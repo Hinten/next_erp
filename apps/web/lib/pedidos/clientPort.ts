@@ -6,13 +6,14 @@ import {
   type DocumentReference,
   type Firestore,
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { nowMicros } from '@delfrance/core/datetime';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import type { PedidoDevolucaoDataPort, PedidoDocData, PedidoWriteOp } from '@delfrance/data/pedido';
-import { ESTADO_NFE, TIPO_NFE } from '@delfrance/schemas';
+import { ESTADO_NFE, TIPO_NFE, type EstadoPedido } from '@delfrance/schemas';
+import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { counterCollection } from '@/lib/data/counterCollection';
-import { historicoEstadoCollection } from '@/lib/data/historicoEstadoCollection';
 import { incidenteCollection } from '@/lib/data/incidenteCollection';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -43,9 +44,10 @@ function refForPath(db: Firestore, path: string): DocumentReference {
   }
   if (parts.length === 4 && parts[0] === 'pedidos') {
     const [, pedidoId, sub, id] = parts as [string, string, string, string];
-    if (sub === 'historicoEstadoPedido') {
-      return historicoEstadoCollection.docRef(db, { pedidoId }, id) as DocumentReference;
-    }
+    // NOTE: `historicoEstadoPedido` is deliberately absent. That subcollection is
+    // written exclusively by the `onPedidoEstadoChanged` Cloud Function and the
+    // rules deny every client write (`meta.serverOwned`), so there is no write op
+    // to resolve — the Estado/Histórico tab only READS it, via its own handle.
     if (sub === 'incidentes') {
       return incidenteCollection.docRef(db, { pedidoId }, id) as DocumentReference;
     }
@@ -54,6 +56,27 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     }
   }
   throw new Error(`clientPedidoPort: unmapped write path "${path}"`);
+}
+
+/**
+ * Invoke the server-owned `reconciliarPagamentoPedido` callable (apps/functions)
+ * to re-derive a pedido's `estado` from its pagamentos (#308). The client SDK
+ * cannot read a query inside `runTransaction`, so the payment sum had to be taken
+ * BEFORE the transaction and was never one atomic snapshot with the pedido total
+ * — concurrent reconciles (two tabs, two sessions) settled on a stale `estado`.
+ * The callable's Admin-SDK transaction reads the pedido AND every pagamento
+ * together. No explicit timeout: the 70s callable default absorbs a gen2 cold
+ * start. Failures arrive as a `FirebaseError` (FunctionsError) the callers narrow
+ * on.
+ */
+export function callReconciliarPagamentoPedido(
+  pedidoId: string,
+): Promise<{ transition: EstadoPedido | null }> {
+  const fn = httpsCallable<{ pedidoId: string }, { transition: EstadoPedido | null }>(
+    getFirebaseFunctions(),
+    'reconciliarPagamentoPedido',
+  );
+  return fn({ pedidoId }).then((res) => res.data);
 }
 
 /**
@@ -75,8 +98,9 @@ export function createClientPedidoPort(db: Firestore): PedidoDevolucaoDataPort {
         const snap = await tx.get(ref);
         const current = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
         const patch = apply(current);
-        // An empty patch means `apply` decided there's nothing to write (e.g. the
-        // estado reconcile found no transition) — skip the no-op update.
+        // An empty patch means `apply` decided there's nothing to write — skip the
+        // no-op update. Unreachable via today's only caller (`savePedido` throws
+        // `PedidoNothingChangedError` first), kept because the port contract allows it.
         if (Object.keys(patch).length === 0) return;
         // tx.update bypasses the converter (only set/add invoke it); the patch
         // already passed the per-field resolver client-side.

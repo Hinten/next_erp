@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MlPayment } from '@delfrance/integrations-mercado-livre';
 import { BANDEIRA, FORMA_PAGAMENTO, STATUS_PAGAMENTO } from '@delfrance/schemas';
-import { mlPaymentToPagamento } from './orderPaymentMapping';
+import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
 
 const NOW_US = 1_753_200_000_000_000;
 
@@ -344,5 +344,143 @@ describe('mlPaymentToPagamento — parcelas/aVista/timestamps', () => {
     });
     expect(mapped.id).toBe('777');
     expect(mapped.duplicata).toBe(false);
+  });
+});
+
+describe('mergePagamentoUpdate — legacy Pagamento.update parity (models.odm.g.dart:11786-11813)', () => {
+  function storedPagamento(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: '900001',
+      metodoPagamentoOuterRef: 'documents/metodo_pgto/abc',
+      forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
+      status_pagamento: STATUS_PAGAMENTO.pendente,
+      cartao: { tpIntegra: '2', bandeira: BANDEIRA.visa, numeroCartao: 'OLD-CARD' },
+      cheque: { banco: 'Banco X' },
+      descricaoPagamento: 'old description',
+      valor: 1,
+      parcelas: 9,
+      juros: 3.5,
+      tarifas: 0.1,
+      aVista: false,
+      duplicata: true,
+      nFat: 'NF-OLD',
+      vencimento: 42,
+      ultimaModificacao: 111,
+      dataCancelamento: 222,
+      dataAprovacao: 333,
+      dataCadastro: 444,
+      ...over,
+    };
+  }
+
+  it('takes the new value UNCONDITIONALLY for forma_de_pagamento/valor/parcelas/aVista/duplicata', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({
+        payment_type: 'account_money',
+        payment_method_id: 'account_money',
+        installments: 1,
+      }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+    const merged = mergePagamentoUpdate(storedPagamento(), mapped);
+
+    expect(merged.forma_de_pagamento).toBe(mapped.forma_de_pagamento);
+    expect(merged.valor).toBe(mapped.valor);
+    expect(merged.parcelas).toBe(mapped.parcelas);
+    expect(merged.aVista).toBe(mapped.aVista);
+    expect(merged.duplicata).toBe(mapped.duplicata);
+  });
+
+  it('falls back to the stored cartao when the incoming payment has none (account_money)', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({ payment_type: 'account_money', payment_method_id: 'account_money' }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+    const stored = storedPagamento();
+    const merged = mergePagamentoUpdate(stored, mapped);
+
+    expect(mapped.cartao).toBeNull();
+    expect(merged.cartao).toEqual(stored.cartao); // the OLD card detail survives
+  });
+
+  it('overwrites cartao with the new value when the incoming payment IS a card payment', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({ payment_type: 'credit_card', payment_method_id: 'visa', card_id: 555 }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+    const merged = mergePagamentoUpdate(storedPagamento(), mapped);
+    expect(merged.cartao).toEqual(mapped.cartao);
+  });
+
+  it('falls back to the stored dataAprovacao when the incoming payment has no date_approved', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({ date_approved: null }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+    const stored = storedPagamento({ dataAprovacao: 999 });
+    const merged = mergePagamentoUpdate(stored, mapped);
+
+    expect(mapped.dataAprovacao).toBeNull();
+    expect(merged.dataAprovacao).toBe(999);
+  });
+
+  it('takes the new dataAprovacao when the incoming payment DOES carry a date_approved', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({ date_approved: '2026-07-22T00:00:00.000Z' }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+    const merged = mergePagamentoUpdate(storedPagamento({ dataAprovacao: 999 }), mapped);
+    expect(merged.dataAprovacao).toBe(mapped.dataAprovacao);
+  });
+
+  it('preserves every field the mapper never sets, untouched', () => {
+    const mapped = mlPaymentToPagamento({ payment: payment(), contaCpfCnpj: null, nowUs: NOW_US });
+    const stored = storedPagamento();
+    const merged = mergePagamentoUpdate(stored, mapped);
+
+    expect(merged.metodoPagamentoOuterRef).toBe(stored.metodoPagamentoOuterRef);
+    expect(merged.cheque).toEqual(stored.cheque);
+    expect(merged.juros).toBe(stored.juros);
+    expect(merged.nFat).toBe(stored.nFat);
+    expect(merged.vencimento).toBe(stored.vencimento);
+    expect(merged.dataCancelamento).toBe(stored.dataCancelamento);
+  });
+
+  it('the id field mirrors the mapped payment id (always present, never null)', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({ id: 900001 }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+    const merged = mergePagamentoUpdate(storedPagamento({ id: '900001' }), mapped);
+    expect(merged.id).toBe('900001');
+  });
+
+  it('never produces an undefined value — a stored doc missing a key terminal-falls-back to null', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({
+        payment_type: 'account_money',
+        payment_method_id: 'account_money',
+        date_approved: null,
+      }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+    // A stored doc that never had a `cartao`/`descricaoPagamento` key at all
+    // (e.g. written by an older code path before those fields existed).
+    const bareExisting: Record<string, unknown> = {
+      valor: 1,
+      forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
+    };
+    const merged = mergePagamentoUpdate(bareExisting, mapped);
+
+    expect(Object.values(merged).some((v) => v === undefined)).toBe(false);
+    expect(merged.cartao).toBeNull();
+    expect(merged.dataAprovacao).toBeNull();
   });
 });

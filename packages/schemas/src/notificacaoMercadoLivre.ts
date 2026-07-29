@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import {
+  notificacaoResilienciaStatusSchema,
+  notificationResilienceFields,
+} from './shared/notificationResilience';
 
 /**
  * `notificacoesMercadoLivre` (TOP-LEVEL) — the **failures-only** inbound webhook
@@ -35,7 +39,13 @@ import { millisSinceEpoch } from './shared/datetime';
  * is re-driven by the sweep; `parked` is terminal (unknown topic, or a `failed`
  * doc that hit the reprocess cap).
  */
-export const notificacaoStatusSchema = z.enum(['failed', 'parked']);
+/**
+ * Local processing state — an alias of the SHARED
+ * `notificacaoResilienciaStatusSchema` so the enum can't drift from what the
+ * pipeline in `@delfrance/data/admin/notifications` writes. Kept as a named
+ * export because the barrel already publishes it.
+ */
+export const notificacaoStatusSchema = notificacaoResilienciaStatusSchema;
 export type NotificacaoStatus = z.infer<typeof notificacaoStatusSchema>;
 
 export const notificacaoMercadoLivreSchema = z
@@ -58,13 +68,9 @@ export const notificacaoMercadoLivreSchema = z
     sent: millisSinceEpoch().nullable().default(null),
     received: millisSinceEpoch().nullable().default(null),
 
-    // ---- Local resilience fields (new-app, not on the ML wire) ------------
-    status: notificacaoStatusSchema.default('failed'),
-    /** LOCAL reprocess counter (incremented by the sweep). */
-    tentativas: z.number().int().default(0),
-    erro: z.string().nullable().default(null),
-    /** Last-attempt time — the sweep's `processedAt < now-1h` window gate. */
-    processedAt: millisSinceEpoch().nullable().default(null),
+    // ---- Local resilience fields (shared; not on any provider's wire) -----
+    // Written/read blind by the pipeline in `@delfrance/data/admin/notifications`.
+    ...notificationResilienceFields(),
   })
   .passthrough();
 

@@ -221,3 +221,66 @@ export function mlPaymentToPagamento(args: {
     dataAprovacao: coerceToMicros(payment.date_approved),
   };
 }
+
+/**
+ * `?? null` terminal fallback — reads a field off a raw (unparsed) stored
+ * Firestore doc, tolerating both an absent key (`undefined`) and an explicit
+ * `null`, so the merge never introduces an `undefined` value (which
+ * `pagamentoCollection.parse` would reject on write).
+ */
+function existingField(existing: Record<string, unknown>, key: string): unknown {
+  return existing[key] ?? null;
+}
+
+/**
+ * Merges an incoming ML-mapped payment onto a STORED `pagamento` doc,
+ * porting `Pagamento.update` (legacy `models.odm.g.dart:11786-11813`) — the
+ * merge legacy runs when `_cadastrarAtualizarPayment` finds an existing
+ * pagamento at the deterministic id (`tasks.dart:1230` calls
+ * `pagamentosInstances[...].update(pagamentoInstance)`).
+ *
+ * Legacy semantics, ported field-for-field:
+ *  - `forma_de_pagamento`, `valor`, `parcelas`, `aVista`, `duplicata` take the
+ *    NEW (mapped) value UNCONDITIONALLY — these five are plain fields on the
+ *    Dart `update()`, not `other.field ?? this.field`.
+ *  - Every other field on `Pagamento.update` is `other.field ?? this.field`:
+ *    the incoming value wins UNLESS it's null, in which case the stored value
+ *    survives. This only actually changes behavior for the nullable mapped
+ *    keys (`status_pagamento`, `cartao`, `descricaoPagamento`, `tarifas`,
+ *    `ultimaModificacao`, `dataCadastro`, `dataAprovacao`) — every OTHER
+ *    stored field (`metodoPagamentoOuterRef`, `cheque`, `juros`, `nFat`,
+ *    `vencimento`, `dataCancelamento`, and any legacy passthrough field)
+ *    is a key `mapped` never sets at all, so it simply survives via the
+ *    `...existing` base below (Dart's `other.field` reads as null on those,
+ *    which resolves to `this.field` all the same).
+ *  - The Firestore doc id is kept — this function returns a plain field
+ *    object, written by the caller with `tx.set(existingRef, ...)` at the
+ *    SAME ref, never a new doc.
+ *
+ * Returns a plain object with `?? null` terminal fallbacks on every key this
+ * function itself decides — safe to feed straight into
+ * `pagamentoCollection.parse` (never an `undefined` value).
+ */
+export function mergePagamentoUpdate(
+  existing: Record<string, unknown>,
+  mapped: MappedPagamentoFields,
+): Record<string, unknown> {
+  return {
+    ...existing,
+    // Unconditional — legacy's five non-nullable-take-new fields.
+    forma_de_pagamento: mapped.forma_de_pagamento,
+    valor: mapped.valor,
+    parcelas: mapped.parcelas,
+    aVista: mapped.aVista,
+    duplicata: mapped.duplicata,
+    // `other.field ?? this.field` — every other field the mapper sets.
+    id: mapped.id ?? existingField(existing, 'id'),
+    status_pagamento: mapped.status_pagamento ?? existingField(existing, 'status_pagamento'),
+    cartao: mapped.cartao ?? existingField(existing, 'cartao'),
+    descricaoPagamento: mapped.descricaoPagamento ?? existingField(existing, 'descricaoPagamento'),
+    tarifas: mapped.tarifas ?? existingField(existing, 'tarifas'),
+    ultimaModificacao: mapped.ultimaModificacao ?? existingField(existing, 'ultimaModificacao'),
+    dataCadastro: mapped.dataCadastro ?? existingField(existing, 'dataCadastro'),
+    dataAprovacao: mapped.dataAprovacao ?? existingField(existing, 'dataAprovacao'),
+  };
+}

@@ -21,6 +21,15 @@ export { RECENCY_SORT } from './types';
 export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
+
+// The four LOCAL resilience fields shared by every failures-only inbound-webhook
+// notification collection. Exported so a NEW channel's schema can spread the same
+// block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
+export {
+  notificacaoResilienciaStatusSchema,
+  notificationResilienceFields,
+  type NotificacaoResilienciaStatus,
+} from './shared/notificationResilience';
 // Re-export `nowMicros` so schema consumers (e.g. @delfrance/storage,
 // apps/functions) can stamp numeric-epoch fields without a direct @delfrance/core
 // dep. (The other epoch/coercion helpers are imported straight from
@@ -74,8 +83,10 @@ export * from './produto';
 export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 
 export {
+  ESTADO_FRETE,
   ESTADO_FRETE_LABELS,
   ESTADOS_FRETE_NAO_POSTADO,
+  ESTADOS_FRETE_PRE_AUTORIZACAO,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
@@ -85,7 +96,9 @@ export {
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
+  isFreteMarketplaceOwned,
   modalidadeFreteSchema,
+  podeAutorizarDespacho,
   reboqueSchema,
   transportadoraSchema,
   veiculoSchema,
@@ -252,6 +265,37 @@ export {
   type MassImportFailure,
   type ImportacaoMercadoLivre,
 } from './importacaoMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the flag-gated order-backfill sweep (#360, Step 9 PR 4).
+  // Bare schema+meta (perms 0n), not a DomainSchema — see the NOTE at the
+  // bottom of backfillPedidosMercadoLivre.ts.
+  backfillPedidosMercadoLivreSchema,
+  backfillPedidosMercadoLivreMeta,
+  type BackfillPedidosMercadoLivre,
+} from './backfillPedidosMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // state doc for the flag-gated ML stock-sync sweeps (Step 10). Bare
+  // schema+meta (perms 0n), not a DomainSchema — see the NOTE at the bottom
+  // of estoqueMercadoLivreSync.ts.
+  estoqueMercadoLivreSyncSchema,
+  estoqueMercadoLivreSyncMeta,
+  type EstoqueMercadoLivreSync,
+} from './estoqueMercadoLivreSync';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
+  // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
+  // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // arquivoOrphanSweepState.ts.
+  ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
+  arquivoOrphanSweepStateSchema,
+  arquivoOrphanSweepStateMeta,
+  type ArquivoOrphanSweepState,
+} from './arquivoOrphanSweepState';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,

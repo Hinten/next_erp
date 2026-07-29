@@ -15,10 +15,11 @@ import { warmRoutes } from './helpers/warmup';
 
 /**
  * End-to-end coverage for `/produtos/recalcular-precos` (#544 bulk price
- * recalculation). Staging has no deployed functions, so the automatic
- * `historicoDePrecos` recording and parent→children propagation (owned by the
- * `onProdutoPrecoCustoChanged` trigger) are NOT assertable here — only covered
- * by the emulator spec from the previous PR in the stack. This suite proves
+ * recalculation). The automatic `historicoDePrecos` recording and parent→children
+ * propagation (owned by the `onProdutoPrecoCustoChanged` trigger) are NOT
+ * asserted here — the trigger IS deployed on staging, but its effects land
+ * asynchronously against a catalog this suite doesn't control, so they are
+ * covered deterministically by the emulator spec instead. This suite proves
  * the parent `precos` WRITE and the screen's own UI behavior.
  *
  * Two deliberate design choices, both driven by the fact that `Calcular`

@@ -69,33 +69,22 @@ afterEach(() => {
 });
 
 describe('mercadoLivreAccountBag', () => {
-  it('carries only user_id + the Mercado-Shops-only price table refs', () => {
+  it('carries only user_id', () => {
     const bag = mercadoLivreAccountBag({
       user_id: 42,
-      tabelaMercadoShopsOuterRef: 'listaDePrecos/ms1',
-      tabelaMercadoShopsPromocionalOuterRef: 'listaDePrecos/ms2',
-      // Extra passthrough / typed fields the bag must NOT leak.
+      // Extra passthrough / typed fields the bag must NOT leak — including the
+      // dropped legacy Mercado-Shops refs a Flutter-written doc still carries.
       shop_id: 99,
       tabelaNormalOuterRef: 'listaDePrecos/normal',
-    } as unknown as Integracao);
-    expect(bag).toEqual({
-      user_id: 42,
       tabelaMercadoShopsOuterRef: 'listaDePrecos/ms1',
       tabelaMercadoShopsPromocionalOuterRef: 'listaDePrecos/ms2',
-    });
+    } as unknown as Integracao);
+    expect(bag).toEqual({ user_id: 42 });
   });
 
-  it('passes through nulls when the account has none of these set', () => {
-    const bag = mercadoLivreAccountBag({
-      user_id: null,
-      tabelaMercadoShopsOuterRef: null,
-      tabelaMercadoShopsPromocionalOuterRef: null,
-    } as unknown as Integracao);
-    expect(bag).toEqual({
-      user_id: null,
-      tabelaMercadoShopsOuterRef: null,
-      tabelaMercadoShopsPromocionalOuterRef: null,
-    });
+  it('passes through a null user_id when the account has none set', () => {
+    const bag = mercadoLivreAccountBag({ user_id: null } as unknown as Integracao);
+    expect(bag).toEqual({ user_id: null });
   });
 });
 
@@ -129,9 +118,8 @@ describe('loadMercadoLivreContext', () => {
     h.parseRead.mockReturnValue({
       tipo: 1,
       user_id: 7,
-      tabelaMercadoShopsOuterRef: 'listaDePrecos/ms1',
-      tabelaMercadoShopsPromocionalOuterRef: 'listaDePrecos/ms2',
       shop_id: 123, // some other channel's field — must not leak into the bag
+      tabelaMercadoShopsOuterRef: 'listaDePrecos/ms1', // dropped legacy field — must not leak either
     });
 
     const ctx = await loadMercadoLivreContext(db, 'int-1');
@@ -140,11 +128,7 @@ describe('loadMercadoLivreContext', () => {
     expect(channelCtx).toEqual({
       integracaoId: 'int-1',
       accessToken: 'AT',
-      account: {
-        user_id: 7,
-        tabelaMercadoShopsOuterRef: 'listaDePrecos/ms1',
-        tabelaMercadoShopsPromocionalOuterRef: 'listaDePrecos/ms2',
-      },
+      account: { user_id: 7 },
     });
   });
 

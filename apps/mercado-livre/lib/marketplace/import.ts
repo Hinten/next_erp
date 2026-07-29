@@ -66,7 +66,7 @@ import { importCategoriaChain } from './importCategoria';
 import { resolveTaxonomia } from './importTaxonomia';
 import { importVariationChildren } from './importVariations';
 import { resolveFamilySiblingIds } from './importFamily';
-import { isAlreadyExists } from './grpcErrors';
+import { isAlreadyExists } from '@delfrance/data/admin';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
 import { type Bucket } from './arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';

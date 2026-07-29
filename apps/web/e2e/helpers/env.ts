@@ -1,8 +1,9 @@
 /**
  * Returns true when the environment variables required for the authenticated
- * e2e flow are configured. Auth-requiring specs read this in `test.beforeAll`
- * and `test.skip` themselves when it returns false, so missing CI secrets
- * degrade gracefully instead of blocking the build.
+ * e2e flow are configured. `globalSetup` (`apps/web/e2e/global-setup.ts`) now
+ * throws before any spec runs if these are missing, so in practice this is
+ * always true by the time a spec's `test.skip` reads it — kept as a defensive
+ * per-spec check, not a graceful-degradation path.
  *
  * The e2e user is ephemeral — `globalSetup` mints it via the Admin SDK — so
  * the only prerequisites are the Firebase project id and a service account;

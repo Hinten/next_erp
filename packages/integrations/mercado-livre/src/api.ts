@@ -15,6 +15,7 @@ import {
   type MlDomainDiscovery,
   type MlItem,
   type MlItemDescription,
+  type MlItemPrices,
   type MlMigrationLiveListing,
   type MlOrder,
   type MlOrderSearch,
@@ -37,6 +38,7 @@ import {
   categorySchema,
   domainDiscoverySchema,
   itemDescriptionSchema,
+  itemPricesSchema,
   itemSchema,
   migrationLiveListingSchema,
   mlBillingInfoSchema,
@@ -93,6 +95,8 @@ export interface MercadoLivreApi {
   getMe(): Promise<MlUser>;
   getUser(id: number | string): Promise<MlUser>;
   getItem(id: string): Promise<MlItem>;
+  /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
+  getPrices(itemId: string): Promise<MlItemPrices>;
   getOrder(id: number | string): Promise<MlOrder>;
   getPack(id: number | string): Promise<MlPack>;
   searchOrders(params: {
@@ -316,6 +320,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
     getItem: (id) =>
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
+    getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
     getPack: (id) => request('GET', `/packs/${id}`, packSchema),
     searchOrders: (params) =>
@@ -446,7 +451,19 @@ async function toHttpError(res: Response): Promise<Error> {
     `ML ${res.status}: ${message ?? res.statusText}`,
     res.status,
     body,
+    parseRetryAfterSec(res.headers.get('retry-after')),
   );
+}
+
+/**
+ * `Retry-After` in whole seconds. Only the delta-seconds form is honoured —
+ * the HTTP-date form (and any junk) parses to null and the caller falls back
+ * to its default pause.
+ */
+function parseRetryAfterSec(raw: string | null): number | null {
+  if (raw == null) return null;
+  const s = raw.trim();
+  return /^\d+$/.test(s) ? Number(s) : null;
 }
 
 function sleep(ms: number): Promise<void> {

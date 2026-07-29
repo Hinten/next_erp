@@ -48,6 +48,15 @@ import {
 } from '@delfrance/data/admin/collections';
 import { PedidoReconcileNotFoundError, reconcilePedidoFromPagamento } from '@delfrance/data/admin';
 import {
+  asMillis,
+  defineNotificationPipeline,
+  MAX_TENTATIVAS,
+  type NotificationDisposition,
+  type ReprocessOptions,
+  type ReprocessResult,
+  TASK_MAX_ATTEMPTS,
+} from '@delfrance/data/admin/notifications';
+import {
   MercadoPagoHttpError,
   MercadoPagoReauthRequiredError,
   createMercadoPagoApi,
@@ -68,11 +77,10 @@ import { loadMercadoPagoContext } from './mercadoPago';
  */
 export const MERCADO_PAGO_NOTIFICATION_QUEUE = 'processMercadoPagoNotification';
 
-/** In-task retry cap — the Cloud Tasks `retryConfig.maxAttempts` (kept in sync). */
-export const TASK_MAX_ATTEMPTS = 3;
-
-/** Cross-sweep reprocess cap — after this many sweeps a `failed` doc is parked. */
-export const MAX_TENTATIVAS = 5;
+// The retry caps and the reprocess window are the SHARED pipeline's — re-exported
+// here so this module stays the one import site for the channel's callers.
+export { MAX_TENTATIVAS, TASK_MAX_ATTEMPTS };
+export type { ReprocessOptions, ReprocessResult };
 
 /**
  * The single MP topic the pipeline processes end-to-end. Everything else
@@ -121,24 +129,10 @@ function asInt(v: unknown): number | null {
 function asBool(v: unknown): boolean | null {
   return typeof v === 'boolean' ? v : null;
 }
-/**
- * Coerce an MP timestamp (`date_created`, ISO-8601 or epoch millis) to epoch
- * millis or null — NORMALIZED at the source so a persisted failure doc can never
- * be rejected by the strict write validator. (Informational only; the sweep
- * gates on the local `processedAt`.)
- */
-function asMillis(v: unknown): number | null {
-  if (typeof v === 'number') return Number.isFinite(v) ? Math.trunc(v) : null;
-  if (typeof v === 'string') {
-    const s = v.trim();
-    if (!s) return null;
-    const iso = Date.parse(s); // ISO-8601
-    if (Number.isFinite(iso)) return iso;
-    const n = Number(s); // numeric string (epoch millis)
-    return Number.isFinite(n) ? Math.trunc(n) : null;
-  }
-  return null;
-}
+// `asMillis` (MP's `date_created`, ISO-8601 or epoch millis) is the shared
+// receiver coercer from `@delfrance/data/admin/notifications` — normalized at the
+// source so a persisted failure doc can never be rejected by the strict write
+// validator. (Informational only; the sweep gates on the local `processedAt`.)
 
 /**
  * Normalize a raw MP POST body (+ its query string) into the lean task payload.
@@ -443,6 +437,68 @@ export interface TaskResult {
   pedidoId?: string;
   topic?: string;
 }
+/**
+ * The shared pipeline, bound to this channel. Built per call so the injectable
+ * `deps` stay per-call (the factory only closes over config — no I/O, no state).
+ *
+ * Note what the persisted doc does NOT carry: any payment detail. MP's failure
+ * doc keeps only the webhook's own POINTER fields, because the sweep re-FETCHES
+ * the payment from the MP API rather than trusting a replayed body (#531). That
+ * is the opposite of the WhatsApp channel, which has no re-fetch anchor and so
+ * must carry its payload.
+ */
+function pipelineFor(deps: ProcessDeps) {
+  return defineNotificationPipeline<MpNotificationPayload, ProcessOutcome>({
+    channel: 'mercado-pago',
+    collection: notificacaoMercadoPagoCollection,
+    taskSchema: mpNotificationTaskSchema,
+    docIdOf: (p) => p.id,
+    dedupKeyOf: (p) => p.paymentId,
+    toDocFields: (p) => ({
+      id: p.id,
+      paymentId: p.paymentId,
+      topic: p.topic,
+      collectorUserId: p.collectorUserId,
+      liveMode: p.liveMode,
+      dateCreated: p.dateCreated,
+    }),
+    fromDoc: (parsed) => {
+      const doc = parsed as MpNotificationPayload;
+      return {
+        id: doc.id,
+        paymentId: doc.paymentId,
+        topic: doc.topic,
+        collectorUserId: doc.collectorUserId,
+        liveMode: doc.liveMode,
+        dateCreated: doc.dateCreated,
+      };
+    },
+    process: (db, payload) => processNotificationPayload(db, payload, deps),
+    toDisposition: (outcome): NotificationDisposition => {
+      // A `dropped` event (sandbox / non-payment topic) is never OURS to process
+      // — in the task nothing is written at all, and in the sweep the doc leaves
+      // the failures store. Same disposition in both phases.
+      if (outcome.kind === 'dropped') return { kind: 'drop', reason: outcome.reason };
+      if (outcome.kind === 'failed') return { kind: 'fail', reason: outcome.reason };
+      return { kind: 'resolve', label: 'reconciled' };
+    },
+  });
+}
+
+const basePipeline = pipelineFor(defaultProcessDeps);
+
+/**
+ * Persist a notification as `failed` (the sweep will re-drive it). The receiver
+ * also calls this as a fallback when the enqueue itself fails, so MP never sees
+ * a 5xx during an enqueue-path outage.
+ */
+export function persistNotificationFailure(
+  db: Firestore,
+  payload: MpNotificationPayload,
+  erro: string,
+): Promise<void> {
+  return basePipeline.persistFailure(db, payload, erro);
+}
 
 /**
  * The `onTaskDispatched` handler body, extracted so the throw/persist
@@ -456,148 +512,17 @@ export async function handleNotificationTask(
   retryCount: number,
   deps: ProcessDeps = defaultProcessDeps,
 ): Promise<TaskResult> {
-  let payload: MpNotificationPayload;
-  try {
-    payload = mpNotificationTaskSchema.parse(data);
-  } catch (err) {
-    if (err instanceof z.ZodError) return { outcome: 'dropped' }; // coding/enqueue bug — drop
-    throw err;
-  }
-
-  let result: ProcessOutcome;
-  try {
-    result = await processNotificationPayload(db, payload, deps);
-  } catch (err) {
-    // Transient (Firestore / MP API / network). Retry in-task until the final
-    // attempt; then persist `failed` so the sweep re-drives it (a throw on the
-    // last attempt would drop the notification).
-    if (!(err instanceof Error)) throw err;
-    if (retryCount < TASK_MAX_ATTEMPTS - 1) throw err; // let the queue retry with backoff
-    // Final attempt: persist so the sweep re-drives it. If the persist ALSO
-    // fails — a *correlated* outage of the SAME Firestore whose failure we're
-    // recovering from — we can't record it locally: log the dropped
-    // notification and re-throw the ORIGINAL error so the failed final attempt
-    // surfaces in Cloud Tasks' error metrics.
-    try {
-      await persistNotificationFailure(db, payload, err.message);
-    } catch (persistErr) {
-      if (!(persistErr instanceof Error)) throw persistErr;
-      console.error(
-        '[mercado-pago] notification DROPPED — transient failure AND persist failed on the final attempt',
-        {
-          id: payload.id,
-          paymentId: payload.paymentId,
-          topic: payload.topic,
-          cause: err.message,
-          persistError: persistErr.message,
-        },
-      );
-      throw err; // surface the original failure to Cloud Tasks
-    }
-    return { outcome: 'failed', topic: payload.topic };
-  }
-
-  if (result.kind === 'dropped') {
-    return { outcome: 'dropped', topic: payload.topic };
-  }
-  if (result.kind === 'failed') {
-    await persistNotificationFailure(db, payload, result.reason);
-    return { outcome: 'failed', topic: payload.topic };
-  }
-  // reconciled — NOTHING persisted (the cost win).
+  const r = await pipelineFor(deps).handleTask(db, data, retryCount);
+  // `payload` is absent only on the schema-parse drop, where there is no topic
+  // to report; `result` is absent on the transient-failure path.
+  const reconciled = r.result?.kind === 'reconciled' ? r.result : null;
   return {
-    outcome: 'done',
-    metodoId: result.metodoId,
-    pedidoId: result.pedidoId,
-    topic: payload.topic,
+    // MP never produces a `park` disposition, so `parked` is unreachable here —
+    // mapped defensively rather than widening this channel's public union.
+    outcome: r.outcome === 'parked' ? 'failed' : r.outcome,
+    ...(reconciled ? { metodoId: reconciled.metodoId, pedidoId: reconciled.pedidoId } : {}),
+    ...(r.payload ? { topic: r.payload.topic } : {}),
   };
-}
-
-/**
- * Persist a notification as `failed` (the sweep will re-drive it). The receiver
- * also calls this as a fallback when the enqueue itself fails, so MP never sees
- * a 5xx during an enqueue-path outage.
- */
-export async function persistNotificationFailure(
-  db: Firestore,
-  payload: MpNotificationPayload,
-  erro: string,
-): Promise<void> {
-  await persistNotification(db, payload, 'failed', 0, erro);
-}
-
-/**
- * Create-only failure/parked writer keyed by the MP notification `id` (auto-id
- * when absent), stamping `processedAt = now` (the sweep's window gate). A
- * duplicate delivery that also failed hits ALREADY_EXISTS (gRPC 6) → the
- * notification is already recorded, so we ignore it rather than clobber its
- * retry state.
- */
-async function persistNotification(
-  db: Firestore,
-  payload: MpNotificationPayload,
-  status: 'failed' | 'parked',
-  tentativas: number,
-  erro: string,
-): Promise<void> {
-  const docId = payload.id ?? notificacaoMercadoPagoCollection.newDocId(db, {});
-  const data = notificacaoMercadoPagoCollection.parse({
-    id: payload.id,
-    paymentId: payload.paymentId,
-    topic: payload.topic,
-    collectorUserId: payload.collectorUserId,
-    liveMode: payload.liveMode,
-    dateCreated: payload.dateCreated,
-    status,
-    tentativas,
-    erro,
-    processedAt: Date.now(),
-  });
-  try {
-    await notificacaoMercadoPagoCollection.docRef(db, {}, docId).create(data);
-  } catch (err) {
-    if (err instanceof Error && (err as { code?: unknown }).code === 6) return; // dup — already recorded
-    throw err;
-  }
-}
-
-/** Advance an existing failure doc's status/retry counter (merge — keeps the wire fields). */
-async function markNotification(
-  db: Firestore,
-  docId: string,
-  status: 'failed' | 'parked',
-  tentativas: number,
-  erro: string,
-  now: number,
-): Promise<void> {
-  await notificacaoMercadoPagoCollection.merge(db, {}, docId, {
-    status,
-    tentativas,
-    erro,
-    processedAt: now,
-  });
-}
-
-/** Remove a resolved failure doc from the failures-only store (sweep success). */
-async function deleteNotification(db: Firestore, docId: string): Promise<void> {
-  await notificacaoMercadoPagoCollection.docRef(db, {}, docId).delete();
-}
-
-/** One hour — the reprocess window (mirrors the ML sweep). */
-const ONE_HOUR_MS = 60 * 60 * 1000;
-
-export interface ReprocessOptions {
-  /** Only re-drive notifications last attempted before `now - olderThanMs`. */
-  olderThanMs?: number;
-  limit?: number;
-  /** Injectable clock (tests). */
-  now?: number;
-}
-
-export interface ReprocessResult {
-  processed: number;
-  outcomes: Record<string, number>;
-  errors: Array<{ docId: string; message: string }>;
 }
 
 /**
@@ -611,76 +536,10 @@ export interface ReprocessResult {
  * rate-limited by its schedule + the `limit` cap. The caller logs the returned
  * counts/errors.
  */
-export async function reprocessNotifications(
+export function reprocessNotifications(
   db: Firestore,
   opts: ReprocessOptions = {},
   deps: ProcessDeps = defaultProcessDeps,
 ): Promise<ReprocessResult> {
-  const now = opts.now ?? Date.now();
-  const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
-  const max = opts.limit ?? 50;
-
-  const snap = await notificacaoMercadoPagoCollection
-    .ref(db, {})
-    .where('status', '==', 'failed')
-    .where('processedAt', '<', cutoff)
-    .orderBy('processedAt')
-    .limit(max)
-    .get();
-
-  const seenPayment = new Set<string>();
-  const outcomes: Record<string, number> = {};
-  const errors: Array<{ docId: string; message: string }> = [];
-  let processed = 0;
-
-  for (const d of snap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    const paymentId = typeof raw.paymentId === 'string' ? raw.paymentId : '';
-    if (paymentId && seenPayment.has(paymentId)) continue; // dedup by paymentId
-    if (paymentId) seenPayment.add(paymentId);
-
-    const doc = notificacaoMercadoPagoCollection.parseRead(
-      raw,
-      notificacaoMercadoPagoCollection.docPath({}, d.id),
-    );
-    const payload: MpNotificationPayload = {
-      id: doc.id,
-      paymentId: doc.paymentId,
-      topic: doc.topic,
-      collectorUserId: doc.collectorUserId,
-      liveMode: doc.liveMode,
-      dateCreated: doc.dateCreated,
-    };
-    const tentativas = (doc.tentativas ?? 0) + 1;
-
-    try {
-      const result = await processNotificationPayload(db, payload, deps);
-      if (result.kind === 'reconciled' || result.kind === 'dropped') {
-        // Resolved — either settled the pedido, or the event is no longer ours
-        // to process (now sandbox / a non-payment topic). Leave the failures store.
-        await deleteNotification(db, d.id);
-        outcomes[result.kind] = (outcomes[result.kind] ?? 0) + 1;
-      } else {
-        // Still failing — re-drive until the cap, then park.
-        const status = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-        await markNotification(db, d.id, status, tentativas, result.reason, now);
-        outcomes[status] = (outcomes[status] ?? 0) + 1;
-      }
-      processed += 1;
-    } catch (err) {
-      // Batch-isolation boundary: a transient failure on one notification must
-      // not abort the sweep. Bump tentativas (park at the cap); if even the mark
-      // write fails, collect and move on. Non-Error throws still propagate.
-      if (!(err instanceof Error)) throw err;
-      try {
-        const status = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-        await markNotification(db, d.id, status, tentativas, err.message, now);
-      } catch (markErr) {
-        if (!(markErr instanceof Error)) throw markErr;
-      }
-      errors.push({ docId: d.id, message: err.message });
-    }
-  }
-
-  return { processed, outcomes, errors };
+  return pipelineFor(deps).reprocess(db, opts);
 }

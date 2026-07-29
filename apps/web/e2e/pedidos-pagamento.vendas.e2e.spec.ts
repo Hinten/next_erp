@@ -13,6 +13,12 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   const prefix = e2ePrefix('pedpag');
   const pedidoId = `${prefix}-001`;
   let fixtures: Awaited<ReturnType<typeof seedPedidoFixtures>>;
+  /**
+   * SERVER-clock watermark for this attempt, in microseconds. Rows older than
+   * this belong to a previous attempt (or to an earlier test in this serial
+   * describe). See `beforeEach` for why it cannot come from `Date.now()`.
+   */
+  let attemptStartMicros: number;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
@@ -53,9 +59,9 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   });
 
   // Reset estado + clear the pagamentos/history subcollections before each
-  // attempt so the auto-reconcile test starts from `iniciado` with no history.
+  // attempt, so every test starts from `iniciado` with no leftover pagamentos
+  // or history.
   test.beforeEach(async () => {
-    await db().collection('pedidos').doc(pedidoId).update({ estado: 'iniciado' });
     const pg = await db().collection('pedidos').doc(pedidoId).collection('pagamentos').get();
     await Promise.all(pg.docs.map((d) => d.ref.delete()));
     const hist = await db()
@@ -64,11 +70,39 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       .collection('historicoEstadoPedido')
       .get();
     await Promise.all(hist.docs.map((d) => d.ref.delete()));
+
+    // Reset LAST, and take this attempt's watermark from the reset's commit
+    // timestamp. It must NOT come from `Date.now()`: the trail's `data` is
+    // `Date.parse(event.time)` — the CloudEvent occurrence time, i.e. Google's
+    // clock — so comparing it against the runner's clock compares two domains,
+    // and a runner running ahead would filter out the very row this test waits
+    // for. `WriteResult.writeTime` is Firestore's own commit timestamp, the same
+    // clock the event time derives from.
+    //
+    // Deriving it instead from the newest `data` already in the trail does NOT
+    // work: the sweep above usually empties it, leaving no value to read, and a
+    // stale row arriving after the sweep would then pass any lower bound.
+    const { writeTime } = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .update({ estado: 'iniciado' });
+    attemptStartMicros = writeTime.toMillis() * 1000;
   });
 
+  // `cleanupPedidoFixtures` deletes the pedido doc with a plain batch delete, which
+  // does NOT cascade subcollections — so both must be swept here. The estado
+  // auto-transition test now runs LAST (it is the deploy gate), so this is the only
+  // thing standing between a failed staging run and orphaned `historicoEstadoPedido`
+  // docs under a parent that no longer exists.
   test.afterAll(async () => {
     const pg = await db().collection('pedidos').doc(pedidoId).collection('pagamentos').get();
     await Promise.all(pg.docs.map((d) => d.ref.delete()));
+    const hist = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .collection('historicoEstadoPedido')
+      .get();
+    await Promise.all(hist.docs.map((d) => d.ref.delete()));
     await cleanupPedidoFixtures(prefix);
   });
 
@@ -101,47 +135,6 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
         { timeout: 15_000 },
       )
       .toEqual({ forma: 1, valor: 100 });
-  });
-
-  test('fully paying a pedido auto-transitions it to "pago" and logs the history', async ({
-    page,
-  }) => {
-    await page.goto(`/pedidos/${pedidoId}/editar`);
-    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
-
-    await page.getByRole('tab', { name: 'Pagamento' }).click();
-    await page.getByRole('button', { name: /Adicionar pagamento/ }).click();
-    // Pedido total is R$ 10,00; pay it in full (default forma Dinheiro, default
-    // status Aprovado → counts toward "paid").
-    await typeMoney(page, 'Valor', '10');
-    await page.getByRole('button', { name: 'Adicionar', exact: true }).click();
-    await expect(page.getByRole('cell', { name: 'R$ 10,00' })).toBeVisible({ timeout: 15_000 });
-
-    // The auto-reconcile flips the pedido estado to "pago"…
-    await expect
-      .poll(
-        async () => {
-          const snap = await db().collection('pedidos').doc(pedidoId).get();
-          return (snap.data()?.estado as string | undefined) ?? null;
-        },
-        { timeout: 15_000 },
-      )
-      .toBe('pago');
-
-    // …and appends a historicoEstadoPedido row recording it.
-    await expect
-      .poll(
-        async () => {
-          const snap = await db()
-            .collection('pedidos')
-            .doc(pedidoId)
-            .collection('historicoEstadoPedido')
-            .get();
-          return snap.docs.map((d) => d.data().estado as string);
-        },
-        { timeout: 15_000 },
-      )
-      .toContain('pago');
   });
 
   test('shows forma-specific fields and autofills the remaining valor', async ({ page }) => {
@@ -235,5 +228,78 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     // "Adicionar" confirm button stays enabled (non-blocking).
     await expect(page.getByText(/novo\s+pagamento é incomum/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Adicionar', exact: true })).toBeEnabled();
+  });
+
+  // DEPLOY GATE — keep this LAST in the serial describe. Since #308 the estado
+  // reconcile is server-owned (the `reconciliarPagamentoPedido` callable), and
+  // this is the ONLY check here that catches "the callable was never deployed":
+  // the other tests above also pay the pedido in full, but assert nothing beyond
+  // the pagamento doc, which the client writes on its own. The server path
+  // itself is covered offline by `pedidos-pagamento-reconcile.emulator.e2e.spec.ts`;
+  // against staging this stays red until the deploy lands, and running last
+  // means one red test instead of aborting the ones that would follow it.
+  test('fully paying a pedido auto-transitions it to "pago" and logs the history', async ({
+    page,
+  }) => {
+    // The 240s in `beforeAll` extends THAT HOOK, not this test — Playwright's
+    // `test.setTimeout` inside a beforeAll sets the hook's own budget. Without
+    // this line the body runs on `playwright.config.ts`'s 60s, which the history
+    // poll below cannot fit behind the three earlier waits plus the staging
+    // `beforeEach`. The symptom would be `Test timeout of 60000ms exceeded`
+    // rather than the assertion failing — which would defeat the whole point of
+    // the deploy gate, since a slow trigger and an undeployed one would report
+    // identically.
+    test.setTimeout(180_000);
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByRole('tab', { name: 'Pagamento' }).click();
+    await page.getByRole('button', { name: /Adicionar pagamento/ }).click();
+    // Pedido total is R$ 10,00; pay it in full (default forma Dinheiro, default
+    // status Aprovado → counts toward "paid").
+    await typeMoney(page, 'Valor', '10');
+    await page.getByRole('button', { name: 'Adicionar', exact: true }).click();
+    await expect(page.getByRole('cell', { name: 'R$ 10,00' })).toBeVisible({ timeout: 15_000 });
+
+    // The auto-reconcile flips the pedido estado to "pago"…
+    await expect
+      .poll(
+        async () => {
+          const snap = await db().collection('pedidos').doc(pedidoId).get();
+          return (snap.data()?.estado as string | undefined) ?? null;
+        },
+        { timeout: 15_000 },
+      )
+      .toBe('pago');
+
+    // …and a historicoEstadoPedido row records it. That row is written by the
+    // `onPedidoEstadoChanged` Cloud Function (apps/functions) reacting to the
+    // pedido write — no longer by the client — so this assertion requires the
+    // function to be DEPLOYED to the staging project. The timeout covers a cold
+    // start on top of the trigger's own delivery latency, and matches the budget
+    // the emulator suite gives the same trigger; staging is strictly slower.
+    //
+    // Scoped to this attempt's watermark deliberately. Two stale-row leaks would
+    // otherwise satisfy a bare `.toContain('pago')`: the preceding test's
+    // `update({ estado: 'pago' })` now fires the trigger and nobody waits for
+    // it, so its row can land after this test's `beforeEach` snapshot-swept the
+    // trail; and across CI's 2 retries `pedidoId` is identical, so a timed-out
+    // attempt's row can outlive it. Both carry a `data` from before the reset.
+    await expect
+      .poll(
+        async () => {
+          const snap = await db()
+            .collection('pedidos')
+            .doc(pedidoId)
+            .collection('historicoEstadoPedido')
+            .get();
+          return snap.docs
+            .map((d) => d.data())
+            .filter((r) => r.estado === 'pago' && (r.data as number) > attemptStartMicros).length;
+        },
+        { timeout: 90_000 },
+      )
+      .toBeGreaterThan(0);
   });
 });

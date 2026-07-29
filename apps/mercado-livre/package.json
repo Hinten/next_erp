@@ -19,6 +19,7 @@
     "@delfrance/integrations-mercado-livre": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "@delfrance/storage": "workspace:*",
+    "@google-cloud/firestore": "^8.6.0",
     "firebase-admin": "catalog:",
     "firebase-functions": "catalog:",
     "next": "catalog:",

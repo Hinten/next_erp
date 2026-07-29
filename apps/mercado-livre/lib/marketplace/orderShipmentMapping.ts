@@ -15,6 +15,7 @@
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import type { MlShipment, MlShipmentPayment } from '@delfrance/integrations-mercado-livre';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete, IntegracaoFrete } from '@delfrance/schemas';
 import { estadoFreteFromShipment } from './orderStatusMaps';
 
@@ -130,16 +131,16 @@ export function mlShipmentToFreteInicial(args: {
  * `mergeEstadoFretePreservando` needs it, and it must match this file's
  * `EstadoFrete` literals exactly.
  */
-const ESTADOS_ANTES_DO_CHECKOUT: ReadonlySet<EstadoFrete> = new Set([
-  'fulfillment',
-  'iniciado',
-  'aguardandoAutorizacao',
-  'aguardandoNFe',
-  'aguardandoValidacaoTransporadora',
-  'despachoAutorizado',
-  'emSeparacao',
-  'empacotado',
-  'aguardandoPostagem',
+const ESTADOS_ANTES_DO_CHECKOUT: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.fulfillment,
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
+  ESTADO_FRETE.despachoAutorizado,
+  ESTADO_FRETE.emSeparacao,
+  ESTADO_FRETE.empacotado,
+  ESTADO_FRETE.aguardandoPostagem,
 ]);
 
 /**
@@ -175,13 +176,13 @@ export function mergeEstadoFretePreservando(
   novoEstado: EstadoFrete,
 ): EstadoFrete {
   if (
-    oldEstado === 'despachoAutorizado' &&
-    (novoEstado === 'iniciado' || novoEstado === 'aguardandoAutorizacao')
+    oldEstado === ESTADO_FRETE.despachoAutorizado &&
+    (novoEstado === ESTADO_FRETE.iniciado || novoEstado === ESTADO_FRETE.aguardandoAutorizacao)
   ) {
-    return 'despachoAutorizado';
+    return ESTADO_FRETE.despachoAutorizado;
   }
-  if (oldEstado === 'checkFinalizado' && ESTADOS_ANTES_DO_CHECKOUT.has(novoEstado)) {
-    return 'checkFinalizado';
+  if (oldEstado === ESTADO_FRETE.checkFinalizado && ESTADOS_ANTES_DO_CHECKOUT.has(novoEstado)) {
+    return ESTADO_FRETE.checkFinalizado;
   }
   return novoEstado;
 }

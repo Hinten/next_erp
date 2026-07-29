@@ -17,11 +17,12 @@ import { warmRoutes } from './helpers/warmup';
  * Runs serially — later tests build on the prices written by earlier ones.
  *
  * The automatic modification-history records and the parent→children precos
- * propagation are now owned by the produto-write Cloud Function trigger,
- * which writes the unified `historicoDeModificacoes` subcollection the modal
- * reads — staging has no deployed functions, so it stays EMPTY here; the
- * modal's empty state is all this suite can prove. Real trigger-written
- * content is covered by `produto-preco.emulator.e2e.spec.ts` instead.
+ * propagation are owned by the produto-write Cloud Function trigger, which
+ * writes the unified `historicoDeModificacoes` subcollection the cost-history
+ * modal reads. This suite does NOT assert them: the trigger IS deployed on
+ * staging, so what the modal shows depends on whichever concurrent specs also
+ * touched the produto, which is not a stable assertion. `produto-preco.emulator.e2e.spec.ts`
+ * covers the trigger's real output deterministically instead.
  */
 test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
   const prefix = e2ePrefix('prod-preco');
@@ -103,19 +104,6 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
     await expect
       .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 25 } });
-  });
-
-  test('shows the empty state in the cost-history modal (no trigger deployed on staging)', async ({
-    page,
-  }) => {
-    // The modal reads `historicoDeModificacoes`, written only by the
-    // `onProdutoChanged` Cloud Function trigger — staging has no deployed
-    // functions, so the collection stays empty here regardless of the price/
-    // custo edits above. Real seeded-content coverage lives in
-    // produto-preco.emulator.e2e.spec.ts, which runs the trigger for real.
-    await openPrecoTab(page);
-    await page.getByRole('button', { name: 'Histórico de custo' }).click();
-    await expect(page.getByText('Nenhum registro.')).toBeVisible({ timeout: 15_000 });
   });
 
   test('rejects a price of 0 (min R$ 0,01) without silently dropping it', async ({ page }) => {

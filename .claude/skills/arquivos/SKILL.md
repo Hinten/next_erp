@@ -276,9 +276,12 @@ patterns above.
   8080/9199): `apps/functions/src/**/*.storage.test.ts`. This is the authority for
   trigger/sweep behavior. Locally:
   `firebase emulators:exec … "pnpm --filter @delfrance/functions test:storage"`.
-- The unreferenced sweep uses the **Pipelines API** (admin v14), which the emulator
-  can't run — tests pass `fetchCandidates`/`resolveReferenced` **seam overrides**.
-  Grace envs are set to `0` in tests so freshly-written docs qualify.
+- The unreferenced sweep pages `arquivos` by document key (a classic
+  `FieldPath.documentId()` query, no Pipelines API involved since #234) and persists
+  its round-robin cursor to `arquivoOrphanSweepState/cursor` — it runs in the
+  emulator without a seam, though `fetchPage`/`resolveReferenced` stay overridable
+  for cursor-mechanics unit tests. Grace envs are set to `0` in tests so
+  freshly-written docs qualify.
 - **Shared-emulator-bucket isolation**: the emulator bucket is shared across test
   files and there's no per-test teardown, so bucket-listing assertions are
   order-fragile — **delete any stray object you write** after your assertions

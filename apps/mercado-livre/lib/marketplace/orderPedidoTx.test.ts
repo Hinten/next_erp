@@ -575,4 +575,55 @@ describe('discoverPedidoMercadoLivre — embedded payments upsert', () => {
     // still the SECOND call's value (150) — the third call's stale 999 never lands.
     expect(pag).toMatchObject({ valor: 150 });
   });
+
+  it('merges (not overwrites) an existing pagamento — a stored field the mapper never sets survives', async () => {
+    // Parity fix: the UPDATE branch now goes through `mergePagamentoUpdate`
+    // (legacy `Pagamento.update`, models.odm.g.dart:11786-11813) instead of a
+    // full-object overwrite — see the module doc's ⚠️ note.
+    const db = new FakeDb();
+    const order1 = makeOrder({
+      id: 4004,
+      lastUpdated: '2026-01-01T00:00:00.000Z',
+      payments: [
+        makePayment({ id: 999, lastModified: '2026-01-01T00:00:00.000Z', transactionAmount: 100 }),
+      ],
+    });
+    const first = await discoverPedidoMercadoLivre(
+      baseArgs(db, {
+        orders: [order1],
+        itensByOrderId: new Map([[4004, [makeItem({ ensureUniqueId: 'u1', produtoUid: 'p1' })]]]),
+      }),
+    );
+
+    const pagId = makePagamentoIdMercadoLivre(CONTA_ID, 999);
+    // Simulate a field a DIFFERENT code path stamped onto the stored doc —
+    // `mlPaymentToPagamento` never sets `metodoPagamentoOuterRef`.
+    const stored = db.docs(`pedidos/${first.pedidoId}/pagamentos`).get(pagId)!;
+    db.seed(`pedidos/${first.pedidoId}/pagamentos`, pagId, {
+      ...stored,
+      metodoPagamentoOuterRef: 'documents/metodo_pgto/manual',
+    });
+
+    // A fresher order carries a fresher revision of the SAME payment.
+    const order2 = makeOrder({
+      id: 4004,
+      lastUpdated: '2026-01-02T00:00:00.000Z',
+      payments: [
+        makePayment({ id: 999, lastModified: '2026-01-02T00:00:00.000Z', transactionAmount: 250 }),
+      ],
+    });
+    await discoverPedidoMercadoLivre(
+      baseArgs(db, {
+        orders: [order2],
+        itensByOrderId: new Map([[4004, [makeItem({ ensureUniqueId: 'u1', produtoUid: 'p1' })]]]),
+      }),
+    );
+
+    const pag = db.docs(`pedidos/${first.pedidoId}/pagamentos`).get(pagId)!;
+    // the manually-stamped field survives the merge...
+    expect(pag.metodoPagamentoOuterRef).toBe('documents/metodo_pgto/manual');
+    // ...while the mapped fields DID advance (proving this was a real update,
+    // not a stale skip that happened to leave the manual field untouched).
+    expect(pag.valor).toBe(250);
+  });
 });

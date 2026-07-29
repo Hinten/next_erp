@@ -41,6 +41,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 
 import { NfeHistory } from './_components/NfeHistory';
 import { CancelarNFeForm } from './_components/CancelarNFeForm';
+import { useCancelarPedidoPrompt } from './_components/useCancelarPedidoPrompt';
 
 function estadoColor(estado: EstadoNFe): MantineColor {
   switch (estado) {
@@ -83,8 +84,14 @@ function PedidoNfeContent() {
   const nfeQuery = useMemo(() => nfeCollection.ref(db, { pedidoId }), [db, pedidoId]);
   const { data: nfes, loading } = useSnapshot(nfeQuery);
 
+  // Owned here, not by CancelarNFeForm: a homologated cancelamento flips the
+  // NF-e to `cancelada` through the snapshot above, which unmounts the form. A
+  // dialog living inside it would vanish before the operator could answer.
+  const { promptCancelarPedido, element: cancelarPedidoDialog } = useCancelarPedidoPrompt();
+
   return (
     <Stack p="md" gap="lg">
+      {cancelarPedidoDialog}
       <Group justify="space-between" align="center">
         <Title order={2}>Notas Fiscais do pedido</Title>
         <Anchor component={Link} href={`/pedidos/${pedidoId}/editar`}>
@@ -142,7 +149,12 @@ function PedidoNfeContent() {
               )}
 
               {estado === ESTADO_NFE.aprovada && (
-                <CancelarNFeForm pedidoId={pedidoId} nfeId={row.id} numero={nfe.numeracao} />
+                <CancelarNFeForm
+                  pedidoId={pedidoId}
+                  nfeId={row.id}
+                  numero={nfe.numeracao}
+                  onCancelamentoConcluido={() => promptCancelarPedido(pedidoId)}
+                />
               )}
             </Stack>
           </Card>

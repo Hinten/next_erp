@@ -28,6 +28,32 @@ function freshId(prefix = 'p') {
  */
 const EVENT_TIME_MICROS = Date.parse('2026-07-21T12:00:00.000Z') * 1000;
 
+/**
+ * The `historicoDeModificacoes` entries THIS test wrote by calling the core
+ * directly — never the whole subcollection.
+ *
+ * The header above says the trigger wrapper needs no emulation. That was true
+ * when this suite ran on firestore alone, but `ci-storage.yml` boots the
+ * FUNCTIONS emulator too (`--only firestore,storage,functions`), so the real
+ * `onProdutoChanged` is live: every `set()` on a produto here is a produto
+ * write, fires it, and appends its own `create` entry. Counting the whole
+ * subcollection therefore races that delivery — `toBe(1)` passes only when the
+ * trigger has not landed yet, and the `empty` assertions fail once it does.
+ *
+ * The trigger stamps `timestamp` from the CloudEvent's real time while every
+ * direct call here passes the fixed {@link EVENT_TIME_MICROS}, so filtering on
+ * it isolates the core's own writes. The assertions stay meaningful: they still
+ * fail if the core writes extra entries, or none.
+ */
+async function coreEntries(db: Firestore, produtoId: string) {
+  const snap = await db
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('historicoDeModificacoes')
+    .get();
+  return snap.docs.filter((d) => d.data().timestamp === EVENT_TIME_MICROS);
+}
+
 describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
   it('records ONE entry for a parent precos+custo change, no legacy docs', async () => {
     const db = getDb();
@@ -63,12 +89,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     expect(entry.changes.custo).toEqual({ old: 5, new: 10 });
     expect(entry.timestamp).toBe(EVENT_TIME_MICROS);
 
-    const allEntries = await db
-      .collection('produtos')
-      .doc(produtoId)
-      .collection('historicoDeModificacoes')
-      .get();
-    expect(allEntries.size).toBe(1);
+    expect(await coreEntries(db, produtoId)).toHaveLength(1);
 
     // The legacy per-lista/per-custo subcollections this trigger used to write
     // are GONE — this PR replaces them with the single unified entry above.
@@ -122,12 +143,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     const redelivered = (await entryRef.get()).data();
     expect(redelivered).toEqual(firstDelivery);
 
-    const allEntries = await db
-      .collection('produtos')
-      .doc(produtoId)
-      .collection('historicoDeModificacoes')
-      .get();
-    expect(allEntries.size).toBe(1);
+    expect(await coreEntries(db, produtoId)).toHaveLength(1);
   });
 
   it('a create (before undefined) has kind "create" and null "old" sides', async () => {
@@ -224,12 +240,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       EVENT_TIME_MICROS,
     );
 
-    const entries = await db
-      .collection('produtos')
-      .doc(parentId)
-      .collection('historicoDeModificacoes')
-      .get();
-    expect(entries.empty).toBe(false);
+    expect(await coreEntries(db, parentId)).not.toHaveLength(0);
 
     const child = (await db.collection('produtos').doc(childId).get()).data()!;
     expect(child.precos).toEqual({ l1: { valor: 5 } }); // untouched
@@ -255,12 +266,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       EVENT_TIME_MICROS,
     );
 
-    const entries = await db
-      .collection('produtos')
-      .doc(childId)
-      .collection('historicoDeModificacoes')
-      .get();
-    expect(entries.empty).toBe(true);
+    expect(await coreEntries(db, childId)).toHaveLength(0);
   });
 
   it('a child write changing nome records an entry without precos in campos', async () => {
@@ -283,13 +289,9 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       EVENT_TIME_MICROS,
     );
 
-    const entries = await db
-      .collection('produtos')
-      .doc(childId)
-      .collection('historicoDeModificacoes')
-      .get();
-    expect(entries.size).toBe(1);
-    const entry = entries.docs[0]!.data();
+    const entries = await coreEntries(db, childId);
+    expect(entries).toHaveLength(1);
+    const entry = entries[0]!.data();
     expect(entry.campos).toEqual(['nome']);
   });
 
@@ -310,11 +312,8 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       ),
     ).resolves.toBeUndefined();
 
-    const entries = await db
-      .collection('produtos')
-      .doc(produtoId)
-      .collection('historicoDeModificacoes')
-      .get();
-    expect(entries.empty).toBe(true);
+    // No `set()` in this test, so no produto doc and no trigger delivery — the
+    // subcollection can only hold what the core wrote, which is nothing.
+    expect(await coreEntries(db, produtoId)).toHaveLength(0);
   });
 });

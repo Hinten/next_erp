@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildCsvReport } from './buildCsvReport';
 import { FIXTURE_ENTRADA, FIXTURE_SAIDA } from './procnfeFixture';
 import { ExportIncompleteError, type ExportSource, type NfeNote } from './types';
+import { ESTADO_NFE } from '@delfrance/schemas';
 
 async function* pagesOf(pages: NfeNote[][]): AsyncGenerator<NfeNote[]> {
   yield* pages;
@@ -25,7 +26,7 @@ describe('buildCsvReport', () => {
         chave: 'a',
         numeracao: 7,
         serie: 1,
-        estado: 'a',
+        estado: ESTADO_NFE.aprovada,
         dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
         xmlNfeProc: FIXTURE_SAIDA,
       },
@@ -35,7 +36,7 @@ describe('buildCsvReport', () => {
         chave: 'b',
         numeracao: 8,
         serie: 1,
-        estado: 'a',
+        estado: ESTADO_NFE.aprovada,
         dataEmissao: new Date('2026-05-27T12:00:00.000Z').getTime(),
         xmlNfeProc: FIXTURE_ENTRADA,
       },
@@ -45,7 +46,7 @@ describe('buildCsvReport', () => {
         chave: 'c',
         numeracao: 9,
         serie: 1,
-        estado: 'n',
+        estado: ESTADO_NFE.rejeitada,
         dataEmissao: new Date('2026-05-27T12:00:00.000Z').getTime(),
         xmlNfeProc: null,
       },
@@ -77,7 +78,7 @@ describe('buildCsvReport', () => {
       chave: `${serie}-${numeracao}`,
       numeracao,
       serie,
-      estado: 'a',
+      estado: ESTADO_NFE.aprovada,
       dataEmissao: null,
       xmlNfeProc: null,
     });
@@ -105,7 +106,7 @@ describe('buildCsvReport', () => {
                 chave: 'a',
                 numeracao: 1,
                 serie: 1,
-                estado: 'a',
+                estado: ESTADO_NFE.aprovada,
                 dataEmissao: null,
                 xmlNfeProc: null,
               },

@@ -98,20 +98,55 @@ export const estadoFreteSchema = z
 export type EstadoFrete = z.infer<typeof estadoFreteSchema>;
 
 /**
+ * Named members of {@link estadoFreteSchema} — the ONLY way to write an
+ * `EstadoFrete` in code. Same rationale as `ESTADO_PEDIDO`; enforced by the
+ * `delfrance/prefer-schema-enum` lint rule.
+ */
+export const ESTADO_FRETE = {
+  fulfillment: 'fulfillment',
+  iniciado: 'iniciado',
+  aguardandoAutorizacao: 'aguardandoAutorizacao',
+  aguardandoNFe: 'aguardandoNFe',
+  aguardandoValidacaoTransporadora: 'aguardandoValidacaoTransporadora',
+  despachoAutorizado: 'despachoAutorizado',
+  aguardandoAgendamento: 'aguardandoAgendamento',
+  despachoNegado: 'despachoNegado',
+  emSeparacao: 'emSeparacao',
+  empacotado: 'empacotado',
+  aguardandoPostagem: 'aguardandoPostagem',
+  checkFinalizado: 'checkFinalizado',
+  postado: 'postado',
+  recebidoPelaTransportadora: 'recebidoPelaTransportadora',
+  aCaminho: 'aCaminho',
+  tentandoRealizarEntrega: 'tentandoRealizarEntrega',
+  entregue: 'entregue',
+  falhaNaEntrega: 'falhaNaEntrega',
+  suspenso: 'suspenso',
+  enderecoNaoEncontrado: 'enderecoNaoEncontrado',
+  aCaminhoDoRemetente: 'aCaminhoDoRemetente',
+  devolvido: 'devolvido',
+  objetoExtraviado: 'objetoExtraviado',
+  cancelado: 'cancelado',
+  desconhecido: 'desconhecido',
+  error: 'error',
+  aguardandoRetirada: 'aguardandoRetirada',
+} as const satisfies Record<string, EstadoFrete>;
+
+/**
  * Estados in which the frete has NOT yet been posted to the carrier — ported
  * from the Dart `naoPostado` list (`integracao_frete_base.dart`).
  */
-export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set([
-  'iniciado',
-  'aguardandoAutorizacao',
-  'aguardandoNFe',
-  'aguardandoValidacaoTransporadora',
-  'despachoAutorizado',
-  'despachoNegado',
-  'emSeparacao',
-  'empacotado',
-  'desconhecido',
-  'aguardandoAgendamento',
+export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
+  ESTADO_FRETE.despachoAutorizado,
+  ESTADO_FRETE.despachoNegado,
+  ESTADO_FRETE.emSeparacao,
+  ESTADO_FRETE.empacotado,
+  ESTADO_FRETE.desconhecido,
+  ESTADO_FRETE.aguardandoAgendamento,
 ]);
 
 /**
@@ -123,9 +158,50 @@ export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set([
  * `estado != checkFinalizado && jaPostado.contains(estado)`, where `jaPostado`
  * is every estado NOT in `naoPostado`. The name follows the Dart port —
  * "jaPostado" here means "past the draft states", not strictly dispatched.
+ * ⚠️ NOT a "has the frete progressed past authorization" test — see
+ * {@link ESTADOS_FRETE_PRE_AUTORIZACAO} for that question (#702).
  */
 export function isFreteJaPostado(estado: EstadoFrete): boolean {
-  return estado !== 'checkFinalizado' && !ESTADOS_FRETE_NAO_POSTADO.has(estado);
+  return estado !== ESTADO_FRETE.checkFinalizado && !ESTADOS_FRETE_NAO_POSTADO.has(estado);
+}
+
+/**
+ * Estados from which a payment-driven `pago` transition may authorize freight
+ * dispatch — strictly those BEFORE `despachoAutorizado` in the lifecycle order
+ * of the enum above.
+ *
+ * Deliberately NOT `!isFreteJaPostado(...)`, which is what the pedido reconcile
+ * used until #702: that predicate answers the label-reprint question and returns
+ * false for `emSeparacao` / `empacotado` / `aguardandoAgendamento` /
+ * `checkFinalizado`, so authorizing dispatch used to REGRESS warehouse progress —
+ * and for `empacotado` and `checkFinalizado`, which are the two of those four in
+ * {@link ESTADOS_FRETE_REMOVE_ESTOQUE}, the pedido's stock effect along with it.
+ *
+ * Excluded on purpose: `despachoNegado` (a denial is a decision — a human clears
+ * it, not a payment), `desconhecido` (noise, not a shipping event — see
+ * {@link ESTADOS_FRETE_IGNORAR_REMOCAO}), `fulfillment` (the marketplace
+ * warehouses the goods) and `despachoAutorizado` itself (already authorized —
+ * skipping it avoids a redundant write).
+ *
+ * INVARIANT: disjoint from {@link ESTADOS_FRETE_REMOVE_ESTOQUE} (asserted in the
+ * unit tests), so authorizing dispatch can never un-remove stock through
+ * `efeitoEstoquePedido`.
+ */
+export const ESTADOS_FRETE_PRE_AUTORIZACAO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
+]);
+
+/**
+ * True when a `pago` transition may set `freteInicial.estado` to
+ * `despachoAutorizado`. Takes a plain `EstadoFrete` like {@link isFreteJaPostado},
+ * so an unrecognized value from raw Firestore data yields `false` — the safe
+ * direction (leave the frete alone).
+ */
+export function podeAutorizarDespacho(estado: EstadoFrete): boolean {
+  return ESTADOS_FRETE_PRE_AUTORIZACAO.has(estado);
 }
 
 /**
@@ -135,22 +211,22 @@ export function isFreteJaPostado(estado: EstadoFrete): boolean {
  * the failure/return tail (the goods are out of the warehouse either way).
  * Consumed by the pedido→estoque sync (`efeitoEstoquePedido`).
  */
-export const ESTADOS_FRETE_REMOVE_ESTOQUE: ReadonlySet<EstadoFrete> = new Set([
-  'empacotado',
-  'aguardandoPostagem',
-  'checkFinalizado',
-  'postado',
-  'recebidoPelaTransportadora',
-  'aCaminho',
-  'tentandoRealizarEntrega',
-  'entregue',
-  'falhaNaEntrega',
-  'suspenso',
-  'enderecoNaoEncontrado',
-  'aCaminhoDoRemetente',
-  'devolvido',
-  'objetoExtraviado',
-  'aguardandoRetirada',
+export const ESTADOS_FRETE_REMOVE_ESTOQUE: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.empacotado,
+  ESTADO_FRETE.aguardandoPostagem,
+  ESTADO_FRETE.checkFinalizado,
+  ESTADO_FRETE.postado,
+  ESTADO_FRETE.recebidoPelaTransportadora,
+  ESTADO_FRETE.aCaminho,
+  ESTADO_FRETE.tentandoRealizarEntrega,
+  ESTADO_FRETE.entregue,
+  ESTADO_FRETE.falhaNaEntrega,
+  ESTADO_FRETE.suspenso,
+  ESTADO_FRETE.enderecoNaoEncontrado,
+  ESTADO_FRETE.aCaminhoDoRemetente,
+  ESTADO_FRETE.devolvido,
+  ESTADO_FRETE.objetoExtraviado,
+  ESTADO_FRETE.aguardandoRetirada,
 ]);
 
 /**
@@ -158,9 +234,9 @@ export const ESTADOS_FRETE_REMOVE_ESTOQUE: ReadonlySet<EstadoFrete> = new Set([
  * `ignorarRemocaoDeEstoque` pair (`integracao_frete_base.dart:201`): an unknown
  * or errored freight status is noise, not a shipping event.
  */
-export const ESTADOS_FRETE_IGNORAR_REMOCAO: ReadonlySet<EstadoFrete> = new Set([
-  'desconhecido',
-  'error',
+export const ESTADOS_FRETE_IGNORAR_REMOCAO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.desconhecido,
+  ESTADO_FRETE.error,
 ]);
 
 /* -------------------------------------------------------------------------- */
@@ -409,6 +485,16 @@ const UNSUPPORTED_FREIGHT_CAPS: FreightTipoCapabilities = {
 export function freightCapsFor(tipo: string | null | undefined): FreightTipoCapabilities {
   if (tipo == null) return UNSUPPORTED_FREIGHT_CAPS;
   return FREIGHT_TIPO_CAPS[tipo as IntegracaoFrete] ?? UNSUPPORTED_FREIGHT_CAPS;
+}
+
+/**
+ * Single definition of "the importing marketplace owns this freight block" — the
+ * read-only lock the Frete tab applies, reused server-side by the pedido estado
+ * reconcile (#702). Tolerant of an unknown / null tipo, like {@link freightCapsFor}:
+ * unrecognized → not marketplace-owned.
+ */
+export function isFreteMarketplaceOwned(tipo: string | null | undefined): boolean {
+  return freightCapsFor(tipo).marketplaceOwned;
 }
 
 /* -------------------------------------------------------------------------- */

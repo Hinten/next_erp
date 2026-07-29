@@ -14,8 +14,6 @@ export {
   buildPedidoPatch,
   savePedido,
   remotelyChangedFields,
-  buildEstadoHistoryOp,
-  recordEstadoChange,
   buildIncidenteOp,
   saveIncidente,
   deleteIncidente,
@@ -23,7 +21,7 @@ export {
   savePagamento,
   deletePagamento,
   nextPedidoEstado,
-  reconcilePedidoEstadoFromPagamentos,
+  cancelarPedido,
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';

@@ -12,13 +12,16 @@ import {
 } from './notificacao';
 
 // #441 default migration-runner wiring (`notificacao.ts`'s `runUptinMigration`)
-// and the Step 9 default order-import wiring (`runOrderImport`) are mocked at
-// their shared seams — `handleUptinMigration` / `importPedidoMercadoLivre`
-// themselves, the ML-context loader, and the API factory — so "default wiring"
-// tests below prove the wire-up (loadMercadoLivreContext → createMercadoLivreApi
-// → handleUptinMigration/importPedidoMercadoLivre) runs with NO real
-// network/Firestore-token dependency. Everything else these modules export
-// stays real (spread from `importActual`).
+// and the Step 9 default order/payment/shipment-import wiring (`runOrderImport`
+// / `runPaymentImport` / `runShipmentImport`) are mocked at their shared seams
+// — `handleUptinMigration` / `importPedidoMercadoLivre` /
+// `importPagamentoMercadoLivre` / `importShipmentMercadoLivre` themselves, the
+// ML-context loader, and the API factory — so "default wiring" tests below
+// prove the wire-up (loadMercadoLivreContext → createMercadoLivreApi →
+// handleUptinMigration/importPedidoMercadoLivre/importPagamentoMercadoLivre/
+// importShipmentMercadoLivre) runs with NO real network/Firestore-token
+// dependency. Everything else these modules export stays real (spread from
+// `importActual`).
 const h = vi.hoisted(() => ({
   handleUptinMigration: vi.fn(async () => {}),
   loadMercadoLivreContext: vi.fn(),
@@ -30,9 +33,32 @@ const h = vi.hoisted(() => ({
       skipped: null,
     }),
   ),
+  importPagamentoMercadoLivre: vi.fn(
+    async (_deps: { nowUs: number; contaId: string }, _resourceId: number) => ({
+      pedidoId: 'ped1',
+      skipped: null,
+    }),
+  ),
+  importShipmentMercadoLivre: vi.fn(
+    async (_deps: { nowUs: number; integracaoId: string }, _resourceId: number) => ({
+      pedidoId: 'ped1',
+      skipped: null,
+    }),
+  ),
+  syncItemPrices: vi.fn(async () => 'synced' as const),
 }));
 vi.mock('./importMigration', () => ({ handleUptinMigration: h.handleUptinMigration }));
 vi.mock('./orderImport', () => ({ importPedidoMercadoLivre: h.importPedidoMercadoLivre }));
+vi.mock('./orderPaymentImport', () => ({
+  importPagamentoMercadoLivre: h.importPagamentoMercadoLivre,
+}));
+vi.mock('./orderShipmentImport', () => ({
+  importShipmentMercadoLivre: h.importShipmentMercadoLivre,
+}));
+vi.mock('./itemsPricesSync', async (importActual) => {
+  const actual = await importActual<typeof import('./itemsPricesSync')>();
+  return { ...actual, syncItemPrices: h.syncItemPrices };
+});
 vi.mock('./mercadoLivre', async (importActual) => {
   const actual = await importActual<typeof import('./mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadMercadoLivreContext };
@@ -230,6 +256,8 @@ beforeEach(() => {
   h.loadMercadoLivreContext.mockReset(); // per-test mockResolvedValue must not leak
   h.createMercadoLivreApi.mockClear();
   h.importPedidoMercadoLivre.mockClear();
+  h.importPagamentoMercadoLivre.mockClear();
+  h.importShipmentMercadoLivre.mockClear();
 });
 
 /* ------------------------------ parse + topics --------------------------- */
@@ -406,7 +434,7 @@ describe('handleNotificationTask', () => {
       asDb(db),
       payloadOf({ id: 'N9', resource: '/items/MLB1', topic: 'items' }),
       0,
-      resolveItemsApi,
+      { resolveItemsApi },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
     expect(resolveItemsApi).toHaveBeenCalledWith(asDb(db), 'conta-A');
@@ -422,7 +450,7 @@ describe('handleNotificationTask', () => {
       asDb(db),
       payloadOf({ id: 'N10', resource: '/items/MLB404', topic: 'items' }),
       0,
-      resolveItemsApi,
+      { resolveItemsApi },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
     expect(resolveItemsApi).not.toHaveBeenCalled(); // no link → no external call
@@ -479,8 +507,8 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       asDb(db),
       payloadOf({ id: 'N20', resource: '/items/MLB1', topic: 'items' }),
       0,
-      migrationResolveItemsApi(),
       // migrationRunner OMITTED — the production default must be used.
+      { resolveItemsApi: migrationResolveItemsApi() },
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
@@ -503,8 +531,7 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       asDb(db),
       payloadOf({ id: 'N21', resource: '/items/MLB1', topic: 'items' }),
       0,
-      migrationResolveItemsApi(),
-      migrationRunner,
+      { resolveItemsApi: migrationResolveItemsApi(), migrationRunner },
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
@@ -537,7 +564,7 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       asDb(db),
       payloadOf({ id: 'N22', resource: '/items/MLB1', topic: 'items' }),
       0,
-      resolveItemsApi,
+      { resolveItemsApi },
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
@@ -561,9 +588,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N40', resource: '/orders/987654', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
     expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 987654);
@@ -582,9 +607,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N41', resource: '/orders/42', topic: 'orders' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders' });
     expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 42);
@@ -602,9 +625,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N42', resource: '2001', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r.outcome).toBe('done');
     expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 2001);
@@ -622,9 +643,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N43', resource: '/orders/5', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
     expect(db.docs(NOTIF).size).toBe(0);
@@ -642,9 +661,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N44', resource: '/orders/abc', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'orders_v2' });
     expect(orderImportRunner).not.toHaveBeenCalled();
@@ -662,9 +679,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
         asDb(db),
         payloadOf({ id: 'N45', resource: '/orders/7', topic: 'orders_v2' }),
         0,
-        undefined,
-        undefined,
-        orderImportRunner,
+        { orderImportRunner },
       ),
     ).rejects.toThrow('ml api unavailable');
     expect(db.docs(NOTIF).size).toBe(0);
@@ -680,9 +695,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N46', resource: '/orders/8', topic: 'orders_v2' }),
       TASK_MAX_ATTEMPTS - 1,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r.outcome).toBe('failed');
     const doc = db.docs(NOTIF).get('N46')!;
@@ -712,8 +725,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N47', resource: '/orders/9', topic: 'orders_v2' }),
       0,
-      // resolveItemsApi/migrationRunner/orderImportRunner ALL omitted — the
-      // production defaults must be used.
+      // runners omitted entirely — the production defaults must be used.
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
@@ -726,6 +738,383 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const [depsArg] = h.importPedidoMercadoLivre.mock.calls[0]!;
     // ONE clock read: nowUs is nowMs converted, not re-read independently.
     expect(depsArg.nowUs).toBe(depsArg.nowMs * 1000);
+  });
+});
+
+/* ------------- payments/shipments import dispatch (Step 9 PR 3) ---------- */
+
+describe('handleNotificationTask — payments/shipments import dispatch (Step 9 PR 3)', () => {
+  describe('payments', () => {
+    it('parses the numeric resource id and routes it to the injected paymentImportRunner (not order/shipment runners), acks done with nothing persisted', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const orderImportRunner = vi.fn(async () => ({
+        pedidoId: 'ped-o',
+        created: true,
+        skipped: null,
+      }));
+      const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped1', skipped: null }));
+      const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-s', skipped: null }));
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N60', resource: '/payments/123456', topic: 'payments' }),
+        0,
+        { orderImportRunner, paymentImportRunner, shipmentImportRunner },
+      );
+      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
+      expect(paymentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 123456);
+      expect(orderImportRunner).not.toHaveBeenCalled();
+      expect(shipmentImportRunner).not.toHaveBeenCalled();
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('a skipped payment import still acks done — nothing persisted, nothing thrown', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const paymentImportRunner = vi.fn(async () => ({
+        pedidoId: null,
+        skipped: 'payment-404' as const,
+      }));
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N61', resource: '/payments/1', topic: 'payments' }),
+        0,
+        { paymentImportRunner },
+      );
+      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('a malformed (non-numeric) resource is dropped WITHOUT dispatching to the runner', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const paymentImportRunner = vi.fn(async () => ({ pedidoId: null, skipped: null }));
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N62', resource: '/payments/abc', topic: 'payments' }),
+        0,
+        { paymentImportRunner },
+      );
+      expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'payments' });
+      expect(paymentImportRunner).not.toHaveBeenCalled();
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('the runner throwing on a non-final attempt propagates (queue retries)', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const paymentImportRunner = vi.fn(async () => {
+        throw new Error('ml api unavailable');
+      });
+      await expect(
+        handleNotificationTask(
+          asDb(db),
+          payloadOf({ id: 'N63', resource: '/payments/7', topic: 'payments' }),
+          0,
+          { paymentImportRunner },
+        ),
+      ).rejects.toThrow('ml api unavailable');
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('the runner throwing on the FINAL attempt persists failed (reuses the existing final-attempt harness)', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const paymentImportRunner = vi.fn(async () => {
+        throw new Error('ml api unavailable');
+      });
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N64', resource: '/payments/8', topic: 'payments' }),
+        TASK_MAX_ATTEMPTS - 1,
+        { paymentImportRunner },
+      );
+      expect(r.outcome).toBe('failed');
+      const doc = db.docs(NOTIF).get('N64')!;
+      expect(doc.status).toBe('failed');
+      expect(doc.erro).toContain('ml api unavailable');
+    });
+
+    it('default wiring (no override): resolves the ML context + api and calls importPagamentoMercadoLivre with {db, api, contaId, nowUs}', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      h.loadMercadoLivreContext.mockResolvedValue({
+        integracaoId: 'conta-A',
+        conta: { user_id: 999 },
+        resolveChannelContext: async () => ({
+          integracaoId: 'conta-A',
+          accessToken: 'AT',
+          account: {},
+        }),
+      });
+      h.importPagamentoMercadoLivre.mockResolvedValue({ pedidoId: 'ped9', skipped: null });
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      try {
+        const r = await handleNotificationTask(
+          asDb(db),
+          payloadOf({ id: 'N65', resource: '/payments/9', topic: 'payments' }),
+          0,
+          // runners omitted entirely — the production defaults must be used.
+        );
+        expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
+        expect(h.loadMercadoLivreContext).toHaveBeenCalledWith(asDb(db), 'conta-A');
+        expect(h.createMercadoLivreApi).toHaveBeenCalled();
+        expect(h.importPagamentoMercadoLivre).toHaveBeenCalledWith(
+          expect.objectContaining({ contaId: 'conta-A', nowUs: 1_700_000_000_000 * 1000 }),
+          9,
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('shipments', () => {
+    it('parses the numeric resource id and routes it to the injected shipmentImportRunner (not order/payment runners), acks done with nothing persisted', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const orderImportRunner = vi.fn(async () => ({
+        pedidoId: 'ped-o',
+        created: true,
+        skipped: null,
+      }));
+      const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-p', skipped: null }));
+      const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped1', skipped: null }));
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N70', resource: '/shipments/987654', topic: 'shipments' }),
+        0,
+        { orderImportRunner, paymentImportRunner, shipmentImportRunner },
+      );
+      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'shipments' });
+      expect(shipmentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 987654);
+      expect(orderImportRunner).not.toHaveBeenCalled();
+      expect(paymentImportRunner).not.toHaveBeenCalled();
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('a skipped shipment import (e.g. no freteInicial yet) still acks done — nothing persisted, nothing thrown', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const shipmentImportRunner = vi.fn(async () => ({
+        pedidoId: 'ped1',
+        skipped: 'sem-frete-inicial' as const,
+      }));
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N71', resource: '/shipments/1', topic: 'shipments' }),
+        0,
+        { shipmentImportRunner },
+      );
+      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'shipments' });
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('a malformed (non-numeric) resource is dropped WITHOUT dispatching to the runner', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const shipmentImportRunner = vi.fn(async () => ({ pedidoId: null, skipped: null }));
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N72', resource: '/shipments/abc', topic: 'shipments' }),
+        0,
+        { shipmentImportRunner },
+      );
+      expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'shipments' });
+      expect(shipmentImportRunner).not.toHaveBeenCalled();
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('the runner throwing on a non-final attempt propagates (queue retries)', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const shipmentImportRunner = vi.fn(async () => {
+        throw new Error('ml api unavailable');
+      });
+      await expect(
+        handleNotificationTask(
+          asDb(db),
+          payloadOf({ id: 'N73', resource: '/shipments/7', topic: 'shipments' }),
+          0,
+          { shipmentImportRunner },
+        ),
+      ).rejects.toThrow('ml api unavailable');
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+
+    it('the runner throwing on the FINAL attempt persists failed (reuses the existing final-attempt harness)', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const shipmentImportRunner = vi.fn(async () => {
+        throw new Error('ml api unavailable');
+      });
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N74', resource: '/shipments/8', topic: 'shipments' }),
+        TASK_MAX_ATTEMPTS - 1,
+        { shipmentImportRunner },
+      );
+      expect(r.outcome).toBe('failed');
+      const doc = db.docs(NOTIF).get('N74')!;
+      expect(doc.status).toBe('failed');
+      expect(doc.erro).toContain('ml api unavailable');
+    });
+
+    it('default wiring (no override): resolves the ML context + api and calls importShipmentMercadoLivre with {db, api, integracaoId, nowUs}', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      h.loadMercadoLivreContext.mockResolvedValue({
+        integracaoId: 'conta-A',
+        conta: { user_id: 999 },
+        resolveChannelContext: async () => ({
+          integracaoId: 'conta-A',
+          accessToken: 'AT',
+          account: {},
+        }),
+      });
+      h.importShipmentMercadoLivre.mockResolvedValue({ pedidoId: 'ped9', skipped: null });
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      try {
+        const r = await handleNotificationTask(
+          asDb(db),
+          payloadOf({ id: 'N75', resource: '/shipments/9', topic: 'shipments' }),
+          0,
+          // runners omitted entirely — the production defaults must be used.
+        );
+        expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'shipments' });
+        expect(h.loadMercadoLivreContext).toHaveBeenCalledWith(asDb(db), 'conta-A');
+        expect(h.createMercadoLivreApi).toHaveBeenCalled();
+        expect(h.importShipmentMercadoLivre).toHaveBeenCalledWith(
+          expect.objectContaining({ integracaoId: 'conta-A', nowUs: 1_700_000_000_000 * 1000 }),
+          9,
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('sweep re-drive threads the payment/shipment runners', () => {
+    it('reprocessNotifications passes the injected paymentImportRunner/shipmentImportRunner through to a re-driven payments/shipments doc', async () => {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      seedFailed(db, 'N80', {
+        processedAt: 1_000,
+        resource: '/payments/501',
+        topic: 'payments',
+      });
+      seedFailed(db, 'N81', {
+        processedAt: 1_000,
+        resource: '/shipments/601',
+        topic: 'shipments',
+      });
+      const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped1', skipped: null }));
+      const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped2', skipped: null }));
+
+      const res = await reprocessNotifications(
+        asDb(db),
+        { now: 10_000, olderThanMs: 100 },
+        { paymentImportRunner, shipmentImportRunner },
+      );
+
+      expect(res.processed).toBe(2);
+      expect(res.outcomes.done).toBe(2);
+      expect(paymentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 501);
+      expect(shipmentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 601);
+      // resolved → both deleted from the failures-only store
+      expect(db.docs(NOTIF).has('N80')).toBe(false);
+      expect(db.docs(NOTIF).has('N81')).toBe(false);
+    });
+  });
+});
+
+/* --------------- items_prices price-sync dispatch (Step 11) --------------- */
+
+describe('handleNotificationTask — items_prices price-sync dispatch (Step 11)', () => {
+  it('parses the item id from the /items/{id}/prices resource and routes it to the injected runner, acks done with nothing persisted', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => 'synced' as const);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N90', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
+    expect(itemsPricesRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 'MLB777');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('default wiring (runners omitted): the real runItemsPricesSync path reaches syncItemPrices', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N95', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+      0,
+      // runners omitted entirely — the production default must be used.
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
+    expect(h.syncItemPrices).toHaveBeenCalledWith(asDb(db), 'conta-A', 'MLB777');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a non-synced outcome (e.g. no-link) still acks done — deterministic, never retried — and warns', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => 'no-link' as const);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N91', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
+    expect(console.warn).toHaveBeenCalledWith(
+      '[mercado-livre] items_prices sync skipped',
+      expect.objectContaining({ integracaoId: 'conta-A', itemId: 'MLB777', outcome: 'no-link' }),
+    );
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a malformed resource (no /prices suffix, or garbage) is dropped WITHOUT dispatching to the runner', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => 'synced' as const);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N92', resource: '/items/MLB777', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'items_prices' });
+    const g = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N93', resource: 'garbage', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(g.outcome).toBe('dropped');
+    expect(itemsPricesRunner).not.toHaveBeenCalled();
+    expect(db.docs(NOTIF).size).toBe(0); // dropped — no persist
+  });
+
+  it('the runner throwing propagates (transient contract preserved — queue retries)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => {
+      throw new Error('ml api unavailable');
+    });
+    await expect(
+      handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N94', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+        0,
+        { itemsPricesRunner },
+      ),
+    ).rejects.toThrow('ml api unavailable');
+    expect(db.docs(NOTIF).size).toBe(0);
   });
 });
 

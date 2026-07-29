@@ -53,6 +53,9 @@ export const userSchema = z
     nickname: z.string().nullable().optional(),
     email: z.string().nullable().optional(),
     site_id: z.string().nullable().optional(),
+    // Account capability tags — `warehouse_management` marks multiorigin
+    // accounts, whose stock cannot be sent via PUT /items.
+    tags: z.array(z.string()).nullable().optional(),
   })
   .passthrough();
 export type MlUser = z.infer<typeof userSchema>;
@@ -144,6 +147,52 @@ export const itemSchema = z
   })
   .passthrough();
 export type MlItem = z.infer<typeof itemSchema>;
+
+/**
+ * `conditions` of one `GET /items/{id}/prices` entry — the applicability
+ * window plus channel restrictions. `context_restrictions` values include
+ * `channel_marketplace` and legacy `channel_mshops` (Mercado Shops is
+ * discontinued — mshops-restricted entries are ignored by the handler).
+ */
+export const itemPricesConditionsSchema = z
+  .object({
+    context_restrictions: z.array(z.string()).nullable().optional(),
+    start_time: z.string().nullable().optional(),
+    end_time: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlItemPricesConditions = z.infer<typeof itemPricesConditionsSchema>;
+
+/**
+ * One `prices[]` entry of `GET /items/{id}/prices` — `type` is
+ * `'standard' | 'promotion'` in practice but stays a plain string (ML adds
+ * price types without notice).
+ */
+export const itemPricesEntrySchema = z
+  .object({
+    id: z.string().nullable().optional(),
+    type: z.string().nullable().optional(),
+    amount: z.number().nullable().optional(),
+    regular_amount: z.number().nullable().optional(),
+    currency_id: z.string().nullable().optional(),
+    last_updated: z.string().nullable().optional(),
+    conditions: itemPricesConditionsSchema.nullable().optional(),
+  })
+  .passthrough();
+export type MlItemPricesEntry = z.infer<typeof itemPricesEntrySchema>;
+
+/**
+ * `GET /items/{id}/prices` — the listing's full price set, consulted on the
+ * `items_prices` webhook topic. Tolerance is deliberate (ML drifts fields
+ * silently): only the entries the price handler keys on are typed.
+ */
+export const itemPricesSchema = z
+  .object({
+    id: z.string().nullable().optional(),
+    prices: z.array(itemPricesEntrySchema).nullable().default([]),
+  })
+  .passthrough();
+export type MlItemPrices = z.infer<typeof itemPricesSchema>;
 
 /**
  * One `order_items[]` line. Lines have NO stable per-line id — identity is
@@ -354,6 +403,12 @@ export const mlPaymentSchema = z
     shipping_cost: z.number().nullable().optional(),
     coupon_amount: z.number().nullable().optional(),
     status: z.string().nullable().optional(),
+    /** Consumed by the payments-topic handler (legacy tasks.dart:1172/1176 — NONE-marketplace skip + order-key resolution). */
+    marketplace: z.string().nullable().optional(),
+    /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
+    external_reference: z.string().nullable().optional(),
+    /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
+    order_id: z.number().int().nullable().optional(),
     installments: z.number().nullable().optional(),
     payment_type: z.string().nullable().optional(),
     payment_type_id: z.string().nullable().optional(),

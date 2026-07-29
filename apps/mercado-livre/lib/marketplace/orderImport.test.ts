@@ -45,7 +45,10 @@ import {
 } from './orderCliente';
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
-import { importPedidoMercadoLivre, type OrderImportDeps } from './orderImport';
+import { importPedidoMercadoLivre, mergeFreteInicial, type OrderImportDeps } from './orderImport';
+import type { MappedFreteInicialFields } from './orderShipmentMapping';
+import { ESTADO_FRETE } from '@delfrance/schemas';
+import type { FreteDoPedido } from '@delfrance/schemas';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Scoped to what orderImport.ts touches directly: `integracao`, `int_frete`,
@@ -574,5 +577,50 @@ describe('importPedidoMercadoLivre — pago advance / downgrade', () => {
     await importPedidoMercadoLivre(deps(db, api), 1);
 
     expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ estado: 'pago' });
+  });
+});
+
+describe('mergeFreteInicial', () => {
+  function makeMappedFrete(over: Partial<MappedFreteInicialFields> = {}): MappedFreteInicialFields {
+    return {
+      externalId: '777',
+      externalOptionIntegracao: 'mercadoLivre',
+      estado: ESTADO_FRETE.postado,
+      integracaoFreteOuterRef: null,
+      enderecoFreteOuterReference: null,
+      modalidade: '1',
+      codRastreio: null,
+      valorCobrado: 20,
+      custoCalculado: 15,
+      custoFinal: 25,
+      dataPrevisaoEntrega: null,
+      ultimaModificacao: NOW_US,
+      prazoDespacho: null,
+      ...over,
+    };
+  }
+
+  it('preserves existing codRastreio/prazoDespacho when mapped carries nulls, but replaces them when mapped is non-null', () => {
+    const existing = {
+      estado: 'postado',
+      externalId: '777',
+      codRastreio: 'BR000STORED',
+      prazoDespacho: Date.parse('2026-01-05T00:00:00.000Z') * 1000,
+    } as unknown as FreteDoPedido;
+
+    const mergedWithNulls = mergeFreteInicial(
+      existing,
+      makeMappedFrete({ codRastreio: null, prazoDespacho: null }),
+    );
+    expect(mergedWithNulls.codRastreio).toBe('BR000STORED'); // preserved — mapped is null
+    expect(mergedWithNulls.prazoDespacho).toBe(existing.prazoDespacho); // preserved — mapped is null
+
+    const newPrazo = Date.parse('2026-02-01T00:00:00.000Z') * 1000;
+    const mergedWithValues = mergeFreteInicial(
+      existing,
+      makeMappedFrete({ codRastreio: 'BR999NEW', prazoDespacho: newPrazo }),
+    );
+    expect(mergedWithValues.codRastreio).toBe('BR999NEW'); // replaced — mapped is non-null
+    expect(mergedWithValues.prazoDespacho).toBe(newPrazo); // replaced — mapped is non-null
   });
 });

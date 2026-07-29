@@ -66,12 +66,21 @@ describe('enviNfeMsgSchema', () => {
     ).toThrow();
   });
 
-  it.each(['e', '0', '1', '2', '3', '4', 't', 'i', 'a', 'c', 'n'] as const)(
-    'accepts EstadoEnviNFeMsg wire value "%s"',
-    (value) => {
-      expect(estadoEnviNFeMsgSchema.parse(value)).toBe(value);
-    },
-  );
+  it.each([
+    ESTADO_ENVI_NFE_MSG.error,
+    ESTADO_ENVI_NFE_MSG.iniciado,
+    ESTADO_ENVI_NFE_MSG.aguardandoEnvio,
+    ESTADO_ENVI_NFE_MSG.respondido,
+    ESTADO_ENVI_NFE_MSG.concluido,
+    '4',
+    't',
+    'i',
+    'a',
+    'c',
+    'n',
+  ] as const)('accepts EstadoEnviNFeMsg wire value "%s"', (value) => {
+    expect(estadoEnviNFeMsgSchema.parse(value)).toBe(value);
+  });
 
   it('exposes the Phase A subset on ESTADO_ENVI_NFE_MSG', () => {
     expect(ESTADO_ENVI_NFE_MSG.respondido).toBe('2');

@@ -531,9 +531,11 @@ export default function EditarProdutoPage() {
           // (the schema default) when there are no fotos, so an untouched produto
           // isn't churned from `null` to `[]` on an unrelated save.
           const fotoIds = deriveFotosArquivosIds(values.fotos as Foto[] | null);
+          const gruposDerived = sortGrupoUids(groupsRef.current ?? implied, grupos);
+          const variacoesDerived = normalizeVariacoesUid(uids, grupos);
           return {
-            grupoDeVariacoesUid: sortGrupoUids(groupsRef.current ?? implied, grupos),
-            variacoesUid: normalizeVariacoesUid(uids, grupos),
+            grupoDeVariacoesUid: gruposDerived.length > 0 ? gruposDerived : null,
+            variacoesUid: variacoesDerived.length > 0 ? variacoesDerived : null,
             componentesKit,
             // Sorted so the denorm is order-stable — the keys feed an
             // `array-contains` query (order-insensitive), and Firestore arrays
