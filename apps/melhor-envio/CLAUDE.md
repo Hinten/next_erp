@@ -34,7 +34,7 @@ in the shared package `@delfrance/integrations-freight-br`.
 ## Dev
 
 ```bash
-cp .env.example ../../.env.local   # fill in (shared root .env.local)
+cp ../../.env.example ../../.env.local   # ONE root file (#730) — fill in
 pnpm --filter @delfrance/melhor-envio-app dev   # :3005
 curl http://localhost:3005/api/health
 ```

@@ -64,6 +64,12 @@ firebase functions:secrets:set NFE_CERT_PASSWORD  --project <project-id>  # env-
 copies `.env*` (except `.env.local`/`.env.example`) into the artifact, and firebase
 loads it as the function's runtime env at deploy.
 
+> The `.env.example` next to this file is the **one deliberate exception** to the
+> repo's one-root-`.env.example` convention (#730): the repo-root `.env.local`
+> feeds the Next apps and never reaches this separate codebase, so these names
+> belong here, not in the root file. The carve-out is pinned in
+> `packages/config-eslint/rules/env-example-location.test.js`.
+
 - For the **env-fallback test**, the only needed var is `NFE_CERT_ENV_FALLBACK=1`.
 - `NFE_AMBIENTE` / `NFE_UF` **default to `homologacao` / `SP`** (`runtime.ts`), so a
   SP homologação test needs nothing else. Admin creds come from ADC; the queue

@@ -156,11 +156,18 @@ jobs:
       pull-requests: write
       actions: read
     steps:
-      - name: Comment failure log on PR
+      # Checked out ONLY to supply the stale-base-hint composite action. Pinned
+      # to the BASE ref, never the PR head: this job holds `pull-requests: write`,
+      # so the script it executes has to come from trusted `main` rather than
+      # from the branch under test.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Collect failure log
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SLUG: emulator
@@ -192,4 +199,24 @@ jobs:
               } >> /tmp/body.md
             done < /tmp/failed-jobs.tsv
           fi
-          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/body.md || true
+
+      # Reads the /tmp/job-*.log files written above, so it must run after them.
+      - name: Stale-base hint
+        uses: ./.github/actions/stale-base-hint
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment failure log on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # The hint leads — it is the thing that stops someone reading a trace
+          # for a failure their base already fixed. Empty file when not stale,
+          # leaving the comment byte-identical to before. `touch` so a skipped
+          # or half-run hint step can never break the comment.
+          touch /tmp/stale-hint.md
+          cat /tmp/stale-hint.md /tmp/body.md > /tmp/comment.md
+          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/comment.md || true

@@ -74,7 +74,7 @@ const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem
 // SEFAZ — there's no algorithmic way to derive one from the other,
 // so the maintainer must set `NFE_TEST_IE` in `.env.local` to the
 // real IE issued for the company that owns the loaded A1 cert.
-// See `apps/nfe/.env.example`.
+// See the repo-root `.env.example` (NF-e section).
 //
 // `NFE_TEST_IE` is REQUIRED — there is no placeholder fallback. A bogus
 // IE only ever earns a guaranteed cStat=209, so when it (or the cert)

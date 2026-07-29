@@ -161,7 +161,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 - **New e2e test** → the **filename suffix picks the lane**, nothing else to
   wire: `.cadastros.e2e.spec.ts` (master data), `.vendas.e2e.spec.ts`
   (sales/fiscal/config), `.emulator.e2e.spec.ts` (offline), `.smoke.spec.ts`.
-  **Do not** add an e2e job to `ci.yml`.
+  **Do not** add an e2e job to `ci.yml`. An e2e spec asserts a **behaviour**,
+  never a **deployment state** — a title that explains what is or is not deployed
+  rots the moment it is (enforced by `apps/web/e2e/spec-conventions.test.ts`; see
+  `apps/web/CLAUDE.md` rule 8).
 
 ## Key fixed decisions
 

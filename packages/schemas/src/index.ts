@@ -287,6 +287,22 @@ export {
 } from './estoqueMercadoLivreSync';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the manual "Atualizar
+  // preços" bulk price-push job/checkpoint doc (Step 11 PR-C), mirrors
+  // importacaoMercadoLivre above.
+  envioPrecoMercadoLivreStatusSchema,
+  envioPrecoFilaItemSchema,
+  envioPrecoSkipSchema,
+  envioPrecoFailureSchema,
+  envioPrecoMercadoLivreSchema,
+  type EnvioPrecoMercadoLivreStatus,
+  type EnvioPrecoFilaItem,
+  type EnvioPrecoSkip,
+  type EnvioPrecoFailure,
+  type EnvioPrecoMercadoLivre,
+} from './envioPrecoMercadoLivre';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
   // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
@@ -384,6 +400,9 @@ export {
   indIntermedOperacaoSchema,
   origemProdutoImpostoSchema,
   TIPO_NFE,
+  IND_PRES_OPERACAO,
+  IND_INTERMED_OPERACAO,
+  ORIGEM_PRODUTO_IMPOSTO,
   TIPO_NFE_LABELS,
   FIN_NFE_OPERACAO_LABELS,
   IND_PRES_OPERACAO_LABELS,
@@ -516,6 +535,17 @@ export {
   indISSSchema,
   indIncentivoSchema,
   IPI_TRIB_CSTS,
+  // enum member constants
+  CRT,
+  CSOSN,
+  CST,
+  MOD_BC,
+  MOD_BCST,
+  ORIGEM,
+  CST_PIS_COFINS,
+  CST_IPI,
+  IND_ISS,
+  IND_INCENTIVO,
   // ICMS sub-configs (SN + Regime Normal)
   confICMSSN101Schema,
   confICMSSN201Schema,

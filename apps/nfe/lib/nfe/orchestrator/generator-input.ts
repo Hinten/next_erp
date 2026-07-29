@@ -14,6 +14,7 @@ import {
 import { microsToMillis } from '@delfrance/core/datetime';
 import { roundReais } from '@delfrance/core/money';
 import {
+  IND_INTERMED_OPERACAO,
   FORMA_PAGAMENTO,
   type Filial,
   type FreteDoPedido,
@@ -733,7 +734,7 @@ export function buildInfIntermed(
   integracao: Integracao | null,
   operacao: Operacao,
 ): { CNPJ: string; idCadIntTran: string } | undefined {
-  if (operacao.indIntermed !== '1') return undefined;
+  if (operacao.indIntermed !== IND_INTERMED_OPERACAO.plataformaTerceiros) return undefined;
   if (!integracao) {
     throw new NFeOrchestratorError(
       `operacao.indIntermed='1' but no Integracao doc resolved — set ` +

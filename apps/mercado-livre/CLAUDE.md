@@ -48,7 +48,8 @@ milestones of the ML port plan.
 
 ## Env
 
-See `.env.example` + `apphosting.yaml`. App-wide ML app credentials
+See the repo-root `.env.example` (Mercado Livre section — one root file is the
+repo convention, #730) + `apphosting.yaml`. App-wide ML app credentials
 (`MERCADO_LIVRE_CLIENT_ID/SECRET`, `..._STATE_SECRET`) live in env / Secret
 Manager — one registered ML app serves every connected account; the per-account
 OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection

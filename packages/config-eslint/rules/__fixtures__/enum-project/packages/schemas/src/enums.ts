@@ -65,3 +65,19 @@ export const ORIGEM_PRODUTO = {
   importadoDireto: '1',
   importadoMercadoInterno: '2',
 } as const satisfies Record<string, OrigemProduto>;
+
+// A hand-written union carrying EXACTLY the members of `origemSchema`, and a
+// generated-codegen-style interface field ditto. Neither is a Zod enum, and both
+// are the shape that broke matching-by-member-set: the real pair was
+// `TpAmb = '1' | '2'` resolving to `IndIncentivo`, and the NF-e codegen's
+// `ide.tpImp` (DANFE layout) resolving to `ModBCST`.
+export type TpAmbLike = '0' | '1' | '2';
+
+export interface GeneratedIde {
+  tpImp: '0' | '1' | '2';
+}
+
+/** Stand-in for a Zod-inferred record — the shape real call sites read from. */
+export interface PedidoLike {
+  estado: EstadoPedido;
+}

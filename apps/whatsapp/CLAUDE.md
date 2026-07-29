@@ -337,7 +337,8 @@ message (mensagem padrão)" section.
 
 ## Env
 
-See `.env.example` + `apphosting.yaml`. The per-account permanent token is NOT an
+See the repo-root `.env.example` (WhatsApp Cloud API section — one root file is
+the repo convention, #730) + `apphosting.yaml`. The per-account permanent token is NOT an
 env var — it is entered per integração and stored server-side. The app-wide
 `WHATSAPP_VERIFY_TOKEN` (GET verify handshake) and `WHATSAPP_APP_SECRET` (the
 **mandatory** `X-Hub-Signature-256` HMAC secret — unset → the POST returns 503) are

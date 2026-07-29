@@ -22,7 +22,7 @@ import type {
   TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
 import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
-import { IPI_TRIB_CSTS } from './schemas';
+import { CSOSN, IPI_TRIB_CSTS } from './schemas';
 import { computeRtcItemValues, parseRtcConfig } from './rtc';
 
 /**
@@ -186,17 +186,21 @@ export function aggregateTotals(
     // cStat 532 ("Total do ICMS difere do somatório dos itens", MOC 7.0 Anexo I
     // W04). Only CSOSN 900's real <vICMS> rolls up (below). Matches the legacy
     // Flutter engine, whose vICMS_ICMSTot stays 0 for SN-credit notes.
-    if (icms.csosn === '201' && icms.csosn201) {
+    if (icms.csosn === CSOSN.tributadaComCreditoComSt && icms.csosn201) {
       vBCST += icms.csosn201.vBCST;
       vST += icms.csosn201.vICMSST;
       vFCPST += icms.csosn201.vFCPST ?? 0;
-    } else if ((icms.csosn === '202' || icms.csosn === '203') && icms.csosn202ou203) {
+    } else if (
+      (icms.csosn === CSOSN.tributadaSemCreditoComSt ||
+        icms.csosn === CSOSN.isencaoFaixaReceitaBrutaComSt) &&
+      icms.csosn202ou203
+    ) {
       vBCST += icms.csosn202ou203.vBCST;
       vST += icms.csosn202ou203.vICMSST;
       vFCPST += icms.csosn202ou203.vFCPST ?? 0;
-    } else if (icms.csosn === '500' && icms.csosn500) {
+    } else if (icms.csosn === CSOSN.icmsCobradoAnteriormente && icms.csosn500) {
       vFCPSTRet += icms.csosn500.vFCPSTRet ?? 0;
-    } else if (icms.csosn === '900' && icms.csosn900) {
+    } else if (icms.csosn === CSOSN.outros && icms.csosn900) {
       vBC += icms.csosn900.vBC ?? 0;
       vICMS += icms.csosn900.vICMS ?? 0;
       vBCST += icms.csosn900.vBCST ?? 0;
