@@ -46,20 +46,22 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
- * Topics whose Step 9+ handlers re-fetch a cross-referenced ML resource
- * (order/payment/shipment) that can lag the notification itself — ML is
- * eventually consistent, so an immediate GET can 404 or return stale data.
- * Legacy delayed EVERY topic 10s before dispatch (`functions.dart:17-48`); we
- * scope the delay to the topics that actually need it (approved deviation —
- * `items` and the rest keep today's immediate dispatch).
+ * Topics whose handlers re-fetch the very resource the notification announces
+ * (order/payment/shipment/item prices) — ML is eventually consistent, so an
+ * immediate GET can 404 or return data predating the change the notification
+ * is about; a short scheduling delay avoids racing ML's own write. Legacy
+ * delayed EVERY topic 10s before dispatch (`functions.dart:17-48`); we scope
+ * the delay to the topics that actually need it (approved deviation — `items`
+ * and the rest keep today's immediate dispatch).
  */
-const ORDER_FAMILY_TOPICS: ReadonlySet<string> = new Set([
+const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'orders_v2',
   'orders',
   'payments',
   'shipments',
+  'items_prices',
 ]);
-const ORDER_FAMILY_SCHEDULE_DELAY_SECONDS = 10;
+const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
 
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();
@@ -84,10 +86,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   // Enqueue the lean payload; the queue processes it out-of-band at a bounded
-  // rate. No Firestore write on this path. Order-family topics get a 10s
+  // rate. No Firestore write on this path. Refetch-delay topics get a 10s
   // scheduling delay (see the const above); every other topic is unchanged.
-  const enqueueOpts = ORDER_FAMILY_TOPICS.has(parsed.payload.topic)
-    ? { scheduleDelaySeconds: ORDER_FAMILY_SCHEDULE_DELAY_SECONDS }
+  const enqueueOpts = REFETCH_DELAY_TOPICS.has(parsed.payload.topic)
+    ? { scheduleDelaySeconds: REFETCH_SCHEDULE_DELAY_SECONDS }
     : undefined;
   try {
     await createMlTaskScheduler().enqueue(parsed.payload, enqueueOpts);
