@@ -18,6 +18,8 @@ export default function NovaCategoriaPage() {
   const { user } = useAuth();
   const db = getFirebaseFirestore();
   const parentBreadcrumbRef = useRef<string | null>(null);
+  /** True only when deriveOnSave produced a different `nomeCompleto`. */
+  const shouldCascadeRef = useRef(false);
   const onParentBreadcrumbChange = useCallback((bc: string | null) => {
     parentBreadcrumbRef.current = bc;
   }, []);
@@ -58,16 +60,20 @@ export default function NovaCategoriaPage() {
         }}
         fields={fields}
         excludedFields={['timestamp', 'ultimaModificacao']}
-        deriveOnSave={(values) => ({
-          nomeCompleto: deriveNomeCompletoOnSave({
+        deriveOnSave={(values) => {
+          const existing = typeof values.nomeCompleto === 'string' ? values.nomeCompleto : null;
+          const nomeCompleto = deriveNomeCompletoOnSave({
             nome: String(values.nome ?? ''),
             hasParent: values.categoriaPaiOuterRef != null && values.categoriaPaiOuterRef !== '',
             parentBreadcrumb: parentBreadcrumbRef.current,
-            existingNomeCompleto:
-              typeof values.nomeCompleto === 'string' ? values.nomeCompleto : null,
-          }),
-        })}
+            existingNomeCompleto: existing,
+          });
+          shouldCascadeRef.current = nomeCompleto !== existing;
+          return { nomeCompleto };
+        }}
         onAfterSave={async (id, values) => {
+          if (!shouldCascadeRef.current) return;
+          shouldCascadeRef.current = false;
           const nc = values.nomeCompleto;
           if (typeof nc === 'string' && nc.length > 0) {
             await cascadeCategoriaNomeCompleto(db, id, nc);

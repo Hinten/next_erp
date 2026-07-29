@@ -46,6 +46,9 @@ export async function cascadeNomeCompletoToDescendants(
   rootId: string,
   rootNomeCompleto: string,
 ): Promise<number> {
+  // Visited set guards against cycles / duplicate child ids in legacy data so
+  // BFS cannot loop forever issuing reads/writes.
+  const visited = new Set<string>([rootId]);
   let frontier: Array<{ id: string; nomeCompleto: string }> = [
     { id: rootId, nomeCompleto: rootNomeCompleto },
   ];
@@ -55,10 +58,16 @@ export async function cascadeNomeCompletoToDescendants(
     const next: Array<{ id: string; nomeCompleto: string }> = [];
     for (const parent of frontier) {
       const children = await deps.listDirectChildren(parent.id);
-      if (children.length === 0) continue;
+      const unseen: CategoriaChild[] = [];
+      for (const c of children) {
+        if (visited.has(c.id)) continue;
+        visited.add(c.id);
+        unseen.push(c);
+      }
+      if (unseen.length === 0) continue;
       const now = deps.now();
       const patches: CategoriaNomeCompletoPatch[] = buildChildNomeCompletoPatches(
-        children,
+        unseen,
         parent.nomeCompleto,
       ).map((p) => ({ ...p, ultimaModificacao: now }));
       await deps.applyPatches(patches);
@@ -81,6 +90,9 @@ export async function listDescendantCategoriaIds(
   listDirectChildren: (parentId: string) => Promise<CategoriaChild[]>,
   rootId: string,
 ): Promise<string[]> {
+  // Same cycle/duplicate guard as the cascade BFS — without it a cycle keeps
+  // the parent-picker exclude list loading forever.
+  const visited = new Set<string>([rootId]);
   const out: string[] = [];
   let frontier = [rootId];
   while (frontier.length > 0) {
@@ -88,6 +100,8 @@ export async function listDescendantCategoriaIds(
     for (const id of frontier) {
       const children = await listDirectChildren(id);
       for (const c of children) {
+        if (visited.has(c.id)) continue;
+        visited.add(c.id);
         out.push(c.id);
         next.push(c.id);
       }

@@ -75,6 +75,54 @@ describe('cascadeNomeCompletoToDescendants', () => {
     expect(updated).toBe(0);
     expect(applyPatches).not.toHaveBeenCalled();
   });
+
+  it('terminates on a cycle without re-patching visited nodes', async () => {
+    // a → b → a
+    const tree: Record<string, CategoriaChild[]> = {
+      a: [{ id: 'b', nome: 'B' }],
+      b: [{ id: 'a', nome: 'A' }],
+    };
+    const applied: CategoriaNomeCompletoPatch[] = [];
+    const updated = await cascadeNomeCompletoToDescendants(
+      {
+        listDirectChildren: async (id) => tree[id] ?? [],
+        applyPatches: async (patches) => {
+          applied.push(...patches);
+        },
+        now: () => 1,
+      },
+      'a',
+      'A',
+    );
+    expect(updated).toBe(1);
+    expect(applied).toEqual([{ id: 'b', nomeCompleto: 'A > B', ultimaModificacao: 1 }]);
+  });
+
+  it('skips duplicate child ids in a single listDirectChildren result', async () => {
+    const listDirectChildren = vi.fn(async (id: string) => {
+      if (id === 'root') {
+        return [
+          { id: 'a', nome: 'A' },
+          { id: 'a', nome: 'A' },
+        ];
+      }
+      return [];
+    });
+    const applied: CategoriaNomeCompletoPatch[] = [];
+    const updated = await cascadeNomeCompletoToDescendants(
+      {
+        listDirectChildren,
+        applyPatches: async (patches) => {
+          applied.push(...patches);
+        },
+        now: () => 2,
+      },
+      'root',
+      'Root',
+    );
+    expect(updated).toBe(1);
+    expect(applied).toEqual([{ id: 'a', nomeCompleto: 'Root > A', ultimaModificacao: 2 }]);
+  });
 });
 
 describe('listDescendantCategoriaIds', () => {
@@ -86,6 +134,17 @@ describe('listDescendantCategoriaIds', () => {
     };
     await expect(listDescendantCategoriaIds(async (id) => tree[id] ?? [], 'root')).resolves.toEqual(
       ['a', 'a1'],
+    );
+  });
+
+  it('terminates on a cycle and returns each id once', async () => {
+    const tree: Record<string, CategoriaChild[]> = {
+      root: [{ id: 'a', nome: 'A' }],
+      a: [{ id: 'b', nome: 'B' }],
+      b: [{ id: 'a', nome: 'A' }],
+    };
+    await expect(listDescendantCategoriaIds(async (id) => tree[id] ?? [], 'root')).resolves.toEqual(
+      ['a', 'b'],
     );
   });
 });

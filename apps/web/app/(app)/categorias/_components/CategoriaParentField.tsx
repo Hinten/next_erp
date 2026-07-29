@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { FirebaseError } from 'firebase/app';
 import { getDocFromServer, type DocumentReference } from 'firebase/firestore';
 import { idFromRef } from '@delfrance/schemas';
@@ -25,6 +25,10 @@ type Props = FieldRenderProps & {
  * breadcrumb is set synchronously from the option meta (hint=`nomeCompleto`,
  * else label=`nome`) so a fast save cannot race a follow-up getDoc. On edit
  * load, a useEffect revalidates the breadcrumb from the server.
+ *
+ * Out-of-order `getDocFromServer` results are dropped via a monotonic request
+ * token (`breadcrumbLoadSeqRef`) so a stale load cannot overwrite a newer
+ * pick/clear.
  */
 export function CategoriaParentField({
   value,
@@ -39,28 +43,30 @@ export function CategoriaParentField({
   name,
 }: Props) {
   const db = getFirebaseFirestore();
+  const breadcrumbLoadSeqRef = useRef(0);
 
   // When the form loads an existing parent (edit), resolve the breadcrumb.
   // On pick the sync path already set a breadcrumb — this revalidates it and
-  // must not wipe it on transient Firebase errors.
+  // must not wipe it on transient Firebase errors. Each run takes a new request
+  // token; stale completions are dropped when `seq !== breadcrumbLoadSeqRef`.
   useEffect(() => {
-    let cancelled = false;
+    const seq = ++breadcrumbLoadSeqRef.current;
     async function load() {
       if (value == null || value === '') {
-        if (!cancelled) onParentBreadcrumbChange(null);
+        if (seq === breadcrumbLoadSeqRef.current) onParentBreadcrumbChange(null);
         return;
       }
       if (typeof value !== 'string') return;
       const id = idFromRef(value);
       if (!id) {
-        if (!cancelled) onParentBreadcrumbChange(null);
+        if (seq === breadcrumbLoadSeqRef.current) onParentBreadcrumbChange(null);
         return;
       }
       try {
         const snap = await getDocFromServer(
           categoriaCollection.docRef(db, {}, id) as DocumentReference,
         );
-        if (cancelled) return;
+        if (seq !== breadcrumbLoadSeqRef.current) return;
         if (!snap.exists()) return;
         onParentBreadcrumbChange(parentBreadcrumbFromDoc(snap.data()));
       } catch (err) {
@@ -72,9 +78,6 @@ export function CategoriaParentField({
       }
     }
     void load();
-    return () => {
-      cancelled = true;
-    };
   }, [value, db, onParentBreadcrumbChange]);
 
   return (
@@ -92,6 +95,9 @@ export function CategoriaParentField({
       excludeIds={excludeIds}
       onBlur={onBlur}
       onChange={(next, meta) => {
+        // Bump the load token so any in-flight server revalidation for the
+        // previous parent cannot overwrite the breadcrumb we set below.
+        breadcrumbLoadSeqRef.current += 1;
         if (next == null || next === '') {
           onParentBreadcrumbChange(null);
           onChange(null);
