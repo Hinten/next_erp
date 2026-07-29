@@ -35,12 +35,24 @@ const caps = (over: Partial<FreightTipoCapabilities> = {}): FreightTipoCapabilit
 describe('resolveEtiquetaProvider', () => {
   it('picks the exact provider for a registered tipo', () => {
     expect(
-      resolveEtiquetaProvider(INTEGRACAO_FRETE.melhorEnvios, freightCapsFor('melhorEnvios')),
+      resolveEtiquetaProvider(
+        INTEGRACAO_FRETE.melhorEnvios,
+        freightCapsFor(INTEGRACAO_FRETE.melhorEnvios),
+      ),
     ).toBe(melhorEnviosProvider);
     expect(
-      resolveEtiquetaProvider(INTEGRACAO_FRETE.mercadoLivre, freightCapsFor('mercadoLivre')),
+      resolveEtiquetaProvider(
+        INTEGRACAO_FRETE.mercadoLivre,
+        freightCapsFor(INTEGRACAO_FRETE.mercadoLivre),
+      ),
     ).toBe(unsupportedMarketplaceProvider);
-    for (const tipo of ['motoboy', 'fob', 'outros', 'retiradaNaLoja'] as IntegracaoFrete[]) {
+    const genericos: IntegracaoFrete[] = [
+      INTEGRACAO_FRETE.motoboy,
+      INTEGRACAO_FRETE.fob,
+      INTEGRACAO_FRETE.outros,
+      INTEGRACAO_FRETE.retiradaNaLoja,
+    ];
+    for (const tipo of genericos) {
       expect(resolveEtiquetaProvider(tipo, freightCapsFor(tipo))).toBe(genericLabelProvider);
     }
   });

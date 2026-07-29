@@ -51,7 +51,7 @@ export interface FreteTabProps {
  */
 export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const freteInicial = form.watch('freteInicial');
-  const modalidade: ModalidadeFrete = freteInicial?.modalidade ?? '9';
+  const modalidade: ModalidadeFrete = freteInicial?.modalidade ?? MODALIDADE_FRETE.semTransporte;
   const temFrete = freteInicial != null && modalidade !== MODALIDADE_FRETE.semTransporte;
   // Direction of the pedido — seeds `ehReverso` on a fresh freteInicial
   // (entrada → reverse by default).
