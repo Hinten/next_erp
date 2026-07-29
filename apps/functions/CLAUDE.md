@@ -95,23 +95,44 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   authoritative produto delete cascade (#226/#136/#199), core
   `cascadeProdutoDeletion(db, produtoId)` (exported for the emulator suite). On a
   produto delete (parent OR variation child) it does two things: **(1) #136** —
-  one `recursiveDelete` over the produto's OWN document ref, which the Admin SDK
-  BulkWriter walks to delete the (already-gone) doc **plus its entire descendant
-  subtree** — every subcollection Firestore would orphan (`estoques` +
-  `historicoEstoque`, `imposto`, `historicoDePrecos`, `historicoDeCusto`,
-  `extraData`, and the marketplace links `produtoMercadoLivre`/`variacoesml`/…),
-  no name enumeration, new subcollections swept automatically; **(2) #199** —
-  variation children are SIBLING top-level docs (`produtos where paiId == id`),
-  not descendants, so a per-child `recursiveDelete(childRef)` deletes each child +
-  its subtree directly (the re-fired trigger on the child is an idempotent no-op —
-  variations are one level deep). The client `deleteProdutoCascade` now deletes
-  ONLY the parent doc (the inbound-reference guard stays client-side); this trigger
-  is the sole cascade, with no dependency on the client/e2e cleanup. Idempotent
-  (Flutter still cascades on its own deletes).
+  one `deleteDocumentSubtree` over the produto's OWN document ref, deleting the
+  (already-gone) doc **plus its entire descendant subtree** — all 14
+  subcollections Firestore would orphan (`estoques` + the nested
+  `historicoEstoque`, `imposto`, `extraData`, `historicoDePrecos`,
+  `historicoDeCusto`, `historicoDeModificacoes`, and the seven marketplace links
+  `produtoMercadoLivre` / `variacaoMercadoLivre` / `prodshopee` / `variashopee` /
+  `produtoMagalu2` / `prodAmazon` / `produtolojaintegrada`), no name enumeration,
+  new subcollections swept automatically; **(2) #199** — variation children are
+  SIBLING top-level docs (`produtos where paiId == id`), not descendants, so a
+  per-child subtree walk deletes each child + its subtree directly. The child
+  delete re-fires this trigger; the trigger passes the deleted doc's own `paiId`
+  (already in the event, no extra read) so that re-entry **skips the children
+  query** — variations are one level deep, so it could never find anything. The
+  client `deleteProdutoCascade` now deletes ONLY the parent doc (the
+  inbound-reference guard stays client-side); this trigger is the sole cascade,
+  with no dependency on the client/e2e cleanup. Idempotent (Flutter still
+  cascades on its own deletes).
 - **`onEstoqueDeleted`** (`onDocumentDeleted('produtos/{produtoId}/estoques/{estoqueId}')`)
-  — sweeps a single estoque's `historicoEstoque` via one `recursiveDelete`.
+  — sweeps a single estoque's `historicoEstoque`, core `cascadeEstoqueDeletion`
+  (exported for the emulator suite — the test used to re-implement the sweep
+  inline and import nothing, so it asserted nothing about shipped code).
   Covers a standalone estoque delete; the produto-wide cascade already deletes
   history directly, so its re-fires of this trigger are idempotent no-ops.
+- ⚠️ **None of the three cascades may use `db.recursiveDelete` (#728).** It
+  issues a kindless all-descendants query — `COLLECTION_GROUP * SELECT __name__
+  LIMIT 5000` — which this Enterprise edition cannot index and cannot be *given*
+  an index for: there is no wildcard index and no field predicate to seek on, so
+  the console's "create index" button opens a blank form. It full-scans silently
+  (nothing throws) and Enterprise bills data scanned: **~6,184 documents per
+  call, 9,234 calls in 7 days = 93% of the staging project's read volume**, at
+  the same price whether the produto had fifty subcollection docs or none. The
+  replacement is `deleteDocumentSubtree` from `@delfrance/data/admin`, which
+  asks `listCollections()` (~5 read units) and then runs one kinded, key-bounded
+  keys-only query per subcollection that actually exists. **Do not swap it back
+  for a schema-derived name list either** — Flutter writes subcollections
+  `ALL_DOMAINS` does not register (`variacoesml` is the one the emulator suite
+  pins), so a registry walk orphans them silently. Verify live with
+  `scripts/check-delete-cost.mjs`.
 - **`onPedidoEstadoChanged`** (`onDocumentWrittenWithAuthContext('pedidos/{pedidoId}')`)
   — the SOLE writer of the pedido estado audit trail
   (`pedidos/{pedidoId}/historicoEstadoPedido`). Replaces three hand-written

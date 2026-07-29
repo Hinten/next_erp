@@ -48,7 +48,7 @@ describe.skipIf(!EMULATED)('cascadeNfeDeletion — direct nfev4 delete (#518)', 
     const db = getDb();
     // The onDocumentDeleted trigger fires AFTER the nfev4 doc is deleted, so its
     // cartacorrecao subcollection is already orphaned when the cascade runs.
-    // Delete the parent first to exercise exactly that: recursiveDelete reclaims a
+    // Delete the parent first to exercise exactly that: the cascade reclaims a
     // subcollection whose owning doc no longer exists.
     await nfeRef(db, pedidoId, nfeId).delete();
 

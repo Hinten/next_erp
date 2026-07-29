@@ -157,6 +157,22 @@ jobs:
           for p in ${{ inputs.projects }}; do args="$args --project=$p"; done
           pnpm --filter @delfrance/web exec playwright test $args
 
+      # Playwright's own globalTeardown does NOT run when the job is cancelled,
+      # and every e2e workflow sets `cancel-in-progress: true` — so each push to
+      # a PR killed the in-flight run mid-suite and permanently orphaned its
+      # fixtures in staging (#712). `always()` covers cancellation, which is the
+      # only case that ever leaked. Idempotent with the in-process teardown: on a
+      # normal run this finds its own prefix already swept and does nothing.
+      #
+      # `exec tsx` rather than the `teardown:e2e` script, which wraps itself in
+      # `dotenv -e ../../.env.local` for local use — in CI the credentials are
+      # already in the job env and there is no such file.
+      - name: Reclaim e2e fixtures — ${{ inputs.slug }}
+        if: always()
+        timeout-minutes: 3
+        continue-on-error: true
+        run: pnpm --filter @delfrance/web exec tsx e2e/global-teardown.ts
+
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7

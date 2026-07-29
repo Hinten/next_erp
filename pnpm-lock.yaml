@@ -1501,6 +1501,9 @@ importers:
       '@delfrance/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@delfrance/data':
+        specifier: workspace:*
+        version: link:../../packages/data
       '@delfrance/rules-gen':
         specifier: workspace:*
         version: link:../../packages/rules-gen

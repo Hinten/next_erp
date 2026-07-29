@@ -31,9 +31,20 @@
  *
  * Pass A never reads a timestamp, so the fix for the reported bug keeps working
  * even if `createTime` is ever unavailable.
+ *
+ * ⚠️ Deleting a fixture is NOT free, and used to be ruinous (#729). Each swept
+ * doc went through `database.recursiveDelete`, which issues one kindless
+ * all-descendants query — unindexable on Firestore Enterprise, ~5,123 read units
+ * per produto whether or not it had a single subcollection doc. With
+ * `MAX_DELETES_PER_COLLECTION` docs across the collections that could own
+ * children, times two passes, one saturated sweep cost ~46M read units; this
+ * runs at `globalSetup` AND `globalTeardown`, on both lanes, per push. It is now
+ * `deleteDocumentSubtree` (`@delfrance/data/admin`), which asks
+ * `listCollections()` and then runs kinded, key-bounded queries. Do not
+ * reintroduce `recursiveDelete` here — `stale-sweep.test.ts` fails if you do.
  */
 import { FieldPath, type Firestore, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
-import { ALL_DOMAINS } from '@delfrance/schemas';
+import { deleteDocumentSubtree } from '@delfrance/data/admin';
 import { db } from '@delfrance/test-fixtures';
 import { requiresAuthEnv } from '../helpers/env';
 import { getRunId } from './run-id';
@@ -63,9 +74,6 @@ const MAX_DELETES_PER_COLLECTION = 500;
 
 /** Wall-clock budget. This runs before the suite, inside a 30-minute job. */
 const SWEEP_BUDGET_MS = 60_000;
-
-/** Firestore batches cap at 500 ops; stay under it. */
-const BATCH_CAP = 400;
 
 /** Marker docs keyed by CI concurrency group. `e2e_`-prefixed, so it is never a real collection. */
 const RUN_MARKERS_COLLECTION = 'e2e_runMarkers';
@@ -122,20 +130,6 @@ export const E2E_FIXTURE_TARGETS: readonly E2EFixtureTarget[] = [
   { collection: 'tabMedi', fields: ['nome'] },
   { collection: 'usuarios', fields: ['nome'] },
 ];
-
-/**
- * Root collections owning at least one subcollection, derived from the schema
- * registry rather than hardcoded — a new subcollection is covered the moment it
- * is registered in `ALL_DOMAINS`. Firestore never cascades, and every
- * subcollection cleanup in the suite needs the parent id in memory, which a
- * cancelled run has lost forever; these are the docs that must be deleted
- * recursively or their children become unreachable (#257).
- */
-export const PARENTS_WITH_SUBCOLLECTIONS: ReadonlySet<string> = new Set(
-  ALL_DOMAINS.map((d) => d.meta.collectionPath)
-    .filter((path) => path.includes('/'))
-    .map((path) => path.slice(0, path.indexOf('/'))),
-);
 
 /**
  * True for an Admin-SDK failure carrying a `code` — Firestore reports numeric
@@ -252,6 +246,11 @@ async function collectPage(
  * these collections; note an implicit field `orderBy` drops docs missing that
  * field, which is why `pedidos` declares both `numero` and `observacoesInternas`
  * rather than relying on either alone.
+ *
+ * Both queries are keys-only (`.select()`): the sweep reads nothing off a
+ * candidate but its `ref` and its `createTime`, and `createTime` rides the
+ * snapshot envelope rather than the field mask. Enterprise bills data scanned,
+ * so pulling produto and pedido bodies here was pure waste.
  */
 async function collectCandidates(
   database: Firestore,
@@ -267,7 +266,10 @@ async function collectCandidates(
     const end = prefixEnd(prefix);
     truncated =
       (await collectPage(
-        col.where(FieldPath.documentId(), '>=', prefix).where(FieldPath.documentId(), '<', end),
+        col
+          .where(FieldPath.documentId(), '>=', prefix)
+          .where(FieldPath.documentId(), '<', end)
+          .select(),
         found,
         deadline,
       )) || truncated;
@@ -275,7 +277,7 @@ async function collectCandidates(
     for (const field of target.fields ?? []) {
       truncated =
         (await collectPage(
-          col.where(field, '>=', prefix).where(field, '<', end),
+          col.where(field, '>=', prefix).where(field, '<', end).select(),
           found,
           deadline,
         )) || truncated;
@@ -286,47 +288,57 @@ async function collectCandidates(
 }
 
 /**
- * Delete `docs`, recursively for anything that can own subcollections and in
- * plain batches for leaves.
+ * Delete `docs` and everything below each of them.
  *
- * `recursiveDelete` issues an all-descendants query per document, so using it on
- * a leaf collection costs one query per doc where a batch costs one commit. The
- * BulkWriter is created once and passed in explicitly: without that the SDK
+ * Every doc goes through `deleteDocumentSubtree` — there is deliberately no
+ * "leaves take a cheap batch, parents take a subtree walk" split any more (#729).
+ * That split was driven by a set derived from `ALL_DOMAINS`, and the registry is
+ * not a complete picture of what is actually under a document: `metodo_pgto` is
+ * swept here but its `credenciais` meta is outside `ALL_DOMAINS`, so every sweep
+ * batch-deleted the parent and orphaned the subcollection. `listCollections()`
+ * asks Firestore instead of asking the registry, which removes the whole class
+ * of drift — at the cost of one ~5-read-unit call per leaf doc (worst case
+ * ~25k units per sweep, against the 46.1M this change removes).
+ *
+ * The BulkWriter is created once and passed in explicitly: without that the SDK
  * shares a single lazily-created writer and every call awaits *everyone's*
  * pending operations.
  */
 async function deleteDocs(
   database: Firestore,
   docs: readonly QueryDocumentSnapshot[],
+  deadline: number,
 ): Promise<number> {
-  const recursive = docs.filter((d) => PARENTS_WITH_SUBCOLLECTIONS.has(d.ref.parent.id));
-  const leaves = docs.filter((d) => !PARENTS_WITH_SUBCOLLECTIONS.has(d.ref.parent.id));
+  if (docs.length === 0) return 0;
+
+  const writer = database.bulkWriter();
   let deleted = 0;
-
-  for (let i = 0; i < leaves.length; i += BATCH_CAP) {
-    const batch = database.batch();
-    for (const doc of leaves.slice(i, i + BATCH_CAP)) batch.delete(doc.ref);
-    await batch.commit();
-    deleted += Math.min(BATCH_CAP, leaves.length - i);
-  }
-
-  if (recursive.length > 0) {
-    const writer = database.bulkWriter();
-    try {
-      for (const doc of recursive) {
-        try {
-          await database.recursiveDelete(doc.ref, writer);
-          deleted += 1;
-        } catch (err) {
-          // One stale ref racing to NOT_FOUND, or a transient UNAVAILABLE, must
-          // not abandon the rest of the backlog.
-          if (!isAdminSdkError(err)) throw err;
-          console.warn(`[sweep] ${doc.ref.path} failed to delete: ${String(err)}`);
-        }
+  try {
+    for (const doc of docs) {
+      // The delete phase used to ignore the budget entirely, so a saturated
+      // sweep ran all 500 deletes per collection however long it took.
+      if (Date.now() > deadline) {
+        console.warn('[sweep] wall-clock budget reached mid-delete — left for the next run');
+        break;
       }
-    } finally {
-      await writer.close();
+      try {
+        const report = await deleteDocumentSubtree(database, doc.ref, { writer, deadline });
+        deleted += 1;
+        if (report.failedDeletes > 0) {
+          console.warn(
+            `[sweep] ${doc.ref.path}: ${report.failedDeletes} delete(s) failed — ` +
+              `${String(report.firstError)}`,
+          );
+        }
+      } catch (err) {
+        // One stale ref racing to NOT_FOUND, or a transient UNAVAILABLE, must
+        // not abandon the rest of the backlog.
+        if (!isAdminSdkError(err)) throw err;
+        console.warn(`[sweep] ${doc.ref.path} failed to delete: ${String(err)}`);
+      }
     }
+  } finally {
+    await writer.close();
   }
 
   return deleted;
@@ -380,7 +392,7 @@ async function sweep(options: SweepOptions): Promise<SweepReport> {
     }
     if (capped.length === 0) continue;
 
-    const deleted = options.dryRun ? capped.length : await deleteDocs(database, capped);
+    const deleted = options.dryRun ? capped.length : await deleteDocs(database, capped, deadline);
     report.deleted += deleted;
     report.byCollection[target.collection] =
       (report.byCollection[target.collection] ?? 0) + deleted;

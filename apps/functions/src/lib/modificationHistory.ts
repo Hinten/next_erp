@@ -66,7 +66,7 @@ export function buildModificationEntry(input: {
  * the same CloudEvent rewrites a content-identical doc, never a duplicate.
  *
  * `opts.requireParentExists` guards writes racing (or delivered after)
- * `onProdutoDeleted`'s `recursiveDelete`: the cascade fires DELETE events for
+ * `onProdutoDeleted`'s subtree walk: the cascade fires DELETE events for
  * every swept subcollection doc, and a user's create/update event can also be
  * delivered late, once the owning produto is already gone (a subcollection
  * event carries no parent-liveness guarantee). Recording an entry under a

@@ -107,7 +107,7 @@ async function findChildrenToPropagate(
  * Exported (I/O core) for the emulator suite; the trigger below wraps it.
  *
  * A produto DELETE (`after === undefined`) writes NO entry:
- * `onProdutoDeleted`'s `recursiveDelete` sweeps the whole subtree — including
+ * `onProdutoDeleted`'s subtree walk sweeps everything below the produto — including
  * `historicoDeModificacoes` — so a delete-time entry would be either swept a
  * moment later or orphaned outright (owner decision, 2026-07-21).
  */

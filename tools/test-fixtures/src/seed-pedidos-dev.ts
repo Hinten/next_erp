@@ -1,3 +1,4 @@
+import { deleteDocumentSubtree } from '@delfrance/data/admin';
 import { db } from './admin';
 import { DEV_INTEGRACAO_ID } from './seed-filiais-dev';
 import { DEV_OPERACAO_ID } from './seed-operacoes-dev';
@@ -528,22 +529,28 @@ export async function seedDevPedidos(): Promise<{ created: number }> {
 
 export async function cleanupDevPedidos(): Promise<{ deleted: number }> {
   let deleted = 0;
-  for (const id of devPedidoIds()) {
-    // Delete the pedido and its ENTIRE subtree in one BulkWriter walk.
-    // Firestore doesn't cascade subcollections when the parent doc is
-    // deleted, and the pedido schema declares six (`itens`, `pagamentos`,
-    // `historicoEstadoPedido`, `incidentes`, `frete`, `nfev4`) plus a
-    // `nfev4/{nfeId}/cartacorrecao` grandchild — a hardcoded list orphaned
-    // everything not in it (#257). `recursiveDelete` sweeps the whole
-    // subtree with no name enumeration, so new subcollections are covered
-    // automatically. Mirrors `cascadeProdutoDeletion` in
-    // apps/functions/src/produtos/onProdutoDeleted.ts.
-    await db().recursiveDelete(db().collection('pedidos').doc(id));
-    deleted += 1;
+  const writer = db().bulkWriter();
+  try {
+    for (const id of devPedidoIds()) {
+      // Delete the pedido and its ENTIRE subtree. Firestore doesn't cascade
+      // subcollections when the parent doc is deleted, and the pedido schema
+      // declares six (`itens`, `pagamentos`, `historicoEstadoPedido`,
+      // `incidentes`, `frete`, `nfev4`) plus a `nfev4/{nfeId}/cartacorrecao`
+      // grandchild — a hardcoded list orphaned everything not in it (#257).
+      // `deleteDocumentSubtree` asks `listCollections()` rather than a name
+      // list, so new subcollections are covered automatically AND it avoids
+      // `recursiveDelete`'s kindless descendant scan, which Firestore
+      // Enterprise cannot index (#728). Mirrors `cascadeProdutoDeletion` in
+      // apps/functions/src/produtos/onProdutoDeleted.ts.
+      await deleteDocumentSubtree(db(), db().collection('pedidos').doc(id), { writer });
+      deleted += 1;
+    }
+    // The cliente can own an `enderecos` subcollection (the endereço fiscal
+    // stamped on withCliente pedidos) — the same walk sweeps it too.
+    await deleteDocumentSubtree(db(), db().collection('clientes').doc(CLIENTE_ID), { writer });
+  } finally {
+    await writer.close();
   }
-  // The cliente can own an `enderecos` subcollection (the endereço fiscal
-  // stamped on withCliente pedidos) — recursiveDelete sweeps it too.
-  await db().recursiveDelete(db().collection('clientes').doc(CLIENTE_ID));
   return { deleted };
 }
 
