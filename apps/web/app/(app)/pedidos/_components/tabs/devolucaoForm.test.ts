@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ESTADO_PEDIDO } from '@delfrance/schemas';
 import type { ItemDoPedido } from '@delfrance/schemas';
 import {
   buildItensDevolvidos,
@@ -146,15 +147,23 @@ describe('isReturnableOrigin', () => {
   const none = new Set<string>();
 
   it('accepts a paid saída order', () => {
-    expect(isReturnableOrigin({ ehSaida: true, estado: 'pago' }, 'o1', none)).toBe(true);
-    expect(isReturnableOrigin({ ehSaida: true, estado: 'finalizado' }, 'o1', none)).toBe(true);
+    expect(isReturnableOrigin({ ehSaida: true, estado: ESTADO_PEDIDO.pago }, 'o1', none)).toBe(
+      true,
+    );
+    expect(
+      isReturnableOrigin({ ehSaida: true, estado: ESTADO_PEDIDO.finalizado }, 'o1', none),
+    ).toBe(true);
   });
 
   it('rejects an entrada, a non-returnable estado, or an excluded id', () => {
-    expect(isReturnableOrigin({ ehSaida: false, estado: 'pago' }, 'o1', none)).toBe(false);
-    expect(isReturnableOrigin({ ehSaida: true, estado: 'iniciado' }, 'o1', none)).toBe(false);
-    expect(isReturnableOrigin({ ehSaida: true, estado: 'pago' }, 'o1', new Set(['o1']))).toBe(
+    expect(isReturnableOrigin({ ehSaida: false, estado: ESTADO_PEDIDO.pago }, 'o1', none)).toBe(
       false,
     );
+    expect(isReturnableOrigin({ ehSaida: true, estado: ESTADO_PEDIDO.iniciado }, 'o1', none)).toBe(
+      false,
+    );
+    expect(
+      isReturnableOrigin({ ehSaida: true, estado: ESTADO_PEDIDO.pago }, 'o1', new Set(['o1'])),
+    ).toBe(false);
   });
 });

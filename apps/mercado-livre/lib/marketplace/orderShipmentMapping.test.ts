@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MlShipment, MlShipmentPayment } from '@delfrance/integrations-mercado-livre';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete } from '@delfrance/schemas';
 import { mergeEstadoFretePreservando, mlShipmentToFreteInicial } from './orderShipmentMapping';
 
@@ -119,14 +120,14 @@ describe('mlShipmentToFreteInicial', () => {
 
   it('maps every base STATUS_SHIPPMENT_MERCADO_LIVRE value with no substatus', () => {
     const table: Array<[string, EstadoFrete]> = [
-      ['handling', 'empacotado'],
-      ['invoice_pending', 'aguardandoAutorizacao'],
-      ['ready_to_ship', 'despachoAutorizado'],
-      ['shipped', 'postado'],
-      ['delivered', 'entregue'],
-      ['not_delivered', 'falhaNaEntrega'],
-      ['cancelled', 'cancelado'],
-      ['pending', 'iniciado'],
+      ['handling', ESTADO_FRETE.empacotado],
+      ['invoice_pending', ESTADO_FRETE.aguardandoAutorizacao],
+      ['ready_to_ship', ESTADO_FRETE.despachoAutorizado],
+      ['shipped', ESTADO_FRETE.postado],
+      ['delivered', ESTADO_FRETE.entregue],
+      ['not_delivered', ESTADO_FRETE.falhaNaEntrega],
+      ['cancelled', ESTADO_FRETE.cancelado],
+      ['pending', ESTADO_FRETE.iniciado],
     ];
     for (const [status, expected] of table) {
       const mapped = mlShipmentToFreteInicial({
@@ -158,49 +159,66 @@ describe('mlShipmentToFreteInicial', () => {
 
 describe('mergeEstadoFretePreservando', () => {
   it('keeps despachoAutorizado when the incoming estado is a pre-authorization regression (iniciado)', () => {
-    expect(mergeEstadoFretePreservando('despachoAutorizado', 'iniciado')).toBe(
-      'despachoAutorizado',
-    );
+    expect(
+      mergeEstadoFretePreservando(ESTADO_FRETE.despachoAutorizado, ESTADO_FRETE.iniciado),
+    ).toBe('despachoAutorizado');
   });
 
   it('keeps despachoAutorizado when the incoming estado regresses to aguardandoAutorizacao', () => {
-    expect(mergeEstadoFretePreservando('despachoAutorizado', 'aguardandoAutorizacao')).toBe(
-      'despachoAutorizado',
-    );
+    expect(
+      mergeEstadoFretePreservando(
+        ESTADO_FRETE.despachoAutorizado,
+        ESTADO_FRETE.aguardandoAutorizacao,
+      ),
+    ).toBe('despachoAutorizado');
   });
 
   it('does NOT preserve despachoAutorizado against an unrelated incoming estado (forward progress wins)', () => {
-    expect(mergeEstadoFretePreservando('despachoAutorizado', 'postado')).toBe('postado');
+    expect(mergeEstadoFretePreservando(ESTADO_FRETE.despachoAutorizado, ESTADO_FRETE.postado)).toBe(
+      'postado',
+    );
   });
 
   it('keeps checkFinalizado when the incoming estado is any pre-checkout estado', () => {
     const preCheckout: EstadoFrete[] = [
-      'fulfillment',
-      'iniciado',
-      'aguardandoAutorizacao',
-      'aguardandoNFe',
-      'aguardandoValidacaoTransporadora',
-      'despachoAutorizado',
-      'emSeparacao',
-      'empacotado',
-      'aguardandoPostagem',
+      ESTADO_FRETE.fulfillment,
+      ESTADO_FRETE.iniciado,
+      ESTADO_FRETE.aguardandoAutorizacao,
+      ESTADO_FRETE.aguardandoNFe,
+      ESTADO_FRETE.aguardandoValidacaoTransporadora,
+      ESTADO_FRETE.despachoAutorizado,
+      ESTADO_FRETE.emSeparacao,
+      ESTADO_FRETE.empacotado,
+      ESTADO_FRETE.aguardandoPostagem,
     ];
     for (const novo of preCheckout) {
-      expect(mergeEstadoFretePreservando('checkFinalizado', novo)).toBe('checkFinalizado');
+      expect(mergeEstadoFretePreservando(ESTADO_FRETE.checkFinalizado, novo)).toBe(
+        'checkFinalizado',
+      );
     }
   });
 
   it('lets checkFinalizado be overwritten by a genuine post-checkout estado (postado)', () => {
-    expect(mergeEstadoFretePreservando('checkFinalizado', 'postado')).toBe('postado');
+    expect(mergeEstadoFretePreservando(ESTADO_FRETE.checkFinalizado, ESTADO_FRETE.postado)).toBe(
+      'postado',
+    );
   });
 
   it('lets checkFinalizado be overwritten by a terminal estado (entregue)', () => {
-    expect(mergeEstadoFretePreservando('checkFinalizado', 'entregue')).toBe('entregue');
+    expect(mergeEstadoFretePreservando(ESTADO_FRETE.checkFinalizado, ESTADO_FRETE.entregue)).toBe(
+      'entregue',
+    );
   });
 
   it('otherwise always takes the incoming estado (no special-cased old estado)', () => {
-    expect(mergeEstadoFretePreservando('iniciado', 'empacotado')).toBe('empacotado');
-    expect(mergeEstadoFretePreservando('postado', 'entregue')).toBe('entregue');
-    expect(mergeEstadoFretePreservando('entregue', 'cancelado')).toBe('cancelado');
+    expect(mergeEstadoFretePreservando(ESTADO_FRETE.iniciado, ESTADO_FRETE.empacotado)).toBe(
+      'empacotado',
+    );
+    expect(mergeEstadoFretePreservando(ESTADO_FRETE.postado, ESTADO_FRETE.entregue)).toBe(
+      'entregue',
+    );
+    expect(mergeEstadoFretePreservando(ESTADO_FRETE.entregue, ESTADO_FRETE.cancelado)).toBe(
+      'cancelado',
+    );
   });
 });

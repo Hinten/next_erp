@@ -880,6 +880,9 @@ importers:
       eslint-config-prettier:
         specifier: 'catalog:'
         version: 10.1.8(eslint@9.39.4)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
       typescript-eslint:
         specifier: 'catalog:'
         version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)

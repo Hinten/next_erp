@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
 import { CHAVE_NFE_REGEX } from '../../nfe';
-import { pedidoSchema, type EstadoPedido } from '../collection/pedido';
+import { ESTADO_PEDIDO, pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
 import { historicoEstadoPedidoSchema } from '../collection/historicoEstadoPedido';
@@ -116,7 +116,7 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
   // `cadastroPedidoProvider.dart:1169`). Only enforced when `pagamentos` is
   // supplied (an MCP agent / integrated save) — the per-tab web flows save the
   // pedido doc and the payments separately, so this stays out of their way.
-  if (data.pagamentos != null && data.estado === 'pago') {
+  if (data.pagamentos != null && data.estado === ESTADO_PEDIDO.pago) {
     const aprovado = data.pagamentos
       .filter((p) => p.status_pagamento === STATUS_PAGAMENTO.aprovado)
       .reduce((sum, p) => sum + (p.valor ?? 0), 0);

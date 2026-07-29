@@ -21,6 +21,7 @@ export {
   savePagamento,
   deletePagamento,
   nextPedidoEstado,
+  cancelarPedido,
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';

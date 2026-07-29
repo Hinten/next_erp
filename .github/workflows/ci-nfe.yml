@@ -21,9 +21,11 @@ on:
       - 'packages/schemas/src/nfe.ts'
       - 'packages/schemas/src/nfeConfig.ts'
       - 'packages/schemas/src/enviNfeMsg.ts'
-      - 'packages/schemas/src/pedido.ts'
-      - 'packages/schemas/src/pagamento.ts'
-      - 'packages/schemas/src/frete.ts'
+      # `pedido.ts`/`pagamento.ts` moved under `src/pedido/` and `frete.ts` under
+      # `src/shared/`; the old root paths matched nothing, so this lane silently
+      # stopped running on the very schemas the XML builder reads.
+      - 'packages/schemas/src/pedido/**'
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
@@ -37,9 +39,11 @@ on:
       - 'packages/schemas/src/nfe.ts'
       - 'packages/schemas/src/nfeConfig.ts'
       - 'packages/schemas/src/enviNfeMsg.ts'
-      - 'packages/schemas/src/pedido.ts'
-      - 'packages/schemas/src/pagamento.ts'
-      - 'packages/schemas/src/frete.ts'
+      # `pedido.ts`/`pagamento.ts` moved under `src/pedido/` and `frete.ts` under
+      # `src/shared/`; the old root paths matched nothing, so this lane silently
+      # stopped running on the very schemas the XML builder reads.
+      - 'packages/schemas/src/pedido/**'
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'

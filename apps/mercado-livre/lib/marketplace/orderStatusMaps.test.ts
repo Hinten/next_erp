@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { ESTADO_FRETE, ESTADO_PEDIDO, STATUS_PAGAMENTO } from '@delfrance/schemas';
 import {
   MlStatusDesconhecidoError,
   estadoFreteFromShipment,
@@ -9,15 +9,15 @@ import {
 
 describe('estadoPedidoFromOrderStatus', () => {
   it.each([
-    ['confirmed', 'carrinho'],
-    ['payment_required', 'escolhendoFormaDePagamento'],
-    ['payment_in_process', 'aguardandoConfirmacaoDePagamento'],
-    ['partially_paid', 'aguardandoConfirmacaoDePagamento'],
-    ['paid', 'emProcessamento'], // NOT 'pago' — legacy quirk, deliberately preserved
-    ['partially_refunded', 'estornadoParcialmente'],
-    ['pending_cancel', 'estornadoIntegralmente'],
-    ['cancelled', 'cancelado'],
-    ['invalid', 'fraude'],
+    ['confirmed', ESTADO_PEDIDO.carrinho],
+    ['payment_required', ESTADO_PEDIDO.escolhendoFormaDePagamento],
+    ['payment_in_process', ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento],
+    ['partially_paid', ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento],
+    ['paid', ESTADO_PEDIDO.emProcessamento], // NOT 'pago' — legacy quirk, deliberately preserved
+    ['partially_refunded', ESTADO_PEDIDO.estornadoParcialmente],
+    ['pending_cancel', ESTADO_PEDIDO.estornadoIntegralmente],
+    ['cancelled', ESTADO_PEDIDO.cancelado],
+    ['invalid', ESTADO_PEDIDO.fraude],
   ] as const)('maps ML order status "%s" to "%s"', (status, expected) => {
     expect(estadoPedidoFromOrderStatus(status)).toBe(expected);
   });
@@ -67,14 +67,14 @@ describe('statusPagamentoFromMlPaymentStatus', () => {
 
 describe('estadoFreteFromShipment', () => {
   it.each([
-    ['handling', 'empacotado'],
-    ['invoice_pending', 'aguardandoAutorizacao'],
-    ['ready_to_ship', 'despachoAutorizado'],
-    ['shipped', 'postado'],
-    ['delivered', 'entregue'],
-    ['not_delivered', 'falhaNaEntrega'],
-    ['cancelled', 'cancelado'],
-    ['pending', 'iniciado'],
+    ['handling', ESTADO_FRETE.empacotado],
+    ['invoice_pending', ESTADO_FRETE.aguardandoAutorizacao],
+    ['ready_to_ship', ESTADO_FRETE.despachoAutorizado],
+    ['shipped', ESTADO_FRETE.postado],
+    ['delivered', ESTADO_FRETE.entregue],
+    ['not_delivered', ESTADO_FRETE.falhaNaEntrega],
+    ['cancelled', ESTADO_FRETE.cancelado],
+    ['pending', ESTADO_FRETE.iniciado],
   ] as const)('maps base shipment status "%s" to "%s" (no substatus)', (status, expected) => {
     expect(estadoFreteFromShipment(status)).toBe(expected);
     expect(estadoFreteFromShipment(status, null)).toBe(expected);
@@ -85,10 +85,10 @@ describe('estadoFreteFromShipment', () => {
   });
 
   it.each([
-    ['invoice_pending', 'aguardandoNFe'],
-    ['waiting_for_carrier_authorization', 'aguardandoValidacaoTransporadora'],
-    ['ready_to_print', 'despachoAutorizado'],
-    ['ready_for_pickup', 'aguardandoPostagem'],
+    ['invoice_pending', ESTADO_FRETE.aguardandoNFe],
+    ['waiting_for_carrier_authorization', ESTADO_FRETE.aguardandoValidacaoTransporadora],
+    ['ready_to_print', ESTADO_FRETE.despachoAutorizado],
+    ['ready_for_pickup', ESTADO_FRETE.aguardandoPostagem],
   ] as const)(
     'honors the "ready_to_ship" substatus override "%s" -> "%s"',
     (substatus, expected) => {

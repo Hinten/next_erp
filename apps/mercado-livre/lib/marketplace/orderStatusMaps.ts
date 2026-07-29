@@ -17,6 +17,8 @@
  * import availability there.
  */
 import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO,
   STATUS_PAGAMENTO,
   type EstadoFrete,
   type EstadoPedido,
@@ -38,24 +40,24 @@ import {
 export function estadoPedidoFromOrderStatus(status: string): EstadoPedido {
   switch (status) {
     case 'confirmed':
-      return 'carrinho';
+      return ESTADO_PEDIDO.carrinho;
     case 'payment_required':
-      return 'escolhendoFormaDePagamento';
+      return ESTADO_PEDIDO.escolhendoFormaDePagamento;
     case 'payment_in_process':
     case 'partially_paid':
-      return 'aguardandoConfirmacaoDePagamento';
+      return ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento;
     case 'paid':
-      return 'emProcessamento';
+      return ESTADO_PEDIDO.emProcessamento;
     case 'partially_refunded':
-      return 'estornadoParcialmente';
+      return ESTADO_PEDIDO.estornadoParcialmente;
     case 'pending_cancel':
-      return 'estornadoIntegralmente';
+      return ESTADO_PEDIDO.estornadoIntegralmente;
     case 'cancelled':
-      return 'cancelado';
+      return ESTADO_PEDIDO.cancelado;
     case 'invalid':
-      return 'fraude';
+      return ESTADO_PEDIDO.fraude;
     default:
-      return 'iniciado';
+      return ESTADO_PEDIDO.iniciado;
   }
 }
 
@@ -120,23 +122,23 @@ export function statusPagamentoFromMlPaymentStatus(status: string): StatusPagame
 function estadoFreteFromBaseStatus(status: string): EstadoFrete {
   switch (status) {
     case 'handling':
-      return 'empacotado';
+      return ESTADO_FRETE.empacotado;
     case 'invoice_pending':
-      return 'aguardandoAutorizacao';
+      return ESTADO_FRETE.aguardandoAutorizacao;
     case 'ready_to_ship':
-      return 'despachoAutorizado';
+      return ESTADO_FRETE.despachoAutorizado;
     case 'shipped':
-      return 'postado';
+      return ESTADO_FRETE.postado;
     case 'delivered':
-      return 'entregue';
+      return ESTADO_FRETE.entregue;
     case 'not_delivered':
-      return 'falhaNaEntrega';
+      return ESTADO_FRETE.falhaNaEntrega;
     case 'cancelled':
-      return 'cancelado';
+      return ESTADO_FRETE.cancelado;
     case 'pending':
-      return 'iniciado';
+      return ESTADO_FRETE.iniciado;
     default:
-      return 'iniciado';
+      return ESTADO_FRETE.iniciado;
   }
 }
 
@@ -170,15 +172,15 @@ export function estadoFreteFromShipment(status: string, substatus?: string | nul
   if (status === 'ready_to_ship' && substatus != null) {
     switch (substatus) {
       case 'invoice_pending':
-        return 'aguardandoNFe';
+        return ESTADO_FRETE.aguardandoNFe;
       case 'waiting_for_carrier_authorization':
-        return 'aguardandoValidacaoTransporadora';
+        return ESTADO_FRETE.aguardandoValidacaoTransporadora;
       case 'ready_to_print':
-        return 'despachoAutorizado';
+        return ESTADO_FRETE.despachoAutorizado;
       case 'ready_for_pickup':
-        return 'aguardandoPostagem';
+        return ESTADO_FRETE.aguardandoPostagem;
       default:
-        return 'postado';
+        return ESTADO_FRETE.postado;
     }
   }
   return estadoFreteFromBaseStatus(status);

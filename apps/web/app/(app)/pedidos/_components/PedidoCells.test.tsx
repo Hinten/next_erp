@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
+import { ESTADO_NFE } from '@delfrance/schemas';
 import type { NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
 
 // Hoisted, mutable state objects so each test can swap the value the mocked
@@ -147,17 +148,17 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
 
   // Sanity-check every estado renders its PT-BR label from ESTADO_NFE_LABELS.
   it.each<[NotaFiscalEletronica['estado'], string]>([
-    ['0', 'Gerado'],
-    ['1', 'Enviando'],
-    ['2', 'Aguardando resposta'],
-    ['3', 'Processamento completo'],
-    ['4', 'Processamento cancelado'],
-    ['a', 'Aprovada'],
-    ['p', 'EPEC aprovado'],
-    ['n', 'Rejeitada'],
-    ['c', 'Cancelada'],
-    ['i', 'Numeração inutilizada'],
-    ['e', 'Erro'],
+    [ESTADO_NFE.gerado, 'Gerado'],
+    [ESTADO_NFE.enviando, 'Enviando'],
+    [ESTADO_NFE.aguardandoResposta, 'Aguardando resposta'],
+    [ESTADO_NFE.processamentoCompleto, 'Processamento completo'],
+    [ESTADO_NFE.processamentoCancelado, 'Processamento cancelado'],
+    [ESTADO_NFE.aprovada, 'Aprovada'],
+    [ESTADO_NFE.epecAprovado, 'EPEC aprovado'],
+    [ESTADO_NFE.rejeitada, 'Rejeitada'],
+    [ESTADO_NFE.cancelada, 'Cancelada'],
+    [ESTADO_NFE.numeracaoInutilizada, 'Numeração inutilizada'],
+    [ESTADO_NFE.error, 'Erro'],
   ])('renders the %s estado as a badge with label "%s"', (estado, label) => {
     setSnap({ data: [rowFromNFe(makeNFe(estado))] });
     wrap(<NFCell pedidoId="p1" />);
@@ -169,12 +170,12 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     // useSnapshot's state changes (which `onSnapshot` will do in
     // production as SEFAZ replies update the NFe doc), the cell re-renders
     // with the new estado without unmounting / remounting.
-    setSnap({ data: [rowFromNFe(makeNFe('0'))] });
+    setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.gerado))] });
     const { rerender } = wrap(<NFCell pedidoId="p1" />);
     expect(screen.getByText('Gerado')).toBeTruthy();
 
     act(() => {
-      setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
+      setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave: '3'.repeat(44) }))] });
     });
     rerender(
       <MantineProvider env="test">
@@ -186,7 +187,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
 
     act(() => {
       setSnap({
-        data: [rowFromNFe(makeNFe('n', { xMotivo: 'cliente sem IE' }))],
+        data: [rowFromNFe(makeNFe(ESTADO_NFE.rejeitada, { xMotivo: 'cliente sem IE' }))],
       });
     });
     rerender(
@@ -201,7 +202,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     // tpEmis === 1 is normal; anything else (2 EPEC, 9 SVC-RS, etc.) is
     // contingency emission. The cell switches to `variant="outline"` so
     // operators can spot the rare case at a glance.
-    setSnap({ data: [rowFromNFe(makeNFe('a', { tpEmis: 9 }))] });
+    setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { tpEmis: 9 }))] });
     const { container } = wrap(<NFCell pedidoId="p1" />);
     // Mantine encodes the variant on a data attribute on the Badge root.
     const badge = container.querySelector('[data-variant="outline"]');
@@ -230,7 +231,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       setSnap({
         data: [
           rowFromNFe(
-            makeNFe('a', {
+            makeNFe(ESTADO_NFE.aprovada, {
               cStat: '100',
               xMotivo: 'Autorizado o uso da NF-e',
               chave: '3'.repeat(44),
@@ -251,7 +252,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
 
     it('copies the chave when the chave copy button is clicked', async () => {
       const chave = '3'.repeat(44);
-      setSnap({ data: [rowFromNFe(makeNFe('a', { chave }))] });
+      setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave }))] });
       const { container } = wrap(<NFCell pedidoId="p1" />);
       const badge = container.querySelector('[data-variant]');
       fireEvent.mouseEnter(badge!);
@@ -263,43 +264,53 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
 
   describe('Cancelar NF-e action gating', () => {
     it('offers "Cancelar NF-e" in the dropdown when the NF-e is aprovada', async () => {
-      setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
+      setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave: '3'.repeat(44) }))] });
       const { container } = wrap(<NFCell pedidoId="p1" />);
       fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
       expect(await screen.findByRole('button', { name: /cancelar nf-e/i })).toBeTruthy();
     });
 
-    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e', 'p'])(
-      'does NOT offer "Cancelar NF-e" for estado %s',
-      async (estado) => {
-        setSnap({ data: [rowFromNFe(makeNFe(estado))] });
-        const { container } = wrap(<NFCell pedidoId="p1" />);
-        fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
-        // The dropdown is open once "Estado:" is in the document.
-        await screen.findByText('Estado:');
-        expect(screen.queryByRole('button', { name: /cancelar nf-e/i })).toBeNull();
-      },
-    );
+    it.each<NotaFiscalEletronica['estado']>([
+      ESTADO_NFE.gerado,
+      ESTADO_NFE.enviando,
+      ESTADO_NFE.aguardandoResposta,
+      ESTADO_NFE.rejeitada,
+      ESTADO_NFE.cancelada,
+      ESTADO_NFE.error,
+      ESTADO_NFE.epecAprovado,
+    ])('does NOT offer "Cancelar NF-e" for estado %s', async (estado) => {
+      setSnap({ data: [rowFromNFe(makeNFe(estado))] });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      // The dropdown is open once "Estado:" is in the document.
+      await screen.findByText('Estado:');
+      expect(screen.queryByRole('button', { name: /cancelar nf-e/i })).toBeNull();
+    });
   });
 
   describe('Carta de correção action gating', () => {
     it('offers "Carta de correção" next to "Cancelar NF-e" when the NF-e is aprovada', async () => {
-      setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
+      setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave: '3'.repeat(44) }))] });
       const { container } = wrap(<NFCell pedidoId="p1" />);
       fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
       expect(await screen.findByRole('button', { name: /carta de corre/i })).toBeTruthy();
     });
 
-    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e', 'p'])(
-      'does NOT offer "Carta de correção" for estado %s',
-      async (estado) => {
-        setSnap({ data: [rowFromNFe(makeNFe(estado))] });
-        const { container } = wrap(<NFCell pedidoId="p1" />);
-        fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
-        await screen.findByText('Estado:');
-        expect(screen.queryByRole('button', { name: /carta de corre/i })).toBeNull();
-      },
-    );
+    it.each<NotaFiscalEletronica['estado']>([
+      ESTADO_NFE.gerado,
+      ESTADO_NFE.enviando,
+      ESTADO_NFE.aguardandoResposta,
+      ESTADO_NFE.rejeitada,
+      ESTADO_NFE.cancelada,
+      ESTADO_NFE.error,
+      ESTADO_NFE.epecAprovado,
+    ])('does NOT offer "Carta de correção" for estado %s', async (estado) => {
+      setSnap({ data: [rowFromNFe(makeNFe(estado))] });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      await screen.findByText('Estado:');
+      expect(screen.queryByRole('button', { name: /carta de corre/i })).toBeNull();
+    });
   });
 
   describe('Baixar XML action — reads straight from the nfev4 doc', () => {
@@ -308,7 +319,11 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       async (field) => {
         setSnap({
           data: [
-            rowFromNFe(makeNFe('a', { [field]: '<nfeProc/>' } as Partial<NotaFiscalEletronica>)),
+            rowFromNFe(
+              makeNFe(ESTADO_NFE.aprovada, {
+                [field]: '<nfeProc/>',
+              } as Partial<NotaFiscalEletronica>),
+            ),
           ],
         });
         const { container } = wrap(<NFCell pedidoId="p1" />);
@@ -320,7 +335,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     it('does NOT offer "Baixar XML" when no XML has been persisted', async () => {
       // Aprovada but with every xml_* field null (the makeNFe default) — the
       // button is gated on XML presence, not on estado.
-      setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
+      setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave: '3'.repeat(44) }))] });
       const { container } = wrap(<NFCell pedidoId="p1" />);
       fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
       await screen.findByText('Estado:');
@@ -347,7 +362,9 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
 
       try {
         const chave = '3'.repeat(44);
-        setSnap({ data: [rowFromNFe(makeNFe('a', { chave, xml_nfe_proc: '<nfeProc/>' }))] });
+        setSnap({
+          data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave, xml_nfe_proc: '<nfeProc/>' }))],
+        });
         const { container } = wrap(<NFCell pedidoId="p1" />);
         fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
         fireEvent.click(await screen.findByRole('button', { name: /baixar xml/i }));
@@ -368,7 +385,11 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
   describe('EPEC aprovado (estado p) action gating — issue #86', () => {
     it('offers the DANFE menu (plain-paper print) but neither Cancelar nor Carta de correção', async () => {
       setSnap({
-        data: [rowFromNFe(makeNFe('p', { tpEmis: 4, chave: '3'.repeat(44), cStat: '136' }))],
+        data: [
+          rowFromNFe(
+            makeNFe(ESTADO_NFE.epecAprovado, { tpEmis: 4, chave: '3'.repeat(44), cStat: '136' }),
+          ),
+        ],
       });
       const { container } = wrap(<NFCell pedidoId="p1" />);
       fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
