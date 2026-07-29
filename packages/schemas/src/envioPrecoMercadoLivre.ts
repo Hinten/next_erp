@@ -125,7 +125,12 @@ export const envioPrecoMercadoLivreSchema = z.object({
   /** The authed uid that clicked "Atualizar preços" (`null` when unknown). */
   startedBy: z.string().nullable().default(null),
   startedAt: millisSinceEpoch(),
-  /** Bumped on every persisted checkpoint (plan page, per-item, terminal). */
+  /**
+   * Rewritten on every persisted checkpoint (plan page, per-item, terminal).
+   * A dispatch reuses one clock read across its checkpoints, so the value is
+   * fresh, not strictly increasing per write — the staleness escape in
+   * `startPriceSyncJob` only needs "recent enough", never monotonicity.
+   */
   updatedAt: millisSinceEpoch(),
   finishedAt: millisSinceEpoch().nullable().default(null),
   /** Set only on `status: 'failed'` — the error that exhausted the retries. */
