@@ -220,9 +220,11 @@ function buildRegistry(program) {
       // Keyed by wire VALUE; the map resolves it back to the member name.
       valueToKey: constant.valueToKey,
     };
-    // Both keys are NAMES, and both are unique across the package (asserted by
-    // `registry.test.ts`'s duplicate check) — unlike a member set, which several
-    // enums share.
+    // Both keys are NAMES, and both are unique across the package — unlike a
+    // member set, which several enums share. That uniqueness is what makes this
+    // keying sound, so it is asserted rather than assumed:
+    // `packages/schemas/src/enumNames.test.ts` fails on a duplicate schema
+    // variable or type alias, naming both files.
     byTypeName.set(typeName, entry);
     byEnumSchemaVar.set(schemaVar, entry);
   }
