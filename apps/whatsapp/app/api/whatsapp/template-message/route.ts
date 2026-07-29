@@ -30,7 +30,7 @@
  */
 import { NextResponse } from 'next/server';
 import type { DocumentData } from 'firebase-admin/firestore';
-import { ESTADO_ENVIO, idFromRef } from '@delfrance/schemas';
+import { ORIGEM_CONVERSA, ESTADO_ENVIO, idFromRef } from '@delfrance/schemas';
 import { conversaCollection, mensagemCollection } from '@delfrance/data/admin/collections';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
@@ -85,7 +85,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   );
 
   // 2. Template messages only apply to WhatsApp conversas.
-  if (conversa.origem !== 'whatsapp') {
+  if (conversa.origem !== ORIGEM_CONVERSA.whatsapp) {
     return NextResponse.json(
       {
         error: 'Mensagem padrão disponível apenas para conversas do WhatsApp.',

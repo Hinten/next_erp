@@ -18,6 +18,7 @@ import { IconLogin2, IconPaperclip, IconSend } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { setDoc, writeBatch } from 'firebase/firestore';
 import {
+  ORIGEM_CONVERSA,
   ORIGEM_RULES,
   WHATSAPP_ANEXO_LIMITS,
   type Conversa,
@@ -214,7 +215,7 @@ function ComposerInput({
       });
       return;
     }
-    const isWhatsapp = conversa.origem === 'whatsapp';
+    const isWhatsapp = conversa.origem === ORIGEM_CONVERSA.whatsapp;
     for (const file of files) {
       const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
       if (rules.formatosAnexo && !rules.formatosAnexo.includes(ext)) {

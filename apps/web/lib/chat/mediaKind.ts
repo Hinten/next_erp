@@ -1,4 +1,5 @@
 import type { Filetype, TipoMensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
 
 /**
  * Media-kind mapping for an OUTBOUND (composer) attachment — a port of the
@@ -16,18 +17,18 @@ import type { Filetype, TipoMensagem } from '@delfrance/schemas';
 export function tipoForFiletype(filetype: Filetype): TipoMensagem {
   switch (filetype) {
     case 'audio':
-      return 'a';
+      return TIPO_MENSAGEM.audio;
     case 'video':
-      return 'v';
+      return TIPO_MENSAGEM.video;
     case 'application':
     case 'document':
-      return 'f';
+      return TIPO_MENSAGEM.arquivo;
     case 'system':
-      return 'e';
+      return TIPO_MENSAGEM.evento;
     case 'error':
-      return '!';
+      return TIPO_MENSAGEM.erro;
     default:
-      return 'c';
+      return TIPO_MENSAGEM.comum;
   }
 }
 

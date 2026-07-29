@@ -36,6 +36,13 @@ import { millisSinceEpoch } from './shared/datetime';
 export const importacaoMercadoLivreStatusSchema = z.enum(['running', 'completed', 'failed']);
 export type ImportacaoMercadoLivreStatus = z.infer<typeof importacaoMercadoLivreStatusSchema>;
 
+/** Named members of {@link importacaoMercadoLivreStatusSchema}. */
+export const IMPORTACAO_MERCADO_LIVRE_STATUS = {
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+} as const satisfies Record<string, ImportacaoMercadoLivreStatus>;
+
 /**
  * The mass-import toggles — the same per-item flags `ImportOptions` accepts
  * (`apps/mercado-livre/lib/marketplace/importCore.ts`) plus one mass-import-only

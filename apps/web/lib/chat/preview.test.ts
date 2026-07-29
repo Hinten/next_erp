@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
+
 import { lastMensagemPreview, type PreviewMensagem } from './preview';
 
 /** Minimal preview message with sensible defaults, overridable per test. */
 function msg(partial: Partial<PreviewMensagem> = {}): PreviewMensagem {
   return {
-    tipo: 'c',
+    tipo: TIPO_MENSAGEM.comum,
     conteudo: null,
     transcription: null,
     user_id: null,

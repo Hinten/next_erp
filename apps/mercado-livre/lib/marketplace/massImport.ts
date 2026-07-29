@@ -55,7 +55,11 @@ import {
   MercadoLivreError,
   createMercadoLivreApi,
 } from '@delfrance/integrations-mercado-livre';
-import { type ImportacaoMercadoLivre, type MassImportOptions } from '@delfrance/schemas';
+import {
+  IMPORTACAO_MERCADO_LIVRE_STATUS,
+  type ImportacaoMercadoLivre,
+  type MassImportOptions,
+} from '@delfrance/schemas';
 import {
   importacaoMercadoLivreCollection,
   produtoMercadoLivreLinkCollection,
@@ -290,7 +294,7 @@ export async function processMassImportJob(
   const nowMs = deps.now ? deps.now() : Date.now(); // one clock read for the whole dispatch
 
   const job = await readJob(db, payload.jobId);
-  if (!job || job.status !== 'running') return 'noop';
+  if (!job || job.status !== IMPORTACAO_MERCADO_LIVRE_STATUS.running) return 'noop';
 
   try {
     const ctx = await resolveImportDeps(db, payload.integracaoId);

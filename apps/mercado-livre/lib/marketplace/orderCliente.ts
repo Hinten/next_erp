@@ -55,7 +55,13 @@ import { createHash } from 'node:crypto';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/collections';
 import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
-import { type Cliente, type TipoCliente, type UF, ufSchema } from '@delfrance/schemas';
+import {
+  TIPO_CLIENTE,
+  type Cliente,
+  type TipoCliente,
+  type UF,
+  ufSchema,
+} from '@delfrance/schemas';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
 import { isAlreadyExists } from '@delfrance/data/admin';
 
@@ -205,7 +211,7 @@ export function billingInfoToClienteFields(info: MlBillingInfo): ClienteImportFi
   if (type === 'CPF') {
     const nome = `${billingInfo?.name ?? ''} ${billingInfo?.last_name ?? ''}`.trim();
     return {
-      tipo: '0',
+      tipo: TIPO_CLIENTE.pessoaFisica,
       nome,
       cpf_cnpj: number.replace(/\D/g, '').trim(),
       idEstrangeiro: null,
@@ -222,7 +228,7 @@ export function billingInfoToClienteFields(info: MlBillingInfo): ClienteImportFi
         ? 'Não contribuinte'
         : (billingInfo?.taxes?.inscriptions?.state_registration ?? null);
     return {
-      tipo: '1',
+      tipo: TIPO_CLIENTE.pessoaJuridica,
       nome: billingInfo?.name ?? '',
       // See this module's header doc — fixes legacy's mistyped strip regex.
       cpf_cnpj: number

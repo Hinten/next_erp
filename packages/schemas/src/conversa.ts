@@ -33,6 +33,24 @@ export const origemConversaSchema = z
 export type OrigemConversa = z.infer<typeof origemConversaSchema>;
 
 /**
+ * Named members of {@link origemConversaSchema}; names from {@link ORIGEM_LABELS}.
+ * The three `ml*` slugs are the reason this exists — `'mlperg'`, `'mlped'` and
+ * `'mlclaims'` are three different Mercado Livre surfaces that read alike.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const ORIGEM_CONVERSA = {
+  site: 'site',
+  facebook: 'facebook',
+  comentarioFacebook: 'comentario',
+  whatsapp: 'whatsapp',
+  mercadoLivrePerguntas: 'mlperg',
+  mercadoLivrePedido: 'mlped',
+  mercadoLivreReclamacoes: 'mlclaims',
+} as const satisfies Record<string, OrigemConversa>;
+
+/**
  * EstadoConversa — int-coded enum (0/1/2/3/4/5/6/7/8/99). Flutter
  * stores the raw int; we keep the same wire format.
  */
@@ -208,6 +226,20 @@ export const tipoMensagemSchema = z
   .enum(['c', 'e', 'v', 'a', 'f', '!'])
   .meta({ labels: TIPO_MENSAGEM_LABELS });
 export type TipoMensagem = z.infer<typeof tipoMensagemSchema>;
+
+/**
+ * Named members of {@link tipoMensagemSchema}; names from
+ * {@link TIPO_MENSAGEM_LABELS}. Single-char wire codes, plus `'!'` for erro —
+ * which is not something anyone should be typing by hand.
+ */
+export const TIPO_MENSAGEM = {
+  comum: 'c',
+  evento: 'e',
+  video: 'v',
+  audio: 'a',
+  arquivo: 'f',
+  erro: '!',
+} as const satisfies Record<string, TipoMensagem>;
 
 /**
  * Mensagem — subcollection `chat/{conversaId}/mensagem`. Mirrors

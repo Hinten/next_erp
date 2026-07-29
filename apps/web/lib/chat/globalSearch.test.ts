@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Mensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
 import {
   type FetchedMensagem,
   type GlobalMatchRow,
@@ -18,7 +19,7 @@ function fetched(
     conversaId,
     mensagemId,
     timestamp,
-    mensagem: { tipo: 'c', conteudo: null, ...mensagem } as Mensagem,
+    mensagem: { tipo: TIPO_MENSAGEM.comum, conteudo: null, ...mensagem } as Mensagem,
   };
 }
 
@@ -26,7 +27,7 @@ describe('matchFetched', () => {
   const docs: FetchedMensagem[] = [
     fetched('c1', 'm1', 30, { conteudo: 'preciso do orçamento hoje' }),
     fetched('c1', 'm2', 20, { conteudo: 'sem relação' }),
-    fetched('c2', 'm3', 25, { tipo: 'e', conteudo: 'orçamento aberto' }), // event → skipped
+    fetched('c2', 'm3', 25, { tipo: TIPO_MENSAGEM.evento, conteudo: 'orçamento aberto' }), // event → skipped
     fetched('c2', 'm4', 10, { conteudo: null, transcription: 'segue o orçamento gravado' }),
   ];
 

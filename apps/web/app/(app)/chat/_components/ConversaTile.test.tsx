@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { ESTADO_ENVIO, type Conversa, type Mensagem } from '@delfrance/schemas';
+import {
+  ORIGEM_CONVERSA,
+  TIPO_MENSAGEM,
+  ESTADO_ENVIO,
+  type Conversa,
+  type Mensagem,
+} from '@delfrance/schemas';
 
 // Hoisted, mutable refs so each test can set the last message + draft state
 // before rendering. Mirrors the MensagemThread.test.tsx hoisted-mock pattern.
@@ -34,7 +40,7 @@ import { ConversaTile } from './ConversaTile';
 function mensagem(partial: Partial<Mensagem>): Mensagem {
   return {
     estadoEnvio: ESTADO_ENVIO.recebido,
-    tipo: 'c',
+    tipo: TIPO_MENSAGEM.comum,
     conteudo: null,
     resposta: null,
     canal: 0,
@@ -58,7 +64,7 @@ function conversa(partial: Partial<Conversa> = {}): Conversa {
     id: null,
     sender_id: null,
     estadoConversa: 1,
-    origem: 'whatsapp',
+    origem: ORIGEM_CONVERSA.whatsapp,
     usarioOuterRef: null,
     integracaoOuterRef: null,
     pedidoOuterRef: null,
