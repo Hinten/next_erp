@@ -191,12 +191,24 @@ export class MercadoLivreContaInativaError extends Error {
  * becomes the logged `motivo` when the final attempt exhausts.
  */
 export class NfeUploadTransientError extends Error {
+  /**
+   * Whether exhausting the retries on THIS transient may stamp
+   * `freteInicial.estado='error'`. Only the invoice-POST catch sets it: a
+   * frete 'error' must mean the upload itself failed, and every pre-POST
+   * transient (shipment GET 429/5xx/network, token-refresh blips, the
+   * not-yet-eligible windows) is excluded by construction — the shipment was
+   * never touched, so a stamp would flag a healthy pedido.
+   */
+  readonly stampFreteOnExhaust: boolean;
+
   constructor(
     readonly tag: string,
     message: string,
+    opts?: { stampFreteOnExhaust?: boolean },
   ) {
     super(message);
     this.name = 'NfeUploadTransientError';
+    this.stampFreteOnExhaust = opts?.stampFreteOnExhaust ?? false;
   }
 }
 
@@ -449,10 +461,7 @@ export async function processNfeUploadTask(
       }
       if (err instanceof MercadoLivreHttpError) {
         if (err.status === 404) return descartado('shipment-404');
-        // 429 is TRANSIENT (mirrors classifyInvoiceError's POST-path rule; the
-        // queue's min backoff covers retry-after) — never the terminal 4xx path.
-        if (err.status === 429) throw err;
-        if (err.status >= 400 && err.status < 500) {
+        if (err.status >= 400 && err.status < 500 && err.status !== 429) {
           const motivo = `get-shipment-${err.status}`;
           console.error('[mercado-livre] nfe-upload: consulta do shipment rejeitada pelo ML', {
             pedidoId,
@@ -464,6 +473,19 @@ export async function processNfeUploadTask(
           });
           return { outcome: 'erro-deterministico', motivo };
         }
+        // 429 + 5xx: transient (the queue's min backoff covers retry-after),
+        // but TAGGED — the shipment state is unknown and no upload was
+        // attempted, so exhausting these must NOT stamp the frete.
+        throw new NfeUploadTransientError(
+          'consulta-shipment',
+          `Falha transitória ao consultar o shipment ${shipmentId}: HTTP ${err.status}`,
+        );
+      }
+      if (err instanceof MercadoLivreNetworkError) {
+        throw new NfeUploadTransientError(
+          'consulta-shipment',
+          `Falha de rede ao consultar o shipment ${shipmentId}: ${err.message}`,
+        );
       }
       throw err;
     }
@@ -507,7 +529,16 @@ export async function processNfeUploadTask(
         err instanceof MercadoLivreReauthRequiredError
       ) {
         const cls = classifyInvoiceError(err);
-        if (cls.kind === 'transient') throw err;
+        if (cls.kind === 'transient') {
+          // The ONE transient class allowed to stamp the frete on exhaustion:
+          // the upload itself was attempted and failed (Copilot review catch —
+          // pre-POST transients must never produce a frete 'error').
+          throw new NfeUploadTransientError(
+            'tentativas-esgotadas',
+            `Falha transitória no envio da NF-e ao ML: ${err.message}`,
+            { stampFreteOnExhaust: true },
+          );
+        }
         if (cls.kind === 'reauth') {
           console.error(
             '[mercado-livre] nfe-upload: credencial morta no envio — reconecte a conta',
@@ -555,11 +586,11 @@ export async function processNfeUploadTask(
 
     // FINAL attempt: log the failure and return instead of throwing
     // (massImport.ts disposition precedent) — tagged transients keep their
-    // tag as motivo (sem-frete / sem-shipment-id / shipment-pendente /
-    // shipment-status-desconhecido), ML-client transients collapse to
-    // 'tentativas-esgotadas'.
-    const tagged = err instanceof NfeUploadTransientError;
-    const motivo = tagged ? err.tag : 'tentativas-esgotadas';
+    // tag as motivo (sem-frete / sem-shipment-id / consulta-shipment /
+    // shipment-pendente / shipment-status-desconhecido / tentativas-esgotadas);
+    // an untagged ML error can only come from a pre-POST path (e.g. a 5xx
+    // during the token refresh) and collapses to 'tentativas-esgotadas'.
+    const motivo = err instanceof NfeUploadTransientError ? err.tag : 'tentativas-esgotadas';
     console.error('[mercado-livre] nfe-upload: tentativas esgotadas', {
       pedidoId,
       nfeId,
@@ -568,13 +599,15 @@ export async function processNfeUploadTask(
       motivo,
       error: err.message,
     });
-    // Stamp the frete ONLY for raw ML transients (5xx/429/being-processed,
-    // network): freteInicial 'error' means the upload itself failed. A tagged
-    // transient means the shipment never became ELIGIBLE — that is not a frete
-    // failure; legacy silently skipped those states, and false-stamping would
-    // flag healthy pedidos in the despacho screens. A stamp failure is logged
-    // loudly, never thrown — it must not mask the primary disposition.
-    if (!tagged && freteCtx.hasFrete) {
+    // Stamp the frete ONLY when the exhausted transient came from the invoice
+    // POST itself (`stampFreteOnExhaust`, set solely by the POST catch):
+    // freteInicial 'error' means the upload itself failed. Everything else —
+    // never-became-eligible windows, shipment-GET or token-refresh blips —
+    // never touched the upload; legacy silently skipped those states, and
+    // false-stamping would flag healthy pedidos in the despacho screens. A
+    // stamp failure is logged loudly, never thrown — it must not mask the
+    // primary disposition.
+    if (err instanceof NfeUploadTransientError && err.stampFreteOnExhaust && freteCtx.hasFrete) {
       try {
         await stampFreteErro(db, pedidoId, freteCtx.shipmentId, nowUs);
       } catch (persistErr) {

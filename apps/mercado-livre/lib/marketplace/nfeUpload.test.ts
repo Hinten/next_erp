@@ -592,7 +592,7 @@ describe('processNfeUploadTask — shipment gate', () => {
     error.mockRestore();
   });
 
-  it('THROWS on getShipment 429 (transient, zero writes)', async () => {
+  it('THROWS a TAGGED transient on getShipment 429 (zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -602,25 +602,39 @@ describe('processNfeUploadTask — shipment gate', () => {
       }),
     });
 
-    await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
-      MercadoLivreHttpError,
-    );
+    // Tagged 'consulta-shipment' so exhaustion can never stamp the frete —
+    // no upload was attempted (Copilot review catch).
+    await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toMatchObject({
+      name: 'NfeUploadTransientError',
+      tag: 'consulta-shipment',
+      stampFreteOnExhaust: false,
+    });
     expect(allWrites(db)).toEqual([]);
   });
 
-  it('THROWS on getShipment 5xx (transient)', async () => {
+  it('THROWS a TAGGED transient on getShipment 5xx and on network failure', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
-    const api = makeApi({
+    const api500 = makeApi({
       getShipment: vi.fn(async () => {
         throw httpErr(500);
       }),
     });
+    await expect(processNfeUploadTask(makeDeps(db, api500), PAYLOAD, 0)).rejects.toMatchObject({
+      name: 'NfeUploadTransientError',
+      tag: 'consulta-shipment',
+    });
 
-    await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
-      MercadoLivreHttpError,
-    );
+    const apiNet = makeApi({
+      getShipment: vi.fn(async () => {
+        throw new MercadoLivreNetworkError('fetch falhou');
+      }),
+    });
+    await expect(processNfeUploadTask(makeDeps(db, apiNet), PAYLOAD, 0)).rejects.toMatchObject({
+      name: 'NfeUploadTransientError',
+      tag: 'consulta-shipment',
+    });
     expect(allWrites(db)).toEqual([]);
   });
 
@@ -812,73 +826,40 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     warn.mockRestore();
   });
 
-  it('THROWS on POST 429 (queue backoff covers the rate limit — zero writes)', async () => {
-    const db = new FakeDb();
-    seedNfe(db);
-    seedPedido(db);
-    const api = makeApi({
-      sendShipmentInvoiceData: vi.fn(async () => {
-        throw httpErr(429);
-      }),
+  // POST transients rethrow TAGGED with stampFreteOnExhaust — the ONE class
+  // whose exhaustion may stamp the frete (a real upload attempt failed).
+  const POST_TRANSIENTS: Array<[string, () => Error]> = [
+    ['POST 429 (queue backoff covers the rate limit)', () => httpErr(429)],
+    ['POST 5xx', () => httpErr(500)],
+    [
+      'shipment_already_being_processed (transient despite 4xx)',
+      () => httpErr(409, { code: 'shipment_already_being_processed' }),
+    ],
+    ['a network failure', () => new MercadoLivreNetworkError('fetch falhou')],
+  ];
+  for (const [title, make] of POST_TRANSIENTS) {
+    it(`THROWS a stamp-armed TAGGED transient on ${title} (zero writes)`, async () => {
+      const db = new FakeDb();
+      seedNfe(db);
+      seedPedido(db);
+      const api = makeApi({
+        sendShipmentInvoiceData: vi.fn(async () => {
+          throw make();
+        }),
+      });
+
+      await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toMatchObject({
+        name: 'NfeUploadTransientError',
+        tag: 'tentativas-esgotadas',
+        stampFreteOnExhaust: true,
+      });
+      expect(allWrites(db)).toEqual([]);
     });
-
-    await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
-      MercadoLivreHttpError,
-    );
-    expect(allWrites(db)).toEqual([]);
-  });
-
-  it('THROWS on POST 5xx (zero writes)', async () => {
-    const db = new FakeDb();
-    seedNfe(db);
-    seedPedido(db);
-    const api = makeApi({
-      sendShipmentInvoiceData: vi.fn(async () => {
-        throw httpErr(500);
-      }),
-    });
-
-    await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
-      MercadoLivreHttpError,
-    );
-    expect(allWrites(db)).toEqual([]);
-  });
-
-  it('THROWS on shipment_already_being_processed (transient despite 4xx, zero writes)', async () => {
-    const db = new FakeDb();
-    seedNfe(db);
-    seedPedido(db);
-    const api = makeApi({
-      sendShipmentInvoiceData: vi.fn(async () => {
-        throw httpErr(409, { code: 'shipment_already_being_processed' });
-      }),
-    });
-
-    await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
-      MercadoLivreHttpError,
-    );
-    expect(allWrites(db)).toEqual([]);
-  });
-
-  it('THROWS on a network failure (zero writes)', async () => {
-    const db = new FakeDb();
-    seedNfe(db);
-    seedPedido(db);
-    const api = makeApi({
-      sendShipmentInvoiceData: vi.fn(async () => {
-        throw new MercadoLivreNetworkError('fetch falhou');
-      }),
-    });
-
-    await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
-      MercadoLivreNetworkError,
-    );
-    expect(allWrites(db)).toEqual([]);
-  });
+  }
 });
 
 describe('processNfeUploadTask — final attempt', () => {
-  it('raw ML transient exhausted: logs, stamps the frete (the ONLY write), returns erro-final', async () => {
+  it('POST transient exhausted: logs, stamps the frete (the ONLY write), returns erro-final', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -904,7 +885,7 @@ describe('processNfeUploadTask — final attempt', () => {
         shipmentId: SHIPMENT_ID,
         retryCount: NFE_UPLOAD_MAX_ATTEMPTS - 1,
         motivo: 'tentativas-esgotadas',
-        error: 'ML 500',
+        error: expect.stringContaining('ML 500'),
       }),
     );
     // The pinned cost invariant: ONE write, the pedido TX update — nothing
@@ -954,6 +935,33 @@ describe('processNfeUploadTask — final attempt', () => {
     );
 
     expect(result).toEqual({ outcome: 'erro-final', motivo: 'shipment-pendente' });
+    expect(allWrites(db)).toEqual([]);
+    expect(db.docs('pedidos').get(PEDIDO_ID)).toEqual(pedidoBefore);
+    error.mockRestore();
+  });
+
+  it('getShipment 5xx exhausted: NO frete stamp — no upload was ever attempted', async () => {
+    // The Copilot review catch: a pre-POST ML transient (shipment GET
+    // 429/5xx/network) exhausting its retries must not produce a frete
+    // 'error' — the shipment state is unknown and the invoice POST never ran.
+    const db = new FakeDb();
+    seedNfe(db);
+    seedPedido(db);
+    const pedidoBefore = structuredClone(db.docs('pedidos').get(PEDIDO_ID));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const api = makeApi({
+      getShipment: vi.fn(async () => {
+        throw httpErr(500);
+      }),
+    });
+
+    const result = await processNfeUploadTask(
+      makeDeps(db, api),
+      PAYLOAD,
+      NFE_UPLOAD_MAX_ATTEMPTS - 1,
+    );
+
+    expect(result).toEqual({ outcome: 'erro-final', motivo: 'consulta-shipment' });
     expect(allWrites(db)).toEqual([]);
     expect(db.docs('pedidos').get(PEDIDO_ID)).toEqual(pedidoBefore);
     error.mockRestore();
