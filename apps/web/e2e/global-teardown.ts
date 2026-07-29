@@ -84,7 +84,12 @@ const isDirectInvocation =
   process.argv[1]?.endsWith('global-teardown.js');
 
 if (isDirectInvocation) {
-  globalTeardown().catch((err: unknown) => {
+  // Awaited, not floating: the CI step's whole job is to finish sweeping before
+  // the runner tears the container down. A floating promise only survives
+  // because pending gRPC sockets happen to keep the event loop alive — relying
+  // on that to not orphan fixtures is exactly the bet this step exists to stop
+  // making. `module: ESNext` + `target: ES2022`, so top-level await is fine.
+  await globalTeardown().catch((err: unknown) => {
     console.warn(`[globalTeardown] failed: ${String(err)}`);
   });
 }

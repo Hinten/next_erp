@@ -314,6 +314,25 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     expect(writes.batchDeletes).toContain('pedidos/e2e-111-ped-001/historicoEstadoPedido/h-1');
   });
 
+  it('reports candidates the wall-clock budget left behind instead of silently dropping them', async () => {
+    // `deleted: 12, remaining: 0` reads as "nothing left" when there may be
+    // hundreds — the same silent-truncation trap the per-collection cap already
+    // guards against. A deadline already in the past cuts the delete phase off
+    // before its first document.
+    stubCiEnv();
+    const writes = noWrites();
+
+    const report = await sweepOrphanedE2EFixtures(
+      false,
+      fakeDb(writes, staleDocs, '111', staleSubcollections) as never,
+      Date.now() - 1,
+    );
+
+    expect(report.deleted).toBe(0);
+    expect(report.remaining).toBeGreaterThan(0);
+    expect(writes.batchDeletes).toEqual([]);
+  });
+
   it('NEVER calls recursiveDelete — it is unindexable on Enterprise (#728/#729)', async () => {
     // The regression guard. `db.recursiveDelete` issues a kindless
     // all-descendants query: no index can serve it, nothing throws, and the only

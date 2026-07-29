@@ -308,21 +308,34 @@ async function deleteDocs(
   database: Firestore,
   docs: readonly QueryDocumentSnapshot[],
   deadline: number,
-): Promise<number> {
-  if (docs.length === 0) return 0;
+): Promise<{ deleted: number; remaining: number }> {
+  if (docs.length === 0) return { deleted: 0, remaining: 0 };
 
   const writer = database.bulkWriter();
   let deleted = 0;
+  let index = 0;
   try {
-    for (const doc of docs) {
+    for (; index < docs.length; index += 1) {
+      const doc = docs[index]!;
       // The delete phase used to ignore the budget entirely, so a saturated
       // sweep ran all 500 deletes per collection however long it took.
+      //
+      // The check sits BETWEEN documents, and the walk below is deliberately
+      // given NO deadline: once a fixture is started it must finish. The walk
+      // deletes the parent first, so a subtree abandoned half-way leaves
+      // children under a doc that no longer exists — and this sweep finds
+      // candidates by querying the ROOT collection, so nothing would ever
+      // rediscover them. A fixture subtree is a handful of docs; finishing one
+      // is cheap, and being unable to reclaim it is not.
       if (Date.now() > deadline) {
-        console.warn('[sweep] wall-clock budget reached mid-delete — left for the next run');
+        console.warn(
+          `[sweep] wall-clock budget reached mid-delete — ` +
+            `${docs.length - index} left for the next run`,
+        );
         break;
       }
       try {
-        const report = await deleteDocumentSubtree(database, doc.ref, { writer, deadline });
+        const report = await deleteDocumentSubtree(database, doc.ref, { writer });
         deleted += 1;
         if (report.failedDeletes > 0) {
           console.warn(
@@ -341,7 +354,10 @@ async function deleteDocs(
     await writer.close();
   }
 
-  return deleted;
+  // Anything the budget cut off is a candidate LEFT BEHIND, and the report says
+  // so — "deleted 12" with `remaining: 0` reads as "nothing left" when there
+  // may be hundreds.
+  return { deleted, remaining: docs.length - index };
 }
 
 /** One pass over every target. */
@@ -392,8 +408,11 @@ async function sweep(options: SweepOptions): Promise<SweepReport> {
     }
     if (capped.length === 0) continue;
 
-    const deleted = options.dryRun ? capped.length : await deleteDocs(database, capped, deadline);
+    const { deleted, remaining } = options.dryRun
+      ? { deleted: capped.length, remaining: 0 }
+      : await deleteDocs(database, capped, deadline);
     report.deleted += deleted;
+    report.remaining += remaining;
     report.byCollection[target.collection] =
       (report.byCollection[target.collection] ?? 0) + deleted;
   }
@@ -425,7 +444,7 @@ function concurrencyGroupId(): string | null {
  * `GITHUB_RUN_ID`, so attempt 2 shares attempt 1's prefix.
  */
 export async function reclaimPredecessorRun(
-  options: { dryRun?: boolean; database?: Firestore } = {},
+  options: { dryRun?: boolean; database?: Firestore; deadline?: number } = {},
 ): Promise<SweepReport> {
   const groupId = concurrencyGroupId();
   if (!groupId) return emptyReport();
@@ -470,13 +489,14 @@ export async function sweepCurrentRunFixtures(database?: Firestore): Promise<Swe
  * below silently dropped `dryRun` and made `sweep:e2e` delete during a dry run.
  */
 export async function sweepStaleFixtures(
-  options: { maxAgeMs?: number; dryRun?: boolean; database?: Firestore } = {},
+  options: { maxAgeMs?: number; dryRun?: boolean; database?: Firestore; deadline?: number } = {},
 ): Promise<SweepReport> {
   return sweep({
     prefixes: [E2E_PREFIX],
     maxAgeMs: options.maxAgeMs ?? STALE_E2E_FIXTURE_AGE_MS,
     dryRun: options.dryRun,
     database: options.database,
+    deadline: options.deadline,
   });
 }
 
@@ -488,10 +508,17 @@ export async function sweepStaleFixtures(
 export async function sweepOrphanedE2EFixtures(
   dryRun = false,
   database?: Firestore,
+  /**
+   * Absolute wall-clock deadline for BOTH passes together. Defaulted here rather
+   * than inside `sweep()` so the budget is one 60s allowance for the whole
+   * janitor — each pass defaulting its own meant a saturated sweep could run for
+   * two. A test injects a past deadline to exercise the truncation path.
+   */
+  deadline: number = Date.now() + SWEEP_BUDGET_MS,
 ): Promise<SweepReport> {
   // Both passes take the same flags. Forwarding to only one of them is what made
   // `sweep:e2e` delete while reporting "would delete".
-  const options = { dryRun, database };
+  const options = { dryRun, database, deadline };
   const report = mergeReports(
     await reclaimPredecessorRun(options),
     await sweepStaleFixtures(options),
