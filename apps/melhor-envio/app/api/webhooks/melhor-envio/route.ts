@@ -14,7 +14,10 @@
 import { NextResponse } from 'next/server';
 import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete } from '@delfrance/schemas';
-import { pedidoCollection } from '@delfrance/data/admin/collections';
+import {
+  historicoFreteInicialCollection,
+  pedidoCollection,
+} from '@delfrance/data/admin/collections';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { verifyHmac } from '@/lib/signatures/hmac';
@@ -154,7 +157,24 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, applied: false });
   }
 
-  await pedidoCollection.docRef(db, {}, doc.id).update(patch);
+  // A genuine estado transition gets one `historicoFtIni` audit row, written
+  // atomically with the `freteInicial` patch — a crash between the two would
+  // otherwise leave state and history diverged. A tracking-only patch (no
+  // `freteInicial.estado` key) does NOT append a row, matching the legacy
+  // `tasks.dart` worker.
+  const batch = db.batch();
+  const estadoChanged = typeof patch['freteInicial.estado'] === 'string';
+  if (estadoChanged) {
+    const historyId = historicoFreteInicialCollection.newDocId(db, { pedidoId: doc.id });
+    const historyRef = historicoFreteInicialCollection.docRef(db, { pedidoId: doc.id }, historyId);
+    batch.set(
+      historyRef,
+      historicoFreteInicialCollection.parse({ estado: target, obs: null, data: Date.now() }),
+    );
+  }
+  batch.update(pedidoCollection.docRef(db, {}, doc.id), patch);
+  await batch.commit();
+
   // Report the estado actually in effect (unchanged when terminal).
   const appliedEstado = (patch['freteInicial.estado'] as EstadoFrete | undefined) ?? currentEstado;
   return NextResponse.json({ ok: true, applied: true, estado: appliedEstado ?? null });

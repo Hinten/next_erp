@@ -2,15 +2,34 @@ import { createHmac } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the Firestore seam: a fake pedidoCollection whose query returns a
-// configurable snapshot and whose docRef captures the update patch.
-const h = vi.hoisted(() => ({ query: vi.fn(), update: vi.fn() }));
+// configurable snapshot, and a fake db.batch() capturing the set/update ops
+// the route commits atomically (freteInicial patch + historicoFtIni row).
+const h = vi.hoisted(() => ({
+  query: vi.fn(),
+  batchSet: vi.fn(),
+  batchUpdate: vi.fn(),
+  batchCommit: vi.fn(),
+}));
 
-vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
+vi.mock('@/lib/firebase/admin', () => ({
+  getAdminFirestore: () => ({
+    batch: () => ({ set: h.batchSet, update: h.batchUpdate, commit: h.batchCommit }),
+  }),
+}));
 
 vi.mock('@delfrance/data/admin/collections', () => ({
   pedidoCollection: {
     ref: () => ({ where: () => ({ limit: () => ({ get: h.query }) }) }),
-    docRef: () => ({ update: h.update }),
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({ ref: 'pedido', id }),
+  },
+  historicoFreteInicialCollection: {
+    newDocId: () => 'hist-1',
+    docRef: (_db: unknown, ctx: { pedidoId: string }, id: string) => ({
+      ref: 'historicoFtIni',
+      pedidoId: ctx.pedidoId,
+      id,
+    }),
+    parse: (data: unknown) => data,
   },
 }));
 
@@ -43,6 +62,7 @@ function pedidoSnap(estado: string, codRastreio: string | null = null) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('MELHOR_ENVIO_CLIENT_SECRET', SECRET);
+  h.batchCommit.mockResolvedValue(undefined);
   h.query.mockResolvedValue(pedidoSnap('aguardandoPostagem'));
 });
 
@@ -100,7 +120,8 @@ describe('POST /api/webhooks/melhor-envio', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
     expect(h.query).not.toHaveBeenCalled();
-    expect(h.update).not.toHaveBeenCalled();
+    expect(h.batchUpdate).not.toHaveBeenCalled();
+    expect(h.batchCommit).not.toHaveBeenCalled();
   });
 
   it('treats a released event as a no-op (label printed, not posted yet)', async () => {
@@ -110,7 +131,8 @@ describe('POST /api/webhooks/melhor-envio', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
     expect(h.query).not.toHaveBeenCalled();
-    expect(h.update).not.toHaveBeenCalled();
+    expect(h.batchUpdate).not.toHaveBeenCalled();
+    expect(h.batchCommit).not.toHaveBeenCalled();
   });
 
   it('acks without writing when no pedido matches the label', async () => {
@@ -120,7 +142,8 @@ describe('POST /api/webhooks/melhor-envio', () => {
     );
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
-    expect(h.update).not.toHaveBeenCalled();
+    expect(h.batchUpdate).not.toHaveBeenCalled();
+    expect(h.batchCommit).not.toHaveBeenCalled();
   });
 
   it('updates estado + codRastreio when the status maps and differs', async () => {
@@ -129,10 +152,23 @@ describe('POST /api/webhooks/melhor-envio', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, applied: true, estado: 'postado' });
-    expect(h.update).toHaveBeenCalledWith({
+    expect(h.batchUpdate).toHaveBeenCalledWith(expect.anything(), {
       'freteInicial.estado': 'postado',
       'freteInicial.codRastreio': 'ME9BR',
     });
+    expect(h.batchCommit).toHaveBeenCalled();
+  });
+
+  it('appends one historicoFtIni row on a genuine estado transition', async () => {
+    const res = await POST(
+      req({ event: 'order.posted', data: { id: 'lbl-1', status: 'posted', tracking: 'ME9BR' } }),
+    );
+    expect(res.status).toBe(200);
+    expect(h.batchSet).toHaveBeenCalledTimes(1);
+    const [ref, entry] = h.batchSet.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(ref).toMatchObject({ ref: 'historicoFtIni', pedidoId: 'ped-1' });
+    expect(entry).toMatchObject({ estado: 'postado', obs: null });
+    expect(typeof entry.data).toBe('number');
   });
 
   it('is idempotent — no write when the pedido is already in the target estado', async () => {
@@ -140,7 +176,8 @@ describe('POST /api/webhooks/melhor-envio', () => {
     const res = await POST(req({ event: 'order.posted', data: { id: 'lbl-1', status: 'posted' } }));
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
-    expect(h.update).not.toHaveBeenCalled();
+    expect(h.batchUpdate).not.toHaveBeenCalled();
+    expect(h.batchCommit).not.toHaveBeenCalled();
   });
 
   it('persists codRastreio on a retry that adds tracking to an already-applied estado', async () => {
@@ -151,7 +188,11 @@ describe('POST /api/webhooks/melhor-envio', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(true);
     // Only codRastreio is written — estado is unchanged.
-    expect(h.update).toHaveBeenCalledWith({ 'freteInicial.codRastreio': 'ME9BR' });
+    expect(h.batchUpdate).toHaveBeenCalledWith(expect.anything(), {
+      'freteInicial.codRastreio': 'ME9BR',
+    });
+    // A tracking-only patch does NOT append a historicoFtIni row.
+    expect(h.batchSet).not.toHaveBeenCalled();
   });
 
   it('never regresses a terminal estado — a late posted after entregue is a no-op', async () => {
@@ -161,7 +202,8 @@ describe('POST /api/webhooks/melhor-envio', () => {
     );
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
-    expect(h.update).not.toHaveBeenCalled();
+    expect(h.batchUpdate).not.toHaveBeenCalled();
+    expect(h.batchCommit).not.toHaveBeenCalled();
   });
 
   it('does not flip a cancelado pedido to entregue on a late delivered event', async () => {
@@ -169,7 +211,8 @@ describe('POST /api/webhooks/melhor-envio', () => {
     const res = await POST(req({ event: 'order.delivered', data: { id: 'lbl-1' } }));
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
-    expect(h.update).not.toHaveBeenCalled();
+    expect(h.batchUpdate).not.toHaveBeenCalled();
+    expect(h.batchCommit).not.toHaveBeenCalled();
   });
 
   it('still records tracking on a terminal pedido without touching estado', async () => {
@@ -180,7 +223,11 @@ describe('POST /api/webhooks/melhor-envio', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ applied: true, estado: 'entregue' });
     // Only codRastreio is written — the terminal estado is preserved.
-    expect(h.update).toHaveBeenCalledWith({ 'freteInicial.codRastreio': 'ME9BR' });
+    expect(h.batchUpdate).toHaveBeenCalledWith(expect.anything(), {
+      'freteInicial.codRastreio': 'ME9BR',
+    });
+    // A tracking-only patch does NOT append a historicoFtIni row.
+    expect(h.batchSet).not.toHaveBeenCalled();
   });
 
   it('derives the status from the event suffix when data.status is absent', async () => {
@@ -188,6 +235,10 @@ describe('POST /api/webhooks/melhor-envio', () => {
     const res = await POST(req({ event: 'order.delivered', data: { id: 'lbl-1' } }));
     expect(res.status).toBe(200);
     expect((await res.json()).estado).toBe('entregue');
-    expect(h.update).toHaveBeenCalledWith({ 'freteInicial.estado': 'entregue' });
+    expect(h.batchUpdate).toHaveBeenCalledWith(expect.anything(), {
+      'freteInicial.estado': 'entregue',
+    });
+    // A genuine estado transition appends a historicoFtIni row.
+    expect(h.batchSet).toHaveBeenCalledTimes(1);
   });
 });

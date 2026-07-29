@@ -681,6 +681,16 @@
       ]
     },
     {
+      "collectionGroup": "historicoFtIni",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "data",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "enderecos",
       "queryScope": "COLLECTION",
       "fields": [

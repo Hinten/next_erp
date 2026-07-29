@@ -44,6 +44,7 @@ export { incidenteCollection } from './incidenteCollection';
 export { metodoPagamentoCollection } from './metodoPagamentoCollection';
 export { pagamentoCollection } from './pagamentoCollection';
 export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollection';
+export { historicoFreteInicialCollection } from './historicoFreteInicialCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';
 export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollection';
 export { clienteCollection } from './clienteCollection';
