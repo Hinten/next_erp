@@ -89,7 +89,8 @@ export function buildDest(
     email: sanitizeNFeEmail(cliente.email) ?? undefined,
   };
 
-  // tipoCliente '0' = PF (CPF), '1' = PJ (CNPJ), '2' = Estrangeiro (idEstrangeiro)
+  // Each tipo picks its own document field: pessoaFisica → CPF,
+  // pessoaJuridica → CNPJ, estrangeiro → idEstrangeiro.
   if (cliente.tipo === TIPO_CLIENTE.pessoaJuridica && cliente.cpf_cnpj) {
     return { ...dest, CNPJ: cliente.cpf_cnpj };
   }

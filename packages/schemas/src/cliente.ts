@@ -26,10 +26,13 @@ export const tipoClienteSchema = z.enum(['0', '1', '2']).meta({ labels: TIPO_CLI
 export type TipoCliente = z.infer<typeof tipoClienteSchema>;
 
 /**
- * Named members of {@link tipoClienteSchema}; names from
- * {@link TIPO_CLIENTE_LABELS}. The cross-field document rule below turns on
- * these codes — `'0'` requires a CPF, `'1'` a CNPJ — so reading them wrong is a
- * validation bug, not a cosmetic one.
+ * Named members of {@link tipoClienteSchema} — a readable name for each wire
+ * code, taken from what {@link TIPO_CLIENTE_LABELS} calls it. (That map is keyed
+ * by the code, so its keys are the values here, not the names.)
+ *
+ * The cross-field document rule below turns on these codes — `'0'` requires a
+ * CPF, `'1'` a CNPJ — so reading them wrong is a validation bug, not a cosmetic
+ * one.
  *
  * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
  * Zod enum that has a companion constant like this one.

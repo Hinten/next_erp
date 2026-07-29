@@ -33,7 +33,10 @@ export const origemConversaSchema = z
 export type OrigemConversa = z.infer<typeof origemConversaSchema>;
 
 /**
- * Named members of {@link origemConversaSchema}; names from {@link ORIGEM_LABELS}.
+ * Named members of {@link origemConversaSchema} — a readable name for each wire
+ * slug, taken from what {@link ORIGEM_LABELS} calls it. (That map is keyed by the
+ * slug, so its keys are the values here, not the names.)
+ *
  * The three `ml*` slugs are the reason this exists — `'mlperg'`, `'mlped'` and
  * `'mlclaims'` are three different Mercado Livre surfaces that read alike.
  *
@@ -228,9 +231,12 @@ export const tipoMensagemSchema = z
 export type TipoMensagem = z.infer<typeof tipoMensagemSchema>;
 
 /**
- * Named members of {@link tipoMensagemSchema}; names from
- * {@link TIPO_MENSAGEM_LABELS}. Single-char wire codes, plus `'!'` for erro —
- * which is not something anyone should be typing by hand.
+ * Named members of {@link tipoMensagemSchema} — a readable name for each wire
+ * code, taken from what {@link TIPO_MENSAGEM_LABELS} calls it. (That map is keyed
+ * by the code, so its keys are the values here, not the names.)
+ *
+ * Single-char codes, plus `'!'` for erro — which is not something anyone should
+ * be typing by hand.
  */
 export const TIPO_MENSAGEM = {
   comum: 'c',
