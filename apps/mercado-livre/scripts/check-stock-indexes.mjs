@@ -954,7 +954,7 @@ try {
       `spike (b): produtos integracoesComProduto index form used → ${form}` +
         (ok
           ? ' — ASC confirmed (#705, CONTAINS twin dropped)'
-          : ' — UNEXPECTED (expected ASCENDING; re-check firestore.indexes.json / plan)'),
+          : ' — UNEXPECTED (expected ASCENDING or ASC; re-check firestore.indexes.json / plan)'),
     );
   }
 
