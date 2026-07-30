@@ -58,6 +58,8 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 | `sweepMercadoLivreStock`             | `onSchedule('every 15 minutes')`       | Step 10 PR C — the **incremental** stock sweep: per conta it runs THE produtos-first joined discovery from the durable cursor (`estoqueMercadoLivreSync/{integracaoId}`), applies the 30-day activity filter and enqueues one `sendMercadoLivreStock` task per ML call. Bounded pages + tasks per tick; a truncated tick persists `continuacao` (frozen window + keyset) and the NEXT tick resumes it. Skips a conta whose 429 `pausedUntilUs` is still live, and skips ONLY the 02:00 America/Sao_Paulo tick in code (`isSlotDoDaily` — that slot belongs to the daily sweep; 02:15/30/45 run normally). **No-op until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1`.** |
 | `sweepMercadoLivreStockDaily`        | `onSchedule('0 2 * * *')`              | Step 10 PR C — the **daily** full-reconciliation sweep, 02:00 America/Sao_Paulo: the same discovery over a flat 24h window (`MERCADO_LIVRE_STOCK_DAILY_WINDOW_H`), with no activity filter and no pedidos probe. It owns its slot alone — the incremental wrapper skips exactly the 02:00 tick — so the two never contend for one conta's caps and state doc. Same flag, same no-op while OFF.                                                                                                                                                                                                                                                                  |
 | `processMercadoLivrePriceSync`       | `onTaskDispatched` (Cloud Tasks queue) | Step 11 PR-C — "Atualizar preços": manual bulk price sync for one conta. Pages the conta's linked produtos, prices from the tabela normal, GETs the item before every PUT (skip-if-equal, fresh status gate, decrease guard unless `baixarPreco`), sends **price-only** bodies (`item.price.not_modifiable` maps to a terminal skip), and re-enqueues itself onto its OWN queue until the job (`enviosPrecoMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.              |
+| `onNfeAprovada`                      | `onDocumentWritten` (Firestore)        | Step 12 (#739) — the codebase's **first Firestore trigger**: fires on every `pedidos/{pedidoId}/nfev4/{nfeId}` write (named `default` database); when a production (`<tpAmb>1`) NF-e reaches `aprovada` with `xml_nfe_proc` present, ONE pedido read filters non-ML pedidos and it enqueues one `{ pedidoId, nfeId }` task onto the NF-e upload queue — **zero Firestore writes** (a non-ML approval costs exactly that 1 read; no task, no doc). Binds **no secrets** (never touches the ML API — see `src/options.ts`).                                                                                                                                       |
+| `processMercadoLivreNfeUpload`       | `onTaskDispatched` (Cloud Tasks queue) | Step 12 (#739) — uploads the raw signed nfeProc XML to ML `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment leaves `invoice_pending`. One task = one NF-e (no self-continuation); 6 attempts over a ≈25–30 min backoff envelope. **Zero writes on the happy path** — idempotency is the live shipment-status gate; the flow's only Firestore write is the failure stamp `freteInicial.estado = 'error'` on the pedido, with the detail in structured Cloud Logging. Single in-flight dispatch. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                        |
 
 ### Durability & the residual loss window
 
@@ -172,6 +174,96 @@ constraints — as the stock knobs: see "Setting (1)" under _Runtime env (stock
 sync, Step 10)_ below. The queue's `rateLimits` (1 concurrent dispatch / 1
 dispatch per second) are fixed in code and baked in at **deploy** time —
 changing them is a code edit + redeploy, not an env var.
+
+## NF-e upload queue + Firestore trigger (Step 12)
+
+`processMercadoLivreNfeUpload` auto-provisions its own Cloud Tasks queue the
+same way the other queues do — no separate queue-creation step. IAM is covered
+by the existing grants (above) — verify they exist, don't re-grant. Note the
+enqueuer here is the **functions runtime SA itself**: `onNfeAprovada` runs in
+THIS codebase and enqueues via `createMlNfeUploadScheduler()`
+(`lib/marketplace/mlNfeUploadTasks.ts`) — the same identity the stock sweeps
+and the price-sync self-continuation already enqueue as. Secrets: the task
+handler binds the same two ML secrets per-function
+(`src/processNfeUpload.ts`, mirroring the mass import) — if they are already
+set for this project, there is nothing new to set. The trigger binds **none**
+(see `src/options.ts`).
+
+**Zero-write model (legacy cost parity).** The flow keeps NO per-NF-e state in
+Firestore:
+
+- **Idempotency** is the task handler's live **shipment-status gate** — the
+  shipment's substatus leaves `invoice_pending` once an invoice is saved, so a
+  duplicate task (Eventarc redelivery, a manual route re-send) no-ops, and ML's
+  `shipment_invoice_already_saved` rejection maps to a success-equivalent.
+- **Per-NF-e observability** is **structured Cloud Logging**: every dispatch
+  logs `pedidoId`, `nfeId`, `outcome`, `motivo`, `retryCount`
+  (`processMercadoLivreNfeUpload`'s completion line), and failures additionally
+  log `shipmentId` plus the ML error `code`/`message`. For on-demand diagnosis
+  of a specific shipment, `getShipmentInvoiceData`
+  (`GET /shipments/{id}/invoice_data?siteId=MLB`) returns what ML actually has.
+- The flow's **only Firestore write** is the failure stamp
+  `freteInicial.estado = 'error'` on the pedido (the despacho screens' signal).
+- **Cost note**: the trigger performs a single pedido read to filter non-ML
+  NF-es BEFORE any task exists — an approval on a non-ML pedido costs exactly
+  1 read, with no task and no write anywhere.
+
+**First Firestore trigger in this codebase.** `firebase deploy` creates the
+gen2 Eventarc trigger itself — no manual Eventarc step. The
+Firestore→Eventarc→Cloud Run service agents were already exercised by
+apps/whatsapp's `sendOutbound` in this project, so no first-time service-agent
+provisioning delay is expected. The Eventarc trigger resource lands in the
+**database's region** while the function runs in `us-east5` — that split is
+normal for Firestore triggers. Verify after the first deploy:
+
+```bash
+gcloud eventarc triggers list --project <project-id>
+# expect a trigger for onnfeaprovada, event type google.cloud.firestore.document.v1.written,
+# filtered to database 'default' + the pedidos/*/nfev4/* document path
+```
+
+**`MERCADO_LIVRE_TASKS_DISABLED` valve behavior**: while the valve is on, the
+trigger logs a warning and **skips** the enqueue (no throw, no Eventarc retry
+loop). Unlike the notification pipeline there is NO sweep backstop for this
+queue — an approval that lands while the valve is on stays un-uploaded until a
+manual poke/route re-drive after the valve lifts. Treat the valve as a
+deliberate, short-lived state.
+
+### ⚠️ HARD CUTOVER — delete the legacy `nfe-ml--updated-trigger` in the same window
+
+The legacy Flutter backend reacts to the SAME nfev4 approval through the Cloud
+Run service `nfe-ml` and its Eventarc trigger **`nfe-ml--updated-trigger`
+(us-east1)**. Running both is a **double-fire**: each approval makes two
+`POST /shipments/{shipmentId}/invoice_data` calls; ML accepts the first and
+rejects the second (the shipment already has invoice data). The NEW handler
+maps that rejection (`shipment_invoice_already_saved`) to a
+success-equivalent, but when the **legacy** service loses the race it **stamps
+`freteInicial.estado = 'error'` on a pedido whose invoice actually uploaded
+fine** — a false error on every approval it loses, indistinguishable from a
+real failure in the panel.
+
+Order of operations:
+
+1. Deploy this functions codebase (creates the queue + the new trigger).
+2. Smoke ONE real approval end-to-end: shipment leaves `invoice_pending` —
+   verify via the task's structured completion log (`outcome: 'enviado'`)
+   and/or `getShipmentInvoiceData`. This single approval sits in the deliberate
+   overlap window — if the legacy service loses the race and stamps
+   `freteInicial.estado = 'error'`, correct that one pedido by hand.
+3. **Delete the legacy trigger immediately** — do not leave the overlap
+   running:
+
+```bash
+gcloud eventarc triggers describe nfe-ml--updated-trigger \
+  --location=us-east1 --project <project-id>
+gcloud eventarc triggers delete nfe-ml--updated-trigger \
+  --location=us-east1 --project <project-id>
+```
+
+Optional, later: delete the now-orphaned `nfe-ml` Cloud Run service itself
+(`gcloud run services delete nfe-ml --region=us-east1 --project <project-id>`)
+once the new path has soaked — the trigger deletion above is what stops the
+double-fire; the idle service is only cost/noise.
 
 ## Runtime env (stock sync, Step 10)
 

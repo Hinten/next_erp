@@ -16,12 +16,14 @@ import {
 } from '../../lib/marketplace/orderBackfill';
 import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoquePlan';
 import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/precoSync';
+import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfeUpload';
 import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';
 import { getDb } from './lib/admin';
 import * as notificationHandlers from './processNotification';
 import * as massImportHandlers from './processMassImport';
 import * as stockSendHandlers from './sendStock';
 import * as priceSyncHandlers from './processPriceSync';
+import * as nfeUploadHandlers from './processNfeUpload';
 
 /**
  * Mercado Livre Cloud Functions (gen2), codebase `mercado-livre`. Deployed as a
@@ -36,7 +38,9 @@ import * as priceSyncHandlers from './processPriceSync';
  * stock send queue (`sendMercadoLivreStock`, ./sendStock — 1 task = 1 ML call);
  * PR C adds the two flag-gated stock sweeps that feed it (./sweepStock). Step 11
  * PR-C adds the manual bulk price-sync job queue (`processMercadoLivrePriceSync`,
- * ./processPriceSync).
+ * ./processPriceSync). Step 12 (#739) adds the NF-e invoice upload: the
+ * `onNfeAprovada` Firestore trigger (./onNfeAprovada — this codebase's first)
+ * feeding the `processMercadoLivreNfeUpload` queue (./processNfeUpload).
  */
 
 // Rename-safety: the DEPLOYED function name is the export KEY of the handler
@@ -98,6 +102,29 @@ if (!(MERCADO_LIVRE_PRICE_SYNC_QUEUE in priceSyncHandlers)) {
 
 /** The queue-based manual bulk price-sync job processor (Step 11 PR-C). */
 export { processMercadoLivrePriceSync } from './processPriceSync';
+
+// Same rename-safety assertion for the Step 12 NF-e upload queue: the
+// `onNfeAprovada` trigger's scheduler (`mlNfeUploadTasks.ts`) enqueues against
+// `MERCADO_LIVRE_NFE_UPLOAD_QUEUE`.
+if (!(MERCADO_LIVRE_NFE_UPLOAD_QUEUE in nfeUploadHandlers)) {
+  throw new Error(
+    `[mercado-livre] function-name drift: functions/src/processNfeUpload.ts must export a ` +
+      `handler named '${MERCADO_LIVRE_NFE_UPLOAD_QUEUE}' (the enqueue target). ` +
+      `Rename the export and the MERCADO_LIVRE_NFE_UPLOAD_QUEUE constant together.`,
+  );
+}
+
+/** The queue-based NF-e invoice upload processor (Step 12, #739 — 1 task = 1 NF-e). */
+export { processMercadoLivreNfeUpload } from './processNfeUpload';
+
+/**
+ * The NF-e approval trigger (Step 12, #739) — this codebase's first Firestore
+ * trigger, feeding the queue above. No rename-safety assertion for ITS name:
+ * Eventarc binds a document path, not a queue/function name — nothing enqueues
+ * against `onNfeAprovada` (the queue it feeds is covered by the
+ * `MERCADO_LIVRE_NFE_UPLOAD_QUEUE` assertion above).
+ */
+export { onNfeAprovada } from './onNfeAprovada';
 
 /**
  * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep
