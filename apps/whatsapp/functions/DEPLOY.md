@@ -8,7 +8,7 @@ analysis. `firebase.whatsapp.deploy.json` points `source` at the generated
 `.deploy/whatsapp-functions`. Mirrors `apps/mercado-pago/functions`, adapted
 payments → whatsapp.
 
-> Deploy is **manual and coordinated** (CLAUDE.md critical rule #1) — never let a
+> Deploy is **manual and coordinated** — agents never run `firebase deploy` (root `CLAUDE.md`, Critical rules) — never let a
 > stray `firebase deploy` push rules. This config has no `firestore`/`storage`
 > block, so it can't.
 
@@ -49,7 +49,7 @@ locally without deploying: `node apps/whatsapp/functions/build.mjs` (writes
 (`estadoEnvio == salva|enviando AND timestamp < cutoff`). The composite
 collection-group index `mensagem(estadoEnvio, timestamp)` in
 `firestore.indexes.json` keeps both cost/latency-bounded (Enterprise otherwise
-full-scans). Deploy it once, coordinated (root critical rule #1 — never let a
+full-scans). Deploy it once, coordinated — agents never run `firebase deploy` (root `CLAUDE.md`, Critical rules) — never let a
 stray deploy push rules; use an indexes-only config or the flag below):
 
 ```bash

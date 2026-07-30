@@ -14,7 +14,7 @@ back to the App Hosting app, no OIDC. This is a **separate codebase from
 > `firebase-functions` / `xmllint-wasm` / `esbuild` are `apps/nfe` devDeps so the
 > bundle's externals resolve locally. `next build` never bundles this folder.
 
-## Deploy lane (manual & coordinated — root CLAUDE.md rule #1)
+## Deploy lane (manual & coordinated — see root `CLAUDE.md`, Critical rules)
 
 One command, with `FUNCTIONS_REGION` (default `us-east1`) and the app's base
 config set. **Ask the user before running it.**

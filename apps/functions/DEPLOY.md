@@ -5,7 +5,7 @@ These are the **Cloud Functions** for the storage pipeline (currently
 at the repo root exists **only** for the emulator suite (`ci-storage.yml`) and is
 deliberately kept away from `firebase deploy`.
 
-Deploys are **manual and coordinated** (CLAUDE.md critical rule #1). This doc is
+Deploys are **manual and coordinated** — see the Deploying section in `apps/functions/CLAUDE.md`. This doc is
 the lane; it does not run in CI.
 
 ## Prerequisites

@@ -25,8 +25,7 @@ export interface ReconciliarPagamentoPedidoResult {
  * ⚠️ On the app's critical path: `PagamentosSection`'s `reconcileEstado()`
  * calls this callable — a hard cutover, with no client-side fallback left — so
  * the pedido estado auto-transition only works once this is DEPLOYED (deploy is
- * manual — root rule #1; see the "Deploying" section in
- * `apps/functions/CLAUDE.md`).
+ * manual — see the "Deploying" section in `apps/functions/CLAUDE.md`).
  */
 export const reconciliarPagamentoPedido = onCall(async (request) => {
   if (!request.auth) {

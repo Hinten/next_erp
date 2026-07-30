@@ -2,7 +2,7 @@ rules_version = '2';
 
 // ⚠️ NOT DEPLOYED. The Flutter repo still owns and deploys the live
 // `storage.rules` (legacy `su`/`q1` claims) for the shared bucket — see
-// docs `guides/coexistence.md` and CLAUDE.md critical rule #1. This file is
+// docs `guides/coexistence.md` and root `CLAUDE.md`, Critical rules. This file is
 // the proposed Next-side ruleset: it enforces the product-scoped path layout
 // + content-type + size limits and is loaded by the Storage emulator in CI.
 // Fine-grained per-domain permission checks land with the rules phase; it is
