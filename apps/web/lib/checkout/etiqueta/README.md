@@ -42,19 +42,25 @@ marketplace provider.
 
 ## Legacy behavior to port for the future marketplace providers
 
-The marketplace carriers currently route to `unsupportedMarketplace` (a toast +
+`mercadoLivre` is **implemented** — `providers/mercadoLivre.ts` (port of the
+legacy `emitirEtiquetaMercadoLivre`) fetches the marketplace-generated label
+through the apps/mercado-livre proxy route (`GET …/etiqueta`, PDF or ZPL2) and
+sends it to the print agent. ML's `invoice_pending` reject auto-recovers: the
+provider (re)sends the pedido's latest **aprovada** NF-e (`enviar-nfe`, 202 =
+enqueued), waits 15s for ML to process it, then retries the fetch exactly once.
+
+The remaining marketplace carriers route to `unsupportedMarketplace` (a toast +
 an `'unsupported'` outcome). When their fetch flows land (Phase 5/6), each
 should reproduce the corresponding legacy call from `emitirOuImprimirFrete.dart`
 (`tipoEtiqueta` is the PDF-vs-ZPL2 selection; `zpl2` below is
 `tipoEtiqueta == FORMATO_ETIQUETA.zpl2`):
 
-| Tipo (`IntegracaoFrete`) | Legacy call                                                         | Notes                                                    |
-| ------------------------ | ------------------------------------------------------------------- | -------------------------------------------------------- |
-| `mercadoLivre`           | `emitirEtiquetaMercadoLivre(pedido, frete, tipoEtiqueta, printJob)` | Generates + prints via the print agent; honors PDF/ZPL2. |
-| `shopee`                 | `gerarEtiquetaShippingShopee(contaUid: pedido.integracao_id, zpl2)` | Account is the pedido's `integracao_id`.                 |
-| `amz` (Amazon)           | `gerarEtiquetaDBAAmazon(contaUid: pedido.integracao_id, zpl2)`      | Amazon DBA label.                                        |
-| `magalu`                 | `gerarEtiquetaMagalu(contaUid: pedido.integracao_id, zpl2)`         | Account is the pedido's `integracao_id`.                 |
-| `lojaIntegrada`          | **target resolution first** (below), then the mapped provider       | LI never emits directly; it maps to another carrier.     |
+| Tipo (`IntegracaoFrete`) | Legacy call                                                         | Notes                                                |
+| ------------------------ | ------------------------------------------------------------------- | ---------------------------------------------------- |
+| `shopee`                 | `gerarEtiquetaShippingShopee(contaUid: pedido.integracao_id, zpl2)` | Account is the pedido's `integracao_id`.             |
+| `amz` (Amazon)           | `gerarEtiquetaDBAAmazon(contaUid: pedido.integracao_id, zpl2)`      | Amazon DBA label.                                    |
+| `magalu`                 | `gerarEtiquetaMagalu(contaUid: pedido.integracao_id, zpl2)`         | Account is the pedido's `integracao_id`.             |
+| `lojaIntegrada`          | **target resolution first** (below), then the mapped provider       | LI never emits directly; it maps to another carrier. |
 
 ### Loja Integrada target resolution (legacy 184-224)
 

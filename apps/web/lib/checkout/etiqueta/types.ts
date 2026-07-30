@@ -3,6 +3,7 @@ import type { FreteDoPedido, IntFrete, IntegracaoFrete, Pedido } from '@delfranc
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 
+import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { printJob } from '@/lib/print-agent/printJob';
 
 /**
@@ -80,8 +81,12 @@ export interface EtiquetaProviderDeps {
   readonly freightClient: FreightHttpClient | null;
   /** NF-e HTTP client (reserved for marketplace/fiscal label providers); may be `null`. */
   readonly nfeClient: NFeHttpClient | null;
+  /** Mercado Livre HTTP client (label fetch + NF-e resend); `null` while logged out. */
+  readonly mercadoLivreClient: MercadoLivreClient | null;
   /** Local print-agent bridge (falls back to a browser download). */
   readonly printJob: typeof printJob;
+  /** Injectable wait (the ML invoice-pending retry); providers default to a real `setTimeout`. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**

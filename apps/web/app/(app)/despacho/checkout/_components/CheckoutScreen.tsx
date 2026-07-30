@@ -11,6 +11,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { useNFeClient } from '@/lib/nfe/client';
 import { useFreightClient } from '@/lib/freight/client';
+import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import {
   showCopyableNotification,
   showErrorNotification,
@@ -65,6 +66,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
   const nfeClient = useNFeClient();
   const freightClient = useFreightClient();
+  const mercadoLivreClient = useMercadoLivreClient();
 
   const { state, dispatch, bumpEpoch, currentEpoch } = useCheckoutReducer();
   // Latest state for the async handlers (avoids stale closures without re-binding).
@@ -309,6 +311,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
           db,
           nfeClient,
           freightClient,
+          mercadoLivreClient,
           pedido,
           pedidoId,
           formatoDanfe: snap.formatoDanfe,
@@ -337,6 +340,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
     user,
     nfeClient,
     freightClient,
+    mercadoLivreClient,
     ui,
     confirmDialog,
     reportPostSave,
@@ -417,6 +421,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
             uid={user?.uid ?? null}
             nfeClient={nfeClient}
             freightClient={freightClient}
+            mercadoLivreClient={mercadoLivreClient}
             formatoDanfe={state.formatoDanfe}
             onFormatoDanfe={(v) => dispatch({ type: 'format/danfe', value: v })}
             formatoEtiqueta={state.formatoEtiqueta}

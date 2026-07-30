@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseZplBlocks, removeZplDanfeBlocks, removeZplDanfeFromZip } from '../src/zplDanfeFilter';
-import { Zip, ZipDeflate, strToU8, unzipSync } from 'fflate';
+import { Zip, ZipDeflate, strFromU8, strToU8, unzipSync } from 'fflate';
 
 describe('zplDanfeFilter', () => {
   // Helper to extract text from a ZIP file
@@ -11,6 +11,28 @@ describe('zplDanfeFilter', () => {
       throw new Error(`File ${filename} not found in ZIP`);
     }
     return new TextDecoder().decode(fileBytes);
+  }
+
+  // Helper to build an in-memory ZIP from named byte entries
+  function buildZip(entries: Record<string, Uint8Array>): Uint8Array {
+    const chunks: Uint8Array[] = [];
+    const zip = new Zip((err, data) => {
+      if (err) throw err;
+      if (data.length) chunks.push(data);
+    });
+    for (const [name, content] of Object.entries(entries)) {
+      const entry = new ZipDeflate(name, { level: 6 });
+      zip.add(entry);
+      entry.push(content, true);
+    }
+    zip.end();
+    const zipBytes = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+      zipBytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return zipBytes;
   }
 
   describe('parseZplBlocks', () => {
@@ -41,6 +63,15 @@ describe('zplDanfeFilter', () => {
     it('parses empty string', () => {
       const blocks = parseZplBlocks('');
       expect(blocks).toHaveLength(0);
+    });
+
+    it('parses multiple blocks sharing a single physical line (legacy regex parser)', () => {
+      // A line-based scanner sees ONE block here — the regex must see two.
+      const zpl = '^XA^FD DANFE SIMPLIFICADO ^FS^XZ^XA^FD Transport ^FS^XZ';
+      const blocks = parseZplBlocks(zpl);
+      expect(blocks).toHaveLength(2);
+      expect(blocks[0]).toBe('^XA^FD DANFE SIMPLIFICADO ^FS^XZ');
+      expect(blocks[1]).toBe('^XA^FD Transport ^FS^XZ');
     });
   });
 
@@ -101,30 +132,37 @@ describe('zplDanfeFilter', () => {
       expect(result).not.toContain('DANFE');
     });
 
-    it('is case-sensitive: only uppercase DANFE is matched', () => {
+    it('matches DANFE case-INSENSITIVELY (legacy parity: bloco.toUpperCase())', () => {
       const zpl = `^XA
 ^FO10,10
 ^A0,30,30^FD This contains danfe text ^FS
-^XZ`;
-      const result = removeZplDanfeBlocks(zpl);
-      // Lowercase "danfe" does not match the uppercase "DANFE" filter
-      expect(result).toBeNull();
-    });
-
-    it('removes uppercase DANFE blocks while preserving lowercase danfe text', () => {
-      const zpl = `^XA
-^FO10,10
-^A0,30,30^FD DANFE ^FS
 ^XZ
 ^XA
 ^FO10,10
-^A0,30,30^FD This has danfe in lowercase ^FS
+^A0,30,30^FD Transport label ^FS
 ^XZ`;
       const result = removeZplDanfeBlocks(zpl);
-      // Uppercase DANFE is removed, lowercase danfe is preserved
+      // Lowercase "danfe" is a DANFE block too — it must be stripped
       expect(result).not.toBeNull();
-      expect(result).toContain('danfe');
-      expect(result).not.toContain('DANFE');
+      expect(result).not.toContain('danfe');
+      expect(result).toContain('Transport label');
+    });
+
+    it('strips uppercase, lowercase and mixed-case DANFE blocks alike', () => {
+      const zpl = [
+        '^XA^FD DANFE ^FS^XZ',
+        '^XA^FD danfe ^FS^XZ',
+        '^XA^FD DaNfE ^FS^XZ',
+        '^XA^FD Transport label ^FS^XZ',
+      ].join('\n');
+      const result = removeZplDanfeBlocks(zpl);
+      expect(result).toBe('^XA^FD Transport label ^FS^XZ');
+    });
+
+    it('strips a DANFE block sharing a single physical line with the transport label', () => {
+      // The single-line layout must not hide the DANFE inside one giant block.
+      const zpl = '^XA^FD DANFE SIMPLIFICADO ^FS^XZ^XA^FD Transport ^FS^XZ';
+      expect(removeZplDanfeBlocks(zpl)).toBe('^XA^FD Transport ^FS^XZ');
     });
   });
 
@@ -316,6 +354,53 @@ describe('zplDanfeFilter', () => {
       // Verify non-ZPL file is preserved unchanged
       const txtResult = getZipFileContent(result!, 'manifest.txt');
       expect(txtResult).toBe(txtContent);
+    });
+
+    it('latin1 round-trip: >0x7F bytes in a kept block survive byte-identical after a strip in the same entry', () => {
+      // 0xC7 0xE3 ("Çã" in latin1) — a UTF-8 decode maps each to U+FFFD and the
+      // re-encode would corrupt them to EF BF BD.
+      const keptBytes = new Uint8Array([
+        ...strToU8('^XA^FD', true),
+        0xc7,
+        0xe3,
+        ...strToU8('^FS^XZ', true),
+      ]);
+      const entryBytes = new Uint8Array([...strToU8('^XA^FD DANFE ^FS^XZ\n', true), ...keptBytes]);
+      const result = removeZplDanfeFromZip(buildZip({ 'label.zpl': entryBytes }));
+      expect(result).not.toBeNull();
+      const outBytes = unzipSync(result!)['label.zpl']!;
+      expect(Array.from(outBytes)).toEqual(Array.from(keptBytes));
+    });
+
+    it('non-ZPL binary entries pass through byte-identical when a strip happens elsewhere in the ZIP', () => {
+      // A pseudo-PDF holding EVERY byte value — no '^XA', so it is copied intact.
+      const pdfBytes = new Uint8Array(8 + 256);
+      pdfBytes.set(strToU8('%PDF-1.4', true), 0);
+      for (let i = 0; i < 256; i++) pdfBytes[8 + i] = i;
+      const zplContent = '^XA^FD DANFE ^FS^XZ\n^XA^FD Label ^FS^XZ';
+      const result = removeZplDanfeFromZip(
+        buildZip({ 'label.zpl': strToU8(zplContent, true), 'plp.pdf': pdfBytes }),
+      );
+      expect(result).not.toBeNull();
+      const out = unzipSync(result!);
+      expect(Array.from(out['plp.pdf']!)).toEqual(Array.from(pdfBytes));
+      const label = strFromU8(out['label.zpl']!, true);
+      expect(label).not.toContain('DANFE');
+      expect(label).toContain('Label');
+    });
+
+    it('strips a single-line multi-block DANFE inside a ZIP entry', () => {
+      const zpl = '^XA^FD DANFE SIMPLIFICADO ^FS^XZ^XA^FD Transport ^FS^XZ';
+      const result = removeZplDanfeFromZip(buildZip({ 'label.zpl': strToU8(zpl, true) }));
+      expect(result).not.toBeNull();
+      expect(strFromU8(unzipSync(result!)['label.zpl']!, true)).toBe('^XA^FD Transport ^FS^XZ');
+    });
+
+    it('strips lowercase danfe blocks inside a ZIP entry (case-insensitive, legacy parity)', () => {
+      const zpl = '^XA^FD danfe simplificado ^FS^XZ\n^XA^FD Transport ^FS^XZ';
+      const result = removeZplDanfeFromZip(buildZip({ 'label.zpl': strToU8(zpl, true) }));
+      expect(result).not.toBeNull();
+      expect(strFromU8(unzipSync(result!)['label.zpl']!, true)).toBe('^XA^FD Transport ^FS^XZ');
     });
 
     it('handles edge case: empty ZIP', async () => {

@@ -46,6 +46,7 @@ function renderModal(row: OutroCheckoutRow | null) {
         db={{} as never}
         nfeClient={null}
         freightClient={null}
+        mercadoLivreClient={null}
         formatoDanfe="simplificadoPdf"
         formatoEtiqueta="pdf"
       />

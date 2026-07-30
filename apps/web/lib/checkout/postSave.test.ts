@@ -24,6 +24,7 @@ import { runCheckoutPostSave } from './postSave';
 
 const db = {} as never;
 const nfeClient = {} as never;
+const mlClient = { __ml: true } as never;
 const ui = { confirmRisk: vi.fn(), notify: vi.fn(), openUrl: vi.fn(), comprarEtiqueta: vi.fn() };
 const pedidoWith = (frete: unknown) => ({ freteInicial: frete }) as unknown as Pedido;
 
@@ -52,6 +53,7 @@ describe('runCheckoutPostSave', () => {
       db,
       nfeClient,
       freightClient: null,
+      mercadoLivreClient: mlClient,
       pedido: pedidoWith({ integracaoFreteOuterRef: 'documents/int_frete/if-1', modalidade: '0' }),
       pedidoId: 'p1',
       formatoDanfe: 'simplificadoPdf',
@@ -74,6 +76,8 @@ describe('runCheckoutPostSave', () => {
       tipo: 'melhorEnvios',
       data: { tipo: 'melhorEnvios' },
     });
+    // The ML client threads through to the provider deps untouched.
+    expect(emitirEtiquetaMock.mock.calls[0]![0].deps.mercadoLivreClient).toBe(mlClient);
   });
 
   it('notifies + returns no-integration when the frete has no transportadora', async () => {
@@ -83,6 +87,7 @@ describe('runCheckoutPostSave', () => {
       db,
       nfeClient,
       freightClient: null,
+      mercadoLivreClient: null,
       pedido: pedidoWith({ integracaoFreteOuterRef: null, modalidade: '0' }),
       pedidoId: 'p1',
       formatoDanfe: 'retrato',
@@ -100,6 +105,7 @@ describe('runCheckoutPostSave', () => {
       db,
       nfeClient: null,
       freightClient: null,
+      mercadoLivreClient: null,
       pedido: pedidoWith(null),
       pedidoId: 'p1',
       formatoDanfe: 'retrato',

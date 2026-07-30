@@ -3,6 +3,7 @@ import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { IntFrete, IntegracaoFrete, Pedido } from '@delfrance/schemas';
+import type { MercadoLivreClient } from '../mercado-livre/client';
 import { dereferenceOuterRef } from '../data/dereferenceOuterRef';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
 import {
@@ -50,6 +51,7 @@ export async function runCheckoutPostSave(args: {
   db: Firestore;
   nfeClient: NFeHttpClient | null;
   freightClient: FreightHttpClient | null;
+  mercadoLivreClient: MercadoLivreClient | null;
   pedido: Pedido;
   pedidoId: string;
   formatoDanfe: CheckoutDanfeFormat;
@@ -57,8 +59,17 @@ export async function runCheckoutPostSave(args: {
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
 }): Promise<PostSaveResult> {
-  const { db, nfeClient, freightClient, pedido, pedidoId, formatoDanfe, formatoEtiqueta, ui } =
-    args;
+  const {
+    db,
+    nfeClient,
+    freightClient,
+    mercadoLivreClient,
+    pedido,
+    pedidoId,
+    formatoDanfe,
+    formatoEtiqueta,
+    ui,
+  } = args;
 
   // 1. NF-e — ensure aprovada, then print the DANFE.
   const nfe: EnsureNfeResult = nfeClient
@@ -108,7 +119,12 @@ export async function runCheckoutPostSave(args: {
         frete,
         intFrete,
         formato: formatoEtiqueta,
-        deps: { freightClient, nfeClient, printJob: args.printJobFn ?? printJob },
+        deps: {
+          freightClient,
+          nfeClient,
+          mercadoLivreClient,
+          printJob: args.printJobFn ?? printJob,
+        },
         ui,
       });
     }
