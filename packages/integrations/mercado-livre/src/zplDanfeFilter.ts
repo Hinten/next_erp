@@ -49,6 +49,14 @@ export function removeZplDanfeBlocks(zpl: string): string | null {
  * - If removal would empty a file's content, skips removal for that file
  * - If all files would be emptied, returns null (preserves original)
  */
+/** Raw-byte scan for the ASCII `^XA` block-start marker (0x5e 0x58 0x41). */
+function containsZplStart(bytes: Uint8Array): boolean {
+  for (let i = 0; i + 2 < bytes.length; i++) {
+    if (bytes[i] === 0x5e && bytes[i + 1] === 0x58 && bytes[i + 2] === 0x41) return true;
+  }
+  return false;
+}
+
 export function removeZplDanfeFromZip(zipBytes: Uint8Array): Uint8Array | null {
   // Unzip the input; on corrupt ZIP, fail-safe to return null (preserve original)
   let unzipped: Record<string, Uint8Array>;
@@ -66,17 +74,20 @@ export function removeZplDanfeFromZip(zipBytes: Uint8Array): Uint8Array | null {
   const processedFiles: Record<string, Uint8Array> = {};
 
   for (const [filename, fileBytes] of Object.entries(unzipped)) {
+    // Only entries that look like ZPL are rewritten; PDFs (folha de
+    // controle/PLP) and any other entry are copied byte-intact (legacy parity).
+    // latin1 is 1:1 byte↔char, so this raw scan is exactly
+    // `strFromU8(fileBytes, true).includes('^XA')` without decoding large
+    // binary entries into strings.
+    if (!containsZplStart(fileBytes)) {
+      processedFiles[filename] = fileBytes;
+      continue;
+    }
+
     // latin1 (the `true` flag) is byte-exact on round-trip; a UTF-8 decode of
     // arbitrary bytes is lossy (U+FFFD) and would corrupt >0x7F bytes on
     // re-encode. The 'DANFE'/'^XA' matches are ASCII, safe under either.
     const fileContent = strFromU8(fileBytes, true);
-
-    // Only entries that look like ZPL are rewritten; PDFs (folha de
-    // controle/PLP) and any other entry are copied byte-intact (legacy parity).
-    if (!fileContent.includes('^XA')) {
-      processedFiles[filename] = fileBytes;
-      continue;
-    }
 
     const processed = removeZplDanfeBlocks(fileContent);
     if (processed !== null) {
