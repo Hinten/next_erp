@@ -7,7 +7,7 @@ These functions are a **deploy-artifact sub-build** of `@delfrance/mercado-livre
 analysis. `firebase.mercado-livre.deploy.json` points `source` at the generated
 `.deploy/mercado-livre-functions`.
 
-> Deploy is **manual and coordinated** (CLAUDE.md critical rule #1) — never let a
+> Deploy is **manual and coordinated** — agents never run `firebase deploy` (root `CLAUDE.md`, Critical rules) — never let a
 > stray `firebase deploy` push rules. This config has no `firestore`/`storage`
 > block, so it can't.
 

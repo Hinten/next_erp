@@ -331,7 +331,7 @@ including the nested Cloud Functions codebase (`functions/`) that hosts the
 trigger + the `reprocessStaleOutbound` `onSchedule` backstop (both in `functions/`,
 delegating to `lib/whatsapp/outbound.ts`) — see "Outbound sender + trigger" above.
 Deploy of the new functions + the `mensagem(estadoEnvio, timestamp)` index is
-manual/coordinated (root rule #1). The **template message** route
+manual/coordinated — see root `CLAUDE.md`, Critical rules. The **template message** route
 (`/api/whatsapp/template-message`, #PR-C4) is now **live** — see the "Template
 message (mensagem padrão)" section.
 
@@ -349,4 +349,4 @@ function/queue and MUST match its deploy region.
 
 Set `NEXT_PUBLIC_WHATSAPP_URL=http://localhost:3008` so apps/web targets this
 backend. Deploy of the App Hosting backend is **manual and coordinated**
-(CLAUDE.md critical rule #1).
+— see root `CLAUDE.md`, Critical rules.
