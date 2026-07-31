@@ -113,13 +113,12 @@ afterEach(() => {
   h.isRevertible.mockReturnValue({ ok: true, reason: null });
 });
 
-// The two pagination tests seed a FULL live page (`PAGE_SIZE` = 50) so that
+// The two pagination tests seed a full live page (`PAGE_SIZE` = 50) so that
 // "Carregar mais" appears, then re-render it twice more — ~150 Mantine rows
-// through jsdom. That lands near 1s locally but blew past Vitest's 5s default on
-// CI, where `turbo run test` drives 17 workspaces (each with its own worker
-// pool) across a 4-vCPU runner, reddening every PR from #752 on. The budget is
-// raised per-suite rather than globally so a genuine hang elsewhere still fails
-// fast.
+// through jsdom. That lands near 1s locally but can exceed Vitest's 5s default
+// under CI load (many workspaces running tests concurrently on limited CPU).
+// The budget is raised per-suite rather than globally so genuine hangs elsewhere
+// still fail fast.
 describe('ModificacoesManager', { timeout: 30_000 }, () => {
   it('shows the empty state when there is no history yet', async () => {
     renderManager([]);
