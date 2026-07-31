@@ -19,7 +19,8 @@
  *   serie 1 = orchestrator (apps/nfe orchestrator.homologacao), serie 2 =
  *   library emission (emission.homologacao), serie 3 = SVC contingency
  *   (svc.homologacao, `SEFAZ_HOM_SVC_SERIE`), serie 4 = Reforma Tributária
- *   (rtc.homologacao, `SEFAZ_HOM_RTC_SERIE`), serie 9 = inutilização
+ *   (rtc.homologacao, `SEFAZ_HOM_RTC_SERIE`), serie 5 = EPEC contingency
+ *   (epec.homologacao, `SEFAZ_HOM_EPEC_SERIE`), serie 9 = inutilização
  *   (`SEFAZ_HOM_INUT_SERIE`). See the companion comment in each test file.
  * - `nNF` seeding has to dodge collisions across CI runs of the *same*
  *   test, in the same serie. SEFAZ exposes **no** "query last nNF used"
@@ -92,6 +93,15 @@ export const SEFAZ_HOM_SVC_SERIE = 3;
  * library emission lane (serie 2) and the orchestrator lane (serie 1).
  */
 export const SEFAZ_HOM_RTC_SERIE = 4;
+
+/**
+ * Série reserved exclusively for the EPEC contingency live test
+ * (`epec.homologacao.test.ts`, apps/nfe). Its first emission rides tpEmis=4
+ * (AN registration, then home-SEFAZ transmission on the same chave) — a
+ * dedicated série keeps the lane 539-disjoint from every other emission
+ * lane and unambiguous in failure triage.
+ */
+export const SEFAZ_HOM_EPEC_SERIE = 5;
 
 /** High base for the homologação test nNF zone. See file header. */
 export const SEFAZ_HOM_TEST_NNF_BASE = 500_000_000;
