@@ -4,6 +4,7 @@ import {
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
+  INTEGRACAO_FRETE,
   estadoFreteSchema,
   freightCapsFor,
   freteDoPedidoSchema,
@@ -204,6 +205,18 @@ describe('FREIGHT_TIPO_CAPS', () => {
       expect(caps.canPrint).toBe(false);
       expect(caps.canTrack).toBe(false);
     }
+  });
+
+  it('Mercado Livre is the only fetch-label tipo (marketplace-client print)', () => {
+    // Full key set: `canFetchLabel` is true ONLY for mercadoLivre — every other
+    // tipo (ME's emit flow included) fetches nothing via a marketplace client.
+    const fetchable = integracoesFreteSchema.options.filter(
+      (t) => FREIGHT_TIPO_CAPS[t].canFetchLabel,
+    );
+    expect(fetchable).toEqual([INTEGRACAO_FRETE.mercadoLivre]);
+    // The unknown-tipo fallback stays all-false too.
+    expect(freightCapsFor(null).canFetchLabel).toBe(false);
+    expect(freightCapsFor('bogus-legacy-tipo').canFetchLabel).toBe(false);
   });
 
   it('the marketplace tipos are the read-only-tab ones', () => {

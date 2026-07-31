@@ -31,6 +31,7 @@ function makeInput(over: {
     deps: {
       freightClient: null,
       nfeClient: null,
+      mercadoLivreClient: null,
       printJob: over.printJob ?? (vi.fn(async () => 'printed') as never),
     },
     ui: {
