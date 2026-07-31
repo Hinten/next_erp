@@ -158,6 +158,13 @@ export interface MercadoLivreSyncChartsResult {
   updated: boolean;
 }
 
+/** A binary shipment label fetched from the mercado-livre backend (`GET etiqueta`). */
+export interface MercadoLivreEtiquetaArtifact {
+  blob: Blob;
+  filename: string;
+  contentType: string;
+}
+
 export interface MercadoLivreClient {
   /** Mint the ML consent URL for an account (PERM.integracao.write). */
   oauthStart(integracaoId: string): Promise<{ authorizeUrl: string }>;
@@ -248,6 +255,35 @@ export interface MercadoLivreClient {
     tabMediId: string;
     tabelas: unknown[];
   }): Promise<MercadoLivreSyncChartsResult>;
+  /**
+   * Fetch the pedido's marketplace-generated shipment label (PERM.frete.read).
+   * Binary success body; error bodies are JSON and surface as a
+   * `MercadoLivreClientHttpError` carrying the route's `code` (e.g. a 409
+   * `ML_INVOICE_PENDING` while the shipment hasn't received the NF-e yet).
+   */
+  etiqueta(pedidoId: string, formato: 'pdf' | 'zpl2'): Promise<MercadoLivreEtiquetaArtifact>;
+  /**
+   * Manually (re)send the pedido's approved NF-e to its ML shipment
+   * (PERM.pedido.write). 202 `{ enqueued: true }` means ENQUEUED, not uploaded —
+   * the actual ML call runs in an async task. An ineligible doc comes back as a
+   * 409 `MercadoLivreClientHttpError` with `code: 'NFE_NAO_ELEGIVEL'`.
+   */
+  enviarNfe(input: { pedidoId: string; nfeId: string }): Promise<{ enqueued: boolean }>;
+}
+
+/** Pull the filename out of a `Content-Disposition` header, if present. */
+function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
+  if (!m?.[1]) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch (err) {
+    // A stray '%' in the server-sent name must not fail a byte-successful
+    // fetch — keep the undecoded filename.
+    if (err instanceof URIError) return m[1];
+    throw err;
+  }
 }
 
 export function createMercadoLivreClient(config: {
@@ -301,6 +337,54 @@ export function createMercadoLivreClient(config: {
     return parsed as T;
   }
 
+  /** Like `call`, but for a binary (non-JSON) success body. Errors are JSON. */
+  async function fetchArtifact(
+    path: string,
+    fallback: { filename: string; contentType: string },
+  ): Promise<MercadoLivreEtiquetaArtifact> {
+    const token = await config.getAuthToken();
+    let res: Response;
+    try {
+      res = await doFetch(`${baseUrl}${path}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (err) {
+      throw new MercadoLivreClientNetworkError(
+        err instanceof Error ? err.message : 'fetch falhou',
+        err,
+      );
+    }
+    if (!res.ok) {
+      let parsed: unknown = null;
+      const text = await res.text();
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch (err) {
+          if (err instanceof SyntaxError) parsed = { error: text };
+          else throw err;
+        }
+      }
+      const errBody = parsed as { error?: string; code?: string } | null;
+      throw new MercadoLivreClientHttpError(
+        errBody?.error ?? `HTTP ${res.status}`,
+        res.status,
+        errBody?.code ?? null,
+      );
+    }
+    const blob = await res.blob();
+    return {
+      blob,
+      // The route names the file via Content-Disposition, but the proxy does
+      // not CORS-expose the header to the browser — tolerate its absence with
+      // a client-side fallback (nfe `fetchArtifact` precedent).
+      filename:
+        filenameFromDisposition(res.headers.get('content-disposition')) ?? fallback.filename,
+      contentType: res.headers.get('content-type') ?? fallback.contentType,
+    };
+  }
+
   return {
     oauthStart: (integracaoId) =>
       call<{ authorizeUrl: string }>(
@@ -340,6 +424,17 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
     sizeChartSync: (input) =>
       call<MercadoLivreSyncChartsResult>('/api/marketplace/mercado-livre/size-charts/sync', input),
+    etiqueta: (pedidoId, formato) =>
+      fetchArtifact(
+        `/api/marketplace/mercado-livre/etiqueta?pedidoId=${encodeURIComponent(pedidoId)}&formato=${formato}`,
+        // ML's PDF endpoint may still hand back a ZIP batch — the route
+        // byte-sniffs the real Content-Type; these are only header fallbacks.
+        formato === 'pdf'
+          ? { filename: `etiqueta-${pedidoId}.pdf`, contentType: 'application/pdf' }
+          : { filename: `etiqueta-${pedidoId}.zip`, contentType: 'application/zip' },
+      ),
+    enviarNfe: (input) =>
+      call<{ enqueued: boolean }>('/api/marketplace/mercado-livre/enviar-nfe', input),
   };
 }
 

@@ -38,6 +38,7 @@ function makeInput(over: {
     deps: {
       freightClient: (over.freightClient ?? null) as never,
       nfeClient: null,
+      mercadoLivreClient: null,
       printJob: vi.fn(),
     },
     ui: over.ui ?? makeUi(),
