@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/firebase",
-  "//": "Deploy-ISOLATED config used only by the storage emulator suite (ci-storage.yml: `firebase emulators:exec --config firebase.functions.json`). Kept separate from the root firebase.json so a stray `firebase deploy` can never push storage.rules over the Flutter-owned live rules, nor deploy the functions before that phase is coordinated (CLAUDE.md critical rule #1).",
+  "//": "Deploy-ISOLATED config used only by the storage emulator suite (ci-storage.yml: `firebase emulators:exec --config firebase.functions.json`). Kept separate from the root firebase.json so a stray `firebase deploy` can never push storage.rules over the Flutter-owned live rules, nor deploy the functions before that phase is coordinated (root `CLAUDE.md`, Critical rules).",
   "functions": [
     {
       "source": "apps/functions",

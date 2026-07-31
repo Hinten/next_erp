@@ -1782,7 +1782,10 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
     timestamp: millisToMicros(Date.now()),
     freteInicial: {
       externalId: 'ML-0001',
-      externalOptionId: 'ml-opt-1',
+      // Real ML importers (legacy and new) NEVER write externalOptionId (nor
+      // printLabelId) — the fetch-label UI must light up off
+      // externalOptionIntegracao alone, and this fixture pins that shape.
+      externalOptionId: null,
       externalOptionIntegracao: 'mercadoLivre',
       externalOptionData: { shipment_id: 'SHP-123' },
       estado: 'postado',

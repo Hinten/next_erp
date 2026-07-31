@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   MercadoLivreHttpError,
+  MercadoLivreLabelUnavailableError,
   MercadoLivreNetworkError,
   MercadoLivreReauthRequiredError,
   MercadoLivreValidationError,
@@ -515,6 +516,106 @@ describe('createMercadoLivreApi — shipment invoice_data (NF-e upload, Step 12,
     expect(String(url)).toContain('/shipments/123/invoice_data');
     expect(String(url)).toContain('siteId=MLB');
     expect(init!.method).toBe('GET');
+  });
+});
+
+describe('createMercadoLivreApi — shipment labels (etiqueta)', () => {
+  const LABEL_BYTES = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff, 0x00, 0x7f]);
+
+  function labelResponse(bytes: Uint8Array, contentType = 'application/zip'): Response {
+    // Uint8Array → ArrayBuffer slice so the Response owns plain bytes.
+    const body = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    return new Response(body, { status: 200, headers: { 'content-type': contentType } });
+  }
+
+  it('getShipmentLabels GETs /shipment_labels with shipment_ids + response_type=pdf, the Bearer header, and returns the bytes', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      labelResponse(LABEL_BYTES),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock, { userAgent: 'test-UA' }));
+    const result = await api.getShipmentLabels('555', 'pdf');
+
+    expect(Array.from(result.bytes)).toEqual(Array.from(LABEL_BYTES));
+    expect(result.contentType).toBe('application/zip');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/shipment_labels');
+    expect(String(url)).toContain('shipment_ids=555');
+    expect(String(url)).toContain('response_type=pdf');
+    // The legacy Dart client sent the token as an `access_token` query param on
+    // exactly this endpoint (deprecated by ML) — pin that it never comes back.
+    expect(String(url)).not.toContain('access_token');
+    expect(init!.method).toBe('GET');
+    const headers = init!.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer live-token');
+    expect(headers['User-Agent']).toBe('test-UA');
+  });
+
+  it('getShipmentLabels requests response_type=zpl2 for the zpl2 format', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      labelResponse(LABEL_BYTES),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const result = await api.getShipmentLabels('555', 'zpl2');
+    expect(Array.from(result.bytes)).toEqual(Array.from(LABEL_BYTES));
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('shipment_ids=555');
+    expect(url).toContain('response_type=zpl2');
+    expect(url).not.toContain('access_token');
+  });
+
+  it('getShipmentLabels maps a 400 failed_shipments body to MercadoLivreLabelUnavailableError with the FULL ML message', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(
+        {
+          failed_shipments: [
+            { shipment_id: 555, message: 'shipment 555 has substatus invoice_pending' },
+          ],
+        },
+        400,
+      ),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    // The caller substring-matches `invoice_pending` on mlMessage (legacy parity).
+    await expect(api.getShipmentLabels('555', 'pdf')).rejects.toMatchObject({
+      constructor: MercadoLivreLabelUnavailableError,
+      mlMessage: 'shipment 555 has substatus invoice_pending',
+    });
+  });
+
+  it('getShipmentLabels falls through to an HTTP error on a 400 that is NOT the failed_shipments shape', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'invalid shipment id', error: 'bad_request' }, 400),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentLabels('555', 'pdf')).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 400,
+      body: { message: 'invalid shipment id', error: 'bad_request' },
+    });
+  });
+
+  it('getShipmentLabels maps a 401 to a re-auth-required error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'invalid token' }, 401),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentLabels('555', 'pdf')).rejects.toBeInstanceOf(
+      MercadoLivreReauthRequiredError,
+    );
+  });
+
+  it('getShipmentLabels treats an EMPTY 2xx body as an unavailable label (legacy guard)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      labelResponse(new Uint8Array(0)),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentLabels('555', 'zpl2')).rejects.toMatchObject({
+      constructor: MercadoLivreLabelUnavailableError,
+      mlMessage: '',
+    });
   });
 });
 

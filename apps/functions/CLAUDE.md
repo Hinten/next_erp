@@ -193,7 +193,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   movement-owned; no `ultimaModificacao` bump on an existing doc — but the
   first-touch create still initializes `ultimaModificacao: now` like every other
   create path). ⚠️ On the app's critical path: the staging estoque tab + the estoque
-  Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
+  Playwright e2e only work once this is DEPLOYED — see the Deploying section in `apps/functions/CLAUDE.md`.
 - **`reconciliarPagamentoPedido`** (`onCall`) — server-owned pedido `estado`
   reconcile for the web client (#308). The client SDK can't read a query inside
   `runTransaction`, so summing a pedido's pagamentos client-side before the tx
@@ -203,8 +203,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   transaction. Same auth model as `aplicarEstoque`: `PERM.pedido.write` (or
   `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
   Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
-  estado auto-transition only works once this is DEPLOYED (deploy is manual —
-  root rule #1).
+  estado auto-transition only works once this is DEPLOYED — see the Deploying section in `apps/functions/CLAUDE.md`.
 - ⚠️ Every trigger and callable above targets the NAMED `default` database
   (gotcha #8). `@delfrance/auth` is a build-time dep (esbuild-bundled, like
   data/schemas) for `hasPerm`/`PERM`.
@@ -228,7 +227,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
 - **Local**: `pnpm --filter @delfrance/functions test` (unit; `guards.ts` is pure
   and exhaustively tested) and `typecheck`.
 
-## Deploying (manual & coordinated — root rule #1)
+## Deploying (manual & coordinated)
 
 One command, from the checkout that carries `firebase.functions.deploy.json`, ASK USER FOR PERMISSION BEFORE RUNNING IT:
 

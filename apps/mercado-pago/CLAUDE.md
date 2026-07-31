@@ -86,5 +86,4 @@ Set `NEXT_PUBLIC_MERCADO_PAGO_URL=http://localhost:3007` so apps/web targets
 this backend. The OAuth `redirect_uri` registered in the Mercado Pago dashboard
 must point at this backend: `https://<this-app>/api/oauth/mercado-pago/callback`.
 
-Deploy of the App Hosting backend is **manual and coordinated** (CLAUDE.md
-critical rule #1).
+Deploy of the App Hosting backend is **manual and coordinated** — see root `CLAUDE.md`, Critical rules.

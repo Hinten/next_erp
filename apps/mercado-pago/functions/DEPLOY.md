@@ -8,7 +8,7 @@ analysis. `firebase.mercado-pago.deploy.json` points `source` at the generated
 `.deploy/mercado-pago-functions`. Mirrors `apps/mercado-livre/functions`,
 adapted marketplace → payments.
 
-> Deploy is **manual and coordinated** (CLAUDE.md critical rule #1) — never let a
+> Deploy is **manual and coordinated** — agents never run `firebase deploy` (root `CLAUDE.md`, Critical rules) — never let a
 > stray `firebase deploy` push rules. This config has no `firestore`/`storage`
 > block, so it can't.
 

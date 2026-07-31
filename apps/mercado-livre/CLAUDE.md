@@ -57,4 +57,4 @@ OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
 encrypted `credenciais` store is a tracked post-migration follow-up).
 
 Deploy of the App Hosting backend + the functions codebase is **manual and
-coordinated** (CLAUDE.md critical rule #1). Functions deploy: `functions/DEPLOY.md`.
+coordinated** — see root `CLAUDE.md`, Critical rules. Functions deploy: `functions/DEPLOY.md`.
