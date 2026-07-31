@@ -148,6 +148,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   through the handle's `merge()`, never `setDoc(ref, patch, { merge: true })` on
   a converted ref — the converter full-parses the patch and the merge mask then
   overwrites stored sibling fields.
+- **Repeated read of a slow-changing doc/query** on a server surface →
+  `@delfrance/data/admin/cache` (`createReadCache` / `createCachedDocReader`)
+  via the `firestore-read-cache` skill; TTL is mandatory and *is* the staleness
+  bound. **Never** cache a `tx.get()`, an OAuth token, or a value you write back.
 - **New CRUD screen** (`TableView` + `ObjectView`) → the `schema-driven-crud`
   skill. **New page or form in `apps/web`** → `apps/web/CLAUDE.md`.
 - **New channel webhook or OAuth callback** → its **own app**,
