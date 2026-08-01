@@ -5,7 +5,7 @@
  *
  *  - a merge-write may set `xml_assinado: null` ONLY while persisting a
  *    non-empty `xml_nfe_proc` in the very same payload (the nfeProc embeds
- *    the signed NFe — `procPersistExtras` is the only legal producer);
+ *    the signed NFe — `swapAnchorForProc` is the only legal producer);
  *  - no write may carry a FieldValue-style sentinel for an XML field —
  *    deletion would make the field absent, which the nfev4 schema forbids
  *    (`.nullable()` without `.optional()`).

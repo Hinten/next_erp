@@ -23,8 +23,6 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
-  buildNFeProcSafe,
-  classifyCStat,
   consultarLote,
   MAX_RECONCILE_ATTEMPTS,
   type SefazCall,
@@ -37,10 +35,11 @@ import { sefazCallFor } from './sefaz-call';
 import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
+  buildProcForAuthorizedOutcome,
   enviNfeCollection,
   outcomeFromConsReci,
   persistPatch,
-  procPersistExtras,
+  swapAnchorForProc,
 } from './audit';
 
 /** Summary of one lote reconcile — the caller re-enqueues iff `stillPending > 0`. */
@@ -143,32 +142,24 @@ export async function reconcileByRecibo(params: {
 
     // Build <nfeProc> when SEFAZ authorized this chave and we still hold the
     // matching signed XML — same atomic anchor-clear as the emit path (#128).
-    // The digest-safe stitch (#396) refuses to pair the protocol with bytes
-    // it did not authorize (e.g. a pre-fix retry overwrote the anchor with a
-    // regenerated XML); the doc then stays aprovada WITHOUT proc for a
-    // DistDFe/manual fetch.
+    // The digest-safe stitch (#396, via `buildProcForAuthorizedOutcome`)
+    // refuses to pair the protocol with bytes it did not authorize (e.g. a
+    // pre-fix retry overwrote the anchor with a regenerated XML); the doc
+    // then stays aprovada WITHOUT proc for a DistDFe/manual fetch.
     const ourProt = ret.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
-    const proc =
-      !chaveSwapped &&
-      classifyCStat(patch.cStat) === 'autorizada' &&
-      ourProt != null &&
-      data.xml_assinado != null
-        ? buildNFeProcSafe(data.xml_assinado, ourProt)
-        : null;
-    const nfeProcXml = proc?.xml ?? null;
-    if (proc?.digest === 'mismatch') {
-      console.warn(
-        `[nfe/reconcile] chave ${chave}: local DigestValue differs from the lote's ` +
-          `protNFe digVal — skipping the <nfeProc> build; the doc stays aprovada ` +
-          `WITHOUT xml_nfe_proc (xml_assinado kept; fetch the authorized XML via ` +
-          `DistDFe/manual import)`,
-      );
-    }
+    const nfeProcXml = buildProcForAuthorizedOutcome({
+      cStat: patch.cStat,
+      chaveMatches: !chaveSwapped,
+      signedXml: data.xml_assinado,
+      prot: ourProt,
+      logTag: 'nfe/reconcile',
+      chave,
+    });
 
     await persistPatch(
       doc.ref,
       patch,
-      nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined,
+      nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
     );
 
     if (patch.estado === ESTADO_NFE.aguardandoResposta) stillPending++;
