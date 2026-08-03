@@ -52,22 +52,23 @@ const configCollection = defineAdminCollection({
   schema: configSchema,
 });
 
-function makeClock(start = 1_700_000_000_000) {
-  let current = start;
-  return {
-    now: (): number => current,
-    advance: (ms: number): void => {
-      current += ms;
-    },
-  };
+const START = 1_700_000_000_000;
+let currentTime = START;
+
+/**
+ * The engine reads `Date.now()` directly and exposes no injection point, so the
+ * clock is stubbed globally — the workaround cachified's own suite uses.
+ */
+function advance(ms: number): void {
+  currentTime += ms;
 }
 
 let db: FakeDb;
-let clock: ReturnType<typeof makeClock>;
 
 beforeEach(() => {
   db = new FakeDb();
-  clock = makeClock();
+  currentTime = START;
+  vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
   __resetAllReadCaches();
   vi.stubEnv(READ_CACHE_DISABLED_ENV, '');
 });
@@ -85,14 +86,15 @@ describe('createCachedDocReader', () => {
       name: 'test:integracao',
       ttlMs: READ_CACHE_TTL.config,
       maxEntries: 8,
-      now: clock.now,
     });
 
     expect(await reader.get(asDb(db), {}, 'i1')).toEqual({ tipo: 'mercadoLivre', user_id: 7 });
     expect(await reader.get(asDb(db), {}, 'i1')).toEqual({ tipo: 'mercadoLivre', user_id: 7 });
     expect(db.reads).toEqual(['integracao/i1']);
 
-    clock.advance(READ_CACHE_TTL.config);
+    // +1: the engine's TTL boundary is inclusive, so the entry is still valid at
+    // exactly `ttlMs` and expires one millisecond later.
+    advance(READ_CACHE_TTL.config + 1);
     await reader.get(asDb(db), {}, 'i1');
     expect(db.reads).toEqual(['integracao/i1', 'integracao/i1']);
   });
@@ -103,7 +105,6 @@ describe('createCachedDocReader', () => {
       name: 'test:parse',
       ttlMs: 60_000,
       maxEntries: 8,
-      now: clock.now,
     });
 
     expect(await reader.get(asDb(db), {}, 'i1')).toEqual({ tipo: 'whatsapp', user_id: null });
@@ -116,7 +117,6 @@ describe('createCachedDocReader', () => {
       name: 'test:softread',
       ttlMs: 60_000,
       maxEntries: 8,
-      now: clock.now,
     });
 
     await reader.get(asDb(db), {}, 'i1');
@@ -130,7 +130,6 @@ describe('createCachedDocReader', () => {
       name: 'test:nfeconfig',
       ttlMs: 60_000,
       maxEntries: 8,
-      now: clock.now,
     });
 
     expect(await reader.get(asDb(db), { filialId: 'f1' }, 'default')).toEqual({
@@ -153,7 +152,6 @@ describe('createCachedDocReader', () => {
       ttlMs: READ_CACHE_TTL.config,
       maxEntries: 8,
       negativeTtlMs: READ_CACHE_TTL.negative,
-      now: clock.now,
     });
 
     expect(await reader.get(asDb(db), {}, 'i1')).toBeNull();
@@ -161,7 +159,7 @@ describe('createCachedDocReader', () => {
     expect(db.reads).toHaveLength(1);
 
     db.seed('integracao/i1', { tipo: 'mercadoLivre', user_id: 7 });
-    clock.advance(READ_CACHE_TTL.negative);
+    advance(READ_CACHE_TTL.negative + 1); // inclusive boundary — see above
     expect(await reader.get(asDb(db), {}, 'i1')).toMatchObject({ user_id: 7 });
     expect(db.reads).toHaveLength(2);
   });
@@ -174,7 +172,6 @@ describe('createCachedDocReader', () => {
       maxEntries: 8,
       negativeTtlMs: 5_000,
       isFresh,
-      now: clock.now,
     });
 
     expect(await reader.get(asDb(db), {}, 'i1')).toBeNull();
@@ -190,7 +187,6 @@ describe('createCachedDocReader', () => {
       ttlMs: READ_CACHE_TTL.config,
       maxEntries: 8,
       isFresh: (conta) => conta.user_id != null,
-      now: clock.now,
     });
 
     await reader.get(asDb(db), {}, 'i1');
@@ -209,7 +205,6 @@ describe('createCachedDocReader', () => {
       name: 'test:invalidate',
       ttlMs: READ_CACHE_TTL.config,
       maxEntries: 8,
-      now: clock.now,
     });
 
     await reader.get(asDb(db), {}, 'i1');
@@ -227,7 +222,6 @@ describe('createCachedDocReader', () => {
       name: 'test:single-flight',
       ttlMs: 60_000,
       maxEntries: 8,
-      now: clock.now,
     });
 
     const all = await Promise.all(Array.from({ length: 5 }, () => reader.get(asDb(db), {}, 'i1')));
@@ -241,7 +235,6 @@ describe('createCachedDocReader', () => {
       name: 'test:clear',
       ttlMs: 60_000,
       maxEntries: 8,
-      now: clock.now,
     });
 
     await reader.get(asDb(db), {}, 'i1');
@@ -261,7 +254,6 @@ describe('createCachedDocReader', () => {
       name: 'test:killed',
       ttlMs: 60_000,
       maxEntries: 8,
-      now: clock.now,
     });
 
     await reader.get(asDb(db), {}, 'i1');

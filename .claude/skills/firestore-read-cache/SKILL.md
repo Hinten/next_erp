@@ -194,11 +194,14 @@ predicate over the already-cached value.
 
 ## 6. Testing
 
-Never sleep. Inject the clock:
+Never sleep. Stub the clock globally — the engine reads `Date.now()` directly and
+takes no injected clock:
 
 ```ts
-let now = 1_700_000_000_000;
-const cache = createReadCache<string, string>({ /* … */ now: () => now });
+let currentTime = 1_700_000_000_000;
+beforeEach(() => {
+  vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
+});
 ```
 
 Prove the **staleness contract**, not just the hit — a test that only asserts "the
@@ -208,12 +211,18 @@ second call did not read" passes even if the TTL never expires:
 await reader.get(db, {}, 'i1');
 await reader.get(db, {}, 'i1');
 expect(db.reads).toHaveLength(1); // the hit
-now += READ_CACHE_TTL.config;
+currentTime += READ_CACHE_TTL.config + 1;
 await reader.get(db, {}, 'i1');
 expect(db.reads).toHaveLength(2); // the re-read — this is the assertion that matters
 ```
 
-The TTL boundary is **exclusive**: at exactly `expiresAt` the entry is expired.
+The TTL boundary is **inclusive**: an entry is still valid at exactly `ttlMs` and
+expires one millisecond later — hence the `+ 1` above.
+
+⚠️ `invalidate()` does **not** cancel a load that is already in flight; a `get()`
+issued afterwards joins it and can return a value read before your write. Sequence
+your write → invalidate → read so no concurrent read is outstanding, or accept the
+window.
 `packages/data/src/admin/cache/*.test.ts` are the worked examples, including the
 `FakeDb` shape for a `createCachedDocReader` test.
 

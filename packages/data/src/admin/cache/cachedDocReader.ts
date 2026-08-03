@@ -43,8 +43,6 @@ export interface CachedDocReaderOptions<T extends z.ZodTypeAny> {
    * alone and is never passed here.
    */
   isFresh?: (value: z.infer<T>) => boolean;
-  /** Injectable clock. Tests set this instead of sleeping. */
-  now?: () => number;
   log?: ReadCacheLogger;
   sampleEvery?: number;
 }
@@ -90,7 +88,6 @@ export function createCachedDocReader<T extends z.ZodTypeAny>(
     ttlMs: opts.ttlMs,
     maxEntries: opts.maxEntries,
     negativeTtlMs: opts.negativeTtlMs,
-    now: opts.now,
     log: opts.log,
     sampleEvery: opts.sampleEvery,
     isFresh:

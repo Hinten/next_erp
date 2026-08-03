@@ -13,6 +13,10 @@
  * window is unacceptable for one specific field, use `isFresh` (below) rather
  * than shrinking the TTL for everyone.
  *
+ * The engine is `@epic-web/cachified` over an `lru-cache` store; this module owns
+ * the policy around it (mandatory TTL, negative caching, the kill switch, the
+ * counters and the test registry). See ADR 0011 for why.
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * NEVER route these through a ReadCache
  * ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +58,15 @@
  * `firestore-read-cache` skill; the rationale and the rejected alternatives
  * (`onSnapshot` mirror, Redis, Firestore bundles) live in ADR 0011.
  */
+
+import {
+  cachified,
+  getPendingValuesCache,
+  type Cache,
+  type CacheEntry,
+  type CreateReporter,
+} from '@epic-web/cachified';
+import { LRUCache } from 'lru-cache';
 
 import { type CacheKey, cacheKeyOf } from './cacheKey';
 
@@ -118,9 +131,13 @@ export interface ReadCacheOptions<V> {
   /**
    * Positive-result lifetime. REQUIRED — there is no global default and no
    * infinite mode. Prefer a {@link READ_CACHE_TTL} tier over a literal.
+   *
+   * Note this is stricter than the engine underneath: cachified's own `ttl` is
+   * optional and defaults to **permanent**, which is exactly the trap that made
+   * `apps/nfe`'s cert cache need a restart to rotate a certificate.
    */
   ttlMs: number;
-  /** Hard upper bound on entries. REQUIRED — evicts least-recently-used first. */
+  /** Hard upper bound on entries; least-recently-used is evicted first. */
   maxEntries: number;
   /**
    * Lifetime for a negative result. Defaults to `min(READ_CACHE_TTL.negative,
@@ -142,22 +159,18 @@ export interface ReadCacheOptions<V> {
    * `(conta) => conta.user_id != null` and refuse a document that predates the
    * connect-time back-fill, on every instance rather than only the one that
    * handled the OAuth callback.
+   *
+   * ⚠️ Deliberately NOT wired to cachified's `checkValue`. That hook also runs
+   * against the return value of the loader and THROWS when it fails
+   * (`check failed for fresh value of …`), so the example above would blow up for
+   * every account that has not finished OAuth yet — the exact case this exists
+   * to serve. It is applied here as a pre-read check against the store instead.
    */
   isFresh?: (value: V) => boolean;
-  /** Injectable clock. Tests set this instead of sleeping. */
-  now?: () => number;
   /** Defaults to a `console.warn` line prefixed `[read-cache]`. */
   log?: ReadCacheLogger;
   /** Emit one stats line every N `get`s. Default 500; `0` disables logging. */
   sampleEvery?: number;
-}
-
-interface Entry<V> {
-  promise: Promise<V>;
-  /** `null` while the load is in flight — an unsettled entry never expires. */
-  expiresAt: number | null;
-  /** Boxed resolved value, so `isFresh` can inspect it synchronously on a hit. */
-  settled: { readonly value: V } | null;
 }
 
 interface RegisteredCache {
@@ -228,59 +241,109 @@ export function createReadCache<K extends CacheKey, V>(opts: ReadCacheOptions<V>
     }
   }
 
-  const { name, ttlMs, maxEntries } = opts;
-  const nowMs = opts.now ?? Date.now;
+  const { name, ttlMs } = opts;
   const isNegative = opts.isNegative ?? ((value: V): boolean => value == null);
   const isFresh = opts.isFresh;
   const log = opts.log ?? defaultLogger;
   const sampleEvery = opts.sampleEvery ?? 500;
 
-  const entries = new Map<string, Entry<V>>();
+  /**
+   * Bounded LRU store. Note it carries NO ttl of its own: cachified expires
+   * against `Date.now()` while lru-cache would expire against `performance.now()`,
+   * and two clocks cannot be faked coherently in a test. Letting cachified own
+   * expiry leaves exactly one. The cost is that an expired entry occupies a slot
+   * until LRU pushes it out, which is irrelevant at these sizes.
+   */
+  let evictions = 0;
+  const store = new LRUCache<string, CacheEntry<V>>({
+    max: opts.maxEntries,
+    // cachified emits no eviction event, so the count comes off the store.
+    // `evict` is capacity pressure only — not `delete`/`set`/`expire`.
+    dispose: (_value, _key, reason) => {
+      if (reason === 'evict') evictions += 1;
+    },
+  });
+  const adapter: Cache<V> = {
+    name,
+    get: (key) => store.get(key),
+    set: (key, entry) => {
+      store.set(key, entry);
+    },
+    delete: (key) => {
+      store.delete(key);
+    },
+  };
+
   let hits = 0;
   let misses = 0;
-  let evictions = 0;
   let failures = 0;
   let gets = 0;
+  let inFlight = 0;
+
+  // cachified exposes no counters, only events — so we tally them here.
+  const reporter: CreateReporter<V> = () => (event) => {
+    switch (event.name) {
+      case 'getCachedValueSuccess':
+        hits += 1;
+        break;
+      case 'getCachedValueEmpty':
+      case 'getCachedValueOutdated':
+      case 'checkCachedValueError':
+        misses += 1;
+        break;
+      case 'getFreshValueError':
+        failures += 1;
+        break;
+      default:
+        break;
+    }
+  };
 
   function stats(): ReadCacheStats {
-    let inFlight = 0;
-    for (const entry of entries.values()) {
-      if (entry.expiresAt == null) inFlight += 1;
-    }
-    return { name, hits, misses, evictions, failures, size: entries.size, inFlight };
+    return {
+      name,
+      hits,
+      misses,
+      evictions,
+      failures,
+      size: store.size,
+      inFlight,
+    };
+  }
+
+  /**
+   * Drop the key from the store AND from cachified's in-flight map.
+   *
+   * ⚠️ **This does NOT reliably cancel a load that is already running**, and the
+   * limitation is structural. cachified registers its pending promise
+   * *asynchronously* — it awaits the store read first — so an `invalidate()`
+   * issued synchronously after a `get()` finds the pending map still empty and
+   * has nothing to cancel. The next `get()` then JOINS that in-flight load and
+   * receives a value read *before* the write that prompted the invalidation.
+   *
+   * Measured, not theorised: see the `in-flight` tests below. It matters for the
+   * write → invalidate → read path (`exchangeAndPersist`), where a concurrent
+   * in-flight read can hand back the pre-write document. Clearing the pending
+   * map still helps once the entry has registered, so it stays.
+   */
+  function drop(encoded: string): void {
+    store.delete(encoded);
+    getPendingValuesCache(adapter).delete(encoded);
   }
 
   function reset(): void {
-    entries.clear();
+    store.clear();
+    getPendingValuesCache(adapter).clear();
     hits = 0;
     misses = 0;
     evictions = 0;
     failures = 0;
     gets = 0;
+    inFlight = 0;
   }
 
   const registered: RegisteredCache = { name, stats, reset };
   registry.add(registered);
-
-  /**
-   * Usable = in flight, or settled and neither expired nor refused by `isFresh`.
-   * The TTL boundary is exclusive: at exactly `expiresAt` the entry is expired.
-   */
-  function isUsable(entry: Entry<V>): boolean {
-    if (entry.expiresAt == null) return true;
-    if (entry.expiresAt <= nowMs()) return false;
-    if (isFresh != null && entry.settled != null && !isFresh(entry.settled.value)) return false;
-    return true;
-  }
-
-  function evictOverflow(): void {
-    while (entries.size > maxEntries) {
-      const oldest = entries.keys().next();
-      if (oldest.done === true) return;
-      entries.delete(oldest.value);
-      evictions += 1;
-    }
-  }
 
   function maybeLog(): void {
     if (sampleEvery <= 0 || gets % sampleEvery !== 0) return;
@@ -303,61 +366,57 @@ export function createReadCache<K extends CacheKey, V>(opts: ReadCacheOptions<V>
       gets += 1;
 
       const encoded = cacheKeyOf(key);
-      const hit = entries.get(encoded);
-      if (hit != null && isUsable(hit)) {
-        hits += 1;
-        // LRU touch: delete + reinsert moves the entry to the tail of the
-        // insertion-ordered Map, so `evictOverflow` drops the least recently
-        // USED key rather than the oldest inserted one.
-        entries.delete(encoded);
-        entries.set(encoded, hit);
-        maybeLog();
-        return hit.promise;
-      }
-      if (hit != null) entries.delete(encoded);
-      misses += 1;
 
-      // Both settle handlers identify "their" entry by the promise they are
-      // attached to — a self-reference in the initializer, legal because the
-      // handlers only run once `promise` is bound.
-      const promise: Promise<V> = load().then(
-        (value) => {
-          // A different promise under this key means `invalidate` / `clear` /
-          // eviction ran while we were in flight. That decision wins.
-          const current = entries.get(encoded);
-          if (current?.promise === promise) {
-            const ttl = isNegative(value) ? negativeTtlMs : ttlMs;
-            if (ttl <= 0) {
-              entries.delete(encoded);
-            } else {
-              current.settled = { value };
-              current.expiresAt = nowMs() + ttl;
+      // `isFresh` runs HERE, not as cachified's `checkValue` — see the option's
+      // doc. A refused entry is dropped so the read below counts as a miss.
+      if (isFresh != null) {
+        const cached = store.get(encoded);
+        if (cached != null && !isFresh(cached.value)) store.delete(encoded);
+      }
+
+      inFlight += 1;
+      const settle = (): void => {
+        inFlight -= 1;
+      };
+      return cachified(
+        {
+          cache: adapter,
+          key: encoded,
+          ttl: ttlMs,
+          async getFreshValue(context) {
+            const value = await load();
+            // A negative result gets its own, shorter budget; `-1` is cachified's
+            // "already expired", which suppresses the write entirely.
+            if (isNegative(value)) {
+              context.metadata.ttl = negativeTtlMs === 0 ? -1 : negativeTtlMs;
             }
-          }
+            return value;
+          },
+        },
+        reporter,
+      ).then(
+        (value) => {
+          settle();
+          maybeLog();
           return value;
         },
         (err: unknown) => {
-          // A rejection is NEVER cached: a transient failure must not poison the
-          // key for the whole TTL. There is no `catch` clause anywhere in this
-          // module, so CLAUDE.md rule 6 holds structurally — this handler
-          // rethrows unconditionally.
-          failures += 1;
-          if (entries.get(encoded)?.promise === promise) entries.delete(encoded);
+          // No `catch` clause anywhere in this module, so CLAUDE.md rule 6 holds
+          // structurally — this handler rethrows unconditionally.
+          settle();
+          maybeLog();
           throw err;
         },
       );
-      entries.set(encoded, { promise, expiresAt: null, settled: null });
-      evictOverflow();
-      maybeLog();
-      return promise;
     },
 
     invalidate(key) {
-      entries.delete(cacheKeyOf(key));
+      drop(cacheKeyOf(key));
     },
 
     clear() {
-      entries.clear();
+      store.clear();
+      getPendingValuesCache(adapter).clear();
     },
 
     stats,

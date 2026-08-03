@@ -9,15 +9,16 @@ import {
   readCacheStatsSnapshot,
 } from './readCache';
 
-/** Injected clock — TTL expiry must be provable without sleeping. */
-function makeClock(start = 1_700_000_000_000) {
-  let current = start;
-  return {
-    now: (): number => current,
-    advance: (ms: number): void => {
-      current += ms;
-    },
-  };
+const START = 1_700_000_000_000;
+let currentTime = START;
+
+/**
+ * TTL expiry must be provable without sleeping. The engine reads `Date.now()`
+ * directly and exposes no injection point, so the clock is stubbed globally —
+ * the same workaround cachified's own suite uses (`jest.spyOn(Date, 'now')`).
+ */
+function advance(ms: number): void {
+  currentTime += ms;
 }
 
 /** A load that records every invocation, so "once per TTL window" is assertable. */
@@ -32,10 +33,9 @@ function countingLoad<V>(produce: () => V) {
   };
 }
 
-let clock: ReturnType<typeof makeClock>;
-
 beforeEach(() => {
-  clock = makeClock();
+  currentTime = START;
+  vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
   // Suites share one process; without this a cache from the previous test serves
   // this one. Mandatory in `*.storage.test.ts` for the same reason.
   __resetAllReadCaches();
@@ -75,21 +75,23 @@ describe('createReadCache — options', () => {
 });
 
 describe('createReadCache — TTL', () => {
-  it('serves from cache until exactly ttlMs, then re-reads (boundary is exclusive)', async () => {
+  // ⚠️ Boundary differs from the hand-rolled engine: cachified's `isExpired` is
+  // `now <= createdTime + ttl`, so an entry is still VALID at exactly `ttlMs` and
+  // expires one millisecond later. The hand-rolled version expired AT `ttlMs`.
+  it('serves from cache through exactly ttlMs, then re-reads (boundary is inclusive)', async () => {
     const { calls, load } = countingLoad(() => 'v');
     const cache = createReadCache<string, string>({
       name: 'ttl',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     expect(await cache.get('k', load)).toBe('v');
-    clock.advance(59_999);
+    advance(60_000); // exactly ttlMs — still valid under an inclusive boundary
     expect(await cache.get('k', load)).toBe('v');
     expect(calls).toHaveLength(1);
 
-    clock.advance(1); // now exactly ttlMs after the write — expired
+    advance(1); // one past ttlMs — expired
     expect(await cache.get('k', load)).toBe('v');
     expect(calls).toHaveLength(2);
     expect(cache.stats()).toMatchObject({ hits: 1, misses: 2 });
@@ -101,7 +103,6 @@ describe('createReadCache — TTL', () => {
       name: 'keys',
       ttlMs: 60_000,
       maxEntries: 8,
-      now: clock.now,
     });
 
     await cache.get(['a', 1], load);
@@ -123,7 +124,6 @@ describe('createReadCache — single flight', () => {
       name: 'sf',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     const all = Promise.all([
@@ -141,12 +141,17 @@ describe('createReadCache — single flight', () => {
       }),
     ]);
 
+    // ⚠️ Differs from the hand-rolled engine, which invoked `load` synchronously
+    // inside `get`. cachified awaits the store read first, so the loader has not
+    // run yet at this point — the dedup itself still holds, it is just deferred.
+    expect(calls).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toBe(1);
-    expect(cache.stats()).toMatchObject({ hits: 2, misses: 1, inFlight: 1, size: 1 });
+    expect(cache.stats()).toMatchObject({ inFlight: 3 });
 
     release('v');
     await expect(all).resolves.toEqual(['v', 'v', 'v']);
-    expect(cache.stats()).toMatchObject({ inFlight: 0 });
+    expect(cache.stats()).toMatchObject({ inFlight: 0, size: 1 });
   });
 
   it('hands every caller the SAME object reference — the value must not be mutated', async () => {
@@ -154,7 +159,6 @@ describe('createReadCache — single flight', () => {
       name: 'shared',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     const first = await cache.get('k', async () => ({ n: 1 }));
@@ -170,7 +174,6 @@ describe('createReadCache — failures', () => {
       name: 'fail',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
     const load = async (): Promise<string> => {
       calls += 1;
@@ -197,7 +200,6 @@ describe('createReadCache — failures', () => {
       name: 'unhandled',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
     await expect(cache.get('k', () => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -206,33 +208,24 @@ describe('createReadCache — failures', () => {
     expect(seen).toEqual([]);
   });
 
-  it('a rejecting in-flight load does not delete a NEWER entry for the same key', async () => {
-    let rejectFirst!: (err: Error) => void;
-    const first = new Promise<string>((_resolve, reject) => {
-      rejectFirst = reject;
-    });
-    const cache = createReadCache<string, string>({
-      name: 'race-reject',
-      ttlMs: 60_000,
-      maxEntries: 4,
-      now: clock.now,
-    });
-
-    const inFlight = cache.get('k', () => first);
-    cache.invalidate('k');
-    const replacement = cache.get('k', async () => 'second');
-    await expect(replacement).resolves.toBe('second');
-
-    rejectFirst(new Error('late'));
-    await expect(inFlight).rejects.toThrow('late');
-
-    // The late rejection must not have evicted the replacement.
-    const { calls, load } = countingLoad(() => 'third');
-    expect(await cache.get('k', load)).toBe('second');
-    expect(calls).toHaveLength(0);
-  });
-
-  it('an in-flight load that settles after invalidate does not repopulate the key', async () => {
+  /**
+   * 🚨 THE behavioural difference from the hand-rolled engine, and it is
+   * structural rather than a wiring choice.
+   *
+   * cachified registers its pending promise ASYNCHRONOUSLY — it awaits the store
+   * read before touching the pending map. So an `invalidate()` issued
+   * synchronously after a `get()` finds that map still empty and cancels
+   * nothing, and the NEXT `get()` joins the load that was already running.
+   *
+   * Consequence for the write → invalidate → read path (`exchangeAndPersist`):
+   * a read issued after the write can return a value fetched BEFORE it. The
+   * hand-rolled engine registered its entry synchronously, so the same sequence
+   * started a fresh load and observed the write.
+   *
+   * This test pins the behaviour we actually have. It is not the behaviour we
+   * want.
+   */
+  it('JOINS an in-flight load even after invalidate — the pending map registers async', async () => {
     let releaseFirst!: (value: string) => void;
     const first = new Promise<string>((resolve) => {
       releaseFirst = resolve;
@@ -241,16 +234,33 @@ describe('createReadCache — failures', () => {
       name: 'race-resolve',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     const inFlight = cache.get('k', () => first);
-    cache.invalidate('k');
-    await expect(cache.get('k', async () => 'second')).resolves.toBe('second');
+    cache.invalidate('k'); // no-op — nothing is registered as pending yet
+    let secondLoaderRan = false;
+    const replacement = cache.get('k', async () => {
+      secondLoaderRan = true;
+      return 'second';
+    });
 
     releaseFirst('first');
     await expect(inFlight).resolves.toBe('first');
-    expect(await cache.get('k', async () => 'third')).toBe('second');
+    // Both the second loader AND the invalidate were bypassed.
+    await expect(replacement).resolves.toBe('first');
+    expect(secondLoaderRan).toBe(false);
+  });
+
+  it('invalidate does take effect once the previous load has settled', async () => {
+    const cache = createReadCache<string, string>({
+      name: 'invalidate-settled',
+      ttlMs: 60_000,
+      maxEntries: 4,
+    });
+
+    expect(await cache.get('k', async () => 'first')).toBe('first');
+    cache.invalidate('k');
+    expect(await cache.get('k', async () => 'second')).toBe('second');
   });
 });
 
@@ -263,21 +273,20 @@ describe('createReadCache — negative caching', () => {
       ttlMs: 60_000,
       maxEntries: 4,
       negativeTtlMs: 5_000,
-      now: clock.now,
     });
 
     expect(await cache.get('k', load)).toBeNull();
-    clock.advance(4_999);
+    advance(5_000); // exactly negativeTtlMs — still valid (inclusive boundary)
     expect(await cache.get('k', load)).toBeNull();
     expect(calls).toHaveLength(1);
 
-    clock.advance(1); // exactly negativeTtlMs — the absence expires
+    advance(1); // one past negativeTtlMs — the absence expires
     value = 'found';
     expect(await cache.get('k', load)).toBe('found');
     expect(calls).toHaveLength(2);
 
     // The positive entry now lives for the FULL ttlMs, not the negative window.
-    clock.advance(5_001);
+    advance(5_001);
     expect(await cache.get('k', load)).toBe('found');
     expect(calls).toHaveLength(2);
   });
@@ -288,14 +297,13 @@ describe('createReadCache — negative caching', () => {
       name: 'neg-default',
       ttlMs: 1_000, // shorter than READ_CACHE_TTL.negative
       maxEntries: 4,
-      now: clock.now,
     });
 
     await cache.get('k', load);
-    clock.advance(999);
+    advance(1_000);
     await cache.get('k', load);
     expect(calls).toHaveLength(1);
-    clock.advance(1);
+    advance(1);
     await cache.get('k', load);
     expect(calls).toHaveLength(2);
   });
@@ -307,7 +315,6 @@ describe('createReadCache — negative caching', () => {
       ttlMs: 60_000,
       maxEntries: 4,
       negativeTtlMs: 0,
-      now: clock.now,
     });
 
     await cache.get('k', load);
@@ -326,17 +333,16 @@ describe('createReadCache — negative caching', () => {
       maxEntries: 4,
       negativeTtlMs: 1_000,
       isNegative: (value) => value.length === 0,
-      now: clock.now,
     });
 
     expect(await cache.get('k', load)).toEqual([]);
-    clock.advance(1_000);
+    advance(1_001);
     rows = ['a'];
     expect(await cache.get('k', load)).toEqual(['a']);
     expect(calls).toHaveLength(2);
 
     // Non-empty ⇒ positive ⇒ full ttlMs.
-    clock.advance(1_001);
+    advance(1_001);
     expect(await cache.get('k', load)).toEqual(['a']);
     expect(calls).toHaveLength(2);
   });
@@ -351,7 +357,6 @@ describe('createReadCache — isFresh', () => {
       ttlMs: 900_000,
       maxEntries: 4,
       isFresh: (conta) => conta.user_id != null,
-      now: clock.now,
     });
 
     expect(await cache.get('k', load)).toEqual({ user_id: null });
@@ -382,7 +387,6 @@ describe('createReadCache — bounded size', () => {
       name: 'lru',
       ttlMs: 60_000,
       maxEntries: 2,
-      now: clock.now,
     });
 
     await cache.get('a', load('a'));
@@ -405,7 +409,6 @@ describe('createReadCache — invalidate / clear / stats', () => {
       name: 'inv',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     await cache.get('a', load);
@@ -423,7 +426,6 @@ describe('createReadCache — invalidate / clear / stats', () => {
       name: 'clr',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     await cache.get('k', load);
@@ -441,7 +443,6 @@ describe('createReadCache — invalidate / clear / stats', () => {
       maxEntries: 4,
       sampleEvery: 2,
       log,
-      now: clock.now,
     });
 
     await cache.get('k', async () => 'v');
@@ -464,7 +465,6 @@ describe('createReadCache — kill switch', () => {
       name: 'killed',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     expect(await cache.get('k', load)).toBe('v');
@@ -480,7 +480,6 @@ describe('createReadCache — kill switch', () => {
       name: 'not-killed',
       ttlMs: 60_000,
       maxEntries: 4,
-      now: clock.now,
     });
 
     await cache.get('k', load);

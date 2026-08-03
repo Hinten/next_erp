@@ -41,8 +41,16 @@ none, and no high-frequency config read used either of the two above.
 
 ## Decision
 
-Ship `@delfrance/data/admin/cache` — a **process-scoped, TTL-bounded, promise-valued**
-read cache — and adopt it only at reads that are demonstrably repeated and read-only.
+Ship `@delfrance/data/admin/cache` — a **process-scoped, TTL-bounded** read cache —
+and adopt it only at reads that are demonstrably repeated and read-only.
+
+The engine is **`@epic-web/cachified`** over an **`lru-cache`** store; this module
+owns the policy around it. That split matters, because cachified deliberately
+supplies none of the policy: its `ttl` is *optional and defaults to permanent*,
+which is exactly the trap that made `apps/nfe`'s cert cache need a restart to rotate
+a certificate. So `ttlMs` and `maxEntries` stay **required arguments**, and the
+kill switch, the counters, the test registry, the key encoding and the typed
+document reader remain ours.
 
 Load-bearing properties, in the order they matter:
 
@@ -137,10 +145,34 @@ the root `CLAUDE.md`.
 - **Wrapping `lru-cache`** (already present transitively via `firebase-admin` →
   `jwks-rsa`) → its `fetch()` is genuine single-flight and a rejected `fetchMethod`
   deletes the entry, but it offers **no injectable clock** (it captures the clock at
-  module load) and no hit/miss counters. Of the properties above it covers four; the
-  rest is wrapper code either way. Since `catalogMode: strict` also makes a direct
-  dependency a catalog entry, and every existing cache in this repo is a hand-rolled
-  `Map`, the wrapper won on cost and on testability.
+  module load), no hit/miss counters, and no per-result TTL, so negative caching
+  would still be hand-rolled.
+
+- **Hand-rolling the whole primitive** → what the first draft of this ADR chose,
+  on the claim that a library "covers four of the ten properties". **For
+  `@epic-web/cachified` that claim was wrong**, and the correction is why this ADR
+  now records the opposite decision. Two of the three things the draft singled out
+  as needing custom code are first-class cachified features:
+  `checkValue` runs against values read *from* the cache and deletes+refetches on
+  failure (that is `isFresh`), and `context.metadata.ttl` sets a per-result TTL with
+  `-1` meaning "do not cache" (that is `negativeTtlMs`, and the library's own README
+  example is literally the null-result case). It also brings single-flight,
+  stale-while-revalidate, batching and Standard-Schema validation for free.
+
+  The hand-rolled version does keep two genuine advantages, both measured while
+  building the alternative rather than assumed:
+
+  1. **Synchronous invalidation.** It registers its entry synchronously, so an
+     `invalidate()` immediately after a `get()` deterministically starts a fresh
+     load. cachified registers its pending promise *asynchronously*, so the same
+     sequence cancels nothing and the next `get()` joins the in-flight load —
+     returning a value read **before** the write that prompted the invalidation.
+     That is the `exchangeAndPersist` path exactly.
+  2. **An injectable clock**, matching the repo's explicit-`now` convention. With
+     cachified, tests must stub `Date.now` globally.
+
+  Neither is fatal, and the second is cosmetic. The first is a real, narrow
+  correctness window on the one write-then-read path this cache has.
 
 ## Status
 

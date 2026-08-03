@@ -24,9 +24,12 @@
     "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
+  "//read-cache-deps": "@epic-web/cachified + lru-cache back `./admin/cache` (ADR 0011). LITERAL semver, never `catalog:` — the catalog is for deps declared by 2+ workspace manifests, and packages/data is the sole consumer of both (root CLAUDE.md). Both are inlined by every functions esbuild bundle, so neither belongs in an apps/*/functions manifest.",
   "dependencies": {
     "@delfrance/schemas": "workspace:*",
+    "@epic-web/cachified": "^5.6.3",
     "firebase": "catalog:",
+    "lru-cache": "^11.3.6",
     "zod": "catalog:"
   },
   "peerDependencies": {
