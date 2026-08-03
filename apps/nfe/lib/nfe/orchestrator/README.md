@@ -1,11 +1,16 @@
 # Signed XML lifecycle
 
 Every `nfev4` doc carries three XML fields — `xml_assinado`, `xml_nfe_proc`,
-`xml_epec_proc` — and at most one of `xml_assinado` / `xml_nfe_proc` is ever
-non-null at a time (apps/nfe/CLAUDE.md rule 1 / issue #128: the anti-loss
-anchor is replaced, never dropped, by `swapAnchorForProc` in `audit.ts`).
-This table is the map from `estado` to what each field holds — read it before
-touching any code under `orchestrator/` that persists an nfev4 doc.
+`xml_epec_proc`. Every write path in this app keeps at most one of
+`xml_assinado` / `xml_nfe_proc` non-null at a time (apps/nfe/CLAUDE.md rule 1
+/ issue #128: the anti-loss anchor is replaced, never dropped, by
+`swapAnchorForProc` in `audit.ts`) — but this is a write-path convention, not
+a schema-enforced constraint (`packages/schemas/src/nfe.ts` has no
+`.refine`/`.superRefine` on the pair), so a legacy or manually-repaired doc
+can still carry both. This table is the map from `estado` to what each field
+holds under normal operation — read it before touching any code under
+`orchestrator/` that persists an nfev4 doc, but don't assume the invariant
+holds for every doc already in Firestore.
 
 | estado                                          | `xml_assinado`                                                                                                  | `xml_nfe_proc`                                                 |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
