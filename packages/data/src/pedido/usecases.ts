@@ -263,6 +263,22 @@ export async function deletePagamento(
   await port.commit([{ type: 'delete', path: PAGAMENTO_PATH(args.pedidoId, args.pagamentoId) }]);
 }
 
+/**
+ * Create several NEW pagamento docs in one commit — the cheque parcela split
+ * (legacy `_adicionarCheques`: a cheque payment with `parcelas > 1` becomes one
+ * pagamento per installment instead of a single doc carrying the count). Each
+ * entry mints its own id via `buildPagamentoOp`; `port.commit` batches them
+ * atomically like every other multi-op write in this port.
+ */
+export async function saveChequeSplit(
+  port: PedidoDataPort,
+  args: { pedidoId: string; pagamentos: Record<string, unknown>[] },
+): Promise<void> {
+  await port.commit(
+    args.pagamentos.map((pagamento) => buildPagamentoOp(port, args.pedidoId, null, pagamento)),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Auto-estado from pagamentos (legacy `cadastroPedidoProvider` transition)
 // ---------------------------------------------------------------------------

@@ -11,6 +11,16 @@ import {
   type StatusPagamento,
 } from '@delfrance/schemas';
 
+/** UI-only interval unit for the cheque parcela split — never persisted. */
+export type ChequeSplitIntervalo = 'dias' | 'meses';
+
+/** µs per interval unit, ×`quantidadeIntervalo`, between generated cheque installments.
+ * Legacy has no calendar-month math — 'meses' is a flat 30-day step. */
+const CHEQUE_INTERVALO_US_PER_UNIT: Record<ChequeSplitIntervalo, number> = {
+  dias: 24 * 60 * 60 * 1_000_000,
+  meses: 30 * 24 * 60 * 60 * 1_000_000,
+};
+
 // Re-exported so the existing pagamento consumers (PagamentosSection, the
 // footer, this file's test) keep importing it from here; the rule itself now
 // lives in @delfrance/schemas so the client + admin estado reconciles share one
@@ -40,8 +50,20 @@ export interface PagamentoFormState {
   nFat: string;
 
   // Card detail (cartão crédito/débito) → written to `pagamento.cartao`.
-  /** `Bandeira` code ('01'..'99'); `''` = none picked. */
+  /** Doc-path of the picked `bandeirasCartao` catalog entry, or `null` — never
+   * persisted; drives the catalog-field autofill below. There is no stored link
+   * from an existing `pagamento.cartao` back to the catalog doc that filled it,
+   * so this starts `null` even when editing a card payment. */
+  bandeiraCartaoRef: string | null;
+  /** `Bandeira` code ('01'..'99'); `''` = none. Preserved from the existing doc
+   * on edit, overwritten by a fresh catalog pick. */
   bandeira: string;
+  /** Catalog-derived fields (`bandeirasCartao`), autofilled on pick and preserved
+   * from the existing doc otherwise; `null` until resolved. */
+  cnpjInstituicao: string | null;
+  tarifa: number | null;
+  tarifaFixa: number | null;
+  prazoRecebimento: number | null;
   numeroCartao: string;
   cAut: string;
 
@@ -56,6 +78,10 @@ export interface PagamentoFormState {
   telefone: string;
   /** "Bom para" date, µs epoch. */
   bomPara: number | null;
+  // Cheque parcela split (`parcelas > 1`) — UI-only, never persisted; consumed by
+  // `buildChequeSplitPagamentos` to space the generated installments' bomPara.
+  intervalo: ChequeSplitIntervalo;
+  quantidadeIntervalo: number;
 }
 
 export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
@@ -71,7 +97,12 @@ export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
   aVista: true,
   duplicata: false,
   nFat: '',
+  bandeiraCartaoRef: null,
   bandeira: '',
+  cnpjInstituicao: null,
+  tarifa: null,
+  tarifaFixa: null,
+  prazoRecebimento: null,
   numeroCartao: '',
   cAut: '',
   banco: '',
@@ -82,6 +113,8 @@ export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
   cpfCnpj: '',
   telefone: '',
   bomPara: null,
+  intervalo: 'dias',
+  quantidadeIntervalo: 1,
 };
 
 /** Populate the form from an existing pagamento doc (edit mode). The embedded
@@ -100,7 +133,12 @@ export function formFromPagamento(p: Pagamento): PagamentoFormState {
     aVista: p.aVista,
     duplicata: p.duplicata,
     nFat: p.nFat ?? '',
+    bandeiraCartaoRef: null,
     bandeira: cartao.success ? (cartao.data.bandeira ?? '') : '',
+    cnpjInstituicao: cartao.success ? (cartao.data.cnpj_instituicao ?? null) : null,
+    tarifa: cartao.success ? (cartao.data.tarifa ?? null) : null,
+    tarifaFixa: cartao.success ? (cartao.data.tarifaFixa ?? null) : null,
+    prazoRecebimento: cartao.success ? (cartao.data.prazoRecebimento ?? null) : null,
     numeroCartao: cartao.success ? (cartao.data.numeroCartao ?? '') : '',
     cAut: cartao.success ? (cartao.data.cAut ?? '') : '',
     banco: cheque.success ? (cheque.data.banco ?? '') : '',
@@ -111,6 +149,8 @@ export function formFromPagamento(p: Pagamento): PagamentoFormState {
     cpfCnpj: cheque.success ? (cheque.data.cpf_cnpj ?? '') : '',
     telefone: cheque.success ? (cheque.data.telefone ?? '') : '',
     bomPara: cheque.success ? (cheque.data.bomPara ?? null) : null,
+    intervalo: 'dias',
+    quantidadeIntervalo: 1,
   };
 }
 
@@ -142,7 +182,8 @@ export function pagamentoFieldVisibility(forma: string): PagamentoFieldVisibilit
   const cheque = f === FORMA_PAGAMENTO.cheque;
   const deposito = f === FORMA_PAGAMENTO.deposito_bancario;
   return {
-    parcelas: cartaoCredito || creditoLoja,
+    // Cheque's parcelas count also drives the parcela-split add flow.
+    parcelas: cartaoCredito || creditoLoja || cheque,
     aVista: cartaoCredito || cartaoDebito || creditoLoja,
     // Cheque has its own "Bom para" date in the cheque group, so it doesn't also
     // show the generic vencimento.
@@ -190,6 +231,12 @@ export function validatePagamentoForm(form: PagamentoFormState): string | null {
   // without `<xPag>` (cStat 441).
   if (form.forma === String(FORMA_PAGAMENTO.outros) && !form.descricao.trim())
     return 'Descrição é obrigatória para a forma "Outros".';
+  if (
+    form.forma === String(FORMA_PAGAMENTO.cheque) &&
+    form.parcelas > 1 &&
+    (!Number.isInteger(form.quantidadeIntervalo) || form.quantidadeIntervalo < 1)
+  )
+    return 'Informe um intervalo válido entre os cheques.';
   return null;
 }
 
@@ -203,9 +250,13 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 /**
  * Build the embedded `cartao` map from the form (card formas only). Spreads any
- * existing card first so the catalog-derived fields (`tarifa`, `tarifaFixa`,
- * `cnpj_instituicao`, `prazoRecebimento`) survive untouched, then overrides the
- * editable fields. `tpIntegra` stays `'2'` (não integrado) unless the base set it.
+ * existing card first for legacy pass-through keys, then overrides the known
+ * fields from the form — `bandeira` + the catalog fields (`tarifa`, `tarifaFixa`,
+ * `cnpj_instituicao`, `prazoRecebimento`) are either the values preserved by
+ * `formFromPagamento` from the existing doc, or whatever a fresh
+ * `bandeirasCartao` pick resolved into the form (see the `CollectionSelect` in
+ * `PagamentosSection`). `tpIntegra` stays `'2'` (não integrado) unless the base
+ * set it.
  */
 function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
   return {
@@ -214,6 +265,10 @@ function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<s
     bandeira: form.bandeira === '' ? null : form.bandeira,
     numeroCartao: trimToNull(form.numeroCartao),
     cAut: trimToNull(form.cAut),
+    cnpj_instituicao: form.cnpjInstituicao,
+    tarifa: form.tarifa,
+    tarifaFixa: form.tarifaFixa,
+    prazoRecebimento: form.prazoRecebimento,
   };
 }
 
@@ -267,4 +322,46 @@ export function pagamentoDataFromForm(
     cartao: vis.cartao ? buildCartao(form, base) : null,
     cheque: vis.cheque ? buildCheque(form, base) : null,
   };
+}
+
+/**
+ * Whether saving this form should fan out into several NEW pagamento docs
+ * instead of one (legacy `_adicionarCheques`): a cheque payment being ADDED
+ * (never edited — splitting an already-saved doc is ambiguous) with more than
+ * one parcela.
+ */
+export function isChequeSplit(form: PagamentoFormState, editingId: string | null): boolean {
+  return editingId === null && form.forma === String(FORMA_PAGAMENTO.cheque) && form.parcelas > 1;
+}
+
+/**
+ * Split a cheque payment with `parcelas > 1` into one pagamento per
+ * installment (legacy `_adicionarCheques`), for `saveChequeSplit`
+ * (`@delfrance/data/pedido`). Each row: `1/parcelas` of the total valor
+ * (rounded — legacy's remainder-redistribution on the last row is a bug, not
+ * ported), its own "bom para" spaced by `intervalo`×`quantidadeIntervalo` from
+ * the form's `bomPara`, `parcelas: 1` (each row is its own single cheque), and
+ * `aVista: false` + `status_pagamento: aprovado` — both hardcoded, matching
+ * legacy (the source guard that would make `aVista` conditional can never be
+ * true once `parcelas > 1`). Assumes the form passed
+ * {@link validatePagamentoForm} and {@link isChequeSplit} is true.
+ */
+export function buildChequeSplitPagamentos(
+  form: PagamentoFormState,
+  base: Pagamento | null,
+): Record<string, unknown>[] {
+  const n = form.parcelas;
+  const stepUs = CHEQUE_INTERVALO_US_PER_UNIT[form.intervalo] * form.quantidadeIntervalo;
+  const initialBomPara = form.bomPara ?? 0;
+  const perRowValor = roundReais((form.valor ?? 0) / n);
+  const template = pagamentoDataFromForm(form, base);
+  const chequeTemplate = template.cheque as Record<string, unknown>;
+  return Array.from({ length: n }, (_, i) => ({
+    ...template,
+    parcelas: 1,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    aVista: false,
+    valor: perRowValor,
+    cheque: { ...chequeTemplate, bomPara: initialBomPara + stepUs * i },
+  }));
 }
