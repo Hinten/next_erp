@@ -325,11 +325,10 @@ it at deploy time:
 (`MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND` / `MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES`
 for stock sync, and `MERCADO_LIVRE_PRECO_DISPATCHES_PER_SECOND` /
 `MERCADO_LIVRE_PRECO_CONCURRENT_DISPATCHES` for price sync) are read at
-**deploy** time by the `onTaskDispatched.rateLimits` option (see `src/sendStock.ts`
-
-- `src/processPriceSync.ts`) and baked into the queue config. These knobs should
-  NOT be set in `.env.deploy` — they are only needed in the **deploying shell's
-  environment** when you run `firebase deploy`. Export them before deploying:
+**deploy** time by the `onTaskDispatched.rateLimits` option (see `src/sendStock.ts` +
+`src/processPriceSync.ts`) and baked into the queue config. These knobs should
+NOT be set in `.env.deploy` — they are only needed in the **deploying shell's
+environment** when you run `firebase deploy`. Export them before deploying:
 
 ```bash
 export MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND=2

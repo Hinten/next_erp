@@ -18,6 +18,7 @@ e2e/.auth/
 .env
 .env.local
 .env.*.local
+.env.deploy
 !.env.example
 
 # A1 digital certificates — NEVER commit. The env cert ships as a base64
