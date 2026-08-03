@@ -462,6 +462,24 @@ describe('buildChequeSplitPagamentos', () => {
     expect((rows[0]!.cheque as { bomPara: number }).bomPara).toBe(0);
     expect((rows[1]!.cheque as { bomPara: number }).bomPara).toBe(DAY_US * 30);
   });
+
+  it('leaves bomPara null on every row when no "bom para" was typed, instead of anchoring to the epoch', () => {
+    const rows = buildChequeSplitPagamentos(
+      form({
+        forma: String(FORMA_PAGAMENTO.cheque),
+        valor: 100,
+        parcelas: 3,
+        intervalo: 'dias',
+        quantidadeIntervalo: 10,
+        bomPara: null,
+      }),
+      null,
+    );
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect((row.cheque as { bomPara: number | null }).bomPara).toBeNull();
+    }
+  });
 });
 
 describe('remainingToPay', () => {

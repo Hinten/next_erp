@@ -343,7 +343,10 @@ export function isChequeSplit(form: PagamentoFormState, editingId: string | null
  * the form's `bomPara`, `parcelas: 1` (each row is its own single cheque), and
  * `aVista: false` + `status_pagamento: aprovado` — both hardcoded, matching
  * legacy (the source guard that would make `aVista` conditional can never be
- * true once `parcelas > 1`). Assumes the form passed
+ * true once `parcelas > 1`). A `null` `bomPara` (nothing typed) stays `null` on
+ * every row rather than anchoring the split to the epoch — there's no base
+ * date to space installments from, so fabricating one (1970 or "now") would be
+ * inventing data the user never entered. Assumes the form passed
  * {@link validatePagamentoForm} and {@link isChequeSplit} is true.
  */
 export function buildChequeSplitPagamentos(
@@ -352,7 +355,7 @@ export function buildChequeSplitPagamentos(
 ): Record<string, unknown>[] {
   const n = form.parcelas;
   const stepUs = CHEQUE_INTERVALO_US_PER_UNIT[form.intervalo] * form.quantidadeIntervalo;
-  const initialBomPara = form.bomPara ?? 0;
+  const initialBomPara = form.bomPara;
   const perRowValor = roundReais((form.valor ?? 0) / n);
   const template = pagamentoDataFromForm(form, base);
   const chequeTemplate = template.cheque as Record<string, unknown>;
@@ -362,6 +365,9 @@ export function buildChequeSplitPagamentos(
     status_pagamento: STATUS_PAGAMENTO.aprovado,
     aVista: false,
     valor: perRowValor,
-    cheque: { ...chequeTemplate, bomPara: initialBomPara + stepUs * i },
+    cheque: {
+      ...chequeTemplate,
+      bomPara: initialBomPara == null ? null : initialBomPara + stepUs * i,
+    },
   }));
 }

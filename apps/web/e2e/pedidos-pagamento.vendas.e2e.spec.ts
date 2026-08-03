@@ -317,7 +317,19 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       timeout: 15_000,
     });
 
-    const DAY_US = 24 * 60 * 60 * 1_000_000;
+    // "Bom para" was never set above — every generated row must stay `null`
+    // rather than get anchored to the epoch (there is no base date to space
+    // installments from). All three rows are otherwise identical, so array
+    // order doesn't matter here.
+    const expectedRow = {
+      forma: 2,
+      valor: 100,
+      parcelas: 1,
+      aVista: false,
+      status: 4,
+      banco: 'BB',
+      bomPara: null,
+    };
     await expect
       .poll(
         async () => {
@@ -326,44 +338,22 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
             .doc(pedidoId)
             .collection('pagamentos')
             .get();
-          return snap.docs
-            .map((d) => {
-              const p = d.data();
-              return {
-                forma: p.forma_de_pagamento as number,
-                valor: p.valor as number,
-                parcelas: p.parcelas as number,
-                aVista: p.aVista as boolean,
-                status: p.status_pagamento as number,
-                banco: (p.cheque as { banco?: string })?.banco ?? null,
-                bomPara: (p.cheque as { bomPara?: number })?.bomPara ?? null,
-              };
-            })
-            .sort((a, b) => (a.bomPara ?? 0) - (b.bomPara ?? 0));
+          return snap.docs.map((d) => {
+            const p = d.data();
+            return {
+              forma: p.forma_de_pagamento as number,
+              valor: p.valor as number,
+              parcelas: p.parcelas as number,
+              aVista: p.aVista as boolean,
+              status: p.status_pagamento as number,
+              banco: (p.cheque as { banco?: string })?.banco ?? null,
+              bomPara: (p.cheque as { bomPara?: number | null })?.bomPara ?? null,
+            };
+          });
         },
         { timeout: 15_000 },
       )
-      .toEqual([
-        { forma: 2, valor: 100, parcelas: 1, aVista: false, status: 4, banco: 'BB', bomPara: 0 },
-        {
-          forma: 2,
-          valor: 100,
-          parcelas: 1,
-          aVista: false,
-          status: 4,
-          banco: 'BB',
-          bomPara: DAY_US * 10,
-        },
-        {
-          forma: 2,
-          valor: 100,
-          parcelas: 1,
-          aVista: false,
-          status: 4,
-          banco: 'BB',
-          bomPara: DAY_US * 20,
-        },
-      ]);
+      .toEqual([expectedRow, expectedRow, expectedRow]);
   });
 
   // DEPLOY GATE — keep this LAST in the serial describe. Since #308 the estado

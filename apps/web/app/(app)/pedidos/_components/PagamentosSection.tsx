@@ -132,6 +132,11 @@ export function PagamentosSection({
   // succession), so the indicator is refcounted — a boolean would be cleared by
   // whichever call settles FIRST, hiding the spinner while another is in flight.
   const reconcilesEmVoo = useRef(0);
+  // The most recently REQUESTED bandeira pick — guards the async getDoc below
+  // against resolving out of order (a slow first pick landing after a faster
+  // second one would otherwise overwrite the newer catalog fields with stale
+  // ones).
+  const latestBandeiraPick = useRef<string | null>(null);
 
   // On a `bandeirasCartao` pick, fetch the catalog doc once and fold its fields
   // into the form (`bandeira` + tarifa/tarifaFixa/prazoRecebimento/CNPJ), clamping
@@ -140,23 +145,39 @@ export function PagamentosSection({
   // semantics as an untouched existing card).
   async function handleBandeiraPick(next: unknown) {
     const ref = typeof next === 'string' ? next : null;
+    latestBandeiraPick.current = ref;
     setForm((f) => ({ ...f, bandeiraCartaoRef: ref }));
     if (ref === null) return;
     const docRef = dereferenceOuterRef(getFirebaseFirestore(), ref);
     if (!docRef) return;
-    const snap = await getDoc(docRef);
-    const parsed = bandeiraCartaoSchema.safeParse(snap.data());
-    if (!parsed.success) return;
-    const catalog = parsed.data;
-    setForm((f) => ({
-      ...f,
-      bandeira: catalog.bandeira ?? '',
-      cnpjInstituicao: catalog.cnpj_instituicao,
-      tarifa: catalog.tarifa,
-      tarifaFixa: catalog.tarifaFixa,
-      prazoRecebimento: catalog.prazoRecebimento,
-      parcelas: Math.min(f.parcelas, catalog.maxParcelas),
-    }));
+    try {
+      const snap = await getDoc(docRef);
+      // A newer pick superseded this one while the fetch was in flight — drop
+      // this (stale) result instead of clobbering the newer catalog fields.
+      if (latestBandeiraPick.current !== ref) return;
+      const parsed = bandeiraCartaoSchema.safeParse(snap.data());
+      if (!parsed.success) return;
+      const catalog = parsed.data;
+      setForm((f) => ({
+        ...f,
+        bandeira: catalog.bandeira ?? '',
+        cnpjInstituicao: catalog.cnpj_instituicao,
+        tarifa: catalog.tarifa,
+        tarifaFixa: catalog.tarifaFixa,
+        prazoRecebimento: catalog.prazoRecebimento,
+        parcelas: Math.min(f.parcelas, catalog.maxParcelas),
+      }));
+    } catch (err) {
+      // The caller fires this fire-and-forget (`void handleBandeiraPick(...)`),
+      // so an uncaught rejection here would be a silent, unreported failure —
+      // surface it instead of leaving the picker stuck with no explanation.
+      if (!(err instanceof FirebaseError)) throw err;
+      notifications.show({
+        color: 'red',
+        title: 'Falha ao carregar a bandeira selecionada',
+        message: err.message,
+      });
+    }
   }
 
   // Auto-estado transition (legacy `cadastroPedidoProvider`): after every pagamento
@@ -323,10 +344,22 @@ export function PagamentosSection({
                 data={formaOptions}
                 value={form.forma}
                 onChange={(v) =>
-                  // Clear a picked bandeira on forma change — a crédito pick
-                  // filtered by ehCredito:true would otherwise linger after
-                  // switching to débito (and vice-versa).
-                  v && setForm((f) => ({ ...f, forma: v, bandeiraCartaoRef: null }))
+                  // Clear the resolved bandeira + catalog fields on forma change,
+                  // not just the picker's ref — a crédito pick filtered by
+                  // ehCredito:true would otherwise still get PERSISTED after
+                  // switching to débito (and vice-versa), even though the picker
+                  // itself visually cleared.
+                  v &&
+                  setForm((f) => ({
+                    ...f,
+                    forma: v,
+                    bandeiraCartaoRef: null,
+                    bandeira: '',
+                    cnpjInstituicao: null,
+                    tarifa: null,
+                    tarifaFixa: null,
+                    prazoRecebimento: null,
+                  }))
                 }
                 allowDeselect={false}
                 searchable
