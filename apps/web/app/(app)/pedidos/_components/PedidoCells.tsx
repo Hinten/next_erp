@@ -30,6 +30,7 @@ import {
   type Pedido,
   TIPO_CLIENTE_LABELS,
   type TipoCliente,
+  freightCapsFor,
   pedidoTotal,
 } from '@delfrance/schemas';
 import { microsToMillis } from '@delfrance/core/datetime';
@@ -396,9 +397,15 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
   const label = ESTADO_FRETE_LABELS[estado] ?? estado;
 
   // Show the etiqueta HoverCard when there's something to act on — a bought
-  // label (reprint/track) or a selected quote (buy). Otherwise keep the
-  // lightweight tracking tooltip.
-  const hasEtiquetaAction = frete?.printLabelId != null || frete?.externalOptionId != null;
+  // label (reprint/track), a selected quote (buy), or a fetch-label
+  // marketplace frete (real ML pedidos carry NEITHER printLabelId nor
+  // externalOptionId — only externalOptionIntegracao identifies them).
+  // Otherwise keep the lightweight tracking tooltip.
+  const canFetchLabel =
+    frete?.externalOptionIntegracao != null &&
+    freightCapsFor(frete.externalOptionIntegracao).canFetchLabel;
+  const hasEtiquetaAction =
+    frete?.printLabelId != null || frete?.externalOptionId != null || canFetchLabel;
   if (!hasEtiquetaAction) {
     const tooltipParts: string[] = [];
     if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
