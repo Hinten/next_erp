@@ -16,6 +16,11 @@ const PERM_CONFIG_WRITE = 1n << 41n;
  */
 export const usuarioSchema = z.object({
   nome: z.string().min(1).max(255),
+  // Legacy `Usuario.apelido` — the external-channel nickname (e.g. a Mercado
+  // Livre buyer's site nickname), distinct from `nome`. Written by the ML
+  // claims import (Step 14) when resolving a sem-auth buyer contact; null for
+  // every real (authenticated) user and for channels without a nickname.
+  apelido: z.string().nullable().default(null).describe('Apelido'),
   // Nullable: sem-auth external-channel contacts (see `externalId` below) are
   // never real Firebase Auth accounts, so they carry no email at all — only
   // a `usuarios` doc identified by `externalId`. Every collaborator/admin
