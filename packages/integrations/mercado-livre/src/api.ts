@@ -13,6 +13,10 @@ import {
   type MlCatalogDomain,
   type MlCategory,
   type MlCategoryAttribute,
+  type MlClaim,
+  type MlClaimMessage,
+  type MlClaimReason,
+  type MlClaimSearch,
   type MlDomainDiscovery,
   type MlItem,
   type MlItemDescription,
@@ -44,6 +48,10 @@ import {
   itemSchema,
   migrationLiveListingSchema,
   mlBillingInfoSchema,
+  mlClaimMessagesSchema,
+  mlClaimReasonSchema,
+  mlClaimSchema,
+  mlClaimSearchSchema,
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentInvoiceSchema,
@@ -96,6 +104,12 @@ export interface PictureFile {
 
 /** Raw label bytes from `getShipmentLabels` (a ZIP for both pdf and zpl2). */
 export interface MlShipmentLabelResult {
+  readonly bytes: Uint8Array;
+  readonly contentType: string | null;
+}
+
+/** Raw file bytes from `downloadClaimAttachment` (claims import, Step 14). */
+export interface MlClaimAttachmentDownload {
   readonly bytes: Uint8Array;
   readonly contentType: string | null;
 }
@@ -231,6 +245,35 @@ export interface MercadoLivreApi {
   getActiveChartDomains(): Promise<MlActiveChartDomains>;
   /** `GET /catalog_domains/{id}` — domain label for pickers. */
   getCatalogDomain(domainId: string): Promise<MlCatalogDomain>;
+
+  /** `GET /post-purchase/v1/claims/{claimId}` — one claim (claims import, Step 14). */
+  getClaim(claimId: number): Promise<MlClaim>;
+  /**
+   * `GET /post-purchase/v1/claims/{claimId}/messages` — the claim's message
+   * thread. **The endpoint returns a bare JSON array**, not a `results`
+   * envelope (claims import, Step 14).
+   */
+  getClaimMessages(claimId: number): Promise<MlClaimMessage[]>;
+  /**
+   * `GET /post-purchase/v1/claims/reasons/{reasonId}` — the human-readable
+   * claim reason. The legacy client needed a token-in-header special case for
+   * exactly this endpoint (api.dart:1501 `tokenOnHeader: true`) — moot here
+   * because `request()` ALWAYS sends the Bearer header.
+   */
+  getClaimReason(reasonId: string): Promise<MlClaimReason>;
+  /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
+  searchClaims(params: {
+    status?: string;
+    stage?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MlClaimSearch>;
+  /**
+   * `GET /post-purchase/v1/claims/{claimId}/attachments/{filename}/download` —
+   * a claim-message attachment as raw bytes (legacy `getAttachment`,
+   * api.dart:1533-1539). The `filename` ML issues is the download key.
+   */
+  downloadClaimAttachment(claimId: number, filename: string): Promise<MlClaimAttachmentDownload>;
 }
 
 export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLivreApi {
@@ -417,6 +460,40 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     return { bytes, contentType: res.headers.get('content-type') };
   }
 
+  /**
+   * Binary download — same auth/retry/error mapping as `getShipmentLabels`,
+   * for claim-message attachments. The token rides the Bearer header — NEVER
+   * the legacy `access_token` query param. Mirrors the label empty-body guard:
+   * a 2xx with no bytes is thrown as an HTTP error (carrying the 2xx status so
+   * the caller can tell "empty body" from a genuine non-2xx) instead of handing
+   * the importer a zero-byte file to upload.
+   */
+  async function downloadClaimAttachment(
+    claimId: number,
+    filename: string,
+  ): Promise<MlClaimAttachmentDownload> {
+    const token = await config.getAccessToken();
+    const res = await fetchWithNetworkRetry(
+      buildUrl(
+        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
+      ),
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'User-Agent': userAgent,
+        },
+      },
+      'Falha de rede ao baixar o anexo do Mercado Livre',
+    );
+    if (!res.ok) throw await toHttpError(res);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length === 0) {
+      throw new MercadoLivreHttpError('O Mercado Livre retornou um anexo vazio.', res.status, null);
+    }
+    return { bytes, contentType: res.headers.get('content-type') };
+  }
+
   return {
     getMe: () => request('GET', '/users/me', userSchema),
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
@@ -506,6 +583,15 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', '/catalog/charts/MLB/configurations/active_domains', activeChartDomainsSchema),
     getCatalogDomain: (domainId) =>
       request('GET', `/catalog_domains/${domainId}`, catalogDomainSchema),
+
+    getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),
+    getClaimMessages: (claimId) =>
+      request('GET', `/post-purchase/v1/claims/${claimId}/messages`, mlClaimMessagesSchema),
+    getClaimReason: (reasonId) =>
+      request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
+    searchClaims: (params) =>
+      request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
+    downloadClaimAttachment,
   };
 }
 

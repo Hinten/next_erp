@@ -45,7 +45,18 @@ const h = vi.hoisted(() => ({
       skipped: null,
     }),
   ),
+  importClaimMercadoLivre: vi.fn(
+    async (_deps: { nowUs: number; nowMs: number; integracaoId: string }, _resourceId: number) => ({
+      pedidoId: 'ped1',
+      incidenteId: 'inc1',
+      conversaId: 'conv1',
+      skipped: null,
+    }),
+  ),
   syncItemPrices: vi.fn(async () => 'synced' as const),
+  // The Step 14 default claim wiring resolves the Storage bucket via
+  // `tryGetAdminBucket` — a sentinel here proves it is threaded verbatim.
+  fakeBucket: { __bucket: true },
 }));
 vi.mock('./importMigration', () => ({ handleUptinMigration: h.handleUptinMigration }));
 vi.mock('./orderImport', () => ({ importPedidoMercadoLivre: h.importPedidoMercadoLivre }));
@@ -55,6 +66,11 @@ vi.mock('./orderPaymentImport', () => ({
 vi.mock('./orderShipmentImport', () => ({
   importShipmentMercadoLivre: h.importShipmentMercadoLivre,
 }));
+vi.mock('./claimImport', () => ({ importClaimMercadoLivre: h.importClaimMercadoLivre }));
+vi.mock('../firebase/admin', async (importActual) => {
+  const actual = await importActual<typeof import('../firebase/admin')>();
+  return { ...actual, tryGetAdminBucket: () => h.fakeBucket as never };
+});
 vi.mock('./itemsPricesSync', async (importActual) => {
   const actual = await importActual<typeof import('./itemsPricesSync')>();
   return { ...actual, syncItemPrices: h.syncItemPrices };
@@ -258,6 +274,7 @@ beforeEach(() => {
   h.importPedidoMercadoLivre.mockClear();
   h.importPagamentoMercadoLivre.mockClear();
   h.importShipmentMercadoLivre.mockClear();
+  h.importClaimMercadoLivre.mockClear();
 });
 
 /* ------------------------------ parse + topics --------------------------- */
@@ -1025,6 +1042,186 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       expect(db.docs(NOTIF).has('N80')).toBe(false);
       expect(db.docs(NOTIF).has('N81')).toBe(false);
     });
+  });
+});
+
+/* ------------------- claims claim-import dispatch (Step 14) ---------------- */
+
+describe('handleNotificationTask — claims claim-import dispatch (Step 14)', () => {
+  it('parses the numeric resource id and routes it to the injected claimImportRunner (not the order/payment/shipment runners), acks done with nothing persisted', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => ({
+      pedidoId: 'ped-o',
+      created: true,
+      skipped: null,
+    }));
+    const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-p', skipped: null }));
+    const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-s', skipped: null }));
+    const claimImportRunner = vi.fn(async () => ({
+      pedidoId: 'ped1',
+      incidenteId: 'inc1',
+      conversaId: 'conv1',
+      skipped: null,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N100', resource: '/claims/5142940410', topic: 'claims' }),
+      0,
+      { orderImportRunner, paymentImportRunner, shipmentImportRunner, claimImportRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'claims' });
+    expect(claimImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 5142940410);
+    expect(orderImportRunner).not.toHaveBeenCalled();
+    expect(paymentImportRunner).not.toHaveBeenCalled();
+    expect(shipmentImportRunner).not.toHaveBeenCalled();
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a skipped claim import (e.g. claim-404 / reclamacao-do-vendedor) still acks done — nothing persisted, nothing thrown', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = vi.fn(async () => ({
+      pedidoId: null,
+      incidenteId: null,
+      conversaId: null,
+      skipped: 'claim-404' as const,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N101', resource: '/claims/1', topic: 'claims' }),
+      0,
+      { claimImportRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'claims' });
+    expect(console.warn).toHaveBeenCalledWith(
+      '[mercado-livre] claim import skipped',
+      expect.objectContaining({ integracaoId: 'conta-A', resourceId: 1, skipped: 'claim-404' }),
+    );
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a malformed (non-numeric) resource is dropped in the TASK phase WITHOUT dispatching to the runner', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = vi.fn(async () => ({
+      pedidoId: null,
+      incidenteId: null,
+      conversaId: null,
+      skipped: null,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N102', resource: '/claims/abc', topic: 'claims' }),
+      0,
+      { claimImportRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'claims' });
+    expect(claimImportRunner).not.toHaveBeenCalled();
+    expect(db.docs(NOTIF).size).toBe(0); // dropped — no persist
+  });
+
+  it('a malformed resource on a persisted doc PARKS in the SWEEP phase (phase-matrix parity)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    seedFailed(db, 'N103', { processedAt: 1_000, resource: '/claims/abc', topic: 'claims' });
+    const claimImportRunner = vi.fn(async () => ({
+      pedidoId: null,
+      incidenteId: null,
+      conversaId: null,
+      skipped: null,
+    }));
+
+    const res = await reprocessNotifications(
+      asDb(db),
+      { now: 10_000, olderThanMs: 100 },
+      { claimImportRunner },
+    );
+
+    expect(res.outcomes.parked).toBe(1);
+    expect(claimImportRunner).not.toHaveBeenCalled();
+    const doc = db.docs(NOTIF).get('N103')!;
+    expect(doc.status).toBe('parked'); // kept as an audit row, not deleted
+  });
+
+  it('the runner throwing on a non-final attempt propagates (queue retries)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = vi.fn(async () => {
+      throw new Error('ml api unavailable');
+    });
+    await expect(
+      handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N104', resource: '/claims/7', topic: 'claims' }),
+        0,
+        { claimImportRunner },
+      ),
+    ).rejects.toThrow('ml api unavailable');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('the runner throwing on the FINAL attempt persists failed (reuses the existing final-attempt harness)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = vi.fn(async () => {
+      throw new Error('ml api unavailable');
+    });
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N105', resource: '/claims/8', topic: 'claims' }),
+      TASK_MAX_ATTEMPTS - 1,
+      { claimImportRunner },
+    );
+    expect(r.outcome).toBe('failed');
+    const doc = db.docs(NOTIF).get('N105')!;
+    expect(doc.status).toBe('failed');
+    expect(doc.erro).toContain('ml api unavailable');
+  });
+
+  it('default wiring (no override): resolves the ML context + api and calls importClaimMercadoLivre with {db, api, integracaoId, conta, nowUs, nowMs, bucket}', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    h.loadMercadoLivreContext.mockResolvedValue({
+      integracaoId: 'conta-A',
+      conta: { user_id: 999, cor: 4 },
+      resolveChannelContext: async () => ({
+        integracaoId: 'conta-A',
+        accessToken: 'AT',
+        account: {},
+      }),
+    });
+    h.importClaimMercadoLivre.mockResolvedValue({
+      pedidoId: 'ped9',
+      incidenteId: 'inc9',
+      conversaId: 'conv9',
+      skipped: null,
+    });
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    try {
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N106', resource: '/claims/9', topic: 'claims' }),
+        0,
+        // runners omitted entirely — the production defaults must be used.
+      );
+      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'claims' });
+      expect(h.loadMercadoLivreContext).toHaveBeenCalledWith(asDb(db), 'conta-A');
+      expect(h.createMercadoLivreApi).toHaveBeenCalled();
+      expect(h.importClaimMercadoLivre).toHaveBeenCalledWith(
+        expect.objectContaining({
+          db: asDb(db),
+          integracaoId: 'conta-A',
+          conta: { userId: 999, cor: 4 },
+          nowMs: 1_700_000_000_000,
+          nowUs: 1_700_000_000_000 * 1000, // ONE clock read, µs converted from ms
+          bucket: h.fakeBucket,
+        }),
+        9,
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
 
