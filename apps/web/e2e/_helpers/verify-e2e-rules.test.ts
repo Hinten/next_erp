@@ -12,29 +12,37 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 describe('verifyE2ENamespaceAccess — #172 staging ruleset pre-flight guard', () => {
-  const originalEnv = { ...process.env };
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    process.env.NEXT_PUBLIC_FIREBASE_API_KEY = 'test-api-key';
-    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID = 'test-project';
-    delete process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID;
+    vi.stubEnv('NEXT_PUBLIC_FIREBASE_API_KEY', 'test-api-key');
+    vi.stubEnv('NEXT_PUBLIC_FIREBASE_PROJECT_ID', 'test-project');
+    vi.stubEnv('NEXT_PUBLIC_FIREBASE_DATABASE_ID', undefined);
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
   });
 
   afterEach(() => {
-    process.env = { ...originalEnv };
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
 
   it('throws without making any request when the client Firebase env is missing', async () => {
-    delete process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+    vi.stubEnv('NEXT_PUBLIC_FIREBASE_API_KEY', undefined);
 
     await expect(verifyE2ENamespaceAccess('e2e@example.com', 'pw')).rejects.toThrow(
       /NEXT_PUBLIC_FIREBASE_API_KEY/,
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('throws a distinct error when sign-in succeeds but the response carries no idToken', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, {}));
+
+    await expect(verifyE2ENamespaceAccess('e2e@example.com', 'pw')).rejects.toThrow(
+      /returned no idToken/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('throws when the ephemeral user sign-in itself fails', async () => {

@@ -61,6 +61,12 @@ async function signInForIdToken(email: string, password: string, apiKey: string)
     );
   }
   const body = (await res.json()) as SignInWithPasswordResponse;
+  if (!body.idToken) {
+    throw new Error(
+      '[verify-e2e-rules] Identity Toolkit sign-in returned no idToken for the ephemeral ' +
+        'e2e user — cannot probe Firestore rules without one.',
+    );
+  }
   return body.idToken;
 }
 
