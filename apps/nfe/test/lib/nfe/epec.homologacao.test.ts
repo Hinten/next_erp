@@ -39,7 +39,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { ESTADO_NFE } from '@delfrance/schemas';
+import { CONTINGENCIA_MODO, ESTADO_NFE } from '@delfrance/schemas';
 import {
   assertNotConsumoIndevido,
   hasNFeCertEnv,
@@ -273,7 +273,7 @@ async function seedFixtures(
     serie: SEFAZ_HOM_EPEC_SERIE,
     idLote: SEED_IDLOTE_START,
     ambiente: '2',
-    contingencia_modo: 'epec',
+    contingencia_modo: CONTINGENCIA_MODO.epec,
     contingencia_justificativa:
       'Teste automatizado de contingencia EPEC em ambiente de homologacao',
     contingencia_dataInicio: Date.now() - 60_000,
