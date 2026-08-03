@@ -103,13 +103,14 @@ import {
   type MercadoLivreApi,
   type MlShipment,
 } from '@delfrance/integrations-mercado-livre';
-import { orderMLCollection, pedidoCollection } from '@delfrance/data/admin/collections';
+import { pedidoCollection } from '@delfrance/data/admin/collections';
 
 import {
   loadContaBag,
   mergeFreteInicial,
   resolveMercadoEnviosIntFreteOuterRef,
 } from './orderImport';
+import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { mlShipmentToFreteInicial } from './orderShipmentMapping';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 
@@ -133,31 +134,6 @@ export interface ShipmentImportResult {
     | 'sem-frete-inicial'
     | 'stale'
     | null;
-}
-
-/* -------------------------------------------------------------------------- */
-/*                          orderML → pedido resolution                      */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Resolve the pedido owning a Mercado Livre order id via its `orderML`
- * mirror — pack_id first, then plain id (the same two-step collection-group
- * resolve `orderPaymentImport.ts` and legacy both use; the pack-first order
- * is a faithful legacy quirk, tasks.dart:1266-1270). Returns `null` when
- * neither key matches any `orderML` doc.
- */
-async function resolvePedidoIdByOrderId(db: Firestore, orderId: number): Promise<string | null> {
-  const byPack = await orderMLCollection
-    .groupQuery(db)
-    .where('pack_id', '==', orderId)
-    .limit(1)
-    .get();
-  const packDoc = byPack.docs[0];
-  if (packDoc) return packDoc.ref.parent?.parent?.id ?? null;
-
-  const byId = await orderMLCollection.groupQuery(db).where('id', '==', orderId).limit(1).get();
-  const idDoc = byId.docs[0];
-  return idDoc ? (idDoc.ref.parent?.parent?.id ?? null) : null;
 }
 
 /* -------------------------------------------------------------------------- */

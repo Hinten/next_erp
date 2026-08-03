@@ -61,6 +61,23 @@ describe('usuarioSchema', () => {
     expect(out.email).toBeNull();
     expect(out.externalId).toBe('a3f8...deadbeef');
   });
+
+  it('defaults apelido to null when absent', () => {
+    const out = usuarioSchema.parse({ nome: 'Sem Apelido' });
+    expect(out.apelido).toBeNull();
+  });
+
+  it('round-trips apelido — the ML buyer nickname on a sem-auth contact', () => {
+    // The ML claims import (Step 14) stores the buyer's site nickname here.
+    const out = usuarioSchema.parse({
+      nome: 'Cliente Mercado Livre',
+      apelido: 'COMPRADOR123',
+      email: null,
+      externalId: '92ba...5014',
+    });
+    expect(out.apelido).toBe('COMPRADOR123');
+    expect(usuarioSchema.parse(out).apelido).toBe('COMPRADOR123');
+  });
 });
 
 describe('isSuperUserBits', () => {
