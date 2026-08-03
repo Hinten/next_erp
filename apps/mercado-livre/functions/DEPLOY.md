@@ -290,50 +290,53 @@ it on). Three separate places matter, and they are NOT interchangeable:
    only.** It documents the same names for the App Hosting backend (which loads
    the repo-root `.env.local`), and that env does **not** reach this separate
    functions codebase — the same caveat the mass-import secrets carry above.
-   (One root `.env.example` is the repo convention — #730.)
+   (One root template set — `.env.example` for config, `.env.secrets.example` for
+   credentials — is the repo convention; #730.)
 
-### Setting (1) — the honest state of the mechanism
+### Setting (1) — `.env.deploy`
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
 directory is the generated `.deploy/mercado-livre-functions`, and
 `scripts/prepare-deploy.mjs` opens with
 `rmSync(deployDir, { recursive: true, force: true })` — it **wipes and
-regenerates the whole folder** as the `predeploy` hook, i.e. after you would
-have dropped a file in it and before firebase reads the source. So a hand-placed
-`.env` there does not survive; there is no `--no-predeploy` escape hatch either.
-Two lanes work today:
+regenerates the whole folder** as the `predeploy` hook, i.e. after you would have
+dropped a file in it and before firebase reads the source. So a hand-placed `.env`
+**there** still does not survive, and there is no `--no-predeploy` escape hatch.
 
-- **Post-deploy on Cloud Run** (a gen2 function IS a Cloud Run service, named
-  after the function in lowercase). After the deploy, per function:
+Instead, put it in the **package** directory and let the hook carry it across the
+wipe. Create `apps/mercado-livre/functions/.env.deploy` (gitignored):
 
-  ```bash
-  gcloud run services list --project <project-id>   # confirm the service names
-  gcloud run services update sweepmercadolivrestock \
-    --region <functions-region> --project <project-id> \
-    --update-env-vars MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
-  # repeat for sweepmercadolivrestockdaily and sendmercadolivrestock
-  ```
+```bash
+MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
+MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN=15
+MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
+```
 
-  ⚠️ Treat this as **not surviving a redeploy**: `firebase deploy` rewrites the
-  service's env from what it computes for the source (an empty `.env` set), so
-  re-apply and re-verify (`gcloud run services describe … --format='value(spec.template.spec.containers[0].env)'`)
-  after every functions deploy.
+`prepare-deploy.mjs` copies it into the artifact **as `.env`** after the wipe, and
+firebase-tools applies it at deploy. It survives redeploys — no
+`gcloud run services update` to re-apply, and no Secret Manager entry for a
+non-secret tunable.
 
-- **Bind it as a secret** — the mechanism this codebase already proves works
-  per-function (`firebase functions:secrets:set` + the `secrets: [...]` option,
-  see the mass-import section). It survives redeploys, but it costs a code edit
-  per variable and Secret Manager is the wrong tool for a non-secret tunable, so
-  it is worth it only for the master flag, if at all.
+**Per-project targeting.** `.env.deploy` applies to whatever project you deploy to,
+so a staging file deployed to produção takes its values with it — and this flag is
+the one that must flip only at the coordinated cutover. For values that belong to
+ONE project, name the file `.env.deploy.<project-id>`: it lands as
+`.env.<project-id>`, which firebase-tools applies only for that `--project`. Both
+can coexist; firebase-tools layers the project-specific file over `.env`.
 
-The durable fix is to have `prepare-deploy.mjs` copy a committed-out
-`apps/mercado-livre/functions/.env.<project-id>` into the artifact **after** the
-wipe, which turns lane 1 into plain firebase-tools behaviour. That change is not
-part of PR C — track it before the cutover if you want a repeatable flip.
+⚠️ The allowlist is anchored and shared by all five `prepare-deploy.mjs` scripts
+(`tools/deploy-env/env-files.mjs`). Exactly two source names are copied —
+`.env.deploy` and `.env.deploy.<project-id>`. A `.env.secrets*` **fails the hook**,
+and so does a bare `.env` (with a rename instruction): everything that reaches the
+artifact is uploaded to the project's `gcf-sources-*` bucket and baked in plaintext
+into the Cloud Run revision, so real secrets stay in Secret Manager
+(`firebase functions:secrets:set` + the `secrets: [...]` option, as the mass-import
+section already does).
 
 `MERCADO_LIVRE_ORDER_BACKFILL_ENABLED` (Step 9's order-backfill sweep) rides
-**exactly the same mechanism** and has the same constraint — it was never
-documented here, which is why the sweep has been shipping dark.
+**exactly the same mechanism** — put it in `.env.deploy` alongside the stock flag.
+It was never documented here, which is why the sweep has been shipping dark.
 
 ### ⚠️ The flag ships OFF — flip it only at the coordinated cutover
 

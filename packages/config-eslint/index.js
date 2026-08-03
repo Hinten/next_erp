@@ -7,6 +7,7 @@ import noOptionalWithoutNullable from './rules/no-optional-without-nullable.js';
 import noErrorAsSoleInstanceof from './rules/no-error-as-sole-instanceof.js';
 import preferSchemaEnum from './rules/prefer-schema-enum.js';
 import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.js';
+import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -104,6 +105,7 @@ const config = [
           'no-error-as-sole-instanceof': noErrorAsSoleInstanceof,
           'prefer-schema-enum': preferSchemaEnum,
           'no-client-estado-history-write': noClientEstadoHistoryWrite,
+          'no-env-secrets-access': noEnvSecretsAccess,
         },
       },
     },
@@ -212,6 +214,22 @@ const config = [
       // place where the old code swallowed FirebaseError into a toast. Failing
       // the build beats shipping a silently missing audit row.
       'delfrance/no-client-estado-history-write': 'error',
+
+      // `.env.secrets.example` (committed, blank) and its gitignored filled-in
+      // sibling hold the repo's credential material. Nothing automated may read
+      // either: a Cloud Functions deploy config ships `"ignore": ["node_modules"]`
+      // and nothing else, so anything a predeploy hook writes into the artifact is
+      // uploaded to the project's `gcf-sources-*` bucket AND baked in plaintext into
+      // the Cloud Run revision. This rule is deliberately enabled HERE, in the base
+      // block, and not inside `typeAware(...)`: that block is `files`-scoped to
+      // `**/*.{ts,tsx,mts,cts}`, which would silently exclude the five
+      // `prepare-deploy.mjs` scripts — the exact files this guards.
+      //
+      // Error, not warn: zero pre-existing sites, and the failure mode is
+      // credential material reaching a cloud bucket, not a style nit. The non-JS
+      // surface ESLint cannot parse (workflows, firebase configs, shell scripts) is
+      // covered by `rules/env-secrets-no-copy.test.js`.
+      'delfrance/no-env-secrets-access': 'error',
     },
   },
 ];

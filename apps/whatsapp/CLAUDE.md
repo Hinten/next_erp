@@ -337,7 +337,8 @@ message (mensagem padrão)" section.
 
 ## Env
 
-See the repo-root `.env.example` (WhatsApp Cloud API section — one root file is
+See the repo-root `.env.example` (WhatsApp Cloud API section; `WHATSAPP_VERIFY_TOKEN`
+and `WHATSAPP_APP_SECRET` are in `.env.secrets.example` — one root template set is
 the repo convention, #730) + `apphosting.yaml`. The per-account permanent token is NOT an
 env var — it is entered per integração and stored server-side. The app-wide
 `WHATSAPP_VERIFY_TOKEN` (GET verify handshake) and `WHATSAPP_APP_SECRET` (the

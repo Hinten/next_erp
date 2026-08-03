@@ -53,16 +53,27 @@ firebase functions:secrets:set NFE_CERT_PASSWORD  --project <project-id>  # env-
   → only `NFE_CERT_ENC_KEY` is actually used; **trim the other two** from the
   `secrets` array in `src/options.ts`.
 - **Test path (env-fallback):** a filial with no uploaded cert signs with the env
-  A1 — keep all three, and set `NFE_CERT_ENV_FALLBACK=1` in `.env` (below).
+  A1 — keep all three, and set `NFE_CERT_ENV_FALLBACK=1` in `.env.deploy` (below).
 
 > `NFE_TEST_CNPJ` / `NFE_TEST_IE` are **not** function secrets — the reconcile path
 > never reads them. They're for the **local seed/emit script** (`.env.local`), which
 > stamps the test filial's CNPJ/IE. Don't declare them here.
 
-**Non-secret config (`.env`).** Put non-secret runtime config in
-**`apps/nfe/functions/.env`** (gitignored; see `.env.example`). `prepare-deploy.mjs`
-copies `.env*` (except `.env.local`/`.env.example`) into the artifact, and firebase
-loads it as the function's runtime env at deploy.
+**Non-secret config (`.env.deploy`).** Put non-secret runtime config in
+**`apps/nfe/functions/.env.deploy`** (gitignored; see `.env.example`).
+`prepare-deploy.mjs` copies it into the artifact **as `.env`**, and firebase loads it
+as the function's runtime env at deploy. For config that should apply to ONE project
+only, use `.env.deploy.<project-id>` — it lands as `.env.<project-id>`, which
+firebase-tools applies only when you deploy with that `--project`.
+
+> ⚠️ **Renamed from the bare `.env` (was: everything matching `.env*` except
+> `.env.local`/`.env.example` got copied).** That was a denylist, so every new `.env*`
+> name the repo invented was opt-OUT of being uploaded to the project's
+> `gcf-sources-*` bucket — `.env.secrets` included. The allowlist now lives in
+> `tools/deploy-env/env-files.mjs` and is shared by all five `prepare-deploy.mjs`
+> scripts. **If you already have an `apps/nfe/functions/.env` on your machine, rename
+> it to `.env.deploy`** — the predeploy hook fails loudly with that instruction
+> rather than silently shipping without it. A `.env.secrets*` fails the hook outright.
 
 > The `.env.example` next to this file is the **one deliberate exception** to the
 > repo's one-root-`.env.example` convention (#730): the repo-root `.env.local`

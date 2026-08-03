@@ -184,11 +184,15 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Seven custom lint rules in `packages/config-eslint/rules/`:
+- Eight custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
-  `no-optional-without-nullable`, `no-client-estado-history-write` and
+  `no-optional-without-nullable`, `no-client-estado-history-write`,
+  `no-env-secrets-access` and
   `prefer-schema-enum` (error), `no-inline-admin-collection` and
-  `no-error-as-sole-instanceof` (warn). `no-client-estado-history-write` guards
+  `no-error-as-sole-instanceof` (warn). `no-env-secrets-access` bans any literal
+  naming `.env.secrets` — the repo's credential template, which nothing automated
+  may read; its non-JS half (workflows, firebase configs, shell) is the
+  `env-secrets-no-copy` backstop test, since ESLint parses neither. `no-client-estado-history-write` guards
   BOTH server-owned pedido audit trails — `historicoEstadoPedido` and
   `historicoFtIni` — whose sole writer is the `onPedidoEstadoChanged` trigger.
   `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside

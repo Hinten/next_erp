@@ -9,9 +9,8 @@ import {
   symlinkSync,
   existsSync,
   cpSync,
-  readdirSync,
-  copyFileSync,
 } from 'node:fs';
+import { copyDeployEnv } from '../../../../tools/deploy-env/env-files.mjs';
 
 // Builds the deploy artifact for the `nfe` Cloud Functions codebase. Run as the
 // deploy `predeploy` hook (`node apps/nfe/functions/scripts/prepare-deploy.mjs`)
@@ -63,15 +62,13 @@ cpSync(join(nfeLib, 'generated', 'moc7.0', 'schemas'), join(deployDir, 'schemas'
   recursive: true,
 });
 
-// 3b. Copy NON-secret env files into the artifact so the deployed function gets
-//     them: firebase loads `.env` + `.env.<projectId>` from the source dir at
-//     deploy. `.env.local` is emulator-only; `.env.example` is the doc template.
+// 3b. Copy the NON-secret env file into the artifact so the deployed function gets
+//     it: firebase loads `.env` + `.env.<projectId>` from the source dir at deploy.
+//     The source name is `.env.deploy` (or `.env.deploy.<projectId>`) and the copy
+//     strips the `.deploy` infix — see tools/deploy-env/env-files.mjs for why the
+//     allowlist is anchored and why a `.env.secrets*` fails the hook outright.
 //     (Secrets live in Secret Manager, declared via setGlobalOptions — NOT here.)
-for (const f of readdirSync(pkgDir)) {
-  if (f.startsWith('.env') && f !== '.env.local' && f !== '.env.example') {
-    copyFileSync(join(pkgDir, f), join(deployDir, f));
-  }
-}
+const copiedEnv = copyDeployEnv(pkgDir, deployDir);
 
 // 4. Junction the app's installed node_modules so firebase-tools' LOCAL trigger
 //    analysis can find + spawn the Functions SDK; kept OUT of the upload by
@@ -83,7 +80,9 @@ if (existsSync(realNodeModules)) {
   console.warn('warning: apps/nfe/node_modules not found — run `pnpm install` before deploying');
 }
 
+// eslint-disable-next-line no-console -- deploy script progress output
 console.log(
   `prepared .deploy/nfe-functions — region=${region}, ` +
-    `deps=${Object.keys(realPkg.dependencies).join(', ')}, +ca +schemas`,
+    `deps=${Object.keys(realPkg.dependencies).join(', ')}, +ca +schemas, ` +
+    `env=${copiedEnv.length ? copiedEnv.join(' + ') : 'none'}`,
 );
