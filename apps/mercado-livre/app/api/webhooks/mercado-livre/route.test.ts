@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
 
-vi.mock('@/lib/marketplace/mlTasks', () => ({
+vi.mock('@/lib/marketplace/tasks/mlTasks', () => ({
   createMlTaskScheduler: () => ({ enqueue: h.enqueue }),
 }));
 

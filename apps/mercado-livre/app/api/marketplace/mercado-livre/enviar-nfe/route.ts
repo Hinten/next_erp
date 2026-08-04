@@ -5,8 +5,8 @@
  * (Step 12, #739). Body: `{ pedidoId, nfeId }` — the `pedidos/{pedidoId}/nfev4/{nfeId}`
  * document. The route only re-checks eligibility and enqueues — it writes
  * NOTHING to Firestore (zero-write model); the actual ML call runs in the
- * `processMercadoLivreNfeUpload` task (see `lib/marketplace/nfeUpload.ts` +
- * `lib/marketplace/mlNfeUploadTasks.ts`).
+ * `processMercadoLivreNfeUpload` task (see `lib/marketplace/nfe/nfeUpload.ts` +
+ * `lib/marketplace/tasks/mlNfeUploadTasks.ts`).
  *
  * Requires `PERM.pedido.write`, NOT the `PERM.integracao.write` the sibling ML
  * admin routes use: the Step-13 callers are expedição staff acting on a pedido
@@ -30,15 +30,15 @@ import { nfev4Collection } from '@delfrance/data/admin/collections';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { MlTasksDisabledError } from '@/lib/marketplace/mlTasks';
-import { createMlNfeUploadScheduler } from '@/lib/marketplace/mlNfeUploadTasks';
+import { MlTasksDisabledError } from '@/lib/marketplace/tasks/mlTasks';
+import { createMlNfeUploadScheduler } from '@/lib/marketplace/tasks/mlNfeUploadTasks';
 import {
   type NfeUploadDispatch,
   type PedidoUploadCheck,
   decideNfeUploadDispatch,
   nfeUploadTaskSchema,
   shouldUploadForPedido,
-} from '@/lib/marketplace/nfeUpload';
+} from '@/lib/marketplace/nfe/nfeUpload';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

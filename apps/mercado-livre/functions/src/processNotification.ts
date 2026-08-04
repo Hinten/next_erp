@@ -5,7 +5,7 @@ import {
   MERCADO_LIVRE_NOTIFICATION_QUEUE,
   TASK_MAX_ATTEMPTS,
   handleNotificationTask,
-} from '../../lib/marketplace/notificacao';
+} from '../../lib/marketplace/core/notificacao';
 import { getDb } from './lib/admin';
 
 /**

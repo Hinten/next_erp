@@ -8,16 +8,16 @@ import { logger } from 'firebase-functions/v2';
 import {
   MERCADO_LIVRE_NOTIFICATION_QUEUE,
   reprocessNotifications,
-} from '../../lib/marketplace/notificacao';
-import { MERCADO_LIVRE_MASS_IMPORT_QUEUE } from '../../lib/marketplace/massImport';
+} from '../../lib/marketplace/core/notificacao';
+import { MERCADO_LIVRE_MASS_IMPORT_QUEUE } from '../../lib/marketplace/import/massImport';
 import {
   ORDER_BACKFILL_FLAG_ENV,
   runOrderBackfillSweep,
-} from '../../lib/marketplace/orderBackfill';
-import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoquePlan';
-import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/precoSync';
-import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfeUpload';
-import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';
+} from '../../lib/marketplace/orders/orderBackfill';
+import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoque/estoquePlan';
+import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/preco/precoSync';
+import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfe/nfeUpload';
+import { createMlTaskScheduler } from '../../lib/marketplace/tasks/mlTasks';
 import { getDb } from './lib/admin';
 import * as notificationHandlers from './processNotification';
 import * as massImportHandlers from './processMassImport';

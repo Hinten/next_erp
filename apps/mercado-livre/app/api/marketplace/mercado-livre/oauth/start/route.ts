@@ -10,9 +10,9 @@ import { NextResponse } from 'next/server';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { signState } from '@/lib/marketplace/state';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { signState } from '@/lib/marketplace/core/state';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

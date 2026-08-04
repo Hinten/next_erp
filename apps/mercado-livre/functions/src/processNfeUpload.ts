@@ -8,7 +8,7 @@ import {
   type NfeUploadTaskPayload,
   nfeUploadTaskSchema,
   processNfeUploadTask,
-} from '../../lib/marketplace/nfeUpload';
+} from '../../lib/marketplace/nfe/nfeUpload';
 import { getDb } from './lib/admin';
 
 /**

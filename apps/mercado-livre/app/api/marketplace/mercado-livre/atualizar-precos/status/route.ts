@@ -1,7 +1,7 @@
 /**
  * `GET /api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=…&jobId=…`
  * — poll the progress of a bulk price-sync job started by
- * `POST /atualizar-precos` (see `lib/marketplace/precoSync.ts`). Requires
+ * `POST /atualizar-precos` (see `lib/marketplace/preco/precoSync.ts`). Requires
  * `PERM.integracao.read`.
  *
  * A `jobId` that doesn't exist, or that exists but belongs to a different

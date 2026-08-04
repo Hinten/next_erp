@@ -7,7 +7,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // (agents never run firebase; index deploy is a coordinated human step).
 //
 // Live proof that `fetchStockFamilies` AND the sold-ids pre-pass
-// (`fetchSoldProdutoIds`) in lib/marketplace/estoquePlan.ts ride the declared
+// (`fetchSoldProdutoIds`) in lib/marketplace/estoque/estoquePlan.ts ride the declared
 // indexes instead of silently full-scanning: this Firestore Enterprise
 // edition auto-creates NO indexes, an unindexed subquery scans its collection
 // ONCE PER OUTER ROW, and Enterprise bills data scanned. Pipelines have no
@@ -167,7 +167,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // overridable via FIREBASE_DATABASE_ID.
 //
 // ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchSoldProdutoIds` in
-// apps/mercado-livre/lib/marketplace/estoquePlan.ts — this script mirrors
+// apps/mercado-livre/lib/marketplace/estoque/estoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
 // shape change there must be reflected here or the proof goes stale. (The
 // mirror follows the owner-approved rework spec: no childIds define, no

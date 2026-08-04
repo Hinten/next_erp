@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 
-import { signState } from '@/lib/marketplace/state';
+import { signState } from '@/lib/marketplace/core/state';
 
 // The callback takes NO Bearer token — it's a browser redirect from Mercado
 // Livre — so the signed `state` is the only trust anchor. signState / verifyState
@@ -16,8 +16,8 @@ vi.mock('@/lib/firebase/admin', () => ({
   getAdminFirestore: () => ({}),
 }));
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 

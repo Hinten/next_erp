@@ -19,16 +19,16 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (unauthenticated
   `topic`+`resource` callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues
   onto the `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
-  write on the happy path — see `lib/marketplace/mlTasks.ts` + `functions/DEPLOY.md`).
-- `lib/marketplace/notificacao.ts` — this channel's webhook adapter: `parseNotificationBody`,
+  write on the happy path — see `lib/marketplace/tasks/mlTasks.ts` + `functions/DEPLOY.md`).
+- `lib/marketplace/core/notificacao.ts` — this channel's webhook adapter: `parseNotificationBody`,
   the dispatch-by-topic `processNotificationPayload`, and a `defineNotificationPipeline({...})`
   binding. The resilience behaviour (retry disposition, failures-only persistence, the
   durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications` — see the
   `webhook-notifications` skill. This channel is the one that needs a PHASE-aware
   `toDisposition` (an unparseable `resource` drops in the task but parks in the sweep).
-- `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
+- `lib/marketplace/core/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
-- `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
+- `lib/marketplace/core/tokenStore.ts` — the durable-token store over the admin-only
   `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
   the still-running Flutter app during the dual-run migration; "one wins" refresh).
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend

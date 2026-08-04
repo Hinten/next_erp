@@ -2,14 +2,14 @@ import { logger } from 'firebase-functions';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 import { z } from 'zod';
 
-import { createMlPriceSyncScheduler } from '../../lib/marketplace/mlPriceSyncTasks';
+import { createMlPriceSyncScheduler } from '../../lib/marketplace/tasks/mlPriceSyncTasks';
 import {
   MERCADO_LIVRE_PRICE_SYNC_QUEUE,
   PRICE_SYNC_MAX_ATTEMPTS,
   type PriceSyncTaskPayload,
   priceSyncTaskSchema,
   processPriceSyncJob,
-} from '../../lib/marketplace/precoSync';
+} from '../../lib/marketplace/preco/precoSync';
 import { getDb } from './lib/admin';
 
 /**

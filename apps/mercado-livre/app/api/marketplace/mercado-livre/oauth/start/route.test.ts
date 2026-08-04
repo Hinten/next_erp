@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 
-import { verifyState } from '@/lib/marketplace/state';
+import { verifyState } from '@/lib/marketplace/core/state';
 
 // Mock the two seams: admin auth (drives verifyCaller) and the ML context loader
 // (sidesteps Firestore + the credential store + the plugin). signState /
@@ -16,8 +16,8 @@ vi.mock('@/lib/firebase/admin', () => ({
   getAdminFirestore: () => ({}),
 }));
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 

@@ -6,7 +6,7 @@
  * freshness before touching Firestore. Stateless — no nonce store needed (the
  * HMAC is the integrity guarantee, and it binds the `metodo_pgto` doc id so a
  * caller can't drive a callback for another account). Ported from
- * apps/mercado-livre/lib/marketplace/state.ts.
+ * apps/mercado-livre/lib/marketplace/core/state.ts.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PriceSyncAlreadyRunningError } from '@/lib/marketplace/precoSync';
+import { PriceSyncAlreadyRunningError } from '@/lib/marketplace/preco/precoSync';
 
 // verifyCaller / context loader / job start / scheduler / job-doc merge are
 // mocked; the route's own logic (body validation, the tabela-normal gate,
@@ -20,17 +20,17 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/precoSync', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/precoSync')>();
+vi.mock('@/lib/marketplace/preco/precoSync', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/preco/precoSync')>();
   return { ...actual, startPriceSyncJob: h.startPriceSyncJob };
 });
 
-vi.mock('@/lib/marketplace/mlPriceSyncTasks', () => ({
+vi.mock('@/lib/marketplace/tasks/mlPriceSyncTasks', () => ({
   createMlPriceSyncScheduler: () => ({ enqueue: h.enqueue }),
 }));
 
@@ -107,7 +107,8 @@ describe('POST /api/marketplace/mercado-livre/atualizar-precos', () => {
   });
 
   it('maps an unknown/wrong-tipo account to its error response (mirrors /importar-todos)', async () => {
-    const { MercadoLivreContaNotConfiguredError } = await import('@/lib/marketplace/mercadoLivre');
+    const { MercadoLivreContaNotConfiguredError } =
+      await import('@/lib/marketplace/core/mercadoLivre');
     h.loadCtx.mockRejectedValue(new MercadoLivreContaNotConfiguredError('não encontrada'));
     const res = await POST(req({ integracaoId: 'int-1' }));
     expect(res.status).toBe(404);

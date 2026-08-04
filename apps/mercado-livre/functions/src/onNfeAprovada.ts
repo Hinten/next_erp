@@ -2,9 +2,12 @@ import { logger } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { nfeMeta } from '@delfrance/schemas';
 
-import { createMlNfeUploadScheduler } from '../../lib/marketplace/mlNfeUploadTasks';
-import { MlTasksDisabledError } from '../../lib/marketplace/mlTasks';
-import { decideNfeUploadDispatch, shouldUploadForPedido } from '../../lib/marketplace/nfeUpload';
+import { createMlNfeUploadScheduler } from '../../lib/marketplace/tasks/mlNfeUploadTasks';
+import { MlTasksDisabledError } from '../../lib/marketplace/tasks/mlTasks';
+import {
+  decideNfeUploadDispatch,
+  shouldUploadForPedido,
+} from '../../lib/marketplace/nfe/nfeUpload';
 import { getDb } from './lib/admin';
 
 /**

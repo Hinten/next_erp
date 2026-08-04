@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MassImportAlreadyRunningError } from '@/lib/marketplace/massImport';
+import { MassImportAlreadyRunningError } from '@/lib/marketplace/import/massImport';
 
 // verifyCaller / context loader / job start / scheduler / job-doc merge are
 // mocked; the route's own logic (body validation, defaults, error mapping,
@@ -20,17 +20,17 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/massImport', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/massImport')>();
+vi.mock('@/lib/marketplace/import/massImport', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/import/massImport')>();
   return { ...actual, startMassImportJob: h.startMassImportJob };
 });
 
-vi.mock('@/lib/marketplace/mlMassImportTasks', () => ({
+vi.mock('@/lib/marketplace/tasks/mlMassImportTasks', () => ({
   createMlMassImportScheduler: () => ({ enqueue: h.enqueue }),
 }));
 
@@ -110,7 +110,8 @@ describe('POST /api/marketplace/mercado-livre/importar-todos', () => {
   });
 
   it('maps an unknown/wrong-tipo account to its error response (mirrors /importar)', async () => {
-    const { MercadoLivreContaNotConfiguredError } = await import('@/lib/marketplace/mercadoLivre');
+    const { MercadoLivreContaNotConfiguredError } =
+      await import('@/lib/marketplace/core/mercadoLivre');
     h.loadCtx.mockRejectedValue(new MercadoLivreContaNotConfiguredError('não encontrada'));
     const res = await POST(req({ integracaoId: 'int-1' }));
     expect(res.status).toBe(404);

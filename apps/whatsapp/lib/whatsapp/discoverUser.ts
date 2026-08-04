@@ -11,7 +11,7 @@
  * and both create. This port closes that by (a) keying the sem-auth `usuarios`
  * doc on the deterministic `externalId` hash as its document id and creating it
  * with `.create()` + an ALREADY_EXISTS re-lookup (mirroring
- * `apps/mercado-livre/lib/marketplace/import.ts`), and (b) only creating the
+ * `apps/mercado-livre/lib/marketplace/import/import.ts`), and (b) only creating the
  * paired cliente when THIS call actually minted the usuario, so a concurrent
  * loser never doubles the cliente.
  *

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 
-import { MlTasksDisabledError } from '@/lib/marketplace/mlTasks';
+import { MlTasksDisabledError } from '@/lib/marketplace/tasks/mlTasks';
 
 // verifyCaller / dispatch decision / pedido check / scheduler are mocked; the
 // route's own logic (body validation, the 404, skip→409 mapping, the always-202
@@ -37,12 +37,12 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/nfeUpload', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/nfeUpload')>();
+vi.mock('@/lib/marketplace/nfe/nfeUpload', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/nfe/nfeUpload')>();
   return { ...actual, decideNfeUploadDispatch: h.decide, shouldUploadForPedido: h.shouldUpload };
 });
 
-vi.mock('@/lib/marketplace/mlNfeUploadTasks', () => ({
+vi.mock('@/lib/marketplace/tasks/mlNfeUploadTasks', () => ({
   createMlNfeUploadScheduler: () => ({ enqueue: h.schedEnqueue }),
 }));
 

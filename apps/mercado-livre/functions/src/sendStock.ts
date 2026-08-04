@@ -5,9 +5,9 @@ import {
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
   concurrentDispatches,
   dispatchesPerSecond,
-} from '../../lib/marketplace/estoquePlan';
-import { processStockSendTask } from '../../lib/marketplace/estoqueSend';
-import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
+} from '../../lib/marketplace/estoque/estoquePlan';
+import { processStockSendTask } from '../../lib/marketplace/estoque/estoqueSend';
+import { createMlStockTaskScheduler } from '../../lib/marketplace/tasks/mlStockTasks';
 import { getDb } from './lib/admin';
 
 /**

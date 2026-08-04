@@ -14,9 +14,9 @@
 import { NextResponse } from 'next/server';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { MarketplaceStateError, verifyState } from '@/lib/marketplace/state';
-import { isMercadoLivreError } from '@/lib/marketplace/respond';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { MarketplaceStateError, verifyState } from '@/lib/marketplace/core/state';
+import { isMercadoLivreError } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

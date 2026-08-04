@@ -249,6 +249,6 @@ refetch-before-mutate). The last two are known gaps, not models to follow.
 - `packages/data/src/admin/notifications/notificationGuardrails.test.ts` (B+C: every `notificacoes*` handle has a pipeline consumer + sweep index)
 - `packages/data/src/admin/adminBundleSafety.test.ts`
 - `packages/schemas/src/shared/notificationResilience.ts`
-- `apps/{mercado-livre/lib/marketplace,mercado-pago/lib/payments,whatsapp/lib/whatsapp}/notificacao.ts`
+- `apps/{mercado-livre/lib/marketplace/core,mercado-pago/lib/payments,whatsapp/lib/whatsapp}/notificacao.ts`
 - `apps/{mercado-livre,mercado-pago,whatsapp}/functions/src/index.ts` + `DEPLOY.md`
 - `firestore.indexes.json` (the three `notificacoes*` composite indexes)

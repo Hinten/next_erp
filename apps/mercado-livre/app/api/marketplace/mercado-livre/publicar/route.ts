@@ -14,10 +14,10 @@ import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { publishProduto } from '@/lib/marketplace/publish';
-import { MercadoLivrePublishError } from '@/lib/marketplace/publishCore';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
+import { publishProduto } from '@/lib/marketplace/publish/publish';
+import { MercadoLivrePublishError } from '@/lib/marketplace/publish/publishCore';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

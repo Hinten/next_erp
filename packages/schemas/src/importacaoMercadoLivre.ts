@@ -45,7 +45,7 @@ export const IMPORTACAO_MERCADO_LIVRE_STATUS = {
 
 /**
  * The mass-import toggles — the same per-item flags `ImportOptions` accepts
- * (`apps/mercado-livre/lib/marketplace/importCore.ts`) plus one mass-import-only
+ * (`apps/mercado-livre/lib/marketplace/import/importCore.ts`) plus one mass-import-only
  * flag: `atualizarCadastrados` (default off — a plain re-scan only imports
  * items with NO existing link doc for this conta; turning this on also
  * re-drives already-registered items through the per-item import, which still

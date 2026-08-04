@@ -39,8 +39,11 @@ import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { parseNotificationBody, persistNotificationFailure } from '@/lib/marketplace/notificacao';
-import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
+import {
+  parseNotificationBody,
+  persistNotificationFailure,
+} from '@/lib/marketplace/core/notificacao';
+import { createMlTaskScheduler } from '@/lib/marketplace/tasks/mlTasks';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

@@ -2,7 +2,7 @@ import { toOuterRef, type OuterRef } from '@delfrance/schemas';
 
 /**
  * Materialized breadcrumb for a categoria — same format as the ML import
- * (`apps/mercado-livre/lib/marketplace/importCategoria.ts`): names joined with
+ * (`apps/mercado-livre/lib/marketplace/import/importCategoria.ts`): names joined with
  * ` > ` (spaces around `>`). Root categories are just `nome`.
  *
  * Issue #554: derived on every save; never hand-edited in the UI.
