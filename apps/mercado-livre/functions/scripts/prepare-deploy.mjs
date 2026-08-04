@@ -50,6 +50,9 @@ writeFileSync(join(deployDir, 'package.json'), JSON.stringify(deployPkg, null, 2
 //     operator-authored source name is `.env.deploy` (or `.env.deploy.<projectId>`)
 //     and the copy strips the `.deploy` infix. The allowlist is anchored and a
 //     `.env.secrets*` fails the hook outright — see tools/deploy-env/env-files.mjs.
+//     (#764 introduced this copy inline and single-file; it now routes through the
+//     shared classifier so all five deploy scripts agree and the per-project
+//     variant works.)
 const copiedEnv = copyDeployEnv(pkgDir, deployDir);
 
 // 3. Junction the app's installed node_modules so firebase-tools' LOCAL trigger

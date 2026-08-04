@@ -293,7 +293,7 @@ it on). Three separate places matter, and they are NOT interchangeable:
    (One root template set — `.env.example` for config, `.env.secrets.example` for
    credentials — is the repo convention; #730.)
 
-### Setting (1) — `.env.deploy`
+### Setting (1) — runtime env via `.env.deploy`
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
@@ -324,6 +324,23 @@ the one that must flip only at the coordinated cutover. For values that belong t
 ONE project, name the file `.env.deploy.<project-id>`: it lands as
 `.env.<project-id>`, which firebase-tools applies only for that `--project`. Both
 can coexist; firebase-tools layers the project-specific file over `.env`.
+
+⚠️ **The four deploy-time-only tuning knobs**
+(`MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND` / `MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES`
+for stock sync, and `MERCADO_LIVRE_PRECO_DISPATCHES_PER_SECOND` /
+`MERCADO_LIVRE_PRECO_CONCURRENT_DISPATCHES` for price sync) are read at **deploy**
+time by the `onTaskDispatched.rateLimits` option (see `src/sendStock.ts` +
+`src/processPriceSync.ts`) and baked into the queue config. They do **not** belong
+in `.env.deploy` — that file becomes the function's RUNTIME env, which is read too
+late. Export them in the shell you run `firebase deploy` from:
+
+```bash
+export MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND=2
+export MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES=2
+firebase deploy --only functions:mercado-livre \
+  --config firebase.mercado-livre.deploy.json \
+  --project <project-id>
+```
 
 ⚠️ The allowlist is anchored and shared by all five `prepare-deploy.mjs` scripts
 (`tools/deploy-env/env-files.mjs`). Exactly two source names are copied —
