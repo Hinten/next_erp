@@ -2,6 +2,7 @@ import { bundle } from '../build.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
+import { copyDeployEnv } from '../../../../tools/deploy-env/env-files.mjs';
 
 // Builds the deploy artifact for the `mercado-livre` Cloud Functions codebase.
 // Run as the deploy `predeploy` hook (`node
@@ -42,16 +43,19 @@ const deployPkg = {
 };
 writeFileSync(join(deployDir, 'package.json'), JSON.stringify(deployPkg, null, 2) + '\n');
 
-// 3. Copy optional .env.deploy file into the artifact as .env, if it exists.
-//    firebase-tools applies .env file at deploy time for gen2 functions.
-const envDeployFile = join(pkgDir, '.env.deploy');
-const envArtifact = join(deployDir, '.env');
-if (existsSync(envDeployFile)) {
-  const envContent = readFileSync(envDeployFile, 'utf8');
-  writeFileSync(envArtifact, envContent);
-}
+// 2b. Copy the optional runtime env file into the artifact — this is what makes a
+//     deploy-time flag (MERCADO_LIVRE_STOCK_SYNC_ENABLED and friends) survive a
+//     redeploy instead of needing `gcloud run services update` after every one.
+//     firebase loads `.env` + `.env.<projectId>` from the source dir at deploy; the
+//     operator-authored source name is `.env.deploy` (or `.env.deploy.<projectId>`)
+//     and the copy strips the `.deploy` infix. The allowlist is anchored and a
+//     `.env.secrets*` fails the hook outright — see tools/deploy-env/env-files.mjs.
+//     (#764 introduced this copy inline and single-file; it now routes through the
+//     shared classifier so all five deploy scripts agree and the per-project
+//     variant works.)
+const copiedEnv = copyDeployEnv(pkgDir, deployDir);
 
-// 4. Junction the app's installed node_modules so firebase-tools' LOCAL trigger
+// 3. Junction the app's installed node_modules so firebase-tools' LOCAL trigger
 //    analysis can find + spawn the Functions SDK; kept OUT of the upload by
 //    `ignore: ["node_modules"]`. The cloud reinstalls the minimal deps.
 const realNodeModules = join(pkgDir, '..', 'node_modules');
@@ -66,5 +70,6 @@ if (existsSync(realNodeModules)) {
 // eslint-disable-next-line no-console -- deploy script progress output
 console.log(
   `prepared .deploy/mercado-livre-functions — region=${region}, ` +
-    `deps=${Object.keys(realPkg.dependencies).join(', ')}`,
+    `deps=${Object.keys(realPkg.dependencies).join(', ')}, ` +
+    `env=${copiedEnv.length ? copiedEnv.join(' + ') : 'none'}`,
 );

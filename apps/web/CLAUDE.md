@@ -44,7 +44,7 @@ lib/
 ## Dev
 
 ```bash
-cp ../../.env.example ../../.env.local   # ONE root file (#730) — fill in Firebase config
+cd ../.. && cat .env.example .env.secrets.example > .env.local && cd apps/web   # ONE root template set (#730) — fill in Firebase config
 pnpm dev                           # run ALL apps in parallel from the repo root
 ```
 

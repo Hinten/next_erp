@@ -1,0 +1,21 @@
+{
+  "name": "@delfrance/deploy-env",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./env-files.mjs",
+  "exports": {
+    ".": "./env-files.mjs",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "lint": "eslint .",
+    "clean": "rm -rf .turbo"
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "eslint": "catalog:",
+    "vitest": "catalog:"
+  }
+}
