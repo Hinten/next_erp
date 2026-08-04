@@ -2,9 +2,10 @@ import { defineConfig } from 'vitest/config';
 
 // Rules behavior suite — runs ONLY under `firebase emulators:exec --config
 // firebase.rules.json` (see that file at the repo root). The dedicated
-// `*.rules.test.ts` extension + this separate config keep it out of the
-// offline unit run and out of vitest.workspace.ts (which only globs
-// vitest.config.ts) — same isolation pattern as apps/functions' test:storage.
+// `*.rules.test.ts` extension + this separate config keep it out of the offline
+// unit run: this package's `test` script points at vitest.config.ts, so nothing
+// turbo runs picks these up — same isolation pattern as apps/functions'
+// test:storage.
 export default defineConfig({
   test: {
     name: '@delfrance/rules-gen:rules',

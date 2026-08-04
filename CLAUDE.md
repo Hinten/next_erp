@@ -222,3 +222,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   and never pins a version. Do not re-add a `corepack prepare pnpm@x.y.z`:
   it is silently overridden, which is exactly how the workflows drifted to
   declaring a version they never used (#612).
+- **Turbo is the only test aggregator — there is no root vitest config.** Each
+  workspace owns a `vitest.config.ts` and a `test` script; `pnpm test`
+  (= `turbo run test`) fans out across them with caching, and `ci.yml` filters
+  out the six workspaces needing live creds or emulators. Do not re-add a
+  `vitest.workspace.ts`: Vitest 4 **removed** workspace files, so the one that
+  used to sit at the root was inert — `vitest --project <name>` matched nothing
+  and a bare root `vitest` just globbed the repo with the root config, failing on
+  every app-level path alias. A root `projects: [...]` config would "work" but is
+  a trap: it runs the live-credential suites turbo's filters exist to skip.
