@@ -292,48 +292,56 @@ it on). Three separate places matter, and they are NOT interchangeable:
    functions codebase — the same caveat the mass-import secrets carry above.
    (One root `.env.example` is the repo convention — #730.)
 
-### Setting (1) — the honest state of the mechanism
+### Setting (1) — runtime env via .env.deploy
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
 directory is the generated `.deploy/mercado-livre-functions`, and
 `scripts/prepare-deploy.mjs` opens with
 `rmSync(deployDir, { recursive: true, force: true })` — it **wipes and
-regenerates the whole folder** as the `predeploy` hook, i.e. after you would
-have dropped a file in it and before firebase reads the source. So a hand-placed
-`.env` there does not survive; there is no `--no-predeploy` escape hatch either.
-Two lanes work today:
+regenerates the whole folder** as the `predeploy` hook. A hand-placed `.env`
+there does not survive **unless** it is copied into the artifact during the
+script's setup phase.
 
-- **Post-deploy on Cloud Run** (a gen2 function IS a Cloud Run service, named
-  after the function in lowercase). After the deploy, per function:
+`scripts/prepare-deploy.mjs` now copies an optional, gitignored `.env.deploy`
+file into the artifact as `.env` **after** the wipe. firebase-tools then applies
+it at deploy time:
 
-  ```bash
-  gcloud run services list --project <project-id>   # confirm the service names
-  gcloud run services update sweepmercadolivrestock \
-    --region <functions-region> --project <project-id> \
-    --update-env-vars MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
-  # repeat for sweepmercadolivrestockdaily and sendmercadolivrestock
-  ```
+1. Create `apps/mercado-livre/functions/.env.deploy` (gitignored) with your
+   deploy-time env vars:
 
-  ⚠️ Treat this as **not surviving a redeploy**: `firebase deploy` rewrites the
-  service's env from what it computes for the source (an empty `.env` set), so
-  re-apply and re-verify (`gcloud run services describe … --format='value(spec.template.spec.containers[0].env)'`)
-  after every functions deploy.
+   ```bash
+   MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
+   MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN=15
+   MERCADO_LIVRE_STOCK_RATE_PAUSE_MIN=5
+   MERCADO_LIVRE_PRECO_PAGE_LIMIT=25
+   ```
 
-- **Bind it as a secret** — the mechanism this codebase already proves works
-  per-function (`firebase functions:secrets:set` + the `secrets: [...]` option,
-  see the mass-import section). It survives redeploys, but it costs a code edit
-  per variable and Secret Manager is the wrong tool for a non-secret tunable, so
-  it is worth it only for the master flag, if at all.
+2. Run `firebase deploy` as normal — the `predeploy` hook copies the file
+   into the artifact, and firebase-tools applies it to the deployed functions.
+3. The file survives redeploys — no re-apply needed after every deploy.
 
-The durable fix is to have `prepare-deploy.mjs` copy a committed-out
-`apps/mercado-livre/functions/.env.<project-id>` into the artifact **after** the
-wipe, which turns lane 1 into plain firebase-tools behaviour. That change is not
-part of PR C — track it before the cutover if you want a repeatable flip.
+⚠️ **The two deploy-time-only tuning knobs**
+(`MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND` / `MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES`
+for stock sync, and `MERCADO_LIVRE_PRECO_DISPATCHES_PER_SECOND` /
+`MERCADO_LIVRE_PRECO_CONCURRENT_DISPATCHES` for price sync) are read at
+**deploy** time by the `onTaskDispatched.rateLimits` option (see `src/sendStock.ts` +
+`src/processPriceSync.ts`) and baked into the queue config. These knobs should
+NOT be set in `.env.deploy` — they are only needed in the **deploying shell's
+environment** when you run `firebase deploy`. Export them before deploying:
+
+```bash
+export MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND=2
+export MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES=2
+firebase deploy --only functions:mercado-livre \
+  --config firebase.mercado-livre.deploy.json \
+  --project <project-id>
+```
 
 `MERCADO_LIVRE_ORDER_BACKFILL_ENABLED` (Step 9's order-backfill sweep) rides
-**exactly the same mechanism** and has the same constraint — it was never
-documented here, which is why the sweep has been shipping dark.
+**exactly the same mechanism** as the stock sync master flag — it is a runtime
+env var and should be set in `.env.deploy` if you want to enable backfill during
+this deploy.
 
 ### ⚠️ The flag ships OFF — flip it only at the coordinated cutover
 

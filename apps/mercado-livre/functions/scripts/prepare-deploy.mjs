@@ -42,7 +42,16 @@ const deployPkg = {
 };
 writeFileSync(join(deployDir, 'package.json'), JSON.stringify(deployPkg, null, 2) + '\n');
 
-// 3. Junction the app's installed node_modules so firebase-tools' LOCAL trigger
+// 3. Copy optional .env.deploy file into the artifact as .env, if it exists.
+//    firebase-tools applies .env file at deploy time for gen2 functions.
+const envDeployFile = join(pkgDir, '.env.deploy');
+const envArtifact = join(deployDir, '.env');
+if (existsSync(envDeployFile)) {
+  const envContent = readFileSync(envDeployFile, 'utf8');
+  writeFileSync(envArtifact, envContent);
+}
+
+// 4. Junction the app's installed node_modules so firebase-tools' LOCAL trigger
 //    analysis can find + spawn the Functions SDK; kept OUT of the upload by
 //    `ignore: ["node_modules"]`. The cloud reinstalls the minimal deps.
 const realNodeModules = join(pkgDir, '..', 'node_modules');
