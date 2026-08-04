@@ -52,7 +52,7 @@
  *  - anchors (S1): rides BOTH declared twins for the array term —
  *    `produtos(paiId ASC, publicado ASC, integracoesComProduto ASC,
  *    __name__ ASC)` and `produtos(paiId ASC, publicado ASC,
- *    integracoesComProduto CONTAINS, __name__ ASC)`. Which form an
+ *    integracoesComProduto CONTAINS, __name__ ASC)`. Which of the two forms an
  *    `arrayContains` predicate actually seeks is spike (b)'s question: the
  *    staging gate PRINTS the ridden index, and the LOSER is dropped in a
  *    follow-up (they are declared together only so the gate can adjudicate).
