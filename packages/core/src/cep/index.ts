@@ -12,6 +12,7 @@
  * barrel — see `packages/core/src/index.barrel.test.ts`.
  */
 export { cleanCep, isCepCompleto, formatCep } from './cep';
+export { IBGE_UF_CODES, codigoMunicipioMatchesUf, ufFromCodigoMunicipio } from './ibgeUf';
 export {
   type EnderecoViaCep,
   type ViaCepClient,

@@ -1,0 +1,28 @@
+{
+  "name": "@delfrance/cmun-table",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dump": "dotenv -e ../../.env.local -- tsx src/dump.ts",
+    "vendor": "tsx src/vendor.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@delfrance/core": "workspace:*",
+    "@delfrance/migrations": "workspace:*",
+    "firebase-admin": "catalog:"
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,0 +1,166 @@
+import { describe, expect, it } from 'vitest';
+import { decodeCMunTable, encodeCMunTable } from './deps';
+import { type CmunDumpRow, CmunDumpError, formatGapReport, validateDump } from './validate';
+
+/** Fixtures are three rows, so the "does this look like Brazil?" bands are off. */
+const OPTS = { sanityBands: false } as const;
+
+function row(over: Partial<CmunDumpRow> = {}): CmunDumpRow {
+  return {
+    cepInicial: 1_000_000,
+    cepFinal: 1_099_999,
+    cMun: '3550308',
+    nomeMunicipio: 'SAO PAULO',
+    uf: 'SP',
+    ...over,
+  };
+}
+
+describe('validateDump', () => {
+  it('normalizes a clean dump into encodable ranges', () => {
+    const result = validateDump(
+      [row({ cepInicial: 2_000_000, cepFinal: 2_099_999, cMun: '3304557', uf: 'RJ' }), row()],
+      OPTS,
+    );
+
+    // Sorted by cepInicial regardless of the dump's document order — the legacy
+    // seed used Firestore auto-ids, so the order is arbitrary.
+    expect(result.ranges).toEqual([
+      { cepInicial: 1_000_000, cepFinal: 1_099_999, cMun: 3_550_308 },
+      { cepInicial: 2_000_000, cepFinal: 2_099_999, cMun: 3_304_557 },
+    ]);
+    expect(result.codeCount).toBe(2);
+  });
+
+  it('produces output the runtime codec accepts', () => {
+    const result = validateDump([row()], OPTS);
+    const table = decodeCMunTable(encodeCMunTable(result.ranges));
+
+    expect([...table.starts]).toEqual([1_000_000]);
+    expect([...table.codes]).toEqual([3_550_308]);
+  });
+
+  describe('fatal checks', () => {
+    it('rejects a CEP bound that arrived as a string', () => {
+      // The legacy import ran `int.parse` and stored Firestore integers, so a
+      // string here means the dump mixed types — and `Number(cep)`'s
+      // leading-zero assumption is void.
+      expect(() => validateDump([row({ cepInicial: '01000000' })], OPTS)).toThrow(CmunDumpError);
+    });
+
+    it('rejects a cMun that is not 7 digits', () => {
+      expect(() => validateDump([row({ cMun: '355030' })], OPTS)).toThrow(CmunDumpError);
+      expect(() => validateDump([row({ cMun: 3_550_308 })], OPTS)).toThrow(CmunDumpError);
+    });
+
+    it('rejects a cMun whose prefix contradicts its UF', () => {
+      // THE check that catches a corrupt dump: cMun's first 2 digits are the
+      // state's IBGE code, so this cross-validates two independently imported
+      // CSV columns.
+      const err = validateDump.bind(null, [row({ uf: 'RJ' })], OPTS);
+      expect(err).toThrow(CmunDumpError);
+      expect(err).toThrow(/não pertence à UF RJ/);
+    });
+
+    it('rejects an unknown UF', () => {
+      expect(() => validateDump([row({ uf: 'XX' })], OPTS)).toThrow(CmunDumpError);
+    });
+
+    it('rejects an inverted or out-of-bounds faixa', () => {
+      expect(() =>
+        validateDump([row({ cepInicial: 1_099_999, cepFinal: 1_000_000 })], OPTS),
+      ).toThrow(CmunDumpError);
+      expect(() => validateDump([row({ cepInicial: 999 })], OPTS)).toThrow(CmunDumpError);
+    });
+
+    it('rejects overlapping faixas', () => {
+      const err = validateDump.bind(
+        null,
+        [row(), row({ cepInicial: 1_050_000, cepFinal: 1_199_999, cMun: '3304557', uf: 'RJ' })],
+        OPTS,
+      );
+      expect(err).toThrow(CmunDumpError);
+      expect(err).toThrow(/sobrepostas/);
+    });
+
+    it('reports EVERY problem in one run, not just the first', () => {
+      const err = validateDump.bind(
+        null,
+        [row({ cMun: 'nope' }), row({ cepInicial: 2_000_000, cepFinal: 2_099_999, uf: 'ZZ' })],
+        OPTS,
+      );
+
+      expect(err).toThrow(CmunDumpError);
+      try {
+        validateDump(
+          [row({ cMun: 'nope' }), row({ cepInicial: 2_000_000, cepFinal: 2_099_999, uf: 'ZZ' })],
+          OPTS,
+        );
+      } catch (e) {
+        if (!(e instanceof CmunDumpError)) throw e;
+        expect(e.issues.length).toBeGreaterThanOrEqual(2);
+      }
+    });
+
+    it('rejects a truncated export when the sanity bands are on', () => {
+      expect(() => validateDump([row()])).toThrow(/banda esperada/);
+    });
+  });
+
+  describe('exterior rows', () => {
+    it('drops them and reports the count', () => {
+      const result = validateDump(
+        [row(), row({ uf: 'EX', cMun: '9999999', cepInicial: 9_000_000, cepFinal: 9_099_999 })],
+        OPTS,
+      );
+
+      expect(result.droppedExterior).toBe(1);
+      expect(result.ranges).toHaveLength(1);
+      expect(result.warnings.join(' ')).toMatch(/exterior/);
+    });
+  });
+
+  describe('gap report', () => {
+    it('measures the holes between faixas', () => {
+      const result = validateDump(
+        [
+          row({ cepInicial: 1_000_000, cepFinal: 1_099_999 }),
+          row({ cepInicial: 2_000_000, cepFinal: 2_099_999, cMun: '3304557', uf: 'RJ' }),
+        ],
+        OPTS,
+      );
+
+      expect(result.gaps.count).toBe(1);
+      expect(result.gaps.cepsUncovered).toBe(900_000);
+      expect(result.gaps.largest[0]).toEqual({ from: 1_100_000, to: 1_999_999, size: 900_000 });
+    });
+
+    it('sees no gap between adjacent faixas', () => {
+      const result = validateDump(
+        [
+          row({ cepInicial: 1_000_000, cepFinal: 1_099_999 }),
+          row({ cepInicial: 1_100_000, cepFinal: 1_199_999 }),
+        ],
+        OPTS,
+      );
+
+      expect(result.gaps.count).toBe(0);
+      expect(formatGapReport(result.gaps)).toMatch(/Nenhum buraco/);
+    });
+  });
+
+  describe('non-fatal warnings', () => {
+    it('flags a município spelled two ways across its faixas', () => {
+      const result = validateDump(
+        [
+          row({ nomeMunicipio: 'SAO PAULO' }),
+          row({ cepInicial: 1_100_000, cepFinal: 1_199_999, nomeMunicipio: 'SÃO PAULO' }),
+        ],
+        OPTS,
+      );
+
+      expect(result.warnings.join(' ')).toMatch(/nomeMunicipio divergente/);
+      expect(result.ranges).toHaveLength(2); // non-fatal
+    });
+  });
+});
