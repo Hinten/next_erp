@@ -57,6 +57,16 @@ export interface MercadoLivrePublicarResult {
   permalink: string | null;
 }
 
+export interface MercadoLivreReverificarResult {
+  /** Old-shape estado code derived from the listing's fresh ML status. */
+  estado: string;
+  /** Raw ML `status` as of the re-check (`active`/`paused`/`closed`/…). */
+  status: string | null;
+  subStatus: string[] | null;
+  /** Whether the stock sweep will send to this listing again. */
+  enviavel: boolean;
+}
+
 export interface MercadoLivreImportarResult {
   /** The created/updated ERP produto id. */
   produtoId: string;
@@ -180,6 +190,16 @@ export interface MercadoLivreClient {
     produtoId: string;
     listingTypeId?: string;
   }): Promise<MercadoLivrePublicarResult>;
+  /**
+   * Re-read ONE listing from ML and record its real state on the link doc
+   * (PERM.integracao.write) — the operator's way out of a stock latch (#781).
+   * It does not send stock; the next sweep (≤15 min) does that on its own.
+   */
+  reverificarAnuncio(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId: string;
+  }): Promise<MercadoLivreReverificarResult>;
   /**
    * Import (or re-sync) an ML listing into an ERP produto (PERM.integracao.write).
    * A listing with variations / User-Products returns a 422 `MercadoLivreClientHttpError`
@@ -396,6 +416,11 @@ export function createMercadoLivreClient(config: {
       ),
     publicar: (input) =>
       call<MercadoLivrePublicarResult>('/api/marketplace/mercado-livre/publicar', input),
+    reverificarAnuncio: (input) =>
+      call<MercadoLivreReverificarResult>(
+        '/api/marketplace/mercado-livre/reverificar-anuncio',
+        input,
+      ),
     importar: (input) =>
       call<MercadoLivreImportarResult>('/api/marketplace/mercado-livre/importar', input),
     startMassImport: (input) =>

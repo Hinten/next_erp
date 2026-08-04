@@ -19,6 +19,14 @@
  *    synced when the COARSE `estado` changed and could miss a `sub_status`-only
  *    change; we also sync when the raw `status`/`sub_status` change, so the bot
  *    never sees a stale sub_status.
+ *  - RE-ARMS the stock sweep (#781): when ML reports a listing that could receive
+ *    stock again, this clears the `errors` the stock sender latched it with. That
+ *    makes stale `errors` a change in their own right — see `errorsToClear` below.
+ *
+ * `applyItemStatusToLink` (exported at the bottom) is the shared status-writeback
+ * core: this sync and the stock sender's terminal 4xx branch refresh a listing
+ * through the SAME code, so the sender can never again leave a stale
+ * `status: 'active'` behind for the sweep's gate to trip over.
  *
  * Scope (7a): SIMPLE listings. User-Products links and a listing still
  * mid-migration (`estado === 'am'`) are DEFERRED — a UP link or an
@@ -47,6 +55,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import { loadMercadoLivreContext } from './mercadoLivre';
+import { podeEnviarEstoque } from './estoquePlan';
 import { refMatchesIntegracao } from './linkRefs';
 import type { UptinSourceLink } from './importMigration';
 
@@ -168,39 +177,118 @@ export async function syncItemStatus(
   const currentSubStatus = Array.isArray(link.data.sub_status)
     ? (link.data.sub_status as string[])
     : null;
+  const currentErrors = Array.isArray(link.data.errors) ? link.data.errors : [];
 
+  // #781 RE-ARM: the stock sender latches a listing it cannot update by stamping
+  // `errors` (plus `estado 'E'` when ML still reports the listing healthy), and
+  // the sweep's gate then skips it. Clearing that latch is precisely this
+  // webhook's job — but only once ML says the listing could receive stock again,
+  // so a `closed`/`under_review` listing KEEPS its diagnosis on screen.
+  //
+  // `errorsToClear` therefore has to count as a change on its own: a link that is
+  // already at the right estado/status would otherwise short-circuit on
+  // `unchanged` below and stay latched forever. Gating it on `enviar` also keeps
+  // this convergent — the flag can only be true while there is a write left to do.
+  const errorsToClear = currentErrors.length > 0 && podeEnviarEstoque(status, subStatus).enviar;
   const estadoChanged = estado !== currentEstado;
   const linkChanged =
-    estadoChanged || status !== currentStatus || !stringArraysEqual(subStatus, currentSubStatus);
+    estadoChanged ||
+    status !== currentStatus ||
+    !stringArraysEqual(subStatus, currentSubStatus) ||
+    errorsToClear;
 
   if (!linkChanged) return 'unchanged';
 
-  // Parent marketplace denorm FIRST — only on a COARSE estado transition (legacy
-  // gate). These arrays are DEPRECATED (Pipelines resolve linkage now, #431) but
-  // kept in the exact shape publish/import stamp during dual-run. The legacy
-  // `statusProdutosMarketplace` inactive-map is intentionally NOT written (neither
-  // publish nor import writes it). Variation-children sweep on cancel → #438.
-  //
-  // ORDER MATTERS: the two writes are not atomic and idempotency is keyed on the
-  // link doc's estado/status/sub_status, so the link merge MUST be the LAST write.
-  // If it ran first, a transient failure of the denorm write would leave the link
-  // already at the new estado — a retry would then see `unchanged` and never
-  // reconcile the parent, permanently stranding a cancelled listing in the arrays.
-  // Denorm-first keeps both writes idempotent on replay (arrayUnion no-ops;
-  // removeMarketplaceEntry returns null once the entry is gone), and the link only
-  // advances once the denorm has succeeded.
-  if (estadoChanged) {
-    await updateParentDenorm(db, link.produtoId, integracaoId, itemId, estado);
-  }
-
-  await produtoMercadoLivreLinkCollection.merge(db, { produtoId: link.produtoId }, link.docId, {
-    estado,
-    status,
-    sub_status: subStatus,
-    ultimaModificacao: Date.now(),
-  });
+  await applyItemStatusToLink(
+    db,
+    integracaoId,
+    { produtoId: link.produtoId, linkDocId: link.docId, itemId },
+    item,
+    {
+      nowMs: Date.now(),
+      // The denorm is a COARSE-transition-only write (legacy gate) — skip it when
+      // only status/sub_status/errors moved.
+      skipDenorm: !estadoChanged,
+      extra: errorsToClear ? { errors: [] } : {},
+    },
+  );
 
   return 'synced';
+}
+
+/** The link doc one status refresh targets, plus the ML item id the denorm keys on. */
+export interface LinkStatusTarget {
+  produtoId: string;
+  /** The `produtoMercadoLivre` doc id under that produto. */
+  linkDocId: string;
+  /** ML item id — the parent denorm's array key. */
+  itemId: string;
+}
+
+export interface ApplyItemStatusOpts {
+  /** The ONE clock read of the calling dispatch (ms). */
+  nowMs: number;
+  /**
+   * Merged ON TOP of the derived patch — an `estado` override (the stock
+   * sender's "ML says healthy, our payload was refused" case writes `'E'` over
+   * the derived `'p'`), `errors`, and so on.
+   */
+  extra?: Record<string, unknown>;
+  /** Skip the parent denorm when the caller knows `estado` did not change. */
+  skipDenorm?: boolean;
+}
+
+/**
+ * Write one ML item's lifecycle status onto its link doc, plus the parent
+ * produto's dual-run marketplace denorm. Extracted so the `items` webhook and
+ * the stock sender's terminal 4xx branch (#781) refresh a listing IDENTICALLY —
+ * the sender learns the listing's real state from ML instead of leaving a stale
+ * `status: 'active'` behind, which is what made a rejected send retry forever.
+ *
+ * Callers that already hold the link's current values pass `skipDenorm` to keep
+ * the legacy coarse-transition gate; callers that do not (the stock sender never
+ * reads the link — its payload carries the writeback target) simply let the
+ * denorm run, which is idempotent on replay.
+ *
+ * ORDER MATTERS: the two writes are not atomic and idempotency is keyed on the
+ * link doc's estado/status/sub_status, so the link merge MUST be the LAST write.
+ * If it ran first, a transient failure of the denorm write would leave the link
+ * already at the new estado — a retry would then see `unchanged` and never
+ * reconcile the parent, permanently stranding a cancelled listing in the arrays.
+ * Denorm-first keeps both writes idempotent on replay (arrayUnion no-ops;
+ * removeMarketplaceEntry returns null once the entry is gone), and the link only
+ * advances once the denorm has succeeded.
+ *
+ * The denormalized arrays are DEPRECATED (Pipelines resolve linkage now, #431)
+ * but kept in the exact shape publish/import stamp during dual-run. The legacy
+ * `statusProdutosMarketplace` inactive-map is intentionally NOT written (neither
+ * publish nor import writes it). Variation-children sweep on cancel → #438.
+ */
+export async function applyItemStatusToLink(
+  db: Firestore,
+  integracaoId: string,
+  target: LinkStatusTarget,
+  item: { status?: string | null; sub_status?: string[] | null },
+  opts: ApplyItemStatusOpts,
+): Promise<void> {
+  const estado = estadoFromMlStatus(item.status);
+
+  if (opts.skipDenorm !== true) {
+    await updateParentDenorm(db, target.produtoId, integracaoId, target.itemId, estado);
+  }
+
+  await produtoMercadoLivreLinkCollection.merge(
+    db,
+    { produtoId: target.produtoId },
+    target.linkDocId,
+    {
+      estado,
+      status: item.status ?? null,
+      sub_status: item.sub_status ?? null,
+      ultimaModificacao: opts.nowMs,
+      ...(opts.extra ?? {}),
+    },
+  );
 }
 
 /* -------------------------------------------------------------------------- */

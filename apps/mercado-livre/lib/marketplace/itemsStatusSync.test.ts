@@ -241,6 +241,89 @@ describe('syncItemStatus — link sync', () => {
   });
 });
 
+/**
+ * #781. The stock sender latches a listing it cannot update; this webhook is the
+ * automatic way out. The subtle part is the `unchanged` short-circuit above —
+ * without counting `errors` as a change, a link whose estado/status already match
+ * ML would return early and stay latched forever.
+ */
+describe('syncItemStatus — re-arms a latched listing (#781)', () => {
+  it('a healthy listing clears the latch even when estado/status already match', async () => {
+    const db = new FakeDb();
+    seedLink(db, {
+      estado: 'p',
+      status: 'active',
+      sub_status: ['x'],
+      errors: ['ML 400: invalid quantity'],
+    });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: ['x'] }),
+    );
+
+    // Identical estado/status/sub_status — only the stale errors differ.
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', errors: [] });
+  });
+
+  it("clears the sender's estado 'E' back to the real ML state", async () => {
+    const db = new FakeDb();
+    seedLink(db, { estado: 'E', status: 'active', errors: ['ML 400: invalid quantity'] });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: [] }),
+    );
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      estado: 'p',
+      status: 'active',
+      errors: [],
+    });
+  });
+
+  it('a listing that still cannot take stock KEEPS its diagnosis on screen', async () => {
+    const db = new FakeDb();
+    seedLink(db, { estado: 'p', status: 'active', errors: ['ML 400: invalid quantity'] });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'under_review', sub_status: [] }),
+    );
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      estado: 'v',
+      errors: ['ML 400: invalid quantity'],
+    });
+  });
+
+  it('converges: a non-sendable listing with errors settles on unchanged', async () => {
+    const db = new FakeDb();
+    // Gating the clear on `enviar` is what keeps this terminating — an
+    // unconditional "errors present ⇒ changed" would never return unchanged.
+    seedLink(db, { estado: 'v', status: 'under_review', sub_status: [], errors: ['boom'] });
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'under_review', sub_status: [] }),
+    );
+
+    expect(out).toBe('unchanged');
+    expect(db.updates).toEqual([]);
+  });
+});
+
 describe('syncItemStatus — cancel (closed)', () => {
   it('closed → estado cancelado + key-based denorm removal', async () => {
     const db = new FakeDb();

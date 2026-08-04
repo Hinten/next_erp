@@ -154,6 +154,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   type ComponentesKit,
+  ESTADO_PUBLICACAO_ML,
   estoqueDisponivel,
   kitEstoqueDisponivel,
   toOuterRef,
@@ -170,6 +171,15 @@ export const STOCK_SYNC_FLAG_ENV = 'MERCADO_LIVRE_STOCK_SYNC_ENABLED';
 
 /** Cloud Tasks queue name for the stock send tasks (PR B's `onTaskDispatched`). */
 export const MERCADO_LIVRE_STOCK_SEND_QUEUE = 'sendMercadoLivreStock';
+
+/**
+ * In-task retry cap — the Cloud Tasks `retryConfig.maxAttempts` (kept in sync;
+ * `sendStock.ts` reads THIS constant, and `estoqueSend.stockSendMaxAttempts.test.ts`
+ * pins the two together). Mirrors `MASS_IMPORT_MAX_ATTEMPTS` /
+ * `PRICE_SYNC_MAX_ATTEMPTS`: the 4xx branch only writes its terminal state on
+ * the LAST attempt, so the handler must know the cap the queue was deployed with.
+ */
+export const STOCK_SEND_MAX_ATTEMPTS = 3;
 
 /** Lower clamp of every quantity sent to ML (legacy clamp >= 0). */
 export const ESTOQUE_MIN = 0;
@@ -992,6 +1002,7 @@ export type SendSkipReason =
   | 'sem-link'
   | 'sem-item-id'
   | 'aguardando-migracao'
+  | 'anuncio-em-erro'
   | 'status-nao-enviavel'
   | 'kit-virtual'
   | 'nao-publicado'
@@ -1070,9 +1081,11 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
  * OTHER listings still send): `'sem-link'` (listing without a doc id,
  * defensive — server-projected), `'sem-item-id'` (never published),
  * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration, Flutter-driven),
- * `'status-nao-enviavel'` (whitelist gate PER listing; `desconhecido`
- * statuses additionally warn with that listing's itemId — status tracking per
- * Lucas).
+ * `'anuncio-em-erro'` (`estado 'E'` — the send handler verified with ML that the
+ * anúncio is healthy and it was our PAYLOAD that was refused, so re-sending it
+ * unchanged only re-earns the rejection, #781), `'status-nao-enviavel'`
+ * (whitelist gate PER listing; `desconhecido` statuses additionally warn with
+ * that listing's itemId — status tracking per Lucas).
  *
  * Per surviving listing — every task carries THAT listing's `linkDocId`
  * (writeback per listing): old model (`isUserProductModel !== true`) with
@@ -1142,6 +1155,16 @@ export function buildSendTasks(
     }
     if (link.estado === 'am') {
       skips.push({ produtoId: anchorId, reason: 'aguardando-migracao' });
+      continue;
+    }
+    // #781: the send handler's terminal branch stamps `'E'` when ML confirmed the
+    // anúncio is healthy and it was therefore OUR payload it refused — rebuilding
+    // the identical payload next tick just re-earns the same rejection. Every
+    // other terminal case records the listing's real ML status instead, and the
+    // whitelist below skips those. Cleared by an `items` webhook or the produto
+    // tab's "Reverificar anúncio" action.
+    if (link.estado === ESTADO_PUBLICACAO_ML.erro) {
+      skips.push({ produtoId: anchorId, reason: 'anuncio-em-erro' });
       continue;
     }
 

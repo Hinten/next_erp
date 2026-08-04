@@ -19,6 +19,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
 import {
+  ESTADO_PUBLICACAO_ML,
   ESTADO_PUBLICACAO_ML_LABELS,
   type EstadoPublicacaoMl,
   INTEGRACAO_TIPO,
@@ -109,6 +110,8 @@ export function MercadoLivreManager({
   const links = useMemo(() => linksSnap.data ?? [], [linksSnap.data]);
 
   const [publishing, setPublishing] = useState<string | null>(null);
+  /** The link doc id currently being re-checked against ML (#781), if any. */
+  const [rechecking, setRechecking] = useState<string | null>(null);
   // 422 ML_PUBLISH_BLOCKED issue lists, kept per account so they render inline
   // in the offending row instead of a transient toast.
   const [blockedIssues, setBlockedIssues] = useState<Record<string, string[]>>({});
@@ -159,6 +162,44 @@ export function MercadoLivreManager({
     }
   }
 
+  /**
+   * Re-read ONE listing from ML and record its real state (#781). The stock
+   * sender stops sending to a listing stamped `estado 'E'` — it writes that only
+   * after ML confirmed the anúncio is healthy, so the payload was at fault. An
+   * `items` webhook normally clears it, but a listing nobody touches never fires
+   * one, and this is the manual way out. The live `useSnapshot` above repaints
+   * the row as soon as the server write lands.
+   */
+  async function handleReverificar(integracaoId: string, linkDocId: string) {
+    if (!client) return;
+    setRechecking(linkDocId);
+    try {
+      const result = await client.reverificarAnuncio({ integracaoId, produtoId, linkDocId });
+      notifications.show({
+        color: result.enviavel ? 'green' : 'yellow',
+        title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
+        message: result.enviavel
+          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos).'
+          : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
+      });
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'red',
+          message: 'Não foi possível contatar o serviço do Mercado Livre.',
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setRechecking(null);
+    }
+  }
+
   if (contasSnap.loading || linksSnap.loading) {
     return (
       <Group justify="center" py="md">
@@ -195,43 +236,84 @@ export function MercadoLivreManager({
         de publicar.
       </Text>
       {contas.map((conta) => {
-        const link = links.find((l) => refMatchesIntegracao(l.data.contaOuterRef, conta.id));
-        const linkData: ProdutoMercadoLivreLink | null = link?.data ?? null;
-        const estado = parseEstado(linkData?.estado);
-        const isFirstPublish = linkData?.id == null;
-        const needsListingType = isFirstPublish && linkData?.listing_type_id == null;
-        const issues = blockedIssues[conta.id] ?? [];
-        const persistedErrors = (linkData?.errors ?? []).filter(
-          (e): e is string => typeof e === 'string' && e.length > 0,
+        // The stock sweep loops EVERY listing this conta holds on the produto
+        // (estoquePlan's link join deliberately has no `limit(1)`), so rendering
+        // only the first one hid a latched sibling completely (#781).
+        const contaLinks = links.filter((l) =>
+          refMatchesIntegracao(l.data.contaOuterRef, conta.id),
         );
+        // Publishing still targets the CONTA, not one listing — it reads the same
+        // primary link it always did.
+        const primary: ProdutoMercadoLivreLink | null = contaLinks[0]?.data ?? null;
+        const isFirstPublish = primary?.id == null;
+        const needsListingType = isFirstPublish && primary?.listing_type_id == null;
+        const issues = blockedIssues[conta.id] ?? [];
 
         return (
           <Card key={conta.id} withBorder padding="md" data-testid={`ml-conta-${conta.id}`}>
             <Stack gap="sm">
               <Group justify="space-between">
                 <Text fw={600}>{conta.data.nome}</Text>
-                {linkData ? (
-                  <Badge color={estado ? ESTADO_COLORS[estado] : 'gray'}>
-                    {estado ? ESTADO_PUBLICACAO_ML_LABELS[estado] : 'Desconhecido'}
-                  </Badge>
-                ) : (
+                {contaLinks.length === 0 && (
                   <Badge color="gray" variant="light">
                     Não publicado
                   </Badge>
                 )}
               </Group>
 
-              {linkData?.id != null && <Text size="sm">Anúncio {linkData.id}</Text>}
+              {contaLinks.map((l) => {
+                const d: ProdutoMercadoLivreLink = l.data;
+                const estado = parseEstado(d.estado);
+                const persistedErrors = (d.errors ?? []).filter(
+                  (e): e is string => typeof e === 'string' && e.length > 0,
+                );
+                const latched = estado === ESTADO_PUBLICACAO_ML.erro && d.id != null;
 
-              {persistedErrors.length > 0 && (
-                <Alert color="red" variant="light" title="Última publicação falhou">
-                  <List size="sm">
-                    {persistedErrors.map((e) => (
-                      <List.Item key={e}>{e}</List.Item>
-                    ))}
-                  </List>
-                </Alert>
-              )}
+                return (
+                  <Stack key={l.id} gap="xs" data-testid={`ml-anuncio-${l.id}`}>
+                    <Group justify="space-between">
+                      <Text size="sm">
+                        {d.id != null ? `Anúncio ${d.id}` : 'Rascunho — ainda não publicado'}
+                      </Text>
+                      <Badge color={estado ? ESTADO_COLORS[estado] : 'gray'}>
+                        {estado ? ESTADO_PUBLICACAO_ML_LABELS[estado] : 'Desconhecido'}
+                      </Badge>
+                    </Group>
+
+                    {persistedErrors.length > 0 && (
+                      // `errors` is written by the publish flow, the price sync AND
+                      // the stock sender, so the title must not blame any one of
+                      // them — it used to read "Última publicação falhou" and
+                      // reported stock failures as publish failures (#781).
+                      <Alert color="red" variant="light" title="Última falha do Mercado Livre">
+                        <List size="sm">
+                          {persistedErrors.map((e) => (
+                            <List.Item key={e}>{e}</List.Item>
+                          ))}
+                        </List>
+                      </Alert>
+                    )}
+
+                    {latched && (
+                      <Group gap="sm" align="center">
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="xs"
+                          onClick={() => handleReverificar(conta.id, l.id)}
+                          loading={rechecking === l.id}
+                          disabled={disabled || !client || !canPublish || rechecking !== null}
+                        >
+                          Reverificar anúncio
+                        </Button>
+                        <Text size="xs" c="dimmed">
+                          O envio de estoque está parado para este anúncio.
+                        </Text>
+                      </Group>
+                    )}
+                  </Stack>
+                );
+              })}
 
               {issues.length > 0 && (
                 <Alert color="red" variant="light" title="Publicação bloqueada">
