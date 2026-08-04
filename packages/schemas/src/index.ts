@@ -47,6 +47,7 @@ export {
   docIdSchema,
   outerRefLooseSchema,
   toOuterRef,
+  toOuterRefOrNull,
   idFromRef,
   parseRef,
   type OuterRef,

@@ -20,9 +20,20 @@ import {
 
 type DocData = Record<string, unknown>;
 
+interface FakeRef {
+  id: string;
+  get(): Promise<{ exists: boolean; id: string; data: () => DocData | undefined }>;
+  set(data: DocData, opts?: { merge?: boolean }): Promise<void>;
+}
+interface FakeQuery {
+  get(): Promise<{ docs: Array<{ id: string; data: () => DocData }>; empty: boolean }>;
+}
+
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
-  readonly opLog: Array<{ op: 'get' | 'query' | 'add' | 'set'; path: string }> = [];
+  readonly opLog: Array<{ op: 'get' | 'query' | 'add' | 'set' | 'create'; path: string }> = [];
+  /** Transactions opened — `runTransaction` bumps this once per call. */
+  transacoes = 0;
   private autoN = 0;
 
   private col(path: string): Map<string, DocData> {
@@ -37,7 +48,41 @@ class FakeDb {
     return this.col(path);
   }
   writes(): Array<{ op: string; path: string }> {
-    return this.opLog.filter((o) => o.op === 'add' || o.op === 'set');
+    return this.opLog.filter((o) => o.op === 'add' || o.op === 'set' || o.op === 'create');
+  }
+
+  /**
+   * Minimal read-write transaction. Writes are BUFFERED and applied on commit, and a
+   * write flips `lendo` off so a later read throws — pinning Firestore's real
+   * all-reads-before-any-write rule rather than silently tolerating a violation.
+   */
+  async runTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+    const self = this;
+    this.transacoes += 1;
+    const pendentes: Array<() => Promise<void>> = [];
+    let lendo = true;
+    const tx = {
+      async get(alvo: FakeRef | FakeQuery) {
+        if (!lendo) throw new Error('transaction: read after write');
+        return alvo.get();
+      },
+      create(ref: FakeRef, data: DocData) {
+        lendo = false;
+        self.opLog.push({ op: 'create', path: `${ref.id}` });
+        pendentes.push(async () => {
+          await ref.set(data);
+        });
+      },
+      set(ref: FakeRef, data: DocData, opts?: { merge?: boolean }) {
+        lendo = false;
+        pendentes.push(async () => {
+          await ref.set(data, opts);
+        });
+      },
+    };
+    const saida = await fn(tx);
+    for (const aplicar of pendentes) await aplicar();
+    return saida;
   }
 
   private query(path: string, clauses: Array<[string, unknown]>) {
@@ -392,6 +437,99 @@ describe('desativarIntFreteDaConta', () => {
     const db = new FakeDb();
     const disposicao = await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
     expect(disposicao).toEqual({ action: 'nao-encontrado' });
+    expect(db.writes()).toHaveLength(0);
+  });
+});
+
+/* --------------------- concurrency: tx + staleness guard ------------------ */
+
+describe('transactional writes', () => {
+  it('runs the create path inside ONE transaction', async () => {
+    const db = new FakeDb();
+    await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
+    expect(db.transacoes).toBe(1);
+    expect(db.docs('int_frete').size).toBe(1);
+  });
+
+  it('runs the update path inside ONE transaction', async () => {
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1', { nome: 'Nome antigo' });
+    await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
+    expect(db.transacoes).toBe(1);
+    expect(db.docs('int_frete').get('if-1')!.nome).toBe('Loja ML');
+  });
+
+  it('runs the deactivate path inside ONE transaction', async () => {
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1');
+    await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
+    expect(db.transacoes).toBe(1);
+    expect(db.docs('int_frete').get('if-1')!.ativo).toBe(false);
+  });
+
+  it('reads the lookup THROUGH the transaction (not as a loose read)', async () => {
+    // The FakeDb transaction throws on a read issued after a write; a lookup that
+    // bypassed `tx` would also bypass conflict detection, reopening the RMW gap.
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1', { nome: 'Nome antigo' });
+    await expect(
+      sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS),
+    ).resolves.toMatchObject({ action: 'atualizado' });
+  });
+});
+
+describe('staleness guard (ultimaModificacao)', () => {
+  it('does nothing when the stored doc is NEWER than the event', async () => {
+    const db = new FakeDb();
+    // A human edited the freight doc in /logistica one hour AFTER this conta event.
+    seedIntFrete(db, 'if-1', {
+      nome: 'Nome escolhido a mao',
+      ultimaModificacao: EVENT_MS + 3_600_000,
+    });
+    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
+    expect(disposicao).toEqual({ action: 'obsoleto', intFreteId: 'if-1' });
+    expect(db.writes()).toHaveLength(0);
+    expect(db.docs('int_frete').get('if-1')!.nome).toBe('Nome escolhido a mao');
+  });
+
+  it('applies when the stored doc is OLDER than the event', async () => {
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1', { nome: 'Nome antigo', ultimaModificacao: EVENT_MS - 1 });
+    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
+    expect(disposicao).toMatchObject({ action: 'atualizado' });
+    expect(db.docs('int_frete').get('if-1')!.nome).toBe('Loja ML');
+  });
+
+  it('applies on an EQUAL stamp (same instant, and the write is idempotent)', async () => {
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1', { nome: 'Nome antigo', ultimaModificacao: EVENT_MS });
+    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
+    expect(disposicao).toMatchObject({ action: 'atualizado' });
+  });
+
+  it('applies when the stored doc has NO ultimaModificacao (legacy Flutter doc)', async () => {
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1', { nome: 'Nome antigo' });
+    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
+    expect(disposicao).toMatchObject({ action: 'atualizado' });
+  });
+
+  it('tolerates a non-ms stored stamp (ISO string) rather than mis-ordering it', async () => {
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1', {
+      nome: 'Nome escolhido a mao',
+      ultimaModificacao: new Date(EVENT_MS + 3_600_000).toISOString(),
+    });
+    const disposicao = await sincronizarIntFreteDaConta(asDb(db), CONTA_ID, conta(), EVENT_MS);
+    expect(disposicao).toEqual({ action: 'obsoleto', intFreteId: 'if-1' });
+  });
+
+  it('blocks a stale DEACTIVATE — a doc re-activated after the delete event survives', async () => {
+    const db = new FakeDb();
+    seedIntFrete(db, 'if-1', { ativo: true, ultimaModificacao: EVENT_MS + 1 });
+    const disposicao = await desativarIntFreteDaConta(asDb(db), CONTA_ID, EVENT_MS);
+    expect(disposicao).toEqual({ action: 'obsoleto', intFreteId: 'if-1' });
+    expect(db.docs('int_frete').get('if-1')!.ativo).toBe(true);
     expect(db.writes()).toHaveLength(0);
   });
 });

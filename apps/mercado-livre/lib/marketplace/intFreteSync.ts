@@ -14,6 +14,15 @@
  * This module is the pure, unit-testable core; `functions/src/onIntegracaoMercadoLivreChanged.ts`
  * is a thin trigger wrapper over it (the same split `nfeUpload.ts` / `onNfeAprovada.ts` use).
  *
+ * ---- Concurrency ----
+ * Every write path is ONE `db.runTransaction`: the lookup reads through `tx` and the
+ * create/patch commits in the same transaction, so the read-modify-write can't interleave
+ * with a concurrent conta write (which on the create path would otherwise have both
+ * invocations see "no doc" and create a DUPLICATE). Layered on top, `docMaisNovoQueEvento`
+ * refuses to apply an event older than what is already stored — Eventarc is at-least-once
+ * and unordered, and this doc has other writers (the `/logistica` editor, and the Flutter
+ * conta screen during the dual run).
+ *
  * ---- Parity notes vs `.old/` ----
  *  - Mirrored fields are the legacy `MercadoEnvios.fromConta` set
  *    (`.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart:332-339`):
@@ -35,9 +44,14 @@
  *    pointing at it and deleting it would blank the Frete tab + etiqueta action on
  *    historical orders.
  */
-import type { DocumentData, Firestore, Query } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore, Query, Transaction } from 'firebase-admin/firestore';
 import { coerceToMillis } from '@delfrance/core/datetime';
-import { INTEGRACAO_FRETE, INTEGRACAO_TIPO, outerRefSchema, toOuterRef } from '@delfrance/schemas';
+import {
+  INTEGRACAO_FRETE,
+  INTEGRACAO_TIPO,
+  toOuterRef,
+  toOuterRefOrNull,
+} from '@delfrance/schemas';
 import { intFreteCollection, integracaoCollection } from '@delfrance/data/admin/collections';
 
 import { refMatchesIntegracao } from './linkRefs';
@@ -58,7 +72,14 @@ export const CAMPOS_SINCRONIZADOS = [
 
 /** What one sync/deactivate call did — logged as one structured line by the trigger. */
 export interface DisposicaoIntFrete {
-  action: 'criado' | 'atualizado' | 'inalterado' | 'desativado' | 'incompleto' | 'nao-encontrado';
+  action:
+    | 'criado'
+    | 'atualizado'
+    | 'inalterado'
+    | 'desativado'
+    | 'incompleto'
+    | 'nao-encontrado'
+    | 'obsoleto';
   intFreteId?: string;
   /** Field names actually written (create/update only). */
   campos?: string[];
@@ -93,21 +114,6 @@ export function mudouCampoSincronizado(before: Raw, after: Raw): boolean {
 /*                                 Field mapping                              */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Normalize any accepted ref form to canonical `documents/<col>/<id>` WITHOUT
- * throwing. `toOuterRef` from `@delfrance/schemas` does the same normalization but
- * `.parse()`s, and a malformed ref on a legacy conta must degrade to "field not
- * resolvable" here, not abort the trigger (which would then ride the Eventarc retry
- * forever on a permanently bad doc).
- */
-function normalizarOuterRef(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const segs = raw.split('/').filter(Boolean);
-  if (segs[0] === 'documents') segs.shift();
-  const candidato = `documents/${segs.join('/')}`;
-  return outerRefSchema.safeParse(candidato).success ? candidato : null;
-}
-
 /** The canonical back-ref an ML freight doc must carry: `documents/integracao/<id>`. */
 export function refCanonicalDaConta(integracaoId: string): string {
   return toOuterRef(integracaoCollection.docPath({}, integracaoId));
@@ -138,7 +144,9 @@ export function montarCamposIntFrete(
   if (typeof nome === 'string' && nome.length > 0) campos.nome = nome;
   else faltando.push('nome');
 
-  const filial = normalizarOuterRef(conta?.filialIntegracaoPedidoOuterRef);
+  // Non-throwing on purpose: a legacy conta carrying a malformed ref must degrade to
+  // "filial not resolvable" (below), not abort the trigger onto the Eventarc retry.
+  const filial = toOuterRefOrNull(conta?.filialIntegracaoPedidoOuterRef);
   if (filial != null) campos.filialIntegracaoFreteOuterRef = filial;
   else faltando.push('filialIntegracaoPedidoOuterRef');
 
@@ -197,15 +205,22 @@ function melhorPorDataCadastro(
 export async function buscarIntFreteDaConta(
   db: Firestore,
   integracaoId: string,
-  opts: { apenasAtivo?: boolean } = {},
+  opts: { apenasAtivo?: boolean; tx?: Transaction } = {},
 ): Promise<IntFreteEncontrado | null> {
+  // Inside a transaction the lookup MUST read through `tx` — a plain `q.get()` is an
+  // ordinary read that neither participates in the transaction's conflict detection
+  // nor sees its pending writes, which would reintroduce the very read-modify-write
+  // gap the transaction exists to close. (Unlike the Firebase JS client SDK, the Admin
+  // SDK can read a QUERY inside a transaction — `orderImport.ts:621` does the same.)
+  const ler = (query: Query) => (opts.tx != null ? opts.tx.get(query) : query.get());
+
   let q: Query = intFreteCollection
     .ref(db, {})
     .where('tipo', '==', INTEGRACAO_FRETE.mercadoLivre)
     .where('contaMercadoLivreMercadoEnviosOuterRef', '==', refCanonicalDaConta(integracaoId));
   if (opts.apenasAtivo === true) q = q.where('ativo', '==', true);
 
-  const snap = await q.get();
+  const snap = await ler(q);
   const direto = melhorPorDataCadastro(snap.docs);
   if (direto != null) return direto;
 
@@ -218,7 +233,7 @@ export async function buscarIntFreteDaConta(
     .ref(db, {})
     .where('tipo', '==', INTEGRACAO_FRETE.mercadoLivre);
   if (opts.apenasAtivo === true) scan = scan.where('ativo', '==', true);
-  const scanSnap = await scan.get();
+  const scanSnap = await ler(scan);
   const tolerante = melhorPorDataCadastro(scanSnap.docs, (raw) =>
     refMatchesIntegracao(raw.contaMercadoLivreMercadoEnviosOuterRef, integracaoId),
   );
@@ -238,10 +253,39 @@ export async function buscarIntFreteDaConta(
 /* -------------------------------------------------------------------------- */
 
 /**
+ * True when the STORED freight doc is strictly newer than the event being applied —
+ * somebody wrote it after this event happened, so replaying the event would roll that
+ * change back. The caller must then do nothing.
+ *
+ * Eventarc is at-least-once AND unordered, so this is not hypothetical: a redelivery
+ * carries the ORIGINAL `event.time`, and it can land long after a newer conta write has
+ * already synced. The other writers of this doc are the `/logistica` editor and the
+ * still-running Flutter conta screen (dual-run) — a human edit at T2 must survive a
+ * stale event from T1.
+ *
+ * Equal stamps PROCEED: same instant, and the write is idempotent (the field diff
+ * below reduces it to a no-op anyway). Only `>` blocks.
+ *
+ * `coerceToMillis` because `ultimaModificacao` is tolerant on read — a legacy doc may
+ * carry an ISO string or µs where the schema now says ms, and comparing those raw
+ * against an ms stamp would silently mis-order them.
+ */
+export function docMaisNovoQueEvento(data: Record<string, unknown>, eventTimeMs: number): boolean {
+  const armazenado = coerceToMillis(data.ultimaModificacao);
+  return armazenado != null && armazenado > eventTimeMs;
+}
+
+/**
  * Upsert this conta's Mercado Envios freight doc. Creates it when absent, otherwise
  * patches ONLY the mirrored fields that actually differ — so a conta write that moved
  * nothing relevant (and an Eventarc replay of an already-applied event) performs no
  * write at all, and `dataCadastro` never churns.
+ *
+ * Lookup and write share ONE transaction. Without it this is a read-modify-write with
+ * a gap, and two conta writes landing together (or a trigger racing the still-running
+ * Flutter conta screen) interleave: on the update path the later read loses the earlier
+ * patch, and on the create path BOTH invocations see "no doc" and create one —
+ * producing exactly the duplicate `int_frete` this issue exists to prevent.
  */
 export async function sincronizarIntFreteDaConta(
   db: Firestore,
@@ -250,35 +294,50 @@ export async function sincronizarIntFreteDaConta(
   eventTimeMs: number,
 ): Promise<DisposicaoIntFrete> {
   const { campos, faltando } = montarCamposIntFrete(integracaoId, conta);
-  const existente = await buscarIntFreteDaConta(db, integracaoId);
 
-  if (existente == null) {
-    if (faltando.length > 0) {
-      // Legacy force-unwrapped the filial here and crashed. Degrade instead: the doc
-      // is created by the next conta save, once the missing field is filled in.
-      console.warn(
-        '[mercado-livre] conta Mercado Livre sem dados suficientes para criar o int_frete',
-        { integracaoId, faltando },
+  return db.runTransaction(async (tx) => {
+    const existente = await buscarIntFreteDaConta(db, integracaoId, { tx });
+
+    if (existente == null) {
+      if (faltando.length > 0) {
+        // Legacy force-unwrapped the filial here and crashed. Degrade instead: the doc
+        // is created by the next conta save, once the missing field is filled in.
+        console.warn(
+          '[mercado-livre] conta Mercado Livre sem dados suficientes para criar o int_frete',
+          { integracaoId, faltando },
+        );
+        return { action: 'incompleto', faltando };
+      }
+      const id = intFreteCollection.newDocId(db, {});
+      tx.create(
+        intFreteCollection.docRef(db, {}, id),
+        intFreteCollection.parse({ ...campos, ultimaModificacao: eventTimeMs }) as DocumentData,
       );
-      return { action: 'incompleto', faltando };
+      return { action: 'criado', intFreteId: id, campos: Object.keys(campos) };
     }
-    const ref = await intFreteCollection.add(db, {}, { ...campos, ultimaModificacao: eventTimeMs });
-    return { action: 'criado', intFreteId: ref.id, campos: Object.keys(campos) };
-  }
 
-  const patch: Record<string, unknown> = {};
-  for (const [campo, valor] of Object.entries(campos)) {
-    if (existente.data[campo] !== valor) patch[campo] = valor;
-  }
-  if (Object.keys(patch).length === 0) {
-    return { action: 'inalterado', intFreteId: existente.id };
-  }
+    if (docMaisNovoQueEvento(existente.data, eventTimeMs)) {
+      return { action: 'obsoleto', intFreteId: existente.id };
+    }
 
-  await intFreteCollection.merge(db, {}, existente.id, {
-    ...patch,
-    ultimaModificacao: eventTimeMs,
+    const patch: Record<string, unknown> = {};
+    for (const [campo, valor] of Object.entries(campos)) {
+      if (existente.data[campo] !== valor) patch[campo] = valor;
+    }
+    if (Object.keys(patch).length === 0) {
+      return { action: 'inalterado', intFreteId: existente.id };
+    }
+
+    tx.set(
+      intFreteCollection.docRef(db, {}, existente.id),
+      intFreteCollection.parseMerge({
+        ...patch,
+        ultimaModificacao: eventTimeMs,
+      }) as DocumentData,
+      { merge: true },
+    );
+    return { action: 'atualizado', intFreteId: existente.id, campos: Object.keys(patch) };
   });
-  return { action: 'atualizado', intFreteId: existente.id, campos: Object.keys(patch) };
 }
 
 /**
@@ -291,16 +350,27 @@ export async function desativarIntFreteDaConta(
   integracaoId: string,
   eventTimeMs: number,
 ): Promise<DisposicaoIntFrete> {
-  const existente = await buscarIntFreteDaConta(db, integracaoId);
-  if (existente == null) return { action: 'nao-encontrado' };
-  if (existente.data.ativo !== true) {
-    return { action: 'inalterado', intFreteId: existente.id };
-  }
-  await intFreteCollection.merge(db, {}, existente.id, {
-    ativo: false,
-    ultimaModificacao: eventTimeMs,
+  return db.runTransaction(async (tx) => {
+    const existente = await buscarIntFreteDaConta(db, integracaoId, { tx });
+    if (existente == null) return { action: 'nao-encontrado' };
+    // A freight doc re-activated AFTER this event happened outranks it — deactivating
+    // now would undo that newer decision with no event left to redo it.
+    if (docMaisNovoQueEvento(existente.data, eventTimeMs)) {
+      return { action: 'obsoleto', intFreteId: existente.id };
+    }
+    if (existente.data.ativo !== true) {
+      return { action: 'inalterado', intFreteId: existente.id };
+    }
+    tx.set(
+      intFreteCollection.docRef(db, {}, existente.id),
+      intFreteCollection.parseMerge({
+        ativo: false,
+        ultimaModificacao: eventTimeMs,
+      }) as DocumentData,
+      { merge: true },
+    );
+    return { action: 'desativado', intFreteId: existente.id, campos: ['ativo'] };
   });
-  return { action: 'desativado', intFreteId: existente.id, campos: ['ativo'] };
 }
 
 /**
