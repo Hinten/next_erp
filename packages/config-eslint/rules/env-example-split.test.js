@@ -35,16 +35,52 @@ const SECRET_SUFFIX_RE = /(SECRET|PASSWORD|_TOKEN|PRIVATE_KEY|CERT_BASE64|ENC_KE
  */
 const CONFIG_ALLOW_LIST = new Set([]);
 
-/** `KEY=value` lines only — comments and blanks are not declarations. */
-function parseKeys(relPath) {
-  const text = readFileSync(join(REPO_ROOT, relPath), 'utf8');
+/**
+ * `KEY=value` lines only — comments and blanks are not declarations.
+ *
+ * Split on `/\r?\n/`, never on `'\n'`. A Windows checkout with `core.autocrlf=true`
+ * smudges these templates to CRLF, and a `'\n'` split then leaves a trailing `\r` on
+ * every line. `\r` is a JS LineTerminator, so `.` does not match it: `(.*)` cannot
+ * consume it and the — non-multiline — `$` never reaches end-of-string. EVERY line
+ * fails to match and this returns `[]`.
+ *
+ * That is worse than the one red test it produced. The other three assertions here
+ * iterate what this returns, so on an empty array they passed VACUOUSLY: the backstop
+ * quietly stopped biting for every local developer while staying green in CI, whose
+ * checkout is LF. A guard that only runs where nobody is looking is not a guard.
+ *
+ * `parseEnvText` is split out from the file read so the regression test below can feed
+ * CRLF directly, rather than depending on how git happened to check this file out.
+ */
+function parseEnvText(text) {
   const entries = [];
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r?\n/)) {
     const match = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
     if (match) entries.push({ key: match[1], value: match[2] });
   }
   return entries;
 }
+
+function parseKeys(relPath) {
+  return parseEnvText(readFileSync(join(REPO_ROOT, relPath), 'utf8'));
+}
+
+describe('parseEnvText line endings', () => {
+  it('parses CRLF input identically to LF input', () => {
+    const lf = 'A_KEY=value\n# a comment, not a declaration\nB_KEY=\n';
+    const crlf = lf.replaceAll('\n', '\r\n');
+    const expected = [
+      { key: 'A_KEY', value: 'value' },
+      { key: 'B_KEY', value: '' },
+    ];
+
+    expect(parseEnvText(lf)).toEqual(expected);
+    // Equality with `expected`, not merely with the LF result: a parser that kept the
+    // `\r` in the VALUE would satisfy "found the keys" while making `SOME_KEY=x\r`
+    // compare unequal to `'x'` — the same silent-mismatch class, one layer down.
+    expect(parseEnvText(crlf)).toEqual(expected);
+  });
+});
 
 describe('env template split', () => {
   it('both templates exist and declare something', () => {
