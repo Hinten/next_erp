@@ -89,6 +89,31 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    deliberately opt out (the nfe package via an explicit `'no-restricted-syntax': 'off'`
    block) — there the catch rule is OFF and the convention is on you, which is
    exactly where a swallowed SEFAZ error costs most.
+7. **Every write can lose a race — decide what happens when yours is the
+   loser.** Firestore imposes no ordering: a `merge()`/`update()` lands whenever
+   it arrives, and `runTransaction`'s OCC retries the callback but does **not**
+   re-derive anything captured in the closure, so a value read before an `await`
+   is re-applied verbatim over the winner. A second writer is always plausible
+   here — the legacy Flutter app is a **live concurrent writer** to the same
+   documents, provider webhooks arrive out of order, and the notification sweep
+   re-drives hours-old payloads through the same handler as a fresh task. Pick
+   the cheapest tier that holds. **(0) Make the race impossible** —
+   `FieldValue.increment`/`maximum`/`minimum`, or a deterministic doc id from
+   `event.id`; nothing to compare, nothing to drop. **(1) Native precondition** —
+   `ref.update(patch, { lastUpdateTime: snap.updateTime })` (Admin only) when the
+   patch is derived from a doc you just read; a concurrent change fails
+   `FAILED_PRECONDITION` instead of silently losing. **(2) Event-clock
+   watermark** — for out-of-order provider events, re-read inside a transaction,
+   compare stored against incoming, drop when not fresher, and **always advance
+   the watermark on the write that wins** (a watermark that is never advanced is
+   a guard that never rejects anything). **(3) Tell the human** — an interactive
+   edit that loses raises a conflict, never a silent drop. Re-checking a
+   predicate against a binding read *outside* the transaction is not a guard:
+   re-derive it from the `tx.get` result. ⚠️ The stamps are **not
+   interchangeable** — `ultimaModificacao` is µs on pedido/pagamento/produto but
+   **ms** on the ML links, and `historicoFtIni.data` is ms while
+   `historicoEstadoPedido.data` is µs, so a cross-unit comparison is a guard that
+   never fires. See ADR 0011.
 
 ## Layout
 
