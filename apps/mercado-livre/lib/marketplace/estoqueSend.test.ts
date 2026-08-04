@@ -78,15 +78,18 @@ class FakeDb {
             if (opts?.merge) col.set(id, { ...(col.get(id) ?? {}), ...data });
             else col.set(id, { ...data });
           },
-          // The terminal 4xx branch refreshes through `applyItemStatusToLink`,
-          // whose parent-denorm arm calls `update()` on the produto doc. These
-          // specs never seed that doc, so the denorm no-ops on `!exists` — this
-          // exists so a future seeded spec fails on its assertion rather than on
-          // a missing method. FieldValue sentinels are stored verbatim (the
-          // denorm's own semantics are covered in itemsStatusSync.test.ts).
+          // `update()` backs both the parent-denorm arm of `applyItemStatusToLink`
+          // and every `mergeIfExists` link writeback. The missing-doc failure
+          // MUST carry gRPC code 5, because that is what `isNotFound` narrows on
+          // — a bare Error would make `mergeIfExists` rethrow instead of
+          // resolving false, and the ghost-doc regression would go unnoticed.
+          // FieldValue sentinels are stored verbatim (the denorm's own semantics
+          // are covered in itemsStatusSync.test.ts).
           update: async (data: DocData) => {
             self.opLog.push({ op: 'update', path: `${path}/${id}` });
-            if (!col.has(id)) throw new Error(`NOT_FOUND: ${path}/${id}`);
+            if (!col.has(id)) {
+              throw Object.assign(new Error(`NOT_FOUND: ${path}/${id}`), { code: 5 });
+            }
             col.set(id, { ...(col.get(id) ?? {}), ...data });
           },
         };
@@ -362,16 +365,19 @@ describe('processStockSendTask — deterministic skips', () => {
 describe('processStockSendTask — request bodies (payload verbatim)', () => {
   it('quantidade → exactly { available_quantity }, and ONLY the state-doc read', async () => {
     const h = makeHarness();
+    seedLink(h.db);
 
     const res = await run(h, payload({ quantidade: 7 }));
 
     expect(res).toEqual({ outcome: 'sent', reason: null });
     expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { available_quantity: 7 });
     // The WHOLE Firestore op log: the pause-state get before the call, then
-    // the link writeback — no produto/link/children/estoque read anywhere.
+    // the link writeback — no produto/link/children/estoque read anywhere. The
+    // writeback is an `update` (mergeIfExists), never a `set`: a link deleted
+    // mid-flight must not be resurrected as a ghost.
     expect(h.db.opLog).toEqual([
       { op: 'get', path: `${STATE_PATH}/${CONTA}` },
-      { op: 'set', path: `${LINK_PATH}/link1` },
+      { op: 'update', path: `${LINK_PATH}/link1` },
     ]);
   });
 
@@ -451,6 +457,11 @@ describe('processStockSendTask — writeback', () => {
 
   it('the target comes from the payload — linkDocId under produtoId, never re-resolved', async () => {
     const h = makeHarness();
+    h.db.seed('produtos/OTHER/produtoMercadoLivre', 'lk9', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      id: 'MLB111',
+      estado: 'p',
+    });
 
     await run(h, payload({ produtoId: 'OTHER', linkDocId: 'lk9' }));
 
@@ -459,6 +470,23 @@ describe('processStockSendTask — writeback', () => {
       status: 'active',
       ultimaModificacao: NOW_MS,
     });
+  });
+
+  it('a link deleted mid-flight is NOT recreated — the writeback resolves to nothing', async () => {
+    const h = makeHarness();
+    // No seedLink: the sweep enqueued this task, then the link doc was deleted
+    // (produto delete cascade, an operator unlinking, the UP-migration prune).
+    const res = await run(h, payload({ quantidade: 7 }));
+
+    // The send itself still succeeded — only the writeback had nowhere to land.
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    // The ghost regression: `merge` would have CREATED this doc holding only
+    // the writeback keys — no contaOuterRef, no title, no id.
+    expect(h.db.docs(LINK_PATH).has('link1')).toBe(false);
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('link removido durante o envio'),
+      expect.objectContaining({ linkDocId: 'link1', produtoId: 'PROD' }),
+    );
   });
 
   it('a response without sub_status writes [] (never undefined on the wire)', async () => {

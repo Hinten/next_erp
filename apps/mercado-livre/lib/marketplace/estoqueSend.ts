@@ -316,7 +316,10 @@ export async function processStockSendTask(
     // status onto the link doc the PAYLOAD names (`linkDocId` under the anchor
     // `produtoId` — carried from the sweep, never re-resolved) so the derived
     // estado + raw status/sub_status never go stale on a successful send.
-    await produtoMercadoLivreLinkCollection.merge(
+    // `mergeIfExists`: `linkDocId` rides from the sweep and is never re-resolved,
+    // so the link may have been deleted while this task sat in the queue. An
+    // upsert would resurrect a ghost doc holding only these keys.
+    const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
       db,
       { produtoId: payload.produtoId },
       payload.linkDocId,
@@ -331,6 +334,17 @@ export async function processStockSendTask(
         errors: [],
       },
     );
+    if (!applied) {
+      console.warn(
+        '[mercado-livre] stock-send: link removido durante o envio — writeback ignorado',
+        {
+          integracaoId: payload.integracaoId,
+          produtoId: payload.produtoId,
+          linkDocId: payload.linkDocId,
+          itemId: payload.itemId,
+        },
+      );
+    }
 
     // Staleness observability (module doc): the numbers were computed at sweep
     // time and sent verbatim — `ageMs` says how old they were.
@@ -503,12 +517,21 @@ async function pararComErro(
   nowMs: number,
   reason: string,
 ): Promise<StockSendResult> {
-  await produtoMercadoLivreLinkCollection.merge(
+  // `mergeIfExists`: a link deleted mid-flight needs no diagnosis, and an
+  // upsert here would recreate it as a ghost the sweep can never clean up.
+  const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
     db,
     { produtoId: target.produtoId },
     target.linkDocId,
     { estado: ESTADO_PUBLICACAO_ML.erro, errors, ultimaModificacao: nowMs },
   );
+  if (!applied) {
+    console.warn('[mercado-livre] stock-send: link removido — erro não registrado no anúncio', {
+      produtoId: target.produtoId,
+      linkDocId: target.linkDocId,
+      reason,
+    });
+  }
   return { outcome: 'erro-registrado', reason };
 }
 

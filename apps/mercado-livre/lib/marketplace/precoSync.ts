@@ -609,7 +609,9 @@ export async function processPriceSyncJob(
           if (err.status >= 400 && err.status < 500) {
             // Deterministic rejection — stamp the link exactly like
             // estoqueSend/publish do, record the failure, move on.
-            await produtoMercadoLivreLinkCollection.merge(
+            // `mergeIfExists`: the draft's target was planned earlier in the
+            // job, so the link may already be gone — never upsert a ghost.
+            await produtoMercadoLivreLinkCollection.mergeIfExists(
               db,
               { produtoId: draft.produtoId },
               draft.linkDocId,
@@ -654,7 +656,8 @@ export async function processPriceSyncJob(
         ultimaModificacao: nowMs,
       };
       if (draft.kind === 'item') writeback.precoPublicado = draft.preco;
-      await produtoMercadoLivreLinkCollection.merge(
+      // `mergeIfExists` — same reason as the failure stamp above.
+      await produtoMercadoLivreLinkCollection.mergeIfExists(
         db,
         { produtoId: draft.produtoId },
         draft.linkDocId,

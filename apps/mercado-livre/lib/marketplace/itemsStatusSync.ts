@@ -270,14 +270,19 @@ export async function applyItemStatusToLink(
   target: LinkStatusTarget,
   item: { status?: string | null; sub_status?: string[] | null },
   opts: ApplyItemStatusOpts,
-): Promise<void> {
+): Promise<boolean> {
   const estado = estadoFromMlStatus(item.status);
 
   if (opts.skipDenorm !== true) {
     await updateParentDenorm(db, target.produtoId, integracaoId, target.itemId, estado);
   }
 
-  await produtoMercadoLivreLinkCollection.merge(
+  // `mergeIfExists`, never `merge`: `target` was resolved earlier (a queued task
+  // payload, a sweep row), so the link can have been deleted in between — by the
+  // produto delete cascade, an operator unlinking, or the UP-migration prune. An
+  // upsert would resurrect a ghost carrying only these keys and none of the
+  // schema's required fields, under a possibly-deleted parent.
+  const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
     db,
     { produtoId: target.produtoId },
     target.linkDocId,
@@ -289,6 +294,15 @@ export async function applyItemStatusToLink(
       ...(opts.extra ?? {}),
     },
   );
+  if (!applied) {
+    console.warn('[mercado-livre] link do anúncio já removido — writeback de status descartado', {
+      integracaoId,
+      produtoId: target.produtoId,
+      linkDocId: target.linkDocId,
+      itemId: target.itemId,
+    });
+  }
+  return applied;
 }
 
 /* -------------------------------------------------------------------------- */

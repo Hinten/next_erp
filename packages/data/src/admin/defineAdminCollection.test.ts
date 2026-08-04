@@ -120,6 +120,100 @@ describe('defineAdminCollection', () => {
     });
   });
 
+  describe('mergeIfExists', () => {
+    /** A db whose `update()` resolves, or rejects with a gRPC-coded Error. */
+    function fakeDb(rejectWith?: { code: number }) {
+      const update = vi.fn(() => {
+        if (!rejectWith) return Promise.resolve();
+        const err = Object.assign(new Error('boom'), rejectWith);
+        return Promise.reject(err);
+      });
+      const set = vi.fn(() => Promise.resolve());
+      const doc = vi.fn(() => ({ update, set }));
+      const collection = vi.fn(() => ({ doc }));
+      const db = { collection } as unknown as Parameters<typeof handle.mergeIfExists>[0];
+      return { db, update, set, doc, collection };
+    }
+
+    it('writes through update() — never set() — and resolves true', async () => {
+      const { db, update, set, collection, doc } = fakeDb();
+      await expect(
+        handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { cStat: '100' }),
+      ).resolves.toBe(true);
+      expect(collection).toHaveBeenCalledWith('things/abc/sub');
+      expect(doc).toHaveBeenCalledWith('d1');
+      expect(update).toHaveBeenCalledWith({ cStat: '100' });
+      // The whole point: an absent doc must NOT be upserted.
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('resolves false (no throw, no create) when the doc is gone — gRPC NOT_FOUND', async () => {
+      const { db, set } = fakeDb({ code: 5 });
+      await expect(
+        handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { cStat: '1' }),
+      ).resolves.toBe(false);
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('rethrows any non-NOT_FOUND failure (PERMISSION_DENIED stays fatal)', async () => {
+      const { db } = fakeDb({ code: 7 });
+      await expect(
+        handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { cStat: '1' }),
+      ).rejects.toThrow('boom');
+    });
+
+    it('never injects schema defaults (same guarantee as parseMerge)', async () => {
+      const { db, update } = fakeDb();
+      await handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { cStat: null });
+      expect(update).toHaveBeenCalledWith({ cStat: null });
+    });
+
+    it('validates the patch before writing anything', async () => {
+      const { db, update } = fakeDb();
+      await expect(
+        handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { tpEmis: 'not-a-number' }),
+      ).rejects.toThrow();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    // The update()-vs-set(merge) divergence guard: both of these would write
+    // something DIFFERENT from what the same patch does through merge().
+    it('throws on a nested plain object (update replaces the map, merge deep-merges it)', async () => {
+      const { db, update } = fakeDb();
+      await expect(
+        looseHandle.mergeIfExists(db, {}, 'd1', { nome: 'x', bloco: { a: 1 } }),
+      ).rejects.toThrow(TypeError);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('throws on a dotted key (update reads it as a field path, merge as a literal name)', async () => {
+      const { db, update } = fakeDb();
+      await expect(looseHandle.mergeIfExists(db, {}, 'd1', { 'a.b': 1 })).rejects.toThrow(
+        TypeError,
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('allows a class instance — Timestamp/GeoPoint/Buffer are leaf values, not maps', async () => {
+      const { db, update } = fakeDb();
+      class FakeTimestamp {
+        constructor(readonly seconds: number) {}
+      }
+      const ts = new FakeTimestamp(1);
+      await expect(looseHandle.mergeIfExists(db, {}, 'd1', { nome: 'x', at: ts })).resolves.toBe(
+        true,
+      );
+      expect(update).toHaveBeenCalledWith({ nome: 'x', at: ts });
+    });
+
+    it('an empty patch writes nothing and resolves true', async () => {
+      const { db, update, set } = fakeDb();
+      await expect(handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', {})).resolves.toBe(true);
+      expect(update).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+    });
+  });
+
   describe('resolvePath', () => {
     it('fills placeholders from context', () => {
       expect(handle.resolvePath({ thingId: 'abc' })).toBe('things/abc/sub');

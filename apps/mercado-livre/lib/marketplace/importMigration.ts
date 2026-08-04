@@ -124,7 +124,6 @@ import {
 
 import { type ImportDeps, importProduto } from './import';
 import { type ImportOptions, MercadoLivreImportError } from './importCore';
-import { isNotFound } from '@delfrance/data/admin';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
 
 /** Every import side-effect OFF (#441) — the migration only converges existing
@@ -258,7 +257,9 @@ export async function handleUptinMigration(
     // (tasks.dart:951-958) — freshly-imported members already land at the
     // correct estado via the import itself, so they're never stamped here.
     for (const pml of pmlsToStamp.values()) {
-      await produtoMercadoLivreLinkCollection.merge(
+      // `mergeIfExists`: these targets were resolved by reads earlier in this
+      // run, so a concurrent delete must not resurrect them as ghosts.
+      await produtoMercadoLivreLinkCollection.mergeIfExists(
         db,
         { produtoId: pml.produtoId },
         pml.linkDocId,
@@ -282,24 +283,22 @@ export async function handleUptinMigration(
     }
   } catch (err) {
     try {
+      // A `false` here means the PML was already deleted (e.g. a prior attempt
+      // pruned it before crashing) — nothing to record, and nothing to report.
       await stampSourceError(db, sourceLink, now);
     } catch (stampErr) {
       if (!(stampErr instanceof Error)) throw stampErr;
-      if (!isNotFound(stampErr)) {
-        // Unexpected failure while recording the error state — never silently
-        // dropped, but the ORIGINAL migration failure below still wins (mirrors
-        // notificacao.ts's `persistNotificationFailure` catch shape).
-        console.error(
-          '[mercado-livre] falha ao marcar PML de origem como erro após falha na migração UPtin',
-          {
-            produtoId: sourceLink.produtoId,
-            linkDocId: sourceLink.linkDocId,
-            cause: stampErr.message,
-          },
-        );
-      }
-      // NOT_FOUND (the PML was already deleted, e.g. a prior attempt pruned it
-      // before crashing) or a logged infra failure — either way, fall through.
+      // Unexpected failure while recording the error state — never silently
+      // dropped, but the ORIGINAL migration failure below still wins (mirrors
+      // notificacao.ts's `persistNotificationFailure` catch shape).
+      console.error(
+        '[mercado-livre] falha ao marcar PML de origem como erro após falha na migração UPtin',
+        {
+          produtoId: sourceLink.produtoId,
+          linkDocId: sourceLink.linkDocId,
+          cause: stampErr.message,
+        },
+      );
     }
     throw err;
   }
@@ -430,23 +429,22 @@ async function pruneMigratedSource(
 }
 
 /**
- * Best-effort `estado: 'E'` stamp on the source PML (tasks.dart:1017-1020). A
- * strict `.update()` (not `.merge()`/`.set(..., {merge:true})`, which would
- * silently CREATE a partial doc) so a doc pruned by an earlier attempt throws
- * NOT_FOUND instead of resurrecting.
+ * Best-effort `estado: 'E'` stamp on the source PML (tasks.dart:1017-1020).
+ * `mergeIfExists` (never `merge`, which would silently CREATE a partial doc)
+ * so a PML pruned by an earlier attempt resolves `false` instead of
+ * resurrecting. Returns whether the stamp landed.
  */
 async function stampSourceError(
   db: Firestore,
   sourceLink: UptinSourceLink,
   now: number,
-): Promise<void> {
-  const patch = produtoMercadoLivreLinkCollection.parseMerge({
-    estado: 'E',
-    ultimaModificacao: now,
-  });
-  await produtoMercadoLivreLinkCollection
-    .docRef(db, { produtoId: sourceLink.produtoId }, sourceLink.linkDocId)
-    .update(patch);
+): Promise<boolean> {
+  return produtoMercadoLivreLinkCollection.mergeIfExists(
+    db,
+    { produtoId: sourceLink.produtoId },
+    sourceLink.linkDocId,
+    { estado: 'E', ultimaModificacao: now },
+  );
 }
 
 /* --------------------------- applyMarketplaceDeletion --------------------- */
