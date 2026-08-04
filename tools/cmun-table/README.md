@@ -102,10 +102,12 @@ reviewable transformation. Decide that after seeing the report, not before.
 ## Encoding
 
 Three comma-separated base36 integer lists in string constants, decoded lazily
-into `Uint32Array`s on first lookup (~150 KB committed, ~275 KB retained heap,
-~2 ms once per process). A plain `[number, number, string][]` literal would cost
-~310 KB **and** materialise 11k JS arrays on every cold start — the metric that
-matters for App Hosting and the nested Cloud Functions codebases.
+into `Uint32Array`s on first lookup. Measured on a realistic-scale synthetic
+dump (8.586 faixas, 5.570 municípios): **103 KiB encoded, 3,5 ms one-time
+decode, 0,30 µs/lookup** — so expect ~130 KiB at the real faixa count. A plain
+`[number, number, string][]` literal would cost roughly 3× the bytes **and**
+materialise one JS array per faixa on every cold start — the metric that matters
+for App Hosting and the nested Cloud Functions codebases.
 
 The `startGaps` column stores each faixa's start as a **non-negative gap from
 the previous faixa's end**, which makes overlapping faixas structurally
