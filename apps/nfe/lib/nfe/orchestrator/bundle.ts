@@ -32,6 +32,7 @@ import {
 
 import { createFirestoreImpostoResolver } from '../imposto-resolver';
 import type { ImpostoResolver } from '../imposto-resolver';
+import { ensureCodigoMunicipio } from './cmun';
 import { NFeMissingImpostoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 
 /** Mirror of Flutter's `nFeSaidaIdFromTpEmis` — one nfev4 slot per (pedido, tpEmis). */
@@ -308,14 +309,34 @@ export async function loadPedidoBundle(
   const integracao = intermediadorFromSnap(pedidoId, integracaoPath, integracaoSnap, operacao);
   const regrasImposto = parseRegraImpostoSnapshot(pedidoId, regraImpostoSnap);
 
+  // `codigoMunicipio` (IBGE) is mandatory for enderDest.cMun, enderEmit.cMun
+  // AND ide.cMunFG, but nothing on any server path used to produce it (#785).
+  // Resolve — and persist — both endereços here, so the generator stays a pure
+  // function of its input and the failure, if any, names the document and CEP.
+  // The patched `filial` MUST be the one returned: `ide.ts` reads
+  // `filial.sede.codigoMunicipio` for cMunFG and `parties.ts` for enderEmit.
+  const filialRaw = filialSnap.data() as Filial;
+  const [enderecoDest, sede] = await Promise.all([
+    ensureCodigoMunicipio(enderecoSnap.data() as Endereco, {
+      persist: { ref: enderecoSnap.ref, field: 'codigoMunicipio' },
+      contexto: `endereco '${enderecoPath}'`,
+    }),
+    ensureCodigoMunicipio(filialRaw.sede, {
+      // Dotted leaf, never the whole `sede` map — a whole-map write would
+      // clobber a concurrent edit to this human-managed config collection.
+      persist: { ref: filialSnap.ref, field: 'sede.codigoMunicipio' },
+      contexto: `filial '${filialPath}'.sede`,
+    }),
+  ]);
+
   return {
     pedidoId,
     pedido,
     filialId: filialSnap.id,
-    filial: filialSnap.data() as Filial,
+    filial: { ...filialRaw, sede },
     clienteId: clienteSnap.id,
     cliente: clienteSnap.data() as Cliente,
-    enderecoDest: enderecoSnap.data() as Endereco,
+    enderecoDest,
     operacaoId: operacaoSnap.id,
     operacao,
     pagamentos,
