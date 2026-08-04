@@ -131,6 +131,18 @@ export function buildDest(
   // Deriving this from the mere TRUTHINESS of `cliente.ie` (as this did before)
   // reads the sentinels as real inscrições: a `'Não contribuinte'` cliente got
   // `indIEDest='1'`, which obliges a valid IE, and SEFAZ rejected the note.
+  //
+  // ⚠️ The '2' branch is narrower than it looks. NT 2025.001 rule E16a-30 made
+  // "destinatário isento de IE" a REJECTION (cStat=805) on an internal
+  // operation (idDest=1) in 17 UFs — AL, AM, BA, CE, DF, ES, GO, MG, MS, MT,
+  // PB, PE, RJ, RN, RS, SE and SP included. So a pessoa jurídica whose cadastro
+  // simply never had an IE filled in is emittable interstate but not in-state.
+  // The cure is cadastro data, not a different indicador: the cliente either
+  // has an IE (→ '1') or is a não-contribuinte (→ '9'), and `IE_SENTINELA`
+  // exists precisely so the operator can say which. Left faithful to the legacy
+  // ladder deliberately — silently reading an absent IE as '9' would assert
+  // "não contribuinte" about a cliente nobody classified.
+
   const ehPJ = cliente.tipo === TIPO_CLIENTE.pessoaJuridica;
   const ieToken = classifyIe(cliente.ie);
   const indIEDest: TNFe_infNFe_dest['indIEDest'] =

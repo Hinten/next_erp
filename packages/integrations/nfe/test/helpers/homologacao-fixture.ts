@@ -21,6 +21,8 @@ import {
   aggregateTotals,
   type Imposto,
 } from '../../src/tribute';
+import { IE_SENTINELA } from '@delfrance/schemas';
+
 import type { GeneratorInput } from '../../src/generator';
 
 /**
@@ -182,13 +184,13 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       tipo: 1,
       ehServico: false,
       ehExterior: false,
-      // The fixture's cliente is a pessoa jurídica with no IE
-      // (cliente.ie is null), so `buildDest` stamps indIEDest='2'
-      // (contribuinte isento de inscrição) — the legacy ladder reads an
-      // absent IE on a PJ as isento, not as não-contribuinte. cStat=696
-      // ("indIEDest=9 requires indFinal=1") therefore no longer applies
-      // to this fixture, but `true` stays correct on its own terms: the
-      // fixture models a marketplace-style sale to an end consumer.
+      // The fixture's cliente carries the NAO CONTRIBUINTE sentinel, so
+      // `buildDest` stamps indIEDest='9' (não contribuinte). SEFAZ rule
+      // 696 then demands indFinal='1' — i.e. the operation must be
+      // marked as final-consumer. Flipping this to `true` satisfies
+      // the cross-field consistency check and matches the semantics
+      // of the fixture (a marketplace-style sale to an end consumer
+      // without state inscription).
       ehConsumidorFinal: true,
       padrao: false,
       ativo: true,
@@ -216,7 +218,20 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       nome: 'CLIENTE HOMOLOGACAO',
       cpf_cnpj: '99999999000191',
       idEstrangeiro: null,
-      ie: null,
+      // The NAO CONTRIBUINTE sentinel, not `null`. Two reasons:
+      //
+      // 1. It is what this fixture MEANS — a marketplace sale to an end
+      //    consumer without state inscription. A PJ with `ie = null` reads
+      //    as ISENTO to the ladder (indIEDest='2'), which is a different
+      //    fiscal claim.
+      // 2. SEFAZ-SP rejects indIEDest='2' on an internal operation
+      //    (idDest=1) with cStat=805 — NT 2025.001 rule E16a-30, which
+      //    made that validation national for 17 UFs including SP. So the
+      //    ISENTO reading is not even emittable here.
+      //
+      // Carrying the sentinel also means every live homologação round-trip
+      // proves the sentinel never reaches the signed XML.
+      ie: IE_SENTINELA.naoContribuinte,
       imun: null,
       isUF: null,
       email: null,
