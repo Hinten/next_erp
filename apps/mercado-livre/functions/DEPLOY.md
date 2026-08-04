@@ -59,6 +59,7 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 | `sweepMercadoLivreStockDaily`        | `onSchedule('0 2 * * *')`              | Step 10 PR C — the **daily** full-reconciliation sweep, 02:00 America/Sao_Paulo: the same discovery over a flat 24h window (`MERCADO_LIVRE_STOCK_DAILY_WINDOW_H`), with no activity filter and no pedidos probe. It owns its slot alone — the incremental wrapper skips exactly the 02:00 tick — so the two never contend for one conta's caps and state doc. Same flag, same no-op while OFF.                                                                                                                                                                                                                                                                  |
 | `processMercadoLivrePriceSync`       | `onTaskDispatched` (Cloud Tasks queue) | Step 11 PR-C — "Atualizar preços": manual bulk price sync for one conta. Pages the conta's linked produtos, prices from the tabela normal, GETs the item before every PUT (skip-if-equal, fresh status gate, decrease guard unless `baixarPreco`), sends **price-only** bodies (`item.price.not_modifiable` maps to a terminal skip), and re-enqueues itself onto its OWN queue until the job (`enviosPrecoMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.              |
 | `onNfeAprovada`                      | `onDocumentWritten` (Firestore)        | Step 12 (#739) — the codebase's **first Firestore trigger**: fires on every `pedidos/{pedidoId}/nfev4/{nfeId}` write (named `default` database); when a production (`<tpAmb>1`) NF-e reaches `aprovada` with `xml_nfe_proc` present, ONE pedido read filters non-ML pedidos and it enqueues one `{ pedidoId, nfeId }` task onto the NF-e upload queue — **zero Firestore writes** (a non-ML approval costs exactly that 1 read; no task, no doc). Binds **no secrets** (never touches the ML API — see `src/options.ts`).                                                                                                                                       |
+| `onIntegracaoMercadoLivreChanged`    | `onDocumentWritten` (Firestore)        | #782 — mirrors a Mercado Livre conta onto its Mercado Envios `int_frete` doc: created on connect, re-synced when `nome` / `ativo` / filial / `dataCadastro` change, **deactivated** (never deleted) when the conta is deleted or its `tipo` is edited away. Restores what the legacy Flutter conta screen did inline on every save. Every gate runs before the first read, so any non-ML conta write — and any ML token refresh or `user_id` stamp — costs zero reads and zero writes. Binds **no secrets** (pure Firestore — see `src/options.ts`).                                                                                                            |
 | `processMercadoLivreNfeUpload`       | `onTaskDispatched` (Cloud Tasks queue) | Step 12 (#739) — uploads the raw signed nfeProc XML to ML `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment leaves `invoice_pending`. One task = one NF-e (no self-continuation); 6 attempts over a ≈25–30 min backoff envelope. **Zero writes on the happy path** — idempotency is the live shipment-status gate; the flow's only Firestore write is the failure stamp `freteInicial.estado = 'error'` on the pedido, with the detail in structured Cloud Logging. Single in-flight dispatch. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                        |
 
 ### Durability & the residual loss window
@@ -264,6 +265,65 @@ Optional, later: delete the now-orphaned `nfe-ml` Cloud Run service itself
 (`gcloud run services delete nfe-ml --region=us-east1 --project <project-id>`)
 once the new path has soaked — the trigger deletion above is what stops the
 double-fire; the idle service is only cost/noise.
+
+## Mercado Envios `int_frete` sync trigger (#782)
+
+`onIntegracaoMercadoLivreChanged` needs **no queue, no secrets and no IAM grant** — it
+is pure Firestore. It does need one new composite index, deployed **before** the
+function, or its first invocations silently full-scan `int_frete` (Enterprise
+auto-creates nothing and bills data scanned):
+
+```json
+{
+  "collectionGroup": "int_frete",
+  "queryScope": "COLLECTION",
+  "fields": [
+    { "fieldPath": "tipo", "order": "ASCENDING" },
+    { "fieldPath": "contaMercadoLivreMercadoEnviosOuterRef", "order": "ASCENDING" },
+    { "fieldPath": "ativo", "order": "ASCENDING" },
+    { "fieldPath": "dataCadastro", "order": "DESCENDING" }
+  ]
+}
+```
+
+It is already in `firestore.indexes.json`; deploy with
+`firebase deploy --only firestore:indexes`. The same entry also converts the order
+importer's `resolveMercadoEnviosIntFreteOuterRef` from a full scan into an
+index-bound equality — that one was live on the import hot path.
+
+**Deploy order**: indexes → this functions codebase → the backfill. Then verify the
+Eventarc trigger:
+
+```bash
+gcloud eventarc triggers list --project <project-id>
+# expect a trigger for onintegracaomercadolivrechanged,
+# event type google.cloud.firestore.document.v1.written,
+# filtered to database 'default' + the integracao/* document path
+```
+
+**Backfill** — contas connected in the new UI have no `int_frete` doc at all, and the
+trigger's skip-if-unchanged means a no-op touch will not create one. Dry-run first:
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <project-id>
+```
+
+then apply:
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <project-id> --apply
+```
+
+It drives the trigger's own `sincronizarIntFreteDaConta`, so the two can never
+disagree. Idempotent (re-running an already-synced project writes nothing), so it is
+safe to run again; it also normalizes any `contaMercadoLivreMercadoEnviosOuterRef`
+still stored in the bare `integracao/<id>` form. A conta reported `incompleto` has no
+filial (or no nome) yet — `int_frete` cannot represent that, so fill the field in and
+re-run.
+
+**No legacy cutover.** Unlike the NF-e trigger, this one can ship while the Flutter
+conta screen is still live: both writers converge on the same doc via the same
+back-ref, writing the same values, and whichever runs second finds nothing to change.
 
 ## Runtime env (stock sync, Step 10)
 
