@@ -49,19 +49,27 @@
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
- *  - anchors (S1): `produtos(paiId ASC, publicado ASC, __name__ ASC)` plus
- *    BOTH declared twins for the array term —
+ *  - anchors (S1): rides BOTH declared twins for the array term —
  *    `produtos(paiId ASC, publicado ASC, integracoesComProduto ASC,
  *    __name__ ASC)` and `produtos(paiId ASC, publicado ASC,
- *    integracoesComProduto CONTAINS, __name__ ASC)`. Which form an
+ *    integracoesComProduto CONTAINS, __name__ ASC)`. Which of the two forms an
  *    `arrayContains` predicate actually seeks is spike (b)'s question: the
  *    staging gate PRINTS the ridden index, and the LOSER is dropped in a
- *    follow-up (they are declared together only so the gate can adjudicate);
+ *    follow-up (they are declared together only so the gate can adjudicate).
+ *    The bare `produtos(paiId ASC, publicado ASC, __name__ ASC)` prefix that
+ *    used to sit alongside them was dropped by the #779 audit: every S1 call
+ *    site also filters `integracoesComProduto`, so it was dead weight —
+ *    either twin's leading two fields already serve it as a prefix;
  *  - estoque joins: `estoques(parentId ASC, depositoOuterRef ASC,
  *    ultimaModificacao ASC)` COLLECTION_GROUP — `parentId` carries the
  *    `equalAny` seek, `ultimaModificacao` covers the MAX branch;
  *  - subcollection() probes: two COLLECTION-scope entries —
- *    `estoques(depositoOuterRef)` and `produtoMercadoLivre(contaOuterRef)`.
+ *    `estoques(depositoOuterRef ASC, ultimaModificacao ASC)` and
+ *    `produtoMercadoLivre(contaOuterRef)`. The estoques entry widened past
+ *    the bare `depositoOuterRef` PR C shipped (still fine for `ownEstoque`'s
+ *    `select`) once the #779 audit found `ownEstoqueMax`'s
+ *    `aggregate(maximum('ultimaModificacao'))` needed it too — same reason
+ *    the COLLECTION_GROUP sibling above carries that trailing field.
  *    Staging explain evidence (gate run 2, 2026-07-28): with no
  *    COLLECTION-scope index a `subcollection()` probe carrying a WHERE
  *    compiles to a COLLECTION-GROUP index scan with the PARENT as a RESIDUAL
