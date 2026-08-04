@@ -311,6 +311,91 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  // ⚠️ DUAL-RUN ONLY — delete this whole block with the Flutter decommission
+  // (#829). These four Mercado Livre collections are reached by the NEW app only
+  // through the Admin SDK (or not at all); they carry client match blocks purely
+  // so the generated ruleset reproduces the grants the deployed legacy ruleset
+  // already gives the Flutter client (perm codes m1/m2/m4/mb,
+  // `.old/firestore.rules:168-191,219-224`). See #783.
+  describe('Mercado Livre dual-run client grants (#829)', () => {
+    it('{d_integracao: 1} reads the ML token stores the Flutter app depends on', async () => {
+      // The Flutter OAuth connect screen writes both docs and every ML action
+      // screen reads tokenDuravel through MercadoLivreApi — without these blocks
+      // the whole Flutter ML UI dies the moment this ruleset deploys.
+      await seed('integracao/i-ml/token6h/t1', { token: 'TG-code', expires_in: 1 });
+      await seed('integracao/i-ml/tokenDuravel/t1', {
+        access_token: 'a',
+        refresh_token: 'r',
+        expires_in: 1,
+      });
+      const reader = db({ d_integracao: 1 });
+      await assertSucceeds(getDoc(doc(reader, 'integracao/i-ml/token6h/t1')));
+      await assertSucceeds(getDoc(doc(reader, 'integracao/i-ml/tokenDuravel/t1')));
+    });
+
+    it('{d_integracao: 2} creates and refreshes tokenDuravel, {4} deletes it', async () => {
+      const writer = db({ d_integracao: 2 });
+      await assertSucceeds(
+        setDoc(doc(writer, 'integracao/i-ml/tokenDuravel/t-new'), {
+          access_token: 'a',
+          refresh_token: 'r',
+          expires_in: 1,
+        }),
+      );
+      // The Flutter refresh path rewrites the doc in place.
+      await assertSucceeds(
+        updateDoc(doc(writer, 'integracao/i-ml/tokenDuravel/t-new'), { access_token: 'a2' }),
+      );
+      // The conta deleteCascade removes both token docs client-side.
+      await assertSucceeds(
+        deleteDoc(doc(db({ d_integracao: 4 }), 'integracao/i-ml/tokenDuravel/t-new')),
+      );
+    });
+
+    it('is bit-exact: a read claim cannot write, and another domain cannot read', async () => {
+      await seed('integracao/i-ml/tokenDuravel/t-bits', {
+        access_token: 'a',
+        refresh_token: 'r',
+        expires_in: 1,
+      });
+      await assertFails(
+        updateDoc(doc(db({ d_integracao: 1 }), 'integracao/i-ml/tokenDuravel/t-bits'), {
+          access_token: 'x',
+        }),
+      );
+      await assertFails(getDoc(doc(db({ d_produto: 7 }), 'integracao/i-ml/tokenDuravel/t-bits')));
+      await assertFails(getDoc(doc(db({}), 'integracao/i-ml/tokenDuravel/t-bits')));
+    });
+
+    it('exposes the token collection groups, mirroring the legacy {parent=**} blocks', async () => {
+      await assertSucceeds(getDocs(collectionGroup(db({ d_integracao: 1 }), 'tokenDuravel')));
+      await assertSucceeds(getDocs(collectionGroup(db({ d_integracao: 1 }), 'token6h')));
+      await assertFails(getDocs(collectionGroup(db({ d_frete: 7 }), 'tokenDuravel')));
+    });
+
+    it('grants the two top-level ML collections on the same claim', async () => {
+      await seed('notificacoesMercadoLivre/n1', { resource: '/orders/1', topic: 'orders_v2' });
+      await seed('questionsML/q1', { id: 1, seller_id: 2, item_id: 'MLB1', text: 'oi' });
+      const reader = db({ d_integracao: 1 });
+      await assertSucceeds(getDoc(doc(reader, 'notificacoesMercadoLivre/n1')));
+      await assertSucceeds(getDoc(doc(reader, 'questionsML/q1')));
+      await assertFails(getDoc(doc(db({ d_pedido: 7 }), 'notificacoesMercadoLivre/n1')));
+      await assertFails(getDoc(doc(db({ d_chat: 7 }), 'questionsML/q1')));
+    });
+
+    it('does NOT relax the sibling credential stores, even for a superuser', async () => {
+      // The dual-run exception is ML-token-only: `credenciais` and
+      // `credenciaisWhatsapp` hold live refresh tokens with no legacy client
+      // grant to preserve, so they must stay unregistered and default-denied.
+      await seed('integracao/i-ml/credenciais/c1', { access_token: 'a', refresh_token: 'r' });
+      await seed('integracao/i-wa/credenciaisWhatsapp/c1', { permanent_token: 'p' });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(getDoc(doc(su, 'integracao/i-ml/credenciais/c1')));
+      await assertFails(getDoc(doc(su, 'integracao/i-wa/credenciaisWhatsapp/c1')));
+      await assertFails(setDoc(doc(su, 'integracao/i-ml/credenciais/c2'), { x: 1 }));
+    });
+  });
+
   describe('grupoEconomico tenant registry', () => {
     it('signed-in users read exactly their own grupo doc', async () => {
       await seed('grupoEconomico/g1', { nome: 'Grupo 1' });

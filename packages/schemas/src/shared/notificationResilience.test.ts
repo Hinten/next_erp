@@ -82,25 +82,45 @@ describe('registry safety', () => {
     expect(isDomainSchema(notificacaoResilienciaStatusSchema)).toBe(false);
   });
 
-  it('no notification schema is registered in ALL_DOMAINS', () => {
+  /**
+   * ⚠️ DUAL-RUN CARVE-OUT (#829). `notificacoesMercadoLivre` IS registered, for
+   * literal parity with the legacy ruleset (`match /notificacoesMercadoLivre`,
+   * perm code `m4`, `.old/firestore.rules:186-191`) so deploying the generated
+   * ruleset cannot deny the still-running Flutter app anything it has today —
+   * see #783. It is the ONLY allowed exception: the guard below must
+   * keep biting for Mercado Pago and WhatsApp, whose notification logs have no
+   * legacy client grant to preserve. Restore the blanket `toEqual([])` form when
+   * #829 lands.
+   */
+  const DUAL_RUN_REGISTERED_PATHS = ['notificacoesMercadoLivre'];
+
+  it('no notification schema but the dual-run ML one is registered in ALL_DOMAINS', () => {
     const registered = new Set<unknown>(ALL_DOMAINS);
-    for (const schema of [
-      notificacaoMercadoLivreSchema,
-      notificacaoMercadoPagoSchema,
-      notificacoesWhatsappSchema,
-    ]) {
+    for (const schema of [notificacaoMercadoPagoSchema, notificacoesWhatsappSchema]) {
       expect(registered.has(schema)).toBe(false);
     }
     const registeredPaths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
-    expect(registeredPaths.filter((p) => p.startsWith('notificac'))).toEqual([]);
+    expect(registeredPaths.filter((p) => p.startsWith('notificac')).sort()).toEqual(
+      DUAL_RUN_REGISTERED_PATHS,
+    );
   });
 
-  it('the barrel exports the schemas as BARE constants, never as a DomainSchema pair', () => {
-    for (const name of [
-      'notificacaoMercadoLivreSchema',
-      'notificacaoMercadoPagoSchema',
-      'notificacoesWhatsappSchema',
-    ]) {
+  it('the ML dual-run registration is a real DomainSchema pair, not an accident', () => {
+    // The carve-out above weakens a safety net, so pin that it was taken
+    // deliberately: the pair exists, is in ALL_DOMAINS, and points at the path
+    // the legacy ruleset grants.
+    const pair = (barrel as Record<string, unknown>).notificacaoMercadoLivre;
+    expect(isDomainSchema(pair), 'notificacaoMercadoLivre must be a DomainSchema pair').toBe(true);
+    expect(new Set<unknown>(ALL_DOMAINS).has(pair)).toBe(true);
+    expect((pair as { meta: { collectionPath: string } }).meta.collectionPath).toBe(
+      'notificacoesMercadoLivre',
+    );
+    // Its bare schema stays exported too — the admin collection handle uses it.
+    expect(barrel.notificacaoMercadoLivreSchema).toBe(notificacaoMercadoLivreSchema);
+  });
+
+  it('the other channels export their schemas as BARE constants, never as a DomainSchema pair', () => {
+    for (const name of ['notificacaoMercadoPagoSchema', 'notificacoesWhatsappSchema']) {
       const value = (barrel as Record<string, unknown>)[name];
       expect(value, `${name} must be exported from the barrel`).toBeDefined();
       expect(isDomainSchema(value), `${name} must not be a DomainSchema pair`).toBe(false);
