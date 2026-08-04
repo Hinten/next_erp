@@ -273,6 +273,32 @@ export async function applyItemStatusToLink(
 ): Promise<boolean> {
   const estado = estadoFromMlStatus(item.status);
 
+  // THE LINK IS THE ANCHOR — check it before touching anything else. The denorm
+  // has to run BEFORE the link write (see the ordering note above), which means
+  // that without this guard a link deleted between planning and here would still
+  // get its parent's `marketplace`/`marketplaceIds`/`integracoesComProduto`
+  // arrays re-stamped by `arrayUnion` — advertising a listing whose link no
+  // longer exists. `mergeIfExists` would then discard the link write and leave
+  // exactly the half-applied state it was added to prevent.
+  //
+  // This is a guard, not an atomic gate: a delete landing between this read and
+  // the writes below still half-applies. Closing that window entirely needs both
+  // writes in one transaction — a bigger change than this one, and the residual
+  // race is the same denorm drift the arrays already tolerate (they are
+  // DEPRECATED, dual-run only). `mergeIfExists` still backstops the link half.
+  const linkSnap = await produtoMercadoLivreLinkCollection
+    .docRef(db, { produtoId: target.produtoId }, target.linkDocId)
+    .get();
+  if (!linkSnap.exists) {
+    console.warn('[mercado-livre] link do anúncio já removido — writeback de status descartado', {
+      integracaoId,
+      produtoId: target.produtoId,
+      linkDocId: target.linkDocId,
+      itemId: target.itemId,
+    });
+    return false;
+  }
+
   if (opts.skipDenorm !== true) {
     await updateParentDenorm(db, target.produtoId, integracaoId, target.itemId, estado);
   }
@@ -295,12 +321,18 @@ export async function applyItemStatusToLink(
     },
   );
   if (!applied) {
-    console.warn('[mercado-livre] link do anúncio já removido — writeback de status descartado', {
-      integracaoId,
-      produtoId: target.produtoId,
-      linkDocId: target.linkDocId,
-      itemId: target.itemId,
-    });
+    // The guard above saw the link; it was deleted while these writes ran. Rare
+    // enough to deserve its own line — this is the residual race, not the
+    // ordinary "already gone" case.
+    console.warn(
+      '[mercado-livre] link do anúncio removido DURANTE o writeback — denorm do pai pode ter sido aplicado',
+      {
+        integracaoId,
+        produtoId: target.produtoId,
+        linkDocId: target.linkDocId,
+        itemId: target.itemId,
+      },
+    );
   }
   return applied;
 }

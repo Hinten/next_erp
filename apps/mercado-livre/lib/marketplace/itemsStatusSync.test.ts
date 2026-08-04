@@ -5,7 +5,12 @@ import {
   MercadoLivreNetworkError,
 } from '@delfrance/integrations-mercado-livre';
 
-import { type ItemsApiResolver, type ItemsSyncApi, syncItemStatus } from './itemsStatusSync';
+import {
+  applyItemStatusToLink,
+  type ItemsApiResolver,
+  type ItemsSyncApi,
+  syncItemStatus,
+} from './itemsStatusSync';
 import { parseItemIdFromResource } from './linkRefs';
 
 /* ------------------------------ fake Firestore ---------------------------- */
@@ -420,6 +425,73 @@ describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', 
     expect(out).toBe('synced'); // guarded — no NOT_FOUND throw on the missing parent
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' });
     expect(db.docData('produtos', PRODUTO)).toBeUndefined(); // never resurrected
+  });
+});
+
+describe('applyItemStatusToLink — the link is the anchor', () => {
+  const target = { produtoId: PRODUTO, linkDocId: 'link1', itemId: ITEM };
+
+  it('a deleted link stops the write BEFORE the parent denorm is touched', async () => {
+    const db = new FakeDb();
+    // The produto survives with its denorm arrays already emptied (an operator
+    // unlinked the listing); the link doc is gone. The denorm must stay empty —
+    // `updateParentDenorm` would otherwise arrayUnion the entries straight back,
+    // advertising a listing whose link no longer exists.
+    db.seed('produtos', PRODUTO, {
+      nome: 'Camiseta',
+      marketplace: [],
+      marketplaceIds: [],
+      integracoesComProduto: [],
+    });
+
+    const applied = await applyItemStatusToLink(
+      asDb(db),
+      CONTA,
+      target,
+      { status: 'active', sub_status: null },
+      { nowMs: 1_700_000_000_000 },
+    );
+
+    expect(applied).toBe(false);
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({
+      marketplace: [],
+      marketplaceIds: [],
+      integracoesComProduto: [],
+    });
+    // And no ghost link doc was created on the way out.
+    expect(db.docData(LINK_PATH, 'link1')).toBeUndefined();
+  });
+
+  it('a live link writes both halves and resolves true', async () => {
+    const db = new FakeDb();
+    seedLink(db, { estado: 'pa', status: 'paused' });
+
+    const applied = await applyItemStatusToLink(
+      asDb(db),
+      CONTA,
+      target,
+      { status: 'active', sub_status: null },
+      { nowMs: 1_700_000_000_000 },
+    );
+
+    expect(applied).toBe(true);
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+  });
+
+  it('skipDenorm still guards the link — no ghost, and still false', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', PRODUTO, { nome: 'Camiseta', marketplace: [] });
+
+    const applied = await applyItemStatusToLink(
+      asDb(db),
+      CONTA,
+      target,
+      { status: 'active', sub_status: null },
+      { nowMs: 1_700_000_000_000, skipDenorm: true },
+    );
+
+    expect(applied).toBe(false);
+    expect(db.docData(LINK_PATH, 'link1')).toBeUndefined();
   });
 });
 

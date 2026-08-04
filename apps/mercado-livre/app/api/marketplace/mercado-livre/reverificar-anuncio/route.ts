@@ -54,14 +54,20 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
   }
-  const body = parsed as { integracaoId?: string; produtoId?: string; linkDocId?: string };
-  if (!body.integracaoId || !body.produtoId || !body.linkDocId) {
+  const body = parsed as Record<string, unknown>;
+  // TYPE-check, not just truthiness: a non-string that happens to be truthy
+  // (`linkDocId: 1`) would sail past a `!value` guard and then throw deep inside
+  // `.doc(id)` ("not a valid resource path") — a 500 for what is a client error.
+  const naoString = (v: unknown): boolean => typeof v !== 'string' || v === '';
+  if (naoString(body.integracaoId) || naoString(body.produtoId) || naoString(body.linkDocId)) {
     return NextResponse.json(
-      { error: 'integracaoId, produtoId e linkDocId são obrigatórios.' },
+      { error: 'integracaoId, produtoId e linkDocId são obrigatórios (string não vazia).' },
       { status: 400 },
     );
   }
-  const { integracaoId, produtoId, linkDocId } = body;
+  const integracaoId = body.integracaoId as string;
+  const produtoId = body.produtoId as string;
+  const linkDocId = body.linkDocId as string;
 
   const db = getAdminFirestore();
 

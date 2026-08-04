@@ -160,6 +160,23 @@ describe('POST /api/marketplace/mercado-livre/reverificar-anuncio', () => {
     expect(h.applyItemStatusToLink).not.toHaveBeenCalled();
   });
 
+  it('400s on truthy NON-STRING fields — a client error must not surface as a 500', async () => {
+    // `linkDocId: 1` passes a `!value` guard and then throws inside `.doc(id)`
+    // ("not a valid resource path"). This is an authenticated write route, so the
+    // types are checked before any value reaches Firestore.
+    const cases = [
+      { integracaoId: 1, produtoId: PRODUTO, linkDocId: LINK },
+      { integracaoId: CONTA, produtoId: { $ne: null }, linkDocId: LINK },
+      { integracaoId: CONTA, produtoId: PRODUTO, linkDocId: ['a'] },
+      { integracaoId: CONTA, produtoId: PRODUTO, linkDocId: '' },
+      { integracaoId: true, produtoId: PRODUTO, linkDocId: LINK },
+    ];
+    for (const body of cases) {
+      expect((await POST(req(body))).status).toBe(400);
+    }
+    expect(h.applyItemStatusToLink).not.toHaveBeenCalled();
+  });
+
   it('is gated on the caller permission — nothing is read or written on a reject', async () => {
     h.verifyCaller.mockResolvedValue({
       error: NextResponse.json({ error: 'forbidden' }, { status: 403 }),

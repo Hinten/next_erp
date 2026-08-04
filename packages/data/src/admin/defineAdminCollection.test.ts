@@ -214,6 +214,118 @@ describe('defineAdminCollection', () => {
     });
   });
 
+  describe('mergeIfExists — write scope (which stored fields can be touched)', () => {
+    /**
+     * A STATEFUL fake: it holds a document and applies `update()` the way
+     * Firestore does — a field mask built from the payload's TOP-LEVEL keys,
+     * every unnamed field left alone.
+     *
+     * The two halves prove different things, and only one is non-circular:
+     *  - `sent` is the REAL guarantee. Firestore derives the update mask from
+     *    exactly these top-level keys, so "the payload carried only these keys"
+     *    is what makes every other stored field unreachable by the write. A
+     *    regression that made `parseMerge` inject a schema default would widen
+     *    the mask, and these assertions are what would catch it.
+     *  - `store` only documents the resulting document under this fake's rules.
+     *    It cannot prove Firestore's semantics — it shows what our payload would
+     *    do given them, which is what makes the specs readable.
+     */
+    function statefulDb(seed: Record<string, unknown>) {
+      const store: Record<string, unknown> = { ...seed };
+      const sent: Array<Record<string, unknown>> = [];
+      const update = vi.fn((data: Record<string, unknown>) => {
+        sent.push(data);
+        for (const [k, v] of Object.entries(data)) store[k] = v; // mask = top-level keys
+        return Promise.resolve();
+      });
+      const doc = vi.fn(() => ({ update, set: vi.fn() }));
+      const collection = vi.fn(() => ({ doc }));
+      const db = { collection } as unknown as Parameters<typeof handle.mergeIfExists>[0];
+      return { db, store, sent };
+    }
+
+    it('sends ONLY the patched keys, so no other stored field is in the mask', async () => {
+      const { db, store, sent } = statefulDb({
+        nome: 'original',
+        cStat: '000',
+        estado: 'stored-estado',
+        tpEmis: 9,
+      });
+
+      await handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { cStat: '100' });
+
+      // The mask: one key. `estado`/`tpEmis` carry schema defaults ('0'/1) that
+      // a full parse would inject — they must not appear here.
+      expect(Object.keys(sent[0]!)).toEqual(['cStat']);
+      expect(store).toEqual({
+        nome: 'original',
+        cStat: '100',
+        estado: 'stored-estado',
+        tpEmis: 9,
+      });
+    });
+
+    it('a stored value the patch does not name is never clobbered by its schema default', async () => {
+      // The failure this guards: `estado` defaults to '0' and `tpEmis` to 1. If
+      // a full-schema parse ever crept in, this write would silently reset a
+      // listing's stored estado — the exact class of bug `parseMerge` exists for.
+      const { db, store, sent } = statefulDb({ nome: 'x', cStat: null, estado: 'p', tpEmis: 6 });
+
+      await handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { nome: 'y' });
+
+      expect(sent[0]).toEqual({ nome: 'y' });
+      expect(store.estado).toBe('p');
+      expect(store.tpEmis).toBe(6);
+    });
+
+    it('an explicit null overwrites its own field and only its own field', async () => {
+      const { db, store, sent } = statefulDb({ nome: 'x', cStat: '100', estado: 'p' });
+
+      await handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { cStat: null });
+
+      expect(sent[0]).toEqual({ cStat: null });
+      expect(store).toEqual({ nome: 'x', cStat: null, estado: 'p' });
+    });
+
+    it('an undefined-valued key is dropped from the mask — its stored field survives', async () => {
+      // `parseMerge` strips undefined (Firestore rejects it outright). The point
+      // here is the MASK: the key must not reach the payload, or the stored
+      // value would be in scope for the write.
+      const { db, store, sent } = statefulDb({ nome: 'x', cStat: '100' });
+
+      await handle.mergeIfExists(db, { thingId: 'abc' }, 'd1', { cStat: undefined, nome: 'y' });
+
+      expect(sent[0]).toEqual({ nome: 'y' });
+      expect(store.cStat).toBe('100');
+    });
+
+    it('an array patch replaces that array wholesale and touches nothing else', async () => {
+      // What `estoqueSend`'s writeback relies on: `errors: []` / `sub_status: []`
+      // must CLEAR the stored array, not merge into it, while siblings survive.
+      const { db, store, sent } = statefulDb({
+        nome: 'x',
+        tags: ['a', 'b'],
+        outroCampo: 'intacto',
+      });
+
+      await looseHandle.mergeIfExists(db, {}, 'd1', { tags: [] });
+
+      expect(sent[0]).toEqual({ tags: [] });
+      expect(store).toEqual({ nome: 'x', tags: [], outroCampo: 'intacto' });
+    });
+
+    it('a patch rejected by the guard writes nothing at all — the doc is untouched', async () => {
+      const { db, store, sent } = statefulDb({ nome: 'x', bloco: { a: 1, b: 2 } });
+
+      await expect(looseHandle.mergeIfExists(db, {}, 'd1', { bloco: { a: 9 } })).rejects.toThrow(
+        TypeError,
+      );
+
+      expect(sent).toEqual([]);
+      expect(store).toEqual({ nome: 'x', bloco: { a: 1, b: 2 } });
+    });
+  });
+
   describe('resolvePath', () => {
     it('fills placeholders from context', () => {
       expect(handle.resolvePath({ thingId: 'abc' })).toBe('things/abc/sub');

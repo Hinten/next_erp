@@ -66,8 +66,16 @@ export interface AdminCollectionHandle<T extends z.ZodTypeAny> {
   merge(db: Firestore, ctx: PathContext, id: string, patch: Record<string, unknown>): Promise<void>;
   /**
    * Validate (partial) + merge-write at `id` **only if the document already
-   * exists**. Resolves `true` when the patch landed, `false` when the document
-   * was already gone. Every other failure rethrows.
+   * exists**. Resolves `false` when the document was already gone; every other
+   * failure rethrows.
+   *
+   * `true` means "nothing is known to be missing", NOT "a write definitely
+   * happened": a patch that validates to zero keys resolves `true` without
+   * issuing a write, so it never learns whether the document exists. Callers
+   * branch on `false` (the document is gone) — never read `true` as proof of a
+   * write. Nothing to write is not a failure, and the alternative readings are
+   * worse: `false` would claim the document is missing, and probing existence
+   * would spend a read to answer a question no caller asked.
    *
    * Use this for a best-effort stamp on a doc another actor may have deleted
    * meanwhile — a background writeback whose target id was resolved earlier
