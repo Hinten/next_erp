@@ -155,7 +155,13 @@ function computeTarifas(payment: MlPayment): number {
     .filter(isLojaCharge)
     .reduce((sum, cd) => sum + ((cd.amounts?.original ?? 0) - (cd.amounts?.refunded ?? 0)), 0);
 
-  return (payment.marketplace_fee ?? 0) + feeDetailsSum + chargesLojaSum;
+  // Clamped at 0 the same way `valor` is below: a refunded fee (`refunded >
+  // original` on a cancelled/returned order) or a negative `fee_details[].amount`
+  // makes the sum negative, and `pagamentoSchema.tarifas` is `.min(0)` — the raw
+  // negative throws a ZodError that the notification pipeline reads as TRANSIENT
+  // and retries until the delivery parks (#794). A fee is never negative in our
+  // books, so a net credit is dropped rather than recorded with a flipped sign.
+  return Math.max(0, (payment.marketplace_fee ?? 0) + feeDetailsSum + chargesLojaSum);
 }
 
 export function mlPaymentToPagamento(args: {
