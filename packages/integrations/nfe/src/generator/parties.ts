@@ -6,7 +6,7 @@
  * here too (see `.claude/skills/nfe/references/homologacao.md`).
  */
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
-import { TIPO_CLIENTE } from '@delfrance/schemas';
+import { IE_SENTINELA, TIPO_CLIENTE, normalizarIe } from '@delfrance/schemas';
 
 import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
 import type { TEnderEmi, TEndereco, TNFe_infNFe_dest, TNFe_infNFe_emit } from '../types/nfe-schema';
@@ -66,23 +66,87 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
   };
 }
 
+/**
+ * What `cliente.ie` actually holds, once normalized. The field is free text and
+ * carries two sentinels alongside real inscrições estaduais — see
+ * `IE_SENTINELA` in `@delfrance/schemas`. Comparison goes through
+ * `normalizarIe`, so `Não contribuinte`, `NÃO CONTRIBUINTE` and
+ * `nao  contribuinte` all land on the same token: the existing cliente base
+ * holds years of hand-typed values and the cadastro screen still accepts free
+ * text, so the reader cannot assume the stored value is canonical.
+ */
+type IeToken = 'ausente' | 'naoContribuinte' | 'isento' | 'numero';
+
+function classifyIe(ie: string | null): IeToken {
+  const normalized = normalizarIe(ie);
+  if (normalized == null) return 'ausente';
+  if (normalized === IE_SENTINELA.naoContribuinte) return 'naoContribuinte';
+  if (normalized === IE_SENTINELA.isento) return 'isento';
+  return 'numero';
+}
+
+/**
+ * `dest.IE` is XSD type `TIeDestNaoIsento` — `[0-9]{2,14}`, DIGITS ONLY. The
+ * stored value is hand-typed and routinely punctuated (`123.456.789.00`), so
+ * strip to digits the way legacy did (`removerNaoAlfaNumericos`,
+ * `.old/packages/nfe_client/lib/src/schemas/utils.dart:119`) — except legacy
+ * kept spaces, which this XSD does not accept.
+ *
+ * A value with no usable digits throws rather than degrading: this is only ever
+ * called on the `indIEDest='1'` branch, where SEFAZ *obliges* a valid IE.
+ * Silently falling back to `'2'` would mis-declare the destinatário in a note
+ * SEFAZ accepts — worse than one it rejects — and emitting the raw value just
+ * moves the failure to the pre-send XSD gate with a far worse message.
+ */
+function requireIeDigits(ie: string | null): string {
+  const digits = (ie ?? '').replace(/\D/g, '');
+  if (!/^\d{2,14}$/.test(digits)) {
+    throw new NFePartiesError(
+      `cliente.ie='${ie ?? ''}' is not a valid inscrição estadual ` +
+        `(expected 2 to 14 digits, got '${digits}'). Fix the cadastro, or set it to ` +
+        `'${IE_SENTINELA.isento}' / '${IE_SENTINELA.naoContribuinte}'.`,
+    );
+  }
+  return digits;
+}
+
 export function buildDest(
   cliente: Cliente,
   endereco: Endereco,
   ambiente: Ambiente,
+  ehExterior: boolean,
 ): TNFe_infNFe_dest {
   const xNomeReal = sanitizeNFeText(cliente.nome, 60) ?? '';
   const xNome = ambiente === 'homologacao' ? HOMOLOGACAO_XNOME : xNomeReal;
 
-  // `indIEDest` — `'9'` Não Contribuinte when cliente.ie is null,
-  // `'1'` Contribuinte ICMS otherwise. `'2'` Isento is Phase D.
-  const indIEDest: TNFe_infNFe_dest['indIEDest'] = cliente.ie ? '1' : '9';
+  // `indIEDest` ladder, ported from `.old/packages/pedido_nfe/lib/src/
+  // pedido_nfe_base.dart:675-683,720`. First match wins:
+  //
+  //   ehExterior                          → '9'  (operação com o exterior)
+  //   not pessoaJurídica (PF/estrangeiro)  → '9'  Não Contribuinte
+  //   PJ, ie says "não contribuinte"       → '9'
+  //   PJ, ie says "isento" OR is absent    → '2'  Contribuinte isento de inscrição
+  //   PJ, ie is anything else              → '1'  Contribuinte ICMS
+  //
+  // Deriving this from the mere TRUTHINESS of `cliente.ie` (as this did before)
+  // reads the sentinels as real inscrições: a `'Não contribuinte'` cliente got
+  // `indIEDest='1'`, which obliges a valid IE, and SEFAZ rejected the note.
+  const ehPJ = cliente.tipo === TIPO_CLIENTE.pessoaJuridica;
+  const ieToken = classifyIe(cliente.ie);
+  const indIEDest: TNFe_infNFe_dest['indIEDest'] =
+    ehExterior || !ehPJ || ieToken === 'naoContribuinte'
+      ? '9'
+      : ieToken === 'isento' || ieToken === 'ausente'
+        ? '2'
+        : '1';
 
   const dest: TNFe_infNFe_dest = {
     xNome: xNome.length > 0 ? xNome : undefined,
     indIEDest,
     enderDest: buildEnderDest(endereco),
-    IE: cliente.ie ?? undefined,
+    // Emitted ONLY for indIEDest='1' — that is what keeps a sentinel (or a
+    // stray IE on a pessoa física) out of the signed XML.
+    IE: indIEDest === '1' ? requireIeDigits(cliente.ie) : undefined,
     IM: cliente.imun ?? undefined,
     // Emails MUST keep `@` — sanitizeNFeText would strip it (the `@` is
     // in the restricted-char set for free-text descriptive fields).

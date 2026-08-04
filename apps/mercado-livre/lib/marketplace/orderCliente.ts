@@ -36,6 +36,15 @@
  *    like the CPF branch's digit-strip) — reproducing the typo would risk
  *    punctuation reaching `clienteSchema.cpf_cnpj` (`/^[0-9A-Z]*$/`) and
  *    throwing at write time instead of silently being a no-op like in Dart.
+ *  - `ie` stores the CANONICAL `IE_SENTINELA.naoContribuinte` token
+ *    (`NAO CONTRIBUINTE`, uppercase + unaccented) where legacy stored ML's raw
+ *    `'Não contribuinte'` (billing_info.dart:105), and the comparison that
+ *    picks it goes through `normalizarIe` instead of being exact. Legacy's
+ *    exact match let one casing variant from ML fall through to a null
+ *    `state_registration`, which the NF-e reader then classifies as ISENTO —
+ *    a wrong destinatário classification SEFAZ accepts. Dual-run safe: the
+ *    Flutter NF-e reader normalizes before comparing
+ *    (`pedido_nfe_base.dart:675`), so the canonical token matches it verbatim.
  *  - An unmappable (non-empty, unrecognized) `estado` name/code makes the
  *    whole endereço unbuildable (`null` return) instead of legacy's thrown
  *    `Exception` — consistent with the `canMakeAdress`-style "skip, don't
@@ -56,8 +65,10 @@ import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/collections';
 import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
 import {
+  IE_SENTINELA,
   UF_SIGLA,
   TIPO_CLIENTE,
+  normalizarIe,
   type Cliente,
   type TipoCliente,
   type UF,
@@ -223,10 +234,23 @@ export function billingInfoToClienteFields(info: MlBillingInfo): ClienteImportFi
   }
 
   if (type === 'CNPJ') {
-    const contribuinte = billingInfo?.taxes?.taxpayer_type?.description ?? null;
+    // ML's `taxpayer_type.description` is free-form prose, and the documented
+    // MLB vocabulary is exactly "Contribuinte" / "Não contribuinte" (there is
+    // no stable id to key off — the MLB examples carry `description` only).
+    // Match it through `normalizarIe` so a casing or accent variant
+    // (`NÃO CONTRIBUINTE`, `Nao contribuinte`) still resolves: an exact
+    // comparison silently fell through to `state_registration`, which for a
+    // não-contribuinte is null — and `ie = null` on a PJ means ISENTO to the
+    // NF-e reader, a wrong classification SEFAZ ACCEPTS.
+    //
+    // The stored value is the canonical IE_SENTINELA token, never ML's raw
+    // phrasing, so it also matches the still-running Flutter reader verbatim.
+    // A real `state_registration` is stored unchanged — the NF-e generator
+    // strips it to digits at emission.
+    const contribuinte = normalizarIe(billingInfo?.taxes?.taxpayer_type?.description);
     const ie =
-      contribuinte === 'Não contribuinte'
-        ? 'Não contribuinte'
+      contribuinte === IE_SENTINELA.naoContribuinte
+        ? IE_SENTINELA.naoContribuinte
         : (billingInfo?.taxes?.inscriptions?.state_registration ?? null);
     return {
       tipo: TIPO_CLIENTE.pessoaJuridica,

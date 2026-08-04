@@ -182,13 +182,13 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       tipo: 1,
       ehServico: false,
       ehExterior: false,
-      // The fixture's cliente has no IE (cliente.ie is null), so
-      // `buildDest` stamps indIEDest='9' (não contribuinte). SEFAZ rule
-      // 696 then demands indFinal='1' — i.e. the operation must be
-      // marked as final-consumer. Flipping this to `true` satisfies
-      // the cross-field consistency check and matches the semantics
-      // of the fixture (a marketplace-style sale to an end consumer
-      // without state inscription).
+      // The fixture's cliente is a pessoa jurídica with no IE
+      // (cliente.ie is null), so `buildDest` stamps indIEDest='2'
+      // (contribuinte isento de inscrição) — the legacy ladder reads an
+      // absent IE on a PJ as isento, not as não-contribuinte. cStat=696
+      // ("indIEDest=9 requires indFinal=1") therefore no longer applies
+      // to this fixture, but `true` stays correct on its own terms: the
+      // fixture models a marketplace-style sale to an end consumer.
       ehConsumidorFinal: true,
       padrao: false,
       ativo: true,

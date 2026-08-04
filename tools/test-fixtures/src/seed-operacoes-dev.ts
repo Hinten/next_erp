@@ -42,11 +42,12 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
     tipo: 1, // saída
     ehServico: false,
     ehExterior: false,
-    // Cliente seeded by seed-pedidos-dev is PF (no IE) → orchestrator
-    // stamps `indIEDest='9'` (Não Contribuinte). SEFAZ requires the
-    // matching `indFinal='1'` on `<ide>`, which only flips when
-    // `operacao.ehConsumidorFinal=true` (parties.ts:84 + ide.ts:103).
-    // Without this pair, SEFAZ rejects with cStat=696.
+    // Cliente seeded by seed-pedidos-dev is PF → orchestrator stamps
+    // `indIEDest='9'` (Não Contribuinte) whatever `ie` holds, since the
+    // ladder in `buildDest` only reaches '1'/'2' for a pessoa jurídica.
+    // SEFAZ requires the matching `indFinal='1'` on `<ide>`, which only
+    // flips when `operacao.ehConsumidorFinal=true` (`buildDest` in
+    // parties.ts + ide.ts). Without this pair, SEFAZ rejects with cStat=696.
     ehConsumidorFinal: true,
     padrao: true,
     ativo: true,

@@ -320,9 +320,9 @@ async function writeCliente(): Promise<void> {
     // Known-valid test CPF (passes check digits). PF avoids
     // cStat=234 ("IE do destinatário não vinculada ao CNPJ") — the
     // previous PJ pair (CNPJ 11222333000181 + IE 110042490114) was
-    // not recognised by SEFAZ-SP HOM. PF has no IE; the orchestrator
-    // stamps `indIEDest='9'` (Não Contribuinte) and the paired
-    // `operacao.ehConsumidorFinal=true` keeps `indFinal='1'` so
+    // not recognised by SEFAZ-SP HOM. A pessoa física always gets
+    // `indIEDest='9'` (Não Contribuinte) and never an `<IE>`, and the
+    // paired `operacao.ehConsumidorFinal=true` keeps `indFinal='1'` so
     // SEFAZ doesn't reject with cStat=696.
     cpf_cnpj: '12345678909',
     idEstrangeiro: null,
