@@ -218,19 +218,12 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       nome: 'CLIENTE HOMOLOGACAO',
       cpf_cnpj: '99999999000191',
       idEstrangeiro: null,
-      // The NAO CONTRIBUINTE sentinel, not `null`. Two reasons:
-      //
-      // 1. It is what this fixture MEANS — a marketplace sale to an end
-      //    consumer without state inscription. A PJ with `ie = null` reads
-      //    as ISENTO to the ladder (indIEDest='2'), which is a different
-      //    fiscal claim.
-      // 2. SEFAZ-SP rejects indIEDest='2' on an internal operation
-      //    (idDest=1) with cStat=805 — NT 2025.001 rule E16a-30, which
-      //    made that validation national for 17 UFs including SP. So the
-      //    ISENTO reading is not even emittable here.
-      //
-      // Carrying the sentinel also means every live homologação round-trip
-      // proves the sentinel never reaches the signed XML.
+      // The NAO CONTRIBUINTE sentinel rather than `null`. Both now reach
+      // indIEDest='9', but the sentinel says explicitly what this fixture
+      // MEANS — a marketplace sale to an end consumer without state
+      // inscription — instead of relying on the ladder's default for an
+      // unclassified cliente. It also makes every live homologação
+      // round-trip prove the sentinel never reaches the signed XML.
       ie: IE_SENTINELA.naoContribuinte,
       imun: null,
       isUF: null,

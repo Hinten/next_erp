@@ -60,6 +60,11 @@ export const TIPO_CLIENTE = {
  * pedido_nfe_base.dart:675-678`), so a cliente we write matches the still-
  * running Flutter app with no normalization on its side. Both fit `ie`'s
  * `max(16)` — `NAO CONTRIBUINTE` is exactly 16 characters.
+ *
+ * A sentinel is a CLAIM, and worth making explicitly: `isento` in particular
+ * drives `indIEDest='2'`, which SEFAZ only accepts in the narrow circumstances
+ * NT 2025.001 rule E16a-30 left open. A blank `ie` is not a synonym for either
+ * sentinel — it means nobody has classified the cliente yet.
  */
 export const IE_SENTINELA = {
   isento: 'ISENTO',

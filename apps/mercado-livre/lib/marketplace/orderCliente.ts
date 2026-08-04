@@ -41,8 +41,9 @@
  *    `'Não contribuinte'` (billing_info.dart:105), and the comparison that
  *    picks it goes through `normalizarIe` instead of being exact. Legacy's
  *    exact match let one casing variant from ML fall through to a null
- *    `state_registration`, which the NF-e reader then classifies as ISENTO —
- *    a wrong destinatário classification SEFAZ accepts. Dual-run safe: the
+ *    `state_registration`, leaving the destinatário unclassified rather than
+ *    marked não-contribuinte — the NF-e reader then has to default it. Dual-run
+ *    safe: the
  *    Flutter NF-e reader normalizes before comparing
  *    (`pedido_nfe_base.dart:675`), so the canonical token matches it verbatim.
  *  - An unmappable (non-empty, unrecognized) `estado` name/code makes the
@@ -240,8 +241,8 @@ export function billingInfoToClienteFields(info: MlBillingInfo): ClienteImportFi
     // Match it through `normalizarIe` so a casing or accent variant
     // (`NÃO CONTRIBUINTE`, `Nao contribuinte`) still resolves: an exact
     // comparison silently fell through to `state_registration`, which for a
-    // não-contribuinte is null — and `ie = null` on a PJ means ISENTO to the
-    // NF-e reader, a wrong classification SEFAZ ACCEPTS.
+    // não-contribuinte is null — leaving the destinatário with no fiscal
+    // classification at all, for the NF-e reader to default.
     //
     // The stored value is the canonical IE_SENTINELA token, never ML's raw
     // phrasing, so it also matches the still-running Flutter reader verbatim.

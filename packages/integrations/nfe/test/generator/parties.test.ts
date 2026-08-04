@@ -76,8 +76,10 @@ describe('buildDest — indIEDest', () => {
     expect(out.IE).toBeUndefined();
   });
 
+  // '2' is reachable ONLY by an explicit ISENTO — a claim the operator makes,
+  // never one inferred from a blank field. See the ladder's deviation note.
   it.each(['ISENTO', 'isento', ' Isento '])(
-    'pessoa jurídica with ie=%j is Isento (2) with no IE',
+    'pessoa jurídica with an explicit ie=%j is Isento (2) with no IE',
     (ie) => {
       const out = dest({ ie });
       expect(out.indIEDest).toBe('2');
@@ -85,12 +87,18 @@ describe('buildDest — indIEDest', () => {
     },
   );
 
-  // Legacy treats an absent IE on a PJ as isento, NOT as não-contribuinte.
-  it.each([null, '', '   '])('pessoa jurídica with ie=%j is Isento (2)', (ie) => {
-    const out = dest({ ie });
-    expect(out.indIEDest).toBe('2');
-    expect(out.IE).toBeUndefined();
-  });
+  // Deviation from legacy, which maps a blank ie on a PJ to '2'. NT 2025.001
+  // rule E16a-30 rejects '2' on an in-state operation (cStat=805) in 17 UFs
+  // including SP, so an unclassified cliente would be emittable interstate but
+  // not in-state — caught live by the homologação lane.
+  it.each([null, '', '   '])(
+    'pessoa jurídica with a blank ie=%j is Não Contribuinte (9), not Isento',
+    (ie) => {
+      const out = dest({ ie });
+      expect(out.indIEDest).toBe('9');
+      expect(out.IE).toBeUndefined();
+    },
+  );
 
   it('pessoa jurídica with a real inscrição estadual is Contribuinte ICMS (1)', () => {
     const out = dest({ ie: '30703088534' });
