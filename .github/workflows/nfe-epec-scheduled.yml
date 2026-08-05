@@ -1,0 +1,175 @@
+name: CI — NFe EPEC scheduled live test
+
+# Live EPEC (Evento Prévio de Emissão em Contingência) round-trip against the
+# Ambiente Nacional + the home SEFAZ, run on its own monthly cadence instead
+# of gating every PR. See issue #130: EPEC was live-validated by hand on
+# 2026-06-11 (AN round-trip + the pós-EPEC retransmission after the expected
+# 468 retry window), and this workflow automates that same check so a future
+# regression alerts on its own. Cron has no "every 30 days" expression — a
+# monthly schedule is the closest fit.
+#
+# Deliberately NOT folded into ci-nfe.yml's `on:` triggers: the AN round-trip
+# + pós-EPEC leg are slow and stateful (two live SEFAZ round-trips, one of
+# them government infrastructure outside our control), not the kind of check
+# that should gate every PR.
+on:
+  schedule:
+    - cron: '0 6 1 * *' # 06:00 UTC on the 1st of every month
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  epec-live:
+    name: Live EPEC round-trip (AN + home SEFAZ)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify live-test secrets are configured
+        # Fail loud + early instead of letting vitest's `describe.skip`
+        # silently drop the suite (which would surface as a green run that
+        # actually exercised nothing).
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          missing=()
+          [[ -z "${NFE_CERT_BASE64:-}" ]]          && missing+=("NFE_CERT_BASE64")
+          [[ -z "${NFE_CERT_PASSWORD:-}" ]]        && missing+=("NFE_CERT_PASSWORD")
+          [[ -z "${NFE_TEST_IE:-}" ]]              && missing+=("NFE_TEST_IE")
+          [[ -z "${FIREBASE_PROJECT_ID:-}" ]]      && missing+=("FIREBASE_PROJECT_ID_STAGING")
+          [[ -z "${FIREBASE_SERVICE_ACCOUNT:-}" ]] && missing+=("FIREBASE_SERVICE_ACCOUNT_STAGING")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required GitHub Action secrets for epec-live: ${missing[*]}"
+            echo "Configure them at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          echo "All 5 live-test secrets are configured."
+
+      - name: Restore last-known-good SEFAZ chain
+        # Same fallback posture as ci-nfe.yml's nfe-live job: a fresh fetch
+        # is ALWAYS attempted first, the cache only backstops a failed one.
+        uses: actions/cache/restore@v4
+        with:
+          path: packages/integrations/nfe/ca/*.pem
+          key: sefaz-chains-${{ github.run_id }}
+          restore-keys: |
+            sefaz-chains-
+
+      - name: Refresh SEFAZ-SP TLS chain
+        # Only SP is needed here — EPEC registers at the AN (whose endpoint
+        # rides the vendored DFe root, no per-run fetch) and the pós-EPEC leg
+        # transmits to the home SEFAZ (SP for the test filial).
+        run: |
+          if ! pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca; then
+            if [[ -f packages/integrations/nfe/ca/sefaz-sp-homologacao.pem ]]; then
+              echo "::warning::SP chain fetch failed — using the last-known-good cached chain"
+            else
+              echo "::error::SP chain fetch failed and no cached chain is available"
+              exit 1
+            fi
+          fi
+
+      - name: SEFAZ-SP HOM status gate (single status call per run)
+        # Short-circuits the EPEC round-trip below if SEFAZ-SP is paralisado
+        # (cStat 108/109) or unreachable — same one-status-call-per-run
+        # posture as ci-nfe.yml, to stay well below the cStat=656 throttle.
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          pnpm --filter @delfrance/integrations-nfe test operations.homologacao
+
+      - name: Live EPEC round-trip — AN registration + pós-EPEC home-SEFAZ transmission
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          NFE_CERT_ENV_FALLBACK:    '1'
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          pnpm --filter @delfrance/nfe-app test epec.homologacao
+
+      - name: Save SEFAZ chain to cache (last-known-good)
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: packages/integrations/nfe/ca/*.pem
+          key: sefaz-chains-${{ github.run_id }}
+
+  report-failure:
+    name: Alert on failure (find-or-create issue)
+    needs: [epec-live]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Find or create the tracking issue, then comment
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const title = '🛡️ Scheduled EPEC live test failing (nfe-epec-scheduled.yml)';
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const commentBody =
+              `❌ \`nfe-epec-scheduled.yml\` failed on the ${new Date().toISOString().slice(0, 10)} run.\n\n` +
+              `See the Actions tab for full logs: ${runUrl}`;
+
+            const existing = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:issue is:open in:title "${title}"`,
+            });
+
+            if (existing.data.items.length > 0) {
+              const issueNumber = existing.data.items[0].number;
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber, body: commentBody,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner, repo, title,
+                body:
+                  `${commentBody}\n\n` +
+                  `This issue is the standing tracker for \`nfe-epec-scheduled.yml\` failures — ` +
+                  `future failed runs comment here instead of opening a new issue. Close it once the ` +
+                  `EPEC live round-trip (AN registration + pós-EPEC home-SEFAZ transmission) is green again.`,
+              });
+            }
