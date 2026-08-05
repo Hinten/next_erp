@@ -137,10 +137,46 @@ the root `CLAUDE.md`.
 - **Wrapping `lru-cache`** (already present transitively via `firebase-admin` →
   `jwks-rsa`) → its `fetch()` is genuine single-flight and a rejected `fetchMethod`
   deletes the entry, but it offers **no injectable clock** (it captures the clock at
-  module load) and no hit/miss counters. Of the properties above it covers four; the
-  rest is wrapper code either way. Since `catalogMode: strict` also makes a direct
-  dependency a catalog entry, and every existing cache in this repo is a hand-rolled
-  `Map`, the wrapper won on cost and on testability.
+  module load), no hit/miss counters and no per-result TTL, so negative caching stays
+  hand-rolled regardless.
+
+- **`@epic-web/cachified`** → the serious contender, and the one alternative that was
+  built rather than reasoned about. An earlier draft of this ADR claimed a library
+  "covers four of the ten properties". **For cachified that was wrong** — it covers
+  roughly six, and two of them are exactly what the draft singled out as needing
+  custom code: `checkValue` runs against values read *from* the cache and
+  deletes+refetches on failure (that is `isFresh`), and `context.metadata.ttl` sets a
+  per-result TTL where `-1` means "do not cache" (that is `negativeTtlMs`, and the
+  library's own README example is literally the null-result case). It adds
+  stale-while-revalidate, batching and Standard-Schema validation for free, ships zero
+  dependencies, and is actively maintained.
+
+  A full working implementation exists and was measured. Three findings decided
+  against it:
+
+  1. **`invalidate()` does not cancel an in-flight load.** cachified registers its
+     pending promise *asynchronously* — it awaits the store read first — so an
+     `invalidate()` issued synchronously after a `get()` finds the pending map empty
+     and cancels nothing. The next `get()` joins the running load and receives a value
+     read **before** the write that prompted the invalidation. That is the
+     `exchangeAndPersist` path (write, evict, read back). Closing it would mean
+     reimplementing the pending map in front of the library, which defeats the point.
+  2. **It did not reduce the code we own.** Measured on the working branch: 286 → 315
+     lines (+29), *and* two new runtime dependencies. cachified replaces the engine
+     but not the policy, and this cache is mostly policy — mandatory TTL, the kill
+     switch, the counters, the test registry, the key encoding and the typed document
+     reader all remain ours either way. Its own `ttl` is optional and defaults to
+     **permanent**, the exact trap that made `apps/nfe`'s cert cache need a restart.
+  3. **No injectable clock**, so tests stub `Date.now` globally, against the repo's
+     explicit-`now` convention (`ReprocessOptions.now`, `ProdutoDataPort.now()`).
+
+  Recorded at this length deliberately: the decision is close, and the public API is
+  engine-agnostic, so swapping later costs one PR touching only `readCache.ts`. If we
+  ever want stale-while-revalidate or batched reads, revisit this rather than rebuild.
+  Note also that `checkValue` is **not** a drop-in for `isFresh` — cachified runs it
+  against the loader's return value too and throws on failure, so
+  `isFresh: (conta) => conta.user_id != null` would reject every account that has not
+  yet completed OAuth.
 
 ## Status
 
