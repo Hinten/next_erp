@@ -24,10 +24,14 @@ vi.mock('./orderCliente', () => {
     billingInfoToClienteFields: vi.fn(),
     billingInfoToEnderecoFields: vi.fn(() => null),
     shipmentToEnderecoFields: vi.fn(() => null),
-    findOrCreateCliente: vi.fn(),
     ensureEndereco: vi.fn(),
   };
 });
+// Promoted out of ./orderCliente by #786 — the resolution is shared with every
+// other channel importer now.
+vi.mock('@delfrance/data/admin/clientes', () => ({
+  findOrCreateCliente: vi.fn(),
+}));
 vi.mock('./orderPedidoTx', () => ({
   discoverPedidoMercadoLivre: vi.fn(),
 }));
@@ -41,8 +45,8 @@ import {
   billingInfoToClienteFields,
   billingInfoToEnderecoFields,
   ensureEndereco,
-  findOrCreateCliente,
 } from './orderCliente';
+import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { importPedidoMercadoLivre, mergeFreteInicial, type OrderImportDeps } from './orderImport';
@@ -245,7 +249,13 @@ beforeEach(() => {
     telefone: null,
     email: null,
   });
-  vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-default', created: true });
+  vi.mocked(findOrCreateCliente).mockResolvedValue({
+    clienteId: 'cli-default',
+    created: true,
+    matchedBy: null,
+    rejected: [],
+    dropped: [],
+  });
   // `mockClear` (above) doesn't reset a mock's implementation — restore the
   // module factory's null default explicitly so a test overriding it doesn't
   // leak into whichever test runs next.
@@ -354,7 +364,13 @@ describe('importPedidoMercadoLivre — cliente', () => {
       telefone: null,
       email: null,
     });
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-1', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-1',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
 
     await importPedidoMercadoLivre(deps(db, api), 1);
 
@@ -392,7 +408,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
     const order = makeOrder({ id: 1 });
     const api = makeApi({ getOrder: vi.fn(async () => order) });
 
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
       idExterno: null,
       cep: '01310100',

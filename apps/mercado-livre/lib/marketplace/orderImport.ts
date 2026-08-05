@@ -108,9 +108,9 @@ import {
   billingInfoToClienteFields,
   billingInfoToEnderecoFields,
   ensureEndereco,
-  findOrCreateCliente,
   shipmentToEnderecoFields,
 } from './orderCliente';
+import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 
@@ -383,7 +383,25 @@ async function applyClienteStep(args: {
     throw err;
   }
 
-  const { clienteId } = await findOrCreateCliente(db, clienteFields, nowMs);
+  const { clienteId, rejected, dropped } = await findOrCreateCliente(db, {
+    fields: clienteFields,
+    nowMs,
+  });
+  if (rejected.length > 0) {
+    // A telefone/e-mail hit whose document contradicts the buyer's. Before #786
+    // this merged silently and overwrote the other person's cpf_cnpj; now it is
+    // a near-miss worth seeing rather than a duplicate to explain later.
+    console.warn('[mercado-livre] candidatos a cliente rejeitados por documento divergente', {
+      orderId,
+      rejected,
+    });
+  }
+  if (dropped.length > 0) {
+    console.warn('[mercado-livre] campos do cliente descartados por valor inválido', {
+      orderId,
+      dropped,
+    });
+  }
   const clienteOuterRef = toOuterRef(clienteCollection.docPath({}, clienteId));
 
   await db.runTransaction(async (tx) => {

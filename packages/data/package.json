@@ -13,6 +13,7 @@
     "./server": "./src/server/index.ts",
     "./admin": "./src/admin/index.ts",
     "./admin/cache": "./src/admin/cache/index.ts",
+    "./admin/clientes": "./src/admin/clientes/index.ts",
     "./admin/collections": "./src/admin/collections/index.ts",
     "./admin/notifications": "./src/admin/notifications/index.ts",
     "./produto": "./src/produto/index.ts",
