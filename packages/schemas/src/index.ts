@@ -64,6 +64,8 @@ export {
   tipoClienteSchema,
   TIPO_CLIENTE,
   TIPO_CLIENTE_LABELS,
+  IE_SENTINELA,
+  normalizarIe,
   refineClienteTipoDocumento,
   type Cliente,
   type TipoCliente,
