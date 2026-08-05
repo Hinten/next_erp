@@ -95,7 +95,7 @@ export function buildFixturePedido(opts: BuildFixtureOptions = {}): CheckoutData
 
     produtos.set(produtoUid, engineProduto(produtoUid, nome, sku, ehKit, componentesKit));
 
-    // `precoDeVenda` (min 0.01) + `quantidade` (min 0) are required; the rest
+    // `precoDeVenda` (min 0) + `quantidade` (min 0) are required; the rest
     // fill from schema defaults. Ascending `ordem` keeps the flattened order stable.
     const item = itemDoPedidoSchema.parse({
       produtoUid,
