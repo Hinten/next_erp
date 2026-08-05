@@ -108,6 +108,7 @@ import {
   billingInfoToClienteFields,
   billingInfoToEnderecoFields,
   ensureEndereco,
+  resolveCodigoMunicipioBestEffort,
   findOrCreateCliente,
   shipmentToEnderecoFields,
 } from './orderCliente';
@@ -437,8 +438,18 @@ async function applyEnderecoStep(args: {
   }
   if (!enderecoFields) return pedido;
 
+  // ML sends no IBGE código, so both mappers emit null and the NF-e generator
+  // (which hard-requires it) used to reject every imported endereço (#785).
+  // Resolve here rather than in the mappers, which are deliberately pure.
+  // Note this does NOT change the endereço's deterministic id — see
+  // `makeEnderecoId`, which no longer hashes the field.
+  const codigoMunicipio = await resolveCodigoMunicipioBestEffort(enderecoFields);
+
   const clienteId = idFromRef(pedido.clientePedidoOuterRef);
-  const enderecoId = await ensureEndereco(db, clienteId, enderecoFields);
+  const enderecoId = await ensureEndereco(db, clienteId, {
+    ...enderecoFields,
+    codigoMunicipio,
+  });
   const enderecoOuterRef = toOuterRef(`clientes/${clienteId}/enderecos/${enderecoId}`);
 
   await db.runTransaction(async (tx) => {

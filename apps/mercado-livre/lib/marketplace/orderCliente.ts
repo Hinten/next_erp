@@ -55,6 +55,12 @@ import { createHash } from 'node:crypto';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/collections';
 import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
+import { ViaCepError } from '@delfrance/core/cep';
+import {
+  CodigoMunicipioNaoResolvidoError,
+  type ResolveCodigoMunicipioOptions,
+  resolveCodigoMunicipio,
+} from '@delfrance/core/cep/cmun';
 import {
   UF_SIGLA,
   TIPO_CLIENTE,
@@ -365,7 +371,19 @@ export function makeEnderecoId(fields: EnderecoImportFields): string {
     fields.complemento ?? '',
     fields.bairro,
     fields.cep,
-    fields.codigoMunicipio ?? '',
+    // `codigoMunicipio` is deliberately ABSENT from the hashed tuple (#785).
+    //
+    // Legacy `generateUid` includes it here, but BOTH importers only ever fed
+    // it null: Flutter's `toEndereco()` (billing_info.dart:77-91) calls
+    // `Endereco.forceEndereco(...)` without a `codigoMunicipio` argument, and
+    // this port hard-coded null until #785 started resolving it. Since
+    // `parts.join('')` swallows an empty element, dropping it keeps every
+    // existing ML endereço's id BYTE-IDENTICAL — while letting us store the
+    // resolved código without forking each address into a second document.
+    //
+    // It is also the right tuple on the merits: cMun is a pure function of
+    // `cep`, which is already hashed, so it carries no identity of its own.
+    // The hand-computed vector in this module's test pins the equivalence.
     fields.cidade,
     fields.estado,
     fields.cPais ?? '',
@@ -558,6 +576,50 @@ export async function findOrCreateCliente(
  * create racing to the same id is not an error — both converge on the same
  * doc (`isAlreadyExists`, gRPC ALREADY_EXISTS).
  */
+/**
+ * Resolve `codigoMunicipio` (IBGE) from the endereço's CEP, never failing the
+ * import (#785).
+ *
+ * ML's payload carries no IBGE code, so both mappers emit `null` — and the NF-e
+ * generator hard-requires it, which is why every ML-imported endereço used to
+ * fail emission. Resolution is IO, so it lives here rather than in the pure
+ * mappers (see this module's header).
+ *
+ * An unresolvable CEP stores `null` and moves on: a município we cannot name is
+ * not a reason to drop an order. The emission-time backstop in
+ * `apps/nfe/lib/nfe/orchestrator/cmun.ts` retries it later, when a human is
+ * present to act on the failure.
+ */
+export async function resolveCodigoMunicipioBestEffort(
+  fields: Pick<EnderecoImportFields, 'cep' | 'codigoMunicipio' | 'estado'>,
+  /**
+   * Test seam — production passes nothing. Without it a suite shares the
+   * process-wide ViaCEP client, whose (deliberate) memoization then leaks one
+   * test's answer into the next.
+   */
+  options?: ResolveCodigoMunicipioOptions,
+): Promise<string | null> {
+  try {
+    return await resolveCodigoMunicipio(fields, options);
+  } catch (err) {
+    if (err instanceof CodigoMunicipioNaoResolvidoError) {
+      console.warn('[mercado-livre] codigoMunicipio (IBGE) não resolvido', {
+        cep: fields.cep,
+        estado: fields.estado,
+        motivo: err.motivo,
+      });
+      return null;
+    }
+    if (err instanceof ViaCepError) {
+      console.warn('[mercado-livre] ViaCEP indisponível ao resolver codigoMunicipio', {
+        cep: fields.cep,
+      });
+      return null;
+    }
+    throw err;
+  }
+}
+
 export async function ensureEndereco(
   db: Firestore,
   clienteId: string,

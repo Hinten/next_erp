@@ -26,6 +26,10 @@ vi.mock('./orderCliente', () => {
     shipmentToEnderecoFields: vi.fn(() => null),
     findOrCreateCliente: vi.fn(),
     ensureEndereco: vi.fn(),
+    // #785 — the import resolves codigoMunicipio before creating the endereço.
+    // Stubbed to null so this suite stays offline; the resolution itself is
+    // covered in orderCliente.test.ts.
+    resolveCodigoMunicipioBestEffort: vi.fn(async () => null),
   };
 });
 vi.mock('./orderPedidoTx', () => ({
@@ -42,6 +46,7 @@ import {
   billingInfoToEnderecoFields,
   ensureEndereco,
   findOrCreateCliente,
+  resolveCodigoMunicipioBestEffort,
 } from './orderCliente';
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
@@ -421,6 +426,94 @@ describe('importPedidoMercadoLivre — endereço', () => {
       clientePedidoOuterRef: 'documents/clientes/cli-77',
       enderecoFiscalOuterRef: 'documents/clientes/cli-77/enderecos/end-99',
     });
+  });
+
+  /**
+   * #785's acceptance criterion. ML's payload has no IBGE código, so the mapper
+   * emits null and the endereço used to be stored that way — which made
+   * `parties.ts` reject every NF-e for an imported pedido.
+   */
+  it('stores the resolved codigoMunicipio on the endereço it creates', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
+      idExterno: null,
+      cep: '01310100',
+      logradouro: 'Av. Paulista',
+      numero: '1000',
+      bairro: 'Bela Vista',
+      complemento: null,
+      codigoMunicipio: null, // what the pure mapper always emits
+      cidade: 'São Paulo',
+      estado: 'SP',
+      cPais: null,
+      pais: null,
+      nome: null,
+      cpf_cnpj: null,
+      rg: null,
+      ie: null,
+      imun: null,
+      email: null,
+      telefone: null,
+    });
+    vi.mocked(resolveCodigoMunicipioBestEffort).mockResolvedValue('3550308');
+    vi.mocked(ensureEndereco).mockResolvedValue('end-99');
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(vi.mocked(ensureEndereco)).toHaveBeenCalledWith(
+      expect.anything(),
+      'cli-77',
+      expect.objectContaining({ cep: '01310100', codigoMunicipio: '3550308' }),
+    );
+  });
+
+  it('still imports when the CEP cannot be resolved, storing null', async () => {
+    // A município we cannot name is not a reason to drop an order — the
+    // emission-time backstop retries it when a human is present.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
+      idExterno: null,
+      cep: '99999999',
+      logradouro: 'Rua X',
+      numero: '1',
+      bairro: 'Centro',
+      complemento: null,
+      codigoMunicipio: null,
+      cidade: 'Cidade',
+      estado: 'SP',
+      cPais: null,
+      pais: null,
+      nome: null,
+      cpf_cnpj: null,
+      rg: null,
+      ie: null,
+      imun: null,
+      email: null,
+      telefone: null,
+    });
+    vi.mocked(resolveCodigoMunicipioBestEffort).mockResolvedValue(null);
+    vi.mocked(ensureEndereco).mockResolvedValue('end-99');
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
+      enderecoFiscalOuterRef: 'documents/clientes/cli-77/enderecos/end-99',
+    });
+    expect(vi.mocked(ensureEndereco)).toHaveBeenCalledWith(
+      expect.anything(),
+      'cli-77',
+      expect.objectContaining({ codigoMunicipio: null }),
+    );
   });
 });
 

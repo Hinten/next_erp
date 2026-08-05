@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
 import { UF_SIGLA, TIPO_CLIENTE } from '@delfrance/schemas';
+import { type ViaCepClient, ViaCepError } from '@delfrance/core/cep';
 
 import {
   type ClienteImportFields,
@@ -12,6 +13,7 @@ import {
   ensureEndereco,
   findOrCreateCliente,
   makeEnderecoId,
+  resolveCodigoMunicipioBestEffort,
   shipmentToEnderecoFields,
 } from './orderCliente';
 
@@ -387,6 +389,47 @@ describe('makeEnderecoId', () => {
     };
     expect(makeEnderecoId({ ...base, numero: '124' })).not.toBe(makeEnderecoId(base));
   });
+
+  /**
+   * The load-bearing guarantee of #785.
+   *
+   * Before #785 both importers wrote `codigoMunicipio: null` — this port
+   * hard-coded it, and Flutter's `toEndereco()` (billing_info.dart:77-91)
+   * omits the argument to `forceEndereco` entirely. Now that the import
+   * resolves the código, the id MUST NOT move, or every existing ML address
+   * would fork into a second document on its next order.
+   *
+   * The hand-computed vector above is the real regression test (it still passes
+   * unchanged); this pins the property directly.
+   */
+  it('is unchanged by codigoMunicipio — the field is not part of the identity', () => {
+    const base: EnderecoImportFields = {
+      idExterno: null,
+      logradouro: 'Rua Teste',
+      numero: '123',
+      complemento: null,
+      bairro: 'Centro',
+      cep: '01310100',
+      codigoMunicipio: null,
+      cidade: 'São Paulo',
+      estado: UF_SIGLA.SP,
+      cPais: null,
+      pais: null,
+      nome: null,
+      cpf_cnpj: null,
+      rg: null,
+      ie: null,
+      imun: null,
+      email: null,
+      telefone: null,
+    };
+
+    // cMun is a pure function of `cep`, which IS hashed — so it carries no
+    // identity of its own, and an endereço backfilled in place still matches
+    // the id a fresh import computes.
+    expect(makeEnderecoId({ ...base, codigoMunicipio: '3550308' })).toBe(makeEnderecoId(base));
+    expect(makeEnderecoId({ ...base, codigoMunicipio: '' })).toBe(makeEnderecoId(base));
+  });
 });
 
 describe('findOrCreateCliente', () => {
@@ -573,5 +616,107 @@ describe('ensureEndereco', () => {
     const first = await ensureEndereco(db(fake), 'cli-1', fields);
     const second = await ensureEndereco(db(fake), 'cli-1', fields);
     expect(second).toBe(first);
+  });
+});
+
+describe('resolveCodigoMunicipioBestEffort', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * ML's payload carries no IBGE código, so both mappers emit `null` and every
+   * imported endereço used to fail NF-e emission (#785). This resolves it — but
+   * must never fail an import, because a município we cannot name is not a
+   * reason to drop an order.
+   *
+   * Each case injects its OWN ViaCEP client. The shared one memoizes by design
+   * (CEP → município is static data), which would otherwise leak one case's
+   * answer into the next and make "ViaCEP is unreachable" pass vacuously.
+   */
+  function viaCepReturning(codigoMunicipio: string | null): ViaCepClient {
+    return {
+      buscarCep: vi.fn(() =>
+        Promise.resolve(
+          codigoMunicipio == null
+            ? null
+            : { logradouro: '', bairro: '', cidade: '', estado: '', codigoMunicipio },
+        ),
+      ),
+    };
+  }
+
+  const forbiddenViaCep: ViaCepClient = {
+    buscarCep: vi.fn(() => {
+      throw new Error('ViaCEP must not be consulted here');
+    }),
+  };
+
+  it('returns a stored 7-digit código without consulting anything', async () => {
+    await expect(
+      resolveCodigoMunicipioBestEffort(
+        { cep: '01310100', codigoMunicipio: '3550308', estado: UF_SIGLA.SP },
+        { viaCep: forbiddenViaCep },
+      ),
+    ).resolves.toBe('3550308');
+    expect(forbiddenViaCep.buscarCep).not.toHaveBeenCalled();
+  });
+
+  it('resolves a missing código from the CEP', async () => {
+    await expect(
+      resolveCodigoMunicipioBestEffort(
+        { cep: '01310100', codigoMunicipio: null, estado: UF_SIGLA.SP },
+        { viaCep: viaCepReturning('3550308') },
+      ),
+    ).resolves.toBe('3550308');
+  });
+
+  it('returns null — never throws — when the CEP cannot be resolved', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(
+      resolveCodigoMunicipioBestEffort(
+        { cep: '99999999', codigoMunicipio: null, estado: UF_SIGLA.SP },
+        { viaCep: viaCepReturning(null) },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('returns null when ViaCEP is unreachable', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const viaCep: ViaCepClient = {
+      buscarCep: vi.fn(() => Promise.reject(new ViaCepError('rede', '01310100'))),
+    };
+
+    await expect(
+      resolveCodigoMunicipioBestEffort(
+        { cep: '01310100', codigoMunicipio: null, estado: UF_SIGLA.SP },
+        { viaCep },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('returns null when the resolved código contradicts the endereço UF', async () => {
+    // `resolveUf` defaults a genuinely-absent estado to 'AC' (see this module's
+    // header), and a São Paulo cMun emitted under UF=AC earns SEFAZ rejection
+    // 273 — better to store null and let a human fix it.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(
+      resolveCodigoMunicipioBestEffort(
+        { cep: '01310100', codigoMunicipio: null, estado: UF_SIGLA.AC },
+        { viaCep: viaCepReturning('3550308') },
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('rethrows anything that is not a resolution failure', async () => {
+    const boom = new RangeError('bug');
+    const viaCep: ViaCepClient = { buscarCep: vi.fn(() => Promise.reject(boom)) };
+
+    await expect(
+      resolveCodigoMunicipioBestEffort(
+        { cep: '01310100', codigoMunicipio: null, estado: UF_SIGLA.SP },
+        { viaCep },
+      ),
+    ).rejects.toBe(boom);
   });
 });
