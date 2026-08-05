@@ -59,7 +59,7 @@ describe('getEndpoints (home SEFAZ)', () => {
   it('covers all 27 UFs with a concrete authorizer + endpoint set, both ambientes', () => {
     expect(new Set(ALL_UFS).size).toBe(27);
     for (const uf of ALL_UFS) {
-      for (const ambiente of ['producao', 'homologacao']) {
+      for (const ambiente of ['producao', 'homologacao'] as const) {
         const urls = getEndpoints(uf, ambiente);
         expect(urls.NfeAutorizacao).toMatch(/^https:\/\//);
         expect(urls.NfeRetAutorizacao).toMatch(/^https:\/\//);
