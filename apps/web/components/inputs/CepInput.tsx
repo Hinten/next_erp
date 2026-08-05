@@ -4,14 +4,15 @@ import { useState } from 'react';
 import { ActionIcon, TextInput, Tooltip } from '@mantine/core';
 import { IconSearch } from '@tabler/icons-react';
 import { useFormContext } from 'react-hook-form';
+import {
+  type EnderecoViaCep,
+  ViaCepError,
+  buscarCep,
+  cleanCep,
+  formatCep,
+  isCepCompleto,
+} from '@delfrance/core/cep';
 import type { FieldRenderProps } from '@delfrance/ui';
-import { type EnderecoViaCep, buscarCep, cleanCep } from '@/lib/endereco/viaCep';
-
-/** Display mask `#####-###` over the clean 8-digit value. */
-function maskCep(clean: string): string {
-  const d = cleanCep(clean);
-  return d.length > 5 ? `${d.slice(0, 5)}-${d.slice(5)}` : d;
-}
 
 export interface CepTextInputProps {
   value: string;
@@ -45,7 +46,7 @@ export function CepTextInput({
   const [loading, setLoading] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
 
-  const complete = cleanCep(value).length === 8;
+  const complete = isCepCompleto(value);
 
   async function buscar() {
     if (!complete) return;
@@ -56,12 +57,10 @@ export function CepTextInput({
       if (found) onFound(found);
       else setLookupError('CEP não encontrado.');
     } catch (err) {
-      if (err instanceof TypeError) {
-        setLookupError('Falha de rede ao buscar o CEP.');
-        return;
-      }
-      if (err instanceof SyntaxError) {
-        setLookupError('Resposta inválida do ViaCEP.');
+      // The client wraps every transport failure — network, timeout, malformed
+      // JSON — in ViaCepError, so this is the one class to narrow on.
+      if (err instanceof ViaCepError) {
+        setLookupError('Não foi possível consultar o CEP. Tente novamente.');
         return;
       }
       throw err;
@@ -73,7 +72,7 @@ export function CepTextInput({
   return (
     <TextInput
       label={label}
-      value={maskCep(value)}
+      value={formatCep(value)}
       onChange={(e) => {
         setLookupError(null);
         onChange(cleanCep(e.currentTarget.value));
