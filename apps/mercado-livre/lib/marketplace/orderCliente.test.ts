@@ -42,6 +42,10 @@ class FakeDb {
   storedDoc(path: string, id: string): DocData | undefined {
     return this.col(path).get(id);
   }
+  /** Every doc in a collection — `.size` is the no-duplicate assertion. */
+  docs(path: string): Map<string, DocData> {
+    return this.col(path);
+  }
 
   private query(entries: Array<[string, DocData]>) {
     const clauses: Array<[string, string, unknown]> = [];
@@ -199,6 +203,41 @@ function shipmentWithReceiverAddress(receiver_address: Record<string, unknown> |
   } as unknown as MlShipment;
 }
 
+/**
+ * The 18 `EnderecoImportFields` slots at fixed, fully-populated values — a test
+ * overrides only what it cares about. The defaults are the tuple every golden
+ * vector below is computed over, so changing one re-keys those vectors.
+ */
+function enderecoFields(overrides: Partial<EnderecoImportFields> = {}): EnderecoImportFields {
+  return {
+    idExterno: null,
+    cep: '01310100',
+    logradouro: 'Rua Teste',
+    numero: '123',
+    bairro: 'Centro',
+    complemento: null,
+    codigoMunicipio: null,
+    cidade: 'São Paulo',
+    estado: UF_SIGLA.SP,
+    cPais: null,
+    pais: null,
+    nome: null,
+    cpf_cnpj: null,
+    rg: null,
+    ie: null,
+    imun: null,
+    email: null,
+    telefone: null,
+    ...overrides,
+  };
+}
+
+/** Narrows a mapper's `| null` return without a non-null assertion. */
+function requireFields(fields: EnderecoImportFields | null): EnderecoImportFields {
+  if (fields == null) throw new Error('the fixture must produce an endereço');
+  return fields;
+}
+
 /* --------------------------------------------------------------------------- */
 
 describe('billingInfoToClienteFields', () => {
@@ -335,57 +374,169 @@ describe('shipmentToEnderecoFields', () => {
   });
 });
 
+/**
+ * GOLDEN VECTORS — hand-computed, byte-for-byte fixed. `makeEnderecoId` ports
+ * `Endereco.generateUid` (models.dart:841-866), and a Flutter-written endereço
+ * only resolves to the same doc id during dual-run while every hashed value
+ * matches. Each 40-char hex is the lowercase SHA-1 of the documented UTF-8
+ * preimage. Recompute with:
+ *   node -e 'console.log(require("crypto").createHash("sha1").update(S,"utf8").digest("hex"))'
+ * A change to any of these is a WIRE BREAK — an address that silently forks
+ * into a second document — not a test to "fix".
+ *
+ * PROVENANCE: each digest is computed from the preimage in its comment, which
+ * mirrors the concatenation documented at `orderCliente.ts:378-407`. They are
+ * NOT captured from a running Dart build (`.old/` is unavailable), so they pin
+ * THIS port's contract against accidental drift. The check that would prove
+ * legacy parity outright is recomputing the id of a real Flutter-written
+ * endereço doc — see #790.
+ *
+ * Two traps these exist to catch:
+ *  - the hash order is NOT `enderecoSchema`'s declaration order — `cep` sits at
+ *    position 7 here but 2 in the schema, and `complemento`/`bairro` are swapped,
+ *    so deriving the id by iterating schema keys yields a different digest;
+ *  - `parts.join('')` uses NO separator, so field boundaries are ambiguous and
+ *    editing any fallback string moves the digest of every address hitting it.
+ */
+
+// sha1("enderecoRua Teste123Centro01310100São PauloSP")
+const FULL = '70d9018b0d28f930c549ce4ad9e164b3be7904d5';
+// sha1("enderecoRua Augusta1500Apt 42Consolação01305100São PauloSP")
+const FULL_WITH_COMPLEMENTO = 'e9628f9968f54ac0c1a6f3270e73bff09134a30e';
+// sha1("enderecoNAO INFORMADOS/NSEM BAIRRO01310100NAO INFORMADASP")
+const BILLING_FALLBACKS = '303b2fa905f645c8ca70c704df4bea5c27d3b971';
+// sha1("enderecoNão informadoS/NNão informadoNão informado01310100NAO INFORMADASP")
+const SHIPMENT_FALLBACKS = 'f1726b875c77521560406cbb8b6a9d032367788b';
+// sha1("enderecoNAO INFORMADOS/NSEM BAIRRO01310100NAO INFORMADAAC") — estado absent
+const BILLING_FALLBACKS_UF_AC = 'c9a338fc57a5c098b31ed098fc95fc586db76b6f';
+// sha1("enderecoNAO INFORMADONAO INFORMADOSEM BAIRRO01310100NAO INFORMADASP")
+// — what legacy wrote for the billing payload below: numero "NAO INFORMADO".
+const LEGACY_BILLING_NUMERO = '7e3e3a4ca54c301c9613c0c681f6180085d312c2';
+// sha1("enderecoNão informadoNão informadoNão informadoNão informado01310100NAO INFORMADASP")
+// — what legacy wrote for the shipment payload below: numero "Não informado".
+const LEGACY_SHIPMENT_NUMERO = 'e1db83b989200c55f7123d5d12e326aa5eaecad4';
+
 describe('makeEnderecoId', () => {
   it('matches a hand-computed sha1 vector over the exact legacy field order', () => {
-    const fields: EnderecoImportFields = {
-      idExterno: null,
-      logradouro: 'Rua Teste',
-      numero: '123',
-      complemento: null,
-      bairro: 'Centro',
-      cep: '01310100',
-      codigoMunicipio: null,
-      cidade: 'São Paulo',
-      estado: UF_SIGLA.SP,
-      cPais: null,
-      pais: null,
-      nome: null,
-      cpf_cnpj: null,
-      rg: null,
-      ie: null,
-      imun: null,
-      email: null,
-      telefone: null,
-    };
-    // sha1(utf8('endereco' + '' + 'Rua Teste' + '123' + '' + 'Centro' +
-    // '01310100' + '' + 'São Paulo' + 'SP' + '' + '' + '' + '' + '' + '' + '' +
-    // '' + '')) — computed independently via node:crypto against this exact
-    // concatenation, not re-derived from the implementation under test.
-    expect(makeEnderecoId(fields)).toBe('70d9018b0d28f930c549ce4ad9e164b3be7904d5');
+    // 'endereco' + '' + 'Rua Teste' + '123' + '' + 'Centro' + '01310100' + '' +
+    // 'São Paulo' + 'SP', then nine empty tail slots.
+    expect(makeEnderecoId(enderecoFields())).toBe(FULL);
+  });
+
+  it('hashes a non-null complemento into the 5th slot, between numero and bairro', () => {
+    // The slot the vector above leaves empty. Pins the complemento/bairro order,
+    // which is SWAPPED relative to enderecoSchema's declaration order.
+    expect(
+      makeEnderecoId(
+        enderecoFields({
+          logradouro: 'Rua Augusta',
+          numero: '1500',
+          complemento: 'Apt 42',
+          bairro: 'Consolação',
+          cep: '01305100',
+        }),
+      ),
+    ).toBe(FULL_WITH_COMPLEMENTO);
+  });
+
+  it('returns a 40-char lowercase hex digest', () => {
+    expect(makeEnderecoId(enderecoFields())).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it('changes when any single field changes (id is a function of the whole tuple)', () => {
-    const base: EnderecoImportFields = {
-      idExterno: null,
-      logradouro: 'Rua Teste',
-      numero: '123',
+    expect(makeEnderecoId(enderecoFields({ numero: '124' }))).not.toBe(
+      makeEnderecoId(enderecoFields()),
+    );
+  });
+});
+
+/**
+ * #790's "legacy-id compatibility" case. Every fallback string the two mappers
+ * substitute is HASHED, so these vectors pin the fallback TEXT itself — driven
+ * end-to-end from an ML payload through the real mapper rather than from a
+ * hand-written field literal, which is what makes them bite.
+ *
+ * #789 replaces both mappers with one shared `forceEndereco`-faithful builder
+ * and unifies the two fallback vocabularies. The moment it does, these go red.
+ * That is the point: unifying them re-keys every address that hits a fallback,
+ * so the port creates a DUPLICATE instead of recovering the doc the Flutter app
+ * already wrote. The re-key has to be a decision, not a discovery.
+ */
+describe('makeEnderecoId — mapper fallback vectors', () => {
+  /** Every optional billing address field absent — every fallback fires at once. */
+  const emptyBillingAddress = {
+    street_name: null,
+    street_number: null,
+    neighborhood: null,
+    comment: null,
+    city_name: null,
+  };
+
+  const billingFallbackFields = () =>
+    requireFields(billingInfoToEnderecoFields(cpfBillingInfo({}, emptyBillingAddress)));
+
+  const shipmentFallbackFields = () =>
+    requireFields(
+      shipmentToEnderecoFields(
+        shipmentWithReceiverAddress({ postal_code: '01310100', state: { name: 'SP' } }),
+      ),
+    );
+
+  it('pins the billing fallbacks: NAO INFORMADO / S/N / SEM BAIRRO / NAO INFORMADA', () => {
+    const fields = billingFallbackFields();
+    expect(fields).toMatchObject({
+      logradouro: 'NAO INFORMADO',
+      numero: 'S/N',
+      bairro: 'SEM BAIRRO',
       complemento: null,
-      bairro: 'Centro',
-      cep: '01310100',
-      codigoMunicipio: null,
-      cidade: 'São Paulo',
+      cidade: 'NAO INFORMADA',
       estado: UF_SIGLA.SP,
-      cPais: null,
-      pais: null,
-      nome: null,
-      cpf_cnpj: null,
-      rg: null,
-      ie: null,
-      imun: null,
-      email: null,
-      telefone: null,
-    };
-    expect(makeEnderecoId({ ...base, numero: '124' })).not.toBe(makeEnderecoId(base));
+    });
+    expect(makeEnderecoId(fields)).toBe(BILLING_FALLBACKS);
+  });
+
+  it('pins the shipment fallbacks: Não informado ×3 / S/N / NAO INFORMADA', () => {
+    const fields = shipmentFallbackFields();
+    expect(fields).toMatchObject({
+      logradouro: 'Não informado',
+      numero: 'S/N',
+      // Unlike billing, the shipment mapper fills complemento rather than
+      // leaving it null (models.dart:5332) — a hashed slot, so it re-keys too.
+      complemento: 'Não informado',
+      bairro: 'Não informado',
+      cidade: 'NAO INFORMADA',
+    });
+    expect(makeEnderecoId(fields)).toBe(SHIPMENT_FALLBACKS);
+  });
+
+  it('the two mappers disagree, so the SAME empty address forks by which one built it', () => {
+    // `applyEnderecoStep` (orderImport.ts) tries billing first and falls back to
+    // the shipment. An order whose billing address later becomes unusable is
+    // re-keyed onto a second endereço purely by that fallback — this asserts the
+    // hazard exists today; #789's unification is what removes it.
+    expect(makeEnderecoId(billingFallbackFields())).not.toBe(
+      makeEnderecoId(shipmentFallbackFields()),
+    );
+  });
+
+  it('pins resolveUf(null) → AC: an address with no estado folds into the AC bucket', () => {
+    const fields = requireFields(
+      billingInfoToEnderecoFields(cpfBillingInfo({}, { ...emptyBillingAddress, state: null })),
+    );
+    expect(fields.estado).toBe(UF_SIGLA.AC);
+    expect(makeEnderecoId(fields)).toBe(BILLING_FALLBACKS_UF_AC);
+  });
+
+  it("numero's 'S/N' is a KNOWN, accepted dual-run fork — not legacy's digest", () => {
+    // orderCliente.ts:55-59: legacy's numero fallback was the 13-char
+    // "NAO INFORMADO" / "Não informado", which overflows enderecoSchema.numero's
+    // max(10), so this port substitutes 'S/N'. The two constants are what legacy
+    // would have written for these exact payloads (derived from that documented
+    // text, not from a Dart run). So a número-less address DOES resolve to a
+    // different doc than the Flutter app's — a real, accepted duplicate, pinned
+    // here so the deviation stays deliberate. #789 owns whether to keep it.
+    expect(makeEnderecoId(billingFallbackFields())).not.toBe(LEGACY_BILLING_NUMERO);
+    expect(makeEnderecoId(shipmentFallbackFields())).not.toBe(LEGACY_SHIPMENT_NUMERO);
   });
 });
 
@@ -536,32 +687,14 @@ describe('findOrCreateCliente', () => {
 });
 
 describe('ensureEndereco', () => {
-  const fields: EnderecoImportFields = {
-    idExterno: null,
-    logradouro: 'Rua Teste',
-    numero: '123',
-    complemento: null,
-    bairro: 'Centro',
-    cep: '01310100',
-    codigoMunicipio: null,
-    cidade: 'São Paulo',
-    estado: UF_SIGLA.SP,
-    cPais: null,
-    pais: null,
-    nome: null,
-    cpf_cnpj: null,
-    rg: null,
-    ie: null,
-    imun: null,
-    email: null,
-    telefone: null,
-  };
+  const path = 'clientes/cli-1/enderecos';
+  const fields = enderecoFields();
 
   it('creates the endereço at the deterministic id under clientes/{clienteId}/enderecos', async () => {
     const fake = new FakeDb();
     const id = await ensureEndereco(db(fake), 'cli-1', fields);
     expect(id).toBe(makeEnderecoId(fields));
-    expect(fake.storedDoc('clientes/cli-1/enderecos', id)).toMatchObject({
+    expect(fake.storedDoc(path, id)).toMatchObject({
       logradouro: 'Rua Teste',
       cep: '01310100',
       estado: 'SP',
@@ -575,87 +708,48 @@ describe('ensureEndereco', () => {
     expect(second).toBe(first);
   });
 
-  it('does not create a duplicate: seeding an existing doc and calling returns the same id with collection size = 1', async () => {
+  it('recovers a PRE-EXISTING doc instead of duplicating it', async () => {
+    // The real dual-run case: the doc was written earlier — by a prior import or
+    // by the still-running Flutter app — so unlike the idempotency test above,
+    // not both writes happen here. `create` must hit ALREADY_EXISTS and return.
     const fake = new FakeDb();
     const id = makeEnderecoId(fields);
-    // Seed the collection with a pre-existing doc at this id
-    const seedData = { ...fields, logradouro: 'Rua Teste', cep: '01310100' };
-    fake.seed('clientes/cli-1/enderecos', id, seedData);
+    fake.seed(path, id, { ...fields, timestamp: 1_700_000_000_000 });
 
-    // Call ensureEndereco with the same field set
-    const returnedId = await ensureEndereco(db(fake), 'cli-1', fields);
-
-    // Assert the id is the same
-    expect(returnedId).toBe(id);
-
-    // Assert the collection size is still 1 (no duplicate created)
-    const col = fake.cols.get('clientes/cli-1/enderecos');
-    expect(col?.size).toBe(1);
+    expect(await ensureEndereco(db(fake), 'cli-1', fields)).toBe(id);
+    expect(fake.docs(path).size).toBe(1);
   });
 
-  it('preserves an existing doc byte-identical when already present', async () => {
+  it('leaves the existing doc untouched — operator edits and unknown legacy keys survive', async () => {
     const fake = new FakeDb();
     const id = makeEnderecoId(fields);
-    // Seed with the fields plus an extra operator-edited field
-    const seedData = {
+    // An operator edited `complemento` in apps/web after the import (editing a
+    // field does not move the doc id), and the Flutter writer left behind a key
+    // this port never writes.
+    const existing = {
       ...fields,
-      observacao: 'Entrega entre 9-18, não chamar campainha',
+      complemento: 'Deixar com o porteiro',
+      idEnderecoLegado: 'flutter-4711',
     };
-    fake.seed('clientes/cli-1/enderecos', id, seedData);
+    fake.seed(path, id, { ...existing });
 
-    // Call ensureEndereco
     await ensureEndereco(db(fake), 'cli-1', fields);
 
-    // Assert the stored doc is still byte-identical to the seed
-    const stored = fake.storedDoc('clientes/cli-1/enderecos', id);
-    expect(stored).toEqual(seedData);
+    expect(fake.storedDoc(path, id)).toStrictEqual(existing);
+    // The sharp `create` → `set` detector: `enderecoCollection.parse` injects
+    // `timestamp: null` (enderecoSchema's default, endereco.ts:144), so a write
+    // that landed on the existing doc would introduce a key the seed never had.
+    expect(fake.storedDoc(path, id)).not.toHaveProperty('timestamp');
   });
 
-  it('matches the legacy Endereco.generateUid golden vector for compatibility with dual-run', async () => {
-    // Golden vector: a known field set pinned to the exact sha1 this port
-    // produces. This prevents silent breakage from a future change to fallback
-    // strings or field concatenation order — the ID derivation must match
-    // legacy for dual-run to avoid creating duplicate docs. The specific
-    // vector is arbitrary; what matters is the pin.
-    const goldenFields: EnderecoImportFields = {
-      idExterno: null,
-      logradouro: 'Rua Augusta',
-      numero: '1500',
-      complemento: 'Apt 42',
-      bairro: 'Consolação',
-      cep: '01305100',
-      codigoMunicipio: null,
-      cidade: 'São Paulo',
-      estado: UF_SIGLA.SP,
-      cPais: null,
-      pais: null,
-      nome: null,
-      cpf_cnpj: null,
-      rg: null,
-      ie: null,
-      imun: null,
-      email: null,
-      telefone: null,
-    };
-    // This sha1 is pinned to the field order and null-handling logic of
-    // makeEnderecoId. Any change to the field order, any new field, or any
-    // modification to a fallback string MUST be followed by updating this
-    // vector and ensuring dual-run parity with the legacy app.
-    const goldenSha1 = 'e9628f9968f54ac0c1a6f3270e73bff09134a30e';
-    expect(makeEnderecoId(goldenFields)).toBe(goldenSha1);
-  });
-
-  it('produces a different id when fields differ', async () => {
+  it('lands on a SECOND document when a field differs', async () => {
+    // The pure-function twin of this only proves two ids differ; this proves
+    // `ensureEndereco` actually writes two documents.
     const fake = new FakeDb();
     const baseId = await ensureEndereco(db(fake), 'cli-1', fields);
+    const otherId = await ensureEndereco(db(fake), 'cli-1', enderecoFields({ numero: '124' }));
 
-    // Call again with a different numero
-    const fieldsWithDifferentNumero = { ...fields, numero: '124' };
-    const differentId = await ensureEndereco(db(fake), 'cli-1', fieldsWithDifferentNumero);
-
-    expect(differentId).not.toBe(baseId);
-    // Assert collection size is 2 (both docs created)
-    const col = fake.cols.get('clientes/cli-1/enderecos');
-    expect(col?.size).toBe(2);
+    expect(otherId).not.toBe(baseId);
+    expect(fake.docs(path).size).toBe(2);
   });
 });
