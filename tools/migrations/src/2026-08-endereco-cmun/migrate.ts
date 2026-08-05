@@ -115,6 +115,11 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   //    `pagesByDocId`'s note for why this descends per-cliente.
   for await (const docs of pagesByDocId(ctx.db.collection('clientes'))) {
     for (const cliente of docs) {
+      // Count the cliente itself: it was read to get here, and the runbook
+      // tells you to size the run from these totals. Omitting it under-reports
+      // the read volume badly when many clientes have few or no endereços.
+      docsScanned += 1;
+
       // Unfiltered read of one cliente's endereços — a handful of docs each,
       // no `where`/`orderBy`, so no index is involved.
       const enderecos = await cliente.ref.collection('enderecos').get();

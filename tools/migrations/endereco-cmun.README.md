@@ -65,6 +65,10 @@ Cost profile: one small extra query per cliente instead of one large scan.
 Slower in wall-clock, but predictable, and on scan-based billing it reads only
 what it needs. Size it on staging first and read the logged totals.
 
+`docsScanned` counts **every document read** — each `filial`, each `int_frete`,
+each `cliente`, and each `endereco` — so the number in the summary line is the
+real read volume, not just the endereços that were candidates for a write.
+
 **It is offline-only.** Ten thousand ViaCEP calls against a service that
 rate-limits without documenting its limit is a self-inflicted outage. Rows the
 table cannot resolve are logged as skips; the emission-time backstop
