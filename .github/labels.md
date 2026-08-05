@@ -84,7 +84,7 @@ for one state:
 
 | Label                    | Colour   | Use it for                                                                 |
 | ------------------------ | -------- | -------------------------------------------------------------------------- |
-| `needs-migration-window` | `c5def5` | Ready to do, but must be executed **during** the data-migration / cutover.  |
+| `needs-migration-window` | `ff007f` | Ready to do, but must be executed **during** the data-migration / cutover.  |
 
 Distinct from the three above: the work is fully specced and unblocked — only
 its *timing* is gated. Doing it early is not merely premature, it is wrong:
