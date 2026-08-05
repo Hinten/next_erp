@@ -45,7 +45,7 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
     nro: requireSanitized('filial.sede.numero', filial.sede.numero, 60),
     xCpl: sanitizeNFeText(filial.sede.complemento, 60) ?? undefined,
     xBairro: requireSanitized('filial.sede.bairro', filial.sede.bairro, 60),
-    cMun: requireField('filial.sede.codigoMunicipio', filial.sede.codigoMunicipio),
+    cMun: requireCMun('filial.sede.codigoMunicipio', filial.sede.codigoMunicipio),
     xMun: requireSanitized('filial.sede.cidade', filial.sede.cidade, 60),
     UF: filial.sede.estado as TEnderEmi['UF'],
     CEP: filial.sede.cep,
@@ -200,7 +200,7 @@ function buildEnderDest(endereco: Endereco): TEndereco {
     nro: requireSanitized('endereco.numero', endereco.numero, 60),
     xCpl: sanitizeNFeText(endereco.complemento, 60) ?? undefined,
     xBairro: requireSanitized('endereco.bairro', endereco.bairro, 60),
-    cMun: requireField('endereco.codigoMunicipio', endereco.codigoMunicipio),
+    cMun: requireCMun('endereco.codigoMunicipio', endereco.codigoMunicipio),
     xMun: requireSanitized('endereco.cidade', endereco.cidade, 60),
     UF: endereco.estado as TEndereco['UF'],
     CEP: endereco.cep,
@@ -212,6 +212,29 @@ function buildEnderDest(endereco: Endereco): TEndereco {
 function requireField<T>(name: string, value: T | null | undefined): NonNullable<T> {
   if (value == null) throw new NFePartiesError(`${name} is required`);
   return value as NonNullable<T>;
+}
+
+/**
+ * `cMun` — the 7-digit IBGE município code.
+ *
+ * Deliberately stricter than `requireField`, which only rejects `== null`.
+ * `enderecoSchema.codigoMunicipio` is `z.string().max(8).regex(/^\d*$/)`, so an
+ * empty string is perfectly storable — and it used to sail through here and
+ * emit `<cMun></cMun>`, a malformed XML rejected by SEFAZ with no hint of which
+ * field was to blame. `ide.ts`'s `cMunFG` check already used a falsy test, so
+ * the two disagreed. Name the field and show what arrived (#785).
+ *
+ * This package stays synchronous and network-free: resolution belongs to
+ * `apps/nfe/lib/nfe/orchestrator/cmun.ts`, which fills the value in before the
+ * generator ever sees it.
+ */
+function requireCMun(name: string, value: string | null | undefined): string {
+  if (!value || !/^\d{7}$/.test(value)) {
+    throw new NFePartiesError(
+      `${name} must be the 7-digit IBGE município code (got ${JSON.stringify(value ?? null)})`,
+    );
+  }
+  return value;
 }
 
 function requireSanitized(name: string, value: string | null | undefined, maxLen?: number): string {
