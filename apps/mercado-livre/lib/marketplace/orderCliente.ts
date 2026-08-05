@@ -55,7 +55,6 @@ import { createHash } from 'node:crypto';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/collections';
 import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
-import { ViaCepError } from '@delfrance/core/cep';
 import {
   CodigoMunicipioNaoResolvidoError,
   type ResolveCodigoMunicipioOptions,
@@ -602,17 +601,15 @@ export async function resolveCodigoMunicipioBestEffort(
   try {
     return await resolveCodigoMunicipio(fields, options);
   } catch (err) {
+    // `resolveCodigoMunicipio` wraps EVERY resolution failure — including a
+    // ViaCEP transport error, which becomes motivo `viacep-indisponivel` — so
+    // this one class covers them all and `motivo` is what distinguishes them in
+    // the log. A separate `instanceof ViaCepError` branch here would be dead.
     if (err instanceof CodigoMunicipioNaoResolvidoError) {
       console.warn('[mercado-livre] codigoMunicipio (IBGE) não resolvido', {
         cep: fields.cep,
         estado: fields.estado,
         motivo: err.motivo,
-      });
-      return null;
-    }
-    if (err instanceof ViaCepError) {
-      console.warn('[mercado-livre] ViaCEP indisponível ao resolver codigoMunicipio', {
-        cep: fields.cep,
       });
       return null;
     }

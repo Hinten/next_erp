@@ -680,8 +680,12 @@ describe('resolveCodigoMunicipioBestEffort', () => {
     ).resolves.toBeNull();
   });
 
-  it('returns null when ViaCEP is unreachable', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('returns null when ViaCEP is unreachable, logging it as viacep-indisponivel', async () => {
+    // `resolveCodigoMunicipio` WRAPS a ViaCepError rather than letting it
+    // escape, so a second `instanceof ViaCepError` branch here would be dead
+    // code. The outage stays distinguishable through `motivo` — which is what
+    // this asserts.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const viaCep: ViaCepClient = {
       buscarCep: vi.fn(() => Promise.reject(new ViaCepError('rede', '01310100'))),
     };
@@ -692,6 +696,11 @@ describe('resolveCodigoMunicipioBestEffort', () => {
         { viaCep },
       ),
     ).resolves.toBeNull();
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ motivo: 'viacep-indisponivel' }),
+    );
   });
 
   it('returns null when the resolved código contradicts the endereço UF', async () => {
