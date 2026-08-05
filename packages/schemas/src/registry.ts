@@ -26,7 +26,9 @@ import {
 } from './pedido';
 import { counter } from './counter';
 import { conversa, mensagem } from './conversa';
-import { integracao, brandShopee } from './integracao';
+import { integracao, brandShopee, token6h, tokenDuravel } from './integracao';
+import { notificacaoMercadoLivre } from './notificacaoMercadoLivre';
+import { questionMercadoLivre } from './questionMercadoLivre';
 import { cargo } from './cargo';
 import { cmun } from './cmun';
 import { usuario } from './usuario';
@@ -79,6 +81,18 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   mensagem,
   integracao,
   brandShopee,
+  // ⚠️ DUAL-RUN ONLY — remove all four with the Flutter decommission (#829).
+  // These are legacy Mercado Livre collections the NEW app touches only through
+  // the Admin SDK (or not at all). They are registered so the generated ruleset
+  // reproduces the client grants the deployed legacy ruleset already gives the
+  // Flutter app, which would otherwise be default-denied on the day we deploy.
+  // See #783. `tokenDuravel`/`token6h` are the load-bearing pair (the Flutter
+  // OAuth connect screen and every ML action screen read them client-side);
+  // `notificacoesMercadoLivre` and `questionsML` are defensive parity.
+  token6h,
+  tokenDuravel,
+  notificacaoMercadoLivre,
+  questionMercadoLivre,
   cargo,
   cmun,
   usuario,

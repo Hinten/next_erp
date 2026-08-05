@@ -4,8 +4,6 @@ import { nfeConfigCollection, nfev4Collection } from '@delfrance/data/admin/coll
 import {
   applyOutcome,
   autorizarLote,
-  buildNFeProcSafe,
-  classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
   extractCNFFromChave,
@@ -63,11 +61,12 @@ import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
   buildEnviNFeMsgFromLote,
+  buildProcForAuthorizedOutcome,
   enviNfeCollection,
   existingToEmitResult,
   outcomeFromConsReci,
   persistPatch,
-  procPersistExtras,
+  swapAnchorForProc,
 } from './audit';
 import { buildGeneratorInput } from './generator-input';
 import { enviarEpecParaNota, transmitirPosEpec } from './epec';
@@ -775,28 +774,20 @@ export async function applyAutorizadoOutcome(args: {
 
   // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and we
   // still have the matching local signedXml (no chave swap). The digest-safe
-  // stitch (#396) refuses to pair the protocol with bytes it did not
-  // authorize (e.g. a duplicidade recovery after a pre-fix retry regenerated
-  // the anchor); 'unknown' (absent digVal / unextractable digest) never
-  // blocks the normal path.
-  const proc =
-    classifyCStat(patch.cStat) === 'autorizada' && protNFeRaw != null && finalChave === chave
-      ? buildNFeProcSafe(signedXml, protNFeRaw)
-      : null;
-  const nfeProcXml = proc?.xml ?? null;
-  // Warn only when the digest was the deciding blocker — a non-authorized
-  // outcome or a 539 chave swap skips the proc build for its own reason and
-  // must not be attributed to the digest.
-  if (proc?.digest === 'mismatch') {
-    console.warn(
-      `[nfe/orchestrator] pedido '${bundle.pedidoId}' chave ${chave}: local DigestValue ` +
-        `differs from the protNFe digVal — skipping the <nfeProc> build; the doc stays ` +
-        `aprovada WITHOUT xml_nfe_proc (xml_assinado kept; fetch the authorized XML via ` +
-        `DistDFe/manual import)`,
-    );
-  }
+  // stitch (#396, via `buildProcForAuthorizedOutcome`) refuses to pair the
+  // protocol with bytes it did not authorize (e.g. a duplicidade recovery
+  // after a pre-fix retry regenerated the anchor); 'unknown' (absent digVal /
+  // unextractable digest) never blocks the normal path.
+  const nfeProcXml = buildProcForAuthorizedOutcome({
+    cStat: patch.cStat,
+    chaveMatches: finalChave === chave,
+    signedXml,
+    prot: protNFeRaw,
+    logTag: 'nfe/orchestrator',
+    chave,
+  });
 
-  await persistPatch(nfeRef, patch, nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined);
+  await persistPatch(nfeRef, patch, nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined);
 
   // Degraded async: SEFAZ replied 103 to a (nominally sync) single-pedido send.
   // The doc is now aguardandoResposta with a receipt — hand off to the async

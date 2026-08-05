@@ -44,6 +44,61 @@ export const TIPO_CLIENTE = {
 } as const satisfies Record<string, TipoCliente>;
 
 /**
+ * The two sentinels `ie` carries instead of a real inscrição estadual —
+ * uppercase and UNACCENTED, the canonical spelling every writer must store.
+ *
+ * `ie` is free text (see the field below), so the vocabulary has to live
+ * somewhere both ends can see it: the NF-e generator reads it to derive
+ * `dest.indIEDest` (`packages/integrations/nfe/src/generator/parties.ts`) and
+ * the Mercado Livre order import writes it
+ * (`apps/mercado-livre/lib/marketplace/orderCliente.ts`). Leaving it an
+ * implicit contract between those two files is exactly how they drifted apart:
+ * the port carried the legacy writer and never carried the legacy reader.
+ *
+ * These literals are the ones the legacy Flutter NF-e reader compares against
+ * after its own normalization (`.old/packages/pedido_nfe/lib/src/
+ * pedido_nfe_base.dart:675-678`), so a cliente we write matches the still-
+ * running Flutter app with no normalization on its side. Both fit `ie`'s
+ * `max(16)` — `NAO CONTRIBUINTE` is exactly 16 characters.
+ *
+ * A sentinel is a CLAIM, and worth making explicitly: `isento` in particular
+ * drives `indIEDest='2'`, which SEFAZ only accepts in the narrow circumstances
+ * NT 2025.001 rule E16a-30 left open. A blank `ie` is not a synonym for either
+ * sentinel — it means nobody has classified the cliente yet.
+ */
+export const IE_SENTINELA = {
+  isento: 'ISENTO',
+  naoContribuinte: 'NAO CONTRIBUINTE',
+} as const satisfies Record<string, string>;
+
+/**
+ * Canonical form of an `ie` value for comparison against {@link IE_SENTINELA}:
+ * strip diacritics (NFD decomposition, same as the NF-e package's
+ * `removerAcentos` — inlined because `schemas` cannot depend on
+ * `integrations/nfe`), uppercase, trim, collapse internal whitespace runs.
+ * Blank input collapses to `null`, the schema's own "unset" shape.
+ *
+ * Readers MUST normalize before classifying rather than assume the stored value
+ * is canonical: the existing base holds years of hand-typed values
+ * (`Não contribuinte`, `NÃO CONTRIBUINTE`, stray whitespace) and the cadastro
+ * screen still accepts free text. Writers use it to decide, then store the
+ * {@link IE_SENTINELA} literal itself.
+ *
+ * Not for real inscrições estaduais — those are stored verbatim and the NF-e
+ * generator strips them to digits at emission (the XSD's `[0-9]{2,14}`).
+ */
+export function normalizarIe(ie: string | null | undefined): string | null {
+  if (ie == null) return null;
+  const normalized = ie
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized === '' ? null : normalized;
+}
+
+/**
  * Cross-field rule: the document must match the tipo. A Pessoa Física (tipo
  * '0') requires a CPF; a Pessoa Jurídica (tipo '1') requires a CNPJ. The
  * field-level refine already guarantees `cpf_cnpj` is a valid CPF *or* CNPJ —
@@ -100,6 +155,11 @@ export const clienteSchema = z.object({
     .default(null)
     .describe('CPF / CNPJ'),
   idEstrangeiro: z.string().max(20).nullable().default(null).describe('ID estrangeiro'),
+  // Free text, and deliberately so — besides a real inscrição estadual it
+  // carries the two sentinels in IE_SENTINELA above, which drive the NF-e
+  // `dest.indIEDest`. Anything reading this field must go through
+  // `normalizarIe` first; anything writing a sentinel must store the
+  // IE_SENTINELA literal.
   ie: z.string().max(16).nullable().default(null).describe('Inscrição estadual'),
   imun: z
     .string()

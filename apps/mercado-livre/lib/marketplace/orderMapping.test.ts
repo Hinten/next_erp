@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
 import { coerceToMicros } from '@delfrance/core/datetime';
+import { itemDoPedidoSchema } from '@delfrance/schemas';
 import {
   assertOrderItemsComplete,
   mlOrderItemToItemDoPedido,
@@ -165,6 +166,27 @@ describe('mlOrderItemToItemDoPedido', () => {
       timestamp: 42,
       imposto: null,
     });
+  });
+
+  it('maps a zero-priced line and still passes itemDoPedidoSchema (#794)', () => {
+    // A 100%-couponed / bonus line — or a `206 Partial Content` order whose
+    // `unit_price` is missing entirely — maps to precoDeVenda 0. The old
+    // `min(0.01)` floor threw a ZodError here, which the notification pipeline
+    // read as transient and retried until the delivery parked.
+    const order = baseOrder({
+      order_items: [{ item: { id: 'MLB777', title: 'Brinde' }, quantity: 1 }],
+    });
+    const result = mlOrderItemToItemDoPedido({
+      orderId: order.id,
+      orderItem: order.order_items![0]!,
+      index: 0,
+      produtoUid: null,
+      timestampUs: 42,
+    });
+
+    expect(result.precoDeVenda).toBe(0);
+    expect(result.descontoUnitario).toBe(0);
+    expect(() => itemDoPedidoSchema.parse(result)).not.toThrow();
   });
 
   it('never sets gtin/custo — legacy _makeItemDoPedido never sets either', () => {

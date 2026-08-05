@@ -175,7 +175,7 @@ describe('reconcileByRecibo', () => {
     vi.mocked(consultarLote).mockResolvedValue(loteRet('104', '100') as never);
     await reconcileByRecibo({ ...baseArgs, attempt: 0 });
     const call = vi.mocked(persistPatch).mock.calls.at(-1)!;
-    expect(call[2]).toBeDefined(); // procPersistExtras present → xml_nfe_proc written
+    expect(call[2]).toBeDefined(); // swapAnchorForProc extras present → xml_nfe_proc written
   });
 
   it('autorizada + stored bytes with digest MISMATCH → NO proc extras, doc stays aprovada (#396)', async () => {

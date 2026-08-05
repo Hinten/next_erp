@@ -10,10 +10,16 @@ source of truth — the Firestore rules generator walks it, the data layer resol
 collection paths from it, and this page is drawn from it. If a diagram here ever
 disagrees with `packages/schemas`, **the schema wins** — update the diagram.
 
-There are **51 registered collection domains** (44 named + the 7 marketplace-link
+There are **55 registered collection domains** (48 named + the 7 marketplace-link
 produto subcollections spread in via `PRODUTO_SUBCOLLECTION_DOMAINS`). This page
 groups them into seven functional areas, each with its own ER diagram, preceded
 by a high-level map.
+
+Four of those 48 are **dual-run only** — legacy Mercado Livre collections the new
+app reaches solely through the Admin SDK, registered so the generated ruleset does
+not strip access the still-running Flutter client has today. They come back out
+with the Flutter decommission (#829); see
+[Legacy ruleset coverage](/architecture/legacy-rules-coverage/).
 
 ## How to read these diagrams
 
@@ -414,12 +420,21 @@ erDiagram
 `chat` conversations reference the user, channel, pedido and produto they concern,
 with messages in a subcollection. `integracao` (a sales channel) references the
 branch, price lists, operations and warehouse it maps to. Its **credential**
-subcollections (`credenciais`, `tokenDuravel`) are deliberately **not registered**
-in `ALL_DOMAINS`, so the rules generator emits no match block and Firestore
-default-denies them — they are Admin-SDK-only. Its `brandshopee` subcollection
-(Shopee brand-cache docs) IS registered, gated by the same `integracao`
-permissions. Each `produtos` doc also carries the seven marketplace-link
-subcollections (loose pass-through, written by Flutter).
+subcollections `credenciais` and `credenciaisWhatsapp` are deliberately **not
+registered** in `ALL_DOMAINS`, so the rules generator emits no match block and
+Firestore default-denies them — they are Admin-SDK-only. Its `brandshopee`
+subcollection (Shopee brand-cache docs) IS registered, gated by the same
+`integracao` permissions. Each `produtos` doc also carries the seven
+marketplace-link subcollections (loose pass-through, written by Flutter).
+
+⚠️ The legacy Mercado Livre token stores `token6h` and `tokenDuravel` are the one
+exception to that deny-all posture. They **are** registered, on the `integracao`
+permission bits, because the Flutter client writes them from its OAuth connect
+screen and reads `tokenDuravel` on every ML action screen — leaving them out would
+retire the Flutter ML UI the day the generated ruleset deploys (#783). The grant
+makes a live ML `refresh_token` client-readable, matching what the deployed legacy
+ruleset already does, and is reverted by #829. The same issue covers the two other
+dual-run registrations, `notificacoesMercadoLivre` and top-level `questionsML`.
 
 ```mermaid
 erDiagram
@@ -435,7 +450,8 @@ erDiagram
   integracao }o--o| operacao : "operacao/operacaoDevolucaoOuterRef"
   integracao }o--o| depositos : "depositoOuterRef"
   integracao ||--o{ credenciais : "sub: credenciais (admin-only, default-deny)"
-  integracao ||--o{ tokenDuravel : "sub: tokenDuravel (admin-only)"
+  integracao ||--o{ token6h : "sub: token6h (legacy ML, dual-run only)"
+  integracao ||--o{ tokenDuravel : "sub: tokenDuravel (legacy ML, dual-run only)"
   integracao ||--o{ brandshopee : "sub: brandshopee (Shopee brand cache)"
 
   produtos ||--o{ marketplace_links : "7 subs: produtoMercadoLivre, prodshopee, …"
@@ -528,10 +544,20 @@ subcollection, and its key outgoing references. Subcollection paths use
 | intFrete | `int_frete` | top | `filialIntegracaoFreteOuterRef` → filiais |
 | tokenMelEnv | `int_frete/{intFreteId}/tokenMelEnv` | sub | — |
 | arquivo | `arquivos` | top | — |
+| token6h ⚠️ | `integracao/{integracaoId}/token6h` | sub | — |
+| tokenDuravel ⚠️ | `integracao/{integracaoId}/tokenDuravel` | sub | — |
+| notificacaoMercadoLivre ⚠️ | `notificacoesMercadoLivre` | top | — |
+| questionMercadoLivre ⚠️ | `questionsML` | top | `contaMercadoLivreQuestionOuterRef` → integracao |
 
-Three collections are intentionally **absent** from `ALL_DOMAINS` so the rules
-generator default-denies them (Admin-SDK-only): `integracao/{}/credenciais`,
-`integracao/{}/tokenDuravel`, and `filiais/{}/certificadoSecreto`.
+⚠️ = **dual-run only**, removed by #829. See the Mercado Livre note above.
+
+Collections intentionally **absent** from `ALL_DOMAINS` so the rules generator
+default-denies them (Admin-SDK-only): `integracao/{}/credenciais`,
+`integracao/{}/credenciaisWhatsapp`, `metodo_pgto/{}/credenciais`,
+`filiais/{}/certificadoSecreto`, and the Mercado Pago / WhatsApp notification
+logs. The full picture of what the generated ruleset does and does not grant,
+measured against the legacy Flutter ruleset, is in
+[Legacy ruleset coverage](/architecture/legacy-rules-coverage/).
 
 ## See also
 

@@ -243,6 +243,19 @@ describe('mpPaymentToPagamento — tarifas composition', () => {
     });
     expect(pagamento.tarifas).toBe(2);
   });
+
+  it('clamps a negative total at 0 — a refunded fee must not fail the write (#794)', () => {
+    const { pagamento } = map({
+      marketplace_fee: 0,
+      fee_details: [{ amount: -2 }],
+      // refunded > original: the raw sum is -5.5, which `pagamentoSchema.tarifas`
+      // (.min(0)) rejects — a ZodError the pipeline retries until it parks.
+      charges_details: [
+        { accounts: { from: 'collector', to: 'mp' }, amounts: { original: 4, refunded: 7.5 } },
+      ],
+    });
+    expect(pagamento.tarifas).toBe(0);
+  });
 });
 
 describe('mpPaymentToPagamento — parcelas / aVista', () => {

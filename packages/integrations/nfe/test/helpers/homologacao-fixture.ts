@@ -21,6 +21,8 @@ import {
   aggregateTotals,
   type Imposto,
 } from '../../src/tribute';
+import { IE_SENTINELA } from '@delfrance/schemas';
+
 import type { GeneratorInput } from '../../src/generator';
 
 /**
@@ -182,7 +184,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       tipo: 1,
       ehServico: false,
       ehExterior: false,
-      // The fixture's cliente has no IE (cliente.ie is null), so
+      // The fixture's cliente carries the NAO CONTRIBUINTE sentinel, so
       // `buildDest` stamps indIEDest='9' (não contribuinte). SEFAZ rule
       // 696 then demands indFinal='1' — i.e. the operation must be
       // marked as final-consumer. Flipping this to `true` satisfies
@@ -216,7 +218,13 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       nome: 'CLIENTE HOMOLOGACAO',
       cpf_cnpj: '99999999000191',
       idEstrangeiro: null,
-      ie: null,
+      // The NAO CONTRIBUINTE sentinel rather than `null`. Both now reach
+      // indIEDest='9', but the sentinel says explicitly what this fixture
+      // MEANS — a marketplace sale to an end consumer without state
+      // inscription — instead of relying on the ladder's default for an
+      // unclassified cliente. It also makes every live homologação
+      // round-trip prove the sentinel never reaches the signed XML.
+      ie: IE_SENTINELA.naoContribuinte,
       imun: null,
       isUF: null,
       email: null,
