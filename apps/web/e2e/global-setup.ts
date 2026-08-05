@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { ensureTestUser, grantAllPerms, seed } from '@delfrance/test-fixtures';
 import { e2eUserEmail } from './_helpers/run-id';
 import { sweepStaleE2EUsers } from './_helpers/admin-cleanup';
+import { verifyE2ENamespaceAccess } from './_helpers/verify-e2e-rules';
 
 /**
  * Playwright globalSetup: prepares the staging backend once per test run.
@@ -18,7 +19,13 @@ import { sweepStaleE2EUsers } from './_helpers/admin-cleanup';
  *      bits + the tenant claim via setCustomUserClaims. globalTeardown
  *      deletes it. No shared persistent account: parallel-safe, no
  *      `E2E_USER_*` secrets, no password drift.
- *   4. Drive the login form, wait for Firebase to persist the session into
+ *   4. Outside emulator mode, probe the DEPLOYED staging ruleset as that user
+ *      over the real REST APIs (never the Admin SDK, which bypasses rules) —
+ *      write+read one doc under this run's `e2e_<runId>_probe` namespace and
+ *      abort with a clear message if denied, instead of letting a stale/wrong
+ *      rules deploy surface as a confusing per-test `PERMISSION_DENIED` deep
+ *      into the suite (#160, #172).
+ *   5. Drive the login form, wait for Firebase to persist the session into
  *      IndexedDB, capture `storageState`, then verify it actually restores an
  *      authenticated session in a fresh context. Retried up to 3×; if no
  *      attempt produces a working storageState we throw — far better than
@@ -95,6 +102,14 @@ export default async function globalSetup(_config: FullConfig) {
   // mints the ID token that the captured storageState carries, so the claims
   // must already be set or the app would restore a token without them.
   await grantAllPerms(email, { extraClaims: { grupoEconomico: 'seed' } });
+
+  // Fail fast, before the browser login retry loop below burns 3 attempts,
+  // if the DEPLOYED staging ruleset doesn't grant this run's namespace. Real
+  // client REST calls only reach staging's actual rules; the emulator lane
+  // loads its own ruleset fresh every run, so there's no "deploy" to verify.
+  if (!emulatorMode) {
+    await verifyE2ENamespaceAccess(email, password);
+  }
 
   const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
