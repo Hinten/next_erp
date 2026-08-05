@@ -276,8 +276,12 @@ const ENDPOINTS: Partial<Record<string, Record<Ambiente, NfeServiceUrls>>> = {
         'https://nfe-homologacao.sefazrs.rs.gov.br/ws/nfeinutilizacao/nfeinutilizacao4.asmx',
       RecepcaoEvento:
         'https://nfe-homologacao.sefazrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+      // RS's own table points Consulta Cadastro at the plain `cad.svrs.rs.gov.br`
+      // host for BOTH ambientes — unlike the shared SVRS block below, which does
+      // split homologação onto `cad-homologacao.svrs.rs.gov.br`. Not a typo:
+      // matches the SEFAZ portal source exactly.
       NfeConsultaCadastro:
-        'https://cad-homologacao.svrs.rs.gov.br/ws/cadconsultacadastro/cadconsultacadastro4.asmx',
+        'https://cad.svrs.rs.gov.br/ws/cadconsultacadastro/cadconsultacadastro4.asmx',
     },
   },
 };
