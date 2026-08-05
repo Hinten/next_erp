@@ -162,6 +162,15 @@ export function buildDest(
     // Emitted ONLY for indIEDest='1' — that is what keeps a sentinel (or a
     // stray IE on a pessoa física) out of the signed XML.
     IE: indIEDest === '1' ? requireIeDigits(cliente.ie) : undefined,
+    // Inscrição SUFRAMA. Obrigatória nas operações com as áreas de livre
+    // comércio / Zona Franca sob controle da SUFRAMA (MOC, grupo E); omitting
+    // it on such an operation forfeits the incentive on a note SEFAZ otherwise
+    // ACCEPTS, so the loss is silent. `clienteSchema.isUF` is already
+    // `[0-9]{8,9}` — exactly the XSD facet — so this needs no strip, unlike IE.
+    //
+    // Not to be confused with `ISUFEmit` (C22), the EMITTER's SUFRAMA
+    // inscription, which belongs to the RTC/gALCZFMCBS work.
+    ISUF: cliente.isUF ?? undefined,
     IM: cliente.imun ?? undefined,
     // Emails MUST keep `@` — sanitizeNFeText would strip it (the `@` is
     // in the restricted-char set for free-text descriptive fields).

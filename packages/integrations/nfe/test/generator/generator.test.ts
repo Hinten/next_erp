@@ -46,7 +46,10 @@ const CLIENTE: Cliente = {
   idEstrangeiro: null,
   ie: '222222222',
   imun: null,
-  isUF: null,
+  // Present so the signed-XSD round-trips below prove <ISUF> is accepted in
+  // its XSD slot (indIEDest → IE → ISUF → IM), not just that it carries the
+  // right value — see fidelity.test.ts for the ordering assertion.
+  isUF: '123456789',
   email: null,
   telefone: null,
   observacoesInternas: null,
