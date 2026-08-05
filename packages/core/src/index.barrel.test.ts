@@ -8,11 +8,11 @@ import * as core from './index';
  * anything reachable from core's ROOT barrel is reachable from every browser
  * bundle in the monorepo.
  *
- * The `./cep` subpath is deliberately excluded from that barrel: its sibling
- * `./cep/cmun` carries the vendored CEP-range → IBGE município table (#785,
- * ~150 KB), and a single `export * from './cep'` here would be one refactor
- * away from dragging it into the browser. This is the same containment the NF-e
- * package gets from its `./http-provider` subpath.
+ * The `./cep` subpath is deliberately excluded from that barrel. It is small
+ * and data-free today, but it is the CEP module's front door — and the thing
+ * behind it (`ViaCepError`, the client) has no business in a bundle that only
+ * wanted `formatReais`. Keeping it opt-in also means a future addition there
+ * cannot silently reach every browser bundle in the monorepo.
  *
  * Asserting on the real module namespaces rather than grepping `index.ts` also
  * catches an INDIRECT leak — some other core module re-exporting `./cep`.
