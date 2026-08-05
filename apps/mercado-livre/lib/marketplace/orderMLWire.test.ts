@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
-import { buildOrderMLWire } from './orderMLWire';
+import { buildOrderMLWire, mergeOrderMLWire } from './orderMLWire';
 
 /**
  * Fixture ported straight from the legacy sample order payload documented in
@@ -302,5 +302,147 @@ describe('buildOrderMLWire', () => {
     const order = { id: 1, status: 'confirmed', buyer: { id: 1 } } as unknown as MlOrder;
     const wire = buildOrderMLWire({ order, contaOuterRef: 'integracao/CONTA999' });
     expect(wire.contaMercadoLivreOuterRef).toBe('documents/integracao/CONTA999');
+  });
+});
+
+/* ========================================================================== */
+/*                              mergeOrderMLWire                              */
+/* ========================================================================== */
+
+/** The stored mirror doc a complete order left behind, as `buildOrderMLWire`
+ * would have written it (only the keys these tests read about). */
+function storedMirror(): Record<string, unknown> {
+  return {
+    id: 2000003508897196,
+    contaMercadoLivreOuterRef: 'documents/integracao/CONTA123',
+    status: 'paid',
+    status_detail: 'accredited',
+    tags: ['pack_order', 'paid'],
+    comment: 'entregar na portaria',
+    pack_id: 2000003508553677,
+    pickup_id: null,
+    buying_mode: 'buy_equals_pay',
+    last_updated: 1649451812000,
+    total_amount: 50,
+    paid_amount: 50,
+    payments: [{ id: 21463688923 }],
+    buyer: { id: 266272126 },
+    shipping: { id: 41297142475 },
+    order_items: [{ item: { id: 'MLB2608564035' } }],
+  };
+}
+
+describe('mergeOrderMLWire', () => {
+  it('keeps the stored pack_id when the incoming payload nulls it (#793)', () => {
+    // A `206 Partial Content` order — `pack_id` absent from the body, so
+    // `buildOrderMLWire` emits it as an explicit null.
+    const incoming = buildOrderMLWire({
+      order: { id: 2000003508897196, status: 'paid', order_items: [] } as unknown as MlOrder,
+      contaOuterRef: 'integracao/CONTA123',
+    });
+    expect(incoming.pack_id).toBeNull(); // precondition: the wire really does null it
+
+    const merged = mergeOrderMLWire(storedMirror(), incoming);
+
+    expect(merged.pack_id).toBe(2000003508553677);
+  });
+
+  it('keeps the stored writeNotNull keys the incoming wire omits', () => {
+    // `status_detail`/`tags`/`comment` are omitted (not nulled) by the wire.
+    const incoming = buildOrderMLWire({
+      order: { id: 2000003508897196, status: 'paid', order_items: [] } as unknown as MlOrder,
+      contaOuterRef: 'integracao/CONTA123',
+    });
+    expect(incoming).not.toHaveProperty('status_detail');
+    expect(incoming).not.toHaveProperty('tags');
+    expect(incoming).not.toHaveProperty('comment');
+
+    const merged = mergeOrderMLWire(storedMirror(), incoming);
+
+    expect(merged.status_detail).toBe('accredited');
+    expect(merged.tags).toEqual(['pack_order', 'paid']);
+    expect(merged.comment).toBe('entregar na portaria');
+  });
+
+  it('lets a non-null incoming value win — including a pack_id change', () => {
+    // ML reassigns pack_id when e.g. an extended warranty is added to a
+    // not_specified item ("criando um novo pack_id").
+    const merged = mergeOrderMLWire(storedMirror(), {
+      pack_id: 2000009999999999,
+      status: 'cancelled',
+      status_detail: 'refunded',
+      tags: ['cancelled'],
+      last_updated: 1649999999000,
+    });
+
+    expect(merged).toMatchObject({
+      pack_id: 2000009999999999,
+      status: 'cancelled',
+      status_detail: 'refunded',
+      tags: ['cancelled'],
+      last_updated: 1649999999000,
+    });
+  });
+
+  it('writes null when BOTH sides are null — a never-set key keeps its explicit null', () => {
+    const merged = mergeOrderMLWire({ pack_id: null, pickup_id: null }, { pack_id: null });
+
+    expect(merged).toHaveProperty('pack_id', null);
+    expect(merged).toHaveProperty('pickup_id', null);
+  });
+
+  it('preserves a stored key the wire never emits (dual-run with the Flutter app)', () => {
+    const stored = { ...storedMirror(), campoEscritoPeloFlutter: 'preservar' };
+    const incoming = buildOrderMLWire({
+      order: { id: 2000003508897196, status: 'paid', order_items: [] } as unknown as MlOrder,
+      contaOuterRef: 'integracao/CONTA123',
+    });
+
+    const merged = mergeOrderMLWire(stored, incoming);
+
+    expect(merged.campoEscritoPeloFlutter).toBe('preservar');
+  });
+
+  it('does not mutate the stored object it merges onto', () => {
+    const stored = storedMirror();
+    mergeOrderMLWire(stored, { pack_id: 42, status: 'cancelled' });
+    expect(stored).toEqual(storedMirror());
+  });
+
+  it('replaces a non-null list/object wholesale — field-level, never deep', () => {
+    const merged = mergeOrderMLWire(storedMirror(), {
+      order_items: [],
+      payments: [{ id: 99 }],
+      buyer: { id: 7 },
+    });
+
+    // `[]` is non-null, so it wins — same as Dart's `??` on a nullable field.
+    expect(merged.order_items).toEqual([]);
+    expect(merged.payments).toEqual([{ id: 99 }]);
+    expect(merged.buyer).toEqual({ id: 7 });
+  });
+
+  it('null-coalesces EVERY key the wire emits — the whole OrderML.update surface', () => {
+    // Table-driven so the "which fields did legacy's ~17-field `OrderML.update`
+    // cover?" question is answered by construction rather than by a hand-copied
+    // list (`.old/` is not part of this checkout — see `mergeOrderMLWire`'s ⚠️).
+    const full = buildOrderMLWire({
+      order: buildFixtureOrder(),
+      contaOuterRef: 'integracao/CONTA123',
+    });
+    // The emptiest order the schema still accepts: every nullable key nulled,
+    // every writeNotNull key omitted.
+    const empty = buildOrderMLWire({
+      order: { id: 2000003508897196, status: 'paid', order_items: [] } as unknown as MlOrder,
+      contaOuterRef: 'integracao/CONTA123',
+    });
+
+    const merged = mergeOrderMLWire(full, empty);
+
+    for (const [key, storedValue] of Object.entries(full)) {
+      // `order_items` is the one key the empty wire still emits non-null (`[]`).
+      if (key === 'order_items') continue;
+      expect({ key, value: merged[key] }).toEqual({ key, value: storedValue });
+    }
   });
 });

@@ -333,3 +333,63 @@ export function buildOrderMLWire(args: {
 
   return wire;
 }
+
+/* -------------------------------------------------------------------------- */
+/*                              refresh-time merge                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Null-coalescing field merge for a mirror REFRESH — `other.field ?? this.field`
+ * for every key, reproducing the legacy Dart `OrderML.update`
+ * (`.old/.../models.odm.g.dart:27642-27672`, reached from `tasks.dart:328-329`).
+ * Pure; `existing` is never mutated.
+ *
+ * Legacy refreshed the mirror field-by-field, so a payload that didn't carry a
+ * value LEFT THE STORED ONE ALONE. This port used to `tx.set` the freshly built
+ * wire wholesale, which deletes any key `buildOrderMLWire` writes as `null` or
+ * omits — and `pack_id` is load-bearing: `resolvePedidoIdByOrderId`
+ * (`orderPedidoResolve.ts`) matches `pack_id == orderId` FIRST, so a mirror that
+ * loses it makes every later payments/shipments/claims notification for that
+ * cart resolve to `pedido-nao-encontrado` (#793).
+ *
+ * A refresh payload really can arrive without `pack_id`, two different ways:
+ *  - `GET /orders/{id}` may answer **206 Partial Content** (already accounted
+ *    for in `orderSchema`'s doc, `packages/integrations/mercado-livre/src/types.ts`,
+ *    and accepted as a success by the API client) — a partial body simply omits
+ *    fields, and `pack_id` is `.nullable().optional()`, so it lands here as
+ *    `null`;
+ *  - an order can legitimately have NO pack at all. Mercado Livre's own docs
+ *    ("Gestão de packs") describe `pack_id` as present "se estiver associado a
+ *    um pacote" and the every-order-gets-a-pack rollout as gradual, so a stored
+ *    `null` is a valid steady state, not a lost value — such an order resolves
+ *    through the `id ==` fallback instead. This merge leaves it `null`.
+ *
+ * ⚠️ Deviation from a literal transcription of `OrderML.update`: legacy names
+ * its ~17 fields explicitly, but `.old/` is not part of this checkout, so the
+ * coalescing is applied to EVERY key instead of a hand-copied list. That is a
+ * superset of legacy's behaviour and matches its intent for every field we can
+ * confirm (`pack_id`, `status_detail`, `tags`, `comment`) — and it has a second
+ * benefit the field list wouldn't give: `orderMLSchema` is `.passthrough()`, so
+ * a key the still-deployed Flutter app wrote that this wire never emits now
+ * survives a refresh instead of being silently dropped (dual-run coexistence).
+ *
+ * Field-level, never deep: a non-null `order_items`/`payments`/`buyer` replaces
+ * the stored one wholesale, exactly like Dart's `??` on a nullable field. Note
+ * `buildOrderMLWire` emits `order_items` as `[]` (not `null`) for an order with
+ * no lines, so an empty list still overwrites — again matching legacy, where
+ * `[]` is non-null.
+ */
+export function mergeOrderMLWire(
+  existing: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    // `incoming ?? existing` — a null/absent incoming value never clears a
+    // stored one. Both null (or unknown to both) still writes the null, so a
+    // never-set key keeps its explicit `null` rather than vanishing.
+    if (value == null && merged[key] != null) continue;
+    merged[key] = value;
+  }
+  return merged;
+}
