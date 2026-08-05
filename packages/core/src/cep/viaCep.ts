@@ -98,18 +98,29 @@ export function createViaCepClient(config: ViaCepConfig = {}): ViaCepClient {
     cache.set(clean, value);
   }
 
-  async function request(clean: string): Promise<EnderecoViaCep | null> {
+  /**
+   * One request under an explicit abort signal.
+   *
+   * The signal comes from an `AbortController` + `setTimeout` rather than
+   * `AbortSignal.timeout()`: this module ships into `apps/web`'s browser
+   * bundle, and the static helper is only available from the 2022 browser
+   * generation on. The manual form also lets the caller `clearTimeout` as soon
+   * as the body is read, instead of leaving a timer pending for the full
+   * window on every fast lookup.
+   */
+  async function performRequest(
+    clean: string,
+    signal: AbortSignal,
+  ): Promise<EnderecoViaCep | null> {
     const doFetch = config.fetch ?? globalThis.fetch;
 
     let res: Response;
     try {
-      res = await doFetch(`${baseUrl}/${clean}/json/`, {
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      res = await doFetch(`${baseUrl}/${clean}/json/`, { signal });
     } catch (err) {
       // `fetch` rejects with TypeError on a network failure and DOMException
-      // ('TimeoutError'/'AbortError') when the signal fires. Anything else is
-      // a bug, not a transport problem — let it through.
+      // ('AbortError') when the signal fires. Anything else is a bug, not a
+      // transport problem — let it through.
       if (err instanceof DOMException) {
         throw new ViaCepError(`Tempo esgotado ao consultar o CEP ${clean}.`, clean, { cause: err });
       }
@@ -152,6 +163,22 @@ export function createViaCepClient(config: ViaCepConfig = {}): ViaCepClient {
     };
     remember(clean, endereco);
     return endereco;
+  }
+
+  /**
+   * Wrap one request in a timeout the caller always releases.
+   *
+   * The window covers the body read too, not just the response headers — a
+   * stalled body would otherwise hang past `timeoutMs`.
+   */
+  async function request(clean: string): Promise<EnderecoViaCep | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await performRequest(clean, controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   return {
