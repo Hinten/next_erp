@@ -651,13 +651,11 @@ describe('podeEnviarEstoque — listing-status whitelist', () => {
       { status: 'closed', sub: ['out_of_stock'], enviar: false, desconhecido: false },
       { status: 'inactive', sub: null, enviar: false, desconhecido: false },
       { status: 'payment_required', sub: null, enviar: false, desconhecido: false },
-      // PRESENT but outside the documented set → desconhecido, never enviar.
-      // (A null status is NOT this case — it takes the legacy arm below.)
+      // Outside the documented set → desconhecido, never enviar.
       { status: 'some_future_status', sub: null, enviar: false, desconhecido: true },
       { status: 'some_future_status', sub: ['out_of_stock'], enviar: false, desconhecido: true },
-      // #780 — a legacy link with no `estado` at all is sent optimistically.
-      { status: null, sub: null, enviar: true, desconhecido: true },
-      { status: undefined, sub: ['out_of_stock'], enviar: true, desconhecido: true },
+      { status: null, sub: null, enviar: false, desconhecido: true },
+      { status: undefined, sub: ['out_of_stock'], enviar: false, desconhecido: true },
     ];
     for (const c of cases) {
       expect(
@@ -667,67 +665,29 @@ describe('podeEnviarEstoque — listing-status whitelist', () => {
     }
   });
 
-  // #780 — the legacy arm. A pre-cutover link authored by the Flutter app has
-  // `status == null` (the field arrived with #440), and gating those out makes
-  // the flag flip a total silent outage. They are sent optimistically because
-  // the send IS the backfill (`estoqueSend` merges the PUT response's real
-  // status back), so `estado` — the only signal the Flutter app does write — is
-  // consulted purely to trim the sends that are known-doomed.
-  it('sends a legacy (status == null) link optimistically, trimming only terminal estados', () => {
-    const cases: Array<{ estado: string | null | undefined; enviar: boolean; why: string }> = [
-      { estado: ESTADO_PUBLICACAO_ML.publicado, enviar: true, why: 'published — the common case' },
-      // NOT trimmed: `estado` cannot express sub_status, so a paused legacy
-      // link may well be `paused/out_of_stock`, which the whitelist admits.
-      // Trimming it would leave it null and unsent forever (non-convergent).
-      { estado: ESTADO_PUBLICACAO_ML.pausado, enviar: true, why: 'may be paused/out_of_stock' },
-      { estado: ESTADO_PUBLICACAO_ML.emRevisao, enviar: true, why: 'under_review is transient' },
-      { estado: ESTADO_PUBLICACAO_ML.rascunho, enviar: true, why: 'no item id — skipped earlier' },
-      { estado: null, enviar: true, why: 'no estado at all' },
-      { estado: undefined, enviar: true, why: 'field absent' },
-      { estado: '', enviar: true, why: 'empty string is not a terminal code' },
-      // The two terminal codes.
-      { estado: ESTADO_PUBLICACAO_ML.cancelado, enviar: false, why: 'closed — a doomed PUT' },
-      { estado: ESTADO_PUBLICACAO_ML.erro, enviar: false, why: 'THE loop-breaker (see below)' },
-    ];
-    for (const c of cases) {
-      expect(podeEnviarEstoque(null, null, c.estado), `estado=${String(c.estado)} (${c.why})`)
-        // `desconhecido` stays true on BOTH arms: the decision was made without
-        // real ML data either way, which is exactly what the caller logs.
-        .toEqual({ enviar: c.enviar, desconhecido: true });
+  // #780 — the contract that keeps the legacy arm confined to `buildSendTasks`.
+  // Three of this gate's four callers hand it a LIVE `GET /items` response
+  // (#781's send-time verification, the `items` re-arm in `itemsStatusSync`,
+  // and the `reverificar-anuncio` route), and `MlItem.status` is
+  // `z.string().nullable().optional()` — so a null CAN arrive from ML, meaning
+  // "ML reported no status". Answering `enviar: true` there would let
+  // `itemsStatusSync`'s `errorsToClear` re-arm a listing #781 had just latched,
+  // restarting the very loop it closed. The legacy-doc question is asked in
+  // `buildSendTasks` instead, where a null comes from a stored Flutter-written
+  // link and means something else entirely.
+  it('answers enviar:false for a null status — a live-ML null is NOT a legacy doc', () => {
+    for (const status of [null, undefined]) {
+      expect(podeEnviarEstoque(status, null), `status=${String(status)}`).toEqual({
+        enviar: false,
+        desconhecido: true,
+      });
+      // Not even out_of_stock rescues it: that sub_status is only meaningful
+      // alongside `paused`, and here there is no status to scope it to.
+      expect(podeEnviarEstoque(status, ['out_of_stock']), `status=${String(status)}`).toEqual({
+        enviar: false,
+        desconhecido: true,
+      });
     }
-  });
-
-  // The convergence contract this whole fix rests on, stated as one test: a
-  // legacy listing ML refuses costs exactly ONE send. `estoqueSend`'s 4xx
-  // handler stamps `estado: 'E'` on the link, and that stamp is what this gate
-  // reads on the next sweep. Without this rung the sweep would rebuild and
-  // re-send the identical rejected payload every tick, forever (#781 fixes the
-  // same loop for links that already carry a real `status`).
-  it('terminates after ONE rejected send: the 4xx `estado: E` stamp is read back as non-sendable', () => {
-    // tick 1 — the legacy link as the Flutter app left it
-    expect(podeEnviarEstoque(null, null, ESTADO_PUBLICACAO_ML.publicado).enviar).toBe(true);
-    // ML rejects → estoqueSend merges `estado: 'E'` (estoqueSend.ts 4xx handler)
-    // tick 2 — same null status, but the rejection stamp is now on the link
-    expect(podeEnviarEstoque(null, null, ESTADO_PUBLICACAO_ML.erro).enviar).toBe(false);
-  });
-
-  // The other half of the convergence: a legacy listing ML ACCEPTS comes back
-  // with real data (estoqueSend merges the PUT response), so every later sweep
-  // uses the normal whitelist and the legacy arm is never taken again.
-  it('leaves the legacy arm for good once a successful send backfills the status', () => {
-    expect(podeEnviarEstoque(null, null, ESTADO_PUBLICACAO_ML.publicado)).toEqual({
-      enviar: true,
-      desconhecido: true,
-    });
-    // after the writeback: real status, and `estado` is no longer consulted
-    expect(podeEnviarEstoque('active', [], ESTADO_PUBLICACAO_ML.erro)).toEqual({
-      enviar: true,
-      desconhecido: false,
-    });
-    expect(podeEnviarEstoque('closed', ['deleted'], ESTADO_PUBLICACAO_ML.publicado)).toEqual({
-      enviar: false,
-      desconhecido: false,
-    });
   });
 });
 
@@ -1372,11 +1332,24 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(res.tasks[0]).toMatchObject({ itemId: 'MLB111', linkDocId: 'link1' });
   });
 
-  // The loop-breaker at the planner level: `estoqueSend`'s 4xx handler stamped
-  // `estado: 'E'`, so the NEXT sweep must not rebuild the same rejected task.
-  it('legacy link already stamped `estado: E` by a rejected send → skipped, no second send', () => {
+  // Loop termination for a legacy link is #781's, not the legacy arm's: a
+  // rejected send is verified against ML on the last attempt and stamps either
+  // the listing's real status or `estado: 'E'`, and BOTH are already skipped
+  // before the legacy arm is reached. Pinned here because it is the reason the
+  // arm needs no `'E'` trim of its own.
+  it('legacy link stamped `estado: E` by #781 → anuncio-em-erro, before the legacy arm', () => {
     const res = run(
       familyRow({ links: [{ status: null, sub_status: null, estado: ESTADO_PUBLICACAO_ML.erro }] }),
+    );
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'anuncio-em-erro' }]);
+  });
+
+  // The other #781 outcome: the verification recorded the listing's real status,
+  // so the link is no longer legacy at all and the whitelist handles it.
+  it('legacy link whose real status #781 recorded → whitelist, not the legacy arm', () => {
+    const res = run(
+      familyRow({ links: [{ status: 'closed', sub_status: ['deleted'], estado: 'c' }] }),
     );
     expect(res.tasks).toEqual([]);
     expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
@@ -1401,7 +1374,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     run(familyRow({ links: [{ status: null, sub_status: null }] }));
     expect(warnSpy).not.toHaveBeenCalled();
     // …including on the trimmed path, where the listing is skipped.
-    run(familyRow({ links: [{ status: null, estado: ESTADO_PUBLICACAO_ML.erro }] }));
+    run(familyRow({ links: [{ status: null, estado: ESTADO_PUBLICACAO_ML.cancelado }] }));
     expect(warnSpy).not.toHaveBeenCalled();
   });
 

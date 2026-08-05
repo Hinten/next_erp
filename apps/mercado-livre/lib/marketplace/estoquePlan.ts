@@ -156,14 +156,16 @@
  * dual-run never wrote them, so EVERY pre-cutover link has `status == null`.
  * Gating those out would make the flag flip a total, silent stock outage — a
  * listing that never changes never fires `items`, so it never self-heals. They
- * are therefore sent OPTIMISTICALLY, because the send is its own backfill: a
- * successful `PUT /items` returns the listing and `estoqueSend` merges the
- * fresh `estado`/`status`/`sub_status` back onto the link, so each legacy
- * listing resolves to real data in ONE send at ZERO extra API cost — cheaper
- * than any `GET`-based pre-flip pass, which would pay one call per listing for
- * exactly the majority that needed none, and would need to be ordered against
- * the flag flip. The rejected minority is trimmed by `ESTADOS_TERMINAIS_LEGADO`
- * (below), which is what makes the convergence terminate.
+ * are therefore sent OPTIMISTICALLY, on a `buildSendTasks` rung of their own
+ * (NOT inside `podeEnviarEstoque`, whose null must stay non-sendable for its
+ * live-ML callers). The send is its own backfill and both outcomes record the
+ * real status: an accepted `PUT /items` returns the listing and `estoqueSend`
+ * writes `status`/`sub_status` straight back, and a rejected one is verified
+ * against ML on the last attempt (#781) and writes them back too. Each legacy
+ * listing therefore resolves to real data at ZERO extra API cost on the happy
+ * path — cheaper than any `GET`-based pre-flip pass, which would pay one call
+ * per listing for exactly the majority that needed none, and would have to be
+ * ordered against the flag flip.
  *
  * ---- Config: business tunables read `process.env` LAZILY (at call time,
  * never at module load — mirrors `orderBackfill`'s flag check) so functions
@@ -859,33 +861,6 @@ const DOCUMENTED_ML_STATUSES = new Set([
   'payment_required',
 ]);
 
-/**
- * The `estado` codes that make a LEGACY-authored link (`status == null`)
- * non-sendable — the only trim on the optimistic arm (module doc, #780).
- * `estado` is the derived short code the Flutter app DOES write, so it is the
- * one signal available before the first send:
- *
- *  - `c` (cancelado) — the listing is already closed. `PUT /items` answers 4xx
- *    and teaches nothing, so the call is pure waste.
- *  - `E` (erro) — the PREVIOUS send's own deterministic rejection, stamped by
- *    `estoqueSend`'s 4xx handler. **This rung is what terminates the loop**: a
- *    legacy listing ML refuses gets exactly ONE send, is stamped `E`, and is
- *    skipped from the next sweep on. Without it the sweep would rebuild and
- *    re-send the identical rejected payload every tick, forever (#781, which
- *    fixes the same loop for links that already carry a real `status`).
- *
- * Deliberately NOT trimmed: `pa` (pausado). A paused listing is the case the
- * whitelist admits when `sub_status` is `out_of_stock`, and `estado` cannot
- * express sub-status — trimming `pa` would leave every legacy paused listing
- * `status: null` and unsent FOREVER (non-convergent), which is the very outage
- * this fix exists to close. A seller-paused listing instead absorbs the update
- * and stays paused, and the writeback then resolves it correctly.
- */
-const ESTADOS_TERMINAIS_LEGADO: ReadonlySet<string> = new Set([
-  ESTADO_PUBLICACAO_ML.cancelado,
-  ESTADO_PUBLICACAO_ML.erro,
-]);
-
 export interface StatusGate {
   /** May this listing receive an `available_quantity` update? */
   enviar: boolean;
@@ -896,24 +871,23 @@ export interface StatusGate {
 /**
  * The listing-status whitelist (module doc): send iff `status === 'active'` OR
  * (`'paused'` AND `sub_status` includes `'out_of_stock'` — ML auto-reactivates
- * on qty>0). An undocumented status is `desconhecido` and never `enviar`.
+ * on qty>0). A null/undefined/undocumented status is `desconhecido` and never
+ * `enviar`.
  *
- * A NULL status takes the legacy arm (#780): the link predates `status`, so it
- * is sent optimistically — the send's own writeback backfills the real values —
- * unless `estado` is terminal (`ESTADOS_TERMINAIS_LEGADO`). It stays
- * `desconhecido` either way: the flag reports "this decision was made without
- * real ML data", which is true of both arms and is what the caller logs.
+ * ⚠️ A null answers `enviar: false` for EVERY caller, deliberately. Three of the
+ * four call sites pass a LIVE `GET /items` response (#781's send-time
+ * verification, the `items` re-arm in `itemsStatusSync`, and the
+ * `reverificar-anuncio` route), where a null status means ML reported none —
+ * which must never read as sendable, or a latched listing re-arms itself. Only
+ * `buildSendTasks` passes a stored link doc, where a null instead means "written
+ * by the Flutter app before the field existed" (#780) — a different question,
+ * answered by its own rung there rather than by widening this contract.
  */
 export function podeEnviarEstoque(
   status: string | null | undefined,
   subStatus: string[] | null | undefined,
-  /** The link's legacy `estado` code — only consulted when `status` is null. */
-  estado?: string | null,
 ): StatusGate {
   const desconhecido = status == null || !DOCUMENTED_ML_STATUSES.has(status);
-  if (status == null) {
-    return { enviar: !ESTADOS_TERMINAIS_LEGADO.has(estado ?? ''), desconhecido };
-  }
   const enviar =
     status === 'active' || (status === 'paused' && (subStatus ?? []).includes('out_of_stock'));
   return { enviar, desconhecido };
@@ -1144,7 +1118,10 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
  * anúncio is healthy and it was our PAYLOAD that was refused, so re-sending it
  * unchanged only re-earns the rejection, #781), `'status-nao-enviavel'`
  * (whitelist gate PER listing; `desconhecido` statuses additionally warn with
- * that listing's itemId — status tracking per Lucas).
+ * that listing's itemId — status tracking per Lucas). A listing whose `status`
+ * is ABSENT skips the whitelist entirely and sends optimistically (#780 — the
+ * legacy arm, module doc), the sole exception being `estado 'c'`, which reuses
+ * `'status-nao-enviavel'`.
  *
  * Per surviving listing — every task carries THAT listing's `linkDocId`
  * (writeback per listing): old model (`isUserProductModel !== true`) with
@@ -1227,32 +1204,64 @@ export function buildSendTasks(
       continue;
     }
 
-    const statusGate = podeEnviarEstoque(
-      typeof link.status === 'string' ? link.status : null,
-      Array.isArray(link.sub_status)
-        ? link.sub_status.filter((s): s is string => typeof s === 'string')
-        : null,
-      typeof link.estado === 'string' ? link.estado : null,
-    );
-    // Both arms of the gate are `desconhecido`, but only ONE is an anomaly. A
-    // status that is PRESENT and undocumented is a real ML-side surprise and
-    // stays loud (status tracking, per Lucas). A MISSING status is the expected
-    // legacy shape (#780) — every pre-cutover link has it — so it is not logged
-    // here at all: at one line per listing per tick it would bury the tick
-    // summary on the first sweeps after the flag flip, and the event worth
-    // seeing is the send itself, which `estoqueSend` already logs (one `info`
-    // per successful send) and the sweep already counts.
-    if (statusGate.desconhecido && link.status != null) {
-      console.warn('[mercado-livre] stock-sync: status de anúncio fora do conjunto documentado', {
-        integracaoId: opts.integracaoId,
-        produtoId: anchorId,
-        itemId,
-        status: link.status,
-      });
-    }
-    if (!statusGate.enviar) {
-      skips.push({ produtoId: anchorId, reason: 'status-nao-enviavel' });
-      continue;
+    if (link.status == null) {
+      // #780 — LEGACY-authored link. `status`/`sub_status` arrived with the
+      // `items` status-sync (#440); the Flutter app authoring the same docs
+      // during dual-run never wrote them, so EVERY pre-cutover link is null
+      // here. Running them through the whitelist would answer "não enviável"
+      // for the whole catalogue, making the flag flip a total, silent stock
+      // outage — and a listing that never changes never fires `items`, so it
+      // would never self-heal either.
+      //
+      // They are therefore sent OPTIMISTICALLY, because the send is its own
+      // backfill and both of its outcomes record the real status: an accepted
+      // PUT returns the listing and `estoqueSend` writes `status`/`sub_status`
+      // straight back, and a rejected one is verified against ML on the last
+      // attempt (#781) and writes them back too. So the null resolves to real
+      // ML data either way — at zero extra API cost on the happy path, which no
+      // pre-flip `GET` pass can match, and with no ordering requirement against
+      // the flag flip.
+      //
+      // The one trim: `estado 'c'` is the Flutter app already telling us the
+      // listing is closed, so the send is a doomed 3 PUTs + 1 GET (#781's
+      // ladder) that teaches nothing. `'E'` needs no rung here — the
+      // `anuncio-em-erro` rung above already took it. `'pa'` is deliberately
+      // NOT trimmed: `estado` cannot express sub-status, so a paused legacy
+      // link may well be `paused/out_of_stock`, which the whitelist admits, and
+      // trimming it would leave it unsent forever — the very outage this closes.
+      //
+      // This rung lives HERE rather than inside `podeEnviarEstoque` because the
+      // question is specific to a STORED link doc. The gate's other callers
+      // pass a live ML response, where a null status means something else
+      // entirely — see its docblock.
+      if (link.estado === ESTADO_PUBLICACAO_ML.cancelado) {
+        skips.push({ produtoId: anchorId, reason: 'status-nao-enviavel' });
+        continue;
+      }
+    } else {
+      const statusGate = podeEnviarEstoque(
+        typeof link.status === 'string' ? link.status : null,
+        Array.isArray(link.sub_status)
+          ? link.sub_status.filter((s): s is string => typeof s === 'string')
+          : null,
+      );
+      // Reached only for a status that is PRESENT, so `desconhecido` here is a
+      // real ML-side surprise and stays loud (status tracking, per Lucas). The
+      // legacy null above is the expected shape, not an anomaly, and is not
+      // logged at all: at one line per listing per tick it would bury the tick
+      // summary on the first sweeps after the flag flip.
+      if (statusGate.desconhecido) {
+        console.warn('[mercado-livre] stock-sync: status de anúncio fora do conjunto documentado', {
+          integracaoId: opts.integracaoId,
+          produtoId: anchorId,
+          itemId,
+          status: link.status,
+        });
+      }
+      if (!statusGate.enviar) {
+        skips.push({ produtoId: anchorId, reason: 'status-nao-enviavel' });
+        continue;
+      }
     }
 
     const base = {
