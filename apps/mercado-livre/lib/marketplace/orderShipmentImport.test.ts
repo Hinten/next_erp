@@ -187,11 +187,27 @@ function seedConta(db: FakeDb, over: DocData = {}): void {
   });
 }
 
+/**
+ * ⚠️ The back-ref is seeded in the BARE `integracao/<id>` form on purpose: since #782
+ * `resolveMercadoEnviosIntFreteOuterRef` first tries an indexed equality on the
+ * canonical `documents/integracao/<id>`, and this fixture is what keeps the tolerant
+ * fallback scan honest. `seedIntFreteCanonico` below covers the indexed path.
+ */
 function seedIntFrete(db: FakeDb, id = 'if-1'): void {
   db.seed('int_frete', id, {
     tipo: 'mercadoLivre',
     ativo: true,
     contaMercadoLivreMercadoEnviosOuterRef: `integracao/${INTEGRACAO_ID}`,
+    dataCadastro: 1000,
+  });
+}
+
+/** The shape the #782 trigger actually writes — resolved by the indexed equality. */
+function seedIntFreteCanonico(db: FakeDb, id = 'if-1'): void {
+  db.seed('int_frete', id, {
+    tipo: 'mercadoLivre',
+    ativo: true,
+    contaMercadoLivreMercadoEnviosOuterRef: `documents/integracao/${INTEGRACAO_ID}`,
     dataCadastro: 1000,
   });
 }
@@ -465,6 +481,38 @@ describe('importShipmentMercadoLivre — happy path write', () => {
     expect(messages.some((m) => typeof m === 'string' && m.includes('externalId divergente'))).toBe(
       true,
     );
+  });
+
+  // #782: the freight doc is now a server-owned companion of the conta, and its
+  // back-ref is written in the canonical `documents/integracao/<id>` form — which
+  // `resolveMercadoEnviosIntFreteOuterRef` resolves through an INDEXED equality.
+  // The other cases here seed the bare form on purpose, exercising the tolerant
+  // fallback; this one pins the shape the trigger actually produces.
+  it('resolves the int_frete doc from the canonical back-ref the #782 trigger writes', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFreteCanonico(db, 'if-canon');
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        // OLDER than the incoming last_updated — a null here is treated as stale.
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000,
+      },
+    });
+    const api = makeApi({
+      getShipment: vi.fn(async () =>
+        makeShipment({ id: 777, orderId: 1, lastUpdated: '2026-01-15T00:00:00.000-03:00' }),
+      ),
+    });
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+
+    const freteInicial = db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData;
+    expect(freteInicial.integracaoFreteOuterRef).toBe('documents/int_frete/if-canon');
   });
 
   it('calls resolvePrazoDespacho with fallbackUs null and the account sellerId', async () => {

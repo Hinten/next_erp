@@ -179,6 +179,22 @@ export const intFreteSchema = z
     ativo: z.boolean().default(true).describe('Ativo'),
     /** String doc path `documents/filiais/<id>` (Flutter ODM format). */
     filialIntegracaoFreteOuterRef: outerRefSchema.describe('Filial'),
+    /**
+     * Back-reference to the Mercado Livre conta (`integracao`) this Mercado
+     * Envios freight doc belongs to — `documents/integracao/<id>`. Legacy
+     * `MercadoEnvios.contaMercadoLivreMercadoEnviosOuterRef`
+     * (`.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart:332`),
+     * which the order importer matches on to find the account's freight config.
+     *
+     * **Server-owned** (#782): the sole writer is the
+     * `onIntegracaoMercadoLivreChanged` trigger in the `mercado-livre` functions
+     * codebase, which keeps this doc in sync with the conta. Null on every other
+     * `tipo` — hence nullable, despite being mandatory for `mercadoLivre`.
+     */
+    contaMercadoLivreMercadoEnviosOuterRef: outerRefSchema
+      .nullable()
+      .default(null)
+      .describe('Conta Mercado Livre'),
     enderecoDeOrigem: enderecoSchema
       .passthrough()
       .nullable()
