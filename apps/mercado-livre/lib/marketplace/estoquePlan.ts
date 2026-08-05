@@ -49,17 +49,16 @@
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
- *  - anchors (S1): rides BOTH declared twins for the array term —
+ *  - anchors (S1): the single array-term composite the staging gate (spike
+ *    (b), #705) proved `arrayContains` rides —
  *    `produtos(paiId ASC, publicado ASC, integracoesComProduto ASC,
- *    __name__ ASC)` and `produtos(paiId ASC, publicado ASC,
- *    integracoesComProduto CONTAINS, __name__ ASC)`. Which of the two forms an
- *    `arrayContains` predicate actually seeks is spike (b)'s question: the
- *    staging gate PRINTS the ridden index, and the LOSER is dropped in a
- *    follow-up (they are declared together only so the gate can adjudicate).
- *    The bare `produtos(paiId ASC, publicado ASC, __name__ ASC)` prefix that
- *    used to sit alongside them was dropped by the #779 audit: every S1 call
- *    site also filters `integracoesComProduto`, so it was dead weight —
- *    either twin's leading two fields already serve it as a prefix;
+ *    __name__ ASC)`. A CONTAINS twin was declared alongside it only so the
+ *    gate could adjudicate which form the planner seeks; ASC won, CONTAINS
+ *    was dropped (#705). The bare `produtos(paiId ASC, publicado ASC,
+ *    __name__ ASC)` prefix that used to sit alongside them was dropped by the
+ *    #779 audit: every S1 call site also filters `integracoesComProduto`, so
+ *    it was dead weight — the surviving composite's leading two fields
+ *    already serve it as a prefix;
  *  - estoque joins: `estoques(parentId ASC, depositoOuterRef ASC,
  *    ultimaModificacao ASC)` COLLECTION_GROUP — `parentId` carries the
  *    `equalAny` seek, `ultimaModificacao` covers the MAX branch;
@@ -102,17 +101,17 @@
  * The 128 MiB materialization ceiling spans the WHOLE query including every
  * joined document — hence every subquery `select`s a minimal field set.
  *
- * Two API spikes stay open until PR C finalizes the query shape (TODO
- * markers at the call sites): (a) nested `define` inside BOTH the maxChildren
- * rollup and the S6 childrenJoin subqueries (and the same-name question — the
- * two sites deliberately bind different variable names); (b) whether
- * pipelines seek CONTAINS or ASCENDING index entries for the
- * `integracoesComProduto` array predicate. Spike (c) — "does `define` accept
- * a correlated-subquery expression?" — is RETIRED: proven live on staging
- * 2026-07-28 (a subquery-valued `define` executes fine), then made moot the
- * same day when the per-anchor sales probe (the `childIds` variable's only
- * consumer) moved out of THE query into the uncorrelated
- * `fetchSoldProdutoIds` pre-pass; nothing defines a subquery anymore.
+ * Spike (a) stays open until the nested-`define` call sites are finalized
+ * (TODO markers at the maxChildren rollup and S6 childrenJoin subqueries —
+ * the two sites deliberately bind different variable names). Spike (b) —
+ * "does `arrayContains` on `integracoesComProduto` seek CONTAINS or
+ * ASCENDING?" — is RETIRED: staging gate printed ASC; the CONTAINS twin was
+ * dropped (#705). Spike (c) — "does `define` accept a correlated-subquery
+ * expression?" — is RETIRED: proven live on staging 2026-07-28 (a
+ * subquery-valued `define` executes fine), then made moot the same day when
+ * the per-anchor sales probe (the `childIds` variable's only consumer) moved
+ * out of THE query into the uncorrelated `fetchSoldProdutoIds` pre-pass;
+ * nothing defines a subquery anymore.
  *
  * ---- Legacy parity anchors (`.old/packages/canais_de_venda`, verified
  * 2026-07-24):
