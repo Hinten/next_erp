@@ -88,8 +88,8 @@ export async function ensureCodigoMunicipio<E extends EnderecoCMunInput>(
       // Fail here rather than in the generator: this message names the document
       // and the CEP, so an operator knows exactly what to fix.
       throw new NFeOrchestratorError(
-        `${options.contexto}: não foi possível resolver codigoMunicipio (IBGE) do CEP ` +
-          `'${endereco.cep}' — ${err.motivo}. Preencha o código do município no endereço.`,
+        `${options.contexto}: could not resolve codigoMunicipio (IBGE) from CEP ` +
+          `'${endereco.cep}' — ${err.motivo}. Fill the município code on the endereço.`,
       );
     }
     throw err;

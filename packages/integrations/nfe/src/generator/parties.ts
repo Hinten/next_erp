@@ -143,7 +143,7 @@ function requireField<T>(name: string, value: T | null | undefined): NonNullable
 function requireCMun(name: string, value: string | null | undefined): string {
   if (!value || !/^\d{7}$/.test(value)) {
     throw new NFePartiesError(
-      `${name} deve ser o código IBGE de 7 dígitos (recebido: ${JSON.stringify(value ?? null)})`,
+      `${name} must be the 7-digit IBGE município code (got ${JSON.stringify(value ?? null)})`,
     );
   }
   return value;

@@ -132,7 +132,7 @@ export async function resolveCodigoMunicipio(
 
   const clean = cleanCep(endereco.cep);
   if (clean.length !== 8) {
-    throw new CodigoMunicipioNaoResolvidoError(cleanCep(endereco.cep), 'cep-invalido');
+    throw new CodigoMunicipioNaoResolvidoError(clean, 'cep-invalido');
   }
 
   const fromTable = lookupCodigoMunicipioIn(options.table ?? cmunTable(), clean);
