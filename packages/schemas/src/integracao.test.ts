@@ -11,6 +11,10 @@ import {
   integracaoMeta,
   integracaoSchema,
   periodoWhatsappSchema,
+  token6hMeta,
+  token6hSchema,
+  tokenDuravelMeta,
+  tokenDuravelSchema,
 } from './integracao';
 import { ALL_DOMAINS } from './registry';
 
@@ -463,11 +467,16 @@ describe('brandShopee', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('integracao metas', () => {
-  it('integracaoMeta targets integracao and cascades credenciais + credenciaisWhatsapp', () => {
+  it('integracaoMeta targets integracao and cascades every credential subcollection', () => {
     expect(integracaoMeta.collectionPath).toBe('integracao');
     expect(integracaoMeta.cascade).toEqual([
       { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
       { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
+      // Dual-run ML pair (#829) — they hold a live refresh_token, and the legacy
+      // Flutter `deleteCascade` on a conta already removed both, so leaving them
+      // out would orphan a working credential.
+      { path: 'integracao/{integracaoId}/token6h', onDelete: 'cascade' },
+      { path: 'integracao/{integracaoId}/tokenDuravel', onDelete: 'cascade' },
     ]);
   });
 
@@ -497,5 +506,70 @@ describe('integracao metas', () => {
   it('is NOT registered in ALL_DOMAINS (server-only secret store)', () => {
     const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
     expect(paths).not.toContain('integracao/{integracaoId}/credenciais');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        Token6h / TokenDuravel — Mercado Livre dual-run parity (#829)        */
+/* -------------------------------------------------------------------------- */
+
+describe('Mercado Livre dual-run token collections', () => {
+  it('token6hSchema parses the legacy Flutter wire shape', () => {
+    // Flutter parks the raw OAuth AUTHORIZATION CODE in `token`, not an access
+    // token (tokenInicial.dart:29-34), and stores `expires_in` as an absolute
+    // ms-epoch int (models.g.dart:15) — never a seconds-duration.
+    const doc = { token: 'TG-6650abc-123456789', expires_in: 1718003600000 };
+    expect(token6hSchema.parse(doc)).toMatchObject(doc);
+  });
+
+  it('token6hSchema keeps unknown legacy fields (passthrough)', () => {
+    const parsed = token6hSchema.parse({
+      token: 'TG-1',
+      expires_in: 1718003600000,
+      algoDoFlutter: 'x',
+    });
+    expect(parsed).toMatchObject({ algoDoFlutter: 'x' });
+  });
+
+  it('tokenDuravelSchema parses the legacy Flutter wire shape', () => {
+    const doc = {
+      access_token: 'APP_USR-abc',
+      refresh_token: 'TG-refresh',
+      token_type: 'bearer',
+      scope: 'offline_access read write',
+      expires_in: 1718003600000,
+      user_id: 123456789,
+    };
+    // `expired` is written with includeIfNull:false, so it may be absent.
+    expect(tokenDuravelSchema.parse(doc)).toMatchObject(doc);
+  });
+
+  it.each([
+    ['token6h', token6hMeta, 'integracao/{integracaoId}/token6h'],
+    ['tokenDuravel', tokenDuravelMeta, 'integracao/{integracaoId}/tokenDuravel'],
+  ])('%s is a DUAL-RUN client grant on the integracao byte, not deny-all', (_name, meta, path) => {
+    // ⚠️ These are the ONE exception to the deny-all posture for credential
+    // stores: registered so the generated ruleset reproduces the grant the
+    // deployed legacy ruleset already gives the Flutter client (perm codes
+    // m1/m2, .old/firestore.rules:168-185). Reusing the parent `integracao`
+    // bits is required — the rules claim name is derived from the bit, so a
+    // bespoke bit would deny existing integração claim-holders. Revert to
+    // { 0n, 0n, 0n } + unregistered when #829 lands.
+    expect(meta.collectionPath).toBe(path);
+    expect(meta.permissions).toEqual({
+      read: 1n << 56n,
+      write: 1n << 57n,
+      delete: 1n << 58n,
+    });
+    expect(ALL_DOMAINS.map((d) => d.meta.collectionPath)).toContain(path);
+  });
+
+  it('does NOT relax the sibling credential stores', () => {
+    // The dual-run exception is ML-only. `credenciais` and `credenciaisWhatsapp`
+    // must stay deny-all and unregistered.
+    const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
+    expect(paths).not.toContain('integracao/{integracaoId}/credenciais');
+    expect(paths).not.toContain('integracao/{integracaoId}/credenciaisWhatsapp');
+    expect(credenciaisWhatsappMeta.permissions).toEqual({ read: 0n, write: 0n, delete: 0n });
   });
 });

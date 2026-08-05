@@ -194,9 +194,24 @@ export const importMercadoLivreOrders = onSchedule(
  * connected). Runs each inline, per-doc isolated, deduped by `resource`,
  * bounded — success deletes the doc, a persistent failure parks it at the cap.
  * Mirrors the legacy `manageNotificationsMercadoLivre` sweep.
+ *
+ * Secrets: every topic runner routes through `loadMercadoLivreContext()`, which
+ * calls `mercadoLivreOAuthConfig()` unconditionally, so — like
+ * `processNotification.ts`/`importMercadoLivreOrders` above — this needs the ML
+ * app credentials bound. Without them every doc throws `MercadoLivreConfigError`,
+ * which the pipeline treats as transient and parks after `MAX_TENTATIVAS` (#778).
  */
 export const reprocessMercadoLivreNotifications = onSchedule(
-  { schedule: 'every 30 minutes', timeZone: 'America/Sao_Paulo' },
+  {
+    schedule: 'every 30 minutes',
+    timeZone: 'America/Sao_Paulo',
+    secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
+    // Each doc's topic runner routes through loadMercadoLivreContext(), which calls
+    // mercadoLivreOAuthConfig() unconditionally — up to 50 docs processed
+    // sequentially can't fit the gen2 60s onSchedule default; 540s matches the
+    // other ML-API-bound sweeps (importMercadoLivreOrders above).
+    timeoutSeconds: 540,
+  },
   async () => {
     const result = await reprocessNotifications(getDb());
     logger.info('[mercado-livre] reprocess sweep', {

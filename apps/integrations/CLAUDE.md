@@ -36,7 +36,7 @@ lib/
 ## Dev
 
 ```bash
-cp ../../.env.example ../../.env.local          # ONE root file (#730)
+cd ../.. && cat .env.example .env.secrets.example > .env.local && cd apps/integrations   # ONE root template set (#730)
 pnpm dev                                        # run all apps from the repo root
 curl http://localhost:3001/api/health
 ```

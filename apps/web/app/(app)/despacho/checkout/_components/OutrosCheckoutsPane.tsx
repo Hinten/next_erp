@@ -5,6 +5,7 @@ import { Group, ScrollArea, Stack, Text, UnstyledButton } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
+import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { CheckoutDanfeFormat } from '@/lib/checkout/nfeFlow';
 import { useOutrosCheckouts, type OutroCheckoutRow } from './useOutrosCheckouts';
 import { OutroCheckoutModal } from './OutroCheckoutModal';
@@ -15,6 +16,7 @@ export interface OutrosCheckoutsPaneProps {
   uid: string | null;
   nfeClient: NFeHttpClient | null;
   freightClient: FreightHttpClient | null;
+  mercadoLivreClient: MercadoLivreClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   formatoEtiqueta: 'pdf' | 'zpl2';
 }
@@ -32,6 +34,7 @@ export function OutrosCheckoutsPane({
   uid,
   nfeClient,
   freightClient,
+  mercadoLivreClient,
   formatoDanfe,
   formatoEtiqueta,
 }: OutrosCheckoutsPaneProps) {
@@ -84,6 +87,7 @@ export function OutrosCheckoutsPane({
         db={db}
         nfeClient={nfeClient}
         freightClient={freightClient}
+        mercadoLivreClient={mercadoLivreClient}
         formatoDanfe={formatoDanfe}
         formatoEtiqueta={formatoEtiqueta}
       />

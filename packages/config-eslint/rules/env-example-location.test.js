@@ -4,14 +4,19 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Repo convention: ONE `.env.example`, at the repo root. Every app's dev
- * server loads the repo-root `.env.local` (`dotenv -e ../../.env.local`), so
- * an app-level `.env.example` documents vars in a place nothing reads — and
- * drifts. This backstop is a test rather than an ESLint rule because ESLint
- * only parses JS/TS and never sees `.env.example` files; failing the test
- * fails CI exactly like a lint error would.
+ * Repo convention: ONE root template SET — `.env.example` (non-secret config) plus
+ * `.env.secrets.example` (credential material), both at the repo root and nowhere
+ * else. Every app's dev server loads the repo-root `.env.local`
+ * (`dotenv -e ../../.env.local`), so an app-level copy of either documents vars in
+ * a place nothing reads — and drifts. This backstop is a test rather than an ESLint
+ * rule because ESLint only parses JS/TS and never sees `.env*` files; failing the
+ * test fails CI exactly like a lint error would.
  *
- * #730 burned the original five app-level copies down to the ONE entry below.
+ * #730 burned the original five app-level copies down to the ONE entry below. The
+ * split into two root files came later and does not weaken that: it is still one
+ * template set at the root, divided by sensitivity rather than by app. Which key
+ * belongs in which file is `env-example-split.test.js`; this file is only about
+ * WHERE the templates live.
  */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -42,9 +47,9 @@ const ALLOWED_NON_ROOT = new Set(['apps/nfe/functions/.env.example']);
  * what the repo ships — and it matches what CI sees, since CI checks out a
  * commit. Reproduce a deletion with `git rm`, not `mv`.
  */
-function findEnvExamples() {
+function findByPathspec(pathspec) {
   const ls = (...args) =>
-    execFileSync('git', [...args, '--', '*.env.example'], {
+    execFileSync('git', [...args, '--', pathspec], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
     })
@@ -52,6 +57,19 @@ function findEnvExamples() {
       .filter(Boolean);
 
   return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
+}
+
+function findEnvExamples() {
+  return findByPathspec('*.env.example');
+}
+
+/**
+ * Separate pathspec, not a widened one: `*.env.example` cannot match
+ * `.env.secrets.example`, and widening it to `*.env*.example` would also start
+ * matching names this convention has no opinion about.
+ */
+function findSecretsExamples() {
+  return findByPathspec('*.env.secrets.example');
 }
 
 describe('.env.example location convention', () => {
@@ -70,6 +88,23 @@ describe('.env.example location convention', () => {
     ).toEqual([]);
     // The root file itself must exist — the convention has an anchor.
     expect(found).toContain('.env.example');
+  });
+
+  it('allows only the repo-root .env.secrets.example', () => {
+    // The `*.env.example` pathspec above does NOT match `.env.secrets.example`
+    // (the suffix is `.secrets.example`), so without this the credential template
+    // would be invisible to the very convention it has to obey — and an app-level
+    // copy of THAT file is worse than an app-level copy of the config one.
+    const found = findSecretsExamples();
+    expect(
+      found.filter((p) => p !== '.env.secrets.example'),
+      [
+        'App-level .env.secrets.example files are not allowed. There is ONE root',
+        'template set (config + secrets); a per-app copy documents credentials in a',
+        'place nothing loads, and every copy is one more file to forget to blank.',
+      ].join('\n'),
+    ).toEqual([]);
+    expect(found).toContain('.env.secrets.example');
   });
 
   it('the carve-out list only shrinks: every entry still exists', () => {

@@ -24,9 +24,10 @@
  *                 sync onto an already-imported pedido (see `runPaymentImport`/
  *                 `runShipmentImport` below); `items_prices` runs the Step 11
  *                 price sync onto the linked produto (see `runItemsPricesSync`
- *                 below); the remaining topics (claims/orders_feedback/
- *                 questions/messages/stock-location) are no-ops until their
- *                 per-topic handlers land in later steps;
+ *                 below); `claims` runs the Step 14 claim → incidente/conversa
+ *                 import (see `runClaimImport` below); the remaining topics
+ *                 (orders_feedback/questions/messages/stock-location) are
+ *                 no-ops until their per-topic handlers land in later steps;
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
@@ -56,12 +57,14 @@ import {
   TASK_MAX_ATTEMPTS,
 } from '@delfrance/data/admin/notifications';
 
+import { tryGetAdminBucket } from '../firebase/admin';
 import {
   type ItemsApiResolver,
   type MigrationRunner,
   resolveItemsApiFromContext,
   syncItemStatus,
 } from './itemsStatusSync';
+import { type ClaimImportResult, importClaimMercadoLivre } from './claimImport';
 import { handleUptinMigration } from './importMigration';
 import { type ItemsPricesSyncOutcome, syncItemPrices } from './itemsPricesSync';
 import { lastSegment, parseItemIdFromPricesResource, parseItemIdFromResource } from './linkRefs';
@@ -330,6 +333,53 @@ const runShipmentImport: ShipmentImportRunner = async (db, integracaoId, resourc
 };
 
 /**
+ * The Step 14 claims-import seam invoked for `claims` notifications — shaped
+ * exactly like `OrderImportRunner` (topic handler → typed runner, injectable
+ * for tests, defaulted to the real ML-context-backed impl below). `resourceId`
+ * is the numeric ML claim id parsed from the notification's `resource`
+ * (`/claims/123` → `123`).
+ */
+export type ClaimImportRunner = (
+  db: Firestore,
+  integracaoId: string,
+  resourceId: number,
+) => Promise<ClaimImportResult>;
+
+/**
+ * The production Step 14 claim importer: loads the account's live ML API
+ * (same seller-token path as `runOrderImport`) and calls the claim-import
+ * handler with ONE clock read for the whole operation (µs + ms threaded
+ * together from a single `Date.now()`, never re-read downstream), the conta's
+ * ML seller id + etiqueta color, and the Storage bucket for attachment
+ * Arquivos (`tryGetAdminBucket` — null degrades to skip-attachments inside
+ * the handler rather than failing the claim). Wired as
+ * `processNotificationPayload`'s default for `claims` so an ordinary
+ * notification needs no caller change; tests inject their own runner.
+ */
+const runClaimImport: ClaimImportRunner = async (db, integracaoId, resourceId) => {
+  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  const channelCtx = await ctx.resolveChannelContext();
+  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const nowMs = Date.now();
+  const nowUs = millisToMicros(nowMs);
+  return importClaimMercadoLivre(
+    {
+      db,
+      api,
+      integracaoId,
+      conta: {
+        userId: asNumberOrNull(ctx.conta.user_id),
+        cor: asNumberOrNull(ctx.conta.cor),
+      },
+      nowUs,
+      nowMs,
+      bucket: tryGetAdminBucket(),
+    },
+    resourceId,
+  );
+};
+
+/**
  * The Step 11 items_prices price-sync seam invoked for `items_prices`
  * notifications — shaped like `OrderImportRunner` but keyed by the ML item id
  * (topic handler → typed runner, injectable for tests, defaulted to the real
@@ -354,8 +404,9 @@ const runItemsPricesSync: ItemsPricesRunner = async (db, integracaoId, itemId) =
   syncItemPrices(db, integracaoId, itemId);
 
 /**
- * The ML order/pack/payment/shipment id from a notification `resource`
- * (`/orders/123` / `/payments/123` / `/shipments/123` → `123`). Tolerates a
+ * The ML order/pack/payment/shipment/claim id from a notification `resource`
+ * (`/orders/123` / `/payments/123` / `/shipments/123` / `/claims/123` →
+ * `123`). Tolerates a
  * bare numeric id with no path segments (`lastSegment` falls back to the whole
  * string when there's no `/`). Anything non-numeric — a coding bug or an
  * ML-side anomaly, never seen in practice — is malformed: the caller drops it
@@ -372,7 +423,7 @@ export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
-  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders/payments/shipments/items_prices resource had no parseable id
+  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders/payments/shipments/items_prices/claims resource had no parseable id
 
 /**
  * The per-topic runner seams the dispatch pipeline threads — ONE options bag
@@ -388,6 +439,7 @@ export interface NotificationRunners {
   paymentImportRunner?: PaymentImportRunner;
   shipmentImportRunner?: ShipmentImportRunner;
   itemsPricesRunner?: ItemsPricesRunner;
+  claimImportRunner?: ClaimImportRunner;
 }
 
 /**
@@ -408,6 +460,7 @@ export async function processNotificationPayload(
   const paymentImportRunner = runners.paymentImportRunner ?? runPaymentImport;
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
   const itemsPricesRunner = runners.itemsPricesRunner ?? runItemsPricesSync;
+  const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
 
   const integracaoId = await resolveIntegracaoByUserId(db, payload.user_id ?? null);
   if (!integracaoId) return { kind: 'no-account' };
@@ -516,12 +569,35 @@ export async function processNotificationPayload(
     return { kind: 'done', integracaoId };
   }
 
-  // Other known topics (claims/orders_feedback/questions/messages/
-  // stock-location): their per-topic handlers land in later steps; here the
-  // foundation acks them so the pipeline is exercisable end-to-end. A future
-  // handler MUST THROW on a transient failure (so the queue/sweep retry) and
-  // be idempotent keyed by the ML resource id — it must never fall through to
-  // a silent success.
+  // `claims` — claim → incidente/conversa/mensagens import (Step 14).
+  // Idempotent, keyed by the byte-exact legacy doc ids (`claimIds.ts`).
+  // THROWS on a transient failure (ML API / Firestore / network) so the
+  // queue/sweep retry. A 404'd claim, an unsupported resource, an
+  // unresolvable pedido, a seller-side complaint, or a cliente-less pedido
+  // are deterministic skips (logged inside the handler and here), still
+  // acked `done` — a retry cannot fix any of them. A resource with no
+  // parseable numeric id is malformed: dropped WITHOUT dispatching a bogus
+  // import (mirrors the orders_v2 malformed-resource drop above).
+  if (payload.topic === 'claims') {
+    const resourceId = parseOrderResourceId(payload.resource);
+    if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
+    const result = await claimImportRunner(db, integracaoId, resourceId);
+    if (result.skipped) {
+      console.warn('[mercado-livre] claim import skipped', {
+        integracaoId,
+        resourceId,
+        skipped: result.skipped,
+      });
+    }
+    return { kind: 'done', integracaoId };
+  }
+
+  // Other known topics (orders_feedback/questions/messages/stock-location):
+  // their per-topic handlers land in later steps; here the foundation acks
+  // them so the pipeline is exercisable end-to-end. A future handler MUST
+  // THROW on a transient failure (so the queue/sweep retry) and be idempotent
+  // keyed by the ML resource id — it must never fall through to a silent
+  // success.
   return { kind: 'done', integracaoId };
 }
 

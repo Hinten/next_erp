@@ -204,6 +204,13 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
   Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
   estado auto-transition only works once this is DEPLOYED — see the Deploying section in `apps/functions/CLAUDE.md`.
+- ⚠️ Every trigger and callable above is a **second writer** on a document the
+  web client, the still-running Flutter app, or another handler may be writing at
+  the same instant — pick a tier from root `CLAUDE.md` Critical rule 7 and record
+  which one at the call site (ADR 0011). `aplicarEstoque` is the tier-0
+  reference (commutative/monotonic transforms, nothing to compare);
+  `reconcilePedidoFromPagamento` is the tier-2 one (watermark compare inside the
+  transaction).
 - ⚠️ Every trigger and callable above targets the NAMED `default` database
   (gotcha #8). `@delfrance/auth` is a build-time dep (esbuild-bundled, like
   data/schemas) for `hasPerm`/`PERM`.

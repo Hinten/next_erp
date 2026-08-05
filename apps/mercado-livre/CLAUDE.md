@@ -48,7 +48,8 @@ milestones of the ML port plan.
 
 ## Env
 
-See the repo-root `.env.example` (Mercado Livre section — one root file is the
+See the repo-root `.env.example` (Mercado Livre section; the OAuth client SECRET and
+the state HMAC key are in `.env.secrets.example` — one root template set is the
 repo convention, #730) + `apphosting.yaml`. App-wide ML app credentials
 (`MERCADO_LIVRE_CLIENT_ID/SECRET`, `..._STATE_SECRET`) live in env / Secret
 Manager — one registered ML app serves every connected account; the per-account
