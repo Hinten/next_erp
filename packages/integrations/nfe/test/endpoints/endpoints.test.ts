@@ -7,8 +7,42 @@ import {
   getConsultaCadastroEndpoint,
   getEndpoints,
   getSvcEndpoints,
+  supportedUFs,
   svcAuthorizerForUF,
 } from '../../src/endpoints';
+
+const ALL_UFS = [
+  'AC',
+  'AL',
+  'AM',
+  'AP',
+  'BA',
+  'CE',
+  'DF',
+  'ES',
+  'GO',
+  'MA',
+  'MG',
+  'MS',
+  'MT',
+  'PA',
+  'PB',
+  'PE',
+  'PI',
+  'PR',
+  'RJ',
+  'RN',
+  'RO',
+  'RR',
+  'RS',
+  'SC',
+  'SE',
+  'SP',
+  'TO',
+];
+
+// The 10 UFs with their own dedicated authorizer host (not SVRS/SVAN).
+const OWN_HOST_UFS = ['AM', 'BA', 'GO', 'MG', 'MS', 'MT', 'PE', 'PR', 'RS', 'SP'];
 
 describe('getEndpoints (home SEFAZ)', () => {
   it('resolves SP for both ambientes', () => {
@@ -18,8 +52,76 @@ describe('getEndpoints (home SEFAZ)', () => {
     );
   });
 
-  it('throws NFeEndpointError for an unwired UF', () => {
-    expect(() => getEndpoints('MG', 'producao')).toThrow(NFeEndpointError);
+  it('throws NFeEndpointError for a non-emitter UF', () => {
+    expect(() => getEndpoints('EX', 'producao')).toThrow(NFeEndpointError);
+  });
+
+  it('covers all 27 UFs with a concrete authorizer + endpoint set, both ambientes', () => {
+    expect(new Set(ALL_UFS).size).toBe(27);
+    for (const uf of ALL_UFS) {
+      for (const ambiente of ['producao', 'homologacao']) {
+        const urls = getEndpoints(uf, ambiente);
+        expect(urls.NfeAutorizacao).toMatch(/^https:\/\//);
+        expect(urls.NfeRetAutorizacao).toMatch(/^https:\/\//);
+        expect(urls.NfeConsultaProtocolo).toMatch(/^https:\/\//);
+        expect(urls.NfeStatusServico).toMatch(/^https:\/\//);
+        expect(urls.NfeInutilizacao).toMatch(/^https:\/\//);
+        expect(urls.RecepcaoEvento).toMatch(/^https:\/\//);
+      }
+    }
+  });
+
+  it('resolves lowercase UFs too', () => {
+    expect(getEndpoints('rs', 'producao').NfeAutorizacao).toContain('nfe.sefazrs.rs.gov.br');
+  });
+
+  it('each own-host UF resolves to its dedicated host, not SVRS/SVAN', () => {
+    for (const uf of OWN_HOST_UFS) {
+      const prod = getEndpoints(uf, 'producao').NfeAutorizacao;
+      expect(prod).not.toContain('svrs.rs.gov.br');
+      expect(prod).not.toContain('sefazvirtual.fazenda.gov.br');
+    }
+  });
+
+  it('does NOT port the legacy GO→MG copy-paste bug — GO and MG resolve to different hosts', () => {
+    expect(getEndpoints('GO', 'producao').NfeAutorizacao).toContain('sefaz.go.gov.br');
+    expect(getEndpoints('MG', 'producao').NfeAutorizacao).toContain('fazenda.mg.gov.br');
+  });
+
+  it('the 16 SVRS-delegated UFs share the SVRS host, distinct from RS itself', () => {
+    const svrsUfs = [
+      'AC',
+      'AL',
+      'AP',
+      'CE',
+      'DF',
+      'ES',
+      'PA',
+      'PB',
+      'PI',
+      'RJ',
+      'RN',
+      'RO',
+      'RR',
+      'SC',
+      'SE',
+      'TO',
+    ];
+    for (const uf of svrsUfs) {
+      expect(getEndpoints(uf, 'producao').NfeAutorizacao).toBe(
+        'https://nfe.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+      );
+    }
+    // RS runs its own host — not the same URL as the UFs it authorizes for.
+    expect(getEndpoints('RS', 'producao').NfeAutorizacao).not.toBe(
+      'https://nfe.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    );
+  });
+
+  it('MA delegates to SVAN (sefazvirtual.fazenda.gov.br), not SVRS', () => {
+    expect(getEndpoints('MA', 'producao').NfeAutorizacao).toBe(
+      'https://www.sefazvirtual.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+    );
   });
 });
 
@@ -129,9 +231,34 @@ describe('getConsultaCadastroEndpoint', () => {
     );
   });
 
-  it('returns null (never throws) for an unwired UF', () => {
-    expect(getConsultaCadastroEndpoint('MG', 'producao')).toBeNull();
+  it('resolves MG now that it is wired', () => {
+    expect(getConsultaCadastroEndpoint('MG', 'producao')).toBe(
+      'https://nfe.fazenda.mg.gov.br/nfe2/services/CadConsultaCadastro4',
+    );
+  });
+
+  it('returns null (never throws) for a non-emitter UF', () => {
     expect(getConsultaCadastroEndpoint('EX', 'homologacao')).toBeNull();
+  });
+
+  it('returns null for AM and MA — neither offers Consulta Cadastro', () => {
+    expect(getConsultaCadastroEndpoint('AM', 'producao')).toBeNull();
+    expect(getConsultaCadastroEndpoint('MA', 'producao')).toBeNull();
+  });
+
+  it('resolves the SVRS-delegated UFs at the shared cad.svrs.rs.gov.br host', () => {
+    expect(getConsultaCadastroEndpoint('AC', 'producao')).toBe(
+      'https://cad.svrs.rs.gov.br/ws/cadconsultacadastro/cadconsultacadastro4.asmx',
+    );
+  });
+});
+
+describe('supportedUFs', () => {
+  it('lists all 27 UFs, no duplicates', () => {
+    const ufs = supportedUFs();
+    expect(new Set(ufs).size).toBe(27);
+    expect(ufs).toHaveLength(27);
+    for (const uf of ALL_UFS) expect(ufs).toContain(uf);
   });
 });
 

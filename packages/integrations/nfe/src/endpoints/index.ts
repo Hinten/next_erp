@@ -1,10 +1,18 @@
 /**
  * SEFAZ web-service endpoints, keyed by UF and ambiente.
  *
- * Phase A wires **SP** — the homologação round-trip target. Remaining UFs and
- * the SVRS / SVAN authorizers used by other states are a Phase A follow-up
- * (mechanical data entry from `.old/packages/nfe_client/lib/src/enderecos*`);
- * the `NfeServiceUrls` shape and `getEndpoints` resolver are the contract.
+ * Full normal-mode coverage, all 27 UFs. Ten UFs run their own dedicated
+ * authorizer host — AM, BA, GO, MG, MS, MT, PE, PR, RS, SP. The remaining
+ * 17 delegate to a shared authorizer: MA to SVAN (Sefaz Virtual Ambiente
+ * Nacional — same physical host as the SVC-AN contingency authorizer below,
+ * but a distinct normal-mode role), and the other 16
+ * (AC/AL/AP/CE/DF/ES/PA/PB/PI/RJ/RN/RO/RR/SC/SE/TO) to SVRS (same host as
+ * the SVC-RS contingency authorizer). URLs sourced 2026-08-05 from the
+ * official SEFAZ webServices portal (`nfe.fazenda.gov.br/portal/webServices.aspx`)
+ * — **not** ported verbatim from `.old/packages/nfe_client/lib/src/enderecos.dart`,
+ * whose `GO_NFe` class points at a Minas Gerais host (copy-paste bug) and whose
+ * `MG` entry is stale (legacy lumps MG into the SVRS default branch; MG has run
+ * its own dedicated host for some time).
  */
 
 export type Ambiente = 'producao' | 'homologacao';
@@ -55,7 +63,315 @@ const ENDPOINTS: Partial<Record<string, Record<Ambiente, NfeServiceUrls>>> = {
       NfeConsultaCadastro: 'https://homologacao.nfe.fazenda.sp.gov.br/ws/cadconsultacadastro4.asmx',
     },
   },
+  AM: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.sefaz.am.gov.br/services2/services/NfeAutorizacao4',
+      NfeRetAutorizacao: 'https://nfe.sefaz.am.gov.br/services2/services/NfeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://nfe.sefaz.am.gov.br/services2/services/NfeConsulta4',
+      NfeStatusServico: 'https://nfe.sefaz.am.gov.br/services2/services/NfeStatusServico4',
+      NfeInutilizacao: 'https://nfe.sefaz.am.gov.br/services2/services/NfeInutilizacao4',
+      RecepcaoEvento: 'https://nfe.sefaz.am.gov.br/services2/services/RecepcaoEvento4',
+      // AM offers no Consulta Cadastro service (empty in the SEFAZ portal
+      // table) — key deliberately omitted, matching SVAN and SVC-AN.
+    },
+    homologacao: {
+      NfeAutorizacao: 'https://homnfe.sefaz.am.gov.br/services2/services/NfeAutorizacao4',
+      NfeRetAutorizacao: 'https://homnfe.sefaz.am.gov.br/services2/services/NfeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://homnfe.sefaz.am.gov.br/services2/services/NfeConsulta4',
+      NfeStatusServico: 'https://homnfe.sefaz.am.gov.br/services2/services/NfeStatusServico4',
+      NfeInutilizacao: 'https://homnfe.sefaz.am.gov.br/services2/services/NfeInutilizacao4',
+      RecepcaoEvento: 'https://homnfe.sefaz.am.gov.br/services2/services/RecepcaoEvento4',
+    },
+  },
+  BA: {
+    producao: {
+      NfeAutorizacao:
+        'https://nfe.sefaz.ba.gov.br/webservices/NFeAutorizacao4/NFeAutorizacao4.asmx',
+      NfeRetAutorizacao:
+        'https://nfe.sefaz.ba.gov.br/webservices/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+      NfeConsultaProtocolo:
+        'https://nfe.sefaz.ba.gov.br/webservices/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+      NfeStatusServico:
+        'https://nfe.sefaz.ba.gov.br/webservices/NFeStatusServico4/NFeStatusServico4.asmx',
+      NfeInutilizacao:
+        'https://nfe.sefaz.ba.gov.br/webservices/NFeInutilizacao4/NFeInutilizacao4.asmx',
+      RecepcaoEvento:
+        'https://nfe.sefaz.ba.gov.br/webservices/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+      NfeConsultaCadastro:
+        'https://nfe.sefaz.ba.gov.br/webservices/CadConsultaCadastro4/CadConsultaCadastro4.asmx',
+    },
+    homologacao: {
+      NfeAutorizacao:
+        'https://hnfe.sefaz.ba.gov.br/webservices/NFeAutorizacao4/NFeAutorizacao4.asmx',
+      NfeRetAutorizacao:
+        'https://hnfe.sefaz.ba.gov.br/webservices/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+      NfeConsultaProtocolo:
+        'https://hnfe.sefaz.ba.gov.br/webservices/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+      NfeStatusServico:
+        'https://hnfe.sefaz.ba.gov.br/webservices/NFeStatusServico4/NFeStatusServico4.asmx',
+      NfeInutilizacao:
+        'https://hnfe.sefaz.ba.gov.br/webservices/NFeInutilizacao4/NFeInutilizacao4.asmx',
+      RecepcaoEvento:
+        'https://hnfe.sefaz.ba.gov.br/webservices/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+      NfeConsultaCadastro:
+        'https://hnfe.sefaz.ba.gov.br/webservices/CadConsultaCadastro4/CadConsultaCadastro4.asmx',
+    },
+  },
+  // ⚠️ Do NOT port `.old`'s `GO_NFe` class — every URL in it points at a
+  // Minas Gerais host (nfe.fazenda.mg.gov.br), an unnoticed copy-paste bug
+  // with no test coverage. These are GO's real hosts, independently sourced.
+  GO: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.sefaz.go.gov.br/nfe/services/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://nfe.sefaz.go.gov.br/nfe/services/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://nfe.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://nfe.sefaz.go.gov.br/nfe/services/NFeStatusServico4',
+      NfeInutilizacao: 'https://nfe.sefaz.go.gov.br/nfe/services/NFeInutilizacao4',
+      RecepcaoEvento: 'https://nfe.sefaz.go.gov.br/nfe/services/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://nfe.sefaz.go.gov.br/nfe/services/CadConsultaCadastro4',
+    },
+    homologacao: {
+      NfeAutorizacao: 'https://homolog.sefaz.go.gov.br/nfe/services/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://homolog.sefaz.go.gov.br/nfe/services/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://homolog.sefaz.go.gov.br/nfe/services/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://homolog.sefaz.go.gov.br/nfe/services/NFeStatusServico4',
+      NfeInutilizacao: 'https://homolog.sefaz.go.gov.br/nfe/services/NFeInutilizacao4',
+      RecepcaoEvento: 'https://homolog.sefaz.go.gov.br/nfe/services/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://homolog.sefaz.go.gov.br/nfe/services/CadConsultaCadastro4',
+    },
+  },
+  // MG runs its own dedicated host today — do NOT trust `.old`'s SVRS
+  // default-branch placement for MG; re-derived independently per the issue.
+  MG: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.fazenda.mg.gov.br/nfe2/services/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://nfe.fazenda.mg.gov.br/nfe2/services/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://nfe.fazenda.mg.gov.br/nfe2/services/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://nfe.fazenda.mg.gov.br/nfe2/services/NFeStatusServico4',
+      NfeInutilizacao: 'https://nfe.fazenda.mg.gov.br/nfe2/services/NFeInutilizacao4',
+      RecepcaoEvento: 'https://nfe.fazenda.mg.gov.br/nfe2/services/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://nfe.fazenda.mg.gov.br/nfe2/services/CadConsultaCadastro4',
+    },
+    homologacao: {
+      NfeAutorizacao: 'https://hnfe.fazenda.mg.gov.br/nfe2/services/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://hnfe.fazenda.mg.gov.br/nfe2/services/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://hnfe.fazenda.mg.gov.br/nfe2/services/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://hnfe.fazenda.mg.gov.br/nfe2/services/NFeStatusServico4',
+      NfeInutilizacao: 'https://hnfe.fazenda.mg.gov.br/nfe2/services/NFeInutilizacao4',
+      RecepcaoEvento: 'https://hnfe.fazenda.mg.gov.br/nfe2/services/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://hnfe.fazenda.mg.gov.br/nfe2/services/CadConsultaCadastro4',
+    },
+  },
+  MS: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.sefaz.ms.gov.br/ws/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://nfe.sefaz.ms.gov.br/ws/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://nfe.sefaz.ms.gov.br/ws/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://nfe.sefaz.ms.gov.br/ws/NFeStatusServico4',
+      NfeInutilizacao: 'https://nfe.sefaz.ms.gov.br/ws/NFeInutilizacao4',
+      RecepcaoEvento: 'https://nfe.sefaz.ms.gov.br/ws/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://nfe.sefaz.ms.gov.br/ws/CadConsultaCadastro4',
+    },
+    homologacao: {
+      NfeAutorizacao: 'https://hom.nfe.sefaz.ms.gov.br/ws/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://hom.nfe.sefaz.ms.gov.br/ws/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://hom.nfe.sefaz.ms.gov.br/ws/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://hom.nfe.sefaz.ms.gov.br/ws/NFeStatusServico4',
+      NfeInutilizacao: 'https://hom.nfe.sefaz.ms.gov.br/ws/NFeInutilizacao4',
+      RecepcaoEvento: 'https://hom.nfe.sefaz.ms.gov.br/ws/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://hom.nfe.sefaz.ms.gov.br/ws/CadConsultaCadastro4',
+    },
+  },
+  MT: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.sefaz.mt.gov.br/nfews/v2/services/NfeAutorizacao4',
+      NfeRetAutorizacao: 'https://nfe.sefaz.mt.gov.br/nfews/v2/services/NfeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://nfe.sefaz.mt.gov.br/nfews/v2/services/NfeConsulta4',
+      NfeStatusServico: 'https://nfe.sefaz.mt.gov.br/nfews/v2/services/NfeStatusServico4',
+      NfeInutilizacao: 'https://nfe.sefaz.mt.gov.br/nfews/v2/services/NfeInutilizacao4',
+      RecepcaoEvento: 'https://nfe.sefaz.mt.gov.br/nfews/v2/services/RecepcaoEvento4',
+      NfeConsultaCadastro: 'https://nfe.sefaz.mt.gov.br/nfews/v2/services/CadConsultaCadastro4',
+    },
+    homologacao: {
+      NfeAutorizacao: 'https://homologacao.sefaz.mt.gov.br/nfews/v2/services/NfeAutorizacao4',
+      NfeRetAutorizacao: 'https://homologacao.sefaz.mt.gov.br/nfews/v2/services/NfeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://homologacao.sefaz.mt.gov.br/nfews/v2/services/NfeConsulta4',
+      NfeStatusServico: 'https://homologacao.sefaz.mt.gov.br/nfews/v2/services/NfeStatusServico4',
+      NfeInutilizacao: 'https://homologacao.sefaz.mt.gov.br/nfews/v2/services/NfeInutilizacao4',
+      RecepcaoEvento: 'https://homologacao.sefaz.mt.gov.br/nfews/v2/services/RecepcaoEvento4',
+      NfeConsultaCadastro:
+        'https://homologacao.sefaz.mt.gov.br/nfews/v2/services/CadConsultaCadastro4',
+    },
+  },
+  PE: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.sefaz.pe.gov.br/nfe-service/services/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://nfe.sefaz.pe.gov.br/nfe-service/services/NFeRetAutorizacao4',
+      NfeConsultaProtocolo:
+        'https://nfe.sefaz.pe.gov.br/nfe-service/services/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://nfe.sefaz.pe.gov.br/nfe-service/services/NFeStatusServico4',
+      NfeInutilizacao: 'https://nfe.sefaz.pe.gov.br/nfe-service/services/NFeInutilizacao4',
+      RecepcaoEvento: 'https://nfe.sefaz.pe.gov.br/nfe-service/services/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://nfe.sefaz.pe.gov.br/nfe-service/services/CadConsultaCadastro4',
+    },
+    homologacao: {
+      NfeAutorizacao: 'https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/NFeAutorizacao4',
+      NfeRetAutorizacao:
+        'https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/NFeRetAutorizacao4',
+      NfeConsultaProtocolo:
+        'https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/NFeStatusServico4',
+      NfeInutilizacao: 'https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/NFeInutilizacao4',
+      RecepcaoEvento: 'https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/NFeRecepcaoEvento4',
+      NfeConsultaCadastro:
+        'https://nfehomolog.sefaz.pe.gov.br/nfe-service/services/CadConsultaCadastro4',
+    },
+  },
+  PR: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.sefa.pr.gov.br/nfe/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://nfe.sefa.pr.gov.br/nfe/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://nfe.sefa.pr.gov.br/nfe/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://nfe.sefa.pr.gov.br/nfe/NFeStatusServico4',
+      NfeInutilizacao: 'https://nfe.sefa.pr.gov.br/nfe/NFeInutilizacao4',
+      RecepcaoEvento: 'https://nfe.sefa.pr.gov.br/nfe/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://nfe.sefa.pr.gov.br/nfe/CadConsultaCadastro4',
+    },
+    homologacao: {
+      NfeAutorizacao: 'https://homologacao.nfe.sefa.pr.gov.br/nfe/NFeAutorizacao4',
+      NfeRetAutorizacao: 'https://homologacao.nfe.sefa.pr.gov.br/nfe/NFeRetAutorizacao4',
+      NfeConsultaProtocolo: 'https://homologacao.nfe.sefa.pr.gov.br/nfe/NFeConsultaProtocolo4',
+      NfeStatusServico: 'https://homologacao.nfe.sefa.pr.gov.br/nfe/NFeStatusServico4',
+      NfeInutilizacao: 'https://homologacao.nfe.sefa.pr.gov.br/nfe/NFeInutilizacao4',
+      RecepcaoEvento: 'https://homologacao.nfe.sefa.pr.gov.br/nfe/NFeRecepcaoEvento4',
+      NfeConsultaCadastro: 'https://homologacao.nfe.sefa.pr.gov.br/nfe/CadConsultaCadastro4',
+    },
+  },
+  // RS's own host — distinct from `nfe.svrs.rs.gov.br` (the SVRS *shared*
+  // authorizer other UFs delegate to, and RS's own SVC-RS contingency host).
+  // Consulta Cadastro is the one service RS itself does NOT host: even RS's
+  // own normal-mode table points it at `cad.svrs.rs.gov.br`.
+  RS: {
+    producao: {
+      NfeAutorizacao: 'https://nfe.sefazrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+      NfeRetAutorizacao:
+        'https://nfe.sefazrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+      NfeConsultaProtocolo: 'https://nfe.sefazrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+      NfeStatusServico: 'https://nfe.sefazrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+      NfeInutilizacao: 'https://nfe.sefazrs.rs.gov.br/ws/nfeinutilizacao/nfeinutilizacao4.asmx',
+      RecepcaoEvento: 'https://nfe.sefazrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+      NfeConsultaCadastro:
+        'https://cad.svrs.rs.gov.br/ws/cadconsultacadastro/cadconsultacadastro4.asmx',
+    },
+    homologacao: {
+      NfeAutorizacao:
+        'https://nfe-homologacao.sefazrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+      NfeRetAutorizacao:
+        'https://nfe-homologacao.sefazrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+      NfeConsultaProtocolo:
+        'https://nfe-homologacao.sefazrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+      NfeStatusServico:
+        'https://nfe-homologacao.sefazrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+      NfeInutilizacao:
+        'https://nfe-homologacao.sefazrs.rs.gov.br/ws/nfeinutilizacao/nfeinutilizacao4.asmx',
+      RecepcaoEvento:
+        'https://nfe-homologacao.sefazrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+      NfeConsultaCadastro:
+        'https://cad-homologacao.svrs.rs.gov.br/ws/cadconsultacadastro/cadconsultacadastro4.asmx',
+    },
+  },
 };
+
+/**
+ * SVRS (Sefaz Virtual Rio Grande do Sul) — the shared normal-mode authorizer
+ * for the 16 UFs with no dedicated host of their own. Same physical host as
+ * the SVC-RS contingency authorizer (`SVC_RS_ENDPOINTS` below); NfeConsultaCadastro
+ * lives on the sibling `cad(.-homologacao)?.svrs.rs.gov.br` host, same as RS's own
+ * table above.
+ */
+const SVRS_NORMAL_ENDPOINTS: Record<Ambiente, NfeServiceUrls> = {
+  producao: {
+    NfeAutorizacao: 'https://nfe.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao: 'https://nfe.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo: 'https://nfe.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+    NfeStatusServico: 'https://nfe.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+    NfeInutilizacao: 'https://nfe.svrs.rs.gov.br/ws/nfeinutilizacao/nfeinutilizacao4.asmx',
+    RecepcaoEvento: 'https://nfe.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+    NfeConsultaCadastro:
+      'https://cad.svrs.rs.gov.br/ws/cadconsultacadastro/cadconsultacadastro4.asmx',
+  },
+  homologacao: {
+    NfeAutorizacao: 'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao:
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo: 'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+    NfeStatusServico:
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+    NfeInutilizacao:
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/nfeinutilizacao/nfeinutilizacao4.asmx',
+    RecepcaoEvento: 'https://nfe-homologacao.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+    NfeConsultaCadastro:
+      'https://cad-homologacao.svrs.rs.gov.br/ws/cadconsultacadastro/cadconsultacadastro4.asmx',
+  },
+};
+
+/** The 16 UFs with no dedicated host, delegated to {@link SVRS_NORMAL_ENDPOINTS}. */
+const SVRS_NORMAL_UFS: readonly string[] = [
+  'AC',
+  'AL',
+  'AP',
+  'CE',
+  'DF',
+  'ES',
+  'PA',
+  'PB',
+  'PI',
+  'RJ',
+  'RN',
+  'RO',
+  'RR',
+  'SC',
+  'SE',
+  'TO',
+];
+
+/**
+ * SVAN (Sefaz Virtual Ambiente Nacional) — MA's normal-mode authorizer.
+ * Same physical host as the SVC-AN contingency authorizer (`SVC_AN_ENDPOINTS`
+ * below), a distinct role. No NfeConsultaCadastro (empty in the SEFAZ portal
+ * table, like AM and SVC-AN).
+ */
+const SVAN_NORMAL_ENDPOINTS: Record<Ambiente, NfeServiceUrls> = {
+  producao: {
+    NfeAutorizacao: 'https://www.sefazvirtual.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+    NfeStatusServico:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
+    NfeInutilizacao:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeInutilizacao4/NFeInutilizacao4.asmx',
+    RecepcaoEvento:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+  },
+  homologacao: {
+    NfeAutorizacao: 'https://hom.sefazvirtual.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+    NfeStatusServico:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
+    NfeInutilizacao:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeInutilizacao4/NFeInutilizacao4.asmx',
+    RecepcaoEvento:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+  },
+};
+
+for (const uf of SVRS_NORMAL_UFS) ENDPOINTS[uf] = SVRS_NORMAL_ENDPOINTS;
+ENDPOINTS.MA = SVAN_NORMAL_ENDPOINTS;
 
 /**
  * Contingency authorizers (MOC Anexo III). `svc-an` / `svc-rs` are the two
@@ -185,7 +501,7 @@ const SVC_RS_UFS: ReadonlySet<string> = new Set([
 
 export class NFeEndpointError extends Error {
   constructor(uf: string) {
-    super(`No NF-e endpoint table for UF '${uf}'. Phase A wires SP only.`);
+    super(`No NF-e endpoint table for UF '${uf}'.`);
     this.name = 'NFeEndpointError';
   }
 }
