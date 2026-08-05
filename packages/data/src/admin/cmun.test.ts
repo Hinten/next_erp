@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { ViaCepClient } from '@delfrance/core/cep';
 import { ViaCepError } from '@delfrance/core/cep';
-import { CodigoMunicipioNaoResolvidoError, __resetCmunMemo, resolveCodigoMunicipio } from './cmun';
+import { __resetAllReadCaches } from './cache';
+import { CodigoMunicipioNaoResolvidoError, resolveCodigoMunicipio } from './cmun';
 
 /**
  * `resolveCodigoMunicipio` — the CMUN table with a ViaCEP write-back (#785).
@@ -32,6 +33,8 @@ class FakeDb {
   readonly rows = new Map<string, Faixa>();
   readonly created: Array<{ id: string; data: Faixa }> = [];
   createError: Error | null = null;
+  /** How many times the CMUN query actually executed. */
+  queries = 0;
 
   seed(faixa: Faixa): void {
     this.rows.set(String(faixa.cepInicial).padStart(8, '0'), faixa);
@@ -59,6 +62,7 @@ class FakeDb {
         return q;
       },
       get: () => {
+        self.queries += 1;
         const hit = [...self.rows.entries()]
           .filter(([, f]) => gte === null || f.cepFinal >= gte)
           .sort((a, b) => a[1].cepFinal - b[1].cepFinal)[0];
@@ -115,8 +119,11 @@ const SP = {
 };
 
 describe('resolveCodigoMunicipio', () => {
-  beforeEach(() => __resetCmunMemo());
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => __resetAllReadCaches());
+  afterEach(() => {
+    __resetAllReadCaches();
+    vi.restoreAllMocks();
+  });
 
   describe('stored override', () => {
     it('short-circuits without touching Firestore or ViaCEP', async () => {
@@ -168,12 +175,50 @@ describe('resolveCodigoMunicipio', () => {
       expect(viaCep.buscarCep).not.toHaveBeenCalled();
     });
 
+    it('serves a repeated CEP from the read cache, without re-querying', async () => {
+      // The repeat this cache exists for: `emitirPedidosLote` fans out over
+      // pedidos that share addresses. On Enterprise a saved query is saved
+      // SCANNED BYTES, not just a document count.
+      const fake = new FakeDb();
+      fake.seed(SP);
+
+      await resolveCodigoMunicipio(db(fake), { cep: '01050000' }, { viaCep: forbiddenViaCep });
+      await resolveCodigoMunicipio(db(fake), { cep: '01050000' }, { viaCep: forbiddenViaCep });
+
+      expect(fake.queries).toBe(1);
+    });
+
+    it('still UF-checks a cached value against EACH endereço', async () => {
+      // The cache holds the CEP → município mapping, which is endereço-
+      // independent. The UF cross-check is NOT: the same CEP can be looked up
+      // for two endereços whose `estado` differs, and only one is wrong. If the
+      // check moved inside the cache, the first caller's estado would decide
+      // for the second.
+      const fake = new FakeDb();
+      fake.seed(SP);
+
+      await resolveCodigoMunicipio(
+        db(fake),
+        { cep: '01050000', estado: 'SP' },
+        { viaCep: forbiddenViaCep },
+      );
+
+      const err = await resolveCodigoMunicipio(
+        db(fake),
+        { cep: '01050000', estado: 'AC' },
+        { viaCep: forbiddenViaCep },
+      ).catch((e: unknown) => e);
+
+      expect(fake.queries).toBe(1); // served from cache…
+      expect((err as CodigoMunicipioNaoResolvidoError).motivo).toBe('uf-divergente'); // …and still checked
+    });
+
     it('treats both faixa bounds as inclusive', async () => {
       const fake = new FakeDb();
       fake.seed(SP);
 
       for (const cep of ['01000000', '01099999']) {
-        __resetCmunMemo();
+        __resetAllReadCaches();
         await expect(
           resolveCodigoMunicipio(db(fake), { cep, estado: 'SP' }, { viaCep: forbiddenViaCep }),
         ).resolves.toBe('3550308');
@@ -225,7 +270,7 @@ describe('resolveCodigoMunicipio', () => {
       const viaCep = viaCepReturning('3550308');
 
       await resolveCodigoMunicipio(db(fake), { cep: '01500000', estado: 'SP' }, { viaCep });
-      __resetCmunMemo(); // even with a cold process memo, the TABLE now answers
+      __resetAllReadCaches(); // even with a cold process memo, the TABLE now answers
       await resolveCodigoMunicipio(db(fake), { cep: '01500000', estado: 'SP' }, { viaCep });
 
       expect(viaCep.buscarCep).toHaveBeenCalledTimes(1);

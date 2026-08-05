@@ -7,6 +7,7 @@ import {
   ufFromCodigoMunicipio,
 } from '@delfrance/core/cep';
 import { ORIGEM_CMUN, type Cmun, cmunDocId, ufSchema } from '@delfrance/schemas';
+import { READ_CACHE_TTL, createReadCache } from './cache';
 import { cmunCollection } from './collections/cmunCollection';
 import { isAlreadyExists } from './grpcErrors';
 
@@ -76,12 +77,27 @@ export interface ResolveCodigoMunicipioOptions {
 /**
  * Process-wide memo of resolved CEPs.
  *
- * The table is effectively static, so there is no staleness to manage, and a
- * lote of pedidos routinely shares addresses. Write-through on the ViaCEP path
- * below. `@delfrance/data/admin/cache` (#753/#762) is not merged yet — adopt it
- * here once it is, and drop this Map.
+ * The repeat this exists for: `emitirPedidosLote` fans out over pedidos that
+ * routinely share addresses, and a re-emission or consulta re-resolves the same
+ * endereço. Each hit saves a Firestore query, which on Enterprise is scanned
+ * bytes, not just a document count.
+ *
+ * Two safety notes, per the `firestore-read-cache` skill's checklist:
+ *
+ * - **Nothing negative is ever cached.** `load` throws when a CEP does not
+ *   resolve, and a rejection is never stored. That matters here specifically:
+ *   this module *writes a row* on a miss, so a cached miss would be stale by
+ *   our own action a millisecond later — the §1.2 read-modify-write trap.
+ * - **No invalidation is needed on our own write.** `registrarFaixa` only ever
+ *   ADDS a faixa in a gap; it never edits an existing one. So a cached value
+ *   cannot be invalidated by anything this process does.
  */
-const memo = new Map<string, string>();
+const cmunByCep = createReadCache<readonly [string], string>({
+  name: 'cmun:by-cep',
+  // The table is effectively static — faixas change a handful of times a year.
+  ttlMs: READ_CACHE_TTL.config,
+  maxEntries: 2_000,
+});
 
 function storedCodigoMunicipio(endereco: EnderecoCMunInput): string | null {
   // `enderecoSchema.codigoMunicipio` is `.max(8).regex(/^\d*$/)`, so `''` is
@@ -181,19 +197,33 @@ export async function resolveCodigoMunicipio(
     throw new CodigoMunicipioNaoResolvidoError(clean, 'cep-invalido');
   }
 
-  const cached = memo.get(clean);
-  if (cached) return cached;
+  // The UF cross-check runs OUTSIDE the cache, on every call: the same CEP can
+  // be looked up for two endereços whose `estado` differs, and only one of them
+  // is wrong. Caching the check's verdict would let the first caller's estado
+  // decide for the second.
+  const resolved = await cmunByCep.get([clean], () => loadCodigoMunicipio(db, clean, options));
+  assertUfAgrees(clean, resolved, endereco.estado);
+  return resolved;
+}
 
+/**
+ * The uncached resolution: `CMUN` table → ViaCEP (written back) → throw.
+ *
+ * Separate from {@link resolveCodigoMunicipio} so the cache wraps exactly the
+ * expensive, endereço-independent part — a CEP maps to one município no matter
+ * which endereço asked.
+ */
+async function loadCodigoMunicipio(
+  db: Firestore,
+  clean: string,
+  options: ResolveCodigoMunicipioOptions,
+): Promise<string> {
   // `Number` drops the leading zero — exactly what the legacy `int.parse(cep)`
   // did, and how `cepInicial`/`cepFinal` are stored.
   const cepInt = Number(clean);
 
   const faixa = await faixaCobrindo(db, cepInt);
-  if (faixa) {
-    assertUfAgrees(clean, faixa.cMun, endereco.estado);
-    memo.set(clean, faixa.cMun);
-    return faixa.cMun;
-  }
+  if (faixa) return faixa.cMun;
 
   if (options.offline) {
     throw new CodigoMunicipioNaoResolvidoError(clean, 'desconhecido');
@@ -214,14 +244,12 @@ export async function resolveCodigoMunicipio(
     throw new CodigoMunicipioNaoResolvidoError(clean, 'viacep-sem-ibge');
   }
   const fromViaCep = found.codigoMunicipio;
-  assertUfAgrees(clean, fromViaCep, endereco.estado);
 
   // The whole point: teach the table, so this CEP never costs a call again.
   // Prefer the UF implied by the código itself — it is the authority, and
   // ViaCEP's `uf` is free text we would otherwise have to trust.
   const uf = ufFromCodigoMunicipio(fromViaCep) ?? ufSchema.safeParse(found.estado).data ?? 'EX';
   await registrarFaixa(db, cepInt, fromViaCep, found.cidade || 'NAO INFORMADO', uf);
-  memo.set(clean, fromViaCep);
   return fromViaCep;
 }
 
@@ -244,9 +272,4 @@ function assertUfAgrees(cep: string, codigoMunicipio: string, estado: string | n
 function ufMatches(codigoMunicipio: string, estado: string): boolean {
   const uf = ufFromCodigoMunicipio(codigoMunicipio);
   return uf !== null && uf === estado.toUpperCase();
-}
-
-/** Test-only: clear the process-wide memo between cases. */
-export function __resetCmunMemo(): void {
-  memo.clear();
 }
