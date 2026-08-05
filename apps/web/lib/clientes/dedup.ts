@@ -10,6 +10,7 @@ import {
   whereOp,
 } from '@delfrance/data';
 import { telefoneQueryShapes } from '@delfrance/core/phone';
+import { normalizeDocumento } from '@delfrance/schemas';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 
 const CANDIDATE_LIMIT = 5;
@@ -116,7 +117,7 @@ export async function checkClienteDuplicates(
   db: Firestore,
   input: ClienteDedupInput,
 ): Promise<ClienteDedupResult> {
-  const cpfCnpj = input.cpf_cnpj.replace(/[.\-/\s]/g, '').toUpperCase();
+  const cpfCnpj = normalizeDocumento(input.cpf_cnpj);
   const idEstrangeiro = input.idEstrangeiro.trim();
   const nome = input.nome.trim();
   const email = input.email.trim();

@@ -70,6 +70,7 @@ import {
   UF_SIGLA,
   TIPO_CLIENTE,
   normalizarIe,
+  normalizeDocumento,
   type Cliente,
   type TipoCliente,
   type UF,
@@ -527,8 +528,7 @@ export async function findOrCreateCliente(
   // strip would mangle those and query the wrong key, silently duplicating
   // the cliente. Use the repo-standard normalization instead (punctuation/
   // whitespace stripped, uppercased — same as apps/web/lib/clientes/dedup.ts).
-  const cpfCnpjDigits =
-    fields.cpf_cnpj != null ? fields.cpf_cnpj.replace(/[.\-/\s]/g, '').toUpperCase() : null;
+  const cpfCnpjDigits = fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null;
   const normalizedTelefone = fields.telefone != null ? normalizeTelefone(fields.telefone) : null;
 
   let existing: ExistingCliente | null = null;
