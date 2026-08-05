@@ -1,40 +1,19 @@
-import { Zip, ZipDeflate, strToU8, unzipSync } from 'fflate';
+import { Zip, ZipDeflate, strFromU8, strToU8, unzipSync } from 'fflate';
 
 /**
  * Parse ZPL blocks from a string. ZPL blocks are delimited by ^XA (start) and
- * ^XZ (end).
+ * ^XZ (end). Regex parser, matching the legacy Dart original: a single
+ * physical line holding several `^XA…^XZ` blocks yields SEVERAL blocks — a
+ * line-based scanner would see one, letting a DANFE that shares a line with
+ * the transport label defeat the strip.
  */
 export function parseZplBlocks(zpl: string): string[] {
-  const blocks: string[] = [];
-  let currentBlock = '';
-  let inBlock = false;
-
-  const lines = zpl.split(/\r?\n/);
-  for (const line of lines) {
-    if (line.includes('^XA')) {
-      inBlock = true;
-      currentBlock = line;
-    } else if (line.includes('^XZ')) {
-      currentBlock += '\n' + line;
-      blocks.push(currentBlock);
-      currentBlock = '';
-      inBlock = false;
-    } else if (inBlock) {
-      currentBlock += '\n' + line;
-    }
-  }
-
-  // Handle case where ZPL might be on a single line without newlines
-  if (inBlock) {
-    blocks.push(currentBlock);
-  }
-
-  return blocks;
+  return zpl.match(/\^XA[\s\S]*?\^XZ/g) ?? [];
 }
 
 /**
- * Remove ZPL blocks containing 'DANFE' from a ZPL string.
- * Returns the reconstructed ZPL with DANFE blocks removed.
+ * Remove ZPL blocks containing 'DANFE' (case-INSENSITIVE, legacy parity) from
+ * a ZPL string. Kept blocks are re-joined with '\n' (legacy join).
  * If no DANFE blocks are found or removal would result in no blocks, returns null.
  */
 export function removeZplDanfeBlocks(zpl: string): string | null {
@@ -44,7 +23,7 @@ export function removeZplDanfeBlocks(zpl: string): string | null {
     return null;
   }
 
-  const filteredBlocks = blocks.filter((block) => !block.includes('DANFE'));
+  const filteredBlocks = blocks.filter((block) => !block.toUpperCase().includes('DANFE'));
 
   // If filtering would remove all blocks, don't filter
   if (filteredBlocks.length === 0) {
@@ -70,6 +49,14 @@ export function removeZplDanfeBlocks(zpl: string): string | null {
  * - If removal would empty a file's content, skips removal for that file
  * - If all files would be emptied, returns null (preserves original)
  */
+/** Raw-byte scan for the ASCII `^XA` block-start marker (0x5e 0x58 0x41). */
+function containsZplStart(bytes: Uint8Array): boolean {
+  for (let i = 0; i + 2 < bytes.length; i++) {
+    if (bytes[i] === 0x5e && bytes[i + 1] === 0x58 && bytes[i + 2] === 0x41) return true;
+  }
+  return false;
+}
+
 export function removeZplDanfeFromZip(zipBytes: Uint8Array): Uint8Array | null {
   // Unzip the input; on corrupt ZIP, fail-safe to return null (preserve original)
   let unzipped: Record<string, Uint8Array>;
@@ -83,32 +70,29 @@ export function removeZplDanfeFromZip(zipBytes: Uint8Array): Uint8Array | null {
     throw err;
   }
 
-  const files = Object.entries(unzipped);
   let hadAnyDanfe = false;
   const processedFiles: Record<string, Uint8Array> = {};
 
-  // Process each file in the ZIP
-  for (const [filename, fileBytes] of files) {
-    // Try to decode the file as text (ZPL is text-based)
-    let fileContent = '';
-    try {
-      fileContent = new TextDecoder().decode(fileBytes);
-    } catch (err) {
-      // If it's not text, keep it as-is
-      // TextDecoder.decode generally doesn't throw, but we handle it for completeness
-      if (err instanceof Error) {
-        processedFiles[filename] = fileBytes;
-        continue;
-      }
-      throw err;
+  for (const [filename, fileBytes] of Object.entries(unzipped)) {
+    // Only entries that look like ZPL are rewritten; PDFs (folha de
+    // controle/PLP) and any other entry are copied byte-intact (legacy parity).
+    // latin1 is 1:1 byte↔char, so this raw scan is exactly
+    // `strFromU8(fileBytes, true).includes('^XA')` without decoding large
+    // binary entries into strings.
+    if (!containsZplStart(fileBytes)) {
+      processedFiles[filename] = fileBytes;
+      continue;
     }
 
-    // Try to remove DANFE blocks
-    const processed = removeZplDanfeBlocks(fileContent);
+    // latin1 (the `true` flag) is byte-exact on round-trip; a UTF-8 decode of
+    // arbitrary bytes is lossy (U+FFFD) and would corrupt >0x7F bytes on
+    // re-encode. The 'DANFE'/'^XA' matches are ASCII, safe under either.
+    const fileContent = strFromU8(fileBytes, true);
 
+    const processed = removeZplDanfeBlocks(fileContent);
     if (processed !== null) {
       hadAnyDanfe = true;
-      processedFiles[filename] = strToU8(processed);
+      processedFiles[filename] = strToU8(processed, true);
     } else {
       // No DANFE found or removal would empty this file
       processedFiles[filename] = fileBytes;
@@ -120,27 +104,37 @@ export function removeZplDanfeFromZip(zipBytes: Uint8Array): Uint8Array | null {
     return null;
   }
 
-  // Re-zip the processed files
-  const chunks: Uint8Array[] = [];
-  const zip = new Zip((err, data, _final) => {
-    if (err) throw err;
-    if (data.length) chunks.push(data);
-  });
+  // Re-zip the processed files. Same fail-safe as the unzip above: the legacy
+  // guarantee is "em qualquer erro, mantém o original — nunca bloquear a
+  // impressão", so an error surfacing through the Zip callback must yield
+  // null (caller keeps the original bytes), never propagate.
+  try {
+    const chunks: Uint8Array[] = [];
+    const zip = new Zip((err, data, _final) => {
+      if (err) throw err;
+      if (data.length) chunks.push(data);
+    });
 
-  for (const [filename, content] of Object.entries(processedFiles)) {
-    const entry = new ZipDeflate(filename, { level: 6 });
-    zip.add(entry);
-    entry.push(content, true);
+    for (const [filename, content] of Object.entries(processedFiles)) {
+      const entry = new ZipDeflate(filename, { level: 6 });
+      zip.add(entry);
+      entry.push(content, true);
+    }
+
+    zip.end();
+
+    const blob = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
+    let offset = 0;
+    for (const chunk of chunks) {
+      blob.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return blob;
+  } catch (err) {
+    if (err instanceof Error) {
+      return null;
+    }
+    throw err;
   }
-
-  zip.end();
-
-  const blob = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    blob.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return blob;
 }

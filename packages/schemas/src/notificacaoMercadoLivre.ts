@@ -1,9 +1,16 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import type { CollectionMetadata } from './types';
 import {
   notificacaoResilienciaStatusSchema,
   notificationResilienceFields,
 } from './shared/notificationResilience';
+
+// Mirror `PERM.integracao` from @delfrance/auth (duplicated locally to avoid a
+// circular dep — same approach as cargo.ts / deposito.ts).
+const PERM_INTEGRACAO_READ = 1n << 56n;
+const PERM_INTEGRACAO_WRITE = 1n << 57n;
+const PERM_INTEGRACAO_DELETE = 1n << 58n;
 
 /**
  * `notificacoesMercadoLivre` (TOP-LEVEL) — the **failures-only** inbound webhook
@@ -27,10 +34,17 @@ import {
  * retry counter `tentativas` (distinct from ML's own delivery `attempts`),
  * `erro`, and `processedAt` (the last-attempt time — the sweep's window gate).
  *
- * Admin-only / default-deny: NOT registered in `ALL_DOMAINS` (like `credenciais`
- * / `tokenDuravel`), so clients can't read it and the rules generator emits no
- * match block. The receiver (Admin SDK route) and the nested functions (Admin
- * SDK) are the only writers/readers.
+ * ⚠️ **DUAL-RUN registration — remove with the Flutter decommission (#829).**
+ * The new app reaches this collection only through the Admin SDK (the receiver
+ * route and the nested functions), which bypasses rules, so on its own merits it
+ * would stay unregistered and default-denied like its Mercado Pago and WhatsApp
+ * siblings. It is registered in `ALL_DOMAINS` purely for literal parity with the
+ * legacy ruleset (`match /notificacoesMercadoLivre`, perm code `m4`,
+ * `.old/firestore.rules:186-191`), so that deploying the generated ruleset
+ * cannot deny the legacy Flutter app anything it has today. Registration also
+ * required a carve-out in `shared/notificationResilience.test.ts`, whose blanket
+ * guard otherwise forbids any `notificac*` path in `ALL_DOMAINS` — that guard
+ * still bites for Mercado Pago and WhatsApp. See #783.
  */
 
 /**
@@ -75,6 +89,23 @@ export const notificacaoMercadoLivreSchema = z
   .passthrough();
 
 export type NotificacaoMercadoLivre = z.infer<typeof notificacaoMercadoLivreSchema>;
+
+export const notificacaoMercadoLivreMeta: CollectionMetadata = {
+  collectionPath: 'notificacoesMercadoLivre',
+  // DUAL-RUN grant (#829) — see the docstring above. Legacy perm code `m4`;
+  // reusing the `integracao` bits keeps existing claim-holders working, exactly
+  // as `brandShopee` does.
+  permissions: {
+    read: PERM_INTEGRACAO_READ,
+    write: PERM_INTEGRACAO_WRITE,
+    delete: PERM_INTEGRACAO_DELETE,
+  },
+};
+
+export const notificacaoMercadoLivre = {
+  schema: notificacaoMercadoLivreSchema,
+  meta: notificacaoMercadoLivreMeta,
+};
 
 /** The `resource_id` — last path segment of `resource` (old computed getter). */
 export function notificacaoResourceId(resource: string): string {

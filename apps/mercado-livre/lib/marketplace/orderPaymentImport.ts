@@ -79,14 +79,11 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import { STATUS_PAGAMENTO } from '@delfrance/schemas';
 import { roundReais } from '@delfrance/core/money';
-import {
-  orderMLCollection,
-  pagamentoCollection,
-  pedidoCollection,
-} from '@delfrance/data/admin/collections';
+import { pagamentoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
 
 import { loadContaBag } from './orderImport';
 import { makePagamentoIdMercadoLivre } from './orderIds';
+import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
 
 export interface PaymentImportDeps {
@@ -125,32 +122,6 @@ function parsePaymentOrderKey(payment: MlPayment): number | null {
     payment.external_reference ?? (payment.order_id != null ? String(payment.order_id) : null);
   if (raw == null || !/^\d+$/.test(raw)) return null;
   return Number(raw);
-}
-
-/**
- * Resolve the pedido owning an ML order/pack id via the `orderML`
- * collection-group mirror — `pack_id == orderId` first, else `id == orderId`
- * (tasks.dart:1178-1191). Both fields are numbers on `orderMLSchema`. Not
- * transactional (a plain collection-group scan, same precedent as
- * `import.ts`'s `resolveExistingProduto` and the order-import's own pack
- * resolution) — the transaction below re-derives every write decision from
- * fresh in-tx reads, so a resolve-then-tx race only risks a benign retry on
- * the next notification delivery, never a wrong write.
- */
-async function resolveOrderMlPedidoId(db: Firestore, orderId: number): Promise<string | null> {
-  const byPackId = await orderMLCollection
-    .groupQuery(db)
-    .where('pack_id', '==', orderId)
-    .limit(1)
-    .get();
-  const packHit = byPackId.docs[0];
-  if (packHit) return packHit.ref.parent?.parent?.id ?? null;
-
-  const byId = await orderMLCollection.groupQuery(db).where('id', '==', orderId).limit(1).get();
-  const idHit = byId.docs[0];
-  if (idHit) return idHit.ref.parent?.parent?.id ?? null;
-
-  return null;
 }
 
 /** Strict `status_pagamento === aprovado` sum — mirrors `orderImport.ts`'s own
@@ -207,8 +178,8 @@ export async function importPagamentoMercadoLivre(
     return { pedidoId: null, skipped: 'sem-order-key' };
   }
 
-  // (4) tasks.dart:1178-1191.
-  const pedidoId = await resolveOrderMlPedidoId(db, orderId);
+  // (4) tasks.dart:1178-1191 — the shared pack-first resolver (`orderPedidoResolve.ts`).
+  const pedidoId = await resolvePedidoIdByOrderId(db, orderId);
   if (pedidoId == null) {
     // SEAM — see module doc point (4): no import fallback, by design.
     console.warn('[mercado-livre] payment import: pedido não encontrado para a order', {

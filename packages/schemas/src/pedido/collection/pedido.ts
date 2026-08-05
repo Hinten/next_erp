@@ -96,7 +96,13 @@ export const itemDoPedidoSchema = z
     sku: z.string().nullable().default(null),
     gtin: z.string().nullable().default(null),
     nomeDeVenda: z.string().nullable().default(null),
-    precoDeVenda: z.number().min(0.01),
+    // The STORAGE floor is 0, not 0.01: a marketplace line can legitimately
+    // price at zero (100% coupon/cashback, a bonus line, or a `206 Partial
+    // Content` order response whose `unit_price` the mapper fills with `?? 0`)
+    // and must import rather than park the whole delivery (#794). Negative is
+    // still rejected — no channel produces one. The 0.01 DATA-ENTRY floor lives
+    // in the pedido form (`min={0.01}` on the item price input), not here.
+    precoDeVenda: z.number().min(0, 'O preço não pode ser negativo'),
     descontoUnitario: z.number().min(0).nullable().default(0),
     quantidade: z.number().min(0),
     custo: z.number().nullable().default(null),

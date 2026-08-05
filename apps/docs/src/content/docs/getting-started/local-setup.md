@@ -18,10 +18,14 @@ pnpm install
 ## Configure
 
 There is a **single** env file, at the repo root — `apps/web`'s
-`dev`/`build`/`start` scripts load it via `dotenv-cli`.
+`dev`/`build`/`start` scripts load it via `dotenv-cli`. It is built from two
+committed templates: `.env.example` holds non-secret configuration and
+`.env.secrets.example` holds credential material (OAuth client secrets, HMAC keys,
+the service account, the A1 certificate password). Concatenate them by hand —
+nothing automated may read either one.
 
 ```bash
-cp .env.example .env.local
+cat .env.example .env.secrets.example > .env.local
 # Fill in NEXT_PUBLIC_FIREBASE_* and FIREBASE_PROJECT_ID values from your project.
 ```
 

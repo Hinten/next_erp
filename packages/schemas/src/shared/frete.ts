@@ -357,15 +357,16 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  * scattered `tipo === 'melhorEnvios'` / `MARKETPLACE_TIPOS` checks the etiqueta
  * dispatch (`etiquetaRowState`) and the Frete tab used to hard-code.
  *
- * ⚠️ The **`can*` flags are the behavioral truth**; they are ALL FALSE for every
- * non-Melhor-Envio tipo today, so `etiquetaRowState` yields `'unsupported'` —
- * byte-identical to the previous `tipo !== 'melhorEnvios'` reject. `labelMode` is
- * **descriptive only** (documents intended Phase-5/6 behavior); it does NOT drive
- * the dispatch. Do not flip a marketplace `canPrint` to true until the fetch
- * flow + its client route exist, or a marketplace pedido carrying a
- * `printLabelId` would wrongly route "Imprimir" to the Melhor Envio backend.
- * `marketplaceOwned` is behavioral — it reproduces the old `MARKETPLACE_TIPOS`
- * read-only lock on the Frete tab.
+ * ⚠️ The **`can*` flags are the behavioral truth**; apart from Melhor Envio's
+ * emit flow and Mercado Livre's `canFetchLabel`, they are ALL FALSE, so
+ * `etiquetaRowState` yields `'unsupported'` — byte-identical to the previous
+ * `tipo !== 'melhorEnvios'` reject. `labelMode` is **descriptive only**
+ * (documents intended Phase-5/6 behavior); it does NOT drive the dispatch. Do
+ * not flip a marketplace `canPrint` to true until the fetch flow + its client
+ * route exist, or a marketplace pedido carrying a `printLabelId` would wrongly
+ * route "Imprimir" to the Melhor Envio backend. `marketplaceOwned` is
+ * behavioral — it reproduces the old `MARKETPLACE_TIPOS` read-only lock on the
+ * Frete tab.
  */
 export interface FreightTipoCapabilities {
   /** The importing marketplace owns the whole freight block → Frete tab read-only. */
@@ -376,6 +377,11 @@ export interface FreightTipoCapabilities {
   readonly canBuy: boolean;
   /** The app can print an existing label via the freight HTTP client. */
   readonly canPrint: boolean;
+  /**
+   * The app fetches + prints a marketplace-generated label via that
+   * marketplace's own client — NOT the freight HTTP client.
+   */
+  readonly canFetchLabel: boolean;
   /** The app receives status updates (webhook or order-sync) for this tipo. */
   readonly canTrack: boolean;
   /** Label semantics — DESCRIPTIVE (skill / future), does not drive dispatch. */
@@ -402,17 +408,20 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: true,
     canBuy: true,
     canPrint: true,
+    canFetchLabel: false,
     canTrack: true,
     labelMode: 'emit',
     channel: 'melhor-envio',
   },
-  // Marketplace-managed (fetch-only, read-only tab). Phase 5/6 — all stubs today,
-  // so every `can*` stays false (→ `'unsupported'` in the row action).
+  // Marketplace-managed (fetch-only, read-only tab). Mercado Livre is the one
+  // live fetch provider (`canFetchLabel`); the rest are Phase-5/6 stubs, so
+  // every `can*` stays false (→ `'unsupported'` in the row action).
   mercadoLivre: {
     marketplaceOwned: true,
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: true,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,
@@ -422,6 +431,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,
@@ -431,6 +441,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,
@@ -440,6 +451,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,
@@ -449,6 +461,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,
@@ -459,6 +472,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'generic',
     channel: null,
@@ -468,6 +482,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'none',
     channel: null,
@@ -477,6 +492,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'none',
     channel: null,
@@ -486,6 +502,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     canQuote: false,
     canBuy: false,
     canPrint: false,
+    canFetchLabel: false,
     canTrack: false,
     labelMode: 'generic',
     channel: null,
@@ -503,6 +520,7 @@ const UNSUPPORTED_FREIGHT_CAPS: FreightTipoCapabilities = {
   canQuote: false,
   canBuy: false,
   canPrint: false,
+  canFetchLabel: false,
   canTrack: false,
   labelMode: 'none',
   channel: null,

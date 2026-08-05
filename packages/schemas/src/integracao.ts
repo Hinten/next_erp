@@ -370,13 +370,18 @@ export const integracaoMeta: CollectionMetadata = {
     write: PERM_INTEGRACAO_WRITE,
     delete: PERM_INTEGRACAO_DELETE,
   },
-  // Deleting a channel account frees its OAuth credential subcollection,
+  // Deleting a channel account frees its OAuth credential subcollections,
   // mirroring `int_frete` → `tokenMelEnv`. WhatsApp's permanent-token store
   // (`credenciaisWhatsapp`) is a separate subcollection (distinct schema —
-  // not an OAuth token) and cascades the same way.
+  // not an OAuth token) and cascades the same way. The two legacy Mercado Livre
+  // token stores cascade too: they hold a live `refresh_token`, and the legacy
+  // Flutter `deleteCascade` on a conta already deleted both, so omitting them
+  // here would orphan a working credential (drop these two with #829).
   cascade: [
     { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
+    { path: 'integracao/{integracaoId}/token6h', onDelete: 'cascade' },
+    { path: 'integracao/{integracaoId}/tokenDuravel', onDelete: 'cascade' },
   ],
   // The `integracao` collection holds every channel type; each channel screen
   // (e.g. Balcão) lists a single `tipo` slice supplied via TableView's
@@ -447,7 +452,11 @@ export const brandShopee = { schema: brandShopeeSchema, meta: brandShopeeMeta };
  * The legacy Flutter app split this per channel
  * (`token6h`/`tokenDuravel`, `actokshopee`, `tokenoaut`, `tokenMagalu`); ML's
  * two tokens collapse here into one doc (`access_token` = the 6h token,
- * `refresh_token` = the durable one). The genuinely divergent per-channel
+ * `refresh_token` = the durable one). ⚠️ Note the two ML ones defined further
+ * down are the ONE exception to the deny-all posture in this file: they carry a
+ * temporary dual-run client grant so the Flutter app keeps working (#829). This
+ * store, `credenciaisWhatsapp` and `certificadoSecreto` stay deny-all — do not
+ * copy the ML exception here. The genuinely divergent per-channel
  * identity/config (`shop_id` / `main_account_id` / `tabelasAtacado`,
  * `selling_partner_id`, `tenant_id`, the Mercado Shops table refs) is
  * account-level data and lives as flat fields on the `integracao` doc
@@ -491,24 +500,85 @@ export const credenciaisIntegracaoMeta: CollectionMetadata = {
 // cascade on `integracao` delete frees the subcollection without a rules block.
 
 /* -------------------------------------------------------------------------- */
-/*        TokenDuravel (subcollection) — Mercado Livre dual-run parity         */
+/*      Token6h / TokenDuravel (subcollections) — Mercado Livre dual-run       */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠️ **DUAL-RUN ONLY — remove with the Flutter decommission (#829).**
+ *
+ * The two collections below are the OLD Flutter Mercado Livre credential shapes,
+ * kept so the new app and the still-running Flutter app share one credential on
+ * one ML application. Unlike every other secret store in this file they ARE
+ * registered in `ALL_DOMAINS`, so rules-gen emits client match blocks for them.
+ *
+ * That is a deliberate, time-boxed reversal of the `credenciais` /
+ * `certificadoSecreto` deny-all posture: **it makes a live ML `refresh_token`
+ * readable by any client holding `d_integracao` read.** It is not a NEW exposure —
+ * the deployed legacy ruleset already grants exactly this (`perm(request, "m2", 1)`
+ * at `.old/firestore.rules:178`) — but it only survives while the Flutter client
+ * still needs it. The Flutter paths that force the grant are the OAuth connect
+ * screen (`.old/lib/canaisDeVenda/mercadoLivre/pages/tokenInicial.dart:29-56`,
+ * which client-writes BOTH docs) and the token read/refresh in `MercadoLivreApi`
+ * (`.old/packages/canais_de_venda/mercado_livre/lib/src/api.dart:613,697,706`),
+ * which every Flutter ML action screen goes through. See #783 for the cutover
+ * analysis.
+ *
+ * Permissions reuse the parent `integracao` bits for the same reason
+ * `brandShopee` does: the rules claim name is derived from the permission bit, so
+ * a bespoke bit would leave existing integração claim-holders denied on their own
+ * credentials.
+ *
+ * The NEW app never touches these from a browser — `apps/mercado-livre`'s
+ * `tokenStore.ts` uses the Admin SDK, which bypasses rules either way, and it
+ * writes only `tokenDuravel` (`token6h` has no new-code consumer at all).
+ */
+
+/**
+ * Mercado Livre short-lived OAuth credential — `integracao/{integracaoId}/token6h`.
+ * Legacy `Token6h` (`.old/…/mercado_livre/lib/src/models.dart:46-79`).
+ *
+ * Wire notes:
+ *  - `token` is NOT an access token. The Flutter connect screen parks the raw
+ *    OAuth **authorization code** here (`tokenInicial.dart:29-34`) before
+ *    exchanging it for the durable credential. Legacy annotated it
+ *    `@MaxLength(255)`, a form-level hint we deliberately do not enforce —
+ *    reads must tolerate whatever Flutter stored.
+ *  - `expires_in` is the **absolute** expiry as **int millis since epoch**
+ *    (`dateTimeFromJson((json['expires_in'] as num).toInt())`, `models.g.dart:15`),
+ *    NOT a seconds-duration — same quirk as `tokenDuravel` below.
+ */
+export const token6hSchema = z
+  .object({
+    /** The OAuth authorization code Flutter parks here — not an access token. */
+    token: z.string().min(1),
+    /** Absolute expiry, ms since epoch (Flutter `dateTimeToJson`). */
+    expires_in: millisSinceEpoch(),
+  })
+  .passthrough();
+export type Token6h = z.infer<typeof token6hSchema>;
+
+export const token6hMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/token6h',
+  // DUAL-RUN grant (#829) — see the block comment above. Legacy perm code `m1`.
+  permissions: {
+    read: PERM_INTEGRACAO_READ,
+    write: PERM_INTEGRACAO_WRITE,
+    delete: PERM_INTEGRACAO_DELETE,
+  },
+};
+
+export const token6h = { schema: token6hSchema, meta: token6hMeta };
 
 /**
  * Mercado Livre durable OAuth credential — `integracao/{integracaoId}/tokenDuravel`.
  * This is the OLD Flutter `TokenDuravel` wire shape, used during the migration so
  * the new app and the still-running Flutter app share the same credential (same
- * ML application). A tracked follow-up moves ML onto the encrypted `credenciais`
- * store above and drops this once the Flutter app is retired.
+ * ML application). #829 moves ML onto the encrypted `credenciais` store above and
+ * drops this once the Flutter app is retired.
  *
  * Wire notes: `expires_in` is the **absolute** expiry as **int millis since
  * epoch** (Flutter's `dateTimeToJson`), NOT a seconds-duration. `expired` is a
  * rotation flag Flutter writes with `includeIfNull:false`, so it may be absent.
- *
- * Admin-only / default-deny, exactly like `credenciais` — it holds a live
- * `refresh_token`, so it is NOT registered in `ALL_DOMAINS` and rules-gen emits
- * no block for it. Only the Admin SDK (apps/mercado-livre) reaches it; the
- * Flutter client uses its own production ruleset.
  */
 export const tokenDuravelSchema = z
   .object({
@@ -527,9 +597,15 @@ export type TokenDuravel = z.infer<typeof tokenDuravelSchema>;
 
 export const tokenDuravelMeta: CollectionMetadata = {
   collectionPath: 'integracao/{integracaoId}/tokenDuravel',
-  // Admin-only / default-deny — placeholder bits; NOT in `ALL_DOMAINS`.
-  permissions: { read: 0n, write: 0n, delete: 0n },
+  // DUAL-RUN grant (#829) — see the block comment above. Legacy perm code `m2`.
+  permissions: {
+    read: PERM_INTEGRACAO_READ,
+    write: PERM_INTEGRACAO_WRITE,
+    delete: PERM_INTEGRACAO_DELETE,
+  },
 };
+
+export const tokenDuravel = { schema: tokenDuravelSchema, meta: tokenDuravelMeta };
 
 /* -------------------------------------------------------------------------- */
 /*                  CredenciaisWhatsapp (subcollection)                       */

@@ -53,11 +53,13 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
     h.dereferenceOuterRef.mockReturnValue({ __intRef: 'INT1' });
     h.emitirOuImprimirEtiqueta.mockResolvedValue({ status: 'opened' });
 
+    const mlClient = { __ml: true } as never;
     const res = await reprintCheckoutEtiqueta({
       db,
       pedidoId: 'PEDA',
       freightClient: {} as never,
       nfeClient: null,
+      mercadoLivreClient: mlClient,
       formato: 'pdf',
       ui,
     });
@@ -69,6 +71,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       frete: typeof freteA;
       intFrete: unknown;
       formato: string;
+      deps: { mercadoLivreClient: unknown };
     };
     expect(input.pedidoId).toBe('PEDA');
     expect(input.frete).toBe(freteA); // the fetched pedido's OWN live frete block
@@ -78,6 +81,8 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       data: { tipo: 'melhorEnvios' },
     });
     expect(input.formato).toBe('pdf');
+    // The ML client threads through to the provider deps untouched.
+    expect(input.deps.mercadoLivreClient).toBe(mlClient);
     expect(res).toEqual({ status: 'opened' });
   });
 
@@ -88,6 +93,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       pedidoId: 'GONE',
       freightClient: {} as never,
       nfeClient: null,
+      mercadoLivreClient: null,
       formato: 'pdf',
       ui,
     });
@@ -103,6 +109,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         pedidoId: 'P',
         freightClient: {} as never,
         nfeClient: null,
+        mercadoLivreClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -121,6 +128,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         pedidoId: 'P',
         freightClient: {} as never,
         nfeClient: null,
+        mercadoLivreClient: null,
         formato: 'pdf',
         ui,
       }),

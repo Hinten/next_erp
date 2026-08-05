@@ -32,7 +32,30 @@ pnpm --filter @delfrance/rules-gen gen:rules:e2e:check
 pnpm --filter @delfrance/rules-gen test               # unit + snapshot tests
 pnpm --filter @delfrance/rules-gen test:rules         # emulator behavior suite
 pnpm --filter @delfrance/rules-gen validate:api       # server-side compile
+pnpm --filter @delfrance/rules-gen report:legacy-coverage        # see below
 ```
+
+## What the Flutter app loses on cutover
+
+A database has exactly one ruleset, so the day the generated `firestore.rules`
+replaces the legacy Flutter one, every collection the legacy ruleset granted and
+this one does not becomes **default-denied for the Flutter client** — silently,
+with no error an operator can act on. Issue #783 found that the hard way for
+Mercado Livre.
+
+`report:legacy-coverage` turns that into a mechanical diff and writes
+`apps/docs/src/content/docs/architecture/legacy-rules-coverage.md` (committed, so
+it is readable without the legacy checkout). It also flags, heuristically, which
+legacy collections the Flutter **client** actually touches versus the ones only
+its Admin-SDK backend does — the latter lose nothing.
+
+⚠️ It reads `.old/`, which is **gitignored**: run it from the main checkout, not
+a worktree and not CI. The staleness check in `src/legacyCoverage.test.ts` skips
+itself when `.old/` is absent; the parser tests always run.
+
+Four Mercado Livre collections (`token6h`, `tokenDuravel`,
+`notificacoesMercadoLivre`, `questionsML`) are currently registered **only** to
+keep that grant alive during dual-run — #829 removes them.
 
 Each `gen:` invocation writes **one** file, so a schema change needs **both**.
 

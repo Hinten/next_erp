@@ -6,6 +6,7 @@ import { IconPrinter, IconTruck } from '@tabler/icons-react';
 import type { Firestore } from 'firebase/firestore';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
+import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import {
   showCopyableNotification,
   showErrorNotification,
@@ -115,6 +116,7 @@ export interface OutroCheckoutModalProps {
   db: Firestore;
   nfeClient: NFeHttpClient | null;
   freightClient: FreightHttpClient | null;
+  mercadoLivreClient: MercadoLivreClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   formatoEtiqueta: 'pdf' | 'zpl2';
 }
@@ -136,6 +138,7 @@ export function OutroCheckoutModal({
   db,
   nfeClient,
   freightClient,
+  mercadoLivreClient,
   formatoDanfe,
   formatoEtiqueta,
 }: OutroCheckoutModalProps) {
@@ -190,12 +193,13 @@ export function OutroCheckoutModal({
         pedidoId,
         freightClient,
         nfeClient,
+        mercadoLivreClient,
         formato: formatoEtiqueta,
         ui,
       });
       reportEtiqueta(r);
     });
-  }, [row, db, freightClient, nfeClient, formatoEtiqueta, ui, printInFlight]);
+  }, [row, db, freightClient, nfeClient, mercadoLivreClient, formatoEtiqueta, ui, printInFlight]);
 
   const total = row?.itens.length ?? 0;
   const comErro = row?.itens.filter((i) => i.error != null).length ?? 0;

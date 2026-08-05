@@ -7,6 +7,7 @@ import {
 import { runEtiquetaGates } from './gates';
 import { genericLabelProvider } from './providers/genericLabel';
 import { melhorEnviosProvider } from './providers/melhorEnvios';
+import { mercadoLivreProvider } from './providers/mercadoLivre';
 import { unsupportedMarketplaceProvider } from './providers/unsupportedMarketplace';
 import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput } from './types';
 
@@ -19,7 +20,12 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
 
 /** Registered providers, indexed by every tipo each one claims via `.tipos`. */
 export const PROVIDERS: Readonly<Partial<Record<IntegracaoFrete, CheckoutEtiquetaProvider>>> =
-  buildProviderMap([melhorEnviosProvider, unsupportedMarketplaceProvider, genericLabelProvider]);
+  buildProviderMap([
+    melhorEnviosProvider,
+    mercadoLivreProvider,
+    unsupportedMarketplaceProvider,
+    genericLabelProvider,
+  ]);
 
 function buildProviderMap(
   providers: readonly CheckoutEtiquetaProvider[],
