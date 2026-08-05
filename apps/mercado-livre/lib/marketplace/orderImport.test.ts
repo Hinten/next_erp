@@ -464,6 +464,25 @@ describe('importPedidoMercadoLivre — produto resolution per line (#792)', () =
     expect(row.externalId).toBe('77');
     expect(row.timestamp).toBe(NOW_US); // microseconds — the pedido-family unit
     expect(row.motivoDoIncidente).toContain('SEM-VINCULO');
+    // The LISTING id and the VARIATION id are named separately: `mktplaceId` is
+    // `variation_id ?? item.id`, so calling it "anúncio" would be wrong here, and
+    // the listing id is the one that opens the anúncio on ML.
+    expect(row.motivoDoIncidente).toContain('anúncio MLB90');
+    expect(row.motivoDoIncidente).toContain('variação 77');
+  });
+
+  it('omits the variação clause for a simple line, and still names the anúncio', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const api = makeApi({ getOrder: vi.fn(async () => makeVariationOrder({ id: 94 })) });
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue(null);
+
+    await importPedidoMercadoLivre(deps(db, api), 94);
+
+    const motivo = [...db.docs('pedidos/pedido-1/incidentes').values()][0]!
+      .motivoDoIncidente as string;
+    expect(motivo).toContain('anúncio MLB94');
+    expect(motivo).not.toContain('variação');
   });
 
   it('records NO incidente when every line resolved', async () => {

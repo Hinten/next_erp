@@ -322,14 +322,28 @@ async function resolvePackOrders(
  *
  * Memoized per `(itemId, variationId)`: a pack's sibling orders routinely repeat
  * the same listing, and the resolution is a pure read.
+ *
+ * Also returns the ML ids per line, keyed by `ensureUniqueId`: the stored
+ * `ItemDoPedido` keeps only `mktplaceId` (= `variation_id ?? item.id`), so the
+ * LISTING id is otherwise unrecoverable downstream — and it is the id an operator
+ * needs to open the anúncio on ML (`recordItensSemProduto`).
  */
+interface OrderLineMlIds {
+  itemId: string;
+  variationId: string | null;
+}
+
 async function buildItensByOrderId(
   db: Firestore,
   integracaoId: string,
   orders: readonly MlOrder[],
   nowUs: number,
-): Promise<Map<number, ItemDoPedido[]>> {
+): Promise<{
+  itensByOrderId: Map<number, ItemDoPedido[]>;
+  mlIdsByUniqueId: Map<string, OrderLineMlIds>;
+}> {
   const out = new Map<number, ItemDoPedido[]>();
+  const mlIdsByUniqueId = new Map<string, OrderLineMlIds>();
   const memo = new Map<string, string | null>();
   for (const order of orders) {
     const lines = order.order_items ?? [];
@@ -358,19 +372,21 @@ async function buildItensByOrderId(
         }
       }
 
-      itens.push(
-        mlOrderItemToItemDoPedido({
-          orderId: order.id,
-          orderItem: line,
-          index,
-          produtoUid,
-          timestampUs: nowUs,
-        }),
-      );
+      const item = mlOrderItemToItemDoPedido({
+        orderId: order.id,
+        orderItem: line,
+        index,
+        produtoUid,
+        timestampUs: nowUs,
+      });
+      itens.push(item);
+      if (item.ensureUniqueId != null) {
+        mlIdsByUniqueId.set(item.ensureUniqueId, { itemId, variationId });
+      }
     }
     out.set(order.id, itens);
   }
-  return out;
+  return { itensByOrderId: out, mlIdsByUniqueId };
 }
 
 /**
@@ -395,6 +411,7 @@ async function recordItensSemProduto(
   db: Firestore,
   pedidoId: string,
   itensByOrderId: Map<number, ItemDoPedido[]>,
+  mlIdsByUniqueId: Map<string, OrderLineMlIds>,
   pedidoGravado: Pedido,
   nowUs: number,
 ): Promise<void> {
@@ -415,10 +432,18 @@ async function recordItensSemProduto(
     for (const item of itens) {
       if (item.produtoUid != null || item.ensureUniqueId == null) continue;
       if (jaVinculados.has(item.ensureUniqueId)) continue;
+      // Name the ANÚNCIO and the VARIAÇÃO separately. `mktplaceId` alone would be
+      // ambiguous — it is `variation_id ?? item.id`, so labelling it "anúncio"
+      // is wrong for exactly the variation sale this incidente exists for, and
+      // the listing id is what the operator needs to open the anúncio on ML.
+      const mlIds = mlIdsByUniqueId.get(item.ensureUniqueId);
+      const anuncio = mlIds?.itemId ?? item.mktplaceId ?? '?';
+      const variacao = mlIds?.variationId ?? null;
       const motivo =
-        `[Mercado Livre] Item "${item.nomeDeVenda ?? item.mktplaceId ?? '?'}" ` +
-        `(anúncio ${item.mktplaceId ?? '?'}, SKU ${item.sku ?? '—'}) não foi vinculado a ` +
-        `nenhum produto do ERP. O item ficou sem produto: nenhum estoque foi movimentado. ` +
+        `[Mercado Livre] Item "${item.nomeDeVenda ?? anuncio}" ` +
+        `(anúncio ${anuncio}${variacao != null ? `, variação ${variacao}` : ''}, ` +
+        `SKU ${item.sku ?? '—'}) não foi vinculado a nenhum produto do ERP. ` +
+        `O item ficou sem produto: nenhum estoque foi movimentado. ` +
         `Vincule o produto manualmente no pedido.`;
       try {
         await incidenteCollection.docRef(db, { pedidoId }, `ml-prod-${item.ensureUniqueId}`).create(
@@ -994,7 +1019,12 @@ export async function importPedidoMercadoLivre(
   const { orders, packId } = await resolvePackOrders(api, initialOrder, packInfo);
   for (const order of orders) assertOrderItemsComplete(order);
 
-  const itensByOrderId = await buildItensByOrderId(db, integracaoId, orders, nowUs);
+  const { itensByOrderId, mlIdsByUniqueId } = await buildItensByOrderId(
+    db,
+    integracaoId,
+    orders,
+    nowUs,
+  );
 
   const discoverArgs: DiscoverPedidoArgs = {
     db,
@@ -1016,7 +1046,7 @@ export async function importPedidoMercadoLivre(
   // Unbound lines get a visible incidente (#792) — after the pedido was written,
   // both so the subcollection has a parent and so a line the stored pedido
   // already has bound (Flutter, dual-run) is not falsely flagged.
-  await recordItensSemProduto(db, pedidoId, itensByOrderId, pedido, nowUs);
+  await recordItensSemProduto(db, pedidoId, itensByOrderId, mlIdsByUniqueId, pedido, nowUs);
 
   let billingInfoCache: MlBillingInfo | null = null;
   const getBillingInfo = async (): Promise<MlBillingInfo> => {
