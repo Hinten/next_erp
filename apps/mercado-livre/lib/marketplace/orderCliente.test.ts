@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
-import { IE_SENTINELA, UF_SIGLA, TIPO_CLIENTE } from '@delfrance/schemas';
+import {
+  ENDERECO_FALLBACKS,
+  IE_SENTINELA,
+  UF_SIGLA,
+  TIPO_CLIENTE,
+  type EnderecoBuildOutcome,
+} from '@delfrance/schemas';
 
 import {
   type ClienteImportFields,
@@ -14,6 +20,12 @@ import {
   makeEnderecoId,
   shipmentToEnderecoFields,
 } from './orderCliente';
+
+/** Narrow an adapter's outcome to its fields, failing loudly on anything else. */
+function fieldsOf(outcome: EnderecoBuildOutcome): EnderecoImportFields {
+  if (outcome.kind === 'sem-cep') throw new Error(`esperava um endereço, veio 'sem-cep'`);
+  return outcome.fields;
+}
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Adapted from massImport.test.ts's FakeDb: operator-aware `where()` ('==' and
@@ -190,7 +202,7 @@ function cnpjBillingInfo(
   } as unknown as MlBillingInfo;
 }
 
-function shipmentWithReceiverAddress(receiver_address: Record<string, unknown> | null): MlShipment {
+function shipmentWithReceiverAddress(receiver_address: unknown): MlShipment {
   return {
     id: 555,
     order_id: 987654321,
@@ -279,7 +291,7 @@ describe('billingInfoToClienteFields', () => {
 
 describe('billingInfoToEnderecoFields', () => {
   it('builds the endereço from the billing address, resolving the state NAME to a UF code', () => {
-    const fields = billingInfoToEnderecoFields(cpfBillingInfo());
+    const fields = fieldsOf(billingInfoToEnderecoFields(cpfBillingInfo()));
     expect(fields).toEqual({
       idExterno: null,
       cep: '01310100',
@@ -302,59 +314,104 @@ describe('billingInfoToEnderecoFields', () => {
     } satisfies EnderecoImportFields);
   });
 
-  it('returns null when the billing address has no zip code (canMakeAdress false)', () => {
-    expect(billingInfoToEnderecoFields(cpfBillingInfo({}, { zip_code: '' }))).toBeNull();
-    expect(billingInfoToEnderecoFields(cpfBillingInfo({}, { zip_code: null }))).toBeNull();
+  it('reports sem-cep when the billing address has no zip code (canMakeAdress false)', () => {
+    expect(billingInfoToEnderecoFields(cpfBillingInfo({}, { zip_code: '' })).kind).toBe('sem-cep');
+    expect(billingInfoToEnderecoFields(cpfBillingInfo({}, { zip_code: null }))).toEqual({
+      kind: 'sem-cep',
+      cepRaw: null,
+    });
   });
 
   it('falls back to "S/N" for a missing street_number (legacy fallback text overflows numero max(10))', () => {
-    const fields = billingInfoToEnderecoFields(cpfBillingInfo({}, { street_number: null }));
-    expect(fields?.numero).toBe('S/N');
+    const fields = fieldsOf(
+      billingInfoToEnderecoFields(cpfBillingInfo({}, { street_number: null })),
+    );
+    expect(fields.numero).toBe('S/N');
+  });
+
+  it('recovers instead of discarding when the state name is unmappable', () => {
+    // The pre-#789 port returned null here and `applyEnderecoStep` silently
+    // dropped the endereço, stranding the pedido short of `pago` forever.
+    const outcome = billingInfoToEnderecoFields(
+      cpfBillingInfo({}, { state: { id: 'BR-SP', name: 'Sao Paulo' } }),
+    );
+    expect(outcome.kind).toBe('uf-desconhecida');
+    expect(fieldsOf(outcome).logradouro).toBe('Rua das Flores');
   });
 });
 
 describe('shipmentToEnderecoFields', () => {
   it('builds the endereço from the shipment receiver_address, truncating complement to 30 chars', () => {
     const longComplement = 'Referência: Edifício Queen Mary, portaria 2, sala dos fundos';
-    const fields = shipmentToEnderecoFields(
-      shipmentWithReceiverAddress({
-        street: 'Rua Visconde de Ouro Preto',
-        number: '51',
-        complement: longComplement,
-        neighborhood: { name: 'Consolação' },
-        city: { name: 'São Paulo' },
-        state: { name: 'São Paulo' },
-        postal_code: '01303060',
-      }),
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(
+        shipmentWithReceiverAddress({
+          street: 'Rua Visconde de Ouro Preto',
+          number: '51',
+          complement: longComplement,
+          neighborhood: { name: 'Consolação' },
+          city: { name: 'São Paulo' },
+          state: { name: 'São Paulo' },
+          postal_code: '01303060',
+        }),
+      ),
     );
-    expect(fields?.complemento).toBe(longComplement.slice(0, 30));
-    expect(fields?.complemento).toHaveLength(30);
-    expect(fields?.estado).toBe('SP');
-    expect(fields?.cidade).toBe('São Paulo');
-    expect(fields?.bairro).toBe('Consolação');
-    expect(fields?.cep).toBe('01303060');
+    expect(fields.complemento).toBe(longComplement.slice(0, 30));
+    expect(fields.complemento).toHaveLength(30);
+    expect(fields.estado).toBe(UF_SIGLA.SP);
+    expect(fields.cidade).toBe('São Paulo');
+    expect(fields.bairro).toBe('Consolação');
+    expect(fields.cep).toBe('01303060');
   });
 
-  it("defaults complemento to 'Não informado' when the shipment has none", () => {
-    const fields = shipmentToEnderecoFields(
-      shipmentWithReceiverAddress({
-        street: 'Rua X',
-        number: '1',
-        complement: null,
-        neighborhood: { name: 'Bairro' },
-        city: { name: 'Cidade' },
-        state: { name: 'SP' },
-        postal_code: '01310100',
-      }),
+  it('leaves complemento null when the shipment has none', () => {
+    // Legacy pre-filled 'Não informado' here (models.dart:5332), which meant
+    // forceEndereco's own fallbacks never fired on the shipment path. Unified —
+    // see the deviations docblock: this DOES re-key `makeEnderecoId` for
+    // shipment-sourced addresses, which is a known, accepted cost.
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(
+        shipmentWithReceiverAddress({
+          street: 'Rua X',
+          number: '1',
+          complement: null,
+          neighborhood: { name: 'Bairro' },
+          city: { name: 'Cidade' },
+          state: { name: 'SP' },
+          postal_code: '01310100',
+        }),
+      ),
     );
-    expect(fields?.complemento).toBe('Não informado');
+    expect(fields.complemento).toBeNull();
   });
 
-  it('returns null when the shipment carries no receiver_address', () => {
-    expect(shipmentToEnderecoFields(shipmentWithReceiverAddress(null))).toBeNull();
+  it("uses forceEndereco's fallback text, not the shipment path's own", () => {
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(
+        shipmentWithReceiverAddress({
+          street: null,
+          number: null,
+          neighborhood: null,
+          city: null,
+          state: { name: 'SP' },
+          postal_code: '01310100',
+        }),
+      ),
+    );
+    expect(fields.logradouro).toBe(ENDERECO_FALLBACKS.logradouro);
+    expect(fields.bairro).toBe(ENDERECO_FALLBACKS.bairro);
+    expect(fields.cidade).toBe(ENDERECO_FALLBACKS.cidade);
+    expect(fields.numero).toBe(ENDERECO_FALLBACKS.numero);
   });
 
-  it('returns null when the shipment has no usable postal_code', () => {
+  it('reports sem-cep when the shipment carries no receiver_address', () => {
+    expect(shipmentToEnderecoFields(shipmentWithReceiverAddress(null))).toEqual({
+      kind: 'sem-cep',
+      cepRaw: null,
+    });
+  });
+
+  it('reports sem-cep when the shipment has no usable postal_code', () => {
     expect(
       shipmentToEnderecoFields(
         shipmentWithReceiverAddress({
@@ -365,8 +422,24 @@ describe('shipmentToEnderecoFields', () => {
           state: { name: 'SP' },
           postal_code: null,
         }),
+      ).kind,
+    ).toBe('sem-cep');
+  });
+
+  it('parses receiver_address instead of trusting it — a malformed shape does not throw', () => {
+    // `receiver_address` is untyped on MlShipment and the webhook body is not
+    // Zod-validated (#810), so anything can land here.
+    for (const lixo of [42, 'Rua X, 1', [], { city: 'São Paulo' }, { state: 'SP' }]) {
+      expect(() => shipmentToEnderecoFields(shipmentWithReceiverAddress(lixo))).not.toThrow();
+    }
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(
+        // number where a string belongs, and a scalar where an object belongs
+        shipmentWithReceiverAddress({ number: 51, city: 'São Paulo', postal_code: '01310100' }),
       ),
-    ).toBeNull();
+    );
+    expect(fields.numero).toBe('51');
+    expect(fields.cidade).toBe(ENDERECO_FALLBACKS.cidade);
   });
 });
 
