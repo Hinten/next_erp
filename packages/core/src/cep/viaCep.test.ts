@@ -96,14 +96,47 @@ describe('createViaCepClient', () => {
     });
 
     it('wraps a timeout in ViaCepError', async () => {
-      // `AbortSignal.timeout` rejects with a DOMException, which no caller
-      // would think to narrow on — that is why ViaCepError exists.
-      const cause = new DOMException('The operation was aborted.', 'TimeoutError');
+      // An aborted fetch rejects with a DOMException, which no caller would
+      // think to narrow on — that is why ViaCepError exists.
+      const cause = new DOMException('The operation was aborted.', 'AbortError');
       const client = createViaCepClient({ fetch: vi.fn().mockRejectedValue(cause) });
 
       const err = await client.buscarCep('01310100').catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ViaCepError);
       expect((err as ViaCepError).cause).toBe(cause);
+    });
+
+    it('actually aborts a hanging request when the timeout elapses', async () => {
+      // Drives the real mechanism end to end rather than a synthetic
+      // DOMException: a fetch that never settles on its own must still reject,
+      // and it must reject because OUR signal fired.
+      const fetchStub = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(new DOMException('The operation was aborted.', 'AbortError'));
+            });
+          }),
+      );
+      const client = createViaCepClient({ fetch: fetchStub as never, timeoutMs: 10 });
+
+      await expect(client.buscarCep('01310100')).rejects.toBeInstanceOf(ViaCepError);
+      expect(fetchStub.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('does not abort a request that completes inside the window', async () => {
+      // The timer must be cleared on the happy path — otherwise every fast
+      // lookup leaves one pending for the full timeout.
+      const fetchStub = vi.fn((_url: string, init?: RequestInit) => {
+        const signal = init?.signal;
+        return Promise.resolve(jsonResponse(PAULISTA)).then((res) => {
+          expect(signal?.aborted).toBe(false);
+          return res;
+        });
+      });
+      const client = createViaCepClient({ fetch: fetchStub as never, timeoutMs: 5_000 });
+
+      await expect(client.buscarCep('01310100')).resolves.not.toBeNull();
     });
 
     it('wraps malformed JSON in ViaCepError', async () => {

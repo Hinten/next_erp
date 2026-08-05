@@ -90,8 +90,6 @@ const MAX_CODE_COUNT = 5_600;
 const MIN_RANGE_COUNT = 5_570;
 const MAX_RANGE_COUNT = 25_000;
 
-const VALID_UF_PREFIXES = new Set<string>(Object.values(IBGE_UF_CODES));
-
 interface ParsedRow extends CMunRange {
   readonly nomeMunicipio: string;
   readonly uf: string;
@@ -107,7 +105,7 @@ interface ParsedRow extends CMunRange {
 function requireInteger(value: unknown, field: string, index: number, issues: string[]): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     issues.push(
-      `linha ${index}: ${field} deveria ser um inteiro (o legado grava Firestore integer), ` +
+      `linha ${index + 1}: ${field} deveria ser um inteiro (o legado grava Firestore integer), ` +
         `veio ${typeof value} ${JSON.stringify(value)}`,
     );
     return Number.NaN;
@@ -123,12 +121,12 @@ function parseRow(raw: CmunDumpRow, index: number, issues: string[]): ParsedRow 
 
   const cMunRaw = raw.cMun;
   if (typeof cMunRaw !== 'string' || !/^\d{7}$/.test(cMunRaw)) {
-    issues.push(`linha ${index}: cMun deveria ter 7 dígitos, veio ${JSON.stringify(cMunRaw)}`);
+    issues.push(`linha ${index + 1}: cMun deveria ter 7 dígitos, veio ${JSON.stringify(cMunRaw)}`);
   }
 
   const uf = typeof raw.uf === 'string' ? raw.uf.toUpperCase() : '';
   if (!(uf in IBGE_UF_CODES)) {
-    issues.push(`linha ${index}: uf desconhecida ${JSON.stringify(raw.uf)}`);
+    issues.push(`linha ${index + 1}: uf desconhecida ${JSON.stringify(raw.uf)}`);
   }
 
   if (issues.length > before) return null;
@@ -137,13 +135,13 @@ function parseRow(raw: CmunDumpRow, index: number, issues: string[]): ParsedRow 
 
   if (cepInicial < MIN_CEP || cepFinal > MAX_CEP) {
     issues.push(
-      `linha ${index}: faixa fora dos limites de CEP [${MIN_CEP}, ${MAX_CEP}]: ` +
+      `linha ${index + 1}: faixa fora dos limites de CEP [${MIN_CEP}, ${MAX_CEP}]: ` +
         `${cepInicial}-${cepFinal}`,
     );
     return null;
   }
   if (cepFinal < cepInicial) {
-    issues.push(`linha ${index}: faixa invertida ${cepInicial}-${cepFinal}`);
+    issues.push(`linha ${index + 1}: faixa invertida ${cepInicial}-${cepFinal}`);
     return null;
   }
 
@@ -153,7 +151,7 @@ function parseRow(raw: CmunDumpRow, index: number, issues: string[]): ParsedRow 
   const expectedPrefix = IBGE_UF_CODES[uf as keyof typeof IBGE_UF_CODES];
   if (cMun.slice(0, 2) !== expectedPrefix) {
     issues.push(
-      `linha ${index}: cMun ${cMun} não pertence à UF ${uf} ` +
+      `linha ${index + 1}: cMun ${cMun} não pertence à UF ${uf} ` +
         `(prefixo esperado ${expectedPrefix}, veio ${cMun.slice(0, 2)})`,
     );
     return null;
@@ -212,7 +210,10 @@ export function validateDump(
     // Exterior rows describe no CEP faixa anyone can look up. Drop them
     // explicitly (and report the count) rather than letting '99…' codes sit in
     // a table whose only job is CEP → município.
-    if (raw.uf === 'EX' || raw.cMun === '9999999') {
+    // Case-insensitive: the main path uppercases `uf` before validating, so
+    // a lowercase 'ex' row would otherwise skip this drop and land in the
+    // encoded table as a bogus faixa.
+    if ((typeof raw.uf === 'string' && raw.uf.toUpperCase() === 'EX') || raw.cMun === '9999999') {
       droppedExterior += 1;
       return;
     }
@@ -230,8 +231,8 @@ export function validateDump(
     if (current.cepInicial <= previous.cepFinal) {
       issues.push(
         `faixas sobrepostas: ${previous.cepInicial}-${previous.cepFinal} (${previous.cMun}, ` +
-          `linha ${previous.sourceIndex}) e ${current.cepInicial}-${current.cepFinal} ` +
-          `(${current.cMun}, linha ${current.sourceIndex})`,
+          `linha ${previous.sourceIndex + 1}) e ${current.cepInicial}-${current.cepFinal} ` +
+          `(${current.cMun}, linha ${current.sourceIndex + 1})`,
       );
     }
   }
