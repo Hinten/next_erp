@@ -1131,28 +1131,6 @@
       ]
     },
     {
-      "collectionGroup": "produtos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "paiId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "publicado",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "integracoesComProduto",
-          "arrayConfig": "CONTAINS"
-        },
-        {
-          "fieldPath": "__name__",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "estoques",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
