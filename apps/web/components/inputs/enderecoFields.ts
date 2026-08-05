@@ -4,12 +4,8 @@ import { CepField } from './CepInput';
 /**
  * Recebedor (NFe destinatário) + system/derived keys hidden on every embedded
  * `enderecoSchema` address form. The recebedor fields belong to a separate
- * editor; `idExterno` is a system id; `cPais`/`pais` default to Brazil.
- *
- * `codigoMunicipio` is deliberately NOT hidden (#785). NF-e emission resolves
- * it from the `CMUN` table, falling back to ViaCEP — but when both fail (rare,
- * and it has happened) an operator's only way to unblock the emission is to
- * type the código here. Hiding it removed that escape hatch entirely.
+ * editor; `idExterno` is a system id; `cPais`/`pais` default to Brazil; and
+ * `codigoMunicipio` (IBGE) is filled by the CEP lookup, never typed.
  *
  * Single source of truth shared by the cliente address modal
  * (`EnderecoFormModal`, top-level render → `excludedFields`) and the embedded
@@ -26,6 +22,7 @@ export const ENDERECO_HIDDEN_KEYS = [
   'idExterno',
   'cPais',
   'pais',
+  'codigoMunicipio',
   // System stamps — written by `saveRecord` / ObjectView, never form inputs.
   'timestamp',
   'ultimaModificacao',

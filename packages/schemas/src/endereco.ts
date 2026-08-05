@@ -103,31 +103,13 @@ export const enderecoSchema = z.object({
   numero: z.string().min(1).max(10).describe('Número'),
   bairro: z.string().min(1).max(100).default('SEM BAIRRO').describe('Bairro'),
   complemento: z.string().max(50).nullable().default(null).describe('Complemento'),
-  /**
-   * Código IBGE do município (`cMun` na NF-e).
-   *
-   * ⚠️ **THIS IS NOT A CACHE. Nothing may write here programmatically.** ⚠️
-   *
-   * `cMun` is resolved at emission time from the `CMUN` collection
-   * (`resolveCodigoMunicipio` in `@delfrance/data/admin`). When that table does
-   * not cover a CEP, ViaCEP answers and the result is written back into
-   * **`CMUN`** — never here. `CMUN` is the cache; this field is not.
-   *
-   * It exists for exactly one situation: the table AND ViaCEP both failed
-   * (rare, but it has happened), and an operator needs to unblock an emission
-   * by hand. That is also why it is visible on the endereço form.
-   *
-   * If you are about to persist a resolved código onto an endereço — don't.
-   * Teach `CMUN` instead; that fixes it for every future emission, for every
-   * endereço sharing that CEP. See #785.
-   */
   codigoMunicipio: z
     .string()
     .max(8)
     .regex(/^\d*$/, 'apenas números')
     .nullable()
     .default(null)
-    .describe('Código do Município (IBGE) — preencher só se o sistema não encontrar'),
+    .describe('Código do Município'),
   cidade: z.string().min(1).max(100).describe('Cidade'),
   estado: ufSchema.describe('Estado (UF)'),
   cPais: z.string().nullable().default(null).describe('Código do País'),
