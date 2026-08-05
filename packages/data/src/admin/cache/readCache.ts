@@ -52,7 +52,7 @@
  *
  * Adoption guidance, TTL tiers and the invalidation checklist live in the
  * `firestore-read-cache` skill; the rationale and the rejected alternatives
- * (`onSnapshot` mirror, Redis, Firestore bundles) live in ADR 0011.
+ * (`onSnapshot` mirror, Redis, Firestore bundles) live in ADR 0012.
  */
 
 import { type CacheKey, cacheKeyOf } from './cacheKey';

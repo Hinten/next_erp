@@ -14,7 +14,7 @@ Prerequisites:
 
 ```bash
 pnpm install
-cp .env.example .env.local       # single env file at the repo root — fill in your Firebase config
+cat .env.example .env.secrets.example > .env.local   # ONE root template SET (config + secrets) — fill in
 pnpm dev
 ```
 

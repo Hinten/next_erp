@@ -49,19 +49,27 @@
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
- *  - anchors (S1): `produtos(paiId ASC, publicado ASC, __name__ ASC)` plus
- *    BOTH declared twins for the array term —
+ *  - anchors (S1): rides BOTH declared twins for the array term —
  *    `produtos(paiId ASC, publicado ASC, integracoesComProduto ASC,
  *    __name__ ASC)` and `produtos(paiId ASC, publicado ASC,
- *    integracoesComProduto CONTAINS, __name__ ASC)`. Which form an
+ *    integracoesComProduto CONTAINS, __name__ ASC)`. Which of the two forms an
  *    `arrayContains` predicate actually seeks is spike (b)'s question: the
  *    staging gate PRINTS the ridden index, and the LOSER is dropped in a
- *    follow-up (they are declared together only so the gate can adjudicate);
+ *    follow-up (they are declared together only so the gate can adjudicate).
+ *    The bare `produtos(paiId ASC, publicado ASC, __name__ ASC)` prefix that
+ *    used to sit alongside them was dropped by the #779 audit: every S1 call
+ *    site also filters `integracoesComProduto`, so it was dead weight —
+ *    either twin's leading two fields already serve it as a prefix;
  *  - estoque joins: `estoques(parentId ASC, depositoOuterRef ASC,
  *    ultimaModificacao ASC)` COLLECTION_GROUP — `parentId` carries the
  *    `equalAny` seek, `ultimaModificacao` covers the MAX branch;
  *  - subcollection() probes: two COLLECTION-scope entries —
- *    `estoques(depositoOuterRef)` and `produtoMercadoLivre(contaOuterRef)`.
+ *    `estoques(depositoOuterRef ASC, ultimaModificacao ASC)` and
+ *    `produtoMercadoLivre(contaOuterRef)`. The estoques entry widened past
+ *    the bare `depositoOuterRef` PR C shipped (still fine for `ownEstoque`'s
+ *    `select`) once the #779 audit found `ownEstoqueMax`'s
+ *    `aggregate(maximum('ultimaModificacao'))` needed it too — same reason
+ *    the COLLECTION_GROUP sibling above carries that trailing field.
  *    Staging explain evidence (gate run 2, 2026-07-28): with no
  *    COLLECTION-scope index a `subcollection()` probe carrying a WHERE
  *    compiles to a COLLECTION-GROUP index scan with the PARENT as a RESIDUAL
@@ -154,6 +162,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   type ComponentesKit,
+  ESTADO_PUBLICACAO_ML,
   estoqueDisponivel,
   kitEstoqueDisponivel,
   toOuterRef,
@@ -170,6 +179,15 @@ export const STOCK_SYNC_FLAG_ENV = 'MERCADO_LIVRE_STOCK_SYNC_ENABLED';
 
 /** Cloud Tasks queue name for the stock send tasks (PR B's `onTaskDispatched`). */
 export const MERCADO_LIVRE_STOCK_SEND_QUEUE = 'sendMercadoLivreStock';
+
+/**
+ * In-task retry cap — the Cloud Tasks `retryConfig.maxAttempts` (kept in sync;
+ * `sendStock.ts` reads THIS constant, and `estoqueSend.stockSendMaxAttempts.test.ts`
+ * pins the two together). Mirrors `MASS_IMPORT_MAX_ATTEMPTS` /
+ * `PRICE_SYNC_MAX_ATTEMPTS`: the 4xx branch only writes its terminal state on
+ * the LAST attempt, so the handler must know the cap the queue was deployed with.
+ */
+export const STOCK_SEND_MAX_ATTEMPTS = 3;
 
 /** Lower clamp of every quantity sent to ML (legacy clamp >= 0). */
 export const ESTOQUE_MIN = 0;
@@ -992,6 +1010,7 @@ export type SendSkipReason =
   | 'sem-link'
   | 'sem-item-id'
   | 'aguardando-migracao'
+  | 'anuncio-em-erro'
   | 'status-nao-enviavel'
   | 'kit-virtual'
   | 'nao-publicado'
@@ -1070,9 +1089,11 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
  * OTHER listings still send): `'sem-link'` (listing without a doc id,
  * defensive — server-projected), `'sem-item-id'` (never published),
  * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration, Flutter-driven),
- * `'status-nao-enviavel'` (whitelist gate PER listing; `desconhecido`
- * statuses additionally warn with that listing's itemId — status tracking per
- * Lucas).
+ * `'anuncio-em-erro'` (`estado 'E'` — the send handler verified with ML that the
+ * anúncio is healthy and it was our PAYLOAD that was refused, so re-sending it
+ * unchanged only re-earns the rejection, #781), `'status-nao-enviavel'`
+ * (whitelist gate PER listing; `desconhecido` statuses additionally warn with
+ * that listing's itemId — status tracking per Lucas).
  *
  * Per surviving listing — every task carries THAT listing's `linkDocId`
  * (writeback per listing): old model (`isUserProductModel !== true`) with
@@ -1142,6 +1163,16 @@ export function buildSendTasks(
     }
     if (link.estado === 'am') {
       skips.push({ produtoId: anchorId, reason: 'aguardando-migracao' });
+      continue;
+    }
+    // #781: the send handler's terminal branch stamps `'E'` when ML confirmed the
+    // anúncio is healthy and it was therefore OUR payload it refused — rebuilding
+    // the identical payload next tick just re-earns the same rejection. Every
+    // other terminal case records the listing's real ML status instead, and the
+    // whitelist below skips those. Cleared by an `items` webhook or the produto
+    // tab's "Reverificar anúncio" action.
+    if (link.estado === ESTADO_PUBLICACAO_ML.erro) {
+      skips.push({ produtoId: anchorId, reason: 'anuncio-em-erro' });
       continue;
     }
 

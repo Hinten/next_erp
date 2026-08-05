@@ -180,7 +180,7 @@ proxy.ts                           CORS for /api/nfe/* (browser callers)
 ## Dev
 
 ```bash
-cp ../../.env.example ../../.env.local   # ONE root file (#730) — NF-e section
+cd ../.. && cat .env.example .env.secrets.example > .env.local && cd apps/nfe   # ONE root template set (#730) — NF-e section
 pnpm dev                           # all apps from the repo root
 curl http://localhost:3004/api/health
 ```

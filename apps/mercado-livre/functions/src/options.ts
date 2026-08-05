@@ -29,6 +29,7 @@ setGlobalOptions({
   //   - `sendMercadoLivreStock` + the two stock sweeps (Step 10) — sendStock.ts / sweepStock.ts
   //   - `processMercadoLivrePriceSync` (Step 11 PR-C) — processPriceSync.ts
   //   - `processMercadoLivreNfeUpload` (Step 12 / #739) — processNfeUpload.ts
+  //   - `reprocessMercadoLivreNotifications` (the failures-store reprocess sweep) — index.ts (#778)
   // Each declares `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
   // on its own options rather than here, so a function with no ML API call never
   // gets the secrets bound — `onNfeAprovada` (Step 12's Firestore trigger) is

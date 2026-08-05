@@ -1,5 +1,5 @@
 ---
-title: 0011 — Process-scoped TTL read cache for repeated Firestore reads
+title: 0012 — Process-scoped TTL read cache for repeated Firestore reads
 description: Why repeated config reads are cached in the warm Node process with a mandatory TTL, why the TTL default is 15 minutes, and why onSnapshot, Redis and Firestore bundles were rejected.
 ---
 

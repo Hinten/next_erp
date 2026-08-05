@@ -27,7 +27,7 @@ scanned**, and several of the reads we repeat are *queries*, not document gets. 
 deduplicated query saves scanned bytes, not just a document count.
 
 Source: `packages/data/src/admin/cache/`. Rationale and rejected alternatives:
-ADR 0011 (`apps/docs/src/content/docs/adr/`).
+ADR 0012 (`apps/docs/src/content/docs/adr/`).
 
 ## 1. Decide first — three reads that must NEVER be cached
 
