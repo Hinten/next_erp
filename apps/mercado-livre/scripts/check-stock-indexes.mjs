@@ -56,8 +56,9 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     clearly labeled PENDING-DEPLOY message — the FIRST run after this
 //     rework is EXPECTED to fail exactly those two. Spike (b), retargeted to
 //     `integracoesComProduto` only (the itensIds twins are gone from
-//     firestore.indexes.json): reports which declared twin (CONTAINS vs ASC)
-//     the anchors scan rode — keep the winner, drop the loser in a follow-up.
+//     firestore.indexes.json): reports the form the anchors scan rode.
+//     Verdict ASC (#705) — the CONTAINS twin was dropped; the gate still
+//     prints the form so a planner regression is visible.
 //  3. The sold-ids pre-pass (the fetchSoldProdutoIds shape). The sales signal
 //     moved OUT of THE query (owner-approved): the per-anchor correlated
 //     pedidos probe could never ride the itensIds indexes — its membership
@@ -925,7 +926,11 @@ try {
     );
   }
 
-  /** Spike (b), retargeted: which integracoesComProduto twin did the anchors ride? */
+  /**
+   * Spike (b) report (verdict ASC, #705 — CONTAINS twin removed). Still
+   * prints the ridden form so a planner regression back to residual-only or
+   * a reintroduced CONTAINS index is visible in the gate log.
+   */
   function reportIntegracoesIndexForm(nodes) {
     const anchor = nodes.find(
       (n) => n.identifier != null && /^\/produtos \(paiId ASC, publicado/.test(n.identifier),
@@ -935,11 +940,21 @@ try {
       return;
     }
     const m = anchor.identifier.match(/integracoesComProduto\s+([A-Z_]+)/);
+    if (m == null) {
+      console.log(
+        'spike (b): produtos integracoesComProduto index form used → ' +
+          'NOT IN THE RIDDEN INDEX (arrayContains served residually — read the plan above)',
+      );
+      return;
+    }
+    const form = m[1];
+    // ASCENDING from explain text; ASC is the documented short form.
+    const ok = form === 'ASCENDING' || form === 'ASC';
     console.log(
-      `spike (b): produtos integracoesComProduto index form used → ` +
-        (m != null
-          ? `${m[1]} — keep this twin, drop the other in a follow-up`
-          : 'NOT IN THE RIDDEN INDEX (arrayContains served residually — read the plan above)'),
+      `spike (b): produtos integracoesComProduto index form used → ${form}` +
+        (ok
+          ? ' — ASC confirmed (#705, CONTAINS twin dropped)'
+          : ' — UNEXPECTED (expected ASCENDING or ASC; re-check firestore.indexes.json / plan)'),
     );
   }
 

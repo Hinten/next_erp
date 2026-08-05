@@ -8,6 +8,7 @@ import {
   outerRefSchema,
   parseRef,
   toOuterRef,
+  toOuterRefOrNull,
 } from './outerRef';
 
 // [input, loose, canonical, idRef, docId]
@@ -54,6 +55,26 @@ describe('outerRef helpers', () => {
 
   it('toOuterRef throws when the input cannot form a valid document path', () => {
     expect(() => toOuterRef('bareId')).toThrow();
+  });
+
+  it('toOuterRefOrNull normalizes exactly what toOuterRef accepts', () => {
+    expect(toOuterRefOrNull('documents/col/id')).toBe('documents/col/id');
+    expect(toOuterRefOrNull('col/id')).toBe('documents/col/id');
+    expect(toOuterRefOrNull('documents/col/id/sub/subid')).toBe('documents/col/id/sub/subid');
+  });
+
+  it('toOuterRefOrNull returns null where toOuterRef throws', () => {
+    // Odd-segment paths end on a collection — not a dereferenceable document.
+    for (const bad of ['bareId', '', 'documents/clientes/C1/enderecos']) {
+      expect(() => toOuterRef(bad)).toThrow();
+      expect(toOuterRefOrNull(bad)).toBeNull();
+    }
+  });
+
+  it('toOuterRefOrNull returns null for every non-string (raw snapshot fields)', () => {
+    for (const bad of [null, undefined, 42, true, {}, [], { path: 'col/id' }]) {
+      expect(toOuterRefOrNull(bad)).toBeNull();
+    }
   });
 
   it('idFromRef returns the last path segment', () => {

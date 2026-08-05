@@ -677,3 +677,56 @@ describe('fidelity — exporta (export operation) block', () => {
     expect(out.nfeXml).not.toContain('<exporta>');
   });
 });
+
+// ---------------------------------------------------------------------------
+// (i) The <IE> elements are never free text
+// ---------------------------------------------------------------------------
+
+/**
+ * `cliente.ie` is free text and carries the `IE_SENTINELA` tokens alongside
+ * real inscrições. The reader used to emit it verbatim, so
+ * `<IE>Não contribuinte</IE>` reached the signed XML and SEFAZ rejected the
+ * note. Nothing about the sentinel vocabulary is enforced at write time, so
+ * this is the pin: whatever a cliente holds, an `<IE>` that reaches the wire
+ * is alphanumeric, and `dest`'s specifically is digits within the XSD's
+ * `TIeDestNaoIsento` range.
+ */
+describe('fidelity — no <IE> element ever carries free text', () => {
+  const allIeValues = (xml: string): string[] =>
+    [...xml.matchAll(/<IE>([\s\S]*?)<\/IE>/g)].map((m) => m[1] ?? '');
+
+  it.each([
+    ['a real inscrição estadual', '222222222'],
+    ['a punctuated inscrição estadual', '110.042.490.114'],
+    ['the NAO CONTRIBUINTE sentinel', 'NAO CONTRIBUINTE'],
+    ['a hand-typed não contribuinte', 'Não contribuinte'],
+    ['the ISENTO sentinel', 'ISENTO'],
+    ['no inscrição at all', null],
+  ])('%s never leaks a non-alphanumeric <IE>', (_label, ie) => {
+    const out = generateNFe(buildInput({ cliente: { ...SENT_CLIENTE, ie } }));
+    const values = allIeValues(out.nfeXml);
+    // emit always carries one; dest only for indIEDest='1'.
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) expect(value).toMatch(/^[A-Za-z0-9]+$/);
+  });
+
+  it("dest's <IE> matches the XSD TIeDestNaoIsento pattern [0-9]{2,14}", () => {
+    const out = generateNFe(buildInput({ cliente: { ...SENT_CLIENTE, ie: '110.042.490.114' } }));
+    const destBlock = scope(out.nfeXml, 'dest');
+    const enderStart = destBlock.indexOf('<enderDest>');
+    const tail = enderStart === -1 ? destBlock : destBlock.slice(enderStart);
+    const values = allIeValues(tail);
+    expect(values).toHaveLength(1);
+    expect(values[0]).toMatch(/^\d{2,14}$/);
+  });
+
+  // The signed end-to-end XSD pass for a sentinel-carrying cliente lives in
+  // generator.test.ts, which already has the signing fixture — the XSD rejects
+  // an unsigned <NFe> outright, so it cannot run here.
+  it('omits <IE> from dest entirely for a sentinel', () => {
+    const out = generateNFe(buildInput({ cliente: { ...SENT_CLIENTE, ie: 'Não contribuinte' } }));
+    const destBlock = scope(out.nfeXml, 'dest');
+    expect(destBlock).toContain('<indIEDest>9</indIEDest>');
+    expect(allIeValues(destBlock)).toEqual([]);
+  });
+});

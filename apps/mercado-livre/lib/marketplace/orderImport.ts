@@ -93,7 +93,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import { resolveExistingProduto } from './import';
-import { refMatchesIntegracao } from './linkRefs';
+import { buscarIntFreteDaConta } from './intFreteSync';
 import { assertOrderItemsComplete, mlOrderItemToItemDoPedido } from './orderMapping';
 import { estadoPedidoFromOrderStatus } from './orderStatusMaps';
 import { makePagamentoIdMercadoLivre } from './orderIds';
@@ -239,13 +239,18 @@ export async function loadContaBag(db: Firestore, integracaoId: string): Promise
  * integration — legacy `MercadoEnvios.documents
  * .contaMercadoLivreMercadoEnviosOuterRef__isEqualTo(api.instance)
  * .ativo__isEqualTo(true).orderBy__dataCadastro(false).first()`
- * (tasks.dart:515-517/623-625). `contaMercadoLivreMercadoEnviosOuterRef` isn't
- * a typed `intFreteSchema` field yet (rides `.passthrough()`), so the match is
- * done client-side via the same tolerant `refMatchesIntegracao` the rest of
- * this app uses — a full scan of the (small, config-sized) `int_frete`
- * collection filtered server-side to `tipo`+`ativo`, not a hot query, so no
- * new index is declared. Deviation #6 (see file docstring): null instead of
- * legacy's force-unwrap crash when no such doc exists.
+ * (tasks.dart:515-517/623-625). Deviation #6 (see file docstring): null instead
+ * of legacy's force-unwrap crash when no such doc exists.
+ *
+ * Since #782 the doc is a server-owned companion of the conta (the
+ * `onIntegracaoMercadoLivreChanged` trigger writes it) and
+ * `contaMercadoLivreMercadoEnviosOuterRef` is a **typed** `intFreteSchema` field
+ * with a declared index, so this is now an index-bound equality instead of the
+ * full scan it used to be — the shared `buscarIntFreteDaConta` also keeps the old
+ * tolerant client-side match as a fallback for a doc whose ref was never
+ * normalized. `apenasAtivo` is what makes this the IMPORTER's variant: it wants a
+ * live config, whereas the sync must see inactive docs too (or re-enabling a conta
+ * would duplicate the doc).
  *
  * Exported for reuse by the shipments-topic handler (`orderShipmentImport.ts`,
  * Step 9 PR 3) — same lookup, same account, no behavior change.
@@ -254,23 +259,8 @@ export async function resolveMercadoEnviosIntFreteOuterRef(
   db: Firestore,
   integracaoId: string,
 ): Promise<string | null> {
-  const snap = await intFreteCollection
-    .ref(db, {})
-    .where('tipo', '==', 'mercadoLivre')
-    .where('ativo', '==', true)
-    .get();
-  let bestId: string | null = null;
-  let bestDataCadastro = -Infinity;
-  for (const d of snap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    if (!refMatchesIntegracao(raw.contaMercadoLivreMercadoEnviosOuterRef, integracaoId)) continue;
-    const dataCadastro = typeof raw.dataCadastro === 'number' ? raw.dataCadastro : 0;
-    if (bestId == null || dataCadastro > bestDataCadastro) {
-      bestId = d.id;
-      bestDataCadastro = dataCadastro;
-    }
-  }
-  return bestId != null ? toOuterRef(intFreteCollection.docPath({}, bestId)) : null;
+  const encontrado = await buscarIntFreteDaConta(db, integracaoId, { apenasAtivo: true });
+  return encontrado != null ? toOuterRef(intFreteCollection.docPath({}, encontrado.id)) : null;
 }
 
 /* -------------------------------------------------------------------------- */

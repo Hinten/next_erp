@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "backfill:int-frete": "dotenv -e ../../.env.local -- tsx scripts/backfill-int-frete.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "esbuild": "catalog:",
     "eslint": "catalog:",
     "eslint-config-next": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

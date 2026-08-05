@@ -19,7 +19,8 @@
  * silently full-scans, billed by data scanned). Zero NEW entries: every query
  * below rides an index Step 10 already declared in `firestore.indexes.json`:
  *  - anchors: `produtos(paiId ASC, publicado ASC, integracoesComProduto
- *    CONTAINS, __name__ ASC)` — the declared stock-sync twin; the
+ *    ASC, __name__ ASC)` — the stock-sync composite (spike (b) / #705:
+ *    `array-contains` rides ASC, not CONTAINS); the
  *    `orderBy(FieldPath.documentId())` keyset binds the `__name__` suffix;
  *  - children: the `paiId` equality rides the existing `produtos(paiId, nome)`
  *    index as a prefix;
@@ -197,8 +198,9 @@ export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
   ];
 
   // Rides the DECLARED `produtos(paiId, publicado, integracoesComProduto
-  // CONTAINS, __name__)` composite (Step 10's entry — zero new indexes); the
-  // field mask keeps the page light (produtos docs carry heavy media arrays).
+  // ASC, __name__)` composite (Step 10's entry, ASC form per #705 — zero new
+  // indexes); the field mask keeps the page light (produtos docs carry heavy
+  // media arrays).
   let anchorsQuery = produtoCollection
     .ref(db, {})
     .where('paiId', '==', null)

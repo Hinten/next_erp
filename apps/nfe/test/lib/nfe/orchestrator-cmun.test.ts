@@ -1,136 +1,178 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { DocumentReference } from 'firebase-admin/firestore';
-import { decodeCMunTable, encodeCMunTable } from '@delfrance/core/cep/cmun';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Firestore } from 'firebase-admin/firestore';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { ensureCodigoMunicipio } from '@/lib/nfe/orchestrator/cmun';
 import { NFeOrchestratorError } from '@/lib/nfe/orchestrator/errors';
 
 /**
- * `ensureCodigoMunicipio` is the emission-time backstop for #785: the NF-e
- * generator hard-requires `cMun` for `enderDest`, `enderEmit` AND `cMunFG`, but
- * nothing on any server path used to produce it.
+ * `ensureCodigoMunicipio` — the emission-time cMun lookup (#785).
  *
- * An explicit fixture table + a ViaCEP stub that throws if consulted keeps
- * these tests offline and independent of whether the real table is vendored.
+ * The generator hard-requires the código in three places, but nothing on any
+ * server path used to produce it. This resolves it from the `CMUN` table, and
+ * — the property this suite exists to pin — **writes nothing to the endereço**.
  */
-const TABLE = decodeCMunTable(
-  encodeCMunTable([{ cepInicial: 1_310_000, cepFinal: 1_319_999, cMun: 3_550_308 }]),
-);
 
-const RESOLVE = {
-  table: TABLE,
-  viaCep: {
-    buscarCep: vi.fn(() => {
-      throw new Error('ViaCEP must not be consulted in these tests');
-    }),
-  },
-} as const;
-
-function fakeRef(update = vi.fn().mockResolvedValue(undefined)) {
-  return { update } as unknown as DocumentReference & { update: typeof update };
+interface Faixa {
+  cepInicial: number;
+  cepFinal: number;
+  cMun: string;
+  nomeMunicipio: string;
+  estado: string;
+  origem?: string | null;
 }
 
-/** A gRPC NOT_FOUND — the one write failure that must NOT fail an emission. */
-function notFoundError(): Error {
-  return Object.assign(new Error('NOT_FOUND'), { code: 5 });
+/** Serves the resolver's single query shape and records every write attempt. */
+class FakeDb {
+  readonly rows = new Map<string, Faixa>();
+  readonly writes: string[] = [];
+
+  seed(faixa: Faixa): void {
+    this.rows.set(String(faixa.cepInicial).padStart(8, '0'), faixa);
+  }
+
+  collection(path: string) {
+    const self = this;
+    let gte: number | null = null;
+    const q = {
+      where(_f: string, _op: string, value: number) {
+        gte = value;
+        return q;
+      },
+      orderBy: () => q,
+      limit: () => q,
+      get: () => {
+        const hit = [...self.rows.entries()]
+          .filter(([, f]) => gte === null || f.cepFinal >= gte)
+          .sort((a, b) => a[1].cepFinal - b[1].cepFinal)[0];
+        return Promise.resolve({ docs: hit ? [{ id: hit[0], data: () => hit[1] }] : [] });
+      },
+      doc: (id: string) => ({
+        id,
+        create: (data: Faixa) => {
+          self.writes.push(`${path}/${id}`);
+          self.rows.set(id, data);
+          return Promise.resolve();
+        },
+        update: (patch: unknown) => {
+          self.writes.push(`${path}/${id} ${JSON.stringify(patch)}`);
+          return Promise.resolve();
+        },
+      }),
+    };
+    return q;
+  }
 }
+
+function db(fake: FakeDb): Firestore {
+  return fake as unknown as Firestore;
+}
+
+const SP: Faixa = {
+  cepInicial: 1_000_000,
+  cepFinal: 1_099_999,
+  cMun: '3550308',
+  nomeMunicipio: 'SAO PAULO',
+  estado: 'SP',
+};
+
+const forbiddenViaCep = {
+  buscarCep: vi.fn(() => {
+    throw new Error('ViaCEP must not be consulted here');
+  }),
+};
 
 describe('ensureCodigoMunicipio', () => {
-  it('short-circuits on a stored 7-digit code without writing or resolving', async () => {
-    const ref = fakeRef();
+  beforeEach(() => __resetAllReadCaches());
+  afterEach(() => {
+    __resetAllReadCaches();
+    vi.restoreAllMocks();
+  });
+
+  it('short-circuits on a stored 7-digit código', async () => {
+    const fake = new FakeDb();
 
     const result = await ensureCodigoMunicipio(
+      db(fake),
       { cep: '99999999', codigoMunicipio: '3550308', estado: 'SP' },
-      { persist: { ref, field: 'codigoMunicipio' }, contexto: 'endereco test', resolve: RESOLVE },
+      { contexto: 'endereco test', resolve: { viaCep: forbiddenViaCep } },
     );
 
-    // The CEP is outside the fixture table and ViaCEP throws, so a pass proves
-    // neither leg ran.
     expect(result.codigoMunicipio).toBe('3550308');
-    expect(ref.update).not.toHaveBeenCalled();
   });
 
   it.each([
     ['an empty string', ''],
     ['a 6-digit value', '355030'],
     ['null', null],
-  ])('treats %s as missing and resolves', async (_label, stored) => {
-    // `enderecoSchema.codigoMunicipio` is `.max(8).regex(/^\d*$/)`, so '' is
-    // storable — and it used to reach the generator as `<cMun></cMun>`.
-    const ref = fakeRef();
+  ])('treats %s as missing and resolves from the table', async (_label, stored) => {
+    // `enderecoSchema.codigoMunicipio` is `.max(8).regex(/^\d*$/)`, so `''` is
+    // storable — and used to reach the generator as an empty <cMun>.
+    const fake = new FakeDb();
+    fake.seed(SP);
 
     const result = await ensureCodigoMunicipio(
-      { cep: '01310100', codigoMunicipio: stored, estado: 'SP' },
-      { persist: { ref, field: 'codigoMunicipio' }, contexto: 'endereco test', resolve: RESOLVE },
+      db(fake),
+      { cep: '01050000', codigoMunicipio: stored, estado: 'SP' },
+      { contexto: 'endereco test', resolve: { viaCep: forbiddenViaCep } },
     );
 
     expect(result.codigoMunicipio).toBe('3550308');
-    expect(ref.update).toHaveBeenCalledWith({ codigoMunicipio: '3550308' });
   });
 
-  it('persists an embedded endereço through the DOTTED leaf path', async () => {
-    // The anti-clobber guarantee: `filiais` is human-managed config, so the
-    // write must touch exactly `sede.codigoMunicipio` and never the whole
-    // `sede` map, which would overwrite a concurrent edit.
-    const ref = fakeRef();
+  /**
+   * The property this file exists for. `endereco.codigoMunicipio` is a MANUAL
+   * override, not a cache — the CMUN table is what caches CEP → município. An
+   * earlier revision of this code persisted the resolved value back onto the
+   * endereço; that is precisely what must not happen.
+   */
+  it('writes NOTHING to the endereço', async () => {
+    const fake = new FakeDb();
+    fake.seed(SP);
 
     await ensureCodigoMunicipio(
-      { cep: '01310100', codigoMunicipio: null, estado: 'SP' },
-      {
-        persist: { ref, field: 'sede.codigoMunicipio' },
-        contexto: "filial 'f1'.sede",
-        resolve: RESOLVE,
-      },
+      db(fake),
+      { cep: '01050000', codigoMunicipio: null, estado: 'SP' },
+      { contexto: 'endereco test', resolve: { viaCep: forbiddenViaCep } },
     );
 
-    expect(ref.update).toHaveBeenCalledWith({ 'sede.codigoMunicipio': '3550308' });
+    // A table hit writes nothing at all — not to the endereço, not to CMUN.
+    expect(fake.writes).toEqual([]);
   });
 
-  it('resolves without writing when no persist target is given', async () => {
+  it('teaches the CMUN table (not the endereço) when ViaCEP resolves a gap', async () => {
+    const fake = new FakeDb();
+    const viaCep = {
+      buscarCep: vi.fn(() =>
+        Promise.resolve({
+          logradouro: '',
+          bairro: '',
+          cidade: 'São Paulo',
+          estado: 'SP',
+          codigoMunicipio: '3550308',
+        }),
+      ),
+    };
+
     const result = await ensureCodigoMunicipio(
-      { cep: '01310100', codigoMunicipio: null, estado: 'SP' },
-      { contexto: 'endereco test', resolve: RESOLVE },
+      db(fake),
+      { cep: '01500000', codigoMunicipio: null, estado: 'SP' },
+      { contexto: 'endereco test', resolve: { viaCep } },
     );
 
     expect(result.codigoMunicipio).toBe('3550308');
-  });
-
-  describe('write failures', () => {
-    it('does not fail the emission when the document vanished (NOT_FOUND)', async () => {
-      const ref = fakeRef(vi.fn().mockRejectedValue(notFoundError()));
-
-      const result = await ensureCodigoMunicipio(
-        { cep: '01310100', codigoMunicipio: null, estado: 'SP' },
-        { persist: { ref, field: 'codigoMunicipio' }, contexto: 'endereco test', resolve: RESOLVE },
-      );
-
-      // The emission already has the value it needs; only the cache write lost.
-      expect(result.codigoMunicipio).toBe('3550308');
-    });
-
-    it('rethrows any other write failure', async () => {
-      // A permission failure here is a real service-account misconfiguration on
-      // the highest-stakes path in the system — surface it, do not swallow it.
-      const boom = Object.assign(new Error('PERMISSION_DENIED'), { code: 7 });
-      const ref = fakeRef(vi.fn().mockRejectedValue(boom));
-
-      await expect(
-        ensureCodigoMunicipio(
-          { cep: '01310100', codigoMunicipio: null, estado: 'SP' },
-          {
-            persist: { ref, field: 'codigoMunicipio' },
-            contexto: 'endereco test',
-            resolve: RESOLVE,
-          },
-        ),
-      ).rejects.toBe(boom);
-    });
+    // Exactly one write, and it is a CMUN row — never the endereço.
+    expect(fake.writes).toEqual(['CMUN/01500000']);
   });
 
   describe('unresolvable', () => {
     it('names the document, the CEP and the reason', async () => {
       const err = await ensureCodigoMunicipio(
+        db(new FakeDb()),
         { cep: '123', codigoMunicipio: null, estado: 'SP' },
-        { contexto: "endereco 'clientes/c1/enderecos/e1'", resolve: RESOLVE },
+        {
+          contexto: "endereco 'clientes/c1/enderecos/e1'",
+          resolve: { viaCep: forbiddenViaCep },
+        },
       ).catch((e: unknown) => e);
 
       expect(err).toBeInstanceOf(NFeOrchestratorError);
@@ -140,14 +182,18 @@ describe('ensureCodigoMunicipio', () => {
       expect(message).toContain('cep-invalido');
     });
 
-    it('reports a CEP that falls outside every faixa', async () => {
+    it('reports a CEP outside every faixa when offline', async () => {
       const err = await ensureCodigoMunicipio(
+        db(new FakeDb()),
         { cep: '99999999', codigoMunicipio: null, estado: 'SP' },
-        { contexto: 'endereco test', resolve: { ...RESOLVE, offline: true } },
+        {
+          contexto: 'endereco test',
+          resolve: { viaCep: forbiddenViaCep, offline: true },
+        },
       ).catch((e: unknown) => e);
 
       expect(err).toBeInstanceOf(NFeOrchestratorError);
-      expect((err as Error).message).toContain('fora-das-faixas');
+      expect((err as Error).message).toContain('desconhecido');
     });
   });
 });

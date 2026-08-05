@@ -1,4 +1,20 @@
-import { type CMunRange, IBGE_UF_CODES } from './deps';
+import { IBGE_UF_CODES } from './deps';
+
+/**
+ * One validated CEP faixa, ready for `cmunSchema.parse` in the import.
+ *
+ * `cMun` stays a STRING here — it is a 7-digit code, not a number, and the
+ * Firestore schema stores it as written. `cepInicial`/`cepFinal` stay integers,
+ * matching how the legacy CSV import (`int.parse`) stored them.
+ */
+export interface CMunFaixa {
+  readonly cepInicial: number;
+  readonly cepFinal: number;
+  readonly cMun: string;
+  readonly nomeMunicipio: string;
+  /** UF sigla. Named `estado` to match `cmunSchema`, not the dump's `uf`. */
+  readonly estado: string;
+}
 
 /**
  * Validation of the production `CMUN` dump.
@@ -7,7 +23,7 @@ import { type CMunRange, IBGE_UF_CODES } from './deps';
  * file anywhere in `.old/`, and its provenance is undocumented. So every check
  * here is deliberately fatal and prints the offending rows: a corrupt export
  * has to be caught while a corrected one can still be obtained, not after the
- * table is vendored and a wrong `<cMun>` is on a signed NF-e.
+ * table is imported and a wrong `<cMun>` is on a signed NF-e.
  */
 
 /** A row exactly as the legacy `TabelaoCmun` model stored it. */
@@ -49,8 +65,8 @@ export interface GapReport {
 }
 
 export interface ValidateResult {
-  /** Sorted by `cepInicial`, disjoint, ready for `encodeCMunTable`. */
-  readonly ranges: readonly CMunRange[];
+  /** Sorted by `cepInicial`, disjoint, ready for `cmunSchema.parse`. */
+  readonly ranges: readonly CMunFaixa[];
   /** Distinct 7-digit códigos represented. */
   readonly codeCount: number;
   /** Exterior rows (`uf: 'EX'` / `cMun: '9999999'`) dropped as unlookupable. */
@@ -90,9 +106,7 @@ const MAX_CODE_COUNT = 5_600;
 const MIN_RANGE_COUNT = 5_570;
 const MAX_RANGE_COUNT = 25_000;
 
-interface ParsedRow extends CMunRange {
-  readonly nomeMunicipio: string;
-  readonly uf: string;
+interface ParsedRow extends CMunFaixa {
   readonly sourceIndex: number;
 }
 
@@ -160,9 +174,9 @@ function parseRow(raw: CmunDumpRow, index: number, issues: string[]): ParsedRow 
   return {
     cepInicial,
     cepFinal,
-    cMun: Number(cMun),
+    cMun,
     nomeMunicipio: typeof raw.nomeMunicipio === 'string' ? raw.nomeMunicipio : '',
-    uf,
+    estado: uf,
     sourceIndex: index,
   };
 }
@@ -188,7 +202,7 @@ function buildGapReport(rows: readonly ParsedRow[], largestGaps: number): GapRep
 }
 
 /**
- * Validate + normalize a `CMUN` dump into encodable ranges.
+ * Validate + normalize a `CMUN` dump into importable faixas.
  *
  * Throws {@link CmunDumpError} listing every problem found, rather than the
  * first — one run should tell you everything wrong with the export.
@@ -258,8 +272,8 @@ export function validateDump(
 
   // Non-fatal: the same município spelled two ways across its faixas. Harmless
   // today (nothing reads the name) but a tell that the CSV had dirty rows.
-  const nameByCode = new Map<number, string>();
-  const conflicting = new Set<number>();
+  const nameByCode = new Map<string, string>();
+  const conflicting = new Set<string>();
   for (const row of parsed) {
     if (row.nomeMunicipio === '') continue;
     const seen = nameByCode.get(row.cMun);
@@ -277,7 +291,7 @@ export function validateDump(
   }
 
   return {
-    ranges: parsed.map(({ cepInicial, cepFinal, cMun }) => ({ cepInicial, cepFinal, cMun })),
+    ranges: parsed.map(({ sourceIndex: _ignored, ...faixa }) => faixa),
     codeCount: codes.size,
     droppedExterior,
     gaps: buildGapReport(parsed, largestGaps),

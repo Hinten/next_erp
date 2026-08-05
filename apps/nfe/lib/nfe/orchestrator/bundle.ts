@@ -311,20 +311,21 @@ export async function loadPedidoBundle(
 
   // `codigoMunicipio` (IBGE) is mandatory for enderDest.cMun, enderEmit.cMun
   // AND ide.cMunFG, but nothing on any server path used to produce it (#785).
-  // Resolve — and persist — both endereços here, so the generator stays a pure
-  // function of its input and the failure, if any, names the document and CEP.
+  // Resolve both endereços from the `CMUN` table here, so the generator stays a
+  // pure function of its input and a failure names the document and the CEP.
+  //
+  // This READS ONLY — neither document is written. The CEP → município cache is
+  // the CMUN table itself (the resolver teaches it any CEP it did not know);
+  // `endereco.codigoMunicipio` is a manual operator override, never a cache.
+  //
   // The patched `filial` MUST be the one returned: `ide.ts` reads
   // `filial.sede.codigoMunicipio` for cMunFG and `parties.ts` for enderEmit.
   const filialRaw = filialSnap.data() as Filial;
   const [enderecoDest, sede] = await Promise.all([
-    ensureCodigoMunicipio(enderecoSnap.data() as Endereco, {
-      persist: { ref: enderecoSnap.ref, field: 'codigoMunicipio' },
+    ensureCodigoMunicipio(fs, enderecoSnap.data() as Endereco, {
       contexto: `endereco '${enderecoPath}'`,
     }),
-    ensureCodigoMunicipio(filialRaw.sede, {
-      // Dotted leaf, never the whole `sede` map — a whole-map write would
-      // clobber a concurrent edit to this human-managed config collection.
-      persist: { ref: filialSnap.ref, field: 'sede.codigoMunicipio' },
+    ensureCodigoMunicipio(fs, filialRaw.sede, {
       contexto: `filial '${filialPath}'.sede`,
     }),
   ]);

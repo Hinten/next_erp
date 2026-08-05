@@ -216,6 +216,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_endereco', 4);
     }
 
+    match /CMUN/{docId} {
+      allow read: if isSuperUser() || p('d_cmun', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /counters/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
@@ -282,6 +288,18 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 
+    match /integracao/{integracaoId}/token6h/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
+    match /integracao/{integracaoId}/tokenDuravel/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /listaDePrecos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -299,6 +317,12 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
       allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
+    match /notificacoesMercadoLivre/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 
     match /operacao/{docId} {
@@ -460,6 +484,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
+    match /questionsML/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /tabMedi/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -559,6 +589,12 @@ service cloud.firestore {
     }
     match /{path=**}/regras/{docId} {
       allow read: if isSuperUser() || p('d_regraImposto', 1);
+    }
+    match /{path=**}/token6h/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+    }
+    match /{path=**}/tokenDuravel/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
     }
     match /{path=**}/tokenMelEnv/{docId} {
       allow read: if isSuperUser() || p('d_frete', 2);

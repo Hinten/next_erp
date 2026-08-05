@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { TIPO_CLIENTE_LABELS, clienteFormSchema, clienteMeta, clienteSchema } from './cliente';
+import {
+  IE_SENTINELA,
+  TIPO_CLIENTE_LABELS,
+  clienteFormSchema,
+  clienteMeta,
+  clienteSchema,
+  normalizarIe,
+} from './cliente';
 
 describe('clienteSchema', () => {
   it('accepts a minimal cliente — missing fields default to null', () => {
@@ -158,5 +165,50 @@ describe('TIPO_CLIENTE_LABELS', () => {
       '1': 'Pessoa Jurídica',
       '2': 'Estrangeiro',
     });
+  });
+});
+
+describe('IE_SENTINELA', () => {
+  it('is uppercase and unaccented', () => {
+    for (const value of Object.values(IE_SENTINELA)) {
+      expect(value).toBe(normalizarIe(value));
+    }
+  });
+
+  // The sentinels are stored in `ie`, whose schema caps at 16 —
+  // `NAO CONTRIBUINTE` is exactly at the limit, so a re-word breaks writes.
+  it('fits the ie field max(16)', () => {
+    for (const value of Object.values(IE_SENTINELA)) {
+      expect(clienteSchema.safeParse({ ie: value }).success).toBe(true);
+    }
+  });
+});
+
+describe('normalizarIe', () => {
+  it.each([
+    ['Não contribuinte', IE_SENTINELA.naoContribuinte],
+    ['NÃO CONTRIBUINTE', IE_SENTINELA.naoContribuinte],
+    ['Nao contribuinte', IE_SENTINELA.naoContribuinte],
+    ['não  contribuinte', IE_SENTINELA.naoContribuinte],
+    ['  Não Contribuinte  ', IE_SENTINELA.naoContribuinte],
+    ['nao\tcontribuinte', IE_SENTINELA.naoContribuinte],
+    ['Isento', IE_SENTINELA.isento],
+    ['isento', IE_SENTINELA.isento],
+    [' ISENTO ', IE_SENTINELA.isento],
+  ])('%j normalizes to %j', (input, expected) => {
+    expect(normalizarIe(input)).toBe(expected);
+  });
+
+  it('leaves a real inscrição estadual untouched', () => {
+    expect(normalizarIe('30703088534')).toBe('30703088534');
+  });
+
+  it.each([null, undefined, '', '   '])('%j collapses to null', (input) => {
+    expect(normalizarIe(input)).toBeNull();
+  });
+
+  it('is idempotent', () => {
+    const once = normalizarIe('  não   CONTRIBUINTE ');
+    expect(normalizarIe(once)).toBe(once);
   });
 });

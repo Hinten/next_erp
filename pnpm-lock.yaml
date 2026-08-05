@@ -434,6 +434,9 @@ importers:
       eslint-config-next:
         specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+      tsx:
+        specifier: 'catalog:'
+        version: 4.21.0
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -929,6 +932,9 @@ importers:
 
   packages/data:
     dependencies:
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../core
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../schemas
@@ -1473,6 +1479,9 @@ importers:
       '@delfrance/migrations':
         specifier: workspace:*
         version: link:../migrations
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       firebase-admin:
         specifier: 'catalog:'
         version: 14.0.0

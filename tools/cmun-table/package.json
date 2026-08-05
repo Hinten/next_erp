@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dump": "dotenv -e ../../.env.local -- tsx src/dump.ts",
-    "vendor": "tsx src/vendor.ts",
+    "import": "dotenv -e ../../.env.local -- tsx src/import.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -14,7 +14,8 @@
   "dependencies": {
     "@delfrance/core": "workspace:*",
     "@delfrance/migrations": "workspace:*",
-    "firebase-admin": "catalog:"
+    "firebase-admin": "catalog:",
+    "@delfrance/schemas": "workspace:*"
   },
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
