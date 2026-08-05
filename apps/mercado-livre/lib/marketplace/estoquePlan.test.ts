@@ -1251,6 +1251,29 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
+  // #781: the send handler stamps 'E' only after ML has CONFIRMED the anúncio is
+  // healthy — i.e. it was our payload that was refused. Rebuilding that same
+  // payload every tick just re-earns the rejection, 96×/day.
+  it("estado 'E' (payload refused by a healthy anúncio) → anuncio-em-erro", () => {
+    expect(run(familyRow({ links: [{ estado: 'E' }] })).skips).toEqual([
+      { produtoId: 'PROD', reason: 'anuncio-em-erro' },
+    ]);
+  });
+
+  it("estado 'E' is skipped even while ML still reports the listing active", () => {
+    // The exact shape the bug produced: a latched estado next to a status the
+    // whitelist happily sends to. Before the rung, this row rebuilt a task.
+    const res = run(familyRow({ links: [{ estado: 'E', status: 'active', sub_status: [] }] }));
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'anuncio-em-erro' }]);
+  });
+
+  it("a healthy estado 'p' on an active listing still sends (the rung is narrow)", () => {
+    const res = run(familyRow({ links: [{ estado: 'p', status: 'active' }] }));
+    expect(res.tasks).toHaveLength(1);
+    expect(res.skips).toEqual([]);
+  });
+
   it('non-enviável documented status → status-nao-enviavel, NO warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
     const res = run(familyRow({ links: [{ status: 'paused', sub_status: ['paused_by_seller'] }] }));

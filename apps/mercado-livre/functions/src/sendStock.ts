@@ -3,6 +3,7 @@ import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
 import {
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
+  STOCK_SEND_MAX_ATTEMPTS,
   concurrentDispatches,
   dispatchesPerSecond,
 } from '../../lib/marketplace/estoquePlan';
@@ -25,6 +26,11 @@ import { getDb } from './lib/admin';
  * itself pauses the conta and RETHROWS so the retry rides the queue backoff
  * into that pause gate.
  *
+ * `retryConfig.maxAttempts` is `STOCK_SEND_MAX_ATTEMPTS` and `req.retryCount` is
+ * threaded into the handler: ML answers 4xx for transient reasons too, so the
+ * handler rethrows a 4xx until the LAST attempt and only then asks ML for the
+ * listing's real state and records it (mirrors processMassImport/processPriceSync).
+ *
  * `rateLimits` is evaluated at DEPLOY time (Firebase bakes it into the queue
  * config), so the two knobs are deploy-time env reads with code defaults 2/2
  * (`MERCADO_LIVRE_STOCK_{CONCURRENT_DISPATCHES,DISPATCHES_PER_SECOND}`) — the
@@ -45,7 +51,7 @@ import { getDb } from './lib/admin';
 export const sendMercadoLivreStock = onTaskDispatched(
   {
     retryConfig: {
-      maxAttempts: 3,
+      maxAttempts: STOCK_SEND_MAX_ATTEMPTS,
       minBackoffSeconds: 30,
       maxBackoffSeconds: 300,
       maxDoublings: 2,
@@ -60,6 +66,10 @@ export const sendMercadoLivreStock = onTaskDispatched(
     const result = await processStockSendTask(getDb(), req.data, {
       scheduler: createMlStockTaskScheduler(),
       nowMs: Date.now(),
+      // The 4xx branch never trusts one sample: it rethrows (queue retries with
+      // backoff) until this is the LAST attempt, and only then records the
+      // terminal state. Mirrors processPriceSync/processMassImport.
+      retryCount: req.retryCount ?? 0,
     });
     logger.info('[mercado-livre] processed stock send task', {
       queue: MERCADO_LIVRE_STOCK_SEND_QUEUE,
