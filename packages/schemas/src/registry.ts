@@ -28,6 +28,7 @@ import { counter } from './counter';
 import { conversa, mensagem } from './conversa';
 import { integracao, brandShopee } from './integracao';
 import { cargo } from './cargo';
+import { cmun } from './cmun';
 import { usuario } from './usuario';
 import { deposito } from './deposito';
 import { grupoDeVariacoes } from './grupoDeVariacoes';
@@ -79,6 +80,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   integracao,
   brandShopee,
   cargo,
+  cmun,
   usuario,
   deposito,
   grupoDeVariacoes,

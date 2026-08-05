@@ -929,6 +929,9 @@ importers:
 
   packages/data:
     dependencies:
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../core
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../schemas
@@ -1473,6 +1476,9 @@ importers:
       '@delfrance/migrations':
         specifier: workspace:*
         version: link:../migrations
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       firebase-admin:
         specifier: 'catalog:'
         version: 14.0.0

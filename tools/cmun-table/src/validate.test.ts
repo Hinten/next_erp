@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeCMunTable, encodeCMunTable } from './deps';
+import { cmunDocId, cmunSchema } from '@delfrance/schemas';
 import { type CmunDumpRow, CmunDumpError, formatGapReport, validateDump } from './validate';
 
 /** Fixtures are three rows, so the "does this look like Brazil?" bands are off. */
@@ -17,27 +17,62 @@ function row(over: Partial<CmunDumpRow> = {}): CmunDumpRow {
 }
 
 describe('validateDump', () => {
-  it('normalizes a clean dump into encodable ranges', () => {
+  it('normalizes a clean dump into importable faixas', () => {
     const result = validateDump(
-      [row({ cepInicial: 2_000_000, cepFinal: 2_099_999, cMun: '3304557', uf: 'RJ' }), row()],
+      [
+        row({
+          cepInicial: 2_000_000,
+          cepFinal: 2_099_999,
+          cMun: '3304557',
+          nomeMunicipio: 'RIO DE JANEIRO',
+          uf: 'RJ',
+        }),
+        row(),
+      ],
       OPTS,
     );
 
     // Sorted by cepInicial regardless of the dump's document order — the legacy
-    // seed used Firestore auto-ids, so the order is arbitrary.
+    // seed used Firestore auto-ids, so the order is arbitrary. `cMun` stays a
+    // STRING (it is a code, not a number) and the município/UF ride along,
+    // because the import writes them straight into `cmunSchema`.
     expect(result.ranges).toEqual([
-      { cepInicial: 1_000_000, cepFinal: 1_099_999, cMun: 3_550_308 },
-      { cepInicial: 2_000_000, cepFinal: 2_099_999, cMun: 3_304_557 },
+      {
+        cepInicial: 1_000_000,
+        cepFinal: 1_099_999,
+        cMun: '3550308',
+        nomeMunicipio: 'SAO PAULO',
+        estado: 'SP',
+      },
+      {
+        cepInicial: 2_000_000,
+        cepFinal: 2_099_999,
+        cMun: '3304557',
+        nomeMunicipio: 'RIO DE JANEIRO',
+        estado: 'RJ',
+      },
     ]);
     expect(result.codeCount).toBe(2);
   });
 
-  it('produces output the runtime codec accepts', () => {
-    const result = validateDump([row()], OPTS);
-    const table = decodeCMunTable(encodeCMunTable(result.ranges));
+  it('produces rows the CMUN schema accepts, with a deterministic doc id', () => {
+    // The import writes these straight into Firestore, so validated output has
+    // to survive `cmunSchema.parse` — and the id has to be derivable, or a
+    // re-run duplicates every faixa the way the legacy auto-id seeder did.
+    const [range] = validateDump([row()], OPTS).ranges;
 
-    expect([...table.starts]).toEqual([1_000_000]);
-    expect([...table.codes]).toEqual([3_550_308]);
+    const parsed = cmunSchema.parse({
+      cepInicial: range!.cepInicial,
+      cepFinal: range!.cepFinal,
+      cMun: String(range!.cMun).padStart(7, '0'),
+      nomeMunicipio: 'SAO PAULO',
+      estado: 'SP',
+      origem: 'tabelao',
+    });
+
+    expect(parsed.cepInicial).toBe(1_000_000);
+    expect(parsed.cMun).toBe('3550308');
+    expect(cmunDocId(range!.cepInicial)).toBe('01000000');
   });
 
   describe('fatal checks', () => {

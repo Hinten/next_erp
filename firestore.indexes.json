@@ -1385,6 +1385,16 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "CMUN",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cepFinal",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
