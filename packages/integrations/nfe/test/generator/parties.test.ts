@@ -169,6 +169,35 @@ describe('buildDest — the IE element', () => {
   });
 });
 
+describe('buildDest — the ISUF element', () => {
+  // Inscrição SUFRAMA. Omitting it on an operation into a SUFRAMA-controlled
+  // area forfeits the fiscal incentive on a note SEFAZ ACCEPTS — a silent
+  // loss, which is why it is worth pinning rather than leaving to review.
+  it('emits cliente.isUF verbatim', () => {
+    expect(dest({ isUF: '12345678' }).ISUF).toBe('12345678');
+    expect(dest({ isUF: '123456789' }).ISUF).toBe('123456789');
+  });
+
+  it('is omitted when the cliente has no SUFRAMA inscription', () => {
+    expect(dest({ isUF: null }).ISUF).toBeUndefined();
+  });
+
+  // ISUF rides on its own field, so it must survive every rung of the ladder —
+  // unlike IE, which only appears for indIEDest='1'.
+  it.each([
+    ['a não-contribuinte', { ie: IE_SENTINELA.naoContribuinte }],
+    ['an isento', { ie: IE_SENTINELA.isento }],
+    ['a contribuinte with a real IE', { ie: '30703088534' }],
+    ['a pessoa física', { tipo: TIPO_CLIENTE.pessoaFisica, cpf_cnpj: '12345678909' }],
+  ])('survives on %s', (_label, overrides) => {
+    expect(dest({ ...overrides, isUF: '12345678' }).ISUF).toBe('12345678');
+  });
+
+  it('survives an operação ao exterior', () => {
+    expect(dest({ isUF: '12345678' }, true).ISUF).toBe('12345678');
+  });
+});
+
 /**
  * `cMun` validation (#785).
  *
