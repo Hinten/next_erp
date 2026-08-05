@@ -105,6 +105,15 @@ describe('validateDump', () => {
     it('rejects a truncated export when the sanity bands are on', () => {
       expect(() => validateDump([row()])).toThrow(/banda esperada/);
     });
+
+    it('numbers rows the way a human reads the dump — 1-based', () => {
+      // The dump is JSONL; "linha N" has to match the line you open in an
+      // editor, not the 0-based array index.
+      const err = validateDump.bind(null, [row(), row({ cMun: 'nope' })], OPTS);
+
+      expect(err).toThrow(/linha 2:/);
+      expect(err).not.toThrow(/linha 0:/);
+    });
   });
 
   describe('exterior rows', () => {
@@ -117,6 +126,19 @@ describe('validateDump', () => {
       expect(result.droppedExterior).toBe(1);
       expect(result.ranges).toHaveLength(1);
       expect(result.warnings.join(' ')).toMatch(/exterior/);
+    });
+
+    it.each(['ex', 'Ex', 'eX'])('drops a %s row too — the check is case-insensitive', (uf) => {
+      // The main path uppercases `uf` before validating, so a lowercase
+      // exterior row would otherwise dodge the drop and be encoded as a real
+      // faixa (and then fail the UF cross-check for the wrong reason).
+      const result = validateDump(
+        [row(), row({ uf, cMun: '9999999', cepInicial: 9_000_000, cepFinal: 9_099_999 })],
+        OPTS,
+      );
+
+      expect(result.droppedExterior).toBe(1);
+      expect(result.ranges).toHaveLength(1);
     });
   });
 
