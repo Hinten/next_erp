@@ -574,4 +574,88 @@ describe('ensureEndereco', () => {
     const second = await ensureEndereco(db(fake), 'cli-1', fields);
     expect(second).toBe(first);
   });
+
+  it('does not create a duplicate: seeding an existing doc and calling returns the same id with collection size = 1', async () => {
+    const fake = new FakeDb();
+    const id = makeEnderecoId(fields);
+    // Seed the collection with a pre-existing doc at this id
+    const seedData = { ...fields, logradouro: 'Rua Teste', cep: '01310100' };
+    fake.seed('clientes/cli-1/enderecos', id, seedData);
+
+    // Call ensureEndereco with the same field set
+    const returnedId = await ensureEndereco(db(fake), 'cli-1', fields);
+
+    // Assert the id is the same
+    expect(returnedId).toBe(id);
+
+    // Assert the collection size is still 1 (no duplicate created)
+    const col = fake.cols.get('clientes/cli-1/enderecos');
+    expect(col?.size).toBe(1);
+  });
+
+  it('preserves an existing doc byte-identical when already present', async () => {
+    const fake = new FakeDb();
+    const id = makeEnderecoId(fields);
+    // Seed with the fields plus an extra operator-edited field
+    const seedData = {
+      ...fields,
+      observacao: 'Entrega entre 9-18, não chamar campainha',
+    };
+    fake.seed('clientes/cli-1/enderecos', id, seedData);
+
+    // Call ensureEndereco
+    await ensureEndereco(db(fake), 'cli-1', fields);
+
+    // Assert the stored doc is still byte-identical to the seed
+    const stored = fake.storedDoc('clientes/cli-1/enderecos', id);
+    expect(stored).toEqual(seedData);
+  });
+
+  it('matches the legacy Endereco.generateUid golden vector for compatibility with dual-run', async () => {
+    // Golden vector: a known field set pinned to the exact sha1 this port
+    // produces. This prevents silent breakage from a future change to fallback
+    // strings or field concatenation order — the ID derivation must match
+    // legacy for dual-run to avoid creating duplicate docs. The specific
+    // vector is arbitrary; what matters is the pin.
+    const goldenFields: EnderecoImportFields = {
+      idExterno: null,
+      logradouro: 'Rua Augusta',
+      numero: '1500',
+      complemento: 'Apt 42',
+      bairro: 'Consolação',
+      cep: '01305100',
+      codigoMunicipio: null,
+      cidade: 'São Paulo',
+      estado: UF_SIGLA.SP,
+      cPais: null,
+      pais: null,
+      nome: null,
+      cpf_cnpj: null,
+      rg: null,
+      ie: null,
+      imun: null,
+      email: null,
+      telefone: null,
+    };
+    // This sha1 is pinned to the field order and null-handling logic of
+    // makeEnderecoId. Any change to the field order, any new field, or any
+    // modification to a fallback string MUST be followed by updating this
+    // vector and ensuring dual-run parity with the legacy app.
+    const goldenSha1 = 'e9628f9968f54ac0c1a6f3270e73bff09134a30e';
+    expect(makeEnderecoId(goldenFields)).toBe(goldenSha1);
+  });
+
+  it('produces a different id when fields differ', async () => {
+    const fake = new FakeDb();
+    const baseId = await ensureEndereco(db(fake), 'cli-1', fields);
+
+    // Call again with a different numero
+    const fieldsWithDifferentNumero = { ...fields, numero: '124' };
+    const differentId = await ensureEndereco(db(fake), 'cli-1', fieldsWithDifferentNumero);
+
+    expect(differentId).not.toBe(baseId);
+    // Assert collection size is 2 (both docs created)
+    const col = fake.cols.get('clientes/cli-1/enderecos');
+    expect(col?.size).toBe(2);
+  });
 });
