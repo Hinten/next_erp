@@ -12,6 +12,7 @@ describe('parseArgs', () => {
       projectId: 'staging-x',
       apply: false,
       serviceAccountPath: undefined,
+      targets: [],
     });
   });
 
@@ -24,7 +25,17 @@ describe('parseArgs', () => {
       projectId: 'staging-x',
       apply: false,
       serviceAccountPath: '/tmp/sa.json',
+      targets: [],
     });
+  });
+
+  it('parses --target as a trimmed, blank-free list', () => {
+    expect(parseArgs(['--project', 'x', '--target', 'clientes, cheque']).targets).toEqual([
+      'clientes',
+      'cheque',
+    ]);
+    expect(parseArgs(['--project=x', '--target=clientes']).targets).toEqual(['clientes']);
+    expect(parseArgs(['--project=x', '--target=,,']).targets).toEqual([]);
   });
 
   it('rejects an unknown flag', () => {
@@ -35,6 +46,9 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--project', '--apply'])).toThrow(/--project requires a value/);
     expect(() => parseArgs(['--project', 'x', '--service-account', '--apply'])).toThrow(
       /--service-account requires a value/,
+    );
+    expect(() => parseArgs(['--project', 'x', '--target', '--apply'])).toThrow(
+      /--target requires a value/,
     );
   });
 
