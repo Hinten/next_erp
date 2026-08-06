@@ -66,7 +66,7 @@ import { importCategoriaChain } from './importCategoria';
 import { resolveTaxonomia } from './importTaxonomia';
 import { importVariationChildren } from './importVariations';
 import { resolveFamilySiblingIds } from './importFamily';
-import { isAlreadyExists } from '@delfrance/data/admin';
+import { isAlreadyExists, isFailedPrecondition } from '@delfrance/data/admin';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
 import { type Bucket } from './arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
@@ -310,6 +310,44 @@ export async function importProduto(
   // so a rare concurrent same-item create can't full-overwrite edits made by the
   // winner between our read and write — on ALREADY_EXISTS we re-run once (the
   // produto now exists → the update path).
+  // Prices FIRST — before the produto merge below, and that ordering is
+  // load-bearing. This is the one GUARDED write: a dotted-path update of the
+  // conta's tabela NORMAL key only, so the legacy precos map is never
+  // re-validated and a sibling tabela provably cannot be touched. Set-only,
+  // since the promotional tabela is the ERP's (#803). Null on create, where the
+  // price is already folded into the full produto doc.
+  //
+  // ADR 0011 **tier 1**: the patch is derived from `produtoSnap`, so it asserts
+  // that read's `lastUpdateTime`. A concurrent writer of the same produto — the
+  // still-running Flutter app writes the WHOLE precos map, which a dotted path
+  // cannot defend against — fails this FAILED_PRECONDITION instead of being
+  // silently reverted, and we re-read and re-plan once (the `isAlreadyExists`
+  // precedent below; re-applying the SAME patch would defeat the guard).
+  //
+  // ⚠️ Ordering: the produto merge below always writes on the update path (it
+  // carries `ultimaModificacao`, #800), which BUMPS `updateTime`. Running it
+  // first would make this precondition assert a stamp we ourselves had just
+  // invalidated — failing every single price-writing import. The guarded write
+  // must come first, against the read it was derived from.
+  if (plan.precosOps) {
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(plan.precosOps.set)) patch[`precos.${k}`] = v;
+    if (Object.keys(patch).length > 0) {
+      const ref = produtoCollection.docRef(db, {}, produtoId);
+      // `updateTime` is always present on an existing doc from the real SDK;
+      // the fallback exists only so an in-memory double may omit it.
+      const lastUpdateTime = produtoSnap.updateTime;
+      try {
+        await (lastUpdateTime ? ref.update(patch, { lastUpdateTime }) : ref.update(patch));
+      } catch (err) {
+        if (isFailedPrecondition(err) && attempt < 1) {
+          return importProduto(deps, itemId, attempt + 1);
+        }
+        throw err;
+      }
+    }
+  }
+
   if (plan.produto) {
     const ref = produtoCollection.docRef(db, {}, produtoId);
     if (plan.produto.full) {
@@ -321,28 +359,6 @@ export async function importProduto(
       }
     } else {
       await produtoCollection.merge(db, {}, produtoId, plan.produto.data);
-    }
-  }
-
-  // Prices: dotted-path update of the conta's tabela NORMAL key only — never
-  // re-validates the legacy precos map, and provably cannot touch a sibling
-  // tabela. Set-only: the promotional tabela is the ERP's (#803). On create the
-  // price is already folded into the full produto doc.
-  //
-  // ADR 0011 **tier 1**: the patch is derived from `produtoSnap`, so it carries
-  // that read's `lastUpdateTime`. A concurrent writer of the same produto — the
-  // still-running Flutter app writes the WHOLE precos map, which a dotted path
-  // cannot defend against — makes this fail FAILED_PRECONDITION instead of
-  // silently reverting them, and the caller's retry re-reads and re-plans.
-  // (`updateTime` is always present on an existing doc from the real SDK; the
-  // guard is conditional only so an in-memory test double can omit it.)
-  if (plan.precosOps) {
-    const patch: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(plan.precosOps.set)) patch[`precos.${k}`] = v;
-    if (Object.keys(patch).length > 0) {
-      const ref = produtoCollection.docRef(db, {}, produtoId);
-      const lastUpdateTime = produtoSnap.updateTime;
-      await (lastUpdateTime ? ref.update(patch, { lastUpdateTime }) : ref.update(patch));
     }
   }
 

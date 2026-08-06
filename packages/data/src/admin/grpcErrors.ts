@@ -22,3 +22,15 @@ export function isAlreadyExists(err: unknown): boolean {
 export function isNotFound(err: unknown): boolean {
   return err instanceof Error && (err as { code?: unknown }).code === 5;
 }
+
+/**
+ * gRPC FAILED_PRECONDITION (code 9) — from `docRef.update(patch, {
+ * lastUpdateTime })` when the document changed after the read the patch was
+ * derived from (ADR 0011 tier 1). This is the SUCCESS signal of that guard, not
+ * an infrastructure failure: it means a concurrent writer won and our patch
+ * would have silently reverted them. The call site's job is to re-read,
+ * re-derive and re-apply — never to retry the same patch.
+ */
+export function isFailedPrecondition(err: unknown): boolean {
+  return err instanceof Error && (err as { code?: unknown }).code === 9;
+}
