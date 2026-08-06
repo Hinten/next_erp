@@ -267,14 +267,18 @@ export async function resolveMercadoEnviosIntFreteOuterRef(
 /*                       Order fetch + pack fan-out                           */
 /* -------------------------------------------------------------------------- */
 
-/** `try { get_order } on MLError catch(e) { if (e.code=='404') {...} }` (tasks.dart:385-394). */
+/** `try { get_order } on MLError catch(e) { if (e.code=='404') {...} }` (tasks.dart:385-394).
+ *
+ * Goes through `getOrderResponse` rather than `getOrder` so the order-mirror
+ * write downstream can tell a complete `200` from a `206 Partial Content` — see
+ * `orderPedidoTx.ts`'s `completeOrderIds` and #793. */
 async function fetchOrderWithPackFallback(
   api: MercadoLivreApi,
   orderIdOrPackId: number,
-): Promise<{ initialOrder: MlOrder; packInfo: MlPack | null }> {
+): Promise<{ initialOrder: MlOrder; initialComplete: boolean; packInfo: MlPack | null }> {
   try {
-    const initialOrder = await api.getOrder(orderIdOrPackId);
-    return { initialOrder, packInfo: null };
+    const res = await api.getOrderResponse(orderIdOrPackId);
+    return { initialOrder: res.order, initialComplete: res.complete, packInfo: null };
   } catch (err) {
     if (err instanceof MercadoLivreHttpError && err.status === 404) {
       const packInfo = await api.getPack(orderIdOrPackId);
@@ -282,8 +286,8 @@ async function fetchOrderWithPackFallback(
       if (firstOrderId == null) {
         throw new Error(`Pacote Mercado Livre ${orderIdOrPackId} sem nenhuma order.`);
       }
-      const initialOrder = await api.getOrder(firstOrderId);
-      return { initialOrder, packInfo };
+      const res = await api.getOrderResponse(firstOrderId);
+      return { initialOrder: res.order, initialComplete: res.complete, packInfo };
     }
     throw err;
   }
@@ -296,15 +300,29 @@ async function fetchOrderWithPackFallback(
 async function resolvePackOrders(
   api: MercadoLivreApi,
   initialOrder: MlOrder,
+  initialComplete: boolean,
   packInfoIn: MlPack | null,
-): Promise<{ orders: MlOrder[]; packId: number | null }> {
+): Promise<{ orders: MlOrder[]; packId: number | null; completeOrderIds: ReadonlySet<number> }> {
+  // Each sibling is its OWN `GET /orders/{id}`, so each carries its own
+  // completeness — a partial answer for one must not license replacing the
+  // others' mirrors (#793).
+  const completeOrderIds = new Set<number>();
+  if (initialComplete) completeOrderIds.add(initialOrder.id);
+
   const packId = initialOrder.pack_id ?? null;
-  if (packId == null) return { orders: [initialOrder], packId: null };
+  if (packId == null) return { orders: [initialOrder], packId: null, completeOrderIds };
 
   const packInfo = packInfoIn ?? (await api.getPack(packId));
   const siblingIds = packInfo.orders.map((o) => o.id).filter((id) => id !== initialOrder.id);
-  const siblingOrders = await Promise.all(siblingIds.map((id) => api.getOrder(id)));
-  return { orders: [initialOrder, ...siblingOrders], packId };
+  const siblings = await Promise.all(siblingIds.map((id) => api.getOrderResponse(id)));
+  for (const s of siblings) {
+    if (s.complete) completeOrderIds.add(s.order.id);
+  }
+  return {
+    orders: [initialOrder, ...siblings.map((s) => s.order)],
+    packId,
+    completeOrderIds,
+  };
 }
 
 /**
@@ -879,7 +897,10 @@ export async function importPedidoMercadoLivre(
 ): Promise<OrderImportResult> {
   const { db, api, integracaoId, nowUs, nowMs } = deps;
 
-  const { initialOrder, packInfo } = await fetchOrderWithPackFallback(api, orderIdOrPackId);
+  const { initialOrder, initialComplete, packInfo } = await fetchOrderWithPackFallback(
+    api,
+    orderIdOrPackId,
+  );
 
   // Buyer guard FIRST, then seller — tasks.dart:396-406 (that exact order).
   if (initialOrder.buyer == null) {
@@ -897,7 +918,12 @@ export async function importPedidoMercadoLivre(
     return { pedidoId: null, created: false, skipped: 'seller-mismatch' };
   }
 
-  const { orders, packId } = await resolvePackOrders(api, initialOrder, packInfo);
+  const { orders, packId, completeOrderIds } = await resolvePackOrders(
+    api,
+    initialOrder,
+    initialComplete,
+    packInfo,
+  );
   for (const order of orders) assertOrderItemsComplete(order);
 
   const itensByOrderId = await buildItensByOrderId(db, integracaoId, orders, nowUs);
@@ -911,6 +937,7 @@ export async function importPedidoMercadoLivre(
     operacaoOuterRef: contaBag.operacaoOuterRef,
     listaDePrecosOuterRef: contaBag.listaDePrecosOuterRef,
     orders,
+    completeOrderIds,
     packId,
     itensByOrderId,
     nowUs,

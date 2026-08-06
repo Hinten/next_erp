@@ -339,57 +339,115 @@ export function buildOrderMLWire(args: {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Null-coalescing field merge for a mirror REFRESH — `other.field ?? this.field`
- * for every key, reproducing the legacy Dart `OrderML.update`
- * (`.old/.../models.odm.g.dart:27642-27672`, reached from `tasks.dart:328-329`).
+ * Every mirror key that mirrors a SAME-NAMED field of the raw ML order — i.e.
+ * the whole wire minus `contaMercadoLivreOuterRef`, which is ours, not ML's.
+ * Kept in `buildOrderMLWire`'s own order so the two stay easy to diff.
+ */
+const ORDER_ML_PAYLOAD_KEYS = [
+  'id',
+  'status',
+  'date_created',
+  'date_closed',
+  'last_updated',
+  'expiration_date',
+  'manufacturing_ending_date',
+  'order_items',
+  'payments',
+  'buyer',
+  'pack_id',
+  'pickup_id',
+  'buying_mode',
+  'shipping_cost',
+  'total_amount',
+  'paid_amount',
+  'coupon',
+  'shipping',
+  'status_detail',
+  'tags',
+  'comment',
+] as const;
+
+/**
+ * Which mirror keys THIS payload actually spoke about — the discriminator the
+ * refresh merge runs on.
+ *
+ * `buildOrderMLWire` collapses "ML sent null" and "ML omitted the field" into
+ * the same wire `null` (`order.pack_id ?? null`) — but the difference is
+ * exactly what decides whether a refresh may clear a stored value. The raw
+ * order still carries it: `orderSchema`'s fields are `.optional()`, so Zod
+ * leaves an omitted key ABSENT and an explicit null as `null`. A complete
+ * `GET /orders/{id}` names every field (the ML docs' own sample carries
+ * `pack_id`, `status_detail: null` and `tags`); a `206 Partial Content` body
+ * simply drops them.
+ *
+ * `contaMercadoLivreOuterRef` is always "carried" — we mint it from the conta,
+ * ML never sends it, and it must not be subject to preservation.
+ */
+export function orderMLKeysCarriedBy(order: MlOrder): ReadonlySet<string> {
+  const raw = order as unknown as Record<string, unknown>;
+  const carried = new Set<string>(['contaMercadoLivreOuterRef']);
+  for (const key of ORDER_ML_PAYLOAD_KEYS) {
+    if (key in raw) carried.add(key);
+  }
+  return carried;
+}
+
+/**
+ * Field merge for a mirror REFRESH, keyed on what the payload actually carried.
  * Pure; `existing` is never mutated.
  *
- * Legacy refreshed the mirror field-by-field, so a payload that didn't carry a
- * value LEFT THE STORED ONE ALONE. This port used to `tx.set` the freshly built
- * wire wholesale, which deletes any key `buildOrderMLWire` writes as `null` or
- * omits — and `pack_id` is load-bearing: `resolvePedidoIdByOrderId`
- * (`orderPedidoResolve.ts`) matches `pack_id == orderId` FIRST, so a mirror that
- * loses it makes every later payments/shipments/claims notification for that
- * cart resolve to `pedido-nao-encontrado` (#793).
+ * The port used to `tx.set` the freshly built wire wholesale. That keeps the
+ * doc a faithful mirror when ML speaks in full, but it also deletes any key
+ * `buildOrderMLWire` writes as `null` or omits — and `pack_id` is load-bearing:
+ * `resolvePedidoIdByOrderId` (`orderPedidoResolve.ts`) matches
+ * `pack_id == orderId` FIRST, so a mirror that loses it makes every later
+ * payments/shipments/claims notification for that cart resolve to
+ * `pedido-nao-encontrado` (#793).
  *
- * A refresh payload really can arrive without `pack_id`, two different ways:
- *  - `GET /orders/{id}` may answer **206 Partial Content** (already accounted
- *    for in `orderSchema`'s doc, `packages/integrations/mercado-livre/src/types.ts`,
- *    and accepted as a success by the API client) — a partial body simply omits
- *    fields, and `pack_id` is `.nullable().optional()`, so it lands here as
- *    `null`;
- *  - an order can legitimately have NO pack at all. Mercado Livre's own docs
- *    ("Gestão de packs") describe `pack_id` as present "se estiver associado a
- *    um pacote" and the every-order-gets-a-pack rollout as gradual, so a stored
- *    `null` is a valid steady state, not a lost value — such an order resolves
- *    through the `id ==` fallback instead. This merge leaves it `null`.
+ * Legacy's `OrderML.update` (`.old/.../models.odm.g.dart:27642-27672`, reached
+ * from `tasks.dart:328-329`) solved that with a blanket `other.field ?? this.field`,
+ * which never clears anything — so a field ML genuinely un-sets stays stale
+ * forever, and the doc stops being a mirror. This is deliberately STRICTER:
  *
- * ⚠️ Deviation from a literal transcription of `OrderML.update`: legacy names
- * its ~17 fields explicitly, but `.old/` is not part of this checkout, so the
- * coalescing is applied to EVERY key instead of a hand-copied list. That is a
- * superset of legacy's behaviour and matches its intent for every field we can
- * confirm (`pack_id`, `status_detail`, `tags`, `comment`) — and it has a second
- * benefit the field list wouldn't give: `orderMLSchema` is `.passthrough()`, so
- * a key the still-deployed Flutter app wrote that this wire never emits now
- * survives a refresh instead of being silently dropped (dual-run coexistence).
+ *  - **ML spoke about the field** (present in the raw order, `null` or not) →
+ *    the incoming value wins, including an explicit `null`. Clearing works.
+ *  - **ML was silent** (key absent — a `206 Partial Content` body) → the stored
+ *    value is preserved. Nothing is lost to a partial refresh.
  *
- * Field-level, never deep: a non-null `order_items`/`payments`/`buyer` replaces
- * the stored one wholesale, exactly like Dart's `??` on a nullable field. Note
- * `buildOrderMLWire` emits `order_items` as `[]` (not `null`) for an order with
- * no lines, so an empty list still overwrites — again matching legacy, where
- * `[]` is non-null.
+ * That distinction, not the HTTP status, is what protects `pack_id`: it holds
+ * even for a truncated body returned with a `200`. The status is still used, one
+ * notch above this function — a confirmed complete `200` skips the merge
+ * entirely and replaces the doc (`orderPedidoTx.ts`), so a full answer restores
+ * the exact byte shape Flutter's `OrderML.toJson()` would write.
+ *
+ * Note `pack_id: null` on a complete payload is a legitimate steady state, not
+ * a loss — Mercado Livre's "Gestão de packs" docs describe `pack_id` as present
+ * only "se estiver associado a um pacote", the every-order-gets-a-pack rollout
+ * being gradual, and such an order resolves through the `id ==` fallback.
+ *
+ * Field-level, never deep: a carried `order_items`/`payments`/`buyer` replaces
+ * the stored one wholesale.
  */
 export function mergeOrderMLWire(
   existing: Record<string, unknown>,
   incoming: Record<string, unknown>,
+  carriedByPayload: ReadonlySet<string>,
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...existing };
+
   for (const [key, value] of Object.entries(incoming)) {
-    // `incoming ?? existing` — a null/absent incoming value never clears a
-    // stored one. Both null (or unknown to both) still writes the null, so a
-    // never-set key keeps its explicit `null` rather than vanishing.
-    if (value == null && merged[key] != null) continue;
-    merged[key] = value;
+    // Carried → ML's value wins. Otherwise keep what's stored, and fall back to
+    // the wire's synthesized `null` only when the doc has no value at all, so a
+    // never-set key still lands as an explicit `null` rather than vanishing.
+    if (carriedByPayload.has(key) || !(key in merged)) merged[key] = value;
   }
+
+  // A `writeNotNull` key (`status_detail`/`tags`/`comment`) that ML sent as an
+  // explicit null: carried, but omitted from the wire. Clear it — leaving the
+  // stored value is exactly the staleness this function exists to avoid.
+  for (const key of carriedByPayload) {
+    if (!(key in incoming)) merged[key] = null;
+  }
+
   return merged;
 }

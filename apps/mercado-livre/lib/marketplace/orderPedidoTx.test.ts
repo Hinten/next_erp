@@ -677,56 +677,74 @@ describe('discoverPedidoMercadoLivre — embedded payments upsert', () => {
   });
 });
 
-/* --------------------- orderML mirror: merge, not replace ------------------ */
-// #793. Legacy refreshed the mirror with `OrderML.update`
-// (`other.field ?? this.field`); this port used to `tx.set` the whole wire,
-// which deletes every key `buildOrderMLWire` nulls or omits. `pack_id` is the
-// load-bearing one: `resolvePedidoIdByOrderId` matches it FIRST, so a mirror
-// that loses it strands every later payments/shipments/claims notification for
-// that cart on `pedido-nao-encontrado`.
+/* ------------------ orderML mirror: replace vs. merge (#793) --------------- */
+// The mirror is REPLACED whenever ML spoke in full — a fresh create, or a
+// refresh whose `GET /orders/{id}` answered a complete 200 (reported through
+// `completeOrderIds`). That keeps it a real mirror: a field ML cleared clears
+// here too. Anything we can't call complete goes through the presence-keyed
+// merge instead, so a `206 Partial Content` body — which OMITS fields rather
+// than nulling them — can't destroy what it stayed silent about.
 //
-// The payload that triggers it is a `206 Partial Content` answer to
-// `GET /orders/{id}` — accepted as a success by the API client
-// (`packages/integrations/mercado-livre/src/api.ts`), with `pack_id` and the
-// `writeNotNull` keys simply absent from the body. `resolvePackOrders`
-// re-fetches EVERY order of the pack on every refresh
-// (`orderImport.ts:305-306`), so each of those fetches is an independent
-// chance to answer partially.
+// `pack_id` is why this matters: `resolvePedidoIdByOrderId` matches it FIRST,
+// so a mirror that loses it strands every later payments/shipments/claims
+// notification for that cart on `pedido-nao-encontrado`. And
+// `resolvePackOrders` re-fetches EVERY order of the pack on every refresh
+// (`orderImport.ts`), so each of those fetches is an independent chance to
+// answer partially.
 
 const PACK_ID = 9001;
 
-/** A `206 Partial Content` refresh of `orderId` — fresher than the original,
- * but with no `pack_id` and none of the writeNotNull keys. */
+/** A `206 Partial Content` refresh: fresher, but the omitted keys are genuinely
+ * ABSENT — not nulled. That absence is the whole discriminator. */
 function makePartialRefresh(orderId: number): MlOrder {
-  return makeOrder({ id: orderId, packId: null, lastUpdated: '2026-01-02T00:00:00.000Z' });
+  return {
+    id: orderId,
+    status: 'paid',
+    date_created: '2026-01-01T00:00:00.000Z',
+    last_updated: '2026-01-02T00:00:00.000Z',
+    order_items: [],
+    payments: [],
+    // NOTE: no `pack_id`, `status_detail`, `tags` or `comment` keys at all.
+  } as unknown as MlOrder;
 }
 
-/** Full first import of a two-order pack, then a partial refresh of both. */
-async function importPackThenRefreshPartially(db: FakeDb): Promise<string> {
-  const itens = new Map([
-    [1001, [makeItem({ ensureUniqueId: 'u1', produtoUid: 'p1' })]],
-    [1002, [makeItem({ ensureUniqueId: 'u2', produtoUid: 'p2' })]],
-  ]);
-  const full = [1001, 1002].map(
-    (id) =>
-      ({
-        ...makeOrder({ id, packId: PACK_ID, lastUpdated: '2026-01-01T00:00:00.000Z' }),
-        status_detail: 'accredited',
-        tags: ['pack_order', 'paid'],
-        comment: 'entregar na portaria',
-      }) as unknown as MlOrder,
-  );
+/** A full order as first imported — every writeNotNull key populated. */
+function makeFullOrder(id: number, packId: number | null): MlOrder {
+  return {
+    ...makeOrder({ id, packId, lastUpdated: '2026-01-01T00:00:00.000Z' }),
+    status_detail: 'accredited',
+    tags: ['pack_order', 'paid'],
+    comment: 'entregar na portaria',
+  } as unknown as MlOrder;
+}
 
+const PACK_ITENS = new Map([
+  [1001, [makeItem({ ensureUniqueId: 'u1', produtoUid: 'p1' })]],
+  [1002, [makeItem({ ensureUniqueId: 'u2', produtoUid: 'p2' })]],
+]);
+
+/** Full first import of a two-order pack, then a refresh of both. `complete`
+ * decides whether that refresh is reported as a 200 or left unknown (206). */
+async function importPackThenRefresh(
+  db: FakeDb,
+  refresh: MlOrder[],
+  complete: boolean,
+): Promise<string> {
   const first = await discoverPedidoMercadoLivre(
-    baseArgs(db, { orders: full, packId: PACK_ID, itensByOrderId: itens }),
+    baseArgs(db, {
+      orders: [makeFullOrder(1001, PACK_ID), makeFullOrder(1002, PACK_ID)],
+      packId: PACK_ID,
+      itensByOrderId: PACK_ITENS,
+    }),
   );
   expect(first.created).toBe(true);
 
   const refreshed = await discoverPedidoMercadoLivre(
     baseArgs(db, {
-      orders: [makePartialRefresh(1001), makePartialRefresh(1002)],
+      orders: refresh,
       packId: PACK_ID,
-      itensByOrderId: itens,
+      itensByOrderId: PACK_ITENS,
+      completeOrderIds: complete ? new Set(refresh.map((o) => o.id)) : undefined,
     }),
   );
   // Same pedido — the refresh must land on the docs the first import wrote.
@@ -735,10 +753,15 @@ async function importPackThenRefreshPartially(db: FakeDb): Promise<string> {
   return first.pedidoId;
 }
 
-describe('discoverPedidoMercadoLivre — orderML mirror refresh (#793)', () => {
-  it('a refresh payload without pack_id leaves the stored pack_id intact', async () => {
+/** The two-order pack refreshed from partial (206-shaped) payloads. */
+function refreshPackPartially(db: FakeDb): Promise<string> {
+  return importPackThenRefresh(db, [makePartialRefresh(1001), makePartialRefresh(1002)], false);
+}
+
+describe('discoverPedidoMercadoLivre — orderML refresh from a PARTIAL payload (#793)', () => {
+  it('a payload that omits pack_id leaves the stored pack_id intact', async () => {
     const db = new FakeDb();
-    const pedidoId = await importPackThenRefreshPartially(db);
+    const pedidoId = await refreshPackPartially(db);
 
     const mirrors = db.docs(`pedidos/${pedidoId}/orderML`);
     expect(mirrors.get('1001')!.pack_id).toBe(PACK_ID);
@@ -747,16 +770,16 @@ describe('discoverPedidoMercadoLivre — orderML mirror refresh (#793)', () => {
 
   it('a payments notification for that cart still resolves to the pedido afterwards', async () => {
     const db = new FakeDb();
-    const pedidoId = await importPackThenRefreshPartially(db);
+    const pedidoId = await refreshPackPartially(db);
 
     // The pack-first branch of the shared resolver — what the payments,
     // shipments and claims handlers all call.
     await expect(resolvePedidoIdByOrderId(asDb(db), PACK_ID)).resolves.toBe(pedidoId);
   });
 
-  it('keeps the writeNotNull keys (status_detail / tags / comment) the refresh omits', async () => {
+  it('keeps the writeNotNull keys (status_detail / tags / comment) it omits', async () => {
     const db = new FakeDb();
-    const pedidoId = await importPackThenRefreshPartially(db);
+    const pedidoId = await refreshPackPartially(db);
 
     const mirror = db.docs(`pedidos/${pedidoId}/orderML`).get('1001')!;
     expect(mirror.status_detail).toBe('accredited');
@@ -764,33 +787,110 @@ describe('discoverPedidoMercadoLivre — orderML mirror refresh (#793)', () => {
     expect(mirror.comment).toBe('entregar na portaria');
   });
 
-  it('still lets a fresher non-null value win (the mirror is refreshed, not frozen)', async () => {
+  it('still applies every value the partial payload DOES carry', async () => {
     const db = new FakeDb();
-    const pedidoId = await importPackThenRefreshPartially(db);
+    const pedidoId = await refreshPackPartially(db);
 
     const mirror = db.docs(`pedidos/${pedidoId}/orderML`).get('1001')!;
-    // `status` and the dates rode in on the (fresher) refresh payload.
     expect(mirror.last_updated).toBe(Date.parse('2026-01-02T00:00:00.000Z'));
   });
+});
 
-  it('an order that never had a pack keeps pack_id null and resolves via the id fallback', async () => {
-    // Mercado Livre still documents `pack_id` as present only "se estiver
-    // associado a um pacote" (the every-order-gets-a-pack rollout is gradual),
-    // so a stored `null` is a valid steady state — the merge must not invent
-    // one, and the `id ==` fallback must keep working.
+describe('discoverPedidoMercadoLivre — orderML refresh from a COMPLETE 200', () => {
+  it('replaces the doc wholesale, clearing what ML no longer sends', async () => {
+    // `makeOrder` names `pack_id` explicitly and omits the writeNotNull keys the
+    // first import had set — a complete answer, so the mirror must follow it
+    // rather than keep the stale values.
     const db = new FakeDb();
-    const itens = new Map([[2001, [makeItem({ ensureUniqueId: 'u1', produtoUid: 'p1' })]]]);
+    const pedidoId = await importPackThenRefresh(
+      db,
+      [
+        makeOrder({ id: 1001, packId: PACK_ID, lastUpdated: '2026-01-02T00:00:00.000Z' }),
+        makeOrder({ id: 1002, packId: PACK_ID, lastUpdated: '2026-01-02T00:00:00.000Z' }),
+      ],
+      true,
+    );
 
+    const mirror = db.docs(`pedidos/${pedidoId}/orderML`).get('1001')!;
+    expect(mirror.pack_id).toBe(PACK_ID); // ML still says it belongs to the pack
+    expect(mirror).not.toHaveProperty('status_detail'); // cleared, not preserved
+    expect(mirror).not.toHaveProperty('tags');
+    expect(mirror).not.toHaveProperty('comment');
+  });
+
+  it('honours a complete payload that nulls pack_id — the order left the pack', async () => {
+    const db = new FakeDb();
+    const pedidoId = await importPackThenRefresh(
+      db,
+      [
+        makeOrder({ id: 1001, packId: null, lastUpdated: '2026-01-02T00:00:00.000Z' }),
+        makeOrder({ id: 1002, packId: null, lastUpdated: '2026-01-02T00:00:00.000Z' }),
+      ],
+      true,
+    );
+
+    expect(db.docs(`pedidos/${pedidoId}/orderML`).get('1001')!).toHaveProperty('pack_id', null);
+  });
+
+  it('is per-order: one sibling answering 200 never licenses replacing the other', async () => {
+    // Only 1001 came back complete; 1002's partial answer must still merge.
+    const db = new FakeDb();
+    const first = await discoverPedidoMercadoLivre(
+      baseArgs(db, {
+        orders: [makeFullOrder(1001, PACK_ID), makeFullOrder(1002, PACK_ID)],
+        packId: PACK_ID,
+        itensByOrderId: PACK_ITENS,
+      }),
+    );
+
+    await discoverPedidoMercadoLivre(
+      baseArgs(db, {
+        orders: [
+          makeOrder({ id: 1001, packId: PACK_ID, lastUpdated: '2026-01-02T00:00:00.000Z' }),
+          makePartialRefresh(1002),
+        ],
+        packId: PACK_ID,
+        itensByOrderId: PACK_ITENS,
+        completeOrderIds: new Set([1001]),
+      }),
+    );
+
+    const mirrors = db.docs(`pedidos/${first.pedidoId}/orderML`);
+    expect(mirrors.get('1001')!).not.toHaveProperty('tags'); // replaced
+    expect(mirrors.get('1002')!.tags).toEqual(['pack_order', 'paid']); // merged
+    expect(mirrors.get('1002')!.pack_id).toBe(PACK_ID);
+  });
+});
+
+describe('discoverPedidoMercadoLivre — orders with no pack at all', () => {
+  // Mercado Livre still documents `pack_id` as present only "se estiver
+  // associado a um pacote" (the every-order-gets-a-pack rollout is gradual), so
+  // a stored `null` is a valid steady state — neither path may invent one, and
+  // the `id ==` fallback must keep working.
+  const ITENS = new Map([[2001, [makeItem({ ensureUniqueId: 'u1', produtoUid: 'p1' })]]]);
+
+  it.each([
+    ['a partial refresh', false],
+    ['a complete 200 refresh', true],
+  ])('keeps pack_id null and resolves via the id fallback after %s', async (_label, complete) => {
+    const db = new FakeDb();
     const first = await discoverPedidoMercadoLivre(
       baseArgs(db, {
         orders: [makeOrder({ id: 2001, lastUpdated: '2026-01-01T00:00:00.000Z' })],
-        itensByOrderId: itens,
+        itensByOrderId: ITENS,
       }),
     );
     expect(first.pedidoId).toBe(makePedidoIdMercadoLivre(CONTA_ID, 2001));
 
+    const refresh = complete
+      ? makeOrder({ id: 2001, lastUpdated: '2026-01-02T00:00:00.000Z' })
+      : makePartialRefresh(2001);
     await discoverPedidoMercadoLivre(
-      baseArgs(db, { orders: [makePartialRefresh(2001)], itensByOrderId: itens }),
+      baseArgs(db, {
+        orders: [refresh],
+        itensByOrderId: ITENS,
+        completeOrderIds: complete ? new Set([2001]) : undefined,
+      }),
     );
 
     const mirror = db.docs(`pedidos/${first.pedidoId}/orderML`).get('2001')!;

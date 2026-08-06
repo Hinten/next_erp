@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
-import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import {
+  MercadoLivreHttpError,
+  type MercadoLivreApi,
+  type MlOrder,
+} from '@delfrance/integrations-mercado-livre';
 
 import { OrderItemsIncompleteError } from './orderMapping';
 
@@ -203,7 +207,7 @@ function makeOrder(opts: {
 }
 
 function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): MercadoLivreApi {
-  return {
+  const base: Record<string, unknown> = {
     getOrder: vi.fn(),
     getPack: vi.fn(),
     searchOrders: vi.fn(),
@@ -220,7 +224,20 @@ function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): Me
     getSellerShippingSchedule: vi.fn(),
     getOrderBillingInfo: vi.fn(async () => ({ site_id: 'MLB', buyer: {}, seller: {} })),
     ...over,
-  } as unknown as MercadoLivreApi;
+  };
+
+  // The import fetches orders through `getOrderResponse` (it needs 200-vs-206 to
+  // decide replace-vs-merge on the orderML mirror — #793). Derive it from
+  // whatever `getOrder` the test supplied and report a complete 200, which is
+  // the normal case; a test that needs a partial answer overrides it directly.
+  if (base.getOrderResponse == null) {
+    const getOrder = base.getOrder as (id: number | string) => Promise<MlOrder>;
+    base.getOrderResponse = vi.fn(async (id: number | string) => ({
+      order: await getOrder(id),
+      complete: true,
+    }));
+  }
+  return base as unknown as MercadoLivreApi;
 }
 
 function deps(db: FakeDb, api: MercadoLivreApi): OrderImportDeps {
@@ -334,6 +351,43 @@ describe('importPedidoMercadoLivre — order/pack fetch', () => {
     expect(args.orders.map((o) => o.id)).toEqual([11, 12]);
     expect(args.itensByOrderId.get(11)).toHaveLength(1);
     expect(args.itensByOrderId.get(12)).toHaveLength(1);
+    // Both fetches answered a complete 200 (the makeApi default).
+    expect([...(args.completeOrderIds ?? [])].sort()).toEqual([11, 12]);
+  });
+
+  it('reports completeness PER ORDER — one sibling answering 206 does not taint the others', async () => {
+    // Every order of the pack is its own `GET /orders/{id}`, so a partial answer
+    // for one must not license replacing the others' orderML mirrors (#793).
+    const db = new FakeDb();
+    seedConta(db);
+    const initial = makeOrder({ id: 11, packId: 100 });
+    const sibling = makeOrder({ id: 12, packId: 100 });
+    const api = makeApi({
+      getPack: vi.fn(async () => ({ id: 100, status: 'ready', orders: [{ id: 11 }, { id: 12 }] })),
+      getOrderResponse: vi.fn(async (id: number) =>
+        id === 11 ? { order: initial, complete: true } : { order: sibling, complete: false },
+      ),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 11);
+
+    const args = vi.mocked(discoverPedidoMercadoLivre).mock.calls[0]![0];
+    expect(args.orders.map((o) => o.id)).toEqual([11, 12]);
+    expect([...(args.completeOrderIds ?? [])]).toEqual([11]);
+  });
+
+  it('leaves completeOrderIds empty when the initiating fetch is a 206', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const order = makeOrder({ id: 1 });
+    const api = makeApi({
+      getOrderResponse: vi.fn(async () => ({ order, complete: false })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const args = vi.mocked(discoverPedidoMercadoLivre).mock.calls[0]![0];
+    expect([...(args.completeOrderIds ?? [])]).toEqual([]);
   });
 });
 
