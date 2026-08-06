@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
-import { buildOrderMLWire } from './orderMLWire';
+import { buildOrderMLWire, mergeOrderMLWire, orderMLKeysCarriedBy } from './orderMLWire';
 
 /**
  * Fixture ported straight from the legacy sample order payload documented in
@@ -302,5 +302,217 @@ describe('buildOrderMLWire', () => {
     const order = { id: 1, status: 'confirmed', buyer: { id: 1 } } as unknown as MlOrder;
     const wire = buildOrderMLWire({ order, contaOuterRef: 'integracao/CONTA999' });
     expect(wire.contaMercadoLivreOuterRef).toBe('documents/integracao/CONTA999');
+  });
+});
+
+/* ========================================================================== */
+/*                    orderMLKeysCarriedBy + mergeOrderMLWire                 */
+/* ========================================================================== */
+
+const CONTA_OUTER_REF = 'integracao/CONTA123';
+
+/** The stored mirror doc a complete order left behind, as `buildOrderMLWire`
+ * would have written it (only the keys these tests read about). */
+function storedMirror(): Record<string, unknown> {
+  return {
+    id: 2000003508897196,
+    contaMercadoLivreOuterRef: 'documents/integracao/CONTA123',
+    status: 'paid',
+    status_detail: 'accredited',
+    tags: ['pack_order', 'paid'],
+    comment: 'entregar na portaria',
+    pack_id: 2000003508553677,
+    pickup_id: null,
+    buying_mode: 'buy_equals_pay',
+    last_updated: 1649451812000,
+    total_amount: 50,
+    paid_amount: 50,
+    payments: [{ id: 21463688923 }],
+    buyer: { id: 266272126 },
+    shipping: { id: 41297142475 },
+    order_items: [{ item: { id: 'MLB2608564035' } }],
+  };
+}
+
+/** Build the two inputs a refresh feeds the merge, from one raw ML order. */
+function refreshFrom(order: MlOrder): {
+  wire: Record<string, unknown>;
+  carried: ReadonlySet<string>;
+} {
+  return {
+    wire: buildOrderMLWire({ order, contaOuterRef: CONTA_OUTER_REF }),
+    carried: orderMLKeysCarriedBy(order),
+  };
+}
+
+/** A `206 Partial Content` body: the fields below are simply ABSENT, which is
+ * what distinguishes it from ML explicitly nulling them. */
+function partialOrder(): MlOrder {
+  return { id: 2000003508897196, status: 'paid', order_items: [] } as unknown as MlOrder;
+}
+
+/** A complete `200` body: ML names every field, nulls included. */
+function completeOrderNullingEverything(): MlOrder {
+  return {
+    id: 2000003508897196,
+    status: 'paid',
+    order_items: [],
+    pack_id: null,
+    status_detail: null,
+    tags: null,
+    comment: null,
+  } as unknown as MlOrder;
+}
+
+describe('orderMLKeysCarriedBy', () => {
+  it('names only the fields the payload actually carries', () => {
+    const carried = orderMLKeysCarriedBy(partialOrder());
+
+    expect(carried.has('id')).toBe(true);
+    expect(carried.has('status')).toBe(true);
+    expect(carried.has('order_items')).toBe(true);
+    // Absent from the body → ML said nothing about them.
+    expect(carried.has('pack_id')).toBe(false);
+    expect(carried.has('status_detail')).toBe(false);
+    expect(carried.has('tags')).toBe(false);
+    expect(carried.has('comment')).toBe(false);
+  });
+
+  it('counts an explicit null as carried — ML spoke, it just said null', () => {
+    const carried = orderMLKeysCarriedBy(completeOrderNullingEverything());
+
+    expect(carried.has('pack_id')).toBe(true);
+    expect(carried.has('status_detail')).toBe(true);
+    expect(carried.has('tags')).toBe(true);
+    expect(carried.has('comment')).toBe(true);
+  });
+
+  it('always counts contaMercadoLivreOuterRef — it is ours, never ML’s', () => {
+    expect(orderMLKeysCarriedBy(partialOrder()).has('contaMercadoLivreOuterRef')).toBe(true);
+  });
+});
+
+describe('mergeOrderMLWire', () => {
+  it('keeps the stored pack_id when the payload omits it (#793)', () => {
+    const { wire, carried } = refreshFrom(partialOrder());
+    // Precondition: the wire really does synthesize a null for the absent key.
+    expect(wire.pack_id).toBeNull();
+
+    const merged = mergeOrderMLWire(storedMirror(), wire, carried);
+
+    expect(merged.pack_id).toBe(2000003508553677);
+  });
+
+  it('CLEARS pack_id when the payload explicitly nulls it', () => {
+    const { wire, carried } = refreshFrom(completeOrderNullingEverything());
+
+    const merged = mergeOrderMLWire(storedMirror(), wire, carried);
+
+    expect(merged).toHaveProperty('pack_id', null);
+  });
+
+  it('keeps the writeNotNull keys the payload omits', () => {
+    const { wire, carried } = refreshFrom(partialOrder());
+    expect(wire).not.toHaveProperty('status_detail');
+    expect(wire).not.toHaveProperty('tags');
+    expect(wire).not.toHaveProperty('comment');
+
+    const merged = mergeOrderMLWire(storedMirror(), wire, carried);
+
+    expect(merged.status_detail).toBe('accredited');
+    expect(merged.tags).toEqual(['pack_order', 'paid']);
+    expect(merged.comment).toBe('entregar na portaria');
+  });
+
+  it('CLEARS the writeNotNull keys the payload explicitly nulls', () => {
+    // The wire omits them either way, so only `carried` can tell the two apart.
+    const { wire, carried } = refreshFrom(completeOrderNullingEverything());
+    expect(wire).not.toHaveProperty('status_detail');
+
+    const merged = mergeOrderMLWire(storedMirror(), wire, carried);
+
+    expect(merged).toHaveProperty('status_detail', null);
+    expect(merged).toHaveProperty('tags', null);
+    expect(merged).toHaveProperty('comment', null);
+  });
+
+  it('lets a non-null carried value win — including a pack_id change', () => {
+    // ML reassigns pack_id when e.g. an extended warranty is added to a
+    // not_specified item ("criando um novo pack_id").
+    const carried = new Set(['pack_id', 'status', 'status_detail', 'tags', 'last_updated']);
+    const merged = mergeOrderMLWire(
+      storedMirror(),
+      {
+        pack_id: 2000009999999999,
+        status: 'cancelled',
+        status_detail: 'refunded',
+        tags: ['cancelled'],
+        last_updated: 1649999999000,
+      },
+      carried,
+    );
+
+    expect(merged).toMatchObject({
+      pack_id: 2000009999999999,
+      status: 'cancelled',
+      status_detail: 'refunded',
+      tags: ['cancelled'],
+      last_updated: 1649999999000,
+    });
+  });
+
+  it('seeds a wire null when the stored doc has no value at all', () => {
+    // Not carried and not stored → the explicit null still lands, so the doc
+    // shape stays complete rather than losing the key.
+    const merged = mergeOrderMLWire({ id: 1 }, { id: 1, pack_id: null }, new Set(['id']));
+
+    expect(merged).toHaveProperty('pack_id', null);
+  });
+
+  it('preserves a stored key neither the wire nor the payload mentions', () => {
+    // Dual-run: `orderMLSchema` is passthrough, so a Flutter-written field must
+    // survive a partial refresh.
+    const stored = { ...storedMirror(), campoEscritoPeloFlutter: 'preservar' };
+    const { wire, carried } = refreshFrom(partialOrder());
+
+    const merged = mergeOrderMLWire(stored, wire, carried);
+
+    expect(merged.campoEscritoPeloFlutter).toBe('preservar');
+  });
+
+  it('does not mutate the stored object it merges onto', () => {
+    const stored = storedMirror();
+    mergeOrderMLWire(stored, { pack_id: 42 }, new Set(['pack_id']));
+    expect(stored).toEqual(storedMirror());
+  });
+
+  it('replaces a carried list/object wholesale — field-level, never deep', () => {
+    const merged = mergeOrderMLWire(
+      storedMirror(),
+      { order_items: [], payments: [{ id: 99 }], buyer: { id: 7 } },
+      new Set(['order_items', 'payments', 'buyer']),
+    );
+
+    expect(merged.order_items).toEqual([]);
+    expect(merged.payments).toEqual([{ id: 99 }]);
+    expect(merged.buyer).toEqual({ id: 7 });
+  });
+
+  it('preserves EVERY key a partial payload stays silent about', () => {
+    // Table-driven, so the answer doesn't depend on a hand-copied field list.
+    const full = buildOrderMLWire({
+      order: buildFixtureOrder(),
+      contaOuterRef: CONTA_OUTER_REF,
+    });
+    const { wire, carried } = refreshFrom(partialOrder());
+
+    const merged = mergeOrderMLWire(full, wire, carried);
+
+    for (const [key, storedValue] of Object.entries(full)) {
+      // `id`/`status`/`order_items` ARE carried by the partial body, so they
+      // legitimately take the incoming value.
+      if (carried.has(key)) continue;
+      expect({ key, value: merged[key] }).toEqual({ key, value: storedValue });
+    }
   });
 });
