@@ -244,12 +244,6 @@ function enderecoFields(overrides: Partial<EnderecoImportFields> = {}): Endereco
   };
 }
 
-/** Narrows a mapper's `| null` return without a non-null assertion. */
-function requireFields(fields: EnderecoImportFields | null): EnderecoImportFields {
-  if (fields == null) throw new Error('the fixture must produce an endereço');
-  return fields;
-}
-
 /* --------------------------------------------------------------------------- */
 
 describe('billingInfoToClienteFields', () => {
@@ -516,9 +510,16 @@ const FULL = '70d9018b0d28f930c549ce4ad9e164b3be7904d5';
 // sha1("enderecoRua Augusta1500Apt 42Consolação01305100São PauloSP")
 const FULL_WITH_COMPLEMENTO = 'e9628f9968f54ac0c1a6f3270e73bff09134a30e';
 // sha1("enderecoNAO INFORMADOS/NSEM BAIRRO01310100NAO INFORMADASP")
-const BILLING_FALLBACKS = '303b2fa905f645c8ca70c704df4bea5c27d3b971';
+// Since #789 unified the two fallback vocabularies onto `ENDERECO_FALLBACKS`,
+// this is BOTH mappers' digest for a fallback-only address — see the
+// `both mappers now agree` case below.
+const UNIFIED_FALLBACKS = '303b2fa905f645c8ca70c704df4bea5c27d3b971';
 // sha1("enderecoNão informadoS/NNão informadoNão informado01310100NAO INFORMADASP")
-const SHIPMENT_FALLBACKS = 'f1726b875c77521560406cbb8b6a9d032367788b';
+// — what the shipment path produced BEFORE #789 unified it, i.e. what the
+// still-running Flutter writer produces for this payload. Pinned as a
+// `.not.toBe` so the accepted dual-run fork stays visible, the same way
+// LEGACY_*_NUMERO below pin theirs.
+const LEGACY_SHIPMENT_FALLBACKS = 'f1726b875c77521560406cbb8b6a9d032367788b';
 // sha1("enderecoNAO INFORMADOS/NSEM BAIRRO01310100NAO INFORMADAAC") — estado absent
 const BILLING_FALLBACKS_UF_AC = 'c9a338fc57a5c098b31ed098fc95fc586db76b6f';
 // sha1("enderecoNAO INFORMADONAO INFORMADOSEM BAIRRO01310100NAO INFORMADASP")
@@ -568,11 +569,23 @@ describe('makeEnderecoId', () => {
  * end-to-end from an ML payload through the real mapper rather than from a
  * hand-written field literal, which is what makes them bite.
  *
- * #789 replaces both mappers with one shared `forceEndereco`-faithful builder
- * and unifies the two fallback vocabularies. The moment it does, these go red.
- * That is the point: unifying them re-keys every address that hits a fallback,
- * so the port creates a DUPLICATE instead of recovering the doc the Flutter app
- * already wrote. The re-key has to be a decision, not a discovery.
+ * #789 has now landed: both mappers are adapters over one shared
+ * `buildEnderecoForcado`, and the two fallback vocabularies are unified onto
+ * `ENDERECO_FALLBACKS`. This block was written to go red at exactly that moment,
+ * because unifying them re-keys every address that hits a fallback — the port
+ * creates a DUPLICATE instead of recovering the doc the Flutter app already
+ * wrote, and that had to be a decision rather than a discovery.
+ *
+ * The decision was taken and is recorded in `orderCliente.ts`'s header (the
+ * unified-fallback deviation): one text for one meaning is worth the divergence,
+ * and `ensureEndereco` creates without overwriting, so the cost is a duplicate
+ * document and never a lost one. These vectors are re-baselined onto the unified
+ * vocabulary to match, and the pre-#789 shipment digest is kept as
+ * `LEGACY_SHIPMENT_FALLBACKS` — asserted `.not.toBe` — so the accepted fork
+ * stays pinned instead of being deleted along with the knowledge of it.
+ *
+ * The BILLING vectors are unchanged: `ENDERECO_FALLBACKS` is the billing
+ * vocabulary, so only the shipment path moved.
  */
 describe('makeEnderecoId — mapper fallback vectors', () => {
   /** Every optional billing address field absent — every fallback fires at once. */
@@ -585,10 +598,10 @@ describe('makeEnderecoId — mapper fallback vectors', () => {
   };
 
   const billingFallbackFields = () =>
-    requireFields(billingInfoToEnderecoFields(cpfBillingInfo({}, emptyBillingAddress)));
+    fieldsOf(billingInfoToEnderecoFields(cpfBillingInfo({}, emptyBillingAddress)));
 
   const shipmentFallbackFields = () =>
-    requireFields(
+    fieldsOf(
       shipmentToEnderecoFields(
         shipmentWithReceiverAddress({ postal_code: '01310100', state: { name: 'SP' } }),
       ),
@@ -604,35 +617,44 @@ describe('makeEnderecoId — mapper fallback vectors', () => {
       cidade: 'NAO INFORMADA',
       estado: UF_SIGLA.SP,
     });
-    expect(makeEnderecoId(fields)).toBe(BILLING_FALLBACKS);
+    expect(makeEnderecoId(fields)).toBe(UNIFIED_FALLBACKS);
   });
 
-  it('pins the shipment fallbacks: Não informado ×3 / S/N / NAO INFORMADA', () => {
+  it('pins the shipment fallbacks: now the SAME unified vocabulary as billing', () => {
     const fields = shipmentFallbackFields();
     expect(fields).toMatchObject({
-      logradouro: 'Não informado',
+      logradouro: 'NAO INFORMADO',
       numero: 'S/N',
-      // Unlike billing, the shipment mapper fills complemento rather than
-      // leaving it null (models.dart:5332) — a hashed slot, so it re-keys too.
-      complemento: 'Não informado',
-      bairro: 'Não informado',
+      // Pre-#789 the shipment mapper pre-filled complemento with 'Não informado'
+      // (models.dart:5332) before force ever saw it; it now passes the raw value
+      // through, so an absent complement stays null. A hashed slot, so this alone
+      // re-keys the address.
+      complemento: null,
+      bairro: 'SEM BAIRRO',
       cidade: 'NAO INFORMADA',
+      estado: UF_SIGLA.SP,
     });
-    expect(makeEnderecoId(fields)).toBe(SHIPMENT_FALLBACKS);
+    expect(makeEnderecoId(fields)).toBe(UNIFIED_FALLBACKS);
   });
 
-  it('the two mappers disagree, so the SAME empty address forks by which one built it', () => {
+  it('the shipment fallback address no longer hashes to what Flutter writes for it', () => {
+    // The accepted dual-run cost of the unification: the still-running Flutter
+    // writer keys this same payload on the pre-#789 digest, so the port creates a
+    // SECOND endereço rather than recovering that one. `ensureEndereco` creates
+    // without overwriting, so it is a duplicate document, never a lost one.
+    expect(makeEnderecoId(shipmentFallbackFields())).not.toBe(LEGACY_SHIPMENT_FALLBACKS);
+  });
+
+  it('both mappers now agree, so an empty address no longer forks by which one built it', () => {
     // `applyEnderecoStep` (orderImport.ts) tries billing first and falls back to
-    // the shipment. An order whose billing address later becomes unusable is
-    // re-keyed onto a second endereço purely by that fallback — this asserts the
-    // hazard exists today; #789's unification is what removes it.
-    expect(makeEnderecoId(billingFallbackFields())).not.toBe(
-      makeEnderecoId(shipmentFallbackFields()),
-    );
+    // the shipment. Before #789 that fallback alone re-keyed the order onto a
+    // second endereço; unifying the vocabularies is what removed the hazard, and
+    // this is the assertion that holds it removed.
+    expect(makeEnderecoId(billingFallbackFields())).toBe(makeEnderecoId(shipmentFallbackFields()));
   });
 
   it('pins resolveUf(null) → AC: an address with no estado folds into the AC bucket', () => {
-    const fields = requireFields(
+    const fields = fieldsOf(
       billingInfoToEnderecoFields(cpfBillingInfo({}, { ...emptyBillingAddress, state: null })),
     );
     expect(fields.estado).toBe(UF_SIGLA.AC);
@@ -646,7 +668,8 @@ describe('makeEnderecoId — mapper fallback vectors', () => {
     // would have written for these exact payloads (derived from that documented
     // text, not from a Dart run). So a número-less address DOES resolve to a
     // different doc than the Flutter app's — a real, accepted duplicate, pinned
-    // here so the deviation stays deliberate. #789 owns whether to keep it.
+    // here so the deviation stays deliberate. #789 kept it, and its header now
+    // records why (the `numero` fallback-text deviation).
     expect(makeEnderecoId(billingFallbackFields())).not.toBe(LEGACY_BILLING_NUMERO);
     expect(makeEnderecoId(shipmentFallbackFields())).not.toBe(LEGACY_SHIPMENT_NUMERO);
   });

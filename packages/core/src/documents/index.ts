@@ -29,6 +29,7 @@ export class DocumentRegistry {
 
 export {
   brDocumentProvider,
+  normalizeDocumento,
   validateCPF,
   validateCNPJ,
   validateCpfCnpj,
