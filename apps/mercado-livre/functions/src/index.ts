@@ -137,14 +137,21 @@ export { onNfeAprovada } from './onNfeAprovada';
 export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChanged';
 
 /**
- * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep
- * + the 2AM daily full sweep, both feeding the `sendMercadoLivreStock` queue.
- * Plain `onSchedule` exports — nothing enqueues against THEIR names, so no
- * rename-safety assertion is needed (the queue they feed is covered by the
- * `MERCADO_LIVRE_STOCK_SEND_QUEUE` assertion above). No-ops until
- * `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` (the coordinated cutover).
+ * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep,
+ * the 2AM daily sweep (a flat 24h window — NOT a reconciliation, #806 S11) and
+ * the weekly Sunday-03:00 force-all reconciliation, all feeding the
+ * `sendMercadoLivreStock` queue. Plain `onSchedule` exports — nothing enqueues
+ * against THEIR names, so no rename-safety assertion is needed (the queue they
+ * feed is covered by the `MERCADO_LIVRE_STOCK_SEND_QUEUE` assertion above).
+ * No-ops until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` (the coordinated cutover);
+ * the reconciliation additionally needs its own
+ * `MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED=1`.
  */
-export { sweepMercadoLivreStock, sweepMercadoLivreStockDaily } from './sweepStock';
+export {
+  sweepMercadoLivreStock,
+  sweepMercadoLivreStockDaily,
+  sweepMercadoLivreStockReconciliacao,
+} from './sweepStock';
 
 /**
  * Periodic backstop that pulls new/updated ML orders for each connected account

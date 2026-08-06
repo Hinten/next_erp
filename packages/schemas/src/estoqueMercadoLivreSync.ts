@@ -51,6 +51,13 @@ export const estoqueMercadoLivreSyncSchema = z.object({
   lastSweepAtUs: microsSinceEpoch().nullable().default(null),
   /** When the 2AM daily sweep last completed for this conta (µs). */
   lastDailyAtUs: microsSinceEpoch().nullable().default(null),
+  /**
+   * When the force-all RECONCILIATION pass last completed for this conta (µs).
+   * Its own field, not `lastDailyAtUs`: the 02:00 pass is a flat 24h window and
+   * does NOT reconcile (#806 S11), so conflating the two would tell an operator
+   * a full pass ran when none did. Null until the first reconciliation.
+   */
+  lastReconciliacaoAtUs: microsSinceEpoch().nullable().default(null),
   /** The last contained per-conta error; reset to null on a clean sweep. */
   lastError: z.string().nullable().default(null),
   /** When `lastError` was recorded (µs) — outlives the reset-to-null on recovery. */

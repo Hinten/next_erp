@@ -252,6 +252,7 @@ describe('mlStockSendTaskSchema', () => {
         ehKitVirtual: false,
         publicado: true,
         componentesKit: null,
+        componentesKitKeys: [],
         timestampMs: null,
         estoque: null,
         componentEstoques: [],

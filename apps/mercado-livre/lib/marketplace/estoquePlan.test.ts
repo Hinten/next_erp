@@ -381,6 +381,7 @@ const childrenSub = () => ({
         'ehKitVirtual',
         'publicado',
         'componentesKit',
+        'componentesKitKeys',
         'timestamp',
         alias('estoque', ownEstoqueSub()),
         alias('componentEstoques', compEstoquesSub('childKitKeys')),
@@ -462,6 +463,8 @@ function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): R
         'ehKitVirtual',
         'publicado',
         'componentesKit',
+        // #806 S12 cross-check against componentesKit — projection only.
+        'componentesKitKeys',
         'integracoesComProduto',
         'timestamp',
         alias('estoque', ownEstoqueSub()),
@@ -504,6 +507,7 @@ function member(produtoId: string, extra: Partial<FamilyMember> = {}): FamilyMem
     ehKitVirtual: false,
     publicado: true,
     componentesKit: null,
+    componentesKitKeys: [],
     timestampMs: null,
     estoque: null,
     componentEstoques: [],
@@ -942,6 +946,10 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
           ehKitVirtual: false,
           publicado: true,
           componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+          // The seeded row carries no `componentesKitKeys` — coerced to []. This
+          // IS the #806 S12 shape (a kit whose denorm cannot answer for its
+          // components); `kitDenormInvalido` is what acts on it downstream.
+          componentesKitKeys: [],
           timestampMs: T1,
           estoque: { quantidade: 5, quantidadeReservada: 2, ultimaModificacao: T1 },
           componentEstoques: [
@@ -957,6 +965,7 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
             ehKitVirtual: false,
             publicado: false,
             componentesKit: null,
+            componentesKitKeys: [],
             timestampMs: null,
             estoque: null,
             componentEstoques: [],
@@ -968,6 +977,7 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
             ehKitVirtual: false,
             publicado: true,
             componentesKit: null,
+            componentesKitKeys: [],
             timestampMs: T2,
             estoque: { quantidade: 3, quantidadeReservada: 1 },
             componentEstoques: [],
@@ -983,6 +993,7 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
           ehKitVirtual: false,
           publicado: false,
           componentesKit: null,
+          componentesKitKeys: [],
           timestampMs: null,
           estoque: null,
           componentEstoques: [],
@@ -1725,6 +1736,96 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         { produtoId: 'CH1', reason: 'sem-link' },
         { produtoId: 'CH2', reason: 'sem-link' },
       ],
+    });
+  });
+
+  describe('the kit-denorm-invalido rung (#806 S12)', () => {
+    /** A kit whose componentesKit names a component its keys denorm has lost. */
+    const kitDefasado = (): Partial<FamilyMember> => ({
+      ehKit: true,
+      componentesKit: { COMP: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+      componentesKitKeys: [], // stale: the join fetches nothing for COMP
+    });
+
+    it('a stale anchor denorm SKIPS instead of sending 0', () => {
+      // Before this rung the component resolved to 0, the kit min was 0, and we
+      // PUT available_quantity: 0 — ML then auto-pauses the listing.
+      const row = familyRow({ anchor: kitDefasado() });
+      const { tasks, skips } = run(row, new Map([['PROD', 0]]));
+      expect(tasks).toEqual([]);
+      expect(skips).toEqual([{ produtoId: 'PROD', reason: 'kit-denorm-invalido' }]);
+      expect(vi.mocked(console.error)).toHaveBeenCalledWith(
+        expect.stringContaining('componentesKitKeys defasado'),
+        expect.objectContaining({ produtoId: 'PROD', componentes: 1, chaves: 0 }),
+      );
+    });
+
+    it('a HEALTHY kit is untouched — the keys cover every component', () => {
+      const row = familyRow({
+        anchor: {
+          ehKit: true,
+          componentesKit: { COMP: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+          componentesKitKeys: ['COMP'],
+        },
+      });
+      expect(run(row, new Map([['PROD', 4]])).tasks).toHaveLength(1);
+    });
+
+    it('EXTRA keys are not a defect — only a MISSING one is', () => {
+      const row = familyRow({
+        anchor: {
+          ehKit: true,
+          componentesKit: { COMP: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+          componentesKitKeys: ['COMP', 'REMOVIDO'],
+        },
+      });
+      expect(run(row, new Map([['PROD', 4]])).tasks).toHaveLength(1);
+    });
+
+    it('a non-kit with keys but no componentesKit is not flagged', () => {
+      const row = familyRow({ anchor: { ehKit: false, componentesKit: null } });
+      expect(run(row, new Map([['PROD', 7]])).tasks).toHaveLength(1);
+    });
+
+    it('bulk: only the defasado child drops — its siblings still ride the PUT', () => {
+      const row = familyRow({
+        children: [
+          child('CH1', [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+          child('CH2', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+            ...kitDefasado(),
+          }),
+        ],
+      });
+      const { tasks, skips } = run(
+        row,
+        new Map([
+          ['CH1', 3],
+          ['CH2', 0],
+        ]),
+      );
+      expect(skips).toEqual([{ produtoId: 'CH2', reason: 'kit-denorm-invalido' }]);
+      expect(tasks[0]?.variations).toEqual([{ id: 101, available_quantity: 3 }]);
+    });
+
+    it('UP: the defasado child skips, the sibling sends', () => {
+      const row = familyRow({
+        links: [{ isUserProductModel: true }],
+        children: [
+          child('CH1', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+          child('CH2', [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+            ...kitDefasado(),
+          }),
+        ],
+      });
+      const { tasks, skips } = run(
+        row,
+        new Map([
+          ['CH1', 3],
+          ['CH2', 0],
+        ]),
+      );
+      expect(skips).toEqual([{ produtoId: 'CH2', reason: 'kit-denorm-invalido' }]);
+      expect(tasks.map((t) => t.itemId)).toEqual(['MLB-CH1']);
     });
   });
 

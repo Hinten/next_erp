@@ -2,7 +2,11 @@ import { type ScheduleOptions, onSchedule } from 'firebase-functions/v2/schedule
 import { logger } from 'firebase-functions/v2';
 
 import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoquePlan';
-import { isSlotDoDaily, runStockSweep } from '../../lib/marketplace/estoqueSweep';
+import {
+  type StockSweepMode,
+  isSlotDoDaily,
+  runStockSweep,
+} from '../../lib/marketplace/estoqueSweep';
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';
 
@@ -22,11 +26,24 @@ import { getDb } from './lib/admin';
  *    sync at 02:15, not 03:00; the cursor makes the one skipped slot
  *    self-healing regardless).
  *  - `sweepMercadoLivreStockDaily` — 02:00 America/Sao_Paulo, `'daily'` mode:
- *    the same discovery over a FLAT `dailyWindowHours()` (24h) lookback — NOT
- *    a force-all `changedSinceMs: -1` scan — with no activity filter and no
- *    pedidos probe: the full-reconciliation pass over everything that moved in
- *    the last day. It owns its slot alone (the incremental skips 02:00), so
- *    the two never contend for one conta's caps and state doc.
+ *    the same discovery over a FLAT `dailyWindowHours()` (24h) lookback, with
+ *    no activity filter and no pedidos probe — everything that MOVED in the
+ *    last day. It owns its slot alone (the incremental skips 02:00), so the two
+ *    never contend for one conta's caps and state doc.
+ *    ⚠️ This is NOT a full reconciliation, whatever the code used to call it
+ *    (#806 S11): a listing whose ERP stock has not moved in over 24h is never
+ *    in its window, so ML-side drift — a manual edit on ML, a dropped PUT, a
+ *    task lost past `maxPauseReenqueues` — is invisible to it. That is what
+ *    the weekly pass below exists for.
+ *  - `sweepMercadoLivreStockReconciliacao` — Sunday 03:00, `'reconciliacao'`
+ *    mode: the force-all pass (`changedSinceMs: -1`) that re-sends the conta's
+ *    whole linked catalogue and IGNORES skip-if-unchanged. Gated by its OWN
+ *    flag on top of the master one, because it is the expensive pass: it
+ *    enqueues one task per listing, bounded per tick by
+ *    `maxTasksPerSweep()` + the `continuacao` machinery, so a large catalogue
+ *    drains across several ticks rather than in one. It matters more now that
+ *    #695 suppresses the incidental re-sends that used to heal drift as a side
+ *    effect.
  *
  * **Flag-gated OFF**: until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` is set (the
  * coordinated cutover — same window the legacy Flutter sender dies) both
@@ -52,7 +69,7 @@ function sweepScheduleOptions(schedule: string): ScheduleOptions {
 }
 
 /** Run one sweep tick and log its summary (the importMercadoLivreOrders discipline). */
-async function runAndLog(mode: 'incremental' | 'daily'): Promise<void> {
+async function runAndLog(mode: StockSweepMode): Promise<void> {
   const result = await runStockSweep(getDb(), mode, {
     scheduler: createMlStockTaskScheduler(),
     nowMs: Date.now(),
@@ -105,12 +122,42 @@ export const sweepMercadoLivreStock = onSchedule(
 );
 
 /**
- * The 02:00 daily full stock sweep (flag-gated — module doc). Owns its slot:
- * the incremental wrapper above skips exactly this tick.
+ * The 02:00 daily stock sweep (flag-gated — module doc). Owns its slot: the
+ * incremental wrapper above skips exactly this tick. A flat 24h window, NOT a
+ * reconciliation (#806 S11) — see `sweepMercadoLivreStockReconciliacao`.
  */
 export const sweepMercadoLivreStockDaily = onSchedule(
   sweepScheduleOptions('0 2 * * *'),
   async () => {
     await runAndLog('daily');
+  },
+);
+
+/**
+ * The env flag gating the weekly force-all reconciliation, ON TOP of the master
+ * `MERCADO_LIVRE_STOCK_SYNC_ENABLED`. Two gates because this pass re-sends the
+ * ENTIRE linked catalogue: it must be possible to run the normal sweeps for a
+ * while before turning it on, and to turn it off alone if it costs more ML
+ * quota than the drift it heals is worth. Read LAZILY, `'1'` and nothing else.
+ */
+export const STOCK_RECONCILIACAO_FLAG_ENV = 'MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED';
+
+/**
+ * The weekly force-all reconciliation (Sunday 03:00 America/Sao_Paulo — clear
+ * of the 02:00 daily slot, so the two never contend for a conta's caps or its
+ * state doc). This is the pass that actually reconciles: `changedSinceMs = -1`
+ * admits every anchor, and it force-sends, so a quantity that drifted on ML's
+ * side with no ERP movement behind it is finally corrected.
+ */
+export const sweepMercadoLivreStockReconciliacao = onSchedule(
+  sweepScheduleOptions('0 3 * * 0'),
+  async () => {
+    if (process.env[STOCK_RECONCILIACAO_FLAG_ENV] !== '1') {
+      logger.info(
+        `[mercado-livre] stock reconciliation disabled (${STOCK_RECONCILIACAO_FLAG_ENV} != '1') — no-op`,
+      );
+      return;
+    }
+    await runAndLog('reconciliacao');
   },
 );

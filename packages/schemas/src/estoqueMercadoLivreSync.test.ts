@@ -11,6 +11,10 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       cursorUs: null,
       lastSweepAtUs: null,
       lastDailyAtUs: null,
+      // The reconciliation pass owns its own stamp: the 02:00 daily is a flat
+      // 24h window and does NOT reconcile (#806 S11), so reusing lastDailyAtUs
+      // would tell an operator a full pass ran when none did.
+      lastReconciliacaoAtUs: null,
       lastError: null,
       lastErrorAtUs: null,
       pausedUntilUs: null,
@@ -24,6 +28,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       cursorUs: 1721800800000000,
       lastSweepAtUs: 1721801100000000,
       lastDailyAtUs: 1721764800000000,
+      lastReconciliacaoAtUs: 1721260800000000,
       lastError: null,
       lastErrorAtUs: null,
       pausedUntilUs: null,
@@ -38,6 +43,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       cursorUs: null,
       lastSweepAtUs: 1721801100000000,
       lastDailyAtUs: null,
+      lastReconciliacaoAtUs: null,
       lastError: 'Conta multiorigem (warehouse_management) — envio de estoque recusado.',
       lastErrorAtUs: 1721801100000000,
       pausedUntilUs: null,
@@ -52,6 +58,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       cursorUs: 1721800800000000,
       lastSweepAtUs: 1721801100000000,
       lastDailyAtUs: null,
+      lastReconciliacaoAtUs: null,
       lastError: null,
       lastErrorAtUs: null,
       pausedUntilUs: 1721801400000000,
@@ -66,6 +73,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       cursorUs: 1721800800000000,
       lastSweepAtUs: null,
       lastDailyAtUs: null,
+      lastReconciliacaoAtUs: null,
       lastError: null,
       lastErrorAtUs: null,
       pausedUntilUs: null,

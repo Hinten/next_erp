@@ -234,6 +234,7 @@ function member(produtoId: string, over: Partial<FamilyMember> = {}): FamilyMemb
     ehKitVirtual: false,
     publicado: true,
     componentesKit: null,
+    componentesKitKeys: [],
     timestampMs: null,
     // disponivel = 10 − 2 = 8 (≥ the low-stock limiar 5, so no override arm).
     estoque: { quantidade: 10, quantidadeReservada: 2 },
@@ -339,6 +340,18 @@ describe('isSlotDoDaily', () => {
 });
 
 describe('janelaDoSweep', () => {
+  it('reconciliacao → force-all (-1) with no sales cutoff, cursor irrelevant', () => {
+    // -1 is THE query's documented force-all: its window filter is
+    // `coalesce(logicalMaximum(...), 0) > changedSinceMs`, so every anchor
+    // survives — including families with no estoque doc, which the daily 24h
+    // window excludes by design. That is the difference between "everything
+    // that MOVED" (#806 S11) and an actual reconciliation.
+    const janela = janelaDoSweep('reconciliacao', NOW_MS, {
+      cursorUs: (NOW_MS - 600_000) * 1000,
+    });
+    expect(janela).toEqual({ changedSinceMs: -1, vendaCutoffUs: null });
+  });
+
   it('incremental, no cursor → default window minus overlap; venda cutoff = 30d in µs', () => {
     const janela = janelaDoSweep('incremental', NOW_MS, {});
     expect(janela.changedSinceMs).toBe(NOW_MS - 15 * 60_000 - 20_000);
@@ -1040,6 +1053,39 @@ describe('runStockSweep — skip-if-unchanged wiring (#695)', () => {
 
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(result.contas[0]).toMatchObject({ enqueued: 1, inalterados: 0 });
+  });
+
+  it('reconciliacao: force-all window, force-SEND, and its OWN completion stamp', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    db.seed(SYNC_PATH, 'INT-A', { cursorUs: (NOW_MS - 600_000) * 1000 });
+    wireCtx();
+    // Inactive AND already-sent: only a pass that ignores both filters emits.
+    const { fetchFamilies, calls } = makeFetch([
+      {
+        rows: [
+          {
+            ...familyRow(),
+            links: [link({ ultimoEstoqueEnviado: 8, ultimoEnvioMs: NOW_MS - 60_000 })],
+          },
+        ],
+        nextAfterAnchorId: null,
+      },
+    ]);
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'reconciliacao', { scheduler, fetchFamilies });
+
+    expect(calls[0]?.changedSinceMs).toBe(-1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(result.contas[0]).toMatchObject({ enqueued: 1, inalterados: 0 });
+
+    const state = db.docs(SYNC_PATH).get('INT-A') ?? {};
+    // Its OWN field: writing `lastDailyAtUs` here would tell an operator the
+    // 02:00 pass ran, and `cursorUs` belongs to the incremental sweep alone.
+    expect(state).toMatchObject({ lastReconciliacaoAtUs: NOW_US });
+    expect(state).not.toHaveProperty('lastDailyAtUs');
+    expect(state.cursorUs).toBe((NOW_MS - 600_000) * 1000);
   });
 
   it('the kill switch restores the old behaviour with no data change', async () => {

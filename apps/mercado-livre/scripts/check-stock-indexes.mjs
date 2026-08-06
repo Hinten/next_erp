@@ -545,6 +545,7 @@ const childrenJoin = () =>
       'ehKitVirtual',
       'publicado',
       'componentesKit',
+      'componentesKitKeys', // #806 S12 cross-check — projection only
       'timestamp',
       ownEstoque().as('estoque'),
       compEstoques('childKitKeys').as('componentEstoques'),
@@ -617,6 +618,7 @@ function buildFamiliesPipeline({ changedSinceMs, afterAnchorId }) {
       'ehKitVirtual',
       'publicado',
       'componentesKit',
+      'componentesKitKeys', // #806 S12 cross-check — projection only
       'integracoesComProduto',
       'timestamp',
       ownEstoque().as('estoque'),

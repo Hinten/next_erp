@@ -338,7 +338,8 @@ it on). Three separate places matter, and they are NOT interchangeable:
    `..._WINDOW_OVERLAP_SEC`, `..._CURSOR_MAX_LOOKBACK_H`, `..._DAILY_WINDOW_H`,
    `..._ATIVIDADE_LOOKBACK_D`, `..._LIMIAR`, `..._MAX`, `..._KIT_INCLUI_PROPRIO`,
    `..._ANCHOR_PAGE_LIMIT`, `..._MAX_TASKS_PER_SWEEP`, `..._RATE_PAUSE_MIN`,
-   `..._MAX_PAUSE_REENQUEUES`, `..._SKIP_UNCHANGED_DISABLED`, `..._SKIP_TTL_H`.
+   `..._MAX_PAUSE_REENQUEUES`, `..._SKIP_UNCHANGED_DISABLED`, `..._SKIP_TTL_H`,
+   `MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED`.
 2. **The DEPLOYING shell's env** — `MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND`
    and `MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES` only. They feed
    `onTaskDispatched.rateLimits` (`src/sendStock.ts`), which Firebase evaluates
@@ -404,6 +405,26 @@ unconditional and always safe — only the SKIP is gated — so the sequence is:
 after the Flutter sender is dead — so the dual-run hazard (two writers flapping
 `available_quantity` while only one of them records what it sent) never overlaps
 with it. Do not re-enable the legacy sender afterwards.
+
+### The weekly reconciliation (#806 S11)
+
+`sweepMercadoLivreStockReconciliacao` runs Sunday 03:00 America/Sao_Paulo — clear
+of the 02:00 daily slot, so the two never contend for a conta's caps or its state
+doc — and needs **two** flags: the master `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1`
+plus its own `MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED=1`.
+
+Two gates because this is the expensive pass. It runs THE query with
+`changedSinceMs = -1`, so every anchor survives the window filter and the conta's
+whole linked catalogue is re-sent — one task per listing, bounded per tick by
+`MERCADO_LIVRE_STOCK_MAX_TASKS_PER_SWEEP` plus the `continuacao` machinery, so a
+large catalogue drains across several ticks rather than in one. It also **ignores
+skip-if-unchanged**: a reconciliation that honoured the skip would reconcile
+nothing.
+
+Turn it on only after the normal sweeps have run cleanly for a while, and turn it
+off alone if it costs more ML quota than the drift it heals is worth. Completion
+stamps `lastReconciliacaoAtUs` on the conta's state doc — its **own** field, never
+`lastDailyAtUs`, so "when did a full pass last run?" has an honest answer.
 
 **Per-project targeting.** `.env.deploy` applies to whatever project you deploy to,
 so a staging file deployed to produção takes its values with it — and this flag is

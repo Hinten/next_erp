@@ -180,6 +180,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   type ComponentesKit,
   ESTADO_PUBLICACAO_ML,
+  componentesKitEntries,
   estoqueDisponivel,
   kitEstoqueDisponivel,
   toOuterRef,
@@ -412,6 +413,14 @@ export interface FamilyMember {
   ehKitVirtual: boolean;
   publicado: boolean;
   componentesKit: ComponentesKit | null;
+  /**
+   * The `componentesKitKeys` denorm the component join keys on. Carried NOT to
+   * compute anything — the quantity math reads `componentesKit` — but to detect
+   * when the two DISAGREE: a kit whose keys are stale fetches no component
+   * estoques, every component scores 0, and the family would be SENT as 0
+   * (#806 S12). See `kitDenormInvalido`.
+   */
+  componentesKitKeys: string[];
   /** Produto `timestamp` (ms since epoch) — the created-recently activity arm. */
   timestampMs: number | null;
   /** The member's own estoque at the swept depósito; null when absent. */
@@ -657,6 +666,7 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
         'ehKitVirtual',
         'publicado',
         'componentesKit',
+        'componentesKitKeys', // #806 S12 cross-check — see FamilyMember
         'timestamp',
         ownEstoque().as('estoque'),
         compEstoques('childKitKeys').as('componentEstoques'),
@@ -735,6 +745,9 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
       'ehKitVirtual',
       'publicado',
       'componentesKit',
+      // Projected to cross-check against `componentesKit` (#806 S12) — the
+      // component join already reads it through the `anchorKitKeys` variable.
+      'componentesKitKeys',
       'integracoesComProduto',
       'timestamp',
       ownEstoque().as('estoque'),
@@ -797,6 +810,9 @@ function coerceMember(produtoId: string, raw: Record<string, unknown>): FamilyMe
     ehKitVirtual: raw.ehKitVirtual === true,
     publicado: raw.publicado === true,
     componentesKit: (raw.componentesKit ?? null) as ComponentesKit | null,
+    componentesKitKeys: Array.isArray(raw.componentesKitKeys)
+      ? raw.componentesKitKeys.filter((k): k is string => typeof k === 'string' && k !== '')
+      : [],
     timestampMs: finiteNumber(raw.timestamp),
     estoque:
       raw.estoque != null && typeof raw.estoque === 'object' && !Array.isArray(raw.estoque)
@@ -1093,7 +1109,9 @@ export type SendSkipReason =
   | 'conta-fora-do-produto'
   | 'variations-excede-limite'
   /** ML already holds this number — the send would be a no-op (#695). */
-  | 'quantidade-inalterada';
+  | 'quantidade-inalterada'
+  /** Kit whose `componentesKitKeys` denorm is stale — would be SENT as 0 (#806 S12). */
+  | 'kit-denorm-invalido';
 
 export interface SendSkip {
   /** The produto the reason applies to — the family anchor, or the UP child. */
@@ -1106,6 +1124,29 @@ export interface StockVariationEntry {
   /** Numeric ML variation id (the variação link's `id` field). */
   id: number;
   available_quantity: number;
+}
+
+/**
+ * Is this member a kit whose `componentesKitKeys` denorm cannot answer for its
+ * `componentesKit` map? (#806 S12)
+ *
+ * The component estoques are joined by `parentId equalAny(componentesKitKeys)`,
+ * while the kit math iterates `componentesKit`. When the denorm is stale the
+ * join returns nothing for the missing keys, `kitEstoqueDisponivel` scores each
+ * of those components 0, the min is 0 — and we send `available_quantity: 0`,
+ * which makes ML auto-pause the listing as `out_of_stock`. A real zero and an
+ * unresolvable one are indistinguishable downstream, so the mismatch has to be
+ * caught HERE, where both sides are still visible, and turned into a SKIP.
+ *
+ * Deliberately narrow: only a MISSING key is a defect. Extra keys are harmless
+ * (they just widen the join), and a non-kit is never checked.
+ */
+export function kitDenormInvalido(member: FamilyMember): boolean {
+  if (!member.ehKit) return false;
+  const entries = componentesKitEntries(member.componentesKit);
+  if (entries.length === 0) return false; // an empty kit constrains nothing
+  const keys = new Set(member.componentesKitKeys);
+  return entries.some(([componenteId]) => !keys.has(componenteId));
 }
 
 /* ------------------- skip-if-unchanged (#695) — pure core ------------------ */
@@ -1295,6 +1336,23 @@ export function buildSendTasks(
 
   if (row.links.length === 0) return skipOnly(anchorId, 'sem-link');
   if (row.anchor.ehKitVirtual) return skipOnly(anchorId, 'kit-virtual');
+  // #806 S12: a kit whose componentesKitKeys denorm has drifted resolves every
+  // missing component to 0, so the family would be SENT as 0 and ML would
+  // auto-pause the listing. Skip loudly instead — a wrong zero is worse than a
+  // missed update, and the operator needs to see the denorm is broken.
+  if (kitDenormInvalido(row.anchor)) {
+    console.error(
+      '[mercado-livre] stock-sync: kit com componentesKitKeys defasado — envio pulado ' +
+        '(enviaria 0 e o ML pausaria o anúncio); recalcule o denorm do produto',
+      {
+        integracaoId: opts.integracaoId,
+        produtoId: anchorId,
+        componentes: componentesKitEntries(row.anchor.componentesKit).length,
+        chaves: row.anchor.componentesKitKeys.length,
+      },
+    );
+    return skipOnly(anchorId, 'kit-denorm-invalido');
+  }
   // DEFENSIVE-ONLY rung: S1 already filters `publicado` server-side (keep the S1 term).
   if (!row.anchor.publicado) return skipOnly(anchorId, 'nao-publicado');
   // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1 term).
@@ -1476,6 +1534,12 @@ export function buildSendTasks(
           skips.push({ produtoId: child.produtoId, reason: 'sem-item-id' });
           continue;
         }
+        // #806 S12, per bulk child: a stale denorm on ONE variation would put
+        // a 0 in the shared `variations` array — the siblings still go.
+        if (kitDenormInvalido(child)) {
+          skips.push({ produtoId: child.produtoId, reason: 'kit-denorm-invalido' });
+          continue;
+        }
         const quantidade = quantidades.get(child.produtoId) ?? null;
         if (quantidade == null) {
           skips.push({ produtoId: child.produtoId, reason: 'kit-virtual' });
@@ -1557,6 +1621,11 @@ export function buildSendTasks(
         continue;
       }
       if (emittedItemIds.has(varItemId)) continue; // cycle-wide dedup — silent (set above)
+      // #806 S12, per UP child — same reason, its own ML item.
+      if (kitDenormInvalido(child)) {
+        skips.push({ produtoId: child.produtoId, reason: 'kit-denorm-invalido' });
+        continue;
+      }
       const quantidade = quantidades.get(child.produtoId) ?? null;
       if (quantidade == null) {
         skips.push({ produtoId: child.produtoId, reason: 'kit-virtual' });

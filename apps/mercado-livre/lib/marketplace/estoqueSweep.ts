@@ -118,8 +118,33 @@ import type { MlStockTaskScheduler } from './mlStockTasks';
 import { MlTasksDisabledError } from './mlTasks';
 import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';
 
-/** Which of the two scheduled ticks is running (drives window + cursor rules). */
-export type StockSweepMode = 'incremental' | 'daily';
+/**
+ * Which tick is running (drives window + cursor rules).
+ *
+ *  - `'incremental'` — every 15 min, from the durable cursor.
+ *  - `'daily'` — 02:00, a FLAT 24h lookback. Despite what the code used to call
+ *    it, this is NOT a full reconciliation: a listing whose ERP stock has not
+ *    moved in over 24h is never in its window, so ML-side drift (a manual edit,
+ *    a dropped PUT, a task lost past `maxPauseReenqueues`) is invisible to it
+ *    (#806 S11).
+ *  - `'reconciliacao'` — the force-all pass that IS one: `changedSinceMs = -1`
+ *    makes every anchor survive THE query's computed window filter, so the
+ *    conta's whole linked catalogue is re-sent. It exists because
+ *    skip-if-unchanged (#695) suppresses the incidental re-sends that used to
+ *    heal drift as a side effect, so it force-sends too (`pularInalterados:
+ *    false`) — a reconciliation that honoured the skip would reconcile nothing.
+ */
+export type StockSweepMode = 'incremental' | 'daily' | 'reconciliacao';
+
+/**
+ * The completion stamp a NON-incremental mode writes. Each mode owns its own
+ * field: the 02:00 pass is a flat 24h window and does NOT reconcile (#806 S11),
+ * so writing `lastDailyAtUs` for a reconciliation — or the reverse — would tell
+ * an operator a pass ran that never did. Neither touches `cursorUs`.
+ */
+function carimboDoModo(mode: StockSweepMode, nowUs: number): Record<string, unknown> {
+  return mode === 'reconciliacao' ? { lastReconciliacaoAtUs: nowUs } : { lastDailyAtUs: nowUs };
+}
 
 /**
  * Is `nowMs` inside the 02:00 America/Sao_Paulo slot (02:00–02:14) that
@@ -247,6 +272,14 @@ export function janelaDoSweep(
   stateRaw: Record<string, unknown>,
 ): SweepJanela {
   const overlapMs = windowOverlapSec() * 1000;
+  if (mode === 'reconciliacao') {
+    // `-1` is THE query's documented force-all: its window filter is
+    // `coalesce(logicalMaximum(...), 0) > changedSinceMs`, so every anchor
+    // survives — including families with no estoque doc at all, which a
+    // positive window excludes by design. No sales cutoff: like the daily
+    // pass, this one sends everything it finds.
+    return { changedSinceMs: -1, vendaCutoffUs: null };
+  }
   if (mode === 'daily') {
     return {
       changedSinceMs: nowMs - dailyWindowHours() * 3_600_000 - overlapMs,
@@ -578,7 +611,7 @@ async function sweepConta(
     // the ORIGINAL sweep's start. Clear it and stamp the mode's own field.
     patch = filtroIncremental
       ? { continuacao: null, cursorUs: startedAtUs, lastSweepAtUs: nowUs, lastError: null }
-      : { continuacao: null, lastDailyAtUs: nowUs, lastError: null };
+      : { continuacao: null, ...carimboDoModo(mode, nowUs), lastError: null };
   } else {
     // A complete fresh sweep: the incremental cursor advances to `nowMs`; the
     // daily sweep stamps `lastDailyAtUs` and never touches the cursor. Both
@@ -591,7 +624,7 @@ async function sweepConta(
             lastError: null,
             continuacao: null,
           }
-        : { lastDailyAtUs: nowUs, lastError: null, continuacao: null };
+        : { ...carimboDoModo(mode, nowUs), lastError: null, continuacao: null };
   }
   await estoqueMercadoLivreSyncCollection.merge(db, {}, integracaoId, patch);
 
