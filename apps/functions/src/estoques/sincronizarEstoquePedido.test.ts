@@ -228,6 +228,19 @@ describe('detectarCrescimentoLegado (#795 — the ML pack-merge shape)', () => {
     // Only the NONE bucket differs → no real growth.
     expect(detectarCrescimentoLegado(soP1, comLixo)).toBeNull();
   });
+
+  it('does NOT match when the anchor is EMPTY — no baseline is not a baseline', () => {
+    // Every previous line is junk, so there is nothing to anchor on: a first
+    // real addition must NOT read as growth over nothing, or the reconstruction
+    // would rest on no baseline and could double-move stock.
+    const soLixo = legado({ NONE: [{ produtoUid: 'NONE', quantidade: 7 }] });
+    expect(detectarCrescimentoLegado(soLixo, p1MaisP2)).toBeNull();
+
+    const zeroQuantidade = legado({ p1: [{ produtoUid: 'p1', quantidade: 0 }] });
+    expect(detectarCrescimentoLegado(zeroQuantidade, p1MaisP2)).toBeNull();
+
+    expect(detectarCrescimentoLegado(legado({}), p1MaisP2)).toBeNull();
+  });
 });
 
 describe('sintetizarAplicadoLegado (#795)', () => {

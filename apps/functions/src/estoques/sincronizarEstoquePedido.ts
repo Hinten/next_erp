@@ -226,6 +226,12 @@ export function detectarCrescimentoLegado(
 
   const itensAntes = extrairItens(before.itens);
   const antes = totaisPorProduto(itensAntes);
+  // An EMPTY anchor is no anchor. If every previous line was junk (no
+  // `produtoUid`, `NONE`, or a non-positive quantity) the first real addition
+  // would read as growth over nothing, and the reconstruction would rest on no
+  // baseline at all — which is precisely the guess this whole guard exists to
+  // prevent. Skip, exactly as before #795.
+  if (Object.keys(antes).length === 0) return null;
   const depois = totaisPorProduto(extrairItens(after.itens));
 
   let cresceu = false;
@@ -731,7 +737,12 @@ export async function sincronizarEstoquePedido(
 
     // ⚠️ AFTER `aplicarPlano` — it still issues reads, and a transaction rejects
     // any read that follows a write ("all reads before all writes").
-    if (aplicadoBase !== pedido.aplicado) {
+    // Keyed on `reconstruirLegado`, NOT on whether the synthesis produced a
+    // non-null snapshot: a reconstruction that rebuilds to "nothing was applied"
+    // (every anchor line expanded to zero — a kit with no `limitarEstoque`
+    // component, a deleted produto) still moves stock off a legacy-marker pedido
+    // and must be just as reviewable.
+    if (reconstruirLegado) {
       // Loud + reviewable: this movement rests on a reconstruction, so the set
       // of affected pedidos stays auditable. A SUBcollection write — it cannot
       // touch CAMPOS_OBSERVADOS (no loop-guard interaction).
