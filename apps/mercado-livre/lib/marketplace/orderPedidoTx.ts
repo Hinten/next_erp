@@ -156,9 +156,32 @@
  * a targeted `tx.update`. A brand-new pedido gets the full doc (this module's
  * own CREATE shape, mirroring `mlOrderToPedidoCoreFields` +
  * `tools/test-fixtures/src/seed-pedidos-dev.ts`'s `writePedido`).
+ *
  * `orderML`/`pagamento` are independent leaf subcollection docs (not "the
- * pedido doc" the dual-run rule restricts) and are always fully rewritten —
- * mirrors legacy's own full-object `.save()` on each.
+ * pedido doc" the dual-run rule restricts), and BOTH follow legacy's
+ * create-fresh / merge-on-refresh split rather than a full rewrite:
+ *  - `pagamento` — `mergePagamentoUpdate` (see the ⚠️ under (c) above);
+ *  - `orderML`  — replaced wholesale whenever ML spoke in FULL (a fresh create,
+ *    or a refresh whose `GET /orders/{id}` answered a complete `200`, reported
+ *    through `completeOrderIds`), so the doc stays a true mirror: the wire is
+ *    byte-faithful to Flutter's `OrderML.toJson()`, and a field ML cleared is
+ *    cleared here. Anything we cannot call complete goes through
+ *    `mergeOrderMLWire` (`orderMLWire.ts`) instead, which is keyed on what the
+ *    payload CARRIED — ML's value wins wherever it named a field (explicit
+ *    `null` included), and only the keys it stayed silent about are preserved.
+ *
+ *    Why the merge exists at all: a `206 Partial Content` body omits fields, and
+ *    `buildOrderMLWire` turns an omitted `pack_id` into an explicit `null`. That
+ *    is load-bearing, since `resolvePedidoIdByOrderId` matches `pack_id` FIRST —
+ *    losing it strands every later payments/shipments/claims notification for
+ *    that cart on `pedido-nao-encontrado` (#793). Note this is deliberately
+ *    stricter than legacy's `OrderML.update`
+ *    (`tasks.dart:328-329` → `models.odm.g.dart:27642-27672`), a blanket
+ *    `other.field ?? this.field` that never cleared anything and so let the
+ *    mirror drift. A `pack_id: null` on a COMPLETE payload is not a loss —
+ *    Mercado Livre documents `pack_id` as present only "se estiver associado a
+ *    um pacote", the every-order-gets-a-pack rollout being gradual, and such an
+ *    order resolves through the `id ==` fallback.
  */
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import { coerceToMicros, coerceToMillis, microsToMillis } from '@delfrance/core/datetime';
@@ -169,7 +192,6 @@ import {
   ORIGEM_INCIDENTE,
   TIPO_INCIDENTE,
   flattenPedidoItens,
-  orderMLSchema,
   type EstadoPedido,
   type ItemDoPedido,
   type Pedido,
@@ -183,7 +205,7 @@ import {
 
 import { makePagamentoIdMercadoLivre, makePedidoIdMercadoLivre } from './orderIds';
 import { mlOrderToPedidoCoreFields } from './orderMapping';
-import { buildOrderMLWire } from './orderMLWire';
+import { buildOrderMLWire, mergeOrderMLWire, orderMLKeysCarriedBy } from './orderMLWire';
 import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
 
 export interface DiscoverPedidoArgs {
@@ -196,6 +218,15 @@ export interface DiscoverPedidoArgs {
   listaDePrecosOuterRef: string | null;
   /** Every ML order feeding this call — `[initiatingOrder, ...restOfPack]` when `packId` is set. */
   orders: MlOrder[];
+  /**
+   * Ids of the orders whose `GET /orders/{id}` answered a COMPLETE `200` (as
+   * opposed to a `206 Partial Content`). Their mirror doc is replaced wholesale
+   * — ML spoke in full, so the doc should say exactly what ML says. Every other
+   * order falls back to the presence-keyed merge. Deliberately fail-safe: an id
+   * absent here (or the whole set omitted) means "not known to be complete", so
+   * a caller that can't tell never triggers a destructive replace.
+   */
+  completeOrderIds?: ReadonlySet<number>;
   packId: number | null;
   itensByOrderId: ReadonlyMap<number, readonly ItemDoPedido[]>;
   /** One timestamp for the whole operation (µs since epoch) — never `Date.now()` inside this module. */
@@ -234,6 +265,9 @@ interface OrderReadBundle {
   order: MlOrder;
   orderMlRef: FirebaseFirestore.DocumentReference;
   orderMlExists: boolean;
+  /** The stored mirror doc's raw fields (`null` when absent) — the merge base
+   * for `mergeOrderMLWire` on the refresh path below. */
+  orderMlRaw: Record<string, unknown> | null;
   orderMlStoredLastUpdatedMs: number | null;
   payments: PaymentReadBundle[];
 }
@@ -333,6 +367,7 @@ export async function discoverPedidoMercadoLivre(
         order,
         orderMlRef,
         orderMlExists: orderMlSnap.exists,
+        orderMlRaw,
         orderMlStoredLastUpdatedMs: readNumberField(orderMlRaw, 'last_updated'),
         payments,
       });
@@ -368,8 +403,25 @@ export async function discoverPedidoMercadoLivre(
       // (stamped onto `pedido.integracaoPedidoOuterRef` below) — both usually
       // resolve to the same `integracao` doc in this ML-only flow, but the
       // contract keeps them separate fields, so each is used for its own field.
+      //
+      // The doc is REPLACED whenever ML spoke in full — a fresh create, or a
+      // refresh whose fetch answered a complete `200`. That keeps the mirror a
+      // mirror: the byte-faithful `includeIfNull: true` wire is exactly what
+      // Flutter's `OrderML.toJson()` would write, and a field ML cleared is
+      // cleared here too. Only a payload we cannot call complete goes through
+      // the presence-keyed merge, which preserves the keys ML stayed silent
+      // about (`pack_id` above all — #793) while still honouring every value it
+      // did send. See the module doc's orderML paragraph.
+      // `orderMlRaw` comes from THIS transaction's own `tx.get` above, so an
+      // OCC retry re-reads and re-merges (root CLAUDE.md rule 7, tier 1) — do
+      // not hoist that read out of the `runTransaction` callback.
       const wire = buildOrderMLWire({ order, contaOuterRef: args.contaOuterRef });
-      tx.set(bundle.orderMlRef, orderMLSchema.parse(wire));
+      const replaceWholesale =
+        bundle.orderMlRaw == null || (args.completeOrderIds?.has(order.id) ?? false);
+      const orderMlDoc = replaceWholesale
+        ? wire
+        : mergeOrderMLWire(bundle.orderMlRaw!, wire, orderMLKeysCarriedBy(order));
+      tx.set(bundle.orderMlRef, orderMLCollection.parse(orderMlDoc));
 
       const incomingUs = coerceToMicros(order.last_updated) ?? nowUs;
 

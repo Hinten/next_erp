@@ -49,8 +49,60 @@ const UF = (args.uf ?? 'SP').toUpperCase();
 const AMBIENTE = args.ambiente ?? 'homologacao';
 
 const HOSTS = {
+  // Home-SEFAZ, normal mode — every filial UF, per `src/endpoints/index.ts`.
+  // Ten UFs run their own dedicated host; the other 17 delegate to a shared
+  // authorizer (MA→SVAN, the rest→SVRS) whose host is physically identical
+  // to a contingency authorizer's below — still fetched per-UF because
+  // `apps/nfe/lib/nfe/runtime.ts` resolves the chain file by the filial's
+  // own UF (`sefaz-<uf>-<ambiente>.pem`), not by authorizer id.
   'SP:homologacao': 'homologacao.nfe.fazenda.sp.gov.br',
   'SP:producao': 'nfe.fazenda.sp.gov.br',
+  'AM:homologacao': 'homnfe.sefaz.am.gov.br',
+  'AM:producao': 'nfe.sefaz.am.gov.br',
+  'BA:homologacao': 'hnfe.sefaz.ba.gov.br',
+  'BA:producao': 'nfe.sefaz.ba.gov.br',
+  'GO:homologacao': 'homolog.sefaz.go.gov.br',
+  'GO:producao': 'nfe.sefaz.go.gov.br',
+  'MG:homologacao': 'hnfe.fazenda.mg.gov.br',
+  'MG:producao': 'nfe.fazenda.mg.gov.br',
+  'MS:homologacao': 'hom.nfe.sefaz.ms.gov.br',
+  'MS:producao': 'nfe.sefaz.ms.gov.br',
+  'MT:homologacao': 'homologacao.sefaz.mt.gov.br',
+  'MT:producao': 'nfe.sefaz.mt.gov.br',
+  'PE:homologacao': 'nfehomolog.sefaz.pe.gov.br',
+  'PE:producao': 'nfe.sefaz.pe.gov.br',
+  'PR:homologacao': 'homologacao.nfe.sefa.pr.gov.br',
+  'PR:producao': 'nfe.sefa.pr.gov.br',
+  'RS:homologacao': 'nfe-homologacao.sefazrs.rs.gov.br',
+  'RS:producao': 'nfe.sefazrs.rs.gov.br',
+  // MA → SVAN. Same physical host as `SVC-AN` below (sefazvirtual.fazenda.gov.br).
+  'MA:homologacao': 'hom.sefazvirtual.fazenda.gov.br',
+  'MA:producao': 'www.sefazvirtual.fazenda.gov.br',
+  // The 16 UFs delegated to SVRS. Same physical host as `SVC-RS` below
+  // (svrs.rs.gov.br).
+  ...Object.fromEntries(
+    [
+      'AC',
+      'AL',
+      'AP',
+      'CE',
+      'DF',
+      'ES',
+      'PA',
+      'PB',
+      'PI',
+      'RJ',
+      'RN',
+      'RO',
+      'RR',
+      'SC',
+      'SE',
+      'TO',
+    ].flatMap((uf) => [
+      [`${uf}:homologacao`, 'nfe-homologacao.svrs.rs.gov.br'],
+      [`${uf}:producao`, 'nfe.svrs.rs.gov.br'],
+    ]),
+  ),
   // Contingency authorizers — the "UF" slot carries the authorizer id
   // (chain files land as `sefaz-svc-an-<ambiente>.pem` etc.).
   'SVC-AN:homologacao': 'hom.sefazvirtual.fazenda.gov.br',

@@ -98,6 +98,40 @@ describe('createMercadoLivreApi — happy paths', () => {
     expect(order.order_items).toEqual([]);
   });
 
+  it('getOrderResponse reports a 200 as complete and a 206 as not', async () => {
+    // The orderML mirror uses this to decide replace-vs-merge (#793).
+    const ok = createMercadoLivreApi(
+      cfg(vi.fn(async () => jsonResponse({ id: 1, status: 'paid', order_items: [] }, 200))),
+    );
+    await expect(ok.getOrderResponse(1)).resolves.toMatchObject({ complete: true });
+
+    const partial = createMercadoLivreApi(
+      cfg(vi.fn(async () => jsonResponse({ id: 1, status: 'paid', order_items: [] }, 206))),
+    );
+    await expect(partial.getOrderResponse(1)).resolves.toMatchObject({ complete: false });
+  });
+
+  it('getOrderResponse keeps absent-vs-null distinct on the parsed order', async () => {
+    // `pack_id` absent must NOT become null — that difference is the whole
+    // discriminator the mirror merge runs on.
+    const api = createMercadoLivreApi(
+      cfg(vi.fn(async () => jsonResponse({ id: 1, status: 'paid', order_items: [] }, 206))),
+    );
+    const { order } = await api.getOrderResponse(1);
+    expect('pack_id' in order).toBe(false);
+
+    const withNull = createMercadoLivreApi(
+      cfg(
+        vi.fn(async () =>
+          jsonResponse({ id: 1, status: 'paid', order_items: [], pack_id: null }, 200),
+        ),
+      ),
+    );
+    const res = await withNull.getOrderResponse(1);
+    expect('pack_id' in res.order).toBe(true);
+    expect(res.order.pack_id).toBeNull();
+  });
+
   it('tolerates unknown extra fields (ML adds fields without notice)', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ ...USER, brand_new_ml_field: 42 }),

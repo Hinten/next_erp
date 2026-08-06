@@ -105,6 +105,21 @@ export {
   type UF,
 } from './endereco';
 
+export {
+  ENDERECO_FALLBACKS,
+  ENDERECO_PREFIXOS_MINIMO,
+  NFE_ENDERECO_LIMITES,
+  buildEnderecoForcado,
+  rawEnderecoInputSchema,
+  recoverEnderecoFromCep,
+  resolveUf,
+  sanitizeCep,
+  type EnderecoBuildOutcome,
+  type EnderecoForcado,
+  type EnderecoRecuperado,
+  type RawEnderecoInput,
+} from './enderecoBuilder';
+
 // All produto-owned schemas + logic live in ./produto, grouped by kind
 // (collections, embedded objects, pure logic, page model). Domains produto only
 // references (grupoDeVariacoes, listaDePrecos, deposito, categoria, …) stay below.
@@ -401,6 +416,16 @@ export {
   encodePermissoes,
   type Cargo,
 } from './cargo';
+export {
+  cmun,
+  cmunSchema,
+  cmunMeta,
+  cmunDocId,
+  origemCmunSchema,
+  ORIGEM_CMUN,
+  type Cmun,
+  type OrigemCmun,
+} from './cmun';
 
 export {
   usuario,
