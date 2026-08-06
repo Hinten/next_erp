@@ -37,6 +37,21 @@ const PATH_FIELDS = {
 };
 
 /**
+ * Values of message-carrying flags are PROSE, not paths — `gh pr create --title
+ * "block access to the .ignore/ directory"` must not trip the check. Same
+ * rationale as stripHeredocs below; this covers the inline form.
+ *
+ * The `(?:=|\s)` lookahead is load-bearing: it keeps `--body` from swallowing
+ * `--body-file`, whose value IS a path and must stay scannable.
+ */
+const MESSAGE_FLAG_VALUE =
+  /(^|\s)(-m|--message|--title|--body|--description|--notes|--reason|--subject)(?:=|\s+)("(?:[^"\\]|\\.)*"|'[^']*'|\S+)/g;
+
+function stripMessageFlagValues(command) {
+  return command.replace(MESSAGE_FLAG_VALUE, '$1$2 <prose>');
+}
+
+/**
  * Drop heredoc bodies before scanning a shell command — they are data, not
  * commands. A commit message or PR body that merely *mentions* `.ignore/` must
  * not trip the check. Mirrors block-firebase-deploy.mjs.
@@ -79,7 +94,7 @@ process.stdin.on('end', () => {
   let candidates = [];
 
   if (tool === 'Bash' || tool === 'PowerShell') {
-    candidates = [stripHeredocs(String(input.command ?? ''))];
+    candidates = [stripMessageFlagValues(stripHeredocs(String(input.command ?? '')))];
   } else if (PATH_FIELDS[tool]) {
     candidates = PATH_FIELDS[tool].flatMap((field) => strings(input[field]));
   }
