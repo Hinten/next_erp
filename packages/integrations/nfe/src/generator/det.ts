@@ -6,7 +6,7 @@
  * sub-tree arrives pre-built from the caller and is spliced in raw (tributary
  * computation is intentionally out of scope for Phase A — see the plan).
  */
-import { sanitizeNFeText } from '../sanitize';
+import { sanitizeNFeText, temTextoCorrompido } from '../sanitize';
 import type { TNFe_infNFe_det_prod } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
 import type { GeneratorItem } from './types';
@@ -44,6 +44,17 @@ function fmtMoney(n: number): string {
 
 /** Build the `prod` value object for one item. */
 export function buildProd(item: GeneratorItem): TNFe_infNFe_det_prod {
+  // Checked on the RAW value: produto descriptions are legacy-written like the
+  // endereço is, and `sanitizeNFeText` would launder a lost encoding round-trip
+  // into plausible ASCII on its way into the signed XML. `JSON.stringify` for
+  // the same reason as `requireIntegro` in ./parties — the value can carry C1
+  // control characters that would otherwise be unprintable in the message.
+  if (temTextoCorrompido(item.xProd)) {
+    throw new NFeDetError(
+      `item ${item.nItem}: xProd=${JSON.stringify(item.xProd)} has corrupted text (a lost ` +
+        `character-encoding round-trip). Fix the produto cadastro.`,
+    );
+  }
   const xProd = sanitizeNFeText(item.xProd);
   if (!xProd) throw new NFeDetError(`item ${item.nItem}: xProd is required`);
   const prod: TNFe_infNFe_det_prod = {

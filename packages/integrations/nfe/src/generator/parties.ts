@@ -8,7 +8,7 @@
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
 import { IE_SENTINELA, TIPO_CLIENTE, normalizarIe } from '@delfrance/schemas';
 
-import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
+import { sanitizeNFeEmail, sanitizeNFeText, temTextoCorrompido } from '../sanitize';
 import type { TEnderEmi, TEndereco, TNFe_infNFe_dest, TNFe_infNFe_emit } from '../types/nfe-schema';
 import type { Ambiente } from './types';
 
@@ -43,7 +43,7 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
     // marketplace imports occasionally land decorative chars (`Nº`,
     // `[unid]`) in numero, and SEFAZ rejects them on emission.
     nro: requireSanitized('filial.sede.numero', filial.sede.numero, 60),
-    xCpl: sanitizeNFeText(filial.sede.complemento, 60) ?? undefined,
+    xCpl: sanitizeOptional('filial.sede.complemento', filial.sede.complemento, 60),
     xBairro: requireSanitized('filial.sede.bairro', filial.sede.bairro, 60),
     cMun: requireCMun('filial.sede.codigoMunicipio', filial.sede.codigoMunicipio),
     xMun: requireSanitized('filial.sede.cidade', filial.sede.cidade, 60),
@@ -56,7 +56,7 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
   return {
     CNPJ: filial.cnpj,
     xNome: requireSanitized('filial.razaoSocial', filial.razaoSocial, 60),
-    xFant: sanitizeNFeText(filial.fantasia, 60) ?? undefined,
+    xFant: sanitizeOptional('filial.fantasia', filial.fantasia, 60),
     enderEmit,
     IE: filial.ie,
     IEST: filial.iest ?? undefined,
@@ -116,6 +116,10 @@ export function buildDest(
   ambiente: Ambiente,
   ehExterior: boolean,
 ): TNFe_infNFe_dest {
+  // Checked on the REAL name, before the homologação override swaps it out — a
+  // corrupted cadastro must surface in homologação too, which is exactly where
+  // there is still time to fix it.
+  requireIntegro('cliente.nome', cliente.nome);
   const xNomeReal = sanitizeNFeText(cliente.nome, 60) ?? '';
   const xNome = ambiente === 'homologacao' ? HOMOLOGACAO_XNOME : xNomeReal;
 
@@ -198,14 +202,14 @@ function buildEnderDest(endereco: Endereco): TEndereco {
   return {
     xLgr: requireSanitized('endereco.logradouro', endereco.logradouro, 60),
     nro: requireSanitized('endereco.numero', endereco.numero, 60),
-    xCpl: sanitizeNFeText(endereco.complemento, 60) ?? undefined,
+    xCpl: sanitizeOptional('endereco.complemento', endereco.complemento, 60),
     xBairro: requireSanitized('endereco.bairro', endereco.bairro, 60),
     cMun: requireCMun('endereco.codigoMunicipio', endereco.codigoMunicipio),
     xMun: requireSanitized('endereco.cidade', endereco.cidade, 60),
     UF: endereco.estado as TEndereco['UF'],
     CEP: endereco.cep,
     cPais: endereco.cPais ?? '1058',
-    xPais: sanitizeNFeText(endereco.pais, 60) ?? 'BRASIL',
+    xPais: sanitizeOptional('endereco.pais', endereco.pais, 60) ?? 'BRASIL',
   };
 }
 
@@ -237,8 +241,52 @@ function requireCMun(name: string, value: string | null | undefined): string {
   return value;
 }
 
+/**
+ * Reject a value whose encoding was lost somewhere upstream, BEFORE the
+ * sanitiser can launder it into plausible ASCII.
+ *
+ * The legacy Flutter app mis-decoded some UTF-8 responses as latin1 and wrote the
+ * result to Firestore, where it still sits (issue #788). Sanitisation turns that
+ * into pure, non-blank, in-length ASCII — the mojibake `São Paulo` becomes
+ * `SAo Paulo`, a U+FFFD-bearing one becomes `So Paulo` — so every downstream gate
+ * passes and a wrong address is signed, authorised by SEFAZ and printed on the
+ * DANFE at the buyer's door. Fixing it after authorisation needs a CC-e or a
+ * cancelamento, which is why this fails loudly here instead.
+ *
+ * Repair is deliberately not attempted: U+FFFD is unrecoverable by definition,
+ * and guessing at the digraph form would put a *guess* in a fiscal document.
+ *
+ * The offending value is `JSON.stringify`'d, matching {@link requireCMun}: a
+ * latin1 mis-decode routinely carries C1 control characters (U+0080..U+009F),
+ * which would otherwise go into the message unprintable and break structured
+ * log parsing. Escaped, the message names the exact bad codepoints.
+ */
+function requireIntegro(name: string, value: string | null | undefined): void {
+  if (temTextoCorrompido(value)) {
+    throw new NFePartiesError(
+      `${name}=${JSON.stringify(value)} has corrupted text (a lost character-encoding ` +
+        `round-trip). Fix the cadastro — emitting it would sign a wrong value.`,
+    );
+  }
+}
+
 function requireSanitized(name: string, value: string | null | undefined, maxLen?: number): string {
+  requireIntegro(name, value);
   const cleaned = sanitizeNFeText(value, maxLen);
   if (!cleaned) throw new NFePartiesError(`${name} is required (got blank after sanitize)`);
   return cleaned;
+}
+
+/**
+ * {@link requireSanitized} for an OPTIONAL tag — blank stays `undefined` (the tag
+ * is omitted) but corrupted text still throws. An optional field is no safer than
+ * a required one: `xCpl` is printed on the DANFE like the rest of the address.
+ */
+function sanitizeOptional(
+  name: string,
+  value: string | null | undefined,
+  maxLen?: number,
+): string | undefined {
+  requireIntegro(name, value);
+  return sanitizeNFeText(value, maxLen) ?? undefined;
 }
