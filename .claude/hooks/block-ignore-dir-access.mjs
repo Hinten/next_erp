@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // PreToolUse hook: refuse any tool call that touches the `.ignore/` directory.
 //
-// Why: `.ignore/` holds the Firebase service-account key and the A1 NF-e
-// certificates (.pfx). `permissions.deny` already carried `Read(./.ignore/**)`,
-// but that covers exactly one tool — a Write, an Edit, a Glob, or a shell
-// command reading the same path all went through. This hook closes the gap for
-// every tool at once, including the two shells, where a permission rule would
-// have to enumerate command shapes.
+// Why: `.ignore/` is the repo's local-only, gitignored store for material that
+// agents must never access. `permissions.deny` already carried
+// `Read(./.ignore/**)`, but that covers exactly one tool — a Write, an Edit, a
+// Glob, or a shell command reading the same path all went through. This hook
+// closes the gap for every tool at once, including the two shells, where a
+// permission rule would have to enumerate command shapes.
 //
 // Matching is by PATH SEGMENT: `.ignore` must be preceded by a separator (or
 // start of string) and followed by one (or end). That blocks `.ignore/x`,
@@ -107,10 +107,10 @@ process.stdin.on('end', () => {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason:
-          'Blocked: `.ignore/` holds the Firebase service-account key and the A1 NF-e ' +
-          'certificates. Lucas added this hook deliberately to keep agents out of it. Do not ' +
-          'read, write, list or reference that directory, and do not look for another route ' +
-          'to its contents — ask Lucas to run anything that needs those credentials.',
+          'Blocked: `.ignore/` holds local-only files that agents must not access. This hook ' +
+          'was added deliberately. Do not read, write, list or reference that directory, and ' +
+          'do not look for another route to its contents — ask the repo owner to run anything ' +
+          'that needs them.',
       },
     }),
   );

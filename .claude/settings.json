@@ -107,7 +107,7 @@
       "Write(./.ignore/**)"
     ]
   },
-  "_comment_ignore_dir": "`.ignore/` holds the Firebase service-account key and the A1 NF-e certificates. The deny rules above cover the three file tools; block-ignore-dir-access.mjs covers EVERY tool, including both shells, where a permission rule would have to enumerate command shapes. It matches `.ignore` as a whole path segment, so `.gitignore`, `.prettierignore` and `--ignore-unknown` are unaffected, and it strips heredoc bodies so a commit message that merely mentions the path does not trip it.",
+  "_comment_ignore_dir": "`.ignore/` is the local-only, gitignored store for material agents must never access. The deny rules above cover the three file tools; block-ignore-dir-access.mjs covers EVERY tool, including both shells, where a permission rule would have to enumerate command shapes. It matches `.ignore` as a whole path segment, so `.gitignore`, `.prettierignore` and `--ignore-unknown` are unaffected, and it strips heredoc bodies and message-flag values so a commit message or PR title that merely mentions the path does not trip it.",
   "_comment_branch_prefix": "The PreToolUse hook refuses `git checkout -b` / `switch -c` / `branch <name>` / `worktree add -b` for any name outside `claude/`. Every workflow's pull_request trigger filters on the PR's BASE branch, so a PR stacked onto a branch outside that list reports zero checks — silently, as 'no checks reported' rather than a failure — and can be merged untested. Deleting, listing and checking out existing branches are unaffected by the hook; the deny rules above block delete/switch of main and force-push.",
   "hooks": {
     "PreToolUse": [
