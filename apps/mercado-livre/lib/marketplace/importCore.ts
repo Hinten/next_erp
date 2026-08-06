@@ -197,13 +197,14 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
         grupoDeVariacoesUid: (args.parentGrupoUids?.length ?? 0) > 0 ? args.parentGrupoUids : null,
         variacoesUid: (args.parentVariacoesUid?.length ?? 0) > 0 ? args.parentVariacoesUid : null,
         timestamp: now,
+        ultimaModificacao: now,
       },
     };
   } else {
     // Update: fill-nulls only — never overwrite existing ERP data (dual-run).
     // Prices are NOT in this patch (see precosOps) so the legacy precos map is
     // never re-validated. Every field here fills only a currently-null value.
-    const patch: Record<string, unknown> = {};
+    const patch: Record<string, unknown> = { ultimaModificacao: now };
     if (options.atualizarProdutoPai) {
       const fillNull = (key: keyof MappedMlItem & string, value: unknown) => {
         if ((existingProduto?.[key] ?? null) == null && value != null) patch[key] = value;
@@ -490,10 +491,11 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
             }
           : {}),
         timestamp: now,
+        ultimaModificacao: now,
       },
     };
   } else {
-    const patch: Record<string, unknown> = {};
+    const patch: Record<string, unknown> = { ultimaModificacao: now };
     const fillNull = (key: string, value: unknown) => {
       if ((existingProduto?.[key] ?? null) == null && value != null) patch[key] = value;
     };
