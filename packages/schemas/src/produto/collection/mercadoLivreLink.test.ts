@@ -69,6 +69,12 @@ describe('produtoMercadoLivreLinkSchema', () => {
     });
     expect(parsed.id).toBeNull();
     expect(parsed.errors).toBeNull();
+    // Skip-if-unchanged state (#695) — absent means "unknown", and the sweep
+    // must SEND. A non-null default here would make every listing skip its
+    // very first send.
+    expect(parsed.ultimoEstoqueEnviado).toBeNull();
+    expect(parsed.ultimoEstoqueEnviadoHash).toBeNull();
+    expect(parsed.ultimoEnvioMs).toBeNull();
   });
 
   it('accepts every ESTADO_PUBLICACAO short code', () => {
@@ -131,6 +137,9 @@ describe('variacaoMercadoLivreLinkSchema', () => {
     expect(parsed.itemId).toBeNull();
     expect(parsed.sku).toBeNull();
     expect(parsed.attributes).toBeNull();
+    // Skip-if-unchanged state (#695), UP model — same fail-open default.
+    expect(parsed.ultimoEstoqueEnviado).toBeNull();
+    expect(parsed.ultimoEnvioMs).toBeNull();
   });
 
   it('preserves unknown top-level fields (pass-through)', () => {

@@ -171,6 +171,8 @@
  * cold starts and the unit tests both see current values; pure mechanics stay
  * code constants.
  */
+import { createHash } from 'node:crypto';
+
 import type { Firestore } from 'firebase-admin/firestore';
 // Pipeline expression builders live in the `/pipelines` subpath (admin
 // `@google-cloud/firestore` v8). Namespace import — the module is `export =`d.
@@ -328,6 +330,26 @@ export function concurrentDispatches(): number {
   return envInt('MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES', 2);
 }
 
+/**
+ * Skip-if-unchanged (#695) master switch — a KILL switch, not an opt-in
+ * (mirrors `MERCADO_LIVRE_TASKS_DISABLED` / `DATA_READ_CACHE_DISABLED`), so
+ * the rollout is "deploy with the var set, then delete the line" and the
+ * revert is one env line with no data migration.
+ */
+export function pularEnvioInalterado(): boolean {
+  return !envFlag('MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED');
+}
+
+/**
+ * How long a recorded send is trusted before the sweep re-affirms it anyway.
+ * This is the ONLY bound on a value that has silently gone wrong — a manual
+ * edit on ML's side, a bulk PUT that answered 200 but applied partially — so
+ * it is deliberately short. `0` disables the skip outright.
+ */
+export function skipTtlHours(): number {
+  return envInt('MERCADO_LIVRE_STOCK_SKIP_TTL_H', 24);
+}
+
 /* -------------------- THE query: joined stock families --------------------- */
 
 /**
@@ -355,6 +377,12 @@ export interface RawStockLinkRow {
   sub_status?: unknown;
   isUserProductModel?: unknown;
   linkDocId?: unknown;
+  /** Skip-if-unchanged state (#695) — see `envioInalterado`. Scalar for a
+   *  childless listing, fingerprint for an old-model bulk; `ultimoEnvioMs` is
+   *  MS. Any of them absent/junk means "unknown" and the family sends. */
+  ultimoEstoqueEnviado?: unknown;
+  ultimoEstoqueEnviadoHash?: unknown;
+  ultimoEnvioMs?: unknown;
   [key: string]: unknown;
 }
 
@@ -363,6 +391,13 @@ export interface RawVarLinkRow {
   itemId?: unknown;
   id?: unknown;
   produtoMercadoLivreOuterRef?: unknown;
+  /** The variação link's OWN doc id — the UP writeback target (#695). Every
+   *  sibling child's task carries the same parent `linkDocId`, so the per-item
+   *  last-sent value has to live here instead. */
+  varLinkDocId?: unknown;
+  /** Skip-if-unchanged state (#695), UP model only. */
+  ultimoEstoqueEnviado?: unknown;
+  ultimoEnvioMs?: unknown;
   [key: string]: unknown;
 }
 
@@ -598,6 +633,11 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
         'status',
         'sub_status',
         'isUserProductModel',
+        // Skip-if-unchanged state (#695). Three scalars (~40 B/row); the
+        // subquery's `where` is unchanged, so no index moves.
+        'ultimoEstoqueEnviado',
+        'ultimoEstoqueEnviadoHash',
+        'ultimoEnvioMs',
         pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
       )
       .toArrayExpression();
@@ -622,7 +662,19 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
         compEstoques('childKitKeys').as('componentEstoques'),
         pipelines
           .subcollection('variacaoMercadoLivre')
-          .select('itemId', 'id', 'produtoMercadoLivreOuterRef')
+          .select(
+            'itemId',
+            'id',
+            'produtoMercadoLivreOuterRef',
+            // Skip-if-unchanged state (#695), UP model only — plus this doc's
+            // own id, which the UP writeback needs: the anchor link is shared
+            // by every sibling child, so it cannot hold a per-item value. The
+            // probe still has no `where`, so it stays the partition-bounded
+            // TableScan the index ledger describes.
+            'ultimoEstoqueEnviado',
+            'ultimoEnvioMs',
+            pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
+          )
           .toArrayExpression()
           .as('varLinks'),
       )
@@ -1054,6 +1106,62 @@ export interface StockVariationEntry {
   available_quantity: number;
 }
 
+/* ------------------- skip-if-unchanged (#695) — pure core ------------------ */
+
+/**
+ * Canonical fingerprint of a bulk `variations` payload — the ONE flat scalar
+ * that stands in for a per-variation map on the link doc.
+ *
+ * Why a hash and not the map: `mergeIfExists` runs `assertFlatUpdatePatch`,
+ * which rejects nested objects outright, and the raw list (up to
+ * `MAX_VARIATIONS_PER_TASK` entries) would have to be PROJECTED back by
+ * `linkJoin()` on every anchor of every page — megabytes against the 128 MiB
+ * whole-query ceiling, to decide a boolean.
+ *
+ * Sorted by variation id, so a change in CHILD ORDER (the children array
+ * subquery has no sort) is not read as a change. 128 bits of SHA-256: a
+ * collision costs one skipped send, bounded by the TTL and the daily pass.
+ */
+export function fingerprintVariations(variations: readonly StockVariationEntry[]): string {
+  const canonical = [...variations]
+    .sort((a, b) => a.id - b.id)
+    .map((v) => `${v.id}:${v.available_quantity}`)
+    .join(',');
+  return createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 32);
+}
+
+/**
+ * Does the recorded last-sent state prove ML already holds `atual`?
+ *
+ * Reads RAW link-doc fields, so every argument is `unknown`. Returns FALSE —
+ * i.e. SEND — whenever anything is unknown, junk, type-mismatched, unstamped,
+ * clock-skewed into the future, or older than `skipTtlHours()`. Every failure
+ * mode here fails OPEN: a redundant send is free, a wrongly-skipped one is a
+ * wrong quantity live on ML.
+ *
+ * ⚠️ `ultimoEnvioMs` is MS (like `ultimaModificacao` on these link docs and
+ * `sweepComputedAtMs` in the payload), NOT µs like `estoqueMercadoLivreSync`'s
+ * stamps. `agoraMs` must be the same clock — pass `opts.sweepComputedAtMs`.
+ */
+export function envioInalterado(
+  ultimoEnviado: unknown,
+  ultimoEnvioMs: unknown,
+  atual: number | string,
+  agoraMs: number,
+): boolean {
+  // Strict, type-included equality: a stored `"12"` must never satisfy a
+  // computed `12`, and the hash arm must never satisfy the scalar arm.
+  if (typeof ultimoEnviado !== typeof atual || ultimoEnviado !== atual) return false;
+  const ttlMs = skipTtlHours() * 3_600_000;
+  if (ttlMs <= 0) return false; // TTL 0 (or negative junk) = skip disabled
+  const enviadoEm = finiteNumber(ultimoEnvioMs);
+  if (enviadoEm == null) return false; // a value with no stamp is never trusted
+  const idadeMs = agoraMs - enviadoEm;
+  // A future stamp means the clocks disagree or the unit is wrong (µs read as
+  // ms lands ~50 000 years ahead) — do not trust it, send.
+  return idadeMs >= 0 && idadeMs < ttlMs;
+}
+
 /**
  * One ready-to-enqueue send task — the `mlStockSendTaskSchema` wire shape
  * (the zod schema lives on the stacked send-queue branch; this local type
@@ -1074,6 +1182,14 @@ export interface StockSendTaskDraft {
   itemId: string;
   /** The conta's `produtoMercadoLivre` link doc id (writeback target). */
   linkDocId: string;
+  /**
+   * UP model only: the CHILD's `variacaoMercadoLivre` doc id — where THIS
+   * task's last-sent quantity is recorded (#695). Null on `kind: 'item'` and
+   * on old-model bulks, whose state lives on the anchor link. Null on a UP
+   * task too when the projection carried no doc id: the send still happens,
+   * nothing is recorded, and that variation simply never skips (fail-open).
+   */
+  varLinkDocId: string | null;
   quantidade: number | null;
   variations: StockVariationEntry[] | null;
   sweepId: string;
@@ -1267,6 +1383,9 @@ export function buildSendTasks(
       integracaoId: opts.integracaoId,
       produtoId: anchorId,
       linkDocId, // THIS listing's link doc — status writeback per listing
+      // Overridden only by the UP branch, whose per-item last-sent value
+      // cannot live on the shared anchor link (#695).
+      varLinkDocId: null as string | null,
       sweepId: opts.sweepId,
       sweepComputedAtMs: opts.sweepComputedAtMs,
       reenqueues: 0,
@@ -1396,6 +1515,13 @@ export function buildSendTasks(
         kind: 'variationItem',
         itemId: varItemId,
         variacaoProdutoId: child.produtoId,
+        // The writeback target for THIS variation's last-sent value (#695).
+        // Null when the projection carried no doc id — the send still runs and
+        // simply records nothing, so the variation never skips.
+        varLinkDocId:
+          typeof varLink.varLinkDocId === 'string' && varLink.varLinkDocId !== ''
+            ? varLink.varLinkDocId
+            : null,
         quantidade,
         variations: null,
       });

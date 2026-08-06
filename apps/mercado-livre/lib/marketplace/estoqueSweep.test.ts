@@ -295,6 +295,8 @@ function expectedDraft(mode: StockSweepMode, integracaoId: string): Record<strin
     kind: 'item',
     itemId: 'MLB1',
     linkDocId: 'link-1',
+    // Childless family → the last-sent record lives on the anchor link (#695).
+    varLinkDocId: null,
     quantidade: 8,
     variations: null,
     sweepId: `${mode}-${integracaoId}-${NOW_MS}`,

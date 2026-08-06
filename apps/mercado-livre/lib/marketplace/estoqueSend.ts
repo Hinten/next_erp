@@ -61,11 +61,13 @@ import {
 import {
   estoqueMercadoLivreSyncCollection,
   produtoMercadoLivreLinkCollection,
+  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import {
   PAUSE_REENQUEUE_JITTER_MAX_S,
   STOCK_SEND_MAX_ATTEMPTS,
+  fingerprintVariations,
   maxPauseReenqueues,
   podeEnviarEstoque,
   ratePauseMin,
@@ -102,6 +104,15 @@ export const mlStockSendTaskSchema = z.object({
   variacaoProdutoId: z.string().min(1).nullable().default(null),
   /** The conta's `produtoMercadoLivre` link doc id — the status-writeback target, NEVER re-resolved. */
   linkDocId: z.string().min(1),
+  /**
+   * UP model: the CHILD's `variacaoMercadoLivre` doc id — where THIS task's
+   * last-sent quantity is recorded (#695). Null on `kind: 'item'`, and on a UP
+   * task whose projection carried no doc id (then nothing is recorded and that
+   * variation simply never skips). `.nullable().default(null)` keeps a rolling
+   * deploy wire-compatible in BOTH directions: a task enqueued by the old sweep
+   * parses here, and a task enqueued by the new one parses on an old handler.
+   */
+  varLinkDocId: z.string().min(1).nullable().default(null),
   /** Single-item quantity (sweep-computed) — null when `variations` carries the numbers. */
   quantidade: z.number().int().min(0).nullable().default(null),
   /** Old-model bulk send: one entry per variation, `id` = the NUMERIC variação-link id. */
@@ -295,10 +306,15 @@ export async function processStockSendTask(
         { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },
       );
     }
+    // ONE decision drives both the body and the last-sent record below, so the
+    // record can never describe something other than what was sent (#695) —
+    // in particular it inherits the "variations wins" precedence above.
+    const modo: 'bulk' | 'single' | null =
+      payload.variations != null ? 'bulk' : payload.quantidade != null ? 'single' : null;
     const body: Record<string, unknown> | null =
-      payload.variations != null
+      modo === 'bulk'
         ? { variations: payload.variations }
-        : payload.quantidade != null
+        : modo === 'single'
           ? { available_quantity: payload.quantidade }
           : null;
     if (body == null) {
@@ -319,6 +335,44 @@ export async function processStockSendTask(
     // `mergeIfExists`: `linkDocId` rides from the sweep and is never re-resolved,
     // so the link may have been deleted while this task sat in the queue. An
     // upsert would resurrect a ghost doc holding only these keys.
+    //
+    // The last-sent record (#695) rides this SAME merge for shapes 1-2 — no
+    // extra write. It is written ONLY here, on the success path, after
+    // `updateItem` resolved: a value recorded for a send that did not land
+    // would latch the listing into a permanent skip, so every failure branch
+    // below deliberately leaves these fields alone.
+    //
+    // The unused arm is written back to `null` on every send, so a family that
+    // gains or loses children (shape 1 <-> shape 2) can never be compared
+    // against the previous shape's stale value.
+    //
+    // A UP `variationItem` records NOTHING here: the anchor link is shared by
+    // every sibling child, so whichever sibling wrote last would win and the
+    // value would name no particular item. Its record goes on the child's own
+    // variação link, below.
+    //
+    // Race note (rule 7 / ADR 0011): this is a blind `update()`, deliberately
+    // tier 0. Two sends for one listing crossing (a Cloud Tasks retry, a task
+    // released from a 429 pause) can land out of order and record the older
+    // number. That is tolerable because the field is a HINT: losing it costs a
+    // redundant send, and winning it wrongly costs a skipped send bounded by
+    // `skipTtlHours()` and the daily pass. A `lastUpdateTime` precondition
+    // would need a read, which this handler exists not to do — and it would
+    // not help anyway: it cannot see the order in which ML APPLIED the PUTs.
+    const registroUltimoEnvio =
+      payload.kind === 'variationItem'
+        ? {}
+        : modo === 'bulk'
+          ? {
+              ultimoEstoqueEnviadoHash: fingerprintVariations(payload.variations ?? []),
+              ultimoEstoqueEnviado: null,
+              ultimoEnvioMs: nowMs,
+            }
+          : {
+              ultimoEstoqueEnviado: payload.quantidade,
+              ultimoEstoqueEnviadoHash: null,
+              ultimoEnvioMs: nowMs,
+            };
     const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
       db,
       { produtoId: payload.produtoId },
@@ -332,6 +386,7 @@ export async function processStockSendTask(
         // behind — otherwise the produto tab keeps showing a red alert for a
         // fault that has since healed (#781).
         errors: [],
+        ...registroUltimoEnvio,
       },
     );
     if (!applied) {
@@ -344,6 +399,33 @@ export async function processStockSendTask(
           itemId: payload.itemId,
         },
       );
+    }
+
+    // (5b) UP model only: the per-item last-sent record, on the CHILD's own
+    // variação link (#695). Runs AFTER the anchor merge on purpose — the status
+    // writeback is the important one, and if this throws the task retries and
+    // re-PUTs the identical payload, exactly the exposure the anchor writeback
+    // already carries. `mergeIfExists`, never `merge`: the doc id rode from the
+    // sweep and the child may have been deleted meanwhile; an upsert would
+    // leave a ghost holding only these two keys.
+    if (payload.kind === 'variationItem' && modo === 'single' && payload.varLinkDocId != null) {
+      const varApplied = await variacaoMercadoLivreLinkCollection.mergeIfExists(
+        db,
+        { produtoId: payload.variacaoProdutoId ?? payload.produtoId },
+        payload.varLinkDocId,
+        { ultimoEstoqueEnviado: payload.quantidade, ultimoEnvioMs: nowMs },
+      );
+      if (!varApplied) {
+        console.warn(
+          '[mercado-livre] stock-send: link de variação removido — último envio não registrado',
+          {
+            integracaoId: payload.integracaoId,
+            variacaoProdutoId: payload.variacaoProdutoId,
+            varLinkDocId: payload.varLinkDocId,
+            itemId: payload.itemId,
+          },
+        );
+      }
     }
 
     // Staleness observability (module doc): the numbers were computed at sweep

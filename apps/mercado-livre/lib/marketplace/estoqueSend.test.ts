@@ -14,6 +14,7 @@ import {
   STOCK_SEND_MAX_ATTEMPTS,
   type StockFamilyRow,
   buildSendTasks,
+  fingerprintVariations,
 } from './estoquePlan';
 import { MlTasksDisabledError } from './mlTasks';
 import {
@@ -124,6 +125,7 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
     kind: 'item',
     variacaoProdutoId: null,
     linkDocId: 'link1',
+    varLinkDocId: null,
     quantidade: 10,
     variations: null,
     sweepComputedAtMs: SWEEP_MS,
@@ -502,6 +504,206 @@ describe('processStockSendTask — writeback', () => {
       status: 'active',
       sub_status: [],
       ultimaModificacao: NOW_MS,
+    });
+  });
+});
+
+describe('processStockSendTask — last-sent record (#695, write side)', () => {
+  const VAR_PATH = 'produtos/CH1/variacaoMercadoLivre';
+
+  /** A UP `variationItem` task: its record belongs on the CHILD's varLink. */
+  const upPayload = (over: Partial<MlStockSendTask> = {}) =>
+    payload({
+      kind: 'variationItem',
+      itemId: 'MLB-CH1',
+      variacaoProdutoId: 'CH1',
+      varLinkDocId: 'vl-1',
+      quantidade: 4,
+      ...over,
+    });
+
+  it('single send records the scalar and NULLS the hash arm', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+
+    await run(h, payload({ quantidade: 10 }));
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      ultimoEstoqueEnviado: 10,
+      // Nulled so a family that later GAINS children can never compare its new
+      // bulk fingerprint against this listing's stale scalar, or vice versa.
+      ultimoEstoqueEnviadoHash: null,
+      ultimoEnvioMs: NOW_MS,
+    });
+  });
+
+  it('bulk send records the fingerprint and NULLS the scalar arm', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+    const variations = [
+      { id: 2, available_quantity: 5 },
+      { id: 1, available_quantity: 9 },
+    ];
+
+    await run(h, payload({ quantidade: null, variations }));
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      ultimoEstoqueEnviadoHash: fingerprintVariations(variations),
+      ultimoEstoqueEnviado: null,
+      ultimoEnvioMs: NOW_MS,
+    });
+  });
+
+  it('quantidade AND variations → the record follows the BODY (variations win)', async () => {
+    // Pins the record to the same precedence the request body uses, so the two
+    // can never disagree about what was actually sent.
+    const h = makeHarness();
+    seedLink(h.db);
+    const variations = [{ id: 1, available_quantity: 3 }];
+
+    await run(h, payload({ quantidade: 10, variations }));
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      ultimoEstoqueEnviadoHash: fingerprintVariations(variations),
+      ultimoEstoqueEnviado: null,
+    });
+  });
+
+  it('UP: the record goes on the CHILD varLink, never on the shared anchor link', async () => {
+    const h = makeHarness();
+    seedLink(h.db, { isUserProductModel: true });
+    h.db.seed(VAR_PATH, 'vl-1', { itemId: 'MLB-CH1', id: 101 });
+
+    await run(h, upPayload());
+
+    // The anchor link still gets its STATUS writeback — but no last-sent value,
+    // which every sibling child would otherwise overwrite in turn.
+    const anchorLink = h.db.docs(LINK_PATH).get('link1') ?? {};
+    expect(anchorLink).toMatchObject({ status: 'active', ultimaModificacao: NOW_MS });
+    expect(anchorLink).not.toHaveProperty('ultimoEstoqueEnviado');
+    expect(anchorLink).not.toHaveProperty('ultimoEstoqueEnviadoHash');
+
+    expect(h.db.docs(VAR_PATH).get('vl-1')).toMatchObject({
+      ultimoEstoqueEnviado: 4,
+      ultimoEnvioMs: NOW_MS,
+      itemId: 'MLB-CH1', // merge discipline: untouched fields survive
+    });
+  });
+
+  it('UP: the varLink write comes AFTER the anchor status writeback', async () => {
+    // Ordering is deliberate — the status writeback is the important one, and
+    // it must land even if the second write throws.
+    const h = makeHarness();
+    seedLink(h.db, { isUserProductModel: true });
+    h.db.seed(VAR_PATH, 'vl-1', { itemId: 'MLB-CH1' });
+
+    await run(h, upPayload());
+
+    const updates = h.db.opLog.filter((o) => o.op === 'update').map((o) => o.path);
+    expect(updates).toEqual([`${LINK_PATH}/link1`, `${VAR_PATH}/vl-1`]);
+  });
+
+  it('UP: a varLink deleted mid-flight still sends, warns, and creates NO ghost', async () => {
+    const h = makeHarness();
+    seedLink(h.db, { isUserProductModel: true });
+    // No varLink seeded — the child was deleted while the task sat in the queue.
+
+    const res = await run(h, upPayload());
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.db.docs(VAR_PATH).has('vl-1')).toBe(false);
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('link de variação removido'),
+      expect.objectContaining({ varLinkDocId: 'vl-1', variacaoProdutoId: 'CH1' }),
+    );
+  });
+
+  it('UP without a varLinkDocId → no second write at all (fail-open, never skips)', async () => {
+    const h = makeHarness();
+    seedLink(h.db, { isUserProductModel: true });
+
+    await run(h, upPayload({ varLinkDocId: null }));
+
+    expect(h.db.opLog.filter((o) => o.op === 'update').map((o) => o.path)).toEqual([
+      `${LINK_PATH}/link1`,
+    ]);
+  });
+
+  /* -- Failure paths record NOTHING. This is the load-bearing half: a value
+     recorded for a send that did not land would latch the listing into a
+     permanent skip, and the failure would be invisible. -- */
+
+  it.each([
+    [
+      'terminal 4xx, listing healthy',
+      () =>
+        makeHarness({
+          updateItem: async () => {
+            throw new MercadoLivreHttpError('ML 400: invalid', 400, null);
+          },
+          retryCount: LAST_ATTEMPT,
+        }),
+    ],
+    [
+      'the verification GET 404s',
+      () =>
+        makeHarness({
+          updateItem: async () => {
+            throw new MercadoLivreHttpError('ML 400: invalid', 400, null);
+          },
+          getItem: async () => {
+            throw new MercadoLivreHttpError('ML 404: gone', 404, null);
+          },
+          retryCount: LAST_ATTEMPT,
+        }),
+    ],
+    [
+      'the verification GET itself fails',
+      () =>
+        makeHarness({
+          updateItem: async () => {
+            throw new MercadoLivreHttpError('ML 400: invalid', 400, null);
+          },
+          getItem: async () => {
+            throw new MercadoLivreHttpError('ML 500: boom', 500, null);
+          },
+          retryCount: LAST_ATTEMPT,
+        }),
+    ],
+    [
+      'a dead credential (reauth)',
+      () =>
+        makeHarness({
+          resolveChannelContext: async () => {
+            throw new MercadoLivreReauthRequiredError('refresh_failed', 'reconecte a conta');
+          },
+        }),
+    ],
+  ])('%s → nothing recorded', async (_label, build) => {
+    const h = build();
+    seedLink(h.db);
+
+    await run(h, payload({ quantidade: 10 })).catch(() => undefined);
+
+    const link = h.db.docs(LINK_PATH).get('link1') ?? {};
+    expect(link).not.toHaveProperty('ultimoEstoqueEnviado');
+    expect(link).not.toHaveProperty('ultimoEstoqueEnviadoHash');
+    expect(link).not.toHaveProperty('ultimoEnvioMs');
+  });
+
+  it('a 5xx rethrow leaves an EARLIER record untouched (never advances the stamp)', async () => {
+    const h = makeHarness({
+      updateItem: async () => {
+        throw new MercadoLivreHttpError('ML 503: boom', 503, null);
+      },
+    });
+    seedLink(h.db, { ultimoEstoqueEnviado: 3, ultimoEnvioMs: NOW_MS - 60_000 });
+
+    await expect(run(h, payload({ quantidade: 10 }))).rejects.toThrow();
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      ultimoEstoqueEnviado: 3,
+      ultimoEnvioMs: NOW_MS - 60_000,
     });
   });
 });

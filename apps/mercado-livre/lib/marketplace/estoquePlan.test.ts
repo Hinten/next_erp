@@ -147,9 +147,11 @@ import {
   disponivelByProdutoIdFrom,
   envFlag,
   envInt,
+  envioInalterado,
   estoqueMax,
   fetchSoldProdutoIds,
   fetchStockFamilies,
+  fingerprintVariations,
   incrementalWindowMin,
   isStockSyncEnabled,
   kitIncluiEstoqueProprio,
@@ -157,10 +159,12 @@ import {
   maxPauseReenqueues,
   maxTasksPerSweep,
   podeEnviarEstoque,
+  pularEnvioInalterado,
   quantidadeDoMembro,
   quantidadeParaEnvio,
   quantidadesDaFamilia,
   ratePauseMin,
+  skipTtlHours,
   soldIdsLimit,
   windowOverlapSec,
 } from './estoquePlan';
@@ -222,6 +226,8 @@ const TOUCHED_ENV = [
   'MERCADO_LIVRE_STOCK_ANCHOR_PAGE_LIMIT',
   'MERCADO_LIVRE_STOCK_RATE_PAUSE_MIN',
   'MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT',
+  'MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED',
+  'MERCADO_LIVRE_STOCK_SKIP_TTL_H',
   'ESTOQUE_PLAN_TEST_INT',
   'ESTOQUE_PLAN_TEST_FLAG',
 ];
@@ -351,6 +357,10 @@ const linkSub = () => ({
         'status',
         'sub_status',
         'isUserProductModel',
+        // Skip-if-unchanged state (#695) — three scalars, no `where` change.
+        'ultimoEstoqueEnviado',
+        'ultimoEstoqueEnviadoHash',
+        'ultimoEnvioMs',
         alias('linkDocId', docId(f('__name__'))),
       ],
     },
@@ -378,7 +388,20 @@ const childrenSub = () => ({
           kind: 'arraySubquery',
           stages: [
             { stage: 'subcollection', args: ['variacaoMercadoLivre'] },
-            { stage: 'select', args: ['itemId', 'id', 'produtoMercadoLivreOuterRef'] },
+            {
+              stage: 'select',
+              args: [
+                'itemId',
+                'id',
+                'produtoMercadoLivreOuterRef',
+                // Skip-if-unchanged state (#695) + this doc's OWN id, the UP
+                // writeback target. Still no `where` — the probe stays a
+                // partition-bounded TableScan.
+                'ultimoEstoqueEnviado',
+                'ultimoEnvioMs',
+                alias('varLinkDocId', docId(f('__name__'))),
+              ],
+            },
           ],
         }),
       ],
@@ -1216,12 +1239,147 @@ describe('deveEnviarIncremental — activity filter OR-arms', () => {
   });
 });
 
+describe('skip-if-unchanged (#695) — pure core', () => {
+  describe('fingerprintVariations', () => {
+    it('is deterministic and 32 hex chars', () => {
+      const fp = fingerprintVariations([
+        { id: 2, available_quantity: 5 },
+        { id: 1, available_quantity: 9 },
+      ]);
+      expect(fp).toMatch(/^[0-9a-f]{32}$/);
+      expect(
+        fingerprintVariations([
+          { id: 2, available_quantity: 5 },
+          { id: 1, available_quantity: 9 },
+        ]),
+      ).toBe(fp);
+    });
+
+    it('ignores CHILD ORDER — the children subquery has no sort, so order is noise', () => {
+      const a = fingerprintVariations([
+        { id: 1, available_quantity: 9 },
+        { id: 2, available_quantity: 5 },
+      ]);
+      const b = fingerprintVariations([
+        { id: 2, available_quantity: 5 },
+        { id: 1, available_quantity: 9 },
+      ]);
+      expect(a).toBe(b);
+    });
+
+    it('changes when ONE variation quantity changes — the whole bulk must re-send', () => {
+      const before = fingerprintVariations([
+        { id: 1, available_quantity: 9 },
+        { id: 2, available_quantity: 5 },
+      ]);
+      const after = fingerprintVariations([
+        { id: 1, available_quantity: 9 },
+        { id: 2, available_quantity: 4 },
+      ]);
+      expect(after).not.toBe(before);
+    });
+
+    it('distinguishes a REMOVED variation from a kept one', () => {
+      expect(fingerprintVariations([{ id: 1, available_quantity: 9 }])).not.toBe(
+        fingerprintVariations([
+          { id: 1, available_quantity: 9 },
+          { id: 2, available_quantity: 0 },
+        ]),
+      );
+    });
+
+    it('handles the empty list without throwing', () => {
+      expect(fingerprintVariations([])).toMatch(/^[0-9a-f]{32}$/);
+    });
+  });
+
+  describe('envioInalterado — fails OPEN on every doubt', () => {
+    const NOW = 1_700_000_000_000;
+    const FRESH = NOW - 60_000; // one minute old, well inside the 24h default
+
+    it('true only when the value matches AND the stamp is fresh', () => {
+      expect(envioInalterado(12, FRESH, 12, NOW)).toBe(true);
+      expect(envioInalterado('abc', FRESH, 'abc', NOW)).toBe(true);
+    });
+
+    it('sends when the value differs', () => {
+      expect(envioInalterado(12, FRESH, 13, NOW)).toBe(false);
+    });
+
+    it('sends on a TYPE mismatch — a stored "12" never satisfies a computed 12', () => {
+      expect(envioInalterado('12', FRESH, 12, NOW)).toBe(false);
+      expect(envioInalterado(12, FRESH, '12', NOW)).toBe(false);
+    });
+
+    it('never lets the hash arm satisfy the scalar arm (and vice versa)', () => {
+      // A bulk listing that becomes childless reads its OWN stale hash against
+      // a numeric quantity — different types, so it sends.
+      const hash = fingerprintVariations([{ id: 1, available_quantity: 7 }]);
+      expect(envioInalterado(hash, FRESH, 7, NOW)).toBe(false);
+    });
+
+    it('sends when there is no recorded value at all (first send)', () => {
+      expect(envioInalterado(null, FRESH, 12, NOW)).toBe(false);
+      expect(envioInalterado(undefined, FRESH, 12, NOW)).toBe(false);
+    });
+
+    it('sends when the value carries NO stamp, or a junk one', () => {
+      expect(envioInalterado(12, null, 12, NOW)).toBe(false);
+      expect(envioInalterado(12, undefined, 12, NOW)).toBe(false);
+      expect(envioInalterado(12, 'ontem', 12, NOW)).toBe(false);
+      expect(envioInalterado(12, Number.NaN, 12, NOW)).toBe(false);
+    });
+
+    it('sends on a FUTURE stamp — clock skew, or a µs value read as ms', () => {
+      expect(envioInalterado(12, NOW + 1, 12, NOW)).toBe(false);
+      expect(envioInalterado(12, NOW * 1000, 12, NOW)).toBe(false);
+    });
+
+    it('sends once the stamp is older than the TTL (boundary is exclusive)', () => {
+      const ttlMs = 24 * 3_600_000;
+      expect(envioInalterado(12, NOW - ttlMs + 1, 12, NOW)).toBe(true);
+      expect(envioInalterado(12, NOW - ttlMs, 12, NOW)).toBe(false);
+      expect(envioInalterado(12, NOW - ttlMs - 1, 12, NOW)).toBe(false);
+    });
+
+    it('honours MERCADO_LIVRE_STOCK_SKIP_TTL_H, and TTL 0 disables the skip', () => {
+      process.env.MERCADO_LIVRE_STOCK_SKIP_TTL_H = '1';
+      expect(envioInalterado(12, NOW - 30 * 60_000, 12, NOW)).toBe(true);
+      expect(envioInalterado(12, NOW - 90 * 60_000, 12, NOW)).toBe(false);
+      process.env.MERCADO_LIVRE_STOCK_SKIP_TTL_H = '0';
+      expect(envioInalterado(12, FRESH, 12, NOW)).toBe(false);
+    });
+  });
+
+  describe('config getters', () => {
+    it('pularEnvioInalterado is a KILL switch — ON unless explicitly disabled', () => {
+      expect(pularEnvioInalterado()).toBe(true);
+      process.env.MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED = '1';
+      expect(pularEnvioInalterado()).toBe(false);
+      // envFlag only honours an exact '1' — anything else leaves the skip ON.
+      process.env.MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED = 'true';
+      expect(pularEnvioInalterado()).toBe(true);
+    });
+
+    it('skipTtlHours defaults to 24 and falls back on junk', () => {
+      expect(skipTtlHours()).toBe(24);
+      process.env.MERCADO_LIVRE_STOCK_SKIP_TTL_H = 'xx';
+      expect(skipTtlHours()).toBe(24);
+      process.env.MERCADO_LIVRE_STOCK_SKIP_TTL_H = '6';
+      expect(skipTtlHours()).toBe(6);
+    });
+  });
+});
+
 describe('buildSendTasks — decision ladder + task shapes', () => {
   const OPTS = { integracaoId: CONTA, sweepId: 'sweep-1', sweepComputedAtMs: T4 };
   const BASE_TASK = {
     integracaoId: CONTA,
     produtoId: 'PROD',
     linkDocId: 'link1',
+    // Only a UP `variationItem` whose varLink projected a doc id carries one
+    // (#695); every other shape records on the anchor link.
+    varLinkDocId: null,
     sweepId: 'sweep-1',
     sweepComputedAtMs: T4,
     reenqueues: 0,
@@ -1560,6 +1718,46 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         { produtoId: 'CH2', reason: 'sem-link' },
       ],
     });
+  });
+
+  it('UP: each task carries its OWN varLinkDocId — the per-item writeback target (#695)', () => {
+    // The anchor `linkDocId` is IDENTICAL across siblings, so it cannot hold a
+    // per-item last-sent value; `varLinkDocId` is what makes the record 1:1
+    // with the task. A varLink projecting no doc id degrades to null (the send
+    // still happens, nothing is recorded, that variation never skips).
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            varLinkDocId: 'vl-1',
+          },
+        ]),
+        child('CH2', [
+          {
+            itemId: 'MLB-CH2',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            varLinkDocId: '', // junk → null, not ''
+          },
+        ]),
+        child('CH3', [{ itemId: 'MLB-CH3', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
+    });
+    const { tasks } = run(
+      row,
+      new Map([
+        ['CH1', 1],
+        ['CH2', 2],
+        ['CH3', 3],
+      ]),
+    );
+    expect(tasks.map((t) => [t.itemId, t.linkDocId, t.varLinkDocId])).toEqual([
+      ['MLB-CH1', 'link1', 'vl-1'],
+      ['MLB-CH2', 'link1', null],
+      ['MLB-CH3', 'link1', null],
+    ]);
   });
 
   it('UP model: one variationItem task per child, deduped by itemId', () => {

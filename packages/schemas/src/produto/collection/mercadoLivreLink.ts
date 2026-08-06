@@ -127,7 +127,34 @@ export const produtoMercadoLivreLinkSchema = z
     /** Publish errors — Flutter writes this key even when null. */
     errors: z.array(z.string()).nullable().default(null),
 
+    /**
+     * Skip-if-unchanged state (#695) — what this LISTING was last SENT, and
+     * when. Written ONLY by a successful `PUT /items` writeback in
+     * `estoqueSend`; every failure path leaves it alone, because a value
+     * recorded for a send that did not land would latch the listing into a
+     * permanent skip.
+     *
+     * Exactly one of the two value fields is non-null, and each send writes
+     * the other back to `null`: the scalar for a childless listing, the
+     * fingerprint for an old-model bulk `variations` send. The variation map
+     * itself is never stored — `mergeIfExists` rejects nested objects, and up
+     * to 2000 entries per link would dwarf the sweep's projection budget.
+     *
+     * A null in EITHER means "unknown" and the sweep sends: every failure mode
+     * here fails OPEN.
+     */
+    ultimoEstoqueEnviado: z.number().int().nullable().default(null),
+    ultimoEstoqueEnviadoHash: z.string().nullable().default(null),
+
     ultimaModificacao: millisSinceEpoch().nullable().default(null),
+    /**
+     * When the values above were recorded. MS since epoch, like
+     * `ultimaModificacao` on this doc and `sweepComputedAtMs` in the send
+     * payload — NOT µs like `estoqueMercadoLivreSync`'s stamps (ADR 0011: the
+     * units are not interchangeable, and a cross-unit compare is a guard that
+     * never fires). Doubles as the skip's TTL clock.
+     */
+    ultimoEnvioMs: millisSinceEpoch().nullable().default(null),
     dataCadastro: millisSinceEpoch().nullable().default(null),
   })
   .passthrough();
@@ -149,6 +176,20 @@ export const variacaoMercadoLivreLinkSchema = z
     produtoMercadoLivreOuterRef: outerRefSchema,
     sku: z.string().nullable().default(null),
     attributes: z.array(mlAttributeWireSchema).nullable().default(null),
+
+    /**
+     * Skip-if-unchanged state (#695) for the USER-PRODUCTS model only, where
+     * each variation is its own ML item and therefore its own send task. This
+     * doc — not the parent listing link — is the one that is 1:1 with that
+     * task: every sibling child's task carries the SAME parent `linkDocId`, so
+     * a scalar recorded there would be clobbered by whichever sibling wrote
+     * last, with no way to tell whose value survived.
+     *
+     * Same contract as the parent's fields: written only on a successful send,
+     * ms since epoch, null means "unknown" and the sweep sends.
+     */
+    ultimoEstoqueEnviado: z.number().int().nullable().default(null),
+    ultimoEnvioMs: millisSinceEpoch().nullable().default(null),
   })
   .passthrough();
 export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSchema>;
