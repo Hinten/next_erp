@@ -1,12 +1,23 @@
 /**
  * `POST /api/webhooks/mercado-livre` — #290
  *
- * Mercado Livre notification receiver. ML posts unauthenticated `topic` +
- * `resource` callbacks to the URL registered per connected account (the legacy
- * `distribuidorDeNotificacoes` ran `--allow-unauthenticated`); the security is
- * the obscure callback URL plus re-fetching the resource from the ML API with
- * the account token before acting on it — ML does NOT HMAC-sign the body
- * (contrast Shopee, which does — see lib/signatures/hmac.ts for that path).
+ * Mercado Livre notification receiver. ML posts `topic` + `resource` callbacks
+ * to the URL registered per connected account (the legacy
+ * `distribuidorDeNotificacoes` ran `--allow-unauthenticated`). ML does NOT
+ * HMAC-sign the body — there is no signature header to verify (contrast Shopee,
+ * and this repo's mercado-pago / whatsapp / melhor-envio receivers, which do —
+ * see lib/signatures/hmac.ts for that path). The security model is therefore
+ * three cheap origin gates (#811, `lib/marketplace/webhookOrigin.ts`) —
+ * body-size cap, opt-in source-IP allow-list, and `application_id` must be OUR
+ * registered ML app — layered over the real anchor: every handler re-fetches the
+ * resource from the ML API with the account token before acting on it.
+ *
+ * The gates are amplification guards. Without them one anonymous POST bought a
+ * Cloud Tasks enqueue, an attacker-doc-id'd Firestore create on the failure path,
+ * up to 5 sweep re-drives and an authenticated ML API call — burning the
+ * account's ML rate budget and letting an attacker pre-poison a future
+ * notification id (the genuine failure doc is then dropped as ALREADY_EXISTS).
+ * A rejected request costs one env read and a header/field comparison.
  *
  * The receiver must answer `200` FAST so ML stops retrying, and do the heavy
  * work asynchronously. Step 6 (#290/#360): validate the body and ENQUEUE the
@@ -41,6 +52,11 @@ import { ZodError } from 'zod';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { parseNotificationBody, persistNotificationFailure } from '@/lib/marketplace/notificacao';
 import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
+import {
+  isAllowedSourceIp,
+  isBodyTooLarge,
+  isExpectedApplication,
+} from '@/lib/marketplace/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -66,6 +82,19 @@ const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
 const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
 
 export async function POST(req: Request): Promise<NextResponse> {
+  // Origin gates (#811) — everything that can be decided WITHOUT the body runs
+  // first, so a forged request never reaches the enqueue/persist/ML-call path.
+  if (isBodyTooLarge(req)) {
+    console.warn('[mercado-livre/webhook] rejecting oversized payload', {
+      contentLength: req.headers.get('content-length'),
+    });
+    return NextResponse.json({ error: 'payload muito grande' }, { status: 413 });
+  }
+  if (!isAllowedSourceIp(req)) {
+    console.warn('[mercado-livre/webhook] rejecting notification from a non-allowlisted source IP');
+    return NextResponse.json({ error: 'origem não autorizada' }, { status: 401 });
+  }
+
   const raw = await req.text();
 
   let body: unknown;
@@ -79,6 +108,15 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ok: true, accepted: false });
     }
     throw err;
+  }
+
+  // The `application_id` gate — the body had to be parsed to reach the field, but
+  // this still lands BEFORE the enqueue, the Firestore write and the ML API call,
+  // which is the whole point. Checked against the RAW body: ML sometimes sends
+  // numeric ids as strings, which `parseNotificationBody`'s coercion drops.
+  if (!isExpectedApplication(body)) {
+    console.warn('[mercado-livre/webhook] rejecting notification for a foreign application_id');
+    return NextResponse.json({ error: 'application_id não reconhecido' }, { status: 401 });
   }
 
   // Noise (health ping / missing topic+resource) → ack without enqueuing.

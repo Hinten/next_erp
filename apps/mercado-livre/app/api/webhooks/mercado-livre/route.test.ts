@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The receiver enqueues via the task scheduler and (only on enqueue failure)
 // persists via the admin handle. Mock the scheduler + admin + collection so the
@@ -31,17 +31,30 @@ vi.mock('@delfrance/data/admin/collections', () => ({
 
 const { POST } = await import('./route');
 
-function req(body: unknown): Request {
+/** Our registered ML application id — every request below is stamped with it. */
+const APP_ID = 5503910054141466;
+
+function req(body: unknown, headers: Record<string, string> = {}): Request {
+  const payload =
+    body != null && typeof body === 'object' && !Array.isArray(body)
+      ? { application_id: APP_ID, ...body }
+      : body;
   return new Request('http://localhost:3006/api/webhooks/mercado-livre', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: typeof body === 'string' ? body : JSON.stringify(body),
+    headers: { 'content-type': 'application/json', ...headers },
+    body: typeof payload === 'string' ? payload : JSON.stringify(payload),
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', String(APP_ID));
+  vi.stubEnv('MERCADO_LIVRE_WEBHOOK_ALLOWED_IPS', '');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('POST /api/webhooks/mercado-livre', () => {
@@ -112,6 +125,81 @@ describe('POST /api/webhooks/mercado-livre', () => {
     await expect(
       POST(req({ _id: 'N7', resource: '/orders/7', topic: 'orders_v2', user_id: 1 })),
     ).rejects.toThrow('firestore down');
+  });
+
+  // ---- origin gates (#811). ML does not sign notification bodies, so these
+  // cheap checks are what stands between an anonymous POST and a Cloud Tasks
+  // enqueue + Firestore write + authenticated ML API call.
+
+  it('rejects a foreign application_id with 401, without enqueuing or writing', async () => {
+    const res = await POST(
+      req({ _id: 'F1', resource: '/orders/1', topic: 'orders_v2', user_id: 1, application_id: 42 }),
+    );
+    expect(res.status).toBe(401);
+    expect(h.enqueue).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload carrying no application_id at all', async () => {
+    const res = await POST(
+      req({
+        _id: 'F2',
+        resource: '/orders/1',
+        topic: 'orders_v2',
+        user_id: 1,
+        application_id: null,
+      }),
+    );
+    expect(res.status).toBe(401);
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('accepts our application_id sent as a string (ML is inconsistent about numeric ids)', async () => {
+    const res = await POST(
+      req({
+        _id: 'S1',
+        resource: '/orders/1',
+        topic: 'orders_v2',
+        user_id: 1,
+        application_id: String(APP_ID),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(h.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('falls open when MERCADO_LIVRE_CLIENT_ID is unset — genuine traffic is never dropped on a config gap', async () => {
+    vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', '');
+    const res = await POST(
+      req({ _id: 'O1', resource: '/orders/1', topic: 'orders_v2', user_id: 1, application_id: 42 }),
+    );
+    expect(res.status).toBe(200);
+    expect(h.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a non-allowlisted source IP with 401 when the allow-list is configured', async () => {
+    vi.stubEnv('MERCADO_LIVRE_WEBHOOK_ALLOWED_IPS', '54.88.218.97,18.215.140.160');
+    const notify = { _id: 'I1', resource: '/orders/1', topic: 'orders_v2', user_id: 1 };
+
+    const blocked = await POST(req(notify, { 'x-forwarded-for': '203.0.113.9' }));
+    expect(blocked.status).toBe(401);
+    expect(h.enqueue).not.toHaveBeenCalled();
+
+    const allowed = await POST(req(notify, { 'x-forwarded-for': '54.88.218.97' }));
+    expect(allowed.status).toBe(200);
+    expect(h.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an oversized payload with 413 before the body is read', async () => {
+    const res = await POST(
+      req(
+        { _id: 'B1', resource: '/orders/1', topic: 'orders_v2', user_id: 1 },
+        { 'content-length': String(1_048_576 + 1) },
+      ),
+    );
+    expect(res.status).toBe(413);
+    expect(h.enqueue).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
   });
 
   it('drops (acks 200, never 5xx-loops) when the enqueue fails and the persist is a deterministic validation error', async () => {

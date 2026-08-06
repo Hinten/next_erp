@@ -17,6 +17,14 @@ runConfig:
 #                                override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
 #   MERCADO_LIVRE_CLIENT_ID      ML application id             (Secret Manager)
+#                                also gates the notification webhook (#811): a
+#                                payload whose `application_id` is not this one is
+#                                rejected 401 before the enqueue. Unset ⇒ skipped.
+#   MERCADO_LIVRE_WEBHOOK_ALLOWED_IPS
+#                                OPTIONAL, not a secret — CSV of ML's published
+#                                sender IPs for the webhook allow-list (#811).
+#                                Blank/unset ⇒ the check is disabled (the default;
+#                                ML warns the list can change). See .env.example.
 #   MERCADO_LIVRE_CLIENT_SECRET  ML application secret         (Secret Manager)
 #   MERCADO_LIVRE_STATE_SECRET   HMAC key for the OAuth state  (Secret Manager)
 #   MERCADO_LIVRE_PUBLIC_URL     this backend's public origin — used to build the
