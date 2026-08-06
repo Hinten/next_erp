@@ -169,6 +169,112 @@ function numeroOuNull(valor: unknown): number | null {
 }
 
 /**
+ * The Flutter-era shape: the legacy markers say stock WAS moved, but no
+ * `estoqueAplicado` snapshot records how much (the Flutter app does not know
+ * the field). The sync refuses to guess quantities for such a pedido — see the
+ * skip in {@link sincronizarEstoquePedido} and `estoqueAplicadoSchema`'s doc.
+ */
+function ehMarcadorLegado(raw: DocumentData): boolean {
+  return (
+    raw.estoqueAplicado == null &&
+    (raw.dataIndisponivelEstoque != null || raw.dataRemocaoEstoque != null)
+  );
+}
+
+/** Per-`produtoUid` quantity totals, PRE kit-expansion (no produtos read). */
+function totaisPorProduto(itens: Record<string, ItemParaEstoque[]>): Record<string, number> {
+  const totais: Record<string, number> = {};
+  for (const item of Object.values(itens).flat()) {
+    const id = item.produtoUid;
+    // Same coercion as `calcularAlteracoesEstoque` — legacy docs may hold junk.
+    const quantidade = numeroOuNull(item.quantidade) ?? 0;
+    if (!id || id === 'NONE' || quantidade <= 0) continue;
+    totais[id] = (totais[id] ?? 0) + quantidade;
+  }
+  return totais;
+}
+
+/**
+ * Detect the ONE legacy-marker write this sync is allowed to act on (#795): a
+ * Mercado Livre **pack merge** appending a sibling order's items to a pedido
+ * the Flutter app already stock-moved.
+ *
+ * Legacy moved stock inline in that merge transaction (`tasks.dart:256-306`)
+ * because it drove stock off estado transitions and appending items is not one.
+ * This sync watches `itens` instead, so the merge IS an event here — but a
+ * Flutter-era pedido hits the no-snapshot skip and the appended units are sold
+ * with no movement at all. Overselling.
+ *
+ * `before.itens` is the anchor that makes the reconstruction a READ rather than
+ * a guess: on a pack merge it is exactly the item set Flutter held when it
+ * removed the stock. Returns those items, or `null` when this is not the merge
+ * shape — anything that shrinks, re-prices or reshuffles items keeps skipping
+ * (deliberately minimal blast radius; a skipped Flutter-era cancellation fails
+ * SAFE — stock stays low — while this path fails unsafe).
+ *
+ * Totals are compared pre kit-expansion on purpose: the trigger has no produtos
+ * read, and the predicate does not need one. Exported for the unit tests.
+ */
+export function detectarCrescimentoLegado(
+  before: DocumentData | null,
+  after: DocumentData,
+): Record<string, ItemParaEstoque[]> | null {
+  // A create has no prior revision to anchor on; both revisions must still be
+  // the marker-only shape (a snapshot on either side means the normal path owns
+  // the pedido and no reconstruction is warranted).
+  if (!before || !ehMarcadorLegado(before) || !ehMarcadorLegado(after)) return null;
+
+  const itensAntes = extrairItens(before.itens);
+  const antes = totaisPorProduto(itensAntes);
+  const depois = totaisPorProduto(extrairItens(after.itens));
+
+  let cresceu = false;
+  for (const [id, quantidade] of Object.entries(antes)) {
+    const atual = depois[id] ?? 0;
+    if (atual < quantidade) return null; // a removal/reduction — not a merge
+  }
+  for (const [id, quantidade] of Object.entries(depois)) {
+    if (quantidade > (antes[id] ?? 0)) cresceu = true;
+  }
+  return cresceu ? itensAntes : null;
+}
+
+/**
+ * Rebuild the `estoqueAplicado` the Flutter app never wrote, from the item set
+ * it held (kit-expanded by the caller) plus the markers it DID stamp. The
+ * markers say WHICH effect is applied; `alteracoesAnteriores` says how much.
+ *
+ * A removal consumes the reservation (the exclusivity `efeitoEstoquePedido`
+ * enforces), so a pedido carrying both markers reconstructs as a movement, not
+ * a movement plus a reservation. Exported for the unit tests.
+ */
+export function sintetizarAplicadoLegado(args: {
+  alteracoesAnteriores: Record<string, number>;
+  temMarcadorRemocao: boolean;
+  temMarcadorReserva: boolean;
+  depositoId: string;
+  operacaoId: string | null;
+  ehSaida: boolean;
+  /** µs since epoch. */
+  agora: number;
+}): EstoqueAplicado | null {
+  if (Object.keys(args.alteracoesAnteriores).length === 0) return null;
+  const movimento = args.temMarcadorRemocao;
+  const reserva = args.temMarcadorReserva && !movimento;
+  if (!movimento && !reserva) return null;
+
+  return {
+    depositoId: args.depositoId,
+    operacaoId: args.operacaoId,
+    ehSaida: args.ehSaida,
+    reservado: reserva ? { ...args.alteracoesAnteriores } : null,
+    removido: movimento && args.ehSaida ? { ...args.alteracoesAnteriores } : null,
+    adicionado: movimento && !args.ehSaida ? { ...args.alteracoesAnteriores } : null,
+    atualizadoEm: args.agora,
+  };
+}
+
+/**
  * Focused, tolerant extraction of the sync's inputs from a raw pedido doc.
  * Full-schema validation is deliberately NOT used: a legacy field elsewhere in
  * the doc must not block stock movement. Returns null (with the reason) only
@@ -198,9 +304,7 @@ function extrairPedido(raw: DocumentData): { pedido: PedidoParaSync } | { erro: 
       integracaoId: idDeOuterRef(raw.integracaoPedidoOuterRef),
       operacaoId: idDeOuterRef(raw.operacaoPedidoOuterRef),
       aplicado,
-      temMarcadorLegado:
-        aplicado === null &&
-        (raw.dataIndisponivelEstoque != null || raw.dataRemocaoEstoque != null),
+      temMarcadorLegado: ehMarcadorLegado(raw),
       dataIndisponivelEstoque: numeroOuNull(raw.dataIndisponivelEstoque),
       dataRemocaoEstoque: numeroOuNull(raw.dataRemocaoEstoque),
     },
@@ -221,6 +325,16 @@ export interface SincronizarOpts {
   eventId?: string | null;
   /** Who requested a manual resync — stamped on the audit records. */
   usuarioOuterRef?: string | null;
+  /**
+   * The pedido's items as of the revision BEFORE this write — the anchor that
+   * lets the sync reconstruct a Flutter-era pedido's missing `estoqueAplicado`
+   * instead of skipping it (#795). Supplied ONLY by the trigger, and ONLY when
+   * {@link detectarCrescimentoLegado} matched the pack-merge shape; the resync
+   * callable has no `before`, so a manual resync of a marker-only pedido still
+   * skips. Ignored unless the TRANSACTIONAL read still shows the marker-only
+   * shape (root `CLAUDE.md` rule 7 — the event snapshot is not a guard).
+   */
+  itensLegadoAnteriores?: Record<string, ItemParaEstoque[]> | null;
 }
 
 function ehSaidaDaOperacao(rawOp: DocumentData, fallback: boolean): boolean {
@@ -265,6 +379,39 @@ export function incidenteDrift(args: {
     origem: null,
     tipo: TIPO_INCIDENTE.outros,
     subtipo: 'estoque-drift',
+    motivoDoIncidente: motivo.length > MOTIVO_MAX ? `${motivo.slice(0, MOTIVO_MAX - 1)}…` : motivo,
+    comentarios: null,
+    timestamp: agoraUs,
+    ultimaModificacao: agoraUs,
+    externalId: null,
+    resolucao: null,
+  };
+}
+
+/**
+ * Incidente payload for a legacy-snapshot reconstruction (#795) — the sync moved
+ * stock for a pedido whose applied state it had to rebuild from the previous
+ * revision's items rather than read from a snapshot. Not an error, but every
+ * occurrence should be reviewable: same `tipo`/`subtipo` mechanism as
+ * {@link incidenteDrift} (the wire enum is Flutter-shared — never extend it).
+ * Exported for the unit tests.
+ */
+export function incidenteReconstrucaoLegado(args: {
+  produtoIds: readonly string[];
+  pedidoNumero: string | null;
+  agoraMs: number;
+}): Record<string, unknown> {
+  const agoraUs = args.agoraMs * 1000;
+  const motivo =
+    `[Estoque] Estoque aplicado reconstruído para o pedido ` +
+    `${args.pedidoNumero ?? '(sem número)'}: o pedido foi movimentado pelo aplicativo ` +
+    `antigo, que não grava o registro do que aplicou. A movimentação dos itens ` +
+    `acrescentados (${args.produtoIds.join(', ')}) foi calculada a partir dos itens da ` +
+    `revisão anterior. Confira o estoque físico desses produtos.`;
+  return {
+    origem: null,
+    tipo: TIPO_INCIDENTE.outros,
+    subtipo: 'estoque-reconstrucao-legado',
     motivoDoIncidente: motivo.length > MOTIVO_MAX ? `${motivo.slice(0, MOTIVO_MAX - 1)}…` : motivo,
     comentarios: null,
     timestamp: agoraUs,
@@ -411,6 +558,9 @@ async function aplicarPlano(
  * audit record per estoque (exact before/after) + the pedido snapshot/markers.
  * Zero deltas ⇒ zero writes (loop guard 3). Re-runs converge; every skip is
  * logged with its reason (the legacy code's silent `return`s).
+ *
+ * `opts.itensLegadoAnteriores` opts one write out of the Flutter-era skip — see
+ * {@link detectarCrescimentoLegado} (#795).
  */
 export async function sincronizarEstoquePedido(
   db: Firestore,
@@ -431,7 +581,13 @@ export async function sincronizarEstoquePedido(
 
     // Flutter-era pedido: markers set but no snapshot — the applied quantities
     // are unknown, so this sync must not guess (see estoqueAplicadoSchema doc).
-    if (pedido.temMarcadorLegado)
+    // The ONE exception is the pack-merge shape (#795), where the trigger hands
+    // over the previous revision's items as a real anchor. `temMarcadorLegado`
+    // is re-derived from THIS transaction's read, so a concurrent write that
+    // already minted a snapshot drops the reconstruction and the normal path
+    // takes over (rule 7).
+    const reconstruirLegado = pedido.temMarcadorLegado && opts.itensLegadoAnteriores != null;
+    if (pedido.temMarcadorLegado && !reconstruirLegado)
       return { status: 'ignorado', motivo: 'marcadores legados sem snapshot' };
 
     const estadoAtivo = ESTADOS_PEDIDO_MOVIMENTACAO.has(pedido.estado);
@@ -487,14 +643,24 @@ export async function sincronizarEstoquePedido(
       ehSaida,
       movimentaEstoque,
       movimentaIndisponivelEstoque,
-      jaMovimentado: temMovimentoAplicado(pedido.aplicado),
+      // On a reconstruction the removal marker IS the applied movement — pass it
+      // through, or the hold-only states (`estornadoParcialmente`,
+      // `processandoCancelamento`) would compute "no movement" and restock a
+      // partially-refunded delivered order.
+      jaMovimentado:
+        temMovimentoAplicado(pedido.aplicado) ||
+        (reconstruirLegado && pedido.dataRemocaoEstoque != null),
     });
 
+    const itensAnteriores = reconstruirLegado ? (opts.itensLegadoAnteriores ?? {}) : null;
     let alteracoes: Record<string, number> = {};
-    if (efeito.reservar || efeito.remover || efeito.adicionar) {
+    let aplicadoBase: EstoqueAplicado | null = pedido.aplicado;
+    if (efeito.reservar || efeito.remover || efeito.adicionar || itensAnteriores) {
+      // The reconstruction kit-expands the PREVIOUS items with the same produtos
+      // map — a growth write means before ⊆ after, so this reads nothing extra.
       const produtoIds = [
         ...new Set(
-          Object.values(pedido.itens)
+          [...Object.values(pedido.itens), ...Object.values(itensAnteriores ?? {})]
             .flat()
             .map((item) => item.produtoUid)
             .filter((id): id is string => typeof id === 'string' && id.length > 0 && id !== 'NONE'),
@@ -525,13 +691,26 @@ export async function sincronizarEstoquePedido(
           });
         });
       }
-      alteracoes = calcularAlteracoesEstoque(pedido.itens, produtos);
+      if (efeito.reservar || efeito.remover || efeito.adicionar) {
+        alteracoes = calcularAlteracoesEstoque(pedido.itens, produtos);
+      }
+      if (itensAnteriores) {
+        aplicadoBase = sintetizarAplicadoLegado({
+          alteracoesAnteriores: calcularAlteracoesEstoque(itensAnteriores, produtos),
+          temMarcadorRemocao: pedido.dataRemocaoEstoque != null,
+          temMarcadorReserva: pedido.dataIndisponivelEstoque != null,
+          depositoId: depositoId ?? 'desconhecido',
+          operacaoId: operacaoIdResolvida,
+          ehSaida,
+          agora: agoraUs,
+        });
+      }
     }
 
     const plano = planSincronizacaoEstoque({
       alteracoes,
       efeito,
-      aplicado: pedido.aplicado,
+      aplicado: aplicadoBase,
       depositoId: depositoId ?? 'desconhecido',
       operacaoId: operacaoIdResolvida,
       ehSaida,
@@ -549,6 +728,26 @@ export async function sincronizarEstoquePedido(
       agoraMs,
       registrarDrift: true,
     });
+
+    // ⚠️ AFTER `aplicarPlano` — it still issues reads, and a transaction rejects
+    // any read that follows a write ("all reads before all writes").
+    if (aplicadoBase !== pedido.aplicado) {
+      // Loud + reviewable: this movement rests on a reconstruction, so the set
+      // of affected pedidos stays auditable. A SUBcollection write — it cannot
+      // touch CAMPOS_OBSERVADOS (no loop-guard interaction).
+      const produtoIds = plano.deltas.map((delta) => delta.produtoId);
+      logger.warn(
+        `sincronizarEstoquePedido: pedido ${pedidoId} com marcadores legados — ` +
+          `estoqueAplicado reconstruído a partir da revisão anterior (#795); ` +
+          `${plano.deltas.length} movimento(s) em ${produtoIds.join(', ')}`,
+      );
+      tx.set(
+        incidenteCollection.ref(db, { pedidoId }).doc(),
+        incidenteCollection.parse(
+          incidenteReconstrucaoLegado({ produtoIds, pedidoNumero: pedido.numero, agoraMs }),
+        ),
+      );
+    }
 
     // ⚠️ Only CAMPOS_ESCRITOS — never a field the trigger observes (loop guard 1).
     tx.update(pedidoRef, {
@@ -653,7 +852,12 @@ export const onPedidoEstoqueSync = onDocumentWritten(
     // field, so its retrigger exits here — no reads, no writes, no next event.
     if (before && !mudouCampoObservado(before, after)) return;
 
-    await sincronizarEstoquePedido(getDb(), pedidoId, { eventId: event.id });
+    await sincronizarEstoquePedido(getDb(), pedidoId, {
+      eventId: event.id,
+      // Only the trigger can supply this — it is the sole caller holding the
+      // previous revision (#795).
+      itensLegadoAnteriores: detectarCrescimentoLegado(before, after),
+    });
   },
 );
 
