@@ -317,6 +317,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env[STOCK_SYNC_FLAG_ENV];
   delete process.env.MERCADO_LIVRE_STOCK_MAX_TASKS_PER_SWEEP;
+  delete process.env.MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED;
   vi.restoreAllMocks();
 });
 
@@ -441,6 +442,7 @@ describe('runStockSweep — conta enumeration', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: false,
@@ -558,6 +560,7 @@ describe('runStockSweep — happy path', () => {
         integracaoId: 'INT-A',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
@@ -620,6 +623,7 @@ describe('runStockSweep — happy path', () => {
         integracaoId: 'INT-A',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
@@ -658,6 +662,7 @@ describe('runStockSweep — incremental activity filter', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 1,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
@@ -976,6 +981,82 @@ describe('runStockSweep — page loop', () => {
 
 /* ------------------------- truncation continuation ------------------------- */
 
+describe('runStockSweep — skip-if-unchanged wiring (#695)', () => {
+  /** An active family whose listing already carries the number we would send. */
+  function jaEnviadoRow(): StockFamilyRow {
+    const row = activeRow();
+    return {
+      ...row,
+      links: [link({ ultimoEstoqueEnviado: 8, ultimoEnvioMs: NOW_MS - 60_000 })],
+    };
+  }
+
+  it('incremental: the unchanged family is skipped and COUNTED, nothing enqueued', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [jaEnviadoRow()], nextAfterAnchorId: null }]);
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1, inalterados: 1 });
+  });
+
+  it('daily: the SAME family is force-sent — the drift corrector the skip depends on', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [jaEnviadoRow()], nextAfterAnchorId: null }]);
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'daily', { scheduler, fetchFamilies });
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(result.contas[0]).toMatchObject({ enqueued: 1, inalterados: 0 });
+  });
+
+  it('a DAILY continuation resumed by an incremental tick still force-sends', async () => {
+    // The skip rides the FROZEN window's semantics, exactly like the sales
+    // filter — otherwise a truncated daily pass would silently lose its
+    // force-send half the moment an incremental tick picked it up.
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    db.seed(SYNC_PATH, 'INT-A', {
+      cursorUs: (NOW_MS - 600_000) * 1000,
+      continuacao: {
+        afterAnchorId: 'PROD-3',
+        changedSinceMs: NOW_MS - 24 * 3_600_000 - 20_000,
+        vendaCutoffUs: null, // daily semantics
+        startedAtUs: NOW_US - 900_000_000,
+      },
+    });
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [jaEnviadoRow()], nextAfterAnchorId: null }]);
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(result.contas[0]).toMatchObject({ enqueued: 1, inalterados: 0 });
+  });
+
+  it('the kill switch restores the old behaviour with no data change', async () => {
+    process.env.MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED = '1';
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [jaEnviadoRow()], nextAfterAnchorId: null }]);
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(result.contas[0]).toMatchObject({ enqueued: 1, inalterados: 0 });
+  });
+});
+
 describe('runStockSweep — persistent continuation', () => {
   // A frozen INCREMENTAL continuation: window + keyset + the ORIGINAL start.
   const STARTED_US = NOW_US - 2 * 3_600_000_000; // the sweep that truncated, 2h ago
@@ -1151,6 +1232,7 @@ describe('runStockSweep — 429 pause gate', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: true,
@@ -1227,6 +1309,7 @@ describe('runStockSweep — per-conta failure isolation', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: false,
@@ -1236,6 +1319,7 @@ describe('runStockSweep — per-conta failure isolation', () => {
         integracaoId: 'INT-B',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,

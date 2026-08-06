@@ -338,7 +338,7 @@ it on). Three separate places matter, and they are NOT interchangeable:
    `..._WINDOW_OVERLAP_SEC`, `..._CURSOR_MAX_LOOKBACK_H`, `..._DAILY_WINDOW_H`,
    `..._ATIVIDADE_LOOKBACK_D`, `..._LIMIAR`, `..._MAX`, `..._KIT_INCLUI_PROPRIO`,
    `..._ANCHOR_PAGE_LIMIT`, `..._MAX_TASKS_PER_SWEEP`, `..._RATE_PAUSE_MIN`,
-   `..._MAX_PAUSE_REENQUEUES`.
+   `..._MAX_PAUSE_REENQUEUES`, `..._SKIP_UNCHANGED_DISABLED`, `..._SKIP_TTL_H`.
 2. **The DEPLOYING shell's env** — `MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND`
    and `MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES` only. They feed
    `onTaskDispatched.rateLimits` (`src/sendStock.ts`), which Firebase evaluates
@@ -377,6 +377,33 @@ MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
 firebase-tools applies it at deploy. It survives redeploys — no
 `gcloud run services update` to re-apply, and no Secret Manager entry for a
 non-secret tunable.
+
+### Rolling out skip-if-unchanged (#695)
+
+`MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED` is a **kill switch**, not an
+opt-in: unset means the skip is ON. Recording the last-sent value is
+unconditional and always safe — only the SKIP is gated — so the sequence is:
+
+1. Deploy the write side and **let it bake for a day** with
+   `MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED=1` in `.env.deploy`. The daily
+   02:00 pass alone populates `ultimoEstoqueEnviado` / `...Hash` for every
+   listing whose stock moved in 24h.
+2. Spot-check in Firestore that all three shapes carry a plausible value — in
+   particular that **User-Products children carry it on `variacaoMercadoLivre`,
+   not on the anchor link** (the anchor link is shared by every sibling).
+3. **Flip**: delete the line, redeploy. Watch the next few sweep logs for
+   `inalterados` climbing and `enqueued` collapsing, with `errorCount` flat.
+   `inalterados` is a subset of `skipped`, and it is always 0 on the daily pass
+   — which force-sends by design, because that is what heals drift on ML's side.
+4. **Revert** is putting the line back and redeploying. One env line, no data
+   migration: every stale recorded value is harmless, because every read fails
+   open (unknown / junk / unstamped / future-stamped / past
+   `MERCADO_LIVRE_STOCK_SKIP_TTL_H` all mean SEND).
+
+⚠️ The skip can only be live once `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1`, i.e.
+after the Flutter sender is dead — so the dual-run hazard (two writers flapping
+`available_quantity` while only one of them records what it sent) never overlaps
+with it. Do not re-enable the legacy sender afterwards.
 
 **Per-project targeting.** `.env.deploy` applies to whatever project you deploy to,
 so a staging file deployed to produção takes its values with it — and this flag is

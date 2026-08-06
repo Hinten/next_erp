@@ -1372,7 +1372,15 @@ describe('skip-if-unchanged (#695) — pure core', () => {
 });
 
 describe('buildSendTasks — decision ladder + task shapes', () => {
-  const OPTS = { integracaoId: CONTA, sweepId: 'sweep-1', sweepComputedAtMs: T4 };
+  // The ladder specs below are about ORDERING, not the skip — they run with
+  // `pularInalterados: false`, exactly as the daily pass does. The skip has its
+  // own describe at the end of this block.
+  const OPTS = {
+    integracaoId: CONTA,
+    sweepId: 'sweep-1',
+    sweepComputedAtMs: T4,
+    pularInalterados: false,
+  };
   const BASE_TASK = {
     integracaoId: CONTA,
     produtoId: 'PROD',
@@ -1717,6 +1725,144 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         { produtoId: 'CH1', reason: 'sem-link' },
         { produtoId: 'CH2', reason: 'sem-link' },
       ],
+    });
+  });
+
+  describe('the quantidade-inalterada rung (#695, read side)', () => {
+    const FRESH = T4 - 60_000; // one minute before the sweep clock
+    const skipOpts = { ...OPTS, pularInalterados: true };
+    const withSkip = (row: StockFamilyRow, qty: ReadonlyMap<string, number>) =>
+      buildSendTasks(row, qty, skipOpts);
+
+    it('single: an unchanged quantity produces NO task, only the skip', () => {
+      const row = familyRow({
+        links: [{ ultimoEstoqueEnviado: 7, ultimoEnvioMs: FRESH }],
+      });
+      const { tasks, skips } = withSkip(row, new Map([['PROD', 7]]));
+      expect(tasks).toEqual([]);
+      expect(skips).toEqual([{ produtoId: 'PROD', reason: 'quantidade-inalterada' }]);
+    });
+
+    it('single: a CHANGED quantity still sends', () => {
+      const row = familyRow({
+        links: [{ ultimoEstoqueEnviado: 7, ultimoEnvioMs: FRESH }],
+      });
+      const { tasks, skips } = withSkip(row, new Map([['PROD', 8]]));
+      expect(skips).toEqual([]);
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]?.quantidade).toBe(8);
+    });
+
+    it('the DAILY pass (pularInalterados false) force-sends the same row', () => {
+      // This is the drift corrector: without it a wrong value recorded once
+      // would suppress every future send until the TTL.
+      const row = familyRow({
+        links: [{ ultimoEstoqueEnviado: 7, ultimoEnvioMs: FRESH }],
+      });
+      expect(buildSendTasks(row, new Map([['PROD', 7]]), OPTS).tasks).toHaveLength(1);
+    });
+
+    it('an expired stamp sends again even though the value matches', () => {
+      const row = familyRow({
+        links: [{ ultimoEstoqueEnviado: 7, ultimoEnvioMs: T4 - 25 * 3_600_000 }],
+      });
+      expect(withSkip(row, new Map([['PROD', 7]])).tasks).toHaveLength(1);
+    });
+
+    it('bulk: an identical family skips, and ONE differing variation re-sends it whole', () => {
+      const children = [
+        child('CH1', [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        child('CH2', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ];
+      const hash = fingerprintVariations([
+        { id: 101, available_quantity: 3 },
+        { id: 102, available_quantity: 5 },
+      ]);
+      const row = familyRow({
+        links: [{ ultimoEstoqueEnviadoHash: hash, ultimoEnvioMs: FRESH }],
+        children,
+      });
+      const same = new Map([
+        ['CH1', 3],
+        ['CH2', 5],
+      ]);
+      expect(withSkip(row, same).tasks).toEqual([]);
+      expect(withSkip(row, same).skips).toEqual([
+        { produtoId: 'PROD', reason: 'quantidade-inalterada' },
+      ]);
+
+      const oneMoved = new Map([
+        ['CH1', 3],
+        ['CH2', 4],
+      ]);
+      const sent = withSkip(row, oneMoved);
+      expect(sent.tasks).toHaveLength(1);
+      // The whole bulk goes, not just the variation that moved.
+      expect(sent.tasks[0]?.variations).toEqual([
+        { id: 101, available_quantity: 3 },
+        { id: 102, available_quantity: 4 },
+      ]);
+    });
+
+    it('UP: one child skips while its sibling sends — state is per variação link', () => {
+      // The proof that shape 3's state does not live on the shared anchor link.
+      const row = familyRow({
+        links: [{ isUserProductModel: true }],
+        children: [
+          child('CH1', [
+            {
+              itemId: 'MLB-CH1',
+              produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+              varLinkDocId: 'vl-1',
+              ultimoEstoqueEnviado: 3,
+              ultimoEnvioMs: FRESH,
+            },
+          ]),
+          child('CH2', [
+            {
+              itemId: 'MLB-CH2',
+              produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+              varLinkDocId: 'vl-2',
+              ultimoEstoqueEnviado: 5,
+              ultimoEnvioMs: FRESH,
+            },
+          ]),
+        ],
+      });
+      const { tasks, skips } = withSkip(
+        row,
+        new Map([
+          ['CH1', 3], // unchanged
+          ['CH2', 6], // moved
+        ]),
+      );
+      expect(skips).toEqual([{ produtoId: 'CH1', reason: 'quantidade-inalterada' }]);
+      expect(tasks.map((t) => [t.itemId, t.quantidade])).toEqual([['MLB-CH2', 6]]);
+    });
+
+    it('a skipped listing does NOT consume the itemId — a sibling listing still sends', () => {
+      // `emittedItemIds` is cycle-wide dedup for tasks actually emitted. If a
+      // skip claimed the id, a second listing on the same MLB whose own state
+      // is stale would be silently suppressed too.
+      const row = familyRow({
+        links: [
+          { linkDocId: 'link1', ultimoEstoqueEnviado: 7, ultimoEnvioMs: FRESH },
+          { linkDocId: 'link2' }, // no recorded state → must send
+        ],
+      });
+      const { tasks, skips } = withSkip(row, new Map([['PROD', 7]]));
+      expect(skips).toEqual([{ produtoId: 'PROD', reason: 'quantidade-inalterada' }]);
+      expect(tasks.map((t) => t.linkDocId)).toEqual(['link2']);
+    });
+
+    it('the kill switch turns the rung off entirely', () => {
+      process.env.MERCADO_LIVRE_STOCK_SKIP_UNCHANGED_DISABLED = '1';
+      // The sweep derives `pularInalterados` from the getter, so simulate that.
+      const row = familyRow({
+        links: [{ ultimoEstoqueEnviado: 7, ultimoEnvioMs: FRESH }],
+      });
+      const opts = { ...OPTS, pularInalterados: pularEnvioInalterado() };
+      expect(buildSendTasks(row, new Map([['PROD', 7]]), opts).tasks).toHaveLength(1);
     });
   });
 

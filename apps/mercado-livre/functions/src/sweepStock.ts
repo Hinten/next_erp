@@ -69,6 +69,10 @@ async function runAndLog(mode: 'incremental' | 'daily'): Promise<void> {
     contas: result.contas.length,
     enqueued: result.contas.reduce((sum, c) => sum + c.enqueued, 0),
     skipped: result.contas.reduce((sum, c) => sum + c.skipped, 0),
+    // #695's measurable win: sends avoided because ML already held the number.
+    // A SUBSET of `skipped` — read it against `enqueued` to see how much of the
+    // queue used to be no-ops. Always 0 on the daily pass, which force-sends.
+    inalterados: result.contas.reduce((sum, c) => sum + c.inalterados, 0),
     pages: result.contas.reduce((sum, c) => sum + c.pages, 0),
     truncated: result.contas.filter((c) => c.truncated).length,
     // Contas skipped by the 429 pause gate — a standing count here means the

@@ -273,6 +273,7 @@ describe('mlStockSendTaskSchema', () => {
       integracaoId: CONTA,
       sweepId: 'sweep-1',
       sweepComputedAtMs: SWEEP_MS,
+      pularInalterados: false,
     });
     expect(built.skips).toEqual([]);
     expect(built.tasks).toHaveLength(1);

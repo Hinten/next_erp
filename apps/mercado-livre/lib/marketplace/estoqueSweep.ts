@@ -110,6 +110,7 @@ import {
   incrementalWindowMin,
   isStockSyncEnabled,
   maxTasksPerSweep,
+  pularEnvioInalterado,
   quantidadesDaFamilia,
   windowOverlapSec,
 } from './estoquePlan';
@@ -178,6 +179,12 @@ export interface StockSweepContaResult {
   enqueued: number;
   /** Families dropped by the incremental filter + per-listing/member skips. */
   skipped: number;
+  /**
+   * Send units skipped because ML already holds the number (#695) — a SUBSET
+   * of `skipped`, broken out so the optimization is measurable: read it against
+   * `enqueued` to see how much of the queue was no-ops before.
+   */
+  inalterados: number;
   /** THE-query pages executed for this conta. */
   pages: number;
   /** `true` when the page cap or the task cap cut the sweep short. */
@@ -370,6 +377,7 @@ async function recordContaError(
     integracaoId,
     enqueued: 0,
     skipped: 0,
+    inalterados: 0,
     pages: 0,
     truncated: false,
     paused: false,
@@ -424,6 +432,11 @@ async function sweepConta(
   // filter would wrongly drop the whole page — that window is daily-semantics.
   const filtroIncremental =
     continuacao == null ? mode === 'incremental' : continuacao.vendaCutoffUs != null;
+  // Skip-if-unchanged (#695) rides the SAME frozen-window semantics as the
+  // sales filter: a daily-semantics window resumed by an incremental tick must
+  // still FORCE-send, because the daily pass is the drift corrector the skip
+  // depends on. Off entirely while the kill switch is set.
+  const pularInalterados = filtroIncremental && pularEnvioInalterado();
   // The sold-ids Set, resolved LAZILY: nothing is queried until a family row
   // actually reaches the incremental filter below, and the tick's memo makes
   // the pass at most once overall (module doc). Cached per conta so the second
@@ -446,6 +459,7 @@ async function sweepConta(
   let pages = 0;
   let enqueued = 0;
   let skipped = 0;
+  let inalterados = 0;
   let truncated = false;
   let afterAnchorId: string | null = continuacao?.afterAnchorId ?? null;
   // The last anchor whose drafts were ALL enqueued — the only safe resume
@@ -485,8 +499,12 @@ async function sweepConta(
         integracaoId,
         sweepId,
         sweepComputedAtMs: nowMs,
+        pularInalterados,
       });
       skipped += skips.length;
+      for (const skip of skips) {
+        if (skip.reason === 'quantidade-inalterada') inalterados += 1;
+      }
       for (const task of tasks) {
         if (enqueued >= maxTasks) {
           // Task cap hit with drafts remaining: stop enqueueing entirely. The
@@ -577,7 +595,19 @@ async function sweepConta(
   }
   await estoqueMercadoLivreSyncCollection.merge(db, {}, integracaoId, patch);
 
-  return { integracaoId, enqueued, skipped, pages, truncated, paused: false };
+  // #695's acceptance criterion: the win has to be MEASURABLE. Read against
+  // `enqueued` this is the share of the queue that used to be no-ops.
+  if (inalterados > 0) {
+    console.info('[mercado-livre] stock-sweep: envios evitados por quantidade inalterada', {
+      integracaoId,
+      mode,
+      sweepId,
+      inalterados,
+      enqueued,
+    });
+  }
+
+  return { integracaoId, enqueued, skipped, inalterados, pages, truncated, paused: false };
 }
 
 /* -------------------------------- whole tick -------------------------------- */
@@ -671,6 +701,7 @@ export async function runStockSweep(
           integracaoId,
           enqueued: 0,
           skipped: 0,
+          inalterados: 0,
           pages: 0,
           truncated: false,
           paused: true,

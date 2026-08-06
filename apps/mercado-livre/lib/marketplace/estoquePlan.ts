@@ -1091,7 +1091,9 @@ export type SendSkipReason =
   | 'kit-virtual'
   | 'nao-publicado'
   | 'conta-fora-do-produto'
-  | 'variations-excede-limite';
+  | 'variations-excede-limite'
+  /** ML already holds this number — the send would be a no-op (#695). */
+  | 'quantidade-inalterada';
 
 export interface SendSkip {
   /** The produto the reason applies to — the family anchor, or the UP child. */
@@ -1207,6 +1209,15 @@ export interface BuildSendTasksOpts {
   integracaoId: string;
   sweepId: string;
   sweepComputedAtMs: number;
+  /**
+   * Apply the skip-if-unchanged rungs (#695)? REQUIRED — the caller owns the
+   * mode, because the answer is not a property of the row. The DAILY pass (and
+   * a resumed daily-semantics continuation) passes `false`: that force-send is
+   * the escape hatch that heals drift the skip would otherwise hide — a manual
+   * quantity edit on ML's side, a bulk PUT that answered 200 but applied
+   * partially, a task lost past `maxPauseReenqueues`.
+   */
+  pularInalterados: boolean;
 }
 
 function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResult {
@@ -1237,6 +1248,16 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
  * is ABSENT skips the whitelist entirely and sends optimistically (#780 — the
  * legacy arm, module doc), the sole exception being `estado 'c'`, which reuses
  * `'status-nao-enviavel'`.
+ *
+ * LAST rung of all, once a quantity exists and `opts.pularInalterados` is set
+ * (#695): `'quantidade-inalterada'` — the recorded last-SENT value proves ML
+ * already holds this number, so the PUT would be a no-op. It sits after every
+ * gate above (the status ladder and the `MAX_VARIATIONS_PER_TASK` alarm keep
+ * their ordering), it is evaluated per SEND UNIT against that unit's own state
+ * (the anchor link for `'item'`/bulk, the CHILD's variação link for UP), and a
+ * skipped listing does NOT consume `emittedItemIds` — a sibling listing on the
+ * same MLB id keeps its own right to send. The daily pass passes
+ * `pularInalterados: false`, which is what heals ML-side drift.
  *
  * Per surviving listing — every task carries THAT listing's `linkDocId`
  * (writeback per listing): old model (`isUserProductModel !== true`) with
@@ -1401,6 +1422,22 @@ export function buildSendTasks(
         skips.push({ produtoId: anchorId, reason: 'kit-virtual' });
         continue;
       }
+      // Skip-if-unchanged (#695), AFTER every gate above so the status /
+      // estado ladder keeps its ordering. Deliberately NOT added to
+      // `emittedItemIds`: a sibling listing carrying the same MLB id keeps its
+      // own state and its own right to send.
+      if (
+        opts.pularInalterados &&
+        envioInalterado(
+          link.ultimoEstoqueEnviado,
+          link.ultimoEnvioMs,
+          quantidade,
+          opts.sweepComputedAtMs,
+        )
+      ) {
+        skips.push({ produtoId: anchorId, reason: 'quantidade-inalterada' });
+        continue;
+      }
       emittedItemIds.add(itemId);
       tasks.push({
         ...base,
@@ -1475,6 +1512,22 @@ export function buildSendTasks(
           variations: variations.length,
         });
       }
+      // Skip-if-unchanged (#695) — placed AFTER the cap checks so an oversized
+      // family still raises its alarm even when nothing moved. The fingerprint
+      // covers the whole array, so "any variation differs → send the whole
+      // bulk" falls out of the comparison.
+      if (
+        opts.pularInalterados &&
+        envioInalterado(
+          link.ultimoEstoqueEnviadoHash,
+          link.ultimoEnvioMs,
+          fingerprintVariations(variations),
+          opts.sweepComputedAtMs,
+        )
+      ) {
+        skips.push({ produtoId: anchorId, reason: 'quantidade-inalterada' });
+        continue;
+      }
       emittedItemIds.add(itemId);
       tasks.push({
         ...base,
@@ -1507,6 +1560,20 @@ export function buildSendTasks(
       const quantidade = quantidades.get(child.produtoId) ?? null;
       if (quantidade == null) {
         skips.push({ produtoId: child.produtoId, reason: 'kit-virtual' });
+        continue;
+      }
+      // Skip-if-unchanged (#695), per CHILD: the state lives on this child's
+      // own variação link, so one sibling skipping never suppresses another.
+      if (
+        opts.pularInalterados &&
+        envioInalterado(
+          varLink.ultimoEstoqueEnviado,
+          varLink.ultimoEnvioMs,
+          quantidade,
+          opts.sweepComputedAtMs,
+        )
+      ) {
+        skips.push({ produtoId: child.produtoId, reason: 'quantidade-inalterada' });
         continue;
       }
       emittedItemIds.add(varItemId);

@@ -524,6 +524,11 @@ const linkJoin = () =>
       'status',
       'sub_status',
       'isUserProductModel',
+      // Skip-if-unchanged state (#695) — projection only, no `where` change,
+      // so the index this probe rides is unaffected.
+      'ultimoEstoqueEnviado',
+      'ultimoEstoqueEnviadoHash',
+      'ultimoEnvioMs',
       pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
     )
     .toArrayExpression();
@@ -545,7 +550,17 @@ const childrenJoin = () =>
       compEstoques('childKitKeys').as('componentEstoques'),
       pipelines
         .subcollection('variacaoMercadoLivre')
-        .select('itemId', 'id', 'produtoMercadoLivreOuterRef')
+        .select(
+          'itemId',
+          'id',
+          'produtoMercadoLivreOuterRef',
+          // Skip-if-unchanged state (#695) + the UP writeback target. Still no
+          // `where`, so this stays the partition-bounded TableScan the header
+          // describes — an index here would have no predicate to serve.
+          'ultimoEstoqueEnviado',
+          'ultimoEnvioMs',
+          pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
+        )
         .toArrayExpression()
         .as('varLinks'),
     )
