@@ -37,6 +37,7 @@ import {
   tabelaDeMedidasCollection,
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
+import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin';
 
 import {
   ML_DERIVED_ATTRIBUTE_IDS,
@@ -57,6 +58,9 @@ import {
 
 /** ML caps listings at 10 pictures (the old app enforced the same). */
 const MAX_PICTURES = 10;
+
+/** Compare-and-set retries for the child denorm stamp (see stampChildMarketplace). */
+const MAX_STAMP_ATTEMPTS = 3;
 
 export interface PublishDeps {
   db: Firestore;
@@ -183,33 +187,65 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const pubProduto = toPublishProduto(produtoId, produto);
   const condicao = typeof extra?.condicao === 'number' ? extra.condicao : null;
 
+  /**
+   * Write the fields publish OWNS onto the link doc, and nothing else.
+   *
+   * This used to be `set(parse({ ...linkDoc.data, ...patch }))` — a
+   * read-modify-write re-applying a snapshot captured many awaits earlier
+   * (the doc is read at the top of this function; the ML round trip, the chart
+   * binding and every picture upload happen in between). Root `CLAUDE.md` rule
+   * 7 names that shape exactly, and the still-running Flutter app is a LIVE
+   * concurrent writer to these same documents — as are the items webhook, the
+   * price sync and the stock sender. An operator's `descricao` edit landing
+   * during a publish was silently reverted to whatever we read at the start.
+   *
+   * Patching only publish-owned fields makes the race impossible rather than
+   * unlikely (tier 0): everything we don't write — descricao, channels,
+   * crossdocking, tarifaFrete, comissao and the unknown legacy keys the
+   * `.passthrough()` schema carries — is now simply never touched, so it
+   * cannot be clobbered.
+   *
+   * `mergeIfExists` rather than `merge`: between our read and this write the
+   * doc may have been deleted, and `merge` is an UPSERT that would resurrect a
+   * GHOST carrying only the patch keys (`parseMerge` fills no defaults, so
+   * `contaOuterRef` and `title` would be missing and every later soft-read
+   * would warn). On `false` — or on a genuine first publish — we fall through
+   * to a full, schema-valid `set`.
+   */
+  const writeLinkDoc = async (patch: Record<string, unknown>): Promise<void> => {
+    if (linkDoc) {
+      const merged = await produtoMercadoLivreLinkCollection.mergeIfExists(
+        db,
+        { produtoId },
+        linkDocId,
+        patch,
+      );
+      if (merged) return;
+    }
+    await produtoMercadoLivreLinkCollection.set(db, { produtoId }, linkDocId, {
+      contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
+      // Never overwrite an operator-authored title (#799 bug 4a) — only seed
+      // one here, where the schema requires a non-empty value.
+      title: trimToNull(linkDoc?.data.title) ?? produto.nome,
+      dataCadastro: linkDoc?.data.dataCadastro ?? Date.now(),
+      ...patch,
+    });
+  };
+
   // Every ML API failure from here on stamps `estado: 'E'` + `errors` on the
   // link doc (the module's header contract; legacy's `on MLError` catch
-  // covered the category-detail call of the chart binding too). SPREADS the
-  // existing raw doc first — the old app persisted via `copyWith(...).save()`,
-  // so a re-publish must preserve every Flutter-authored field it doesn't own
-  // (descricao, channels, video_id, crossdocking, tarifaFrete, comissao +
-  // unknown legacy keys via `.passthrough()`).
+  // covered the category-detail call of the chart binding too).
   const stampErrorLinkDoc = async (message: string): Promise<void> => {
-    const now = Date.now();
-    await produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId).set(
-      produtoMercadoLivreLinkCollection.parse({
-        ...(linkDoc?.data ?? {}),
-        contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
-        // Never overwrite an operator-authored title (#799 bug 4a) — only seed
-        // one on the first publish, where the schema requires a non-empty value.
-        title: trimToNull(linkDoc?.data.title) ?? produto.nome,
-        sku: produto.sku ?? null,
-        condition: resolveCondition(link, pubProduto, condicao),
-        category_id: linkDoc?.data.category_id ?? categoryId,
-        listing_type_id: linkDoc?.data.listing_type_id ?? deps.listingTypeId ?? null,
-        estado: 'E',
-        isUserProductModel: link?.isUserProductModel ?? false,
-        errors: [message],
-        ultimaModificacao: now,
-        dataCadastro: linkDoc?.data.dataCadastro ?? now,
-      }),
-    );
+    await writeLinkDoc({
+      sku: produto.sku ?? null,
+      condition: resolveCondition(link, pubProduto, condicao),
+      category_id: linkDoc?.data.category_id ?? categoryId,
+      listing_type_id: linkDoc?.data.listing_type_id ?? deps.listingTypeId ?? null,
+      estado: 'E',
+      isUserProductModel: link?.isUserProductModel ?? false,
+      errors: [message],
+      ultimaModificacao: Date.now(),
+    });
   };
 
   // ---- Size chart (tabela de medidas) binding -----------------------------
@@ -268,38 +304,30 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   // ---- Persist the link docs from the response ---------------------------
   const estado = estadoFromMlStatus(item.status);
-  await produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId).set(
-    produtoMercadoLivreLinkCollection.parse({
-      ...(linkDoc?.data ?? {}),
-      contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
-      // Preserve the operator's title; seed from produto.nome only on a first
-      // publish, where the schema requires a non-empty value (#799 bug 4a).
-      title: trimToNull(linkDoc?.data.title) ?? produto.nome,
-      sku: produto.sku ?? null,
-      condition: input.condition,
-      category_id: item.category_id ?? categoryId,
-      listing_type_id: item.listing_type_id ?? input.listingTypeId ?? null,
-      estado,
-      // #799 bug 6: publish never wrote these, so a freshly published listing
-      // looked like a #780 legacy-authored doc to the stock planner
-      // (estoquePlan.ts:1206) and bypassed the podeEnviarEstoque whitelist for
-      // a cycle. They are the same two fields applyItemStatusToLink maintains.
-      status: item.status ?? null,
-      sub_status: item.sub_status ?? null,
-      id: item.id,
-      precoPublicado: item.price ?? null,
-      freteGratis: item.shipping?.free_shipping ?? false,
-      isUserProductModel: input.isUserProductSeller,
-      // #799 bug 7: the attributes we just sent, minus the ones rebuilt from
-      // the produto on every publish (appending those back would duplicate
-      // them). Without this a produto never touched by Flutter keeps
-      // `attributes: null` forever and the editor has nothing to load.
-      attributes: (input.attributes ?? []).filter((a) => !ML_DERIVED_ATTRIBUTE_IDS.has(a.id)),
-      errors: [],
-      ultimaModificacao: now,
-      dataCadastro: linkDoc?.data.dataCadastro ?? now,
-    }),
-  );
+  await writeLinkDoc({
+    sku: produto.sku ?? null,
+    condition: input.condition,
+    category_id: item.category_id ?? categoryId,
+    listing_type_id: item.listing_type_id ?? input.listingTypeId ?? null,
+    estado,
+    // #799 bug 6: publish never wrote these, so a freshly published listing
+    // looked like a #780 legacy-authored doc to the stock planner
+    // (estoquePlan.ts:1206) and bypassed the podeEnviarEstoque whitelist for
+    // a cycle. They are the same two fields applyItemStatusToLink maintains.
+    status: item.status ?? null,
+    sub_status: item.sub_status ?? null,
+    id: item.id,
+    precoPublicado: item.price ?? null,
+    freteGratis: item.shipping?.free_shipping ?? false,
+    isUserProductModel: input.isUserProductSeller,
+    // #799 bug 7: the attributes we just sent, minus the ones rebuilt from
+    // the produto on every publish (appending those back would duplicate
+    // them). Without this a produto never touched by Flutter keeps
+    // `attributes: null` forever and the editor has nothing to load.
+    attributes: (input.attributes ?? []).filter((a) => !ML_DERIVED_ATTRIBUTE_IDS.has(a.id)),
+    errors: [],
+    ultimaModificacao: now,
+  });
 
   // ---- Dual-run denorm stamps (DEPRECATED arrays — legacy consumers only) --
   // The deployed Flutter backend resolves an incoming ML order item via
@@ -507,35 +535,59 @@ async function stampChildMarketplace(
   childId: string,
   variationId: string,
 ): Promise<void> {
-  const snap = await produtoCollection.docRef(db, {}, childId).get();
-  if (!snap.exists) return;
-  const raw = (snap.data() ?? {}) as Record<string, unknown>;
+  // A genuine read-clean-write: `arrayUnion` cannot express "drop every stale
+  // entry for this conta", so this is the one place publish needs a
+  // compare-and-set (root CLAUDE.md rule 7, tier 1). The child produto is
+  // written by the live Flutter app too, and the previous unconditional merge
+  // re-applied an array derived from a snapshot that may already have lost.
+  // On a precondition failure we re-READ and re-DERIVE — never re-apply the
+  // patch computed from the losing snapshot.
+  const ref = produtoCollection.docRef(db, {}, childId);
+  for (let attempt = 0; ; attempt++) {
+    const snap = await ref.get();
+    if (!snap.exists) return;
+    const raw = (snap.data() ?? {}) as Record<string, unknown>;
 
-  const current = Array.isArray(raw.marketplace)
-    ? (raw.marketplace as Array<Record<string, unknown>>)
-    : [];
-  const cleaned = current.filter((e) => {
-    if (e?.integracaoUid !== integracaoId) return true; // other conta — keep
-    if (e.externalParentId == null) return false; // parent-shaped on a child
-    // Drop EVERY entry for this conta+listing (stale id or already-correct):
-    // the fresh push below is the single source of truth, so an up-to-date
-    // entry can't be duplicated on re-publish.
-    return e.externalParentId !== itemId;
-  });
-  cleaned.push({ integracaoUid: integracaoId, externalParentId: itemId, externalId: variationId });
+    const current = Array.isArray(raw.marketplace)
+      ? (raw.marketplace as Array<Record<string, unknown>>)
+      : [];
+    const cleaned = current.filter((e) => {
+      if (e?.integracaoUid !== integracaoId) return true; // other conta — keep
+      if (e.externalParentId == null) return false; // parent-shaped on a child
+      // Drop EVERY entry for this conta+listing (stale id or already-correct):
+      // the fresh push below is the single source of truth, so an up-to-date
+      // entry can't be duplicated on re-publish.
+      return e.externalParentId !== itemId;
+    });
+    cleaned.push({
+      integracaoUid: integracaoId,
+      externalParentId: itemId,
+      externalId: variationId,
+    });
 
-  const ids = new Set(Array.isArray(raw.marketplaceIds) ? (raw.marketplaceIds as string[]) : []);
-  ids.add(variationId);
-  const contas = new Set(
-    Array.isArray(raw.integracoesComProduto) ? (raw.integracoesComProduto as string[]) : [],
-  );
-  contas.add(integracaoId);
+    const ids = new Set(Array.isArray(raw.marketplaceIds) ? (raw.marketplaceIds as string[]) : []);
+    ids.add(variationId);
+    const contas = new Set(
+      Array.isArray(raw.integracoesComProduto) ? (raw.integracoesComProduto as string[]) : [],
+    );
+    contas.add(integracaoId);
 
-  await produtoCollection.merge(db, {}, childId, {
-    marketplace: cleaned,
-    marketplaceIds: [...ids],
-    integracoesComProduto: [...contas],
-  });
+    const patch = produtoCollection.parseMerge({
+      marketplace: cleaned,
+      marketplaceIds: [...ids],
+      integracoesComProduto: [...contas],
+    });
+    try {
+      await ref.update(patch, { lastUpdateTime: snap.updateTime! });
+      return;
+    } catch (err) {
+      // Someone wrote between our read and our update. Retry a bounded number
+      // of times; a persistent loser is a real problem, not something to hide.
+      if (isFailedPrecondition(err) && attempt < MAX_STAMP_ATTEMPTS - 1) continue;
+      if (isNotFound(err)) return; // deleted meanwhile — nothing to stamp
+      throw err;
+    }
+  }
 }
 
 /**

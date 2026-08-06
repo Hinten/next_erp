@@ -22,3 +22,18 @@ export function isAlreadyExists(err: unknown): boolean {
 export function isNotFound(err: unknown): boolean {
   return err instanceof Error && (err as { code?: unknown }).code === 5;
 }
+
+/**
+ * gRPC FAILED_PRECONDITION (code 9) — from `docRef.update(patch, { lastUpdateTime })`
+ * when the document changed after the read the patch was derived from.
+ *
+ * This is the tier-1 rung of root `CLAUDE.md` rule 7: a read-modify-write whose
+ * patch cannot be expressed as a `FieldValue` transform (a filtered array, a
+ * derived total) attaches the read's `updateTime` as a precondition, so a
+ * concurrent writer makes the write FAIL rather than silently win. The caller
+ * re-reads and re-derives — it must never re-apply the patch computed from the
+ * snapshot that just lost.
+ */
+export function isFailedPrecondition(err: unknown): boolean {
+  return err instanceof Error && (err as { code?: unknown }).code === 9;
+}
