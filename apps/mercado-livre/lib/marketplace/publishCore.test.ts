@@ -92,6 +92,16 @@ describe('buildParentAttributes', () => {
     const attrs = buildParentAttributes({ ...produto, alturaCm: null }, null);
     expect(attrs.map((a) => a.id)).toEqual(['SELLER_SKU', 'WEIGHT']);
   });
+
+  it('omits SELLER_SKU when the item has variations (#799 bug 3)', () => {
+    // Each variation carries its own SELLER_SKU in `attributes`, so it is never
+    // a combination id and the mapper's combination prune cannot reach the
+    // parent's. The legacy removes it by id (models.dart:1508-1515).
+    const attrs = buildParentAttributes({ ...produto, alturaCm: null }, null, null, {
+      includeSku: false,
+    });
+    expect(attrs.map((a) => a.id)).toEqual(['WEIGHT']);
+  });
 });
 
 describe('combinationsFromVariacoes', () => {
@@ -159,6 +169,17 @@ describe('assemblePublishInput', () => {
     expect(input.title).toBe('Camiseta Básica');
     expect(input.sellerCustomField).toBe('link-doc-1');
     expect(input.price).toBe(79.9);
+    // The price is passed through here — buildItemPayload decides whether it
+    // reaches the wire (create-only, and never alongside variations).
+    // #799 bug 3: with variations the parent must NOT carry SELLER_SKU; each
+    // variation has its own below.
+    expect(input.attributes!.map((a) => a.id)).toEqual([
+      'WEIGHT',
+      'SELLER_PACKAGE_HEIGHT',
+      'SELLER_PACKAGE_LENGTH',
+      'SELLER_PACKAGE_WIDTH',
+      'SELLER_PACKAGE_WEIGHT',
+    ]);
     expect(input.variations).toHaveLength(1);
     expect(input.variations![0]).toMatchObject({
       produtoId: 'child-1',
