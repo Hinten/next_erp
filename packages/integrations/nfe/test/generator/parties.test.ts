@@ -10,10 +10,10 @@
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:675-683,720`.
  */
 import { describe, it, expect } from 'vitest';
-import type { Cliente, Endereco } from '@delfrance/schemas';
+import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
 import { IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
 
-import { buildDest, NFePartiesError } from '../../src/generator/parties';
+import { buildDest, buildEmit, NFePartiesError } from '../../src/generator/parties';
 
 const ENDERECO: Endereco = {
   idExterno: null,
@@ -166,5 +166,101 @@ describe('buildDest — the IE element', () => {
 
   it('names the offending value so the operator can fix the cadastro', () => {
     expect(() => dest({ ie: 'S/N' })).toThrow(/S\/N/);
+  });
+});
+
+describe('buildDest — the ISUF element', () => {
+  // Inscrição SUFRAMA. Omitting it on an operation into a SUFRAMA-controlled
+  // area forfeits the fiscal incentive on a note SEFAZ ACCEPTS — a silent
+  // loss, which is why it is worth pinning rather than leaving to review.
+  it('emits cliente.isUF verbatim', () => {
+    expect(dest({ isUF: '12345678' }).ISUF).toBe('12345678');
+    expect(dest({ isUF: '123456789' }).ISUF).toBe('123456789');
+  });
+
+  it('is omitted when the cliente has no SUFRAMA inscription', () => {
+    expect(dest({ isUF: null }).ISUF).toBeUndefined();
+  });
+
+  // ISUF rides on its own field, so it must survive every rung of the ladder —
+  // unlike IE, which only appears for indIEDest='1'.
+  it.each([
+    ['a não-contribuinte', { ie: IE_SENTINELA.naoContribuinte }],
+    ['an isento', { ie: IE_SENTINELA.isento }],
+    ['a contribuinte with a real IE', { ie: '30703088534' }],
+    ['a pessoa física', { tipo: TIPO_CLIENTE.pessoaFisica, cpf_cnpj: '12345678909' }],
+  ])('survives on %s', (_label, overrides) => {
+    expect(dest({ ...overrides, isUF: '12345678' }).ISUF).toBe('12345678');
+  });
+
+  it('survives an operação ao exterior', () => {
+    expect(dest({ isUF: '12345678' }, true).ISUF).toBe('12345678');
+  });
+});
+
+/**
+ * `cMun` validation (#785).
+ *
+ * `enderecoSchema.codigoMunicipio` is `z.string().max(8).regex(/^\d*$/)`, so an
+ * EMPTY STRING is perfectly storable — and the old `requireField` only rejected
+ * `== null`, so `''` sailed through and emitted `<cMun></cMun>`: malformed XML
+ * that SEFAZ rejects without naming the field. `ide.ts`'s `cMunFG` check
+ * already used a falsy test, so the two disagreed. `requireCMun` closes that.
+ *
+ * The value itself is resolved from the `CMUN` table at emission time
+ * (`resolveCodigoMunicipio` in `@delfrance/data/admin`); this package stays
+ * synchronous and network-free, and only validates what it is handed.
+ */
+
+/** Storable values that are NOT a 7-digit IBGE code. */
+const CMUN_INVALIDO: ReadonlyArray<readonly [string, string | null]> = [
+  ['an empty string', ''],
+  ['6 digits', '355030'],
+  ['8 digits', '35503080'],
+  ['null', null],
+];
+
+const FILIAL_CMUN = {
+  razaoSocial: 'Loja Acmé S.A.',
+  fantasia: null,
+  cnae: null,
+  cnpj: '14200166000187',
+  ie: '111111111111',
+  iest: null,
+  imun: null,
+  sede: ENDERECO,
+} as unknown as Filial;
+
+describe('buildEmit — filial.sede.codigoMunicipio', () => {
+  it('accepts a 7-digit código', () => {
+    expect(buildEmit(FILIAL_CMUN).enderEmit.cMun).toBe('3550308');
+  });
+
+  it.each(CMUN_INVALIDO)('rejects %s, naming the field', (_label, codigoMunicipio) => {
+    const filial = { ...FILIAL_CMUN, sede: { ...ENDERECO, codigoMunicipio } } as Filial;
+
+    expect(() => buildEmit(filial)).toThrow(NFePartiesError);
+    expect(() => buildEmit(filial)).toThrow(/filial\.sede\.codigoMunicipio/);
+  });
+});
+
+describe('buildDest — endereco.codigoMunicipio', () => {
+  it('accepts a 7-digit código', () => {
+    expect(dest().enderDest.cMun).toBe('3550308');
+  });
+
+  it.each(CMUN_INVALIDO)('rejects %s, naming the field', (_label, codigoMunicipio) => {
+    const endereco = { ...ENDERECO, codigoMunicipio } as Endereco;
+    const build = () => buildDest(cliente(), endereco, 'producao', false);
+
+    expect(build).toThrow(NFePartiesError);
+    expect(build).toThrow(/endereco\.codigoMunicipio/);
+  });
+
+  it('reports the received value, so an operator can see what is stored', () => {
+    // The whole point: `''` used to be invisible in the failure.
+    const endereco = { ...ENDERECO, codigoMunicipio: '' } as Endereco;
+
+    expect(() => buildDest(cliente(), endereco, 'producao', false)).toThrow(/got ""/);
   });
 });

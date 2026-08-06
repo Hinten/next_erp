@@ -30,6 +30,7 @@ import { integracao, brandShopee, token6h, tokenDuravel } from './integracao';
 import { notificacaoMercadoLivre } from './notificacaoMercadoLivre';
 import { questionMercadoLivre } from './questionMercadoLivre';
 import { cargo } from './cargo';
+import { cmun } from './cmun';
 import { usuario } from './usuario';
 import { deposito } from './deposito';
 import { grupoDeVariacoes } from './grupoDeVariacoes';
@@ -93,6 +94,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   notificacaoMercadoLivre,
   questionMercadoLivre,
   cargo,
+  cmun,
   usuario,
   deposito,
   grupoDeVariacoes,

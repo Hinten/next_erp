@@ -18,7 +18,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
-import { TIPO_CLIENTE } from '@delfrance/schemas';
+import { TIPO_CLIENTE, UF_SIGLA } from '@delfrance/schemas';
 
 import { buildDest, buildEmit, NFePartiesError } from '../../src/generator/parties';
 import { buildProd, NFeDetError } from '../../src/generator/det';
@@ -39,7 +39,7 @@ const ENDERECO: Endereco = {
   cep: '04504010',
   codigoMunicipio: '3550308',
   cidade: 'São Paulo',
-  estado: 'SP',
+  estado: UF_SIGLA.SP,
   cPais: null,
   pais: null,
   nome: null,

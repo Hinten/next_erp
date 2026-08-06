@@ -45,7 +45,7 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
     nro: requireSanitized('filial.sede.numero', filial.sede.numero, 60),
     xCpl: sanitizeOptional('filial.sede.complemento', filial.sede.complemento, 60),
     xBairro: requireSanitized('filial.sede.bairro', filial.sede.bairro, 60),
-    cMun: requireField('filial.sede.codigoMunicipio', filial.sede.codigoMunicipio),
+    cMun: requireCMun('filial.sede.codigoMunicipio', filial.sede.codigoMunicipio),
     xMun: requireSanitized('filial.sede.cidade', filial.sede.cidade, 60),
     UF: filial.sede.estado as TEnderEmi['UF'],
     CEP: filial.sede.cep,
@@ -166,6 +166,15 @@ export function buildDest(
     // Emitted ONLY for indIEDest='1' — that is what keeps a sentinel (or a
     // stray IE on a pessoa física) out of the signed XML.
     IE: indIEDest === '1' ? requireIeDigits(cliente.ie) : undefined,
+    // Inscrição SUFRAMA. Obrigatória nas operações com as áreas de livre
+    // comércio / Zona Franca sob controle da SUFRAMA (MOC, grupo E); omitting
+    // it on such an operation forfeits the incentive on a note SEFAZ otherwise
+    // ACCEPTS, so the loss is silent. `clienteSchema.isUF` is already
+    // `[0-9]{8,9}` — exactly the XSD facet — so this needs no strip, unlike IE.
+    //
+    // Not to be confused with `ISUFEmit` (C22), the EMITTER's SUFRAMA
+    // inscription, which belongs to the RTC/gALCZFMCBS work.
+    ISUF: cliente.isUF ?? undefined,
     IM: cliente.imun ?? undefined,
     // Emails MUST keep `@` — sanitizeNFeText would strip it (the `@` is
     // in the restricted-char set for free-text descriptive fields).
@@ -195,7 +204,7 @@ function buildEnderDest(endereco: Endereco): TEndereco {
     nro: requireSanitized('endereco.numero', endereco.numero, 60),
     xCpl: sanitizeOptional('endereco.complemento', endereco.complemento, 60),
     xBairro: requireSanitized('endereco.bairro', endereco.bairro, 60),
-    cMun: requireField('endereco.codigoMunicipio', endereco.codigoMunicipio),
+    cMun: requireCMun('endereco.codigoMunicipio', endereco.codigoMunicipio),
     xMun: requireSanitized('endereco.cidade', endereco.cidade, 60),
     UF: endereco.estado as TEndereco['UF'],
     CEP: endereco.cep,
@@ -207,6 +216,29 @@ function buildEnderDest(endereco: Endereco): TEndereco {
 function requireField<T>(name: string, value: T | null | undefined): NonNullable<T> {
   if (value == null) throw new NFePartiesError(`${name} is required`);
   return value as NonNullable<T>;
+}
+
+/**
+ * `cMun` — the 7-digit IBGE município code.
+ *
+ * Deliberately stricter than `requireField`, which only rejects `== null`.
+ * `enderecoSchema.codigoMunicipio` is `z.string().max(8).regex(/^\d*$/)`, so an
+ * empty string is perfectly storable — and it used to sail through here and
+ * emit `<cMun></cMun>`, a malformed XML rejected by SEFAZ with no hint of which
+ * field was to blame. `ide.ts`'s `cMunFG` check already used a falsy test, so
+ * the two disagreed. Name the field and show what arrived (#785).
+ *
+ * This package stays synchronous and network-free: resolution belongs to
+ * `apps/nfe/lib/nfe/orchestrator/cmun.ts`, which fills the value in before the
+ * generator ever sees it.
+ */
+function requireCMun(name: string, value: string | null | undefined): string {
+  if (!value || !/^\d{7}$/.test(value)) {
+    throw new NFePartiesError(
+      `${name} must be the 7-digit IBGE município code (got ${JSON.stringify(value ?? null)})`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -223,11 +255,16 @@ function requireField<T>(name: string, value: T | null | undefined): NonNullable
  *
  * Repair is deliberately not attempted: U+FFFD is unrecoverable by definition,
  * and guessing at the digraph form would put a *guess* in a fiscal document.
+ *
+ * The offending value is `JSON.stringify`'d, matching {@link requireCMun}: a
+ * latin1 mis-decode routinely carries C1 control characters (U+0080..U+009F),
+ * which would otherwise go into the message unprintable and break structured
+ * log parsing. Escaped, the message names the exact bad codepoints.
  */
 function requireIntegro(name: string, value: string | null | undefined): void {
   if (temTextoCorrompido(value)) {
     throw new NFePartiesError(
-      `${name}='${value ?? ''}' has corrupted text (a lost character-encoding ` +
+      `${name}=${JSON.stringify(value)} has corrupted text (a lost character-encoding ` +
         `round-trip). Fix the cadastro — emitting it would sign a wrong value.`,
     );
   }

@@ -46,11 +46,12 @@ function fmtMoney(n: number): string {
 export function buildProd(item: GeneratorItem): TNFe_infNFe_det_prod {
   // Checked on the RAW value: produto descriptions are legacy-written like the
   // endereço is, and `sanitizeNFeText` would launder a lost encoding round-trip
-  // into plausible ASCII on its way into the signed XML. See issue #788 and
-  // `requireIntegro` in ./parties.
+  // into plausible ASCII on its way into the signed XML. `JSON.stringify` for
+  // the same reason as `requireIntegro` in ./parties — the value can carry C1
+  // control characters that would otherwise be unprintable in the message.
   if (temTextoCorrompido(item.xProd)) {
     throw new NFeDetError(
-      `item ${item.nItem}: xProd='${item.xProd}' has corrupted text (a lost ` +
+      `item ${item.nItem}: xProd=${JSON.stringify(item.xProd)} has corrupted text (a lost ` +
         `character-encoding round-trip). Fix the produto cadastro.`,
     );
   }
