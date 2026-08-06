@@ -77,6 +77,23 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     this check FAILS PENDING-DEPLOY by design. When the run seeds, the
 //     seeded paid saída pedido doubles as the correctness probe: its
 //     `itensIds` anchor id MUST appear in the distinct output.
+//  5. SPIKE: anchor-predicate A/B (#431). THE question this spike exists to
+//     answer is whether the stock sweep can stop reading the DEPRECATED
+//     `integracoesComProduto` array. Shape A (shipped) puts the conta term IN
+//     THE INDEX RANGE — a pre-filter. Shape B drops it, moves the link join
+//     UP into an `addFields` and filters on `links.length() > 0` — a
+//     post-filter, which on Enterprise does NOT reduce data scanned. B is not
+//     an EXTRA probe: the same array is the gate AND the payload, so S6 reuses
+//     it. The extra cost is therefore exactly "one partition-bounded link
+//     probe per published parent that is NOT on this conta, per tick", and
+//     the multiplier is the printed ratio. B is viable ONLY if the
+//     `links.length() > 0` filter prunes BEFORE the three estoque
+//     `addFields` — stages may be reordered, and this run is how we find out.
+//     Reuses page 1's already-captured plan for A, so it costs ONE extra
+//     analyze execution. Purely INFORMATIONAL: it never fails the gate.
+//     ⚠️ That one execution can be the expensive one — B's index range is
+//     EVERY published parent, which is precisely the number being measured.
+//     Set CHECK_ANCHOR_AB=0 to skip it.
 //  4. A daily-mode PAGE-2 call with the SHIPPED daily predicate
 //     (`changedSinceMs = now − dailyWindowHours − overlap`, `afterAnchorId`
 //     keyset) and prints its plan — the keyset-over-computed-filter cost
@@ -164,6 +181,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // probe family even when discovery finds real linked anchors; seeding
 // always relocates the depósito probe — and, unless overridden, spike (a)
 // — to the seeded family. CHECK_SOLD_IDS_LIMIT bounds the sold-ids page.
+// CHECK_ANCHOR_AB=0 skips the anchor-predicate A/B spike (5. above).
 // Targets the named `default` database (Enterprise — never `(default)`),
 // overridable via FIREBASE_DATABASE_ID.
 //
@@ -182,6 +200,9 @@ const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimit
 const soldIdsLimitRaw = Number(process.env.CHECK_SOLD_IDS_LIMIT ?? '1000');
 const soldIdsLimit =
   Number.isInteger(soldIdsLimitRaw) && soldIdsLimitRaw > 0 ? soldIdsLimitRaw : 1000;
+// The A/B spike (header 5.) runs by default; '0' opts out of its one extra
+// analyze execution — the one whose cost IS the measurement.
+const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '1') !== '0';
 
 // Mirrors the shipped daily window: `dailyWindowHours()` (24) minus
 // `windowOverlapSec()` (20) — estoquePlan.ts defaults, janelaDoSweep('daily').
@@ -611,6 +632,86 @@ function buildFamiliesPipeline({ changedSinceMs, afterAnchorId }) {
     );
 }
 
+/* ---- SPIKE shape B: the same query with the conta term moved OUT of the
+   index range (#431, header 5.). NOT shipped — this exists only to be
+   explained. Two deliberate differences from `buildFamiliesPipeline`:
+
+     1. S1 loses `arrayContains(integracoesComProduto, conta)`, so the index
+        range widens from "anchors on this conta" to EVERY published parent;
+     2. `linkJoin()` moves from S6 up into an `addFields`, and
+        `where(links.length() > 0)` becomes the conta filter. The SAME array
+        is then re-`select`ed in S6 — B pays ONE link probe per row, not two,
+        which is why this is a post-filter swap and not an added join.
+
+   Everything else — the define, the three MAX rollups, the window HAVING, the
+   sort/limit and the projection — is byte-identical to the shipped shape, so
+   the plans are comparable line for line.                                    */
+
+function anchorPredicateNoConta(afterAnchorId) {
+  const paiTerm = pipelines.equal(pipelines.field('paiId'), null);
+  const publicadoTerm = pipelines.equal(pipelines.field('publicado'), true);
+  if (afterAnchorId == null) return pipelines.and(paiTerm, publicadoTerm);
+  return pipelines.and(
+    paiTerm,
+    publicadoTerm,
+    pipelines.greaterThan(
+      pipelines.field('__name__'),
+      pipelines.constant(db.collection('produtos').doc(afterAnchorId)),
+    ),
+  );
+}
+
+function buildFamiliesPipelineLinkFirst({ changedSinceMs, afterAnchorId }) {
+  return (
+    db
+      .pipeline()
+      .collection('produtos')
+      .where(anchorPredicateNoConta(afterAnchorId ?? null))
+      .define(
+        pipelines.documentId(pipelines.field('__name__')).as('anchorId'),
+        kitKeysDefine('anchorKitKeys'),
+      )
+      // The conta gate, computed ONCE and reused by S6 below.
+      .addFields(linkJoin().as('links'))
+      .where(pipelines.greaterThan(pipelines.field('links').length(), 0))
+      .addFields(
+        ownEstoqueMax().as('maxOwn'),
+        compEstoquesMax('anchorKitKeys').as('maxComp'),
+        maxChildren().as('maxChildren'),
+      )
+      .where(
+        pipelines.greaterThan(
+          pipelines.coalesce(
+            pipelines.logicalMaximum(
+              pipelines.field('maxOwn'),
+              pipelines.field('maxComp'),
+              pipelines.field('maxChildren'),
+            ),
+            0,
+          ),
+          changedSinceMs,
+        ),
+      )
+      .sort(pipelines.ascending(pipelines.field('__name__')))
+      .limit(pageLimit)
+      .select(
+        pipelines.variable('anchorId').as('anchorId'),
+        'ehKit',
+        'ehKitVirtual',
+        'publicado',
+        'componentesKit',
+        'timestamp',
+        ownEstoque().as('estoque'),
+        compEstoques('anchorKitKeys').as('componentEstoques'),
+        // Already materialized by the addFields above — no second probe, and
+        // `integracoesComProduto` is deliberately NOT projected: shape B must
+        // prove it can build the whole payload without ever reading it.
+        'links',
+        childrenJoin().as('children'),
+      )
+  );
+}
+
 /* ------ the sold-ids pre-pass, mirrored from fetchSoldProdutoIds ----------- */
 
 // ONE uncorrelated pedidos pass per conta per incremental sweep (header 3.):
@@ -783,14 +884,30 @@ try {
         }
         if (l.includes('|----')) boundLines.push(l.slice(l.indexOf('|----')));
       }
+      // Per-node `Execution:` stats. The A/B spike (header 5.) turns on these:
+      // whether the `links.length() > 0` post-filter prunes BEFORE the estoque
+      // rollups is not decidable from the printed TREE (it is a shape, not an
+      // order) — but the estoque nodes' own execution counts say it outright.
+      const execIdx = block.findIndex((l) => /\bExecution:/.test(l));
+      const execution =
+        execIdx === -1
+          ? []
+          : block
+              .slice(execIdx)
+              .map((l) => l.replace(/^[|\s]+/, '').trim())
+              .filter((l) => l !== '');
       nodes.push({
         type: m[1],
+        // Bullet position in the plan text — printed by the A/B spike so the
+        // reader can see where the filter sits without eyeballing the whole plan.
+        line: i,
         identifier,
         kind,
         partition,
         filter,
         boundLines,
         boundedLines: boundLines.filter((l) => !UNBOUNDED_RE.test(l)),
+        execution,
       });
     }
     return nodes;
@@ -985,6 +1102,8 @@ try {
   }
 
   const plan = incrementalSnap.explainStats?.text ?? '';
+  /** Shape A's parsed nodes, reused by the A/B spike (header 5.). */
+  let pageOneNodes = null;
   console.log(`rows returned: ${incrementalSnap.results.length} (${incrementalLabel})`);
   console.log('\n----- FULL PLAN (page 1, incremental) -----\n');
   console.log(plan);
@@ -998,7 +1117,10 @@ try {
         : 'incremental page-1 explainStats.text is empty — nothing proven',
     );
   } else {
-    const nodes = parseAccessNodes(plan);
+    // Hoisted: the A/B spike (header 5.) reuses shape A's already-captured
+    // plan, so it costs one extra execution instead of two.
+    pageOneNodes = parseAccessNodes(plan);
+    const nodes = pageOneNodes;
     failIdentifierlessScans('page-1 plan', nodes);
 
     checkTarget({
@@ -1072,6 +1194,176 @@ try {
 
     console.log('');
     reportIntegracoesIndexForm(nodes);
+  }
+
+  /* ---- SPIKE: anchor-predicate A/B — can the sweep drop the array? (#431) ---- */
+
+  // Informational ONLY: this section never calls fail(). It measures the one
+  // thing that decides whether #431's stock half is unblockable, and prints a
+  // verdict the reader can act on. See header 5.
+  if (!runAnchorAb) {
+    console.log('\n=== SPIKE: anchor predicate A/B (#431) — SKIPPED (CHECK_ANCHOR_AB=0) ===');
+  } else if (pageOneNodes == null) {
+    console.log(
+      '\n=== SPIKE: anchor predicate A/B (#431) — SKIPPED ===\n' +
+        'shape A produced no plan above, so there is nothing to compare against.',
+    );
+  } else {
+    console.log('\n=== SPIKE: anchor predicate A/B (#431) — explain analyze ===');
+
+    /* -- (i) the ratio. THIS is the multiplier B pays, and it is the whole
+       cost question in one number. Both counts ride the existing
+       produtos(paiId, publicado, integracoesComProduto, __name__) composite —
+       the second as the full prefix, the first as its leading two fields. -- */
+    let publishedParents = null;
+    let contaAnchors = null;
+    try {
+      const base = db
+        .collection('produtos')
+        .where('paiId', '==', null)
+        .where('publicado', '==', true);
+      publishedParents = (await base.count().get()).data().count;
+      contaAnchors = (
+        await base.where('integracoesComProduto', 'array-contains', integracaoId).count().get()
+      ).data().count;
+    } catch (err) {
+      if (!isGrpcCodedError(err)) throw err;
+      console.log(`NOTE  ratio counts unavailable: ${err.message}`);
+    }
+    if (publishedParents != null && contaAnchors != null) {
+      const ratio = contaAnchors === 0 ? null : publishedParents / contaAnchors;
+      console.log(
+        `\n--- the ratio (shape B's extra link probes per tick) ---\n` +
+          `  published parents (B's index range):        ${publishedParents}\n` +
+          `  of those, on conta ${integracaoId} (A's range): ${contaAnchors}\n` +
+          `  B pays a link probe for the difference:     ${publishedParents - contaAnchors}` +
+          // toPrecision, not toFixed: this is a ratio, not money — and the
+          // repo's no-ad-hoc-money-rounding rule bans `.toFixed(2)` outright.
+          (ratio == null ? '' : `  (×${ratio.toPrecision(3)} the rows A materializes)`),
+      );
+      console.log(
+        '  ⚠️ `contaAnchors` counts the DENORM array, which is exactly the field under\n' +
+          '     suspicion: an anchor with a live link but a stale array entry is missing\n' +
+          '     from it (and is invisible to the shipped sweep today). Treat it as a\n' +
+          '     LOWER bound on the truly-linked set, i.e. the ratio as an UPPER bound.',
+      );
+    }
+
+    /* -- (ii) shape B under explain-analyze. One execution; same widened-retry
+       fallback as page 1, because zero rows still carry no explainStats. -- */
+    let abSnap = await buildFamiliesPipelineLinkFirst({
+      changedSinceMs: nowMs - 24 * 3_600_000,
+      afterAnchorId: null,
+    }).execute({ explainOptions: { mode: 'analyze', outputFormat: 'text' } });
+    let abLabel = 'shipped 24h window';
+    if (abSnap.results.length === 0 && abSnap.explainStats === undefined) {
+      abLabel = 'widened window (-1) — 0 rows in the shipped one';
+      abSnap = await buildFamiliesPipelineLinkFirst({
+        changedSinceMs: -1,
+        afterAnchorId: null,
+      }).execute({ explainOptions: { mode: 'analyze', outputFormat: 'text' } });
+    }
+    const abPlan = abSnap.explainStats?.text ?? '';
+    console.log(`\nrows returned: ${abSnap.results.length} (${abLabel})`);
+    console.log('\n----- FULL PLAN (shape B: link post-filter) -----\n');
+    console.log(abPlan);
+
+    if (abPlan.trim() === '') {
+      console.log(
+        'NOTE  shape B returned no plan (0 rows even force-all) — nothing measured. ' +
+          'Point CHECK_INTEGRACAO_ID / CHECK_DEPOSITO_ID at a conta with real linked ' +
+          'produtos, or run with CHECK_SEED=1.',
+      );
+    } else {
+      const abNodes = parseAccessNodes(abPlan);
+
+      // Correctness first: B must find the family through the LINK alone. In
+      // seeded mode the seeded anchor is the guaranteed match, and the seed
+      // gives it BOTH an array entry and a link — so a hit proves the link
+      // path works, not that the array was consulted (B never projects it).
+      if (shouldSeed) {
+        const abIds = abSnap.results.map((r) => r.data()?.anchorId);
+        console.log(
+          abIds.includes(`${SEED_PREFIX}-anchor`)
+            ? `\n  correctness: shape B found the seeded anchor WITHOUT the array term ✔`
+            : `\n  correctness: shape B did NOT return the seeded anchor — read the plan ` +
+                `(it returned ${JSON.stringify(abIds)})`,
+        );
+      }
+
+      // The ordering question, answered by counters rather than by the tree.
+      // If the post-filter prunes first, B's estoque nodes execute about as
+      // often as A's; if the optimizer hoists the rollups, B's counts blow up
+      // toward `publishedParents`.
+      const estoqueNodes = (list) =>
+        uniqueNodes(list.filter((n) => n.identifier != null && /estoques \(/.test(n.identifier)));
+      const printExec = (label, list) => {
+        console.log(`\n  ${label}`);
+        if (list.length === 0) {
+          console.log('    (no estoque access node in this plan)');
+          return;
+        }
+        for (const n of list) {
+          console.log(`    • ${n.type}  ${n.identifier}`);
+          for (const l of n.execution) console.log(`        ${l}`);
+          if (n.execution.length === 0) console.log('        (no Execution: stats on this node)');
+        }
+      };
+      console.log('\n--- estoque-probe execution counters: A vs B ---');
+      console.log(
+        '  Read these side by side. Comparable counts ⇒ the link post-filter pruned\n' +
+          '  BEFORE the rollups (B is viable). B much higher ⇒ the optimizer hoisted the\n' +
+          '  rollups above the filter, and B pays the three estoque subqueries for every\n' +
+          '  published parent — the one outcome that rules B out.',
+      );
+      printExec('A (shipped, conta term in the index range):', estoqueNodes(pageOneNodes));
+      printExec('B (link post-filter):', estoqueNodes(abNodes));
+
+      // Where the filter node actually sits, for the reader who wants the tree.
+      const abLines = abPlan.split('\n');
+      const linksFilterLine = abLines.findIndex(
+        (l, i) =>
+          /•\s+Filter\b/.test(l) &&
+          abLines
+            .slice(i + 1, i + 6)
+            .some((b) => /\bexpression:/.test(b) && /links|array_length/i.test(b)),
+      );
+      const firstEstoqueLine = abNodes
+        .filter((n) => n.identifier != null && /estoques \(/.test(n.identifier))
+        .map((n) => n.line)
+        .sort((a, b) => a - b)[0];
+      console.log(
+        `\n  plan-text positions (a TREE, not an execution order — corroboration only):\n` +
+          `    links post-filter node: ${linksFilterLine === -1 ? 'not found' : `line ${linksFilterLine}`}\n` +
+          `    first estoque probe:    ${firstEstoqueLine == null ? 'not found' : `line ${firstEstoqueLine}`}`,
+      );
+
+      // Did B's anchors scan stay indexed at all? Losing the third field must
+      // not cost the leading two.
+      const abAnchor = uniqueNodes(
+        abNodes.filter(
+          (n) => n.identifier != null && /^\/produtos \(paiId ASC, publicado/.test(n.identifier),
+        ),
+      );
+      console.log('\n  B anchors scan:');
+      if (abAnchor.length === 0) {
+        console.log(
+          '    NOTE  no /produtos (paiId ASC, publicado …) access node — B did NOT ride the\n' +
+            '          composite as a prefix. Read the plan; this alone rules B out.',
+        );
+      } else {
+        for (const n of abAnchor) printNode(n);
+      }
+
+      console.log(
+        '\n  VERDICT is yours to read off the three blocks above:\n' +
+          '    • ratio near 1 AND B-counters ≈ A-counters ⇒ drop the array from BOTH\n' +
+          '      planners (#431 stock half unblocked; precoPlan moves with it).\n' +
+          '    • otherwise ⇒ keep the array as the pre-filter, and decide separately\n' +
+          '      whether to re-point its maintenance to a link trigger so the other two\n' +
+          '      arrays can still die at the Flutter decommission.',
+      );
+    }
   }
 
   /* -------------- sold-ids pre-pass (fetchSoldProdutoIds mirror) -------------- */
