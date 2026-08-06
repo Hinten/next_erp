@@ -23,6 +23,7 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   regraImposto: 'Regras de imposto',
   arquivo: 'Arquivos',
   frete: 'Frete',
+  cmun: 'Tabela de municípios (CEP → IBGE)',
 };
 
 const ACTION_LABELS: Record<string, string> = {
