@@ -517,6 +517,89 @@ describe('findOrCreateCliente — telefone hygiene', () => {
     });
   });
 
+  it('stores an EMPTY e-mail as null on create instead of throwing', async () => {
+    // `clienteSchema.email` is `.email()`, which rejects '' — passing it
+    // through would ZodError inside `add` and abort the whole import.
+    const fake = new FakeDb();
+
+    const result = await findOrCreateCliente(db(fake), {
+      fields: fields({ email: '' }),
+      nowMs: NOW_MS,
+    });
+
+    expect(result.created).toBe(true);
+    expect(fake.storedDoc(CLIENTES, result.clienteId)).toMatchObject({ email: null });
+  });
+
+  it('never patches an EMPTY e-mail onto a matched cliente', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', {
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      email: 'ana@example.com',
+      ultimaModificacao: 1,
+    });
+
+    await findOrCreateCliente(db(fake), { fields: fields({ email: '   ' }), nowMs: NOW_MS });
+
+    // Nothing changed ⇒ no write at all, and the stored e-mail survives.
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({
+      email: 'ana@example.com',
+      ultimaModificacao: 1,
+    });
+  });
+
+  it('stores a WHITESPACE-ONLY nome as null on create', async () => {
+    const fake = new FakeDb();
+
+    const result = await findOrCreateCliente(db(fake), {
+      fields: fields({ nome: '   ' }),
+      nowMs: NOW_MS,
+    });
+
+    expect(fake.storedDoc(CLIENTES, result.clienteId)).toMatchObject({ nome: null });
+  });
+
+  it('never patches a whitespace-only nome over a real one', async () => {
+    // clienteSchema.nome accepts any string, so this wrote blanks rather than
+    // failing loudly.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', {
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      ultimaModificacao: 1,
+    });
+
+    await findOrCreateCliente(db(fake), { fields: fields({ nome: '   ' }), nowMs: NOW_MS });
+
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({
+      nome: 'Ana Maria Souza',
+      ultimaModificacao: 1,
+    });
+  });
+
+  it('stores the collapsed nome, and does not rewrite when only padding differs', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', {
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      ultimaModificacao: 1,
+    });
+
+    await findOrCreateCliente(db(fake), {
+      fields: fields({ nome: '  Ana   Maria  Souza ' }),
+      nowMs: NOW_MS,
+    });
+
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({
+      nome: 'Ana Maria Souza',
+      ultimaModificacao: 1,
+    });
+  });
+
   it('writes a genuinely different telefone', async () => {
     const fake = new FakeDb();
     fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', cpf_cnpj: CPF_A, telefone: TELEFONE_RAW });

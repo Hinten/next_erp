@@ -6,6 +6,7 @@ import {
   isSameCliente,
   isSameEmail,
   isSameTelefone,
+  normalizeNome,
   sanitizeTelefone,
   shouldUpdateName,
   telefoneLookupShapes,
@@ -99,10 +100,47 @@ describe('isSameCliente', () => {
   });
 });
 
+describe('normalizeNome', () => {
+  it('trims and collapses internal whitespace runs', () => {
+    expect(normalizeNome('  Ana   Maria  Souza ')).toBe('Ana Maria Souza');
+    expect(normalizeNome('Ana\tMaria\nSouza')).toBe('Ana Maria Souza');
+  });
+
+  it('treats a whitespace-only value as absent', () => {
+    expect(normalizeNome('')).toBeNull();
+    expect(normalizeNome('   ')).toBeNull();
+    expect(normalizeNome('\t\n')).toBeNull();
+  });
+
+  it('tolerates a non-string', () => {
+    expect(normalizeNome(null)).toBeNull();
+    expect(normalizeNome(42)).toBeNull();
+  });
+});
+
 describe('shouldUpdateName', () => {
   it('never updates to an empty name', () => {
     expect(shouldUpdateName('Ana Maria Souza', '')).toBe(false);
     expect(shouldUpdateName(null, '')).toBe(false);
+  });
+
+  it('never updates to a WHITESPACE-ONLY name', () => {
+    // clienteSchema.nome accepts '   ' happily, so without the trim this wrote
+    // blanks over a real name instead of failing loudly.
+    expect(shouldUpdateName('Ana Maria Souza', '   ')).toBe(false);
+    expect(shouldUpdateName('Ana Maria Souza', '\t\n')).toBe(false);
+  });
+
+  it('counts words after collapsing, so padding does not fake a multi-word name', () => {
+    // '  Ana  '.split(' ') is 4 raw "words" — the guard used to see a
+    // multi-word name and let a first-name-only payload through.
+    expect(shouldUpdateName('Ana Maria Souza', '  Ana  ')).toBe(false);
+  });
+
+  it('counts the STORED name after collapsing too', () => {
+    // 'Ana  '.split(' ') is 3 — a padded single-word stored name used to look
+    // multi-word and wrongly BLOCK a legitimate lone-word update.
+    expect(shouldUpdateName('Ana  ', 'Beatriz')).toBe(true);
   });
 
   it('refuses to let a lone word clobber a multi-word name on file', () => {
