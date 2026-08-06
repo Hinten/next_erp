@@ -471,6 +471,65 @@ describe('importPedidoMercadoLivre — endereço', () => {
     error.mockRestore();
   });
 
+  it('attributes each rejected CEP to its own source when BOTH are unusable', async () => {
+    // The diagnostic is the whole point of the log, so it has to survive the
+    // two mappers returning value-equal outcomes: attributing by object
+    // identity reported `cepShipment: null` here even though the shipment was
+    // tried and rejected — and this suite's own shared `SEM_CEP` constant was
+    // already enough to trigger it.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 555 })),
+      getShipment: vi.fn(async () => ({ id: 555 }) as never),
+    });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '123' });
+    vi.mocked(shipmentToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '456' });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('endereço não construído'),
+      expect.objectContaining({ cepBilling: '123', cepShipment: '456' }),
+    );
+    error.mockRestore();
+  });
+
+  it('reports the shipment CEP even when both mappers return the SAME object', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 555 })),
+      getShipment: vi.fn(async () => ({ id: 555 }) as never),
+    });
+
+    // One object, both mappers — the exact shape that defeated the identity
+    // check. `cepRaw` is non-null so the two implementations disagree: the old
+    // one logged `cepShipment: null`, this one logs '999'.
+    const compartilhado = {
+      kind: 'sem-cep',
+      cepRaw: '999',
+    } as const satisfies EnderecoBuildOutcome;
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue(compartilhado);
+    vi.mocked(shipmentToEnderecoFields).mockReturnValue(compartilhado);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(shipmentToEnderecoFields).toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('endereço não construído'),
+      expect.objectContaining({ cepBilling: '999', cepShipment: '999' }),
+    );
+    error.mockRestore();
+  });
+
   it('falls back to the shipment receiver_address only when billing yields no CEP', async () => {
     const db = new FakeDb();
     seedConta(db);

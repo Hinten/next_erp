@@ -22,15 +22,36 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { NFE_ENDERECO_LIMITES, enderecoSchema } from '@delfrance/schemas';
 
-// Must track `src/xsd/index.ts`'s own `ACTIVE_MOC`.
-const ACTIVE_MOC = '7.0';
 const HERE = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = join(HERE, '..', '..');
+
+/**
+ * The MOC this package is configured to read, taken FROM `src/xsd/index.ts`
+ * rather than re-declared here.
+ *
+ * Re-declaring it would make this file a fifth place to remember during an MOC
+ * bump — one the package's own upgrade checklist does not list — and the way it
+ * would tell you is a file-not-found on a path nobody typed. Reading the real
+ * constant means this test simply follows the package. Parsed rather than
+ * imported because `src/xsd/index.ts` keeps it module-private, and importing
+ * the module would drag in the 3 MB `xmllint-wasm` blob for a pure text assert.
+ */
+function activeMoc(): string {
+  const source = readFileSync(join(PACKAGE_ROOT, 'src', 'xsd', 'index.ts'), 'utf8');
+  const match = /^const ACTIVE_MOC = '([^']+)';$/m.exec(source);
+  if (match == null) {
+    throw new Error(
+      'could not read ACTIVE_MOC out of src/xsd/index.ts — if that constant was ' +
+        'renamed or moved, teach this reader where it went',
+    );
+  }
+  return match[1];
+}
+
 const LEIAUTE = join(
-  HERE,
-  '..',
-  '..',
+  PACKAGE_ROOT,
   'generated',
-  `moc${ACTIVE_MOC}`,
+  `moc${activeMoc()}`,
   'schemas',
   'leiauteNFe_v4.00.xsd',
 );

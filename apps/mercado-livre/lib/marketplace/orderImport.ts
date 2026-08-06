@@ -447,10 +447,15 @@ async function applyEnderecoStep(args: {
 
   const billingInfo = await getBillingInfo();
   const billingOutcome = billingInfoToEnderecoFields(billingInfo);
-  let outcome: EnderecoBuildOutcome = billingOutcome;
-  if (outcome.kind === 'sem-cep' && shippingInstance) {
-    outcome = shipmentToEnderecoFields(shippingInstance);
-  }
+  // Kept as its own binding rather than reassigning `outcome`: the diagnostic
+  // below has to say WHICH source rejected which CEP, and inferring that from
+  // object identity (`outcome === billingOutcome`) would silently start lying
+  // the day either mapper returns a shared constant for its `sem-cep` result.
+  const shipmentOutcome: EnderecoBuildOutcome | null =
+    billingOutcome.kind === 'sem-cep' && shippingInstance
+      ? shipmentToEnderecoFields(shippingInstance)
+      : null;
+  const outcome: EnderecoBuildOutcome = shipmentOutcome ?? billingOutcome;
 
   if (outcome.kind === 'sem-cep') {
     // The one genuinely unbuildable case, and it is NOT harmless: without an
@@ -462,7 +467,7 @@ async function applyEnderecoStep(args: {
       pedidoId,
       motivo: 'sem-cep',
       cepBilling: billingOutcome.kind === 'sem-cep' ? billingOutcome.cepRaw : null,
-      cepShipment: outcome === billingOutcome ? null : outcome.cepRaw,
+      cepShipment: shipmentOutcome?.kind === 'sem-cep' ? shipmentOutcome.cepRaw : null,
     });
     return pedido;
   }
