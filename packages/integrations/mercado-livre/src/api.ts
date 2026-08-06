@@ -114,6 +114,17 @@ export interface MlClaimAttachmentDownload {
   readonly contentType: string | null;
 }
 
+/**
+ * A `GET /orders/{id}` answer plus whether ML returned a COMPLETE
+ * representation (HTTP 200) or a partial one (HTTP 206 Partial Content).
+ * `complete: false` also covers any other 2xx we can't positively call
+ * complete — the flag is only ever trusted in the affirmative.
+ */
+export interface MlOrderResponse {
+  order: MlOrder;
+  complete: boolean;
+}
+
 export interface MercadoLivreApi {
   getMe(): Promise<MlUser>;
   getUser(id: number | string): Promise<MlUser>;
@@ -121,6 +132,15 @@ export interface MercadoLivreApi {
   /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
   getPrices(itemId: string): Promise<MlItemPrices>;
   getOrder(id: number | string): Promise<MlOrder>;
+  /**
+   * `GET /orders/{id}` with the response's completeness exposed. ML answers
+   * **`206 Partial Content`** for an order it can only partly materialize, and a
+   * partial body simply OMITS fields rather than nulling them. Only a caller
+   * that must tell "ML said this field is null" from "ML didn't say" needs this
+   * — today that is the `orderML` mirror refresh (#793); everything else should
+   * use the plain `getOrder`.
+   */
+  getOrderResponse(id: number | string): Promise<MlOrderResponse>;
   getPack(id: number | string): Promise<MlPack>;
   searchOrders(params: {
     seller: number | string;
@@ -324,12 +344,12 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     }
   }
 
-  async function request<T>(
+  async function requestWithStatus<T>(
     method: 'GET' | 'POST' | 'PUT',
     path: string,
     schema: z.ZodType<T>,
     opts: RequestOpts = {},
-  ): Promise<T> {
+  ): Promise<{ data: T; status: number }> {
     const url = buildUrl(path, opts.query);
     // Fetch the token once; it stays valid across the (few, quick) retries.
     const token = await config.getAccessToken();
@@ -351,8 +371,21 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     );
 
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
-    if (res.ok) return parseOk(res, schema);
+    if (res.ok) return { data: await parseOk(res, schema), status: res.status };
     throw await toHttpError(res);
+  }
+
+  /** `requestWithStatus` for the (overwhelming) majority of callers, which only
+   * ever need the body. Reach for `requestWithStatus` when 200-vs-206 changes
+   * what the caller does — today only the order mirror, see `getOrderResponse`. */
+  async function request<T>(
+    method: 'GET' | 'POST' | 'PUT',
+    path: string,
+    schema: z.ZodType<T>,
+    opts: RequestOpts = {},
+  ): Promise<T> {
+    const { data } = await requestWithStatus(method, path, schema, opts);
+    return data;
   }
 
   /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
@@ -501,6 +534,10 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
+    getOrderResponse: async (id) => {
+      const { data, status } = await requestWithStatus('GET', `/orders/${id}`, orderSchema);
+      return { order: data, complete: status === 200 };
+    },
     getPack: (id) => request('GET', `/packs/${id}`, packSchema),
     searchOrders: (params) =>
       request('GET', '/orders/search', orderSearchSchema, { query: params }),

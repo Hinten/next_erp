@@ -57,7 +57,13 @@ export {
 export { NFeXmlError, parse, serialize, serializeFragment, type XmlValue } from './xml';
 
 // Sanitization
-export { removerAcentos, removerCharRestrito, sanitizeNFeEmail, sanitizeNFeText } from './sanitize';
+export {
+  removerAcentos,
+  removerCharRestrito,
+  sanitizeNFeEmail,
+  sanitizeNFeText,
+  temTextoCorrompido,
+} from './sanitize';
 
 // State machine
 export {
