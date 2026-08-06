@@ -1,30 +1,49 @@
-name: CI — NFe EPEC scheduled live test
+name: CI — NFe scheduled live contingency (EPEC + SVC)
 
-# Live EPEC (Evento Prévio de Emissão em Contingência) round-trip against the
-# Ambiente Nacional + the home SEFAZ, run on its own monthly cadence instead
-# of gating every PR. See issue #130: EPEC was live-validated by hand on
-# 2026-06-11 (AN round-trip + the pós-EPEC retransmission after the expected
-# 468 retry window), and this workflow automates that same check so a future
-# regression alerts on its own. Cron has no "every 30 days" expression — a
-# monthly schedule is the closest fit.
+# Two live SEFAZ contingency checks that don't belong on the per-PR path,
+# each on its own cadence:
 #
-# Deliberately NOT folded into ci-nfe.yml's `on:` triggers: the AN round-trip
-# + pós-EPEC leg are slow and stateful (two live SEFAZ round-trips, one of
-# them government infrastructure outside our control), not the kind of check
-# that should gate every PR.
+#   - epec-live (monthly, 1st @ 06:00 UTC) — EPEC (Evento Prévio de Emissão
+#     em Contingência) round-trip against the Ambiente Nacional + the home
+#     SEFAZ. See issue #130: EPEC was live-validated by hand on 2026-06-11
+#     (AN round-trip + the pós-EPEC retransmission after the expected 468
+#     retry window), and this job automates that same check so a future
+#     regression alerts on its own. Cron has no "every 30 days" expression —
+#     a monthly schedule is the closest fit.
+#   - svc-live (weekly, Mondays @ 06:00 UTC) — the SVC contingency suite
+#     (SVC-AN native emission + consulta, SVC-RS off-binding transport),
+#     FATAL here instead of the advisory posture it has on ci-nfe.yml's
+#     PR/push path. SERPRO's hosts are intermittently unreachable from
+#     GitHub-hosted runners (TCP-level, so client certs don't help), so a
+#     hiccup there must never block a merge — but a REAL SVC regression
+#     (endpoints, chains, tpEmis stamping, SOAP contract) still needs to
+#     alert on its own within a week. Issue #146 folds this in here rather
+#     than as a side effect of ci-nfe.yml; cadence/helper restored from the
+#     weekly cron this repo carried briefly at commit 4907eb3 before it was
+#     pulled back out pending this issue.
+#
+# Deliberately NOT folded into ci-nfe.yml's `on:` triggers: both checks are
+# slow and/or stateful against government infrastructure outside our
+# control, not the kind of check that should gate every PR.
 on:
   schedule:
-    - cron: '0 6 1 * *' # 06:00 UTC on the 1st of every month
+    - cron: '0 6 1 * *' # 06:00 UTC on the 1st of every month — EPEC
+    - cron: '0 6 * * 1' # 06:00 UTC every Monday — SVC
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Scoped per cadence (not just per workflow+ref): the monthly and weekly
+  # crons can coincide (a 1st-of-the-month that's also a Monday) and must
+  # not cancel each other. workflow_dispatch runs share one 'dispatch'
+  # group, same as before.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.schedule || 'dispatch' }}
   cancel-in-progress: true
 
 jobs:
   epec-live:
     name: Live EPEC round-trip (AN + home SEFAZ)
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 1 * *'
     steps:
       - uses: actions/checkout@v6
 
@@ -134,16 +153,137 @@ jobs:
           path: packages/integrations/nfe/ca/*.pem
           key: sefaz-chains-${{ github.run_id }}
 
+  svc-live:
+    name: Live SVC contingency suite (SVC-AN + SVC-RS)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 * * 1'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify live-test secrets are configured
+        # Fail loud + early instead of letting vitest's `describe.skip`
+        # silently drop the suite (which would surface as a green run that
+        # actually exercised nothing).
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          missing=()
+          [[ -z "${NFE_CERT_BASE64:-}" ]]          && missing+=("NFE_CERT_BASE64")
+          [[ -z "${NFE_CERT_PASSWORD:-}" ]]        && missing+=("NFE_CERT_PASSWORD")
+          [[ -z "${NFE_TEST_IE:-}" ]]              && missing+=("NFE_TEST_IE")
+          [[ -z "${FIREBASE_PROJECT_ID:-}" ]]      && missing+=("FIREBASE_PROJECT_ID_STAGING")
+          [[ -z "${FIREBASE_SERVICE_ACCOUNT:-}" ]] && missing+=("FIREBASE_SERVICE_ACCOUNT_STAGING")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required GitHub Action secrets for svc-live: ${missing[*]}"
+            echo "Configure them at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          echo "All 5 live-test secrets are configured."
+
+      - name: Restore last-known-good SEFAZ chains (SVC-AN + SVC-RS)
+        # Shares the `sefaz-chains-` restore-key prefix with ci-nfe.yml and
+        # epec-live above, so this job can fall back to whichever of the
+        # three most recently saved a good chain. Own save key below (not
+        # the bare `sefaz-chains-${{ github.run_id }}` epec-live uses) so a
+        # workflow_dispatch run that fires both jobs doesn't have them
+        # racing to save the same key from two different runners.
+        uses: actions/cache/restore@v4
+        with:
+          path: packages/integrations/nfe/ca/*.pem
+          key: sefaz-chains-svc-${{ github.run_id }}
+          restore-keys: |
+            sefaz-chains-
+
+      - name: Fetch SVC-AN + SVC-RS TLS chains (retry, fall back to cache)
+        # This job only ever runs on a schedule or workflow_dispatch — never
+        # a PR — so unlike ci-nfe.yml's cache-first short-circuit for the
+        # PR path, a fresh fetch here is always attempted first (catches a
+        # SEFAZ intermediate rotation promptly); the cache only backstops a
+        # failed fetch. SVC-AN is fatal (it gates the whole suite); SVC-RS
+        # degrades to a warning — svc.homologacao's off-binding transport
+        # test self-skips (loudly) when its chain file is absent.
+        run: |
+          ensure_chain() {
+            local file="packages/integrations/nfe/ca/$1"; shift
+            for i in 1 2; do
+              pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
+              echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 5s"
+              sleep 5
+            done
+            if [[ -f "$file" ]]; then
+              echo "::warning::fetch:sefaz-ca $* failed after 2 attempts — using the last-known-good cached chain"
+              return 0
+            fi
+            return 1
+          }
+          ensure_chain sefaz-svc-an-homologacao.pem -- --uf=SVC-AN --ambiente=homologacao
+          ensure_chain sefaz-svc-rs-homologacao.pem -- --uf=SVC-RS --ambiente=homologacao \
+            || echo "::warning::SVC-RS chain unavailable (fetch failed, no cache) — the off-binding transport test will self-skip this run"
+
+      - name: Live SVC contingency round-trips — SVC-AN emission/consulta + SVC-RS transport
+        # FATAL here (this job runs only on the weekly schedule or
+        # workflow_dispatch) — unlike ci-nfe.yml's PR/push posture, which
+        # keeps this suite advisory because SERPRO's hosts are
+        # intermittently unreachable from GitHub-hosted runners at the TCP
+        # level. Issue #129 / #146.
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          pnpm --filter @delfrance/integrations-nfe test svc.homologacao
+
+      - name: Save SEFAZ chains to cache (last-known-good)
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: packages/integrations/nfe/ca/*.pem
+          key: sefaz-chains-svc-${{ github.run_id }}
+
   report-failure:
     name: Alert on failure (find-or-create issue)
-    needs: [epec-live]
-    if: failure()
+    needs: [epec-live, svc-live]
+    if: always() && (needs.epec-live.result == 'failure' || needs.svc-live.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     steps:
-      - name: Find or create the tracking issue, then comment
+      - name: Alert on EPEC failure (find-or-create tracking issue)
+        if: needs.epec-live.result == 'failure'
         uses: actions/github-script@v9
         with:
           script: |
@@ -151,7 +291,7 @@ jobs:
             const title = '🛡️ Scheduled EPEC live test failing (nfe-epec-scheduled.yml)';
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
             const commentBody =
-              `❌ \`nfe-epec-scheduled.yml\` failed on the ${new Date().toISOString().slice(0, 10)} run.\n\n` +
+              `❌ \`nfe-epec-scheduled.yml\`'s epec-live job failed on the ${new Date().toISOString().slice(0, 10)} run.\n\n` +
               `See the Actions tab for full logs: ${runUrl}`;
 
             const existing = await github.rest.search.issuesAndPullRequests({
@@ -168,8 +308,40 @@ jobs:
                 owner, repo, title,
                 body:
                   `${commentBody}\n\n` +
-                  `This issue is the standing tracker for \`nfe-epec-scheduled.yml\` failures — ` +
+                  `This issue is the standing tracker for \`nfe-epec-scheduled.yml\`'s epec-live job failures — ` +
                   `future failed runs comment here instead of opening a new issue. Close it once the ` +
                   `EPEC live round-trip (AN registration + pós-EPEC home-SEFAZ transmission) is green again.`,
+              });
+            }
+
+      - name: Alert on SVC failure (find-or-create tracking issue)
+        if: needs.svc-live.result == 'failure'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const title = '🛡️ Scheduled SVC contingency test failing (nfe-epec-scheduled.yml)';
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const commentBody =
+              `❌ \`nfe-epec-scheduled.yml\`'s svc-live job failed on the ${new Date().toISOString().slice(0, 10)} run.\n\n` +
+              `See the Actions tab for full logs: ${runUrl}`;
+
+            const existing = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:issue is:open in:title "${title}"`,
+            });
+
+            if (existing.data.items.length > 0) {
+              const issueNumber = existing.data.items[0].number;
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber, body: commentBody,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner, repo, title,
+                body:
+                  `${commentBody}\n\n` +
+                  `This issue is the standing tracker for \`nfe-epec-scheduled.yml\`'s svc-live job failures — ` +
+                  `future failed runs comment here instead of opening a new issue. Close it once the ` +
+                  `SVC contingency round-trip (SVC-AN emission/consulta + SVC-RS off-binding transport) is green again.`,
               });
             }

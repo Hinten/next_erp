@@ -6,8 +6,8 @@
  *  - the dispatch-deadline resolver (`orderPrazoDespacho.ts`, A4),
  *  - PR 1's pure mappers (`orderMapping.ts`, `orderPaymentMapping.ts`,
  *    `orderShipmentMapping.ts`, `orderStatusMaps.ts`, `orderIds.ts`),
- *  - the produto-link lookup already used by product import (`import.ts`'s
- *    `resolveExistingProduto`, exported for this reuse).
+ *  - the order-line produto resolution (`orderProdutoResolve.ts`, #792), which
+ *    itself reuses `import.ts`'s `resolveExistingProduto` for its link step.
  *
  * Ports `importarPedidoMercadoLivre` — the parts NOT already owned by
  * `orderPedidoTx.ts`'s transaction (`_discoverPedidoMercadoLivre`) —
@@ -72,7 +72,9 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import {
   ESTADO_PEDIDO,
+  ORIGEM_INCIDENTE,
   STATUS_PAGAMENTO,
+  TIPO_INCIDENTE,
   flattenPedidoItens,
   itemSubtotal,
   toOuterRef,
@@ -86,15 +88,17 @@ import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import {
   clienteCollection,
+  incidenteCollection,
   integracaoCollection,
   intFreteCollection,
   pagamentoCollection,
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
+import { isAlreadyExists } from '@delfrance/data/admin';
 
-import { resolveExistingProduto } from './import';
 import { buscarIntFreteDaConta } from './intFreteSync';
 import { assertOrderItemsComplete, mlOrderItemToItemDoPedido } from './orderMapping';
+import { resolveOrderLineProduto } from './orderProdutoResolve';
 import { estadoPedidoFromOrderStatus } from './orderStatusMaps';
 import { makePagamentoIdMercadoLivre } from './orderIds';
 import { mlPaymentToPagamento } from './orderPaymentMapping';
@@ -108,9 +112,9 @@ import {
   billingInfoToClienteFields,
   billingInfoToEnderecoFields,
   ensureEndereco,
-  findOrCreateCliente,
   shipmentToEnderecoFields,
 } from './orderCliente';
+import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { type ViaCepClient, createViaCepClient } from '@delfrance/core/cep';
 import { recoverEnderecoFromCep, type EnderecoBuildOutcome } from '@delfrance/schemas';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
@@ -278,14 +282,18 @@ export async function resolveMercadoEnviosIntFreteOuterRef(
 /*                       Order fetch + pack fan-out                           */
 /* -------------------------------------------------------------------------- */
 
-/** `try { get_order } on MLError catch(e) { if (e.code=='404') {...} }` (tasks.dart:385-394). */
+/** `try { get_order } on MLError catch(e) { if (e.code=='404') {...} }` (tasks.dart:385-394).
+ *
+ * Goes through `getOrderResponse` rather than `getOrder` so the order-mirror
+ * write downstream can tell a complete `200` from a `206 Partial Content` — see
+ * `orderPedidoTx.ts`'s `completeOrderIds` and #793. */
 async function fetchOrderWithPackFallback(
   api: MercadoLivreApi,
   orderIdOrPackId: number,
-): Promise<{ initialOrder: MlOrder; packInfo: MlPack | null }> {
+): Promise<{ initialOrder: MlOrder; initialComplete: boolean; packInfo: MlPack | null }> {
   try {
-    const initialOrder = await api.getOrder(orderIdOrPackId);
-    return { initialOrder, packInfo: null };
+    const res = await api.getOrderResponse(orderIdOrPackId);
+    return { initialOrder: res.order, initialComplete: res.complete, packInfo: null };
   } catch (err) {
     if (err instanceof MercadoLivreHttpError && err.status === 404) {
       const packInfo = await api.getPack(orderIdOrPackId);
@@ -293,8 +301,8 @@ async function fetchOrderWithPackFallback(
       if (firstOrderId == null) {
         throw new Error(`Pacote Mercado Livre ${orderIdOrPackId} sem nenhuma order.`);
       }
-      const initialOrder = await api.getOrder(firstOrderId);
-      return { initialOrder, packInfo };
+      const res = await api.getOrderResponse(firstOrderId);
+      return { initialOrder: res.order, initialComplete: res.complete, packInfo };
     }
     throw err;
   }
@@ -307,55 +315,184 @@ async function fetchOrderWithPackFallback(
 async function resolvePackOrders(
   api: MercadoLivreApi,
   initialOrder: MlOrder,
+  initialComplete: boolean,
   packInfoIn: MlPack | null,
-): Promise<{ orders: MlOrder[]; packId: number | null }> {
+): Promise<{ orders: MlOrder[]; packId: number | null; completeOrderIds: ReadonlySet<number> }> {
+  // Each sibling is its OWN `GET /orders/{id}`, so each carries its own
+  // completeness — a partial answer for one must not license replacing the
+  // others' mirrors (#793).
+  const completeOrderIds = new Set<number>();
+  if (initialComplete) completeOrderIds.add(initialOrder.id);
+
   const packId = initialOrder.pack_id ?? null;
-  if (packId == null) return { orders: [initialOrder], packId: null };
+  if (packId == null) return { orders: [initialOrder], packId: null, completeOrderIds };
 
   const packInfo = packInfoIn ?? (await api.getPack(packId));
   const siblingIds = packInfo.orders.map((o) => o.id).filter((id) => id !== initialOrder.id);
-  const siblingOrders = await Promise.all(siblingIds.map((id) => api.getOrder(id)));
-  return { orders: [initialOrder, ...siblingOrders], packId };
+  const siblings = await Promise.all(siblingIds.map((id) => api.getOrderResponse(id)));
+  for (const s of siblings) {
+    if (s.complete) completeOrderIds.add(s.order.id);
+  }
+  return {
+    orders: [initialOrder, ...siblings.map((s) => s.order)],
+    packId,
+    completeOrderIds,
+  };
 }
 
 /**
- * Produto resolution per order line ("ML item.id → produtoUid", outside any
- * transaction) — reuses `import.ts`'s `resolveExistingProduto` (link →
- * `id == item.id` → sku), the SAME cascade the product-import flow uses,
- * rather than a copy. Deliberately simplified vs. legacy's
- * `_makeItemDoPedido` (models.dart:3179-3211), which additionally matches on
- * `variation_id` via the `marketplace` denorm array — this port resolves at
- * the PARENT item level only; a variation-aware resolution is a follow-up
- * (see the PR notes).
+ * Produto resolution per order line ("ML (item.id, variation_id) → produtoUid",
+ * outside any transaction) — delegates to `orderProdutoResolve.ts`'s
+ * `resolveOrderLineProduto` (#792), whose child-first cascade restores legacy
+ * `_makeItemDoPedido`'s variation-level match (models.dart:3179-3211) without
+ * reading the deprecated `marketplace` denorm array. A variation sale binds to
+ * the CHILD produto (which owns the stock and the SKU); a simple listing is
+ * unchanged and still costs exactly one query.
+ *
+ * Memoized per `(itemId, variationId)`: a pack's sibling orders routinely repeat
+ * the same listing, and the resolution is a pure read.
+ *
+ * Also returns the ML ids per line, keyed by `ensureUniqueId`: the stored
+ * `ItemDoPedido` keeps only `mktplaceId` (= `variation_id ?? item.id`), so the
+ * LISTING id is otherwise unrecoverable downstream — and it is the id an operator
+ * needs to open the anúncio on ML (`recordItensSemProduto`).
  */
+interface OrderLineMlIds {
+  itemId: string;
+  variationId: string | null;
+}
+
 async function buildItensByOrderId(
   db: Firestore,
   integracaoId: string,
   orders: readonly MlOrder[],
   nowUs: number,
-): Promise<Map<number, ItemDoPedido[]>> {
+): Promise<{
+  itensByOrderId: Map<number, ItemDoPedido[]>;
+  mlIdsByUniqueId: Map<string, OrderLineMlIds>;
+}> {
   const out = new Map<number, ItemDoPedido[]>();
+  const mlIdsByUniqueId = new Map<string, OrderLineMlIds>();
+  const memo = new Map<string, string | null>();
   for (const order of orders) {
     const lines = order.order_items ?? [];
     const itens: ItemDoPedido[] = [];
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index]!;
       const itemId = line.item?.id ?? '';
+      const variationIdRaw = line.item?.variation_id ?? null;
+      const variationId = variationIdRaw != null ? String(variationIdRaw) : null;
       const sku = line.item?.seller_sku ?? null;
-      const resolved = itemId ? await resolveExistingProduto(db, itemId, sku, integracaoId) : null;
-      itens.push(
-        mlOrderItemToItemDoPedido({
-          orderId: order.id,
-          orderItem: line,
-          index,
-          produtoUid: resolved?.produtoId ?? null,
-          timestampUs: nowUs,
-        }),
-      );
+
+      let produtoUid: string | null = null;
+      if (itemId) {
+        const memoKey = `${itemId}|${variationId ?? ''}`;
+        if (memo.has(memoKey)) {
+          produtoUid = memo.get(memoKey) ?? null;
+        } else {
+          const resolved = await resolveOrderLineProduto(db, {
+            itemId,
+            variationId,
+            sku,
+            integracaoId,
+          });
+          produtoUid = resolved?.produtoId ?? null;
+          memo.set(memoKey, produtoUid);
+        }
+      }
+
+      const item = mlOrderItemToItemDoPedido({
+        orderId: order.id,
+        orderItem: line,
+        index,
+        produtoUid,
+        timestampUs: nowUs,
+      });
+      itens.push(item);
+      if (item.ensureUniqueId != null) {
+        mlIdsByUniqueId.set(item.ensureUniqueId, { itemId, variationId });
+      }
     }
     out.set(order.id, itens);
   }
-  return out;
+  return { itensByOrderId: out, mlIdsByUniqueId };
+}
+
+/**
+ * One `incidente` per order line that resolved to NO produto (#792), so an
+ * unbound line is visible to the operator in the pedido's Incidentes tab
+ * (`PedidoForm.tsx:488`) instead of silently sitting under the `'NONE'` key.
+ *
+ * `produtoUid: null` is deliberately kept rather than falling back to the parent
+ * produto: `calcularAlteracoesEstoque` skips null/'NONE'
+ * (`packages/data/src/pedido/estoquePlan.ts:67`), whereas a parent binding would
+ * make `sincronizarEstoquePedido` CREATE a negative-quantity estoque doc on a
+ * produto that owns none (`sincronizarEstoquePedido.ts:364-377`) — which then
+ * feeds the ML stock sweep's `maxOwn` and can be pushed back to ML.
+ *
+ * Race tier 0 (root CLAUDE.md rule 7): the doc id is derived from the line's
+ * already-deterministic `ensureUniqueId` (`sha256(orderId-mktplaceId-index)`),
+ * so a notification redelivery or the reprocess sweep re-drives the same payload
+ * onto the SAME doc. `.create()` + swallow ONLY `ALREADY_EXISTS` keeps the first
+ * row's `timestamp` instead of re-dating it on every replay.
+ */
+async function recordItensSemProduto(
+  db: Firestore,
+  pedidoId: string,
+  itensByOrderId: Map<number, ItemDoPedido[]>,
+  mlIdsByUniqueId: Map<string, OrderLineMlIds>,
+  pedidoGravado: Pedido,
+  nowUs: number,
+): Promise<void> {
+  // A line already STORED with a produto is not a problem, whoever bound it —
+  // during the dual-run the Flutter app may have imported this same order and
+  // resolved it via its own `marketplace` denorm probe. `orderPedidoTx` dedups by
+  // `ensureUniqueId` and keeps the stored line, so raising an incidente for it
+  // would be a false positive.
+  // `?? {}` — `readPedido` soft-parses, so a pedido written by another actor
+  // without `itens` (or one this run only just created) reads back undefined.
+  const jaVinculados = new Set(
+    flattenPedidoItens(pedidoGravado.itens ?? {})
+      .filter((item) => item.produtoUid != null && item.ensureUniqueId != null)
+      .map((item) => item.ensureUniqueId!),
+  );
+
+  for (const itens of itensByOrderId.values()) {
+    for (const item of itens) {
+      if (item.produtoUid != null || item.ensureUniqueId == null) continue;
+      if (jaVinculados.has(item.ensureUniqueId)) continue;
+      // Name the ANÚNCIO and the VARIAÇÃO separately. `mktplaceId` alone would be
+      // ambiguous — it is `variation_id ?? item.id`, so labelling it "anúncio"
+      // is wrong for exactly the variation sale this incidente exists for, and
+      // the listing id is what the operator needs to open the anúncio on ML.
+      const mlIds = mlIdsByUniqueId.get(item.ensureUniqueId);
+      const anuncio = mlIds?.itemId ?? item.mktplaceId ?? '?';
+      const variacao = mlIds?.variationId ?? null;
+      const motivo =
+        `[Mercado Livre] Item "${item.nomeDeVenda ?? anuncio}" ` +
+        `(anúncio ${anuncio}${variacao != null ? `, variação ${variacao}` : ''}, ` +
+        `SKU ${item.sku ?? '—'}) não foi vinculado a nenhum produto do ERP. ` +
+        `O item ficou sem produto: nenhum estoque foi movimentado. ` +
+        `Vincule o produto manualmente no pedido.`;
+      try {
+        await incidenteCollection.docRef(db, { pedidoId }, `ml-prod-${item.ensureUniqueId}`).create(
+          incidenteCollection.parse({
+            origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
+            tipo: TIPO_INCIDENTE.outros,
+            subtipo: 'ml-produto-nao-vinculado',
+            motivoDoIncidente: motivo,
+            comentarios: null,
+            timestamp: nowUs,
+            ultimaModificacao: nowUs,
+            externalId: item.mktplaceId,
+            resolucao: null,
+          }),
+        );
+      } catch (err) {
+        if (!isAlreadyExists(err)) throw err;
+      }
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -394,7 +531,25 @@ async function applyClienteStep(args: {
     throw err;
   }
 
-  const { clienteId } = await findOrCreateCliente(db, clienteFields, nowMs);
+  const { clienteId, rejected, dropped } = await findOrCreateCliente(db, {
+    fields: clienteFields,
+    nowMs,
+  });
+  if (rejected.length > 0) {
+    // A telefone/e-mail hit whose document contradicts the buyer's. Before #786
+    // this merged silently and overwrote the other person's cpf_cnpj; now it is
+    // a near-miss worth seeing rather than a duplicate to explain later.
+    console.warn('[mercado-livre] candidatos a cliente rejeitados por documento divergente', {
+      orderId,
+      rejected,
+    });
+  }
+  if (dropped.length > 0) {
+    console.warn('[mercado-livre] campos do cliente descartados por valor inválido', {
+      orderId,
+      dropped,
+    });
+  }
   const clienteOuterRef = toOuterRef(clienteCollection.docPath({}, clienteId));
 
   await db.runTransaction(async (tx) => {
@@ -943,7 +1098,10 @@ export async function importPedidoMercadoLivre(
 ): Promise<OrderImportResult> {
   const { db, api, integracaoId, nowUs, nowMs } = deps;
 
-  const { initialOrder, packInfo } = await fetchOrderWithPackFallback(api, orderIdOrPackId);
+  const { initialOrder, initialComplete, packInfo } = await fetchOrderWithPackFallback(
+    api,
+    orderIdOrPackId,
+  );
 
   // Buyer guard FIRST, then seller — tasks.dart:396-406 (that exact order).
   if (initialOrder.buyer == null) {
@@ -961,10 +1119,20 @@ export async function importPedidoMercadoLivre(
     return { pedidoId: null, created: false, skipped: 'seller-mismatch' };
   }
 
-  const { orders, packId } = await resolvePackOrders(api, initialOrder, packInfo);
+  const { orders, packId, completeOrderIds } = await resolvePackOrders(
+    api,
+    initialOrder,
+    initialComplete,
+    packInfo,
+  );
   for (const order of orders) assertOrderItemsComplete(order);
 
-  const itensByOrderId = await buildItensByOrderId(db, integracaoId, orders, nowUs);
+  const { itensByOrderId, mlIdsByUniqueId } = await buildItensByOrderId(
+    db,
+    integracaoId,
+    orders,
+    nowUs,
+  );
 
   const discoverArgs: DiscoverPedidoArgs = {
     db,
@@ -975,6 +1143,7 @@ export async function importPedidoMercadoLivre(
     operacaoOuterRef: contaBag.operacaoOuterRef,
     listaDePrecosOuterRef: contaBag.listaDePrecosOuterRef,
     orders,
+    completeOrderIds,
     packId,
     itensByOrderId,
     nowUs,
@@ -982,6 +1151,11 @@ export async function importPedidoMercadoLivre(
   const { pedidoId, created } = await discoverPedidoMercadoLivre(discoverArgs);
 
   let pedido = await readPedido(db, pedidoId);
+
+  // Unbound lines get a visible incidente (#792) — after the pedido was written,
+  // both so the subcollection has a parent and so a line the stored pedido
+  // already has bound (Flutter, dual-run) is not falsely flagged.
+  await recordItensSemProduto(db, pedidoId, itensByOrderId, mlIdsByUniqueId, pedido, nowUs);
 
   let billingInfoCache: MlBillingInfo | null = null;
   const getBillingInfo = async (): Promise<MlBillingInfo> => {
