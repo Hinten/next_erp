@@ -130,6 +130,11 @@ describe('assembleImportPlan — create', () => {
     const p = assembleImportPlan(args({ categoriaOuterRef: null }));
     expect(p.produto?.data.categoriaProdutoOuterRef).toBeNull();
   });
+
+  it('stamps ultimaModificacao on create — enables update-monitor and modification-history triggers (#800)', () => {
+    const plan = assembleImportPlan(args());
+    expect(plan.produto?.data.ultimaModificacao).toBe(1_700_000_000_000);
+  });
 });
 
 describe('assembleImportPlan — update (existing produto)', () => {
@@ -219,7 +224,7 @@ describe('assembleImportPlan — update (existing produto)', () => {
     expect(plan.produto?.data ?? {}).not.toHaveProperty('publicado');
   });
 
-  it('skips produto write entirely when atualizarProdutoPai=false and no price change', () => {
+  it('writes ultimaModificacao timestamp even when atualizarProdutoPai=false and no price change (#800)', () => {
     const plan = assembleImportPlan(
       args({
         isCreate: false,
@@ -231,7 +236,8 @@ describe('assembleImportPlan — update (existing produto)', () => {
         existingProduto: { nome: 'X', sku: 'S', precos: { tabNormal: { valor: 10 } } },
       }),
     );
-    expect(plan.produto).toBeNull();
+    // No fill-null field, no price change, but ultimaModificacao IS written for update monitors
+    expect(plan.produto?.data).toEqual({ ultimaModificacao: 1_700_000_000_000 });
     expect(plan.precosOps).toBeNull();
   });
 
@@ -273,7 +279,45 @@ describe('assembleImportPlan — update (existing produto)', () => {
     expect(plan.produto?.full).toBe(false);
     expect(plan.produto?.data).toEqual({
       categoriaProdutoOuterRef: 'documents/categorias/MLB1430',
+      ultimaModificacao: 1_700_000_000_000,
     });
+  });
+
+  it('stamps ultimaModificacao on update — enables update-monitor and modification-history triggers (#800)', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: { nome: 'X', sku: null },
+      }),
+    );
+    expect(plan.produto?.data.ultimaModificacao).toBe(1_700_000_000_000);
+  });
+
+  it('updates ultimaModificacao even when no other fields change (timestamp-only write for update monitors)', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        options: {
+          ...DEFAULT_IMPORT_OPTIONS,
+          atualizarProdutoPai: false,
+          sobrescreverPreco: false,
+        },
+        existingProduto: {
+          nome: 'X',
+          sku: 'KEEP',
+          pesoLiquidoKg: 1.2,
+          precos: { tabNormal: { valor: 10 } },
+        },
+        mapped: mapped({
+          sku: 'NEW',
+          pesoLiquidoKg: 0.5,
+          precoNormal: null,
+          precoPromocional: null,
+        }),
+      }),
+    );
+    // Even though all fields would be skipped (no fill-nulls, no price change), the ultimaModificacao patch ensures a write
+    expect(plan.produto?.data).toEqual({ ultimaModificacao: 1_700_000_000_000 });
   });
 });
 
@@ -663,7 +707,7 @@ describe('assembleVariationChildPlan — update (existing child)', () => {
     expect(plan.produto?.data ?? {}).not.toHaveProperty('precos');
   });
 
-  it('no fill-able field + no price change → produto write skipped entirely', () => {
+  it('writes ultimaModificacao even when no other field changes (update monitor)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         isCreate: false,
@@ -681,7 +725,7 @@ describe('assembleVariationChildPlan — update (existing child)', () => {
         },
       }),
     );
-    expect(plan.produto).toBeNull();
+    expect(plan.produto?.data).toEqual({ ultimaModificacao: 1_700_000_000_000 });
   });
 });
 
