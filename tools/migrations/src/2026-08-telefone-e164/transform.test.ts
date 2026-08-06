@@ -117,4 +117,14 @@ describe('resolveTargets', () => {
   it('rejects an unknown target rather than silently migrating nothing', () => {
     expect(() => resolveTargets(['clientes', 'typo'])).toThrow(UnknownTargetError);
   });
+
+  it('de-duplicates — a repeated target must not scan the group twice', () => {
+    // Each target is an unindexed collection-group scan on Enterprise, billed
+    // by data scanned, so a duplicate silently doubles the bill for no work.
+    expect(resolveTargets(['clientes', 'clientes']).map((t) => t.name)).toEqual(['clientes']);
+    expect(resolveTargets(['cheque', 'clientes', 'cheque']).map((t) => t.name)).toEqual([
+      'cheque',
+      'clientes',
+    ]);
+  });
 });

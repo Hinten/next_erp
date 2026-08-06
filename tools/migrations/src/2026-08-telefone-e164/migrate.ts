@@ -82,9 +82,14 @@ export class UnknownTargetError extends Error {
 /**
  * Resolve `--target a,b` (parsed by the shared runner) to the target set.
  * Empty selection means the safe default — `clientes` alone.
+ *
+ * De-duplicated, order preserved. Each target is a collection-group scan, which
+ * is unindexed on Enterprise and therefore billed by data scanned — repeating
+ * one because `--target clientes,clientes` was typed would silently double that
+ * bill for no work.
  */
 export function resolveTargets(names: readonly string[]): TelefoneTarget[] {
-  const selected = names.length > 0 ? names : DEFAULT_TARGETS;
+  const selected = names.length > 0 ? [...new Set(names)] : DEFAULT_TARGETS;
   return selected.map((name) => {
     const target = TARGETS.find((t) => t.name === name);
     if (!target) throw new UnknownTargetError(name);

@@ -12,7 +12,15 @@
 
 import { isValidTelefone, normalizeTelefone } from '@delfrance/core/phone';
 
-/** Why a stored value was left alone. Every skip is logged with its reason. */
+/**
+ * Why a stored value was left alone.
+ *
+ * Every skip EXCEPT `empty` is written to the `out/` log with its reason.
+ * `empty` is deliberately not logged: the migration scans collection groups,
+ * where the overwhelming majority of documents carry no phone field at all, so
+ * logging those would bury the handful of rows that actually want a human.
+ * The summary counts still include them.
+ */
 export const SKIP_REASON = {
   /** Null, absent, empty, or not a string. Nothing to normalize. */
   empty: 'empty',
