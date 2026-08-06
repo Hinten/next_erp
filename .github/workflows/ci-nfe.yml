@@ -299,9 +299,11 @@ jobs:
         # the test logs the exact cStat+xMotivo so the rejection names what to
         # refine. Posture: ADVISORY on pull_request/push (continue-on-error →
         # warning), FATAL on workflow_dispatch (deliberate validation runs).
+        # This workflow has no `schedule:` trigger of its own, so the only
+        # FATAL case is workflow_dispatch.
         # Library-level — no Firestore; reuses the vendored SP HOM chain. #313.
         id: rtc-live
-        continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
         env:
           NFE_CERT_BASE64:   ${{ secrets.NFE_CERT_BASE64 }}
           NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
@@ -319,10 +321,11 @@ jobs:
         # FATAL on workflow_dispatch. The scheduled FATAL run (so a real
         # SVC regression alerts on its own) lives in
         # nfe-epec-scheduled.yml's `svc-live` job (weekly, issue #146),
-        # not here — this workflow has no `schedule:` trigger of its own.
+        # not here — this workflow has no `schedule:` trigger of its own,
+        # so the only FATAL case here is workflow_dispatch.
         # Issue #129.
         id: svc-live
-        continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
         env:
           NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
           NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
