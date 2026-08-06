@@ -80,6 +80,24 @@ for one state:
 | `needs-design`   | Needs a UX/design call before it can be specced.                  |
 | `no-breakdown`   | Too large or too vague to decompose; needs Lucas.                 |
 
+## Timing gate
+
+| Label                    | Colour   | Use it for                                                                 |
+| ------------------------ | -------- | -------------------------------------------------------------------------- |
+| `needs-migration-window` | `ff007f` | Ready to do, but must be executed **during** the data-migration / cutover.  |
+
+Distinct from the three above: the work is fully specced and unblocked — only
+its *timing* is gated. Doing it early is not merely premature, it is wrong:
+the result goes stale, or it lands in a window where the legacy Flutter app is
+still live against the same data.
+
+Pairs with a `task:` router (usually `task: ops-deploy`), never replaces it.
+Query the backlog for the cutover checklist with:
+
+```bash
+gh issue list --state open --label "needs-migration-window"
+```
+
 So a handful of issues (today `#379`, `#557`) carry **no** `task:` label at all.
 That is by design — find them via the three labels above, not a `task:` filter.
 

@@ -18,3 +18,10 @@ export {
 } from './pedidoReconcile';
 
 export { isAlreadyExists, isNotFound } from './grpcErrors';
+export {
+  CodigoMunicipioNaoResolvidoError,
+  resolveCodigoMunicipio,
+  type EnderecoCMunInput,
+  type MotivoCodigoMunicipioNaoResolvido,
+  type ResolveCodigoMunicipioOptions,
+} from './cmun';

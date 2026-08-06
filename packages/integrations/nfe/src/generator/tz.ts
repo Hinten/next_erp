@@ -14,6 +14,7 @@
  * derived from the issuer's UF, and the math is pure epoch-shift + `getUTC*`.
  * Brazil abolished DST in 2019, so per-UF offsets are constants.
  */
+import { IBGE_UF_CODES } from '@delfrance/core/cep';
 import type { UF } from '@delfrance/schemas';
 
 export class NFeTzError extends Error {
@@ -23,37 +24,16 @@ export class NFeTzError extends Error {
   }
 }
 
-/** UF letter → IBGE 2-digit code (chave `cUF` / `ide.cUF`). */
-export const UF_TO_IBGE: Record<UF, string> = {
-  AC: '12',
-  AL: '27',
-  AM: '13',
-  AP: '16',
-  BA: '29',
-  CE: '23',
-  DF: '53',
-  ES: '32',
-  GO: '52',
-  MA: '21',
-  MG: '31',
-  MS: '50',
-  MT: '51',
-  PA: '15',
-  PB: '25',
-  PE: '26',
-  PI: '22',
-  PR: '41',
-  RJ: '33',
-  RN: '24',
-  RO: '11',
-  RR: '14',
-  RS: '43',
-  SC: '42',
-  SE: '28',
-  SP: '35',
-  TO: '17',
-  EX: '99',
-};
+/**
+ * UF letter → IBGE 2-digit code (chave `cUF` / `ide.cUF`).
+ *
+ * The table itself lives in `@delfrance/core/cep`, which also needs it to
+ * cross-check a resolved 7-digit `cMun` against an endereço's UF (#785) — and
+ * core cannot import `@delfrance/schemas` (schemas depends on core). The
+ * `Record<UF, string>` annotation stays here so a UF missing from the shared
+ * map is still a compile error on this side.
+ */
+export const UF_TO_IBGE: Record<UF, string> = IBGE_UF_CODES;
 
 /**
  * UTC offset (minutes) of each UF's legal time. Permanent since Lei
