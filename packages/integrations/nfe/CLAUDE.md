@@ -60,7 +60,7 @@ packages/integrations/nfe/
 ```
 
 Internal consumers import `'../types/nfe-schema'` (the shim), never
-the versioned path directly. Three places know the active MOC
+the versioned path directly. Four places know the active MOC
 literal (kept tiny on purpose — search-and-replace one constant per
 file to bump):
 

@@ -22,8 +22,8 @@ vi.mock('./orderCliente', () => {
   return {
     MlBillingInfoUnsupportedError,
     billingInfoToClienteFields: vi.fn(),
-    billingInfoToEnderecoFields: vi.fn(() => null),
-    shipmentToEnderecoFields: vi.fn(() => null),
+    billingInfoToEnderecoFields: vi.fn(() => ({ kind: 'sem-cep', cepRaw: null })),
+    shipmentToEnderecoFields: vi.fn(() => ({ kind: 'sem-cep', cepRaw: null })),
     findOrCreateCliente: vi.fn(),
     ensureEndereco: vi.fn(),
   };
@@ -42,6 +42,7 @@ import {
   billingInfoToEnderecoFields,
   ensureEndereco,
   findOrCreateCliente,
+  shipmentToEnderecoFields,
 } from './orderCliente';
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
@@ -54,8 +55,35 @@ import {
   ESTADO_FRETE,
   ORIGEM_INCIDENTE,
   TIPO_INCIDENTE,
+  UF_SIGLA,
 } from '@delfrance/schemas';
-import type { FreteDoPedido } from '@delfrance/schemas';
+import type { EnderecoBuildOutcome, EnderecoForcado, FreteDoPedido } from '@delfrance/schemas';
+import type { EnderecoViaCep, ViaCepClient } from '@delfrance/core/cep';
+
+/* --------------------------- endereço test doubles ------------------------- */
+
+const SEM_CEP = { kind: 'sem-cep', cepRaw: null } as const satisfies EnderecoBuildOutcome;
+
+const ENDERECO_SP: EnderecoForcado = {
+  idExterno: null,
+  cep: '01310100',
+  logradouro: 'Av. Paulista',
+  numero: '1000',
+  bairro: 'Bela Vista',
+  complemento: null,
+  codigoMunicipio: null,
+  cidade: 'São Paulo',
+  estado: UF_SIGLA.SP,
+  cPais: null,
+  pais: null,
+  nome: null,
+  cpf_cnpj: null,
+  rg: null,
+  ie: null,
+  imun: null,
+  email: null,
+  telefone: null,
+};
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Scoped to what orderImport.ts touches directly: `integracao`, `int_frete`,
@@ -238,8 +266,22 @@ function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): Me
   } as unknown as MercadoLivreApi;
 }
 
-function deps(db: FakeDb, api: MercadoLivreApi): OrderImportDeps {
-  return { db: asDb(db), api, integracaoId: INTEGRACAO_ID, nowUs: NOW_US, nowMs: NOW_MS };
+function deps(db: FakeDb, api: MercadoLivreApi, viaCep?: ViaCepClient): OrderImportDeps {
+  // `viaCep` defaults to a client that answers nothing rather than to the
+  // process-wide one: a shared memo would leak one case's answer into the next
+  // and let an "unreachable" assertion pass off a stale cached hit.
+  return {
+    db: asDb(db),
+    api,
+    integracaoId: INTEGRACAO_ID,
+    nowUs: NOW_US,
+    nowMs: NOW_MS,
+    viaCep: viaCep ?? stubViaCep(null),
+  };
+}
+
+function stubViaCep(resposta: EnderecoViaCep | null): ViaCepClient {
+  return { buscarCep: vi.fn(async () => resposta) };
 }
 
 beforeEach(() => {
@@ -262,9 +304,10 @@ beforeEach(() => {
   });
   vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-default', created: true });
   // `mockClear` (above) doesn't reset a mock's implementation — restore the
-  // module factory's null default explicitly so a test overriding it doesn't
-  // leak into whichever test runs next.
-  vi.mocked(billingInfoToEnderecoFields).mockReturnValue(null);
+  // module factory's "no endereço" default explicitly so a test overriding it
+  // doesn't leak into whichever test runs next.
+  vi.mocked(billingInfoToEnderecoFields).mockReturnValue(SEM_CEP);
+  vi.mocked(shipmentToEnderecoFields).mockReturnValue(SEM_CEP);
 });
 
 /* ----------------------------------- tests --------------------------------- */
@@ -602,26 +645,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
     const api = makeApi({ getOrder: vi.fn(async () => order) });
 
     vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
-    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
-      idExterno: null,
-      cep: '01310100',
-      logradouro: 'Av. Paulista',
-      numero: '1000',
-      bairro: 'Bela Vista',
-      complemento: null,
-      codigoMunicipio: null,
-      cidade: 'São Paulo',
-      estado: 'SP',
-      cPais: null,
-      pais: null,
-      nome: null,
-      cpf_cnpj: null,
-      rg: null,
-      ie: null,
-      imun: null,
-      email: null,
-      telefone: null,
-    });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'ok', fields: ENDERECO_SP });
     vi.mocked(ensureEndereco).mockResolvedValue('end-99');
 
     await importPedidoMercadoLivre(deps(db, api), 1);
@@ -630,6 +654,174 @@ describe('importPedidoMercadoLivre — endereço', () => {
       clientePedidoOuterRef: 'documents/clientes/cli-77',
       enderecoFiscalOuterRef: 'documents/clientes/cli-77/enderecos/end-99',
     });
+  });
+
+  it('logs the order and both rejected CEPs instead of dropping the endereço in silence', async () => {
+    // Pre-#789 this returned with no log at all, and the pedido was left unable
+    // to reach `pago` or be fiscalizado with nothing to diagnose it by.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '123' });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(ensureEndereco).not.toHaveBeenCalled();
+    expect(db.docs('pedidos').get('pedido-1')).not.toHaveProperty('enderecoFiscalOuterRef');
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('endereço não construído'),
+      expect.objectContaining({ orderId: 1, pedidoId: 'pedido-1', cepBilling: '123' }),
+    );
+    // The pedido itself still imported — the endereço miss is not a skip.
+    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, skipped: null });
+    error.mockRestore();
+  });
+
+  it('attributes each rejected CEP to its own source when BOTH are unusable', async () => {
+    // The diagnostic is the whole point of the log, so it has to survive the
+    // two mappers returning value-equal outcomes: attributing by object
+    // identity reported `cepShipment: null` here even though the shipment was
+    // tried and rejected — and this suite's own shared `SEM_CEP` constant was
+    // already enough to trigger it.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 555 })),
+      getShipment: vi.fn(async () => ({ id: 555 }) as never),
+    });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '123' });
+    vi.mocked(shipmentToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '456' });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('endereço não construído'),
+      expect.objectContaining({ cepBilling: '123', cepShipment: '456' }),
+    );
+    error.mockRestore();
+  });
+
+  it('reports the shipment CEP even when both mappers return the SAME object', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 555 })),
+      getShipment: vi.fn(async () => ({ id: 555 }) as never),
+    });
+
+    // One object, both mappers — the exact shape that defeated the identity
+    // check. `cepRaw` is non-null so the two implementations disagree: the old
+    // one logged `cepShipment: null`, this one logs '999'.
+    const compartilhado = {
+      kind: 'sem-cep',
+      cepRaw: '999',
+    } as const satisfies EnderecoBuildOutcome;
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue(compartilhado);
+    vi.mocked(shipmentToEnderecoFields).mockReturnValue(compartilhado);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(shipmentToEnderecoFields).toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('endereço não construído'),
+      expect.objectContaining({ cepBilling: '999', cepShipment: '999' }),
+    );
+    error.mockRestore();
+  });
+
+  it('falls back to the shipment receiver_address only when billing yields no CEP', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 555 })),
+      getShipment: vi.fn(async () => ({ id: 555 }) as never),
+    });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: null });
+    vi.mocked(shipmentToEnderecoFields).mockReturnValue({ kind: 'ok', fields: ENDERECO_SP });
+    vi.mocked(ensureEndereco).mockResolvedValue('end-88');
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(shipmentToEnderecoFields).toHaveBeenCalled();
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
+      enderecoFiscalOuterRef: 'documents/clientes/cli-77/enderecos/end-88',
+    });
+  });
+
+  it('resolves an unmappable estado from the CEP rather than falling through to the shipment', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 555 })),
+      getShipment: vi.fn(async () => ({ id: 555 }) as never),
+    });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
+      kind: 'uf-desconhecida',
+      fields: { ...ENDERECO_SP, estado: UF_SIGLA.AC },
+      estadoRaw: 'Sao Paulo',
+    });
+    vi.mocked(ensureEndereco).mockResolvedValue('end-77');
+
+    const viaCep = stubViaCep({
+      logradouro: 'Avenida Paulista',
+      bairro: 'Bela Vista',
+      cidade: 'São Paulo',
+      estado: 'SP',
+      codigoMunicipio: '3550308',
+    });
+
+    await importPedidoMercadoLivre(deps(db, api, viaCep), 1);
+
+    expect(viaCep.buscarCep).toHaveBeenCalledWith('01310100');
+    // A recoverable estado is NOT a reason to prefer the shipment address.
+    expect(shipmentToEnderecoFields).not.toHaveBeenCalled();
+    expect(vi.mocked(ensureEndereco).mock.calls[0]?.[2]).toMatchObject({ estado: UF_SIGLA.SP });
+  });
+
+  it('stores the endereço with AC and warns when ViaCEP cannot answer', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
+
+    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
+      kind: 'uf-desconhecida',
+      fields: { ...ENDERECO_SP, estado: UF_SIGLA.AC },
+      estadoRaw: 'Freedonia',
+    });
+    vi.mocked(ensureEndereco).mockResolvedValue('end-66');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await importPedidoMercadoLivre(deps(db, api, stubViaCep(null)), 1);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('UF não resolvida'),
+      expect.objectContaining({ estadoRecebido: 'Freedonia', cep: '01310100' }),
+    );
+    // Still linked: a wrong UF cannot reach a signed XML (cMun is null, so
+    // emission throws), but no endereço at all strands the pedido forever.
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
+      enderecoFiscalOuterRef: 'documents/clientes/cli-77/enderecos/end-66',
+    });
+    warn.mockRestore();
   });
 });
 
