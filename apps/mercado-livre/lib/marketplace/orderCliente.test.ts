@@ -379,8 +379,12 @@ describe('shipmentToEnderecoFields', () => {
  * `Endereco.generateUid` (models.dart:841-866), and a Flutter-written endereço
  * only resolves to the same doc id during dual-run while every hashed value
  * matches. Each 40-char hex is the lowercase SHA-1 of the documented UTF-8
- * preimage. Recompute with:
- *   node -e 'console.log(require("crypto").createHash("sha1").update(S,"utf8").digest("hex"))'
+ * preimage. Recompute any of them by pasting that preimage as the argument —
+ * runs as-is in both bash and PowerShell (the inner quotes must stay single;
+ * PowerShell strips double ones and `require` then picks up Node's WebCrypto
+ * global instead of `node:crypto`):
+ *   node -e "console.log(require('crypto').createHash('sha1').update(process.argv[1],'utf8').digest('hex'))" "enderecoRua Teste123Centro01310100São PauloSP"
+ *   → 70d9018b0d28f930c549ce4ad9e164b3be7904d5 (the FULL vector below)
  * A change to any of these is a WIRE BREAK — an address that silently forks
  * into a second document — not a test to "fix".
  *
