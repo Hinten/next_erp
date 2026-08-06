@@ -51,6 +51,7 @@ import {
   isSameEmail,
   isSameTelefone,
   normalizeDocumento,
+  normalizeNome,
   sanitizeTelefone,
   shouldUpdateName,
   telefoneLookupShapes,
@@ -163,9 +164,12 @@ export function buildClienteUpdatePatch(
   // `shouldUpdateName` answers "MAY this name overwrite?", not "did it change?".
   // Both questions have to pass, or an import that changes nothing rewrites the
   // identical name and bumps `ultimaModificacao` — which is exactly what this
-  // function's "update-only-changed" contract exists to prevent.
-  if (fields.nome !== old.nome && shouldUpdateName(old.nome, fields.nome)) {
-    patch.nome = fields.nome;
+  // function's "update-only-changed" contract exists to prevent. The stored
+  // value is the NORMALIZED one, so a padded payload cannot smuggle blanks past
+  // `clienteSchema.nome`, which accepts any string.
+  const nome = normalizeNome(fields.nome);
+  if (nome != null && nome !== old.nome && shouldUpdateName(old.nome, fields.nome)) {
+    patch.nome = nome;
   }
 
   if (fields.cpf_cnpj != null && identityValue(old.cpf_cnpj) == null) {
@@ -183,8 +187,13 @@ export function buildClienteUpdatePatch(
     patch.telefone = telefone;
   }
 
-  if (fields.email != null && !isSameEmail(old.email, fields.email)) {
-    patch.email = fields.email;
+  // `identityValue`, not a bare null check: `clienteSchema.email` is
+  // `.email()`, which REJECTS `''` and `'   '`. Passing one straight through
+  // would throw a ZodError inside `merge()` and abort the import as if
+  // transient — the same crash `sanitizeTelefone` exists to prevent.
+  const email = identityValue(fields.email);
+  if (email != null && !isSameEmail(old.email, email)) {
+    patch.email = email;
   }
 
   // Guarded like every other field. Without the null check a caller that does
@@ -307,7 +316,9 @@ export async function findOrCreateCliente(
 
   const ref = await clienteCollection.add(db, {}, {
     tipo: fields.tipo,
-    nome: fields.nome !== '' ? fields.nome : null,
+    // Normalized, and `null` rather than blanks: `clienteSchema.nome` accepts
+    // any string, so a whitespace-only payload would otherwise be stored as-is.
+    nome: normalizeNome(fields.nome),
     // Stored canonical, matching what the cpf_cnpj leg queries. A punctuated
     // value would not round-trip clienteSchema's `^[0-9A-Z]*$` at all.
     cpf_cnpj: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
@@ -317,7 +328,9 @@ export async function findOrCreateCliente(
     // would otherwise be stripped to 6 digits and throw a ZodError inside
     // `add`, aborting the whole import as if it were transient.
     telefone,
-    email: fields.email,
+    // `''` fails `clienteSchema.email`'s `.email()` check — same reason as the
+    // patch path above.
+    email: identityValue(fields.email),
     timestamp: nowMs,
     ultimaModificacao: nowMs,
   } satisfies DocumentData);
