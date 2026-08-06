@@ -1281,6 +1281,16 @@
       ]
     },
     {
+      "collectionGroup": "clientes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userCliente",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "usuarios",
       "queryScope": "COLLECTION",
       "fields": [
