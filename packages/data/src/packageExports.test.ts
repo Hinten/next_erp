@@ -45,6 +45,7 @@ describe('@delfrance/data exports map', () => {
         '.',
         './admin',
         './admin/cache',
+        './admin/clientes',
         './admin/collections',
         './admin/notifications',
       ]),

@@ -6,16 +6,22 @@
  *    (`.old/packages/canais_de_venda/mercado_livre/lib/src/api_types/billing_info.dart:74-113`)
  *  - `MercadoLivreShipping.toEndereco`
  *    (`.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart:5328-5338`)
- *  - `normalizePhoneNumber` / `_shouldUpdateName` / `Cliente.getOrCreateOrUpdate`
- *    (`.old/packages/clientes/lib/src/models.dart:63-129,254-419`)
  *  - `Endereco.generateUid`
  *    (`.old/packages/clientes/lib/src/models.dart:841-866`)
  *  - `UFS` / `UFS.fromValue` / `UFS.stateMap`
  *    (`.old/packages/global/lib/src/constantes.dart:97-245`)
  *
+ * `Cliente.getOrCreateOrUpdate` (models.dart:254-419) and
+ * `normalizePhoneNumber`/`_shouldUpdateName` (models.dart:63-129) used to live
+ * here too. They were promoted to `@delfrance/data/admin/clientes` and
+ * `@delfrance/schemas` by #786 — every channel importer needs the same
+ * resolution, and the copy that lived here would merge a new buyer into a
+ * stranger who happened to share a recycled phone number. This module now
+ * holds only the ML-specific mapping plus `ensureEndereco`.
+ *
  * Pure mapping (`billingInfoToClienteFields`/`billingInfoToEnderecoFields`/
  * `shipmentToEnderecoFields`/`makeEnderecoId`) is separated from the IO layer
- * (`findOrCreateCliente`/`ensureEndereco`), mirroring `orderMapping.ts`.
+ * (`ensureEndereco`), mirroring `orderMapping.ts`.
  *
  * The endereço force-fill itself is NOT here — it is
  * `buildEnderecoForcado`/`recoverEnderecoFromCep` in `@delfrance/schemas`
@@ -30,11 +36,11 @@
  *  - `userPath` dedup + vector-embedding generation are both skipped (approved
  *    deviations #5/#2 — ML buyers carry no `userPath`, and `nome_embedding`/
  *    `telefone_embedding` are server-managed opaque fields in this schema).
- *  - Telefone is normalized with this repo's `normalizeTelefone`/
- *    `telefoneQueryShapes` (`@delfrance/core/phone`) instead of porting
- *    legacy's `dlibphonenumber`-based `normalizePhoneNumber` — the project's
- *    own canonical wire-format normalizer, already used for the identical
- *    purpose elsewhere (`apps/whatsapp/lib/whatsapp/discoverUser.ts`,
+ *  - Telefone is normalized with this repo's canonical wire-format normalizer
+ *    (`@delfrance/core/phone`, reached through `@delfrance/schemas`'
+ *    `sanitizeTelefone`) instead of porting legacy's `dlibphonenumber`-based
+ *    `normalizePhoneNumber` — the same normalizer every other resolution site
+ *    uses (`apps/whatsapp/lib/whatsapp/discoverUser.ts`,
  *    `apps/web/lib/clientes/dedup.ts`).
  *  - The CNPJ branch of `toCliente()` strips punctuation with a MISTYPED Dart
  *    regex (`RegExp('r[.,-]')`, matching the literal characters "r." / "r,"
@@ -88,16 +94,14 @@
  */
 import { createHash } from 'node:crypto';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
-import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/collections';
-import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
+import { enderecoCollection } from '@delfrance/data/admin/collections';
 import { z } from 'zod';
 import {
   IE_SENTINELA,
   TIPO_CLIENTE,
   buildEnderecoForcado,
   normalizarIe,
-  normalizeDocumento,
-  type Cliente,
+  type ClienteResolveFields,
   type EnderecoBuildOutcome,
   type EnderecoForcado,
   type TipoCliente,
@@ -121,15 +125,18 @@ export class MlBillingInfoUnsupportedError extends Error {
 
 /* ------------------------------- field shapes ------------------------------ */
 
-/** Cliente fields resolvable from ML billing info — see `billingInfoToClienteFields`. */
-export interface ClienteImportFields {
+/**
+ * Cliente fields resolvable from ML billing info — see
+ * `billingInfoToClienteFields`.
+ *
+ * Narrows the shared `ClienteResolveFields`: ML always knows the tipo (a CPF
+ * means pessoa física, a CNPJ means pessoa jurídica), so it can assert a
+ * non-null one. Callers that cannot — the WhatsApp discovery path knows only a
+ * phone number — pass the shared nullable shape instead, and a null `tipo`
+ * leaves whatever is stored alone.
+ */
+export interface ClienteImportFields extends ClienteResolveFields {
   tipo: TipoCliente;
-  nome: string;
-  cpf_cnpj: string | null;
-  idEstrangeiro: string | null;
-  ie: string | null;
-  telefone: string | null;
-  email: string | null;
 }
 
 /**
@@ -357,173 +364,6 @@ export function makeEnderecoId(fields: EnderecoImportFields): string {
     fields.telefone ?? '',
   ];
   return sha1Hex(parts.join(''));
-}
-
-/* --------------------------------- cliente IO ------------------------------- */
-
-interface ExistingCliente {
-  id: string;
-  data: Cliente;
-}
-
-async function findByEqual(
-  db: Firestore,
-  field: string,
-  value: string,
-): Promise<ExistingCliente | null> {
-  const snap = await clienteCollection.ref(db, {}).where(field, '==', value).limit(1).get();
-  const doc = snap.docs[0];
-  if (!doc) return null;
-  return {
-    id: doc.id,
-    data: clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, doc.id)),
-  };
-}
-
-async function findByIn(
-  db: Firestore,
-  field: string,
-  values: readonly string[],
-): Promise<ExistingCliente | null> {
-  if (values.length === 0) return null;
-  const snap = await clienteCollection
-    .ref(db, {})
-    .where(field, 'in', [...values])
-    .limit(1)
-    .get();
-  const doc = snap.docs[0];
-  if (!doc) return null;
-  return {
-    id: doc.id,
-    data: clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, doc.id)),
-  };
-}
-
-/**
- * `_shouldUpdateName` (clientes/models.dart:117-129) — a lone-word new name
- * never overwrites an existing multi-word name (guards against a webhook
- * payload's truncated/first-name-only field clobbering a fuller one already
- * on file). Empty new name never updates either.
- */
-function shouldUpdateName(oldName: string | null, newName: string): boolean {
-  if (newName === '') return false;
-  if (newName.split(' ').length === 1 && oldName != null && oldName.split(' ').length > 1) {
-    return false;
-  }
-  return true;
-}
-
-/**
- * Update-only-changed patch (`Cliente.getOrCreateOrUpdate`'s hit branch,
- * clientes/models.dart:319-418, minus the `userPath`/embedding steps — see
- * this module's header doc). Empty result = no write needed.
- */
-function buildUpdatePatch(
-  old: Cliente,
-  fields: ClienteImportFields,
-  normalizedTelefone: string | null,
-): Record<string, unknown> {
-  const patch: Record<string, unknown> = {};
-
-  if (shouldUpdateName(old.nome, fields.nome)) {
-    patch.nome = fields.nome;
-  }
-
-  if (fields.cpf_cnpj != null && old.cpf_cnpj !== fields.cpf_cnpj) {
-    patch.cpf_cnpj = fields.cpf_cnpj;
-  }
-
-  if (fields.idEstrangeiro != null && old.idEstrangeiro !== fields.idEstrangeiro) {
-    patch.idEstrangeiro = fields.idEstrangeiro;
-  }
-
-  if (fields.telefone != null) {
-    if (fields.telefone.includes('*')) {
-      // Masked telefone (redacted digits) — never stored, matching legacy's log-only skip.
-    } else if (normalizedTelefone != null && old.telefone !== normalizedTelefone) {
-      patch.telefone = normalizedTelefone;
-    }
-  }
-
-  if (fields.email != null && old.email !== fields.email) {
-    patch.email = fields.email;
-  }
-
-  if (old.tipo !== fields.tipo) {
-    patch.tipo = fields.tipo;
-  }
-
-  if (fields.ie != null && old.ie !== fields.ie) {
-    patch.ie = fields.ie;
-  }
-
-  return patch;
-}
-
-/**
- * `Cliente.getOrCreateOrUpdate` (clientes/models.dart:254-419), `userPath`
- * dedup + vector-embedding generation dropped (see this module's header doc).
- * Dedup order: `cpf_cnpj` (digits-only equality) → `idEstrangeiro` → `telefone`
- * (`telefoneQueryShapes`, both wire shapes) → `email`. `nowMs` stamps
- * `timestamp`+`ultimaModificacao` on create, `ultimaModificacao` only on an
- * update that actually changes a field (mirrors `saveRecord`'s stamp, done by
- * hand here since this write bypasses the client SDK).
- */
-export async function findOrCreateCliente(
-  db: Firestore,
-  fields: ClienteImportFields,
-  nowMs: number,
-): Promise<{ clienteId: string; created: boolean }> {
-  // Dedup-query normalization only — the STORED field keeps the caller's
-  // value. Legacy stripped to digits (clientes/models.dart:272), but our
-  // clienteSchema accepts the ALPHANUMERIC CNPJ (`[0-9A-Z]*`) — a digits-only
-  // strip would mangle those and query the wrong key, silently duplicating
-  // the cliente. Use the repo-standard normalization instead (punctuation/
-  // whitespace stripped, uppercased — same as apps/web/lib/clientes/dedup.ts).
-  const cpfCnpjDigits = fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null;
-  const normalizedTelefone = fields.telefone != null ? normalizeTelefone(fields.telefone) : null;
-
-  let existing: ExistingCliente | null = null;
-  if (cpfCnpjDigits) existing = await findByEqual(db, 'cpf_cnpj', cpfCnpjDigits);
-  if (!existing && fields.idEstrangeiro) {
-    existing = await findByEqual(db, 'idEstrangeiro', fields.idEstrangeiro);
-  }
-  // userPath dedup step intentionally skipped — see this module's header doc.
-  if (!existing && fields.telefone) {
-    const shapes = telefoneQueryShapes(fields.telefone);
-    if (shapes.length > 0) existing = await findByIn(db, 'telefone', shapes);
-  }
-  if (!existing && fields.email) {
-    existing = await findByEqual(db, 'email', fields.email);
-  }
-
-  if (existing) {
-    const patch = buildUpdatePatch(existing.data, fields, normalizedTelefone);
-    if (Object.keys(patch).length > 0) {
-      await clienteCollection.merge(db, {}, existing.id, {
-        ...patch,
-        ultimaModificacao: nowMs,
-      });
-    }
-    return { clienteId: existing.id, created: false };
-  }
-
-  const ref = await clienteCollection.add(
-    db,
-    {},
-    {
-      tipo: fields.tipo,
-      nome: fields.nome !== '' ? fields.nome : null,
-      cpf_cnpj: fields.cpf_cnpj,
-      idEstrangeiro: fields.idEstrangeiro,
-      ie: fields.ie,
-      telefone: normalizedTelefone,
-      email: fields.email,
-      timestamp: nowMs,
-      ultimaModificacao: nowMs,
-    },
-  );
-  return { clienteId: ref.id, created: true };
 }
 
 /* -------------------------------- endereço IO -------------------------------- */
