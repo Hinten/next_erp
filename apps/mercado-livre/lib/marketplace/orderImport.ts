@@ -114,6 +114,8 @@ import {
   findOrCreateCliente,
   shipmentToEnderecoFields,
 } from './orderCliente';
+import { type ViaCepClient, createViaCepClient } from '@delfrance/core/cep';
+import { recoverEnderecoFromCep, type EnderecoBuildOutcome } from '@delfrance/schemas';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 
@@ -137,6 +139,15 @@ export interface OrderImportDeps {
   nowUs: number;
   /** Same instant, milliseconds — cliente/endereço standard. */
   nowMs: number;
+  /**
+   * Resolves an unmappable `estado` from the CEP (#789). Optional: production
+   * shares one lazily-built process-wide client so its memo spans imports.
+   *
+   * ⚠️ Tests MUST pass their own — the shared client's memo would otherwise leak
+   * one case's answer into the next, which is how a "ViaCEP is unreachable" test
+   * passes vacuously off an earlier cached hit.
+   */
+  viaCep?: ViaCepClient;
 }
 
 export interface OrderImportResult {
@@ -466,28 +477,81 @@ async function applyClienteStep(args: {
 }
 
 /**
+ * Process-wide ViaCEP client, built on first use so its memo (and its in-flight
+ * dedup) spans every import this instance serves. Tests inject their own — see
+ * `OrderImportDeps.viaCep`.
+ */
+let defaultViaCep: ViaCepClient | undefined;
+
+/**
  * `if (pedido.cliente_id != null && pedido.endereco_id == null) { ... }`
  * (tasks.dart:448-492) — billing-address-first, shipment-receiver fallback.
+ *
+ * Only a missing or unusable CEP is fatal to the endereço now: an unmappable
+ * `estado` is resolved from that CEP instead of discarding the address (#789).
+ * The shipment fallback is tried when billing yields no CEP — an unmappable
+ * `estado` on billing is recoverable, so it no longer falls through.
  */
 async function applyEnderecoStep(args: {
   db: Firestore;
   pedidoId: string;
   pedido: Pedido;
+  orderId: number | string;
   shippingInstance: MlShipment | null;
   nowUs: number;
+  viaCep?: ViaCepClient;
   getBillingInfo: () => Promise<MlBillingInfo>;
 }): Promise<Pedido> {
-  const { db, pedidoId, pedido, shippingInstance, nowUs, getBillingInfo } = args;
+  const { db, pedidoId, pedido, orderId, shippingInstance, nowUs, getBillingInfo } = args;
   if (pedido.clientePedidoOuterRef == null || pedido.enderecoFiscalOuterRef != null) {
     return pedido;
   }
 
   const billingInfo = await getBillingInfo();
-  let enderecoFields = billingInfoToEnderecoFields(billingInfo);
-  if (!enderecoFields && shippingInstance) {
-    enderecoFields = shipmentToEnderecoFields(shippingInstance);
+  const billingOutcome = billingInfoToEnderecoFields(billingInfo);
+  // Kept as its own binding rather than reassigning `outcome`: the diagnostic
+  // below has to say WHICH source rejected which CEP, and inferring that from
+  // object identity (`outcome === billingOutcome`) would silently start lying
+  // the day either mapper returns a shared constant for its `sem-cep` result.
+  const shipmentOutcome: EnderecoBuildOutcome | null =
+    billingOutcome.kind === 'sem-cep' && shippingInstance
+      ? shipmentToEnderecoFields(shippingInstance)
+      : null;
+  const outcome: EnderecoBuildOutcome = shipmentOutcome ?? billingOutcome;
+
+  if (outcome.kind === 'sem-cep') {
+    // The one genuinely unbuildable case, and it is NOT harmless: without an
+    // `enderecoFiscalOuterRef` the frete conference is skipped and
+    // `podeAvancarPagamento` refuses, so the pedido can never reach `pago` and
+    // can never be fiscalizado. It used to return here in total silence.
+    console.error('[mercado-livre] endereço não construído — pedido ficará sem endereço fiscal', {
+      orderId,
+      pedidoId,
+      motivo: 'sem-cep',
+      cepBilling: billingOutcome.kind === 'sem-cep' ? billingOutcome.cepRaw : null,
+      cepShipment: shipmentOutcome?.kind === 'sem-cep' ? shipmentOutcome.cepRaw : null,
+    });
+    return pedido;
   }
-  if (!enderecoFields) return pedido;
+
+  let enderecoFields = outcome.fields;
+  if (outcome.kind === 'uf-desconhecida') {
+    const viaCep = args.viaCep ?? (defaultViaCep ??= createViaCepClient());
+    const recuperado = await recoverEnderecoFromCep(outcome, viaCep);
+    enderecoFields = recuperado.fields;
+    if (!recuperado.ufResolvida) {
+      // ViaCEP could not answer, so the endereço keeps `forceEndereco`'s AC. It
+      // is still worth storing — a wrong UF cannot reach a signed XML (cMun is
+      // null, so emission throws), whereas no endereço at all strands the
+      // pedido short of `pago` forever.
+      console.warn('[mercado-livre] UF não resolvida pelo CEP — endereço gravado com AC', {
+        orderId,
+        pedidoId,
+        cep: enderecoFields.cep,
+        estadoRecebido: outcome.estadoRaw,
+      });
+    }
+  }
 
   const clienteId = idFromRef(pedido.clientePedidoOuterRef);
   const enderecoId = await ensureEndereco(db, clienteId, enderecoFields);
@@ -1041,8 +1105,10 @@ export async function importPedidoMercadoLivre(
     db,
     pedidoId,
     pedido,
+    orderId: initialOrder.id,
     shippingInstance,
     nowUs,
+    viaCep: deps.viaCep,
     getBillingInfo,
   });
 
