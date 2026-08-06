@@ -473,6 +473,41 @@ describe('shipmentToEnderecoFields', () => {
     expect(fields.numero).toBe('51');
     expect(fields.cidade).toBe(ENDERECO_FALLBACKS.cidade);
   });
+
+  it('degrades ONE unusable name-holder, not the whole endereço', () => {
+    // `city` as a bare string used to be recovered by a `.catch(null)` wrapping
+    // the whole object. Normalising it to null before validation keeps the
+    // damage local: the address still builds, with the city falling back.
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(
+        shipmentWithReceiverAddress({
+          street: 'Rua Visconde de Ouro Preto',
+          number: '51',
+          city: 'São Paulo',
+          neighborhood: { name: 'Consolação' },
+          state: { name: 'SP' },
+          postal_code: '01303060',
+        }),
+      ),
+    );
+    expect(fields.cidade).toBe(ENDERECO_FALLBACKS.cidade);
+    expect(fields.logradouro).toBe('Rua Visconde de Ouro Preto');
+    expect(fields.bairro).toBe('Consolação');
+    expect(fields.estado).toBe(UF_SIGLA.SP);
+  });
+
+  it.each([42, 'Rua X, 1', [], true])(
+    'treats a non-object receiver_address (%j) as no address, not as an error',
+    (lixo) => {
+      // The ONE remaining way the parse can fail. `null` is the honest answer —
+      // there is no address in that payload — and the caller's `sem-cep` is
+      // logged with the order id by applyEnderecoStep, so nothing is silent.
+      expect(shipmentToEnderecoFields(shipmentWithReceiverAddress(lixo))).toEqual({
+        kind: 'sem-cep',
+        cepRaw: null,
+      });
+    },
+  );
 });
 
 /**
