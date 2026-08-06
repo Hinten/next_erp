@@ -78,7 +78,6 @@ export interface ImportDeps {
   /** The account's ML seller id (integração `user_id`) — the ownership guard. */
   sellerUserId: number | null;
   tabelaNormalOuterRef: string | null;
-  tabelaPromocionalOuterRef: string | null;
   depositoOuterRef: string | null;
   /** Storage bucket for photo import (#439); omit to skip photos (e.g. tests). */
   bucket?: Bucket;
@@ -264,7 +263,12 @@ export async function importProduto(
       : `ml-${sha256(`${integracaoId}|${itemId}`).slice(0, 40)}`);
 
   // One read decides create vs update (and closes the collision hole above).
-  const existingProduto = await readRaw(produtoCollection.docRef(db, {}, produtoId));
+  // Its `updateTime` is kept: the precos write below is derived from THIS read,
+  // so it rides back as a `lastUpdateTime` precondition (ADR 0011 tier 1).
+  const produtoSnap = await produtoCollection.docRef(db, {}, produtoId).get();
+  const existingProduto = produtoSnap.exists
+    ? ((produtoSnap.data() ?? {}) as Record<string, unknown>)
+    : null;
   const isCreate = existingProduto == null;
 
   const existingExtra = isCreate
@@ -288,9 +292,6 @@ export async function importProduto(
     linkDocId,
     integracaoId,
     tabelaNormalId: deps.tabelaNormalOuterRef ? lastSegment(deps.tabelaNormalOuterRef) : null,
-    tabelaPromoId: deps.tabelaPromocionalOuterRef
-      ? lastSegment(deps.tabelaPromocionalOuterRef)
-      : null,
     depositoOuterRef: deps.depositoOuterRef,
     descricao,
     categoriaOuterRef,
@@ -323,14 +324,25 @@ export async function importProduto(
     }
   }
 
-  // Prices: dotted-path update (never re-validates the legacy precos map; clears a
-  // promo that ended on ML). On create the prices are already folded into the doc.
+  // Prices: dotted-path update of the conta's tabela NORMAL key only — never
+  // re-validates the legacy precos map, and provably cannot touch a sibling
+  // tabela. Set-only: the promotional tabela is the ERP's (#803). On create the
+  // price is already folded into the full produto doc.
+  //
+  // ADR 0011 **tier 1**: the patch is derived from `produtoSnap`, so it carries
+  // that read's `lastUpdateTime`. A concurrent writer of the same produto — the
+  // still-running Flutter app writes the WHOLE precos map, which a dotted path
+  // cannot defend against — makes this fail FAILED_PRECONDITION instead of
+  // silently reverting them, and the caller's retry re-reads and re-plans.
+  // (`updateTime` is always present on an existing doc from the real SDK; the
+  // guard is conditional only so an in-memory test double can omit it.)
   if (plan.precosOps) {
     const patch: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(plan.precosOps.set)) patch[`precos.${k}`] = v;
-    for (const k of plan.precosOps.delete) patch[`precos.${k}`] = FieldValue.delete();
     if (Object.keys(patch).length > 0) {
-      await produtoCollection.docRef(db, {}, produtoId).update(patch);
+      const ref = produtoCollection.docRef(db, {}, produtoId);
+      const lastUpdateTime = produtoSnap.updateTime;
+      await (lastUpdateTime ? ref.update(patch, { lastUpdateTime }) : ref.update(patch));
     }
   }
 
@@ -499,9 +511,9 @@ export async function importProduto(
  * The parent's WHOLE `precos` map as it stands AFTER this run's price write —
  * legacy copies this whole map onto every child (`produtos.dart:284-290`; ML
  * itself forbids per-variation prices). Derived from the plan instead of a
- * re-read: create folds prices straight into `plan.produto.data`; update writes
- * them via the dotted-path `precosOps` (never on the produto patch), so the
- * final map is the existing one with `precosOps` overlaid.
+ * re-read: create folds the price straight into `plan.produto.data`; update
+ * writes it via the dotted-path `precosOps` (never on the produto patch), so
+ * the final map is the existing one with `precosOps` overlaid.
  */
 function resolveParentPrecosForChildren(
   isCreate: boolean,
@@ -515,9 +527,10 @@ function resolveParentPrecosForChildren(
   const merged: Record<string, unknown> = {
     ...((existingProduto?.precos as Record<string, unknown> | undefined) ?? {}),
   };
+  // Overlay only — `precosOps` is set-only since #803, so a key the ERP owns
+  // (the promotional tabela above all) survives into the children untouched.
   if (plan.precosOps) {
     for (const [k, v] of Object.entries(plan.precosOps.set)) merged[k] = v;
-    for (const k of plan.precosOps.delete) delete merged[k];
   }
   return Object.keys(merged).length > 0 ? merged : null;
 }

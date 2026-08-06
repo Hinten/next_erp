@@ -16,7 +16,7 @@ type DocData = Record<string, unknown>;
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
-  readonly updates: Array<{ path: string; patch: DocData }> = [];
+  readonly updates: Array<{ path: string; patch: DocData; precondition?: unknown }> = [];
   private autoN = 0;
 
   private col(path: string): Map<string, DocData> {
@@ -71,7 +71,16 @@ class FakeDb {
         const docId = id ?? `auto-${++self.autoN}`;
         return {
           id: docId,
-          get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
+          get: async () => ({
+            exists: col.has(docId),
+            id: docId,
+            data: () => col.get(docId),
+            // The real SDK always carries an updateTime on an existing doc; the
+            // import threads it back as a `lastUpdateTime` precondition on the
+            // precos write (ADR 0011 tier 1), so the double must supply one or
+            // the guard would go untested.
+            updateTime: col.has(docId) ? (`ts-${docId}` as unknown) : undefined,
+          }),
           set: async (data: DocData, opts?: { merge?: boolean }) => {
             col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
           },
@@ -79,8 +88,8 @@ class FakeDb {
             if (col.has(docId)) throw Object.assign(new Error('already exists'), { code: 6 });
             col.set(docId, { ...data });
           },
-          update: async (patch: DocData) => {
-            self.updates.push({ path: `${path}/${docId}`, patch });
+          update: async (patch: DocData, precondition?: unknown) => {
+            self.updates.push({ path: `${path}/${docId}`, patch, precondition });
             col.set(docId, { ...(col.get(docId) ?? {}), ...patch });
           },
         };
@@ -201,7 +210,6 @@ function deps(db: FakeDb, api: MercadoLivreApi, over: Partial<ImportDeps> = {}):
     integracaoId: 'conta-A',
     sellerUserId: 55,
     tabelaNormalOuterRef: 'documents/tabelasDePrecos/tabNormal',
-    tabelaPromocionalOuterRef: 'documents/tabelasDePrecos/tabPromo',
     depositoOuterRef: 'documents/depositos/dep1',
     ...over,
   };

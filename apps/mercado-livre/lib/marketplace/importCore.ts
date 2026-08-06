@@ -68,9 +68,11 @@ export interface ImportAssembleArgs {
   isCreate: boolean;
   linkDocId: string;
   integracaoId: string;
-  /** Price-list ids (last segment of the integração's tabela refs). */
+  /**
+   * The conta's tabela NORMAL id (last segment of `tabelaNormalOuterRef`).
+   * There is deliberately no promo counterpart — see `buildPrecosOps` (#803).
+   */
   tabelaNormalId: string | null;
-  tabelaPromoId: string | null;
   /** Where to write stock (integração's depósito); null → stock skipped. */
   depositoOuterRef: string | null;
   /** ML plain-text description (best-effort; truncated to the schema limit). */
@@ -106,12 +108,13 @@ export interface ImportPlan {
   /** Produto write: `full` set on create, merge patch on update; null = skip. */
   produto: { data: Record<string, unknown>; full: boolean } | null;
   /**
-   * Price-list writes for the integração's tabelas, applied by IO via dotted-path
-   * `update` on the UPDATE path — so the whole (possibly legacy-malformed) precos
-   * map isn't re-validated, and a promo that ended on ML is actively cleared.
-   * Null on create (folded into the full produto doc instead).
+   * Price-list write for the integração's tabela NORMAL, applied by IO via a
+   * dotted-path `update` on the UPDATE path — so the whole (possibly
+   * legacy-malformed) precos map isn't re-validated and sibling tabela keys are
+   * provably untouched. Null on create (folded into the full produto doc
+   * instead). Set-only: nothing here ever deletes a price key (#803).
    */
-  precosOps: { set: Record<string, { valor: number }>; delete: string[] } | null;
+  precosOps: { set: Record<string, { valor: number }> } | null;
   /** extraData merge patch (condicao/descricao); null = skip. */
   extra: Record<string, unknown> | null;
   /** Stock write; null = skip (option off, no depósito, or overwrite disabled). */
@@ -137,31 +140,29 @@ function firstNonEmpty(...vals: Array<unknown>): number | null {
 }
 
 /**
- * Price-list writes for the integração's tabelas: set the normal price, set the
- * promo when active, and CLEAR (`delete`) a promo that ended on ML (`precoPromocional`
- * null) — otherwise a stale promo would linger despite `sobrescreverPreco`. Returns
- * null when the price write is disabled or there's no usable normal price.
+ * Price-list write for the integração's tabela NORMAL — the conta's
+ * `tabelaNormalOuterRef` entry, and nothing else. Returns null when the price
+ * write is disabled (`importarPreco` on create / `sobrescreverPreco` on update)
+ * or there's no usable normal price.
+ *
+ * ⚠️ The **promotional** tabela is deliberately NOT written here (#803, owner
+ * decision 2026-08-06). `tabelaPromocionalOuterRef` belongs to promotions the
+ * user authors in the ERP — `RecalcularPrecosCanalAction` already offers it as
+ * a formula-recalculation target — so an ML deal must not land in it, and the
+ * `FieldValue.delete()` that used to clear it when a deal ended is gone with
+ * the write that motivated it. `precoPublicado` on the ML LINK doc still
+ * carries the promo (that is a denorm of "the price live on ML", not a price
+ * table). Do not reintroduce a promo branch: the ERP owns both tabelas.
  */
 function buildPrecosOps(
   args: ImportAssembleArgs,
-): { set: Record<string, { valor: number }>; delete: string[] } | null {
-  const { mapped, options, isCreate, tabelaNormalId, tabelaPromoId } = args;
+): { set: Record<string, { valor: number }> } | null {
+  const { mapped, options, isCreate, tabelaNormalId } = args;
   const write = isCreate ? options.importarPreco : options.sobrescreverPreco;
   if (!write || !tabelaNormalId || mapped.precoNormal == null || mapped.precoNormal <= 0) {
     return null;
   }
-  const set: Record<string, { valor: number }> = {
-    [tabelaNormalId]: { valor: mapped.precoNormal },
-  };
-  const del: string[] = [];
-  if (tabelaPromoId) {
-    if (mapped.precoPromocional != null && mapped.precoPromocional > 0) {
-      set[tabelaPromoId] = { valor: mapped.precoPromocional };
-    } else {
-      del.push(tabelaPromoId); // deal ended → clear the stale promo (never re-validated)
-    }
-  }
-  return { set, delete: del };
+  return { set: { [tabelaNormalId]: { valor: mapped.precoNormal } } };
 }
 
 export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {

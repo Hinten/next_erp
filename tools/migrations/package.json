@@ -7,6 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "migrate:pedido-pagamento-micros": "dotenv -e ../../.env.local -- tsx src/2026-06-pedido-pagamento-micros/migrate.ts",
+    "migrate:ml-precos-ghost-keys": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-precos-ghost-keys/migrate.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

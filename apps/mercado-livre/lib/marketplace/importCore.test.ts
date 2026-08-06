@@ -51,7 +51,6 @@ function args(over: Partial<ImportAssembleArgs> = {}): ImportAssembleArgs {
     linkDocId: 'link1',
     integracaoId: 'conta-A',
     tabelaNormalId: 'tabNormal',
-    tabelaPromoId: 'tabPromo',
     depositoOuterRef: 'documents/depositos/dep1',
     descricao: 'Uma camiseta',
     categoriaOuterRef: null,
@@ -71,7 +70,7 @@ function args(over: Partial<ImportAssembleArgs> = {}): ImportAssembleArgs {
 describe('assembleImportPlan — create', () => {
   const plan = assembleImportPlan(args());
 
-  it('writes a full produto with the mapped fields + precos', () => {
+  it('writes a full produto with the mapped fields + the tabela NORMAL price only', () => {
     expect(plan.produto?.full).toBe(true);
     expect(plan.produto?.data).toMatchObject({
       nome: 'Camiseta',
@@ -79,8 +78,12 @@ describe('assembleImportPlan — create', () => {
       paiId: null,
       publicado: true,
       pesoLiquidoKg: 0.5,
-      precos: { tabNormal: { valor: 79.9 }, tabPromo: { valor: 69.9 } },
     });
+    // Asserted OUTSIDE the toMatchObject: that matcher recurses partially, so a
+    // nested `precos: { tabNormal }` would pass with a stray tabPromo alongside
+    // it — and the absence of a promo key is the whole point here (#803). The
+    // mapped item does carry precoPromocional 69.9.
+    expect(plan.produto?.data.precos).toEqual({ tabNormal: { valor: 79.9 } });
   });
 
   it('writes extraData condicao + descricao', () => {
@@ -143,15 +146,34 @@ describe('assembleImportPlan — update (existing produto)', () => {
     expect(plan.produto?.data.sku).toBe('SKU1');
     // prices are NEVER in the produto patch (no whole-map re-validation)
     expect(plan.produto?.data).not.toHaveProperty('precos');
-    // sobrescreverPreco default true → precosOps sets both tabela keys
-    expect(plan.precosOps?.set).toMatchObject({
-      tabNormal: { valor: 79.9 },
-      tabPromo: { valor: 69.9 },
-    });
-    expect(plan.precosOps?.delete).toEqual([]);
+    // sobrescreverPreco default true → precosOps sets the tabela NORMAL key,
+    // and ONLY it: the promotional tabela is the ERP's (#803).
+    expect(plan.precosOps?.set).toEqual({ tabNormal: { valor: 79.9 } });
   });
 
-  it('CLEARS a promo that ended on ML (sobrescreverPreco) — #1 phantom-promo fix', () => {
+  it('NEVER writes the promotional tabela, even with a live ML promo (#803)', () => {
+    // The mapped item carries precoPromocional 69.9 and the conta has a promo
+    // tabela configured — the pre-#803 plan wrote `tabPromo: { valor: 69.9 }`.
+    // The ERP owns that tabela now: an ML deal must not land in it.
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: {
+          nome: 'X',
+          precos: { tabNormal: { valor: 100 }, tabPromo: { valor: 80 } },
+        },
+        mapped: mapped({ precoNormal: 100, precoPromocional: 69.9 }),
+      }),
+    );
+    expect(plan.precosOps?.set).toEqual({ tabNormal: { valor: 100 } });
+    // The promo price still rides the LINK denorm ("the price live on ML") —
+    // that is not a price table.
+    expect(plan.link.precoPublicado).toBe(69.9);
+  });
+
+  it('an ENDED ML promo no longer deletes the stored promo price (#803)', () => {
+    // This is the regression the issue was filed for: the pre-#803 plan emitted
+    // `delete: ['tabPromo']` here, wiping a price the ERP may own outright.
     const plan = assembleImportPlan(
       args({
         isCreate: false,
@@ -163,7 +185,14 @@ describe('assembleImportPlan — update (existing produto)', () => {
       }),
     );
     expect(plan.precosOps?.set).toEqual({ tabNormal: { valor: 100 } });
-    expect(plan.precosOps?.delete).toEqual(['tabPromo']);
+    expect(plan.precosOps).not.toHaveProperty('delete');
+  });
+
+  it('on create, too: the full produto doc carries only the tabela normal (#803)', () => {
+    const plan = assembleImportPlan(
+      args({ isCreate: true, mapped: mapped({ precoNormal: 100, precoPromocional: 69.9 }) }),
+    );
+    expect(plan.produto?.data.precos).toEqual({ tabNormal: { valor: 100 } });
   });
 
   it('does NOT overwrite an existing non-null field', () => {
