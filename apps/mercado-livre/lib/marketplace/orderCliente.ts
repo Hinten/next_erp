@@ -242,25 +242,61 @@ export function billingInfoToEnderecoFields(info: MlBillingInfo): EnderecoBuildO
  *
  * ⚠️ Every key is explicitly `.optional()`. In Zod 4 a bare `z.unknown()` does
  * NOT make its key optional, so a payload merely *missing* `complement` would
- * fail the whole object and the outer `.catch(null)` would discard a perfectly
- * good address — turning a present CEP into `sem-cep`.
+ * fail the whole object — and the recovery below would discard a perfectly good
+ * address, turning a present CEP into `sem-cep`.
  */
-const nomeado = z.object({ name: z.unknown().optional() }).nullish().catch(null);
 
-const receiverAddressSchema = z
-  .object({
-    street: z.unknown().optional(),
-    number: z.unknown().optional(),
-    complement: z.unknown().optional(),
-    neighborhood: nomeado,
-    city: nomeado,
-    state: nomeado,
-    postal_code: z.unknown().optional(),
-  })
-  .nullish()
-  // Reached only when `receiver_address` is not an object at all (a scalar, an
-  // array, absent) — which is precisely when "no address here" is the answer.
-  .catch(null);
+/**
+ * A `{ name }` holder — `neighborhood` / `city` / `state`.
+ *
+ * ML sometimes sends a bare string where the object belongs. That is "this
+ * field was not supplied in the shape we understand", not a malformed payload,
+ * so it is normalised to `null` BEFORE validation rather than recovered from a
+ * parse failure afterwards. Normalising here also keeps the damage local: one
+ * unusable `city` costs the city, not the whole endereço.
+ */
+const nomeado = z.preprocess(
+  (v) => (v !== null && typeof v === 'object' && !Array.isArray(v) ? v : null),
+  z.object({ name: z.unknown().optional() }).nullable(),
+);
+
+const receiverAddressObject = z.object({
+  street: z.unknown().optional(),
+  number: z.unknown().optional(),
+  complement: z.unknown().optional(),
+  neighborhood: nomeado,
+  city: nomeado,
+  state: nomeado,
+  postal_code: z.unknown().optional(),
+});
+
+const receiverAddressSchema = receiverAddressObject.nullish();
+
+type ReceiverAddress = z.infer<typeof receiverAddressObject>;
+
+/**
+ * Parse `shipment.receiver_address`, or conclude there is no address to read.
+ *
+ * **Why a `ZodError` becomes `null` rather than propagating.** Every key above
+ * is optional and every leaf is `unknown`, so validation can now fail for
+ * exactly one reason: `receiver_address` is not an object at all — a scalar, an
+ * array. There is no address in that payload to recover, and `null` is the
+ * honest answer: the caller reports `sem-cep`, which `applyEnderecoStep` logs
+ * loudly with the order id. Nothing is swallowed silently.
+ *
+ * The narrowing is the point (CLAUDE.md rule 6). Anything that is NOT a
+ * `ZodError` reaching this frame is a bug in this module, not a shape we
+ * decided to tolerate, so it is rethrown and the order import fails as
+ * transient — which is what a bug deserves.
+ */
+function parseReceiverAddress(raw: unknown): ReceiverAddress | null {
+  try {
+    return receiverAddressSchema.parse(raw) ?? null;
+  } catch (err) {
+    if (err instanceof z.ZodError) return null;
+    throw err;
+  }
+}
 
 /**
  * `MercadoLivreShipping.toEndereco` (models.dart:5328-5338) — the fallback
@@ -276,9 +312,7 @@ const receiverAddressSchema = z
  * endereço.
  */
 export function shipmentToEnderecoFields(shipment: MlShipment): EnderecoBuildOutcome {
-  const addr = receiverAddressSchema.parse(
-    (shipment as { receiver_address?: unknown }).receiver_address,
-  );
+  const addr = parseReceiverAddress((shipment as { receiver_address?: unknown }).receiver_address);
   const complemento = typeof addr?.complement === 'string' ? addr.complement.slice(0, 30) : null;
 
   return buildEnderecoForcado({
