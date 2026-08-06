@@ -214,6 +214,21 @@ function totaisPorProduto(itens: Record<string, ItemParaEstoque[]>): Record<stri
  *
  * Totals are compared pre kit-expansion on purpose: the trigger has no produtos
  * read, and the predicate does not need one. Exported for the unit tests.
+ *
+ * ⚠️ KNOWN RESIDUAL (accepted, #795). A stale anchor is only dangerous when it
+ * over-claims — asserting Flutter moved MORE than it did makes this sync move
+ * too little, i.e. oversell. That needs the anchor to already contain a never-
+ * applied growth, which needs a delayed/reordered trigger delivery: event(B)
+ * `A → A+B` overtaken by event(C) `A+B → A+B+C`, C committing first, so B's
+ * units are lost. Normal ordering is safe — ONE notification imports the WHOLE
+ * pack (`resolvePackOrders` + a single `orderPedidoTx` transaction), so two
+ * concurrent notifications share the same `before` and OCC resolves them. The
+ * under-claiming direction is absorbed by the convergent planner. Not guarded:
+ * the anchor cannot be corroborated (no per-item provenance on the doc), and
+ * every complete snapshot written on a first reconstruction carries the same
+ * exposure. The pre-#795 baseline loses EVERY sibling on EVERY such pedido, so
+ * this is a strict improvement in all orderings; the
+ * `estoque-reconstrucao-legado` incidente keeps the affected set auditable.
  */
 export function detectarCrescimentoLegado(
   before: DocumentData | null,
