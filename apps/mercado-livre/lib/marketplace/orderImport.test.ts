@@ -28,10 +28,14 @@ vi.mock('./orderCliente', () => {
     billingInfoToClienteFields: vi.fn(),
     billingInfoToEnderecoFields: vi.fn(() => ({ kind: 'sem-cep', cepRaw: null })),
     shipmentToEnderecoFields: vi.fn(() => ({ kind: 'sem-cep', cepRaw: null })),
-    findOrCreateCliente: vi.fn(),
     ensureEndereco: vi.fn(),
   };
 });
+// Promoted out of ./orderCliente by #786 — the resolution is shared with every
+// other channel importer now.
+vi.mock('@delfrance/data/admin/clientes', () => ({
+  findOrCreateCliente: vi.fn(),
+}));
 vi.mock('./orderPedidoTx', () => ({
   discoverPedidoMercadoLivre: vi.fn(),
 }));
@@ -45,9 +49,9 @@ import {
   billingInfoToClienteFields,
   billingInfoToEnderecoFields,
   ensureEndereco,
-  findOrCreateCliente,
   shipmentToEnderecoFields,
 } from './orderCliente';
+import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { importPedidoMercadoLivre, mergeFreteInicial, type OrderImportDeps } from './orderImport';
@@ -367,7 +371,13 @@ beforeEach(() => {
     telefone: null,
     email: null,
   });
-  vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-default', created: true });
+  vi.mocked(findOrCreateCliente).mockResolvedValue({
+    clienteId: 'cli-default',
+    created: true,
+    matchedBy: null,
+    rejected: [],
+    dropped: [],
+  });
   // `mockClear` (above) doesn't reset a mock's implementation — restore the
   // module factory's "no endereço" default explicitly so a test overriding it
   // doesn't leak into whichever test runs next.
@@ -708,7 +718,13 @@ describe('importPedidoMercadoLivre — cliente', () => {
       telefone: null,
       email: null,
     });
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-1', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-1',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
 
     await importPedidoMercadoLivre(deps(db, api), 1);
 
@@ -746,7 +762,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
     const order = makeOrder({ id: 1 });
     const api = makeApi({ getOrder: vi.fn(async () => order) });
 
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'ok', fields: ENDERECO_SP });
     vi.mocked(ensureEndereco).mockResolvedValue('end-99');
 
@@ -766,7 +788,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
     db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
     const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
 
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '123' });
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -797,7 +825,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
       getShipment: vi.fn(async () => ({ id: 555 }) as never),
     });
 
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '123' });
     vi.mocked(shipmentToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '456' });
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -827,7 +861,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
       kind: 'sem-cep',
       cepRaw: '999',
     } as const satisfies EnderecoBuildOutcome;
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue(compartilhado);
     vi.mocked(shipmentToEnderecoFields).mockReturnValue(compartilhado);
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -851,7 +891,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
       getShipment: vi.fn(async () => ({ id: 555 }) as never),
     });
 
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: null });
     vi.mocked(shipmentToEnderecoFields).mockReturnValue({ kind: 'ok', fields: ENDERECO_SP });
     vi.mocked(ensureEndereco).mockResolvedValue('end-88');
@@ -873,7 +919,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
       getShipment: vi.fn(async () => ({ id: 555 }) as never),
     });
 
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
       kind: 'uf-desconhecida',
       fields: { ...ENDERECO_SP, estado: UF_SIGLA.AC },
@@ -903,7 +955,13 @@ describe('importPedidoMercadoLivre — endereço', () => {
     db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
     const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
 
-    vi.mocked(findOrCreateCliente).mockResolvedValue({ clienteId: 'cli-77', created: true });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-77',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
       kind: 'uf-desconhecida',
       fields: { ...ENDERECO_SP, estado: UF_SIGLA.AC },
