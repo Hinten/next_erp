@@ -590,7 +590,8 @@ describe('ensureEndereco', () => {
 
     // Assert the collection size is still 1 (no duplicate created)
     const col = fake.cols.get('clientes/cli-1/enderecos');
-    expect(col?.size).toBe(1);
+    expect(col).toBeDefined();
+    expect(col!.size).toBe(1);
   });
 
   it('preserves an existing doc byte-identical when already present', async () => {
@@ -613,10 +614,10 @@ describe('ensureEndereco', () => {
 
   it('matches the legacy Endereco.generateUid golden vector for compatibility with dual-run', async () => {
     // Golden vector: a known field set pinned to the exact sha1 this port
-    // produces. This prevents silent breakage from a future change to fallback
-    // strings or field concatenation order — the ID derivation must match
-    // legacy for dual-run to avoid creating duplicate docs. The specific
-    // vector is arbitrary; what matters is the pin.
+    // produces. This validates the field concatenation order and null→''
+    // handling of makeEnderecoId, which must match legacy for dual-run to avoid
+    // creating duplicate docs. The specific vector is arbitrary; what matters
+    // is the pin. Before changing this hash, validate against the legacy app.
     const goldenFields: EnderecoImportFields = {
       idExterno: null,
       logradouro: 'Rua Augusta',
@@ -638,9 +639,10 @@ describe('ensureEndereco', () => {
       telefone: null,
     };
     // This sha1 is pinned to the field order and null-handling logic of
-    // makeEnderecoId. Any change to the field order, any new field, or any
-    // modification to a fallback string MUST be followed by updating this
-    // vector and ensuring dual-run parity with the legacy app.
+    // makeEnderecoId. Any change to the field order or any new field MUST be
+    // followed by validating against the legacy app and updating this vector.
+    // (Fallback text changes like numero:'S/N' happen upstream in the field
+    // mappers, not in makeEnderecoId.)
     const goldenSha1 = 'e9628f9968f54ac0c1a6f3270e73bff09134a30e';
     expect(makeEnderecoId(goldenFields)).toBe(goldenSha1);
   });
@@ -656,6 +658,7 @@ describe('ensureEndereco', () => {
     expect(differentId).not.toBe(baseId);
     // Assert collection size is 2 (both docs created)
     const col = fake.cols.get('clientes/cli-1/enderecos');
-    expect(col?.size).toBe(2);
+    expect(col).toBeDefined();
+    expect(col!.size).toBe(2);
   });
 });
