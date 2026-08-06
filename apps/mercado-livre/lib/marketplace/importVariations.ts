@@ -188,8 +188,10 @@ export async function importVariationChildren(
       .docRef(db, { produtoId }, linkDocId)
       .set(variacaoMercadoLivreLinkCollection.parse(plan.link));
 
-    // Dual-run denorm — child entries carry `externalParentId` (the parent's ML
-    // item id), unlike the parent's own entry which omits it (models.dart:2325).
+    // Dual-run denorm (DEPRECATED arrays; #431 — read by the new app's sweeps
+    // too, not legacy-only: see the three locks at `publish.ts`'s parent stamp).
+    // Child entries carry `externalParentId` (the parent's ML item id), unlike
+    // the parent's own entry which omits it (models.dart:2325).
     // User-Products children also carry `relevantData.isUserProductModel`
     // (`plan.denorm.relevantData`, set by `assembleVariationChildPlan` only when
     // `up` was passed) — omitted entirely for a legacy variations[] child, so

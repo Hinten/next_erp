@@ -363,9 +363,12 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Dual-run denorm (DEPRECATED arrays — legacy consumers only; #431). Runs after
-  // the produto exists (create sets it first). arrayUnion so a concurrent Flutter
-  // write to the same shared arrays isn't dropped. User-Products stamps
+  // Dual-run denorm (DEPRECATED arrays; #431). NOT legacy-only — the new app's
+  // stock and price sweeps both anchor on `integracoesComProduto`, so a listing
+  // imported without this stamp never syncs; see the three locks at the parent
+  // stamp site in `publish.ts`. Runs after the produto exists (create sets it
+  // first). arrayUnion so a concurrent Flutter write to the same shared arrays
+  // isn't dropped. User-Products stamps
   // `relevantData.isUserProductModel` on the PARENT's own entry too (parity —
   // `ProdMarketplace.relevantData`, `models.dart:2333`); omitted for simple/
   // variations[] so their denorm shape stays byte-identical.
