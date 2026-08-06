@@ -127,6 +127,16 @@ export { processMercadoLivreNfeUpload } from './processNfeUpload';
 export { onNfeAprovada } from './onNfeAprovada';
 
 /**
+ * The Mercado Livre conta → Mercado Envios `int_frete` sync trigger (#782). Keeps the
+ * account's freight config doc in step with its `integracao` doc — created on connect,
+ * re-synced on edit, deactivated on delete — restoring what the legacy Flutter conta
+ * screen did inline on every save. Same "no rename-safety assertion" reasoning as
+ * `onNfeAprovada` above: Eventarc binds a document path, and this one feeds no queue
+ * at all. Binds no secrets (see `src/options.ts`).
+ */
+export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChanged';
+
+/**
  * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep
  * + the 2AM daily full sweep, both feeding the `sendMercadoLivreStock` queue.
  * Plain `onSchedule` exports — nothing enqueues against THEIR names, so no

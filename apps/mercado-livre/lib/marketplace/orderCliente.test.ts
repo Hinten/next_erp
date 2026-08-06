@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
-import { UF_SIGLA, TIPO_CLIENTE } from '@delfrance/schemas';
+import { IE_SENTINELA, UF_SIGLA, TIPO_CLIENTE } from '@delfrance/schemas';
 
 import {
   type ClienteImportFields,
@@ -262,16 +262,51 @@ describe('billingInfoToClienteFields', () => {
     expect(fields.ie).toBe('30703088534');
   });
 
-  it("CNPJ 'Não contribuinte' overrides ie to the literal string, ignoring state_registration", () => {
+  // Every spelling ML has been seen to send. The exact-match this replaced
+  // caught only the first one; the rest silently fell through to
+  // `state_registration` (null for a não-contribuinte), which the NF-e reader
+  // then classifies as ISENTO — a wrong classification SEFAZ accepts.
+  it.each([
+    'Não contribuinte',
+    'NÃO CONTRIBUINTE',
+    'Nao contribuinte',
+    'não  contribuinte',
+    '  Não Contribuinte  ',
+  ])(
+    'CNPJ taxpayer_type %j stores the canonical token, ignoring state_registration',
+    (description) => {
+      const fields = billingInfoToClienteFields(
+        cnpjBillingInfo({
+          taxes: {
+            inscriptions: { state_registration: '30703088534' },
+            taxpayer_type: { description },
+          },
+        }),
+      );
+      expect(fields.ie).toBe(IE_SENTINELA.naoContribuinte);
+      expect(fields.ie).toBe('NAO CONTRIBUINTE');
+    },
+  );
+
+  it('stores a real state_registration unchanged', () => {
     const fields = billingInfoToClienteFields(
       cnpjBillingInfo({
         taxes: {
-          inscriptions: { state_registration: '30703088534' },
-          taxpayer_type: { description: 'Não contribuinte' },
+          inscriptions: { state_registration: '110.042.490.114' },
+          taxpayer_type: { description: 'Contribuinte' },
         },
       }),
     );
-    expect(fields.ie).toBe('Não contribuinte');
+    expect(fields.ie).toBe('110.042.490.114');
+  });
+
+  it('falls back to state_registration when taxpayer_type is absent', () => {
+    const fields = billingInfoToClienteFields(
+      cnpjBillingInfo({
+        taxes: { inscriptions: { state_registration: '30703088534' }, taxpayer_type: null },
+      }),
+    );
+    expect(fields.ie).toBe('30703088534');
   });
 
   it('throws MlBillingInfoUnsupportedError for an identification.type other than CPF/CNPJ', () => {

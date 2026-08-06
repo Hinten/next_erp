@@ -99,6 +99,16 @@ class FakeDb {
           set: async (data: DocData, opts?: { merge?: boolean }) => {
             col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
           },
+          // Backs `mergeIfExists` on the link writebacks. The missing-doc
+          // failure MUST carry gRPC code 5 — that is what `isNotFound` narrows
+          // on, and it is what keeps a deleted link from being resurrected as a
+          // ghost holding only the writeback keys.
+          update: async (data: DocData) => {
+            if (!col.has(docId)) {
+              throw Object.assign(new Error(`NOT_FOUND: ${path}/${docId}`), { code: 5 });
+            }
+            col.set(docId, { ...(col.get(docId) ?? {}), ...data });
+          },
         };
       },
       add: async (data: DocData) => {
@@ -122,6 +132,16 @@ const JOBS_PATH = 'enviosPrecoMercadoLivre';
 const TAB_REF = 'documents/tabelasDePrecos/tabNormal';
 
 const linkPath = (produtoId: string) => `produtos/${produtoId}/produtoMercadoLivre`;
+
+/**
+ * Seed the writeback-target link doc for `draft(itemId)`'s conventions. The
+ * writebacks go through `mergeIfExists`, so an unseeded target is a no-op by
+ * design (a link deleted mid-job is never resurrected) — a spec that asserts a
+ * writeback must therefore seed the doc it expects to be updated.
+ */
+function seedLink(db: FakeDb, itemId: string, data: DocData = {}): void {
+  db.seed(linkPath(`prod-${itemId}`), `lnk-${itemId}`, { estado: 'p', ...data });
+}
 
 function draft(itemId: string, over: Partial<EnvioPrecoFilaItem> = {}): EnvioPrecoFilaItem {
   return {
@@ -335,6 +355,7 @@ describe('processPriceSyncJob — plan phase', () => {
   it('plans one page: appends drafts, folds plan skips, advances the cursor, and drains in the SAME dispatch', async () => {
     const db = new FakeDb();
     seedJob(db, 'job1');
+    seedLink(db, 'MLB1');
     const rowA = { anchorId: 'A' } as unknown as PrecoFamilyRow;
     const rowB = { anchorId: 'B' } as unknown as PrecoFamilyRow;
     vi.mocked(buildPrecoDrafts).mockImplementation((row) =>
@@ -540,6 +561,7 @@ describe('processPriceSyncJob — per-item gates', () => {
   it('baixarPreco allows the decrease the default run blocks', async () => {
     const db = new FakeDb();
     seedJob(db, 'job5', { planejamentoConcluido: true, baixarPreco: true, fila: [draft('DOWN')] });
+    seedLink(db, 'DOWN');
     const api = makeApi({ DOWN: mlItem('DOWN', { base_price: 60, price: 60 }) });
     const deps = runDeps(db, api);
 
@@ -653,6 +675,7 @@ describe('processPriceSyncJob — body shapes', () => {
       planejamentoConcluido: true,
       fila: [draft('UPV', { kind: 'variationItem', variacaoProdutoId: 'child-1' })],
     });
+    seedLink(db, 'UPV');
     const api = makeApi({ UPV: mlItem('UPV') });
     const deps = runDeps(db, api);
 
@@ -676,6 +699,7 @@ describe('processPriceSyncJob — body shapes', () => {
   it("an 'item' draft's success writeback DOES carry precoPublicado", async () => {
     const db = new FakeDb();
     seedJob(db, 'job8b', { planejamentoConcluido: true, fila: [draft('PLAIN')] });
+    seedLink(db, 'PLAIN');
     const api = makeApi({ PLAIN: mlItem('PLAIN') });
     const deps = runDeps(db, api);
 
@@ -725,6 +749,7 @@ describe('processPriceSyncJob — PUT dispositions', () => {
   it('any other 400 → UPDATE_PRECO_ERROR failure + the estado-E link stamp', async () => {
     const db = new FakeDb();
     seedJob(db, 'job10', { planejamentoConcluido: true, fila: [draft('BAD')] });
+    seedLink(db, 'BAD');
     const api = makeApi({ BAD: mlItem('BAD') });
     api.updateItem.mockRejectedValue(
       new MercadoLivreHttpError('preço inválido', 400, { error: 'validation_error' }),
@@ -764,6 +789,7 @@ describe('processPriceSyncJob — PUT dispositions', () => {
   it('a promo echo (base_price = sent preco, promo price lower) verifies — either-field match', async () => {
     const db = new FakeDb();
     seedJob(db, 'jobPromo', { planejamentoConcluido: true, fila: [draft('PROMO')] });
+    seedLink(db, 'PROMO');
     const api = makeApi({ PROMO: mlItem('PROMO') });
     // The PUT lands, but an active ML promotion keeps the echoed `price` below
     // the standard price — base_price is the promo-independent confirmation.

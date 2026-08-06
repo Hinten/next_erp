@@ -47,6 +47,7 @@ export {
   docIdSchema,
   outerRefLooseSchema,
   toOuterRef,
+  toOuterRefOrNull,
   idFromRef,
   parseRef,
   type OuterRef,
@@ -63,6 +64,8 @@ export {
   tipoClienteSchema,
   TIPO_CLIENTE,
   TIPO_CLIENTE_LABELS,
+  IE_SENTINELA,
+  normalizarIe,
   refineClienteTipoDocumento,
   type Cliente,
   type TipoCliente,
@@ -374,6 +377,16 @@ export {
   encodePermissoes,
   type Cargo,
 } from './cargo';
+export {
+  cmun,
+  cmunSchema,
+  cmunMeta,
+  cmunDocId,
+  origemCmunSchema,
+  ORIGEM_CMUN,
+  type Cmun,
+  type OrigemCmun,
+} from './cmun';
 
 export {
   usuario,

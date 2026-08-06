@@ -266,8 +266,9 @@ function DevolucaoRowEditor({
         <CurrencyInput
           ariaLabel={`Preço de ${row.nome || 'item'}`}
           value={row.precoDeVenda}
-          // Clearing emits null; keep the schema minimum (`precoDeVenda` is
-          // `min(0.01)`) so the row never blocks the pedido save.
+          // Clearing emits null; keep the form's data-entry floor of 0.01 (the
+          // SCHEMA floor is 0, relaxed in #794 for zero-priced marketplace
+          // lines) so a cleared row never reads as a giveaway.
           onChange={(n) => onUpdate(row.rowId, { precoDeVenda: n ?? 0.01 })}
           disabled={disabled || row._delete}
         />

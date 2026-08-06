@@ -4,7 +4,7 @@
  * Public CNPJ lookup — resolves a CNPJ to a company's razão social, address and
  * (best-effort) inscrição estadual so the cliente form can autofill `nome`/`ie`
  * and offer to register the returned endereço. Mirrors the ViaCEP lookup
- * (`lib/endereco/viaCep.ts`): public API, no key.
+ * (`@delfrance/core/cep`): public API, no key.
  *
  * Provider: BrasilAPI `GET https://brasilapi.com.br/api/cnpj/v1/{cnpj}` (free,
  * CORS-enabled, sourced from the Receita Federal national registry). It returns

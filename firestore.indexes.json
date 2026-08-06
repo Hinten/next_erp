@@ -787,6 +787,28 @@
       ]
     },
     {
+      "collectionGroup": "int_frete",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaMercadoLivreMercadoEnviosOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "metodo_pgto",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1109,28 +1131,6 @@
       ]
     },
     {
-      "collectionGroup": "produtos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "paiId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "publicado",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "integracoesComProduto",
-          "arrayConfig": "CONTAINS"
-        },
-        {
-          "fieldPath": "__name__",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "estoques",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
@@ -1382,6 +1382,16 @@
       "fields": [
         {
           "fieldPath": "id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "CMUN",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cepFinal",
           "order": "ASCENDING"
         }
       ]

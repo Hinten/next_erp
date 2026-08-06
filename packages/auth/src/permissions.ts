@@ -142,6 +142,19 @@ export const PERM = {
     write: 1n << 100n,
     delete: 1n << 101n,
   },
+  // CMUN — the CEP-faixa → IBGE município table (legacy Flutter `TabelaoCmun`,
+  // permCode 'c2'). Byte 13; bits 102-103 are the spare tail of byte 12 and
+  // cannot hold a three-bit domain. Reads must stay grantable: the Flutter app
+  // still queries this collection during the dual run, and a collection with no
+  // readable rules block is denied outright. Writes are `serverOwned` — the
+  // ruleset denies every client write regardless of this bit; it exists so the
+  // generator has a single PERM bit per action, which `claims-map.ts` requires.
+  // Mirrored by `cmunMeta` in packages/schemas/src/cmun.ts.
+  cmun: {
+    read: 1n << 104n,
+    write: 1n << 105n,
+    delete: 1n << 106n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {

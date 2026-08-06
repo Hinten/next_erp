@@ -215,6 +215,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_endereco', 4);
     }
 
+    match /CMUN/{docId} {
+      allow read: if isSuperUser() || p('d_cmun', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /counters/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
