@@ -32,6 +32,7 @@ import {
 
 import { createFirestoreImpostoResolver } from '../imposto-resolver';
 import type { ImpostoResolver } from '../imposto-resolver';
+import { ensureCodigoMunicipio } from './cmun';
 import { NFeMissingImpostoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 
 /** Mirror of Flutter's `nFeSaidaIdFromTpEmis` — one nfev4 slot per (pedido, tpEmis). */
@@ -308,14 +309,35 @@ export async function loadPedidoBundle(
   const integracao = intermediadorFromSnap(pedidoId, integracaoPath, integracaoSnap, operacao);
   const regrasImposto = parseRegraImpostoSnapshot(pedidoId, regraImpostoSnap);
 
+  // `codigoMunicipio` (IBGE) is mandatory for enderDest.cMun, enderEmit.cMun
+  // AND ide.cMunFG, but nothing on any server path used to produce it (#785).
+  // Resolve both endereços from the `CMUN` table here, so the generator stays a
+  // pure function of its input and a failure names the document and the CEP.
+  //
+  // This READS ONLY — neither document is written. The CEP → município cache is
+  // the CMUN table itself (the resolver teaches it any CEP it did not know);
+  // `endereco.codigoMunicipio` is a manual operator override, never a cache.
+  //
+  // The patched `filial` MUST be the one returned: `ide.ts` reads
+  // `filial.sede.codigoMunicipio` for cMunFG and `parties.ts` for enderEmit.
+  const filialRaw = filialSnap.data() as Filial;
+  const [enderecoDest, sede] = await Promise.all([
+    ensureCodigoMunicipio(fs, enderecoSnap.data() as Endereco, {
+      contexto: `endereco '${enderecoPath}'`,
+    }),
+    ensureCodigoMunicipio(fs, filialRaw.sede, {
+      contexto: `filial '${filialPath}'.sede`,
+    }),
+  ]);
+
   return {
     pedidoId,
     pedido,
     filialId: filialSnap.id,
-    filial: filialSnap.data() as Filial,
+    filial: { ...filialRaw, sede },
     clienteId: clienteSnap.id,
     cliente: clienteSnap.data() as Cliente,
-    enderecoDest: enderecoSnap.data() as Endereco,
+    enderecoDest,
     operacaoId: operacaoSnap.id,
     operacao,
     pagamentos,

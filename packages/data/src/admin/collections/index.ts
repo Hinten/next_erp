@@ -8,6 +8,7 @@
  * Defining a handle in app code instead is flagged by the
  * `delfrance/no-inline-admin-collection` ESLint rule (warn).
  */
+export { cmunCollection } from './cmunCollection';
 export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';
