@@ -139,17 +139,34 @@ export function isSameCliente(
 }
 
 /**
+ * Trimmed, whitespace-collapsed name, or `null` when there is nothing to
+ * store. Providers send padded and double-spaced values routinely, and
+ * `clienteSchema.nome` is only `z.string().max(255)` — it accepts `'   '`
+ * happily, so without this a whitespace-only payload silently overwrites a
+ * real name with blanks. Collapsing also makes the word count below mean what
+ * it says: `'Ana  '.split(' ')` is 3 "words".
+ */
+export function normalizeNome(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const collapsed = raw.trim().replace(/\s+/g, ' ');
+  return collapsed === '' ? null : collapsed;
+}
+
+/**
  * A lone-word new name never overwrites an existing multi-word name — guards
  * against a webhook payload's first-name-only field clobbering a fuller name
- * already on file. An empty new name never updates.
+ * already on file. An absent or whitespace-only new name never updates.
  *
  * Ported from the legacy `_shouldUpdateName`
- * (`.old/packages/clientes/lib/src/models.dart:117-129`).
+ * (`.old/packages/clientes/lib/src/models.dart:117-129`), with both sides run
+ * through {@link normalizeNome} first — the Dart original compared raw strings
+ * and split on a literal space, so padded input defeated both checks.
  */
 export function shouldUpdateName(oldName: unknown, newName: string): boolean {
-  if (newName === '') return false;
-  const old = identityValue(oldName);
-  if (newName.split(' ').length === 1 && old != null && old.split(' ').length > 1) {
+  const incoming = normalizeNome(newName);
+  if (incoming == null) return false;
+  const old = normalizeNome(oldName);
+  if (incoming.split(' ').length === 1 && old != null && old.split(' ').length > 1) {
     return false;
   }
   return true;

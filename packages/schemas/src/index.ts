@@ -86,6 +86,7 @@ export {
   isSameEmail,
   isSameTelefone,
   normalizeDocumento,
+  normalizeNome,
   sanitizeTelefone,
   shouldUpdateName,
   telefoneLookupShapes,
