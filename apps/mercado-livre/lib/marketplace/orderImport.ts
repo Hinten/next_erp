@@ -99,10 +99,13 @@ import { estadoPedidoFromOrderStatus } from './orderStatusMaps';
 import { makePagamentoIdMercadoLivre } from './orderIds';
 import { mlPaymentToPagamento } from './orderPaymentMapping';
 import {
-  mergeEstadoFretePreservando,
+  POLITICA_FRESCOR_IMPORT_PEDIDO,
+  freteRecebidoEhMaisNovo,
+  mergeFreteInicial,
   mlShipmentToFreteInicial,
   type MappedFreteInicialFields,
 } from './orderShipmentMapping';
+
 import {
   MlBillingInfoUnsupportedError,
   billingInfoToClienteFields,
@@ -113,6 +116,14 @@ import {
 } from './orderCliente';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
+
+/**
+ * Re-exported for the callers that already import them from here
+ * (`orderShipmentImport.ts`, this module's tests). They now LIVE in
+ * `orderShipmentMapping.ts`, alongside the freshness predicate the merge must be
+ * paired with — both are pure, and had no reason to sit in the orchestrator.
+ */
+export { mergeFreteInicial, mergeFreteInicialSeMaisNovo } from './orderShipmentMapping';
 
 /* -------------------------------------------------------------------------- */
 /*                                  Contract                                  */
@@ -160,6 +171,31 @@ const DOWNGRADE_TRIGGER_STATUSES: ReadonlySet<string> = new Set([
   'invalid',
 ]);
 
+/**
+ * The prerequisites a pedido must satisfy before ANY Mercado Livre path may
+ * advance it to `pago` (tasks.dart:660-664). ONE definition, because `pago`
+ * authorizes dispatch and NF-e emission and the two ML paths that can trigger
+ * it — this module's order import and the `payments`-topic handler — must not
+ * disagree about what it means (#791).
+ *
+ * MUST be evaluated against a TRANSACTION-FRESH read: every field here is
+ * written by a different step of the same import, so a value captured before
+ * the transaction is a decision made on stale data (root `CLAUDE.md` rule 7).
+ */
+export function podeAvancarParaPago(pedido: {
+  estado: EstadoPedido;
+  clientePedidoOuterRef: string | null;
+  enderecoFiscalOuterRef: string | null;
+  freteInicial: unknown;
+}): boolean {
+  return (
+    pedido.estado === ESTADO_PEDIDO.emProcessamento &&
+    pedido.clientePedidoOuterRef != null &&
+    pedido.enderecoFiscalOuterRef != null &&
+    pedido.freteInicial != null
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                             Small pure helpers                             */
 /* -------------------------------------------------------------------------- */
@@ -177,11 +213,17 @@ interface MlShipmentPaymentIdPassthrough {
   payment_id?: number | string | null;
 }
 
-function sumAllValores(valores: readonly number[]): number {
-  return roundReais(valores.reduce((sum, v) => sum + v, 0));
-}
-
-/** Strict `status_pagamento === aprovado` sum (tasks.dart:721-722/756-762) — deliberately NOT `sumPagamentosPagos` (which also treats a null status as paying). */
+/**
+ * Strict `status_pagamento === aprovado` sum (tasks.dart:721-722/756-762) —
+ * deliberately NOT `sumPagamentosPagos` (which also treats a null status as
+ * paying).
+ *
+ * This is now the ONLY paid-sum rule on this path. Legacy's primary advance
+ * summed every pagamento regardless of status (tasks.dart:665-666), which let a
+ * REJECTED payment push a pedido to `pago` — and `pago` authorizes dispatch and
+ * NF-e emission. That per-path inconsistency is NOT kept for parity (#791/O13):
+ * money correctness outranks byte parity.
+ */
 function sumApprovedOnly(
   pagamentos: ReadonlyArray<{ valor: number; status_pagamento?: number | null }>,
 ): number {
@@ -190,6 +232,26 @@ function sumApprovedOnly(
       .filter((p) => p.status_pagamento === STATUS_PAGAMENTO.aprovado)
       .reduce((sum, p) => sum + p.valor, 0),
   );
+}
+
+/**
+ * The new value for a monotonic watermark, or `null` when the stored one is
+ * already at least as fresh (so the caller omits the key from its patch).
+ *
+ * Both arguments are MICROSECONDS; read the stored side through
+ * `coerceToMicros` before calling, because legacy Flutter wrote these fields in
+ * milliseconds and a cross-unit comparison is a guard that never fires (root
+ * `CLAUDE.md` rule 7).
+ *
+ * Plain `Math.max` rather than `FieldValue.maximum`: every caller here already
+ * sits inside a transaction that `tx.get`s the same document, so the two are
+ * equivalent — and the sentinel cannot survive `parseMerge` anyway, since
+ * `microsSinceEpoch`'s preprocess coerces it to `NaN` and Zod then throws.
+ */
+function avancarWatermark(armazenadoUs: number | null, candidatoUs: number | null): number | null {
+  if (candidatoUs == null) return null;
+  if (armazenadoUs == null) return candidatoUs;
+  return candidatoUs > armazenadoUs ? candidatoUs : null;
 }
 
 async function readPedido(db: Firestore, pedidoId: string): Promise<Pedido> {
@@ -395,7 +457,7 @@ async function applyClienteStep(args: {
       ref,
       pedidoCollection.parseMerge({
         clientePedidoOuterRef: clienteOuterRef,
-        lastMarketplaceUpdate: nowUs,
+        ultimaModificacao: avancarWatermark(coerceToMicros(raw.ultimaModificacao), nowUs),
       }) as DocumentData,
     );
   });
@@ -440,7 +502,7 @@ async function applyEnderecoStep(args: {
       ref,
       pedidoCollection.parseMerge({
         enderecoFiscalOuterRef: enderecoOuterRef,
-        lastMarketplaceUpdate: nowUs,
+        ultimaModificacao: avancarWatermark(coerceToMicros(raw.ultimaModificacao), nowUs),
       }) as DocumentData,
     );
   });
@@ -451,59 +513,6 @@ async function applyEnderecoStep(args: {
 /* -------------------------------------------------------------------------- */
 /*                                   Frete                                    */
 /* -------------------------------------------------------------------------- */
-
-/**
- * Overlay `mapped` onto `existing` (or use `mapped` fresh when there's no
- * prior frete). Ports `FreteDoPedido.update`
- * (`.old/packages/pedido/lib/src/models.dart:672-708`) field-for-field, with
- * one deliberate extension (deviation #3): legacy's `update()` is
- * `other.field ?? this.field` for EVERY field it touches (including
- * `valorCobrado`/`custoCalculado`/`custoFinal`, which our own
- * `MappedFreteInicialFields` never sets to null anyway); this port only
- * applies the `mapped.x ?? existing.x ?? null` nullable-preserving pattern to
- * the mapped keys that are ACTUALLY typed nullable
- * (`integracaoFreteOuterRef`, `enderecoFreteOuterReference`, `codRastreio`,
- * `dataPrevisaoEntrega`, `ultimaModificacao`, `prazoDespacho`) — every other
- * mapped key is non-nullable on `MappedFreteInicialFields`, so writing it
- * unconditionally is behaviorally identical to the `?? ` form and clearer.
- * `estado` is the one field legacy's plain `other.estado` (unconditional)
- * does NOT get ported straight — it goes through the dedicated
- * `mergeEstadoFretePreservando` state machine instead (`orderShipmentMapping.ts`),
- * which additionally FIXES legacy's dangling-`if` regression bug (see that
- * function's own docblock) rather than reproducing it.
- *
- * Reused by both frete-merge call sites in this Step 9 slice: this file's own
- * `applyFreteStep` (order import) and `orderShipmentImport.ts`'s
- * shipments-topic handler (PR 3) — one merge helper for both, matching this
- * port's established pattern of collapsing legacy's per-path variants into
- * one (deviation #3's original scope, now extended to the whole merge, not
- * just `estado`).
- */
-export function mergeFreteInicial(
-  existing: FreteDoPedido | null | undefined,
-  mapped: MappedFreteInicialFields,
-): Record<string, unknown> {
-  if (!existing) return { ...mapped };
-  const estado = mergeEstadoFretePreservando(existing.estado, mapped.estado);
-  return {
-    ...existing,
-    externalId: mapped.externalId,
-    externalOptionIntegracao: mapped.externalOptionIntegracao,
-    estado,
-    integracaoFreteOuterRef:
-      mapped.integracaoFreteOuterRef ?? existing.integracaoFreteOuterRef ?? null,
-    enderecoFreteOuterReference:
-      mapped.enderecoFreteOuterReference ?? existing.enderecoFreteOuterReference ?? null,
-    modalidade: mapped.modalidade,
-    codRastreio: mapped.codRastreio ?? existing.codRastreio ?? null,
-    valorCobrado: mapped.valorCobrado,
-    custoCalculado: mapped.custoCalculado,
-    custoFinal: mapped.custoFinal,
-    dataPrevisaoEntrega: mapped.dataPrevisaoEntrega ?? existing.dataPrevisaoEntrega ?? null,
-    ultimaModificacao: mapped.ultimaModificacao ?? existing.ultimaModificacao ?? null,
-    prazoDespacho: mapped.prazoDespacho ?? existing.prazoDespacho ?? null,
-  };
-}
 
 async function fetchFullShippingPayments(
   api: MercadoLivreApi,
@@ -550,11 +559,29 @@ function registerMissingPagamentos(
  * an early conferir-pagamento state); else the simple tracking-only merge
  * (621-657) when a prior frete exists; else (no address, no prior frete)
  * nothing happens, matching legacy.
+ *
+ * ---- #791 restructure (O12) ----
+ * Every predicate that decides WHAT to write is now re-derived from the
+ * tx-fresh pedido: the staleness verdict, the full-conference/tracking-only
+ * selector, and `mappedFrete.enderecoFreteOuterReference`. The pre-transaction
+ * read survives ONLY as a network early-out (it saves three ML round-trips on a
+ * redelivery) and decides nothing — root `CLAUDE.md` rule 7: re-checking a
+ * predicate against a binding read outside the transaction is not a guard.
+ * `mappedFrete` is built outside and re-applied verbatim on an OCC retry, which
+ * is exactly why the verdict has to be recomputed inside.
+ *
+ * The shipping-PAYMENT registration that used to ride along here
+ * (`registerMissingPagamentos`) now belongs exclusively to
+ * `applyPagoAdvanceOrDowngrade`, which runs immediately after in the same
+ * import: one owner per resource (this step owns `freteInicial` +
+ * `valorCobrado`; that step owns `pagamentos` + `estado`), one fewer
+ * subcollection read here, and no need for `fullShippingPayments` on this path.
  */
 async function applyFreteStep(args: {
   db: Firestore;
   api: MercadoLivreApi;
   pedidoId: string;
+  /** Pre-transaction read — a network early-out ONLY. Never a guard. */
   pedido: Pedido;
   shippingInstance: MlShipment;
   integracaoId: string;
@@ -564,7 +591,9 @@ async function applyFreteStep(args: {
    * write (tasks.dart:609-613), not the current clock. */
   orderLastUpdatedUs: number | null;
   nowUs: number;
-}): Promise<Pedido> {
+  /** Run-scoped memo, shared with `applyPagoAdvanceOrDowngrade`. */
+  loadShipmentPayments: () => Promise<MlShipmentPayment[]>;
+}): Promise<void> {
   const {
     db,
     api,
@@ -575,119 +604,162 @@ async function applyFreteStep(args: {
     contaBag,
     orderLastUpdatedUs,
     nowUs,
+    loadShipmentPayments,
   } = args;
 
-  const oldFrete = pedido.freteInicial;
-  const shipmentLastUpdatedUs = coerceToMicros(shippingInstance.last_updated ?? null);
-  const oldUltimaModificacao = oldFrete?.ultimaModificacao ?? null;
-  const isStale =
-    oldFrete == null ||
-    oldFrete.prazoDespacho == null ||
-    oldUltimaModificacao == null ||
-    (shipmentLastUpdatedUs != null && oldUltimaModificacao < shipmentLastUpdatedUs);
-  if (!isStale) return pedido;
+  // Early-out (cheap, NON-authoritative). Mirrors legacy's own pre-read gate at
+  // tasks.dart:497: skip three ML round-trips for a shipment version we have
+  // already applied AND whose prazoDespacho we already resolved.
+  const freteAntigo = pedido.freteInicial;
+  const talvezMaisNovo = freteRecebidoEhMaisNovo({
+    semFreteArmazenado: freteAntigo == null,
+    armazenadoUs: coerceToMicros(freteAntigo?.ultimaModificacao ?? null),
+    recebidoUs: coerceToMicros(shippingInstance.last_updated ?? null),
+    ...POLITICA_FRESCOR_IMPORT_PEDIDO,
+  });
+  if (!talvezMaisNovo && freteAntigo?.prazoDespacho != null) return;
 
-  const shippingPayments = await api.getShipmentPayments(shippingInstance.id);
+  const shippingPayments = await loadShipmentPayments();
   const integracaoFreteOuterRef = await resolveMercadoEnviosIntFreteOuterRef(db, integracaoId);
   const prazoDespachoUs = await resolvePrazoDespacho({
     api,
     shipment: shippingInstance,
     sellerId: contaBag.sellerUserId ?? 0,
-    fallbackUs: oldFrete?.prazoDespacho ?? null,
+    fallbackUs: freteAntigo?.prazoDespacho ?? null,
   });
 
-  const mappedFrete = mlShipmentToFreteInicial({
+  // `enderecoOuterRef` is deliberately NULL here: it is the ONE mapper input
+  // that comes from OUR document rather than ML's payload, so it must not ride
+  // in from the stale read (nor be re-applied verbatim on an OCC retry). It is
+  // substituted from the tx-fresh pedido inside the transaction below.
+  const mappedBase = mlShipmentToFreteInicial({
     shipment: shippingInstance,
     shippingPayments,
     integracaoFreteOuterRef,
-    enderecoOuterRef: pedido.enderecoFiscalOuterRef,
+    enderecoOuterRef: null,
     prazoDespachoUs,
     modalidadeOverride: contaBag.modalidadeFreteImportacao,
   });
 
-  const podeConferirPagamento = ESTADOS_CONFERIR_PAGAMENTO.has(pedido.estado);
-  const fullConference =
-    pedido.enderecoFiscalOuterRef != null &&
-    (oldFrete?.prazoDespacho == null || oldFrete == null || podeConferirPagamento);
+  await db.runTransaction(async (tx) => {
+    /* ======================= READ PHASE (no writes yet) ======================= */
+    const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
+    const pedidoSnap = await tx.get(pedidoRef);
+    if (!pedidoSnap.exists) return;
+    const freshPedido = pedidoCollection.parseRead(
+      pedidoSnap.data() ?? {},
+      pedidoCollection.docPath({}, pedidoId),
+    );
 
-  if (fullConference) {
-    // Full conference (tasks.dart:522-620) — see file docstring deviation #2
-    // for why the shipment-item mismatch guard is not ported.
-    const fullShippingPayments = await fetchFullShippingPayments(api, shippingPayments);
+    /* ==================== DECIDE (tx-fresh inputs only) ====================== */
+    const freshFrete = freshPedido.freteInicial;
+    const maisNovo = freteRecebidoEhMaisNovo({
+      semFreteArmazenado: freshFrete == null,
+      armazenadoUs: coerceToMicros(freshFrete?.ultimaModificacao ?? null),
+      recebidoUs: coerceToMicros(mappedBase.ultimaModificacao),
+      ...POLITICA_FRESCOR_IMPORT_PEDIDO,
+    });
 
-    await db.runTransaction(async (tx) => {
-      const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
-      const pedidoSnap = await tx.get(pedidoRef);
-      const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
+    if (!maisNovo) {
+      // A concurrent handler already applied a NEWER shipment payload — never
+      // overlay this (older) one's fields, and never touch the watermark.
+      //
+      // `prazoDespachoUs` is the one exception: it comes from a FRESH SLA read
+      // performed by THIS run (`resolvePrazoDespacho`), not from the shipment
+      // payload, so it is not subject to that payload's watermark. Filling it
+      // is also REQUIRED for convergence — a null `prazoDespacho` is one of the
+      // conditions that FORCES the full conference below, so leaving it null
+      // would make every future import pay three ML round-trips and write
+      // nothing, forever.
+      const patchParado: Record<string, unknown> = {};
+      if (freshFrete != null && freshFrete.prazoDespacho == null && prazoDespachoUs != null) {
+        patchParado.freteInicial = { ...freshFrete, prazoDespacho: prazoDespachoUs };
+      }
+      // Repair an under-counted total (#791). The conference computes
+      // `valorCobrado` from the items it can see; a pack sibling merged AFTER it
+      // leaves the total permanently low, and the pedido then reaches `pago` on
+      // a partial payment via a perfectly correct comparison against a wrong
+      // threshold. Nothing else recomputes it: once the shipment stops changing,
+      // the conference never runs again.
+      //
+      // Only where the conference already OWNS the field (a frete block and a
+      // fiscal address both present) — otherwise `valorCobrado` still holds
+      // `mlOrderToPedidoCoreFields`' order-derived value and is not ours to
+      // overwrite. Uses the STORED frete's own `valorCobrado`, never this
+      // (older) payload's, so it carries no staleness.
+      if (freshFrete != null && freshPedido.enderecoFiscalOuterRef != null) {
+        const totalItens = roundReais(
+          flattenPedidoItens(freshPedido.itens).reduce((sum, item) => sum + itemSubtotal(item), 0),
+        );
+        const alvo = roundReais(totalItens + (freshFrete.valorCobrado ?? 0));
+        if (freshPedido.valorCobrado !== alvo) patchParado.valorCobrado = alvo;
+      }
+      if (Object.keys(patchParado).length > 0) {
+        patchParado.ultimaModificacao = avancarWatermark(
+          coerceToMicros(freshPedido.ultimaModificacao),
+          nowUs,
+        );
+        tx.update(pedidoRef, pedidoCollection.parseMerge(patchParado) as DocumentData);
+      }
+      return;
+    }
 
-      const freshPedido = pedidoCollection.parseRead(
-        pedidoSnap.data() ?? {},
-        pedidoCollection.docPath({}, pedidoId),
-      );
-      const registeredExternalIds = new Set(
-        pagamentosSnap.docs
-          .map((d) => (d.data() as Record<string, unknown>).id)
-          .filter((id): id is string => typeof id === 'string'),
-      );
+    const mappedFrete: MappedFreteInicialFields = {
+      ...mappedBase,
+      enderecoFreteOuterReference: freshPedido.enderecoFiscalOuterRef,
+    };
+    const targetFrete = mergeFreteInicial(freshFrete, mappedFrete);
 
-      const totalItens = roundReais(
-        flattenPedidoItens(freshPedido.itens).reduce((sum, item) => sum + itemSubtotal(item), 0),
-      );
-      const valorFreteInicial = mappedFrete.valorCobrado ?? 0;
-      const targetFrete = mergeFreteInicial(freshPedido.freteInicial, mappedFrete);
+    // Branch selector, re-derived from the tx-fresh doc (was tasks.dart:512-514
+    // off the STALE pedido). `enderecoFiscalOuterRef` is the one axis on which
+    // the tx-fresh answer can be MORE permissive than the pre-read one, and
+    // that upgrade is fully serviceable here now that the conference no longer
+    // registers pagamentos and so needs no prefetch.
+    const conferenciaCompleta =
+      freshPedido.enderecoFiscalOuterRef != null &&
+      (freshFrete == null ||
+        freshFrete.prazoDespacho == null ||
+        ESTADOS_CONFERIR_PAGAMENTO.has(freshPedido.estado));
 
+    if (!conferenciaCompleta) {
+      // Legacy fallthrough preserved: no fiscal address AND no prior frete →
+      // nothing is written at all (tasks.dart:497-658 — both branch conditions
+      // evaluate false). Creating a frete block for an address-less pedido is a
+      // separate decision, not this fix.
+      if (freshFrete == null) return;
+      // Simple tracking-only merge (tasks.dart:621-657).
       tx.update(
         pedidoRef,
         pedidoCollection.parseMerge({
           freteInicial: targetFrete,
-          valorCobrado: roundReais(totalItens + valorFreteInicial),
-          // The ORDER's own timestamp (tasks.dart:613: `ultimaModificacao:
-          // orderInstance.last_updated!`) — a repeated conference webhook must
-          // not churn the pedido to run-time. nowUs only as a null fallback.
-          ultimaModificacao: orderLastUpdatedUs ?? nowUs,
-          lastMarketplaceUpdate: nowUs,
+          ultimaModificacao: avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs),
         }) as DocumentData,
       );
+      return;
+    }
 
-      registerMissingPagamentos(
-        tx,
-        db,
-        pedidoId,
-        integracaoId,
-        contaBag.contaCpfCnpj,
-        nowUs,
-        fullShippingPayments,
-        registeredExternalIds,
-      );
-    });
-  } else if (oldFrete != null) {
-    // Simple tracking-only merge (tasks.dart:621-657) — re-checks staleness
-    // against the tx-fresh frete before writing (640-642).
-    await db.runTransaction(async (tx) => {
-      const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
-      const pedidoSnap = await tx.get(pedidoRef);
-      const raw = (pedidoSnap.data() ?? {}) as Record<string, unknown>;
-      const freshFrete = (raw.freteInicial ?? null) as FreteDoPedido | null;
-      const freshUltimaModificacao = freshFrete?.ultimaModificacao ?? null;
-      const stillStale =
-        freshFrete == null ||
-        freshUltimaModificacao == null ||
-        (mappedFrete.ultimaModificacao != null &&
-          freshUltimaModificacao < mappedFrete.ultimaModificacao);
-      if (!stillStale) return; // tasks.dart:640-642 no-op
+    // Full conference (tasks.dart:522-620) — see the file docstring's deviation
+    // #2 for why the shipment-item quantity cross-check is still not ported.
+    const totalItens = roundReais(
+      flattenPedidoItens(freshPedido.itens).reduce((sum, item) => sum + itemSubtotal(item), 0),
+    );
+    const patch: Record<string, unknown> = {
+      freteInicial: targetFrete,
+      valorCobrado: roundReais(totalItens + (mappedFrete.valorCobrado ?? 0)),
+    };
 
-      const targetFrete = mergeFreteInicial(freshFrete, mappedFrete);
-      tx.update(
-        pedidoRef,
-        pedidoCollection.parseMerge({
-          freteInicial: targetFrete,
-          lastMarketplaceUpdate: nowUs,
-        }) as DocumentData,
-      );
-    });
-  }
+    // Wall clock, monotonic. Legacy stamped the ORDER's own timestamp here
+    // (tasks.dart:613), but this field is the display / recency-sort / TableView
+    // update-monitor stamp that `saveRecord`, the Mercado Pago reconcile and the
+    // Flutter app all write with a wall clock; a payload-derived value would let
+    // the row jump BACKWARDS in the list and let the monitor miss the change.
+    // The ML ORDER clock lives in `lastMarketplaceUpdate` instead (#791/O15),
+    // written by `discoverPedidoMercadoLivre` alone.
+    const avancado = avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs);
+    if (avancado != null) patch.ultimaModificacao = avancado;
 
-  return readPedido(db, pedidoId);
+    tx.update(pedidoRef, pedidoCollection.parseMerge(patch) as DocumentData);
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -698,171 +770,158 @@ async function applyFreteStep(args: {
  * `if (pedido.estado == emProcessamento && refs set) {...} else if (pedido.estado == pago && status in downgrade-set) {...}`
  * (tasks.dart:660-774). The two branches are mutually exclusive, mirroring
  * legacy's `if / else if`.
+ *
+ * ---- #791 restructure (O13 + O14) ----
+ * Legacy's three separately-committed decisions (primary advance, secondary
+ * shipping-payment advance, downgrade) collapse into ONE transaction. Every
+ * input to the estado decision — `estado`, the four presence fields, the whole
+ * `pagamentos` set and `valorCobrado` — is read with `tx.get` in that same
+ * transaction, so the decision and the write are isolated together:
+ *
+ *  - **O13.** `sumApprovedOnly` everywhere. A REJECTED pagamento no longer
+ *    pushes a pedido to `pago`, which authorizes dispatch and NF-e emission.
+ *  - **O14.** `valorCobrado` comes from the tx-fresh doc. `applyFreteStep`
+ *    writes that field, and both transactions read AND write the same pedido
+ *    document, so Firestore OCC serializes them: a conference that raises the
+ *    total forces this callback to re-run against the new one.
+ *  - The `else if` no longer hangs off a STALE `estado`. If a concurrent
+ *    handler advanced the pedido to `pago` between our pre-read and this
+ *    transaction, the downgrade is still evaluated — previously NEITHER branch
+ *    ran, so a cancelled order stayed `pago` with no later event able to
+ *    repair it.
+ *
+ * Two guards are deliberately TIGHTER than legacy: the advance now requires a
+ * non-null `valorCobrado` (a null total used to read as a threshold of 0, so
+ * any pagamento advanced a never-conferred pedido) — matching
+ * `orderPaymentImport.ts` — and still requires at least one pagamento.
+ *
+ * Admin tx invariant: both reads happen before `registerMissingPagamentos`,
+ * which is the first write.
  */
 async function applyPagoAdvanceOrDowngrade(args: {
   db: Firestore;
-  api: MercadoLivreApi;
   pedidoId: string;
-  pedido: Pedido;
   initialOrder: MlOrder;
-  shippingInstance: MlShipment | null;
   integracaoId: string;
   contaCpfCnpj: string | null;
   nowUs: number;
+  /** Run-scoped memo — resolves to `[]` when the order has no shipment. */
+  loadFullShipmentPayments: () => Promise<MlPayment[]>;
 }): Promise<void> {
   const {
     db,
-    api,
     pedidoId,
-    pedido,
     initialOrder,
-    shippingInstance,
     integracaoId,
     contaCpfCnpj,
     nowUs,
+    loadFullShipmentPayments,
   } = args;
 
-  const podeAvancarPagamento =
-    pedido.estado === ESTADO_PEDIDO.emProcessamento &&
-    pedido.clientePedidoOuterRef != null &&
-    pedido.enderecoFiscalOuterRef != null &&
-    pedido.freteInicial != null;
+  // PLANNING fetch (tasks.dart:681-745): it decides which `getPayment` calls to
+  // spend, never what gets written. The transaction re-derives the
+  // actually-missing set from its own `tx.get`, so this pool may safely be a
+  // superset — the stored pagamento set only ever grows, so "missing now" is a
+  // superset of "missing at commit".
+  const candidatos = await loadFullShipmentPayments();
+  const orderLastUpdatedUs = coerceToMicros(initialOrder.last_updated ?? null);
 
-  if (podeAvancarPagamento) {
-    const pagamentosSnap = await pagamentoCollection.ref(db, { pedidoId }).get();
-    const pagamentos = pagamentosSnap.docs.map((d) => d.data() as Record<string, unknown>);
-    const valores = pagamentos.map((p) => (typeof p.valor === 'number' ? p.valor : 0));
-    const valorCobrado = roundReais(pedido.valorCobrado ?? 0);
+  await db.runTransaction(async (tx) => {
+    /* ======================= READ PHASE (no writes yet) ======================= */
+    const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
+    const pedidoSnap = await tx.get(pedidoRef);
+    const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
+    if (!pedidoSnap.exists) return;
 
-    // Sums ALL pagamentos regardless of status (tasks.dart:665-666) — legacy
-    // per-path inconsistency (the downgrade/secondary branches below are
-    // approved-only), kept for parity.
-    if (pagamentos.length > 0 && sumAllValores(valores) >= valorCobrado) {
-      await db.runTransaction(async (tx) => {
-        const ref = pedidoCollection.docRef(db, {}, pedidoId);
-        const snap = await tx.get(ref);
-        const raw = (snap.data() ?? {}) as Record<string, unknown>;
-        // Re-guard on the tx-fresh doc for ALL four fields (legacy re-reads the
-        // whole instance inside the tx, tasks.dart:670-673).
-        const stillGuarded =
-          raw.estado === 'emProcessamento' &&
-          raw.clientePedidoOuterRef != null &&
-          raw.enderecoFiscalOuterRef != null &&
-          raw.freteInicial != null;
-        if (!stillGuarded) return; // re-guard, tasks.dart:670-673
+    const freshPedido = pedidoCollection.parseRead(
+      pedidoSnap.data() ?? {},
+      pedidoCollection.docPath({}, pedidoId),
+    );
+    const armazenados = pagamentosSnap.docs.map((d) => d.data() as Record<string, unknown>);
+    const idsArmazenados = new Set(
+      armazenados.map((p) => p.id).filter((id): id is string => typeof id === 'string'),
+    );
+
+    /* ======================= COMPUTE + WRITE PHASE ======================= */
+    // Register FIRST, decide SECOND (legacy's own ordering, tasks.dart:681-745):
+    // a downgrade computed over an INCOMPLETE pagamento set under-counts and
+    // therefore fires spuriously on a pedido that is in fact paid in full.
+    const novos = registerMissingPagamentos(
+      tx,
+      db,
+      pedidoId,
+      integracaoId,
+      contaCpfCnpj,
+      nowUs,
+      candidatos,
+      idsArmazenados,
+    );
+
+    const totalAprovado = roundReais(
+      sumApprovedOnly(
+        armazenados.map((p) => ({
+          valor: typeof p.valor === 'number' ? p.valor : 0,
+          status_pagamento: typeof p.status_pagamento === 'number' ? p.status_pagamento : null,
+        })),
+      ) + sumApprovedOnly(novos),
+    );
+    const valorCobrado = freshPedido.valorCobrado;
+    const temPagamento = armazenados.length + novos.length > 0;
+
+    if (podeAvancarParaPago(freshPedido)) {
+      if (valorCobrado != null && temPagamento && totalAprovado >= roundReais(valorCobrado)) {
         tx.update(
-          ref,
+          pedidoRef,
           pedidoCollection.parseMerge({
-            estado: 'pago',
-            lastMarketplaceUpdate: nowUs,
+            estado: ESTADO_PEDIDO.pago,
+            ultimaModificacao: avancarWatermark(
+              coerceToMicros(freshPedido.ultimaModificacao),
+              nowUs,
+            ),
           }) as DocumentData,
         );
-      });
+      }
       return;
     }
 
-    // Secondary branch (tasks.dart:681-745) — register any shipping payment
-    // the pedido hasn't seen yet, then re-check the paid sum (approved-only).
-    if (shippingInstance) {
-      const shippingPayments = await api.getShipmentPayments(shippingInstance.id);
-      const fullPayments = await fetchFullShippingPayments(api, shippingPayments);
-      const registeredExternalIds = new Set(
-        pagamentos.map((p) => p.id).filter((id): id is string => typeof id === 'string'),
-      );
-      const missing = fullPayments.filter((p) => !registeredExternalIds.has(String(p.id)));
+    // The ONE place the ML order clock decides something (#791). A stale-but-true
+    // payment set can never wrongly ADVANCE — the money has to be there either
+    // way — so the advance above is deliberately ungated. A late-delivered
+    // `cancelled`/`refunded` payload CAN wrongly downgrade a pedido that a newer
+    // event has since moved past, so the downgrade is gated on the payload not
+    // being older than what we have already applied.
+    //
+    // `>=`, not `>`: this transaction is separate from the one that advanced the
+    // watermark (`discoverPedidoMercadoLivre`, earlier in this same import), so a
+    // crash or retry between the two leaves the watermark already at this
+    // payload's value. A strict comparison would make the retry unable to ever
+    // converge. Units: both sides µs, and the stored side is coerced, so a
+    // legacy Flutter MILLISECOND value still compares as the same instant.
+    const relogioArmazenadoUs = coerceToMicros(freshPedido.lastMarketplaceUpdate);
+    const payloadEhAtual =
+      orderLastUpdatedUs == null ||
+      relogioArmazenadoUs == null ||
+      orderLastUpdatedUs >= relogioArmazenadoUs;
 
-      if (missing.length > 0) {
-        await db.runTransaction(async (tx) => {
-          const ref = pedidoCollection.docRef(db, {}, pedidoId);
-          const snap = await tx.get(ref);
-          const raw = (snap.data() ?? {}) as Record<string, unknown>;
-          // Same tx-fresh re-guard as the primary branch above.
-          const stillGuarded =
-            raw.estado === 'emProcessamento' &&
-            raw.clientePedidoOuterRef != null &&
-            raw.enderecoFiscalOuterRef != null &&
-            raw.freteInicial != null;
-          if (!stillGuarded) return;
-
-          const oldPagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
-          const oldPagamentos = oldPagamentosSnap.docs.map(
-            (d) => d.data() as Record<string, unknown>,
-          );
-          const oldPagamentosIds = new Set(
-            oldPagamentos.map((p) => p.id).filter((id): id is string => typeof id === 'string'),
-          );
-
-          const stillMissing = missing.filter((p) => !oldPagamentosIds.has(String(p.id)));
-          const novosPagamentos = registerMissingPagamentos(
-            tx,
-            db,
-            pedidoId,
-            integracaoId,
-            contaCpfCnpj,
-            nowUs,
-            stillMissing,
-            oldPagamentosIds,
-          );
-
-          const valorPagoAnteriormente = sumApprovedOnly(
-            oldPagamentos.map((p) => ({
-              valor: typeof p.valor === 'number' ? p.valor : 0,
-              status_pagamento: typeof p.status_pagamento === 'number' ? p.status_pagamento : null,
-            })),
-          );
-          const valorPagoAtualmente = sumApprovedOnly(novosPagamentos);
-          const valorCobradoFresco = typeof raw.valorCobrado === 'number' ? raw.valorCobrado : 0;
-
-          if (
-            roundReais(valorPagoAnteriormente + valorPagoAtualmente) >=
-            roundReais(valorCobradoFresco)
-          ) {
-            tx.update(
-              ref,
-              pedidoCollection.parseMerge({
-                estado: 'pago',
-                lastMarketplaceUpdate: nowUs,
-              }) as DocumentData,
-            );
-          }
-          // legacy's `else if (instance.estado == pago)` downgrade branch here
-          // (tasks.dart:727-735) is dead code — see file docstring deviation #4.
-        });
-      }
+    // tasks.dart:746-774 — reachable now even when a concurrent handler advanced
+    // the pedido to `pago` between our pre-read and this transaction.
+    if (
+      payloadEhAtual &&
+      freshPedido.estado === ESTADO_PEDIDO.pago &&
+      DOWNGRADE_TRIGGER_STATUSES.has(initialOrder.status ?? '') &&
+      totalAprovado < roundReais(valorCobrado ?? 0)
+    ) {
+      const patch: Record<string, unknown> = {
+        estado: estadoPedidoFromOrderStatus(initialOrder.status ?? ''),
+      };
+      // Wall clock, monotonic — see the frete conference above for why this
+      // field is not the event clock. Legacy stamped `nowUs` here too, but
+      // unguarded, so a replay could pull it backwards.
+      const avancado = avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs);
+      if (avancado != null) patch.ultimaModificacao = avancado;
+      tx.update(pedidoRef, pedidoCollection.parseMerge(patch) as DocumentData);
     }
-  } else if (
-    pedido.estado === ESTADO_PEDIDO.pago &&
-    DOWNGRADE_TRIGGER_STATUSES.has(initialOrder.status ?? '')
-  ) {
-    // tasks.dart:746-774.
-    await db.runTransaction(async (tx) => {
-      const ref = pedidoCollection.docRef(db, {}, pedidoId);
-      const snap = await tx.get(ref);
-      const raw = (snap.data() ?? {}) as Record<string, unknown>;
-      if (raw.estado !== 'pago') return;
-
-      const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
-      const totalPago = sumApprovedOnly(
-        pagamentosSnap.docs
-          .map((d) => d.data() as Record<string, unknown>)
-          .map((p) => ({
-            valor: typeof p.valor === 'number' ? p.valor : 0,
-            status_pagamento: typeof p.status_pagamento === 'number' ? p.status_pagamento : null,
-          })),
-      );
-      const valorCobrado = typeof raw.valorCobrado === 'number' ? raw.valorCobrado : 0;
-      if (totalPago < valorCobrado) {
-        tx.update(
-          ref,
-          pedidoCollection.parseMerge({
-            estado: estadoPedidoFromOrderStatus(initialOrder.status ?? ''),
-            ultimaModificacao: nowUs,
-            lastMarketplaceUpdate: nowUs,
-          }) as DocumentData,
-        );
-      }
-    });
-  }
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -942,6 +1001,42 @@ export async function importPedidoMercadoLivre(
   const shippingId = initialOrder.shipping?.id ?? null;
   const shippingInstance = shippingId != null ? await api.getShipment(shippingId) : null;
 
+  // Run-scoped memos, same pattern as `getBillingInfo` above. The frete step and
+  // the pago step both need the shipment's payments; before #791 each fetched
+  // its own copy, so on the conferring path this REMOVES a duplicate
+  // `getShipmentPayments` + N duplicate `getPayment` rather than adding any.
+  let shipmentPaymentsCache: MlShipmentPayment[] | null = null;
+  const loadShipmentPayments = async (): Promise<MlShipmentPayment[]> => {
+    if (shippingInstance == null) return [];
+    shipmentPaymentsCache ??= await api.getShipmentPayments(shippingInstance.id);
+    return shipmentPaymentsCache;
+  };
+
+  let fullShipmentPaymentsCache: MlPayment[] | null = null;
+  const loadFullShipmentPayments = async (): Promise<MlPayment[]> => {
+    if (shippingInstance == null) return [];
+    if (fullShipmentPaymentsCache == null) {
+      const resumos = await loadShipmentPayments();
+      // Planning diff: spend a `getPayment` only on ids the pedido has not
+      // registered yet. Non-transactional ON PURPOSE — it bounds the ML call
+      // count, it does not decide what is written (the pago transaction
+      // re-derives the missing set from its own `tx.get`). The stored set only
+      // ever grows, so this can over-fetch but never under-write.
+      const jaRegistrados = await pagamentoCollection.ref(db, { pedidoId }).get();
+      const ids = new Set(
+        jaRegistrados.docs
+          .map((d) => (d.data() as Record<string, unknown>).id)
+          .filter((id): id is string => typeof id === 'string'),
+      );
+      const faltantes = resumos.filter((p) => {
+        const id = (p as MlShipmentPaymentIdPassthrough).payment_id;
+        return id != null && !ids.has(String(id));
+      });
+      fullShipmentPaymentsCache = await fetchFullShippingPayments(api, faltantes);
+    }
+    return fullShipmentPaymentsCache;
+  };
+
   pedido = await applyEnderecoStep({
     db,
     pedidoId,
@@ -952,7 +1047,9 @@ export async function importPedidoMercadoLivre(
   });
 
   if (shippingInstance) {
-    pedido = await applyFreteStep({
+    // No longer returns a pedido — the pago step re-reads everything it needs
+    // inside its own transaction, so the trailing `readPedido` is gone.
+    await applyFreteStep({
       db,
       api,
       pedidoId,
@@ -962,19 +1059,18 @@ export async function importPedidoMercadoLivre(
       contaBag,
       orderLastUpdatedUs: coerceToMicros(initialOrder.last_updated ?? null),
       nowUs,
+      loadShipmentPayments,
     });
   }
 
   await applyPagoAdvanceOrDowngrade({
     db,
-    api,
     pedidoId,
-    pedido,
     initialOrder,
-    shippingInstance,
     integracaoId,
     contaCpfCnpj: contaBag.contaCpfCnpj,
     nowUs,
+    loadFullShipmentPayments,
   });
 
   // `getAllOrderMessagesMercadoLivre` (tasks.dart:776-781) — OUT OF SCOPE, see

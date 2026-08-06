@@ -46,32 +46,77 @@ import {
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { importPedidoMercadoLivre, mergeFreteInicial, type OrderImportDeps } from './orderImport';
+import {
+  OccEngine,
+  deferred,
+  type OccOpKind,
+  type OccTransaction,
+  type OccWriteKind,
+} from './testing/occTransaction';
 import type { MappedFreteInicialFields } from './orderShipmentMapping';
-import { TIPO_CLIENTE, INTEGRACAO_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
+import { TIPO_CLIENTE, INTEGRACAO_FRETE, ESTADO_FRETE, STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { pedidoCollection } from '@delfrance/data/admin/collections';
 import type { FreteDoPedido } from '@delfrance/schemas';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Scoped to what orderImport.ts touches directly: `integracao`, `int_frete`,
 // `pedidos`, `pedidos/{id}/pagamentos` — mirrors the established
-// import.test.ts/orderPedidoTx.test.ts FakeDb shape (doc get/set/update/create,
-// a chained where/limit/get query, and a non-isolated runTransaction).
+// import.test.ts/orderPedidoTx.test.ts FakeDb shape (doc get/set/update/create
+// and a chained where/limit/get query).
+//
+// `runTransaction` delegates to the SHARED `OccEngine`
+// (`./testing/occTransaction`), which replaces the non-isolated stand-in this
+// file used to carry. That brings three things this file never had: a
+// reads-before-writes guard (the other three FakeDbs in this folder already had
+// one), an `opLog`, and `lastPatch` — plus the snapshot-read/retry semantics the
+// concurrency tests below need.
 
 type DocData = Record<string, unknown>;
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
+  readonly opLog: Array<{ op: OccOpKind; path: string }> = [];
+  private readonly patches = new Map<string, DocData>();
   private autoN = 0;
+
+  /** Exposed so a test can set `db.occ.beforeCommit` / read `db.occ.txLog`. */
+  readonly occ = new OccEngine({
+    applyWrite: (kind, path, data) => this.applyWrite(kind, path, data),
+    logWrite: (op, path) => this.opLog.push({ op, path }),
+    // `lastPatch` means "the patch actually stored", so it is recorded at
+    // COMMIT — an attempt that aborts must not leave its patch behind.
+    recordPatch: (path, patch) => this.patches.set(path, patch),
+  });
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
     if (!c) this.cols.set(path, (c = new Map()));
     return c;
   }
+
+  /** Commit-time write. Never logs — the engine logged it at call time. */
+  private applyWrite(kind: OccWriteKind, docPath: string, data: DocData): void {
+    const cut = docPath.lastIndexOf('/');
+    const col = this.col(docPath.slice(0, cut));
+    const id = docPath.slice(cut + 1);
+    if (kind === 'create' && col.has(id)) {
+      throw Object.assign(new Error('already exists'), { code: 6 });
+    }
+    if (kind === 'update' && !col.has(id)) {
+      throw Object.assign(new Error('not found'), { code: 5 });
+    }
+    col.set(id, kind === 'update' ? { ...(col.get(id) ?? {}), ...data } : { ...data });
+  }
+
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
   }
   docs(path: string): Map<string, DocData> {
     return this.col(path);
+  }
+  /** The last patch actually committed at `path/id` — asserts a write's exact shape. */
+  lastPatch(path: string, id: string): DocData | undefined {
+    return this.patches.get(`${path}/${id}`);
   }
 
   private query(entries: Array<[string, DocData]>) {
@@ -102,50 +147,41 @@ class FakeDb {
     const col = this.col(path);
     const self = this;
     return {
+      path,
       doc: (id?: string) => {
         const docId = id ?? `auto-${++self.autoN}`;
+        const docPath = `${path}/${docId}`;
         return {
           id: docId,
-          get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
+          path: docPath,
+          get: async () => {
+            self.opLog.push({ op: 'get', path: docPath });
+            return { exists: col.has(docId), id: docId, data: () => col.get(docId) };
+          },
           set: async (data: DocData, opts?: { merge?: boolean }) => {
-            col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
+            self.opLog.push({ op: 'set', path: docPath });
+            self.applyWrite(opts?.merge ? 'update' : 'set', docPath, data);
           },
           update: async (patch: DocData) => {
-            col.set(docId, { ...(col.get(docId) ?? {}), ...patch });
+            self.opLog.push({ op: 'update', path: docPath });
+            self.applyWrite('update', docPath, patch);
           },
         };
       },
       where: (field: string, op: string, value: unknown) =>
         self.query([...col.entries()]).where(field, op, value),
-      get: async () => ({
-        docs: [...col.entries()].map(([id, d]) => ({ id, data: () => d, exists: true })),
-      }),
+      get: async () => {
+        self.opLog.push({ op: 'get', path: `${path}#all` });
+        return {
+          docs: [...col.entries()].map(([id, d]) => ({ id, data: () => d, exists: true })),
+        };
+      },
     };
   }
 
-  // No real isolation/retry — enough for these single-threaded unit tests
-  // (same simplification every FakeDb in this folder documents).
-  async runTransaction<T>(fn: (tx: FakeTransaction) => Promise<T>): Promise<T> {
-    const tx: FakeTransaction = {
-      get: async (ref: { get: () => Promise<unknown> }) => ref.get(),
-      set: async (
-        ref: { set: (d: DocData, o?: { merge?: boolean }) => Promise<void> },
-        data: DocData,
-      ) => {
-        await ref.set(data);
-      },
-      update: async (ref: { update: (d: DocData) => Promise<void> }, patch: DocData) => {
-        await ref.update(patch);
-      },
-    };
-    return fn(tx);
+  async runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
+    return this.occ.runTransaction(fn);
   }
-}
-
-interface FakeTransaction {
-  get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
-  set: (ref: { set: (d: DocData) => Promise<void> }, data: DocData) => Promise<void>;
-  update: (ref: { update: (d: DocData) => Promise<void> }, patch: DocData) => Promise<void>;
 }
 
 const asDb = (db: FakeDb) => db as unknown as Firestore;
@@ -298,6 +334,10 @@ describe('importPedidoMercadoLivre — order/pack fetch', () => {
   it('falls back to get_pack on a 404, importing the pack first order', async () => {
     const db = new FakeDb();
     seedConta(db);
+    // `discoverPedidoMercadoLivre` is mocked to report `created: true`, so the
+    // doc it claims to have created must exist for the steps that follow to
+    // `update` it — the Admin SDK rejects an update of an absent document.
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', itens: {} });
     const order = makeOrder({ id: 501, packId: 500 });
     const getOrder = vi
       .fn()
@@ -318,6 +358,9 @@ describe('importPedidoMercadoLivre — order/pack fetch', () => {
   it('fans out to every sibling order of a pack, feeding all of them to discoverPedidoMercadoLivre', async () => {
     const db = new FakeDb();
     seedConta(db);
+    // See the sibling test above — the mocked discover reports `created: true`,
+    // so the pedido doc has to exist for the later steps to update it.
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', itens: {} });
     const initial = makeOrder({ id: 11, packId: 100 });
     const sibling = makeOrder({ id: 12, packId: 100 });
     const getOrder = vi.fn(async (id: number) => (id === 11 ? initial : sibling));
@@ -425,7 +468,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
 });
 
 describe('importPedidoMercadoLivre — frete', () => {
-  it('runs the full-conference branch on a shipping id, mapping freteInicial and pinning ultimaModificacao to the ORDER timestamp', async () => {
+  it('runs the full-conference branch on a shipping id, mapping freteInicial and valorCobrado', async () => {
     const db = new FakeDb();
     seedConta(db);
     db.seed('pedidos', 'pedido-1', {
@@ -471,7 +514,10 @@ describe('importPedidoMercadoLivre — frete', () => {
     const written = db.docs('pedidos').get('pedido-1');
     expect(written).toMatchObject({
       valorCobrado: 120, // roundReais(totalItens 100 + valorFreteInicial 20)
-      ultimaModificacao: Date.parse(orderLastUpdated) * 1000, // the ORDER's timestamp, not nowUs
+      // Wall clock, monotonic (#791): this stamp is the display / recency-sort /
+      // update-monitor field, so it is NOT the ML order clock. That clock lives
+      // in `lastMarketplaceUpdate`, written by `discoverPedidoMercadoLivre`.
+      ultimaModificacao: NOW_US,
     });
     expect(written!.freteInicial).toMatchObject({
       externalId: '777',
@@ -513,8 +559,16 @@ describe('importPedidoMercadoLivre — frete', () => {
 
     await importPedidoMercadoLivre(deps(db, api), 1);
 
-    expect(getShipmentPayments).not.toHaveBeenCalled();
+    // The frete step early-outs before its three ML round-trips. `resolvePrazoDespacho`
+    // is the one only IT calls, so it is the honest probe for "the frete step
+    // did no work" — `getShipmentPayments` is no longer, because the pago step
+    // now fetches it on every import that has a shipment (#791: registering
+    // shipping payments is what keeps the paid-sum, and therefore the downgrade,
+    // from under-counting).
+    expect(resolvePrazoDespacho).not.toHaveBeenCalled();
     expect(db.docs('pedidos').get('pedido-1')!.freteInicial).toEqual(freteInicial);
+    // Nothing was written to the pedido at all.
+    expect(db.lastPatch('pedidos', 'pedido-1')).toBeUndefined();
   });
 });
 
@@ -622,5 +676,237 @@ describe('mergeFreteInicial', () => {
     );
     expect(mergedWithValues.codRastreio).toBe('BR999NEW'); // replaced — mapped is non-null
     expect(mergedWithValues.prazoDespacho).toBe(newPrazo); // replaced — mapped is non-null
+  });
+});
+
+/* ------------------- concurrency: the frete conference race ---------------- */
+// Issue #791 test 4. Exercises the shared `OccEngine`'s retry path against
+// `applyFreteStep`'s FULL-CONFERENCE branch — the one branch with no in-tx
+// staleness re-guard. `mappedFrete` is built OUTSIDE the transaction, so an
+// OCC retry re-applies it verbatim: the loser overwrites the winner with an
+// OLDER shipment payload and drags `freteInicial.ultimaModificacao` backwards.
+
+describe('applyFreteStep — concurrent conferences (OCC)', () => {
+  const STORED_US = Date.parse('2026-01-01T00:00:00.000Z') * 1000;
+  const FRESH_ISO = '2026-01-15T00:00:00.000-03:00';
+  const STALE_ISO = '2026-01-05T00:00:00.000-03:00';
+  const FRESH_US = Date.parse(FRESH_ISO) * 1000;
+  const STALE_US = Date.parse(STALE_ISO) * 1000;
+
+  function seedFreteRace(db: FakeDb): void {
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      // `pago` is NOT in ESTADOS_CONFERIR_PAGAMENTO, but a null `prazoDespacho`
+      // still selects the FULL-CONFERENCE branch — the unguarded one.
+      estado: 'pago',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: {
+        estado: 'postado',
+        externalId: '777',
+        prazoDespacho: null,
+        ultimaModificacao: STORED_US,
+      },
+      valorCobrado: 100,
+      itens: {},
+    });
+  }
+
+  function apiFor(shipmentLastUpdated: string): MercadoLivreApi {
+    return makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 777, status: 'paid' })),
+      getShipment: vi.fn(async () => ({
+        id: 777,
+        order_id: 1,
+        status: 'shipped',
+        substatus: null,
+        last_updated: shipmentLastUpdated,
+        base_cost: 15,
+        shipping_option: { list_cost: 25 },
+      })),
+      getShipmentPayments: vi.fn(async () => []),
+    });
+  }
+
+  /** The `freteInicial.ultimaModificacao` an attempt is about to commit — a run's identity. */
+  function pendingFreteStamp(writes: readonly { path: string; data: DocData }[]): number | null {
+    const patch = writes.find((w) => w.path === 'pedidos/pedido-1')?.data;
+    const frete = patch?.freteInicial as { ultimaModificacao?: number | null } | undefined;
+    return frete?.ultimaModificacao ?? null;
+  }
+
+  /** Runs both conferences concurrently, forcing `holdLast` to commit LAST. */
+  async function runRace(holdLast: 'fresh' | 'stale'): Promise<FakeDb> {
+    const db = new FakeDb();
+    seedFreteRace(db);
+    const heldStamp = holdLast === 'fresh' ? FRESH_US : STALE_US;
+    const gate = deferred();
+    db.occ.beforeCommit = ({ writes }) =>
+      pendingFreteStamp(writes) === heldStamp ? gate.promise : undefined;
+
+    const fresh = importPedidoMercadoLivre(deps(db, apiFor(FRESH_ISO)), 1);
+    const stale = importPedidoMercadoLivre(deps(db, apiFor(STALE_ISO)), 1);
+    await Promise.race([fresh, stale]); // the un-held run settles on its own
+    gate.resolve();
+    await Promise.all([fresh, stale]);
+    return db;
+  }
+
+  it.each(['fresh', 'stale'] as const)(
+    'the NEWER shipment payload wins even when the %s conference commits last',
+    async (holdLast) => {
+      const db = await runRace(holdLast);
+
+      const frete = db.docs('pedidos').get('pedido-1')!.freteInicial as DocData;
+      expect(frete.ultimaModificacao).toBe(FRESH_US);
+    },
+  );
+});
+
+/* ------------------ the pago advance uses the APPROVED-only sum ------------ */
+// Issue #791 test 1-3 (O13). Legacy's primary advance summed EVERY pagamento
+// regardless of status (tasks.dart:665-666), so a rejected payment could push a
+// pedido to `pago` — and `pago` authorizes dispatch and NF-e emission.
+
+describe('importPedidoMercadoLivre — pago advance sums only APPROVED pagamentos', () => {
+  function seedAdvanceCase(db: FakeDb, pagamentos: DocData[]): void {
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: { estado: 'iniciado' },
+      valorCobrado: 100,
+      numero: 'X',
+      itens: {},
+    });
+    pagamentos.forEach((p, i) => db.seed('pedidos/pedido-1/pagamentos', `pag-${i}`, p));
+  }
+
+  const apiForAdvance = (): MercadoLivreApi =>
+    makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
+
+  it('does NOT advance when the only pagamento is recusado for the FULL amount', async () => {
+    const db = new FakeDb();
+    seedAdvanceCase(db, [{ id: '900', valor: 100, status_pagamento: STATUS_PAGAMENTO.recusado }]);
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+    // Not merely "did not advance" — did not WRITE. A no-op decision writes nothing.
+    expect(db.lastPatch('pedidos', 'pedido-1')).toBeUndefined();
+  });
+
+  it('DOES advance on one aprovado pagamento covering the total, with a targeted patch', async () => {
+    const db = new FakeDb();
+    seedAdvanceCase(db, [{ id: '900', valor: 100, status_pagamento: STATUS_PAGAMENTO.aprovado }]);
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('pago');
+    const patch = db.lastPatch('pedidos', 'pedido-1')!;
+    expect(Object.keys(patch).sort()).toEqual(['estado', 'ultimaModificacao']);
+    // An untouched seeded field proves this was a TARGETED patch, not a rewrite.
+    expect(db.docs('pedidos').get('pedido-1')!.numero).toBe('X');
+  });
+
+  it('stays emProcessamento when aprovado + recusado only TOGETHER cover the total', async () => {
+    const db = new FakeDb();
+    seedAdvanceCase(db, [
+      { id: '900', valor: 40, status_pagamento: STATUS_PAGAMENTO.aprovado },
+      // 40 + 60 = 100 under the old sum-everything rule — must not count.
+      { id: '901', valor: 60, status_pagamento: STATUS_PAGAMENTO.recusado },
+    ]);
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+    expect(db.lastPatch('pedidos', 'pedido-1')).toBeUndefined();
+  });
+
+  it('does not count an estornado_parcialmente residue as paying', async () => {
+    const db = new FakeDb();
+    seedAdvanceCase(db, [
+      { id: '900', valor: 100, status_pagamento: STATUS_PAGAMENTO.estornado_parcialmente },
+    ]);
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+  });
+
+  it('does not count a NULL status_pagamento as paying (sumApprovedOnly, not sumPagamentosPagos)', async () => {
+    const db = new FakeDb();
+    seedAdvanceCase(db, [{ id: '900', valor: 100, status_pagamento: null }]);
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+  });
+
+  it('never advances a pedido whose valorCobrado was never conferred (null total)', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: { estado: 'iniciado' },
+      valorCobrado: null,
+      itens: {},
+    });
+    db.seed('pedidos/pedido-1/pagamentos', 'pag-0', {
+      id: '900',
+      valor: 5,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    // A null total used to read as a threshold of 0, so ANY pagamento advanced it.
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+  });
+
+  it('never advances a pedido with no pagamentos at all (0 >= 0 is not payment)', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: { estado: 'iniciado' },
+      valorCobrado: 0,
+      itens: {},
+    });
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+  });
+
+  it('re-derives the four-field guard from the tx-fresh doc, not the pre-read one', async () => {
+    const db = new FakeDb();
+    seedAdvanceCase(db, [{ id: '900', valor: 100, status_pagamento: STATUS_PAGAMENTO.aprovado }]);
+    // A competing writer advances the pedido between our pre-read and our
+    // commit, via a REAL second transaction (so the engine's version counter
+    // moves exactly as it would in production). The advance transaction must
+    // abort, re-run, and decline on the tx-fresh `estado` — leaving exactly one
+    // estado write in the store.
+    let interfered = false;
+    db.occ.beforeCommit = async ({ writes }) => {
+      if (interfered || !writes.some((w) => w.path === 'pedidos/pedido-1')) return;
+      interfered = true;
+      await db.runTransaction(async (tx) => {
+        tx.update(pedidoCollection.docRef(asDb(db), {}, 'pedido-1'), { estado: 'pago' });
+      });
+    };
+
+    await importPedidoMercadoLivre(deps(db, apiForAdvance()), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('pago');
+    expect(db.occ.txLog.some((e) => e.phase === 'abort')).toBe(true);
+    // The competitor's write, and nothing from the aborted attempt's retry.
+    const estadoWrites = db.opLog.filter((o) => o.op === 'update' && o.path === 'pedidos/pedido-1');
+    expect(estadoWrites.length).toBeGreaterThanOrEqual(1);
   });
 });
