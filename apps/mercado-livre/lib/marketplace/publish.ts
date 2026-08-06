@@ -39,6 +39,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import {
+  ML_DERIVED_ATTRIBUTE_IDS,
   MercadoLivrePublishError,
   type PublishGrupoVariacao,
   type PublishLink,
@@ -117,6 +118,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     ? {
         docId: linkDoc.docId,
         id: linkDoc.data.id ?? null,
+        title: linkDoc.data.title ?? null,
         condition: linkDoc.data.condition ?? null,
         listing_type_id: linkDoc.data.listing_type_id ?? null,
         category_id: linkDoc.data.category_id ?? null,
@@ -169,12 +171,14 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     });
   }
 
-  // ---- Category (existing link wins; else suggest from the title) --------
-  let categoryId = link?.category_id ?? null;
-  if (!categoryId && link?.id == null) {
-    const suggestions = await api.suggestCategories(produto.nome, 1);
-    categoryId = suggestions[0]?.category_id ?? null;
-  }
+  // ---- Category -----------------------------------------------------------
+  // The link doc is the ONLY source. Publish used to fall back to
+  // `suggestCategories(produto.nome, 1)[0]` with no human in the loop — and a
+  // wrong first hit is only discoverable once the listing exists, in the wrong
+  // category, on a live marketplace. #799: the suggestion is OFFERED by the
+  // listing editor (GET /categorias/sugestoes) and applied by a person. A
+  // missing category_id is the 422 `assemblePublishInput` already raises.
+  const categoryId = link?.category_id ?? null;
 
   const pubProduto = toPublishProduto(produtoId, produto);
   const condicao = typeof extra?.condicao === 'number' ? extra.condicao : null;
@@ -192,7 +196,9 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       produtoMercadoLivreLinkCollection.parse({
         ...(linkDoc?.data ?? {}),
         contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
-        title: produto.nome,
+        // Never overwrite an operator-authored title (#799 bug 4a) — only seed
+        // one on the first publish, where the schema requires a non-empty value.
+        title: trimToNull(linkDoc?.data.title) ?? produto.nome,
         sku: produto.sku ?? null,
         condition: resolveCondition(link, pubProduto, condicao),
         category_id: linkDoc?.data.category_id ?? categoryId,
@@ -266,16 +272,29 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     produtoMercadoLivreLinkCollection.parse({
       ...(linkDoc?.data ?? {}),
       contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
-      title: produto.nome,
+      // Preserve the operator's title; seed from produto.nome only on a first
+      // publish, where the schema requires a non-empty value (#799 bug 4a).
+      title: trimToNull(linkDoc?.data.title) ?? produto.nome,
       sku: produto.sku ?? null,
       condition: input.condition,
       category_id: item.category_id ?? categoryId,
       listing_type_id: item.listing_type_id ?? input.listingTypeId ?? null,
       estado,
+      // #799 bug 6: publish never wrote these, so a freshly published listing
+      // looked like a #780 legacy-authored doc to the stock planner
+      // (estoquePlan.ts:1206) and bypassed the podeEnviarEstoque whitelist for
+      // a cycle. They are the same two fields applyItemStatusToLink maintains.
+      status: item.status ?? null,
+      sub_status: item.sub_status ?? null,
       id: item.id,
       precoPublicado: item.price ?? null,
       freteGratis: item.shipping?.free_shipping ?? false,
       isUserProductModel: input.isUserProductSeller,
+      // #799 bug 7: the attributes we just sent, minus the ones rebuilt from
+      // the produto on every publish (appending those back would duplicate
+      // them). Without this a produto never touched by Flutter keeps
+      // `attributes: null` forever and the editor has nothing to load.
+      attributes: (input.attributes ?? []).filter((a) => !ML_DERIVED_ATTRIBUTE_IDS.has(a.id)),
       errors: [],
       ultimaModificacao: now,
       dataCadastro: linkDoc?.data.dataCadastro ?? now,
