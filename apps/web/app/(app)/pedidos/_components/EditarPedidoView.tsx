@@ -30,6 +30,7 @@ import { PedidoForm } from './PedidoForm';
 import { PedidoConflictModal } from './PedidoConflictModal';
 import { conflictFields } from './conflictFields';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
+import { marcarInteracaoDoUsuario } from '@/lib/pedidos/interacaoDoUsuario';
 import { StatusBadge } from './StatusBadge';
 import { DIRECAO, direcaoOf } from './direcao';
 import { DirecaoBadge } from './DirecaoBadge';
@@ -149,7 +150,11 @@ export function EditarPedidoView() {
     const baseline: Record<string, unknown> = { ...loaded };
     if (!dirtyFields.estado) baseline.estado = live.estado;
     if (!dirtyFields.freteInicial) baseline.freteInicial = live.freteInicial;
-    const patch = buildPedidoPatch(values, dirtyFields);
+    // Mark the pedido as human-touched (see `marcarInteracaoDoUsuario`). It rides
+    // in the patch — rather than being appended by the port — so the "salvar e
+    // continuar editando" re-baseline below picks it up and the next save doesn't
+    // read it as a remote change.
+    const patch = marcarInteracaoDoUsuario(buildPedidoPatch(values, dirtyFields));
     const port = createClientPedidoPort(getFirebaseFirestore());
     try {
       // An estado change is recorded in `historicoEstadoPedido` by the
