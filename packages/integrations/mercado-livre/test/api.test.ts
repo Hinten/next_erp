@@ -98,6 +98,40 @@ describe('createMercadoLivreApi — happy paths', () => {
     expect(order.order_items).toEqual([]);
   });
 
+  it('getOrderResponse reports a 200 as complete and a 206 as not', async () => {
+    // The orderML mirror uses this to decide replace-vs-merge (#793).
+    const ok = createMercadoLivreApi(
+      cfg(vi.fn(async () => jsonResponse({ id: 1, status: 'paid', order_items: [] }, 200))),
+    );
+    await expect(ok.getOrderResponse(1)).resolves.toMatchObject({ complete: true });
+
+    const partial = createMercadoLivreApi(
+      cfg(vi.fn(async () => jsonResponse({ id: 1, status: 'paid', order_items: [] }, 206))),
+    );
+    await expect(partial.getOrderResponse(1)).resolves.toMatchObject({ complete: false });
+  });
+
+  it('getOrderResponse keeps absent-vs-null distinct on the parsed order', async () => {
+    // `pack_id` absent must NOT become null — that difference is the whole
+    // discriminator the mirror merge runs on.
+    const api = createMercadoLivreApi(
+      cfg(vi.fn(async () => jsonResponse({ id: 1, status: 'paid', order_items: [] }, 206))),
+    );
+    const { order } = await api.getOrderResponse(1);
+    expect('pack_id' in order).toBe(false);
+
+    const withNull = createMercadoLivreApi(
+      cfg(
+        vi.fn(async () =>
+          jsonResponse({ id: 1, status: 'paid', order_items: [], pack_id: null }, 200),
+        ),
+      ),
+    );
+    const res = await withNull.getOrderResponse(1);
+    expect('pack_id' in res.order).toBe(true);
+    expect(res.order.pack_id).toBeNull();
+  });
+
   it('tolerates unknown extra fields (ML adds fields without notice)', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ ...USER, brand_new_ml_field: 42 }),
@@ -1040,5 +1074,110 @@ describe('createMercadoLivreApi — write endpoints', () => {
     await expect(
       api.uploadPicture({ filename: 'x.png', contentType: 'image/png', data: new Uint8Array(1) }),
     ).rejects.toMatchObject({ constructor: MercadoLivreHttpError, status: 400 });
+  });
+});
+
+describe('createMercadoLivreApi — listing metadata (#799)', () => {
+  it('listSiteCategories reads the tree roots', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ id: 'MLB1430', name: 'Roupas' }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.listSiteCategories()).resolves.toEqual([{ id: 'MLB1430', name: 'Roupas' }]);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      'https://api.mercadolibre.com/sites/MLB/categories',
+    );
+  });
+
+  it('getCategory surfaces children_categories so callers can test for a leaf', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 'MLB1430',
+        name: 'Roupas',
+        children_categories: [{ id: 'MLB31447', name: 'Camisetas' }],
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const cat = await api.getCategory('MLB1430');
+    expect(cat.children_categories).toEqual([{ id: 'MLB31447', name: 'Camisetas' }]);
+  });
+
+  it('getCategoryListingTypes hits the per-CATEGORY endpoint', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ id: 'gold_special', name: 'Clássico', site_id: 'MLB' }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getCategoryListingTypes('MLB31447')).resolves.toEqual([
+      { id: 'gold_special', name: 'Clássico', site_id: 'MLB' },
+    ]);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      'https://api.mercadolibre.com/categories/MLB31447/listing_types',
+    );
+  });
+
+  it('getListingPrices sends price + listing type + category', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ listing_type_id: 'gold_special', sale_fee_amount: 12.34, currency_id: 'BRL' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const prices = await api.getListingPrices({
+      price: 79.9,
+      listingTypeId: 'gold_special',
+      categoryId: 'MLB31447',
+    });
+    expect(prices.sale_fee_amount).toBe(12.34);
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.pathname).toBe('/sites/MLB/listing_prices');
+    expect(url.searchParams.get('price')).toBe('79.9');
+    expect(url.searchParams.get('listing_type_id')).toBe('gold_special');
+    expect(url.searchParams.get('category_id')).toBe('MLB31447');
+  });
+
+  it('getCategoryAttributes keeps the fields the editor and the AI flow need', async () => {
+    // Everything below `tags` plus hierarchy/tooltip/value_max_length used to be
+    // dropped on parse, so the filter had nothing to test.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        {
+          id: 'BRAND',
+          name: 'Marca',
+          value_type: 'string',
+          hierarchy: 'FAMILY',
+          relevance: 1,
+          tooltip: 'A marca',
+          hint: 'Ex.: Acme',
+          value_max_length: 60,
+          default_unit: 'cm',
+          allowed_units: [{ id: 'cm', name: 'centímetro' }],
+          attribute_group_id: 'MAIN',
+          attribute_group_name: 'Principais',
+          tags: { required: true },
+        },
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const [attr] = await api.getCategoryAttributes('MLB31447');
+    expect(attr).toMatchObject({
+      hierarchy: 'FAMILY',
+      relevance: 1,
+      tooltip: 'A marca',
+      hint: 'Ex.: Acme',
+      value_max_length: 60,
+      default_unit: 'cm',
+      allowed_units: [{ id: 'cm', name: 'centímetro' }],
+      attribute_group_id: 'MAIN',
+      attribute_group_name: 'Principais',
+      tags: { required: true },
+    });
+  });
+
+  it('accepts tags as an ARRAY, which some categories send', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ id: 'BRAND', value_type: 'string', tags: ['required', 'hidden'] }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const [attr] = await api.getCategoryAttributes('MLB31447');
+    expect(attr!.tags).toEqual(['required', 'hidden']);
   });
 });

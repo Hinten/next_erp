@@ -324,7 +324,6 @@ function migrationDeps(db: FakeDb, api: MercadoLivreApi): UptinMigrationDeps {
     integracaoId: CONTA,
     sellerUserId: 55,
     tabelaNormalOuterRef: 'documents/tabelasDePrecos/tabNormal',
-    tabelaPromocionalOuterRef: 'documents/tabelasDePrecos/tabPromo',
     depositoOuterRef: 'documents/depositos/dep1',
   };
 }

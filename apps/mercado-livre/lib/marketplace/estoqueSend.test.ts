@@ -12,6 +12,7 @@ import { estoqueMercadoLivreSyncCollection } from '@delfrance/data/admin/collect
 import {
   PAUSE_REENQUEUE_JITTER_MAX_S,
   STOCK_SEND_MAX_ATTEMPTS,
+  STOCK_SYNC_FLAG_ENV,
   type StockFamilyRow,
   buildSendTasks,
   fingerprintVariations,
@@ -210,12 +211,17 @@ function run(h: Harness, p: unknown = payload()) {
 }
 
 beforeEach(() => {
+  // The handler is gated on the master flag (#805), which is unset in this
+  // process — without this every spec below would short-circuit into the gate.
+  vi.stubEnv(STOCK_SYNC_FLAG_ENV, '1');
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
+  // `restoreAllMocks` does NOT unstub envs — both calls are required.
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -294,6 +300,49 @@ describe('processStockSendTask — payload parse', () => {
     expect(h.enqueue).not.toHaveBeenCalled();
     expect(h.apiFactory).not.toHaveBeenCalled();
     expect(vi.mocked(console.error)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('processStockSendTask — master flag (#805)', () => {
+  // '0' is the acceptance criterion's own wording ("flipping the flag to 0");
+  // unset is the DEPLOYED steady state, since the flag ships off. `envFlag` is
+  // true only on exactly '1', so both are off — and an already-enqueued backlog
+  // must reach ML on neither.
+  for (const [label, value] of [
+    ['flipped to 0', '0'],
+    ['unset', undefined],
+  ] as const) {
+    it(`${label} → skipped, zero Firestore reads, no token resolve, no ML call`, async () => {
+      vi.stubEnv(STOCK_SYNC_FLAG_ENV, value);
+      const h = makeHarness();
+
+      const res = await run(h);
+
+      expect(res).toEqual({ outcome: 'skipped', reason: 'sync-desabilitado' });
+      // The gate sits before the pause-gate get, so a drained task reads nothing.
+      expect(h.db.opLog).toHaveLength(0);
+      // No API client is ever built ⇒ no access token is resolved or refreshed.
+      expect(h.apiFactory).not.toHaveBeenCalled();
+      expect(h.updateItem).not.toHaveBeenCalled();
+      expect(h.enqueue).not.toHaveBeenCalled();
+      // The conta has to be identifiable in the log — an operator draining a
+      // backlog needs to know WHICH conta went quiet.
+      expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+        expect.stringContaining(STOCK_SYNC_FLAG_ENV),
+        expect.objectContaining({ integracaoId: CONTA, itemId: 'MLB111', sweepId: 'sweep-1' }),
+      );
+    });
+  }
+
+  it("stays enabled on exactly '1' — the gate does not swallow a live send", async () => {
+    vi.stubEnv(STOCK_SYNC_FLAG_ENV, '1');
+    const h = makeHarness();
+    seedLink(h.db);
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 10 });
   });
 });
 
@@ -629,6 +678,28 @@ describe('processStockSendTask — last-sent record (#695, write side)', () => {
     expect(h.db.opLog.filter((o) => o.op === 'update').map((o) => o.path)).toEqual([
       `${LINK_PATH}/link1`,
     ]);
+  });
+
+  it('UP without a variacaoProdutoId writes NOTHING — never falls back to the anchor', async () => {
+    // The subcollection is produtos/{CHILD}/variacaoMercadoLivre. Defaulting to
+    // the anchor would put this child's quantity in a DIFFERENT produto's
+    // subcollection — and since `varLinkDocId` is a plausible id there too,
+    // mergeIfExists would land it on an unrelated doc rather than resolve false.
+    const h = makeHarness();
+    seedLink(h.db, { isUserProductModel: true });
+    // A doc that WOULD be hit by the bad fallback path.
+    h.db.seed('produtos/PROD/variacaoMercadoLivre', 'vl-1', { itemId: 'ALHEIO' });
+
+    const res = await run(h, upPayload({ variacaoProdutoId: null }));
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.db.opLog.filter((o) => o.op === 'update').map((o) => o.path)).toEqual([
+      `${LINK_PATH}/link1`,
+    ]);
+    // The bystander is untouched — no last-sent keys leaked onto it.
+    expect(h.db.docs('produtos/PROD/variacaoMercadoLivre').get('vl-1')).toEqual({
+      itemId: 'ALHEIO',
+    });
   });
 
   /* -- Failure paths record NOTHING. This is the load-bearing half: a value

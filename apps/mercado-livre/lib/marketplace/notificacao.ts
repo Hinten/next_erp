@@ -22,12 +22,12 @@
  *                 Step 9 order→pedido import (see `runOrderImport` below);
  *                 `payments`/`shipments` run the Step 9 PR 3 payment/shipment
  *                 sync onto an already-imported pedido (see `runPaymentImport`/
- *                 `runShipmentImport` below); `items_prices` runs the Step 11
- *                 price sync onto the linked produto (see `runItemsPricesSync`
- *                 below); `claims` runs the Step 14 claim → incidente/conversa
- *                 import (see `runClaimImport` below); the remaining topics
- *                 (orders_feedback/questions/messages/stock-location) are
- *                 no-ops until their per-topic handlers land in later steps;
+ *                 `runShipmentImport` below); `claims` runs the Step 14 claim →
+ *                 incidente/conversa import (see `runClaimImport` below); the
+ *                 remaining topics (items_prices/orders_feedback/questions/
+ *                 messages/stock-location) are no-ops — `items_prices`
+ *                 PERMANENTLY so (#803, see `KNOWN_TOPICS`), the rest until
+ *                 their per-topic handlers land in later steps;
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
@@ -66,8 +66,7 @@ import {
 } from './itemsStatusSync';
 import { type ClaimImportResult, importClaimMercadoLivre } from './claimImport';
 import { handleUptinMigration } from './importMigration';
-import { type ItemsPricesSyncOutcome, syncItemPrices } from './itemsPricesSync';
-import { lastSegment, parseItemIdFromPricesResource, parseItemIdFromResource } from './linkRefs';
+import { lastSegment, parseItemIdFromResource } from './linkRefs';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { type OrderImportResult, importPedidoMercadoLivre } from './orderImport';
 import { type PaymentImportResult, importPagamentoMercadoLivre } from './orderPaymentImport';
@@ -93,6 +92,16 @@ export type { ReprocessOptions, ReprocessResult };
  * The ML notification topics the pipeline recognizes. A known topic is processed
  * (no-op until its handler exists); a genuinely-unknown topic parks.
  * (`questions`/`messages` are recognized but postponed per the port plan.)
+ *
+ * ⚠️ `items_prices` MUST stay in this set even though it has no handler and,
+ * per #803, never will: **the ERP owns both price tables** — Mercado Livre is
+ * not a writer of `produto.precos`. Membership here is what makes an
+ * `items_prices` delivery ack `done` and persist NOTHING; dropping it from the
+ * set instead routes it to `unknown-topic`, which PARKS a
+ * `notificacaoMercadoLivre` document on EVERY delivery. Unsubscribing the topic
+ * in the ML application manager stops the traffic at the source, but it is a
+ * panel checkbox anyone can flip back (and `missed_feeds` replays), so this arm
+ * is the durable half of the fix. Do not re-attach a handler here.
  */
 export const KNOWN_TOPICS: ReadonlySet<string> = new Set([
   'orders_v2',
@@ -230,7 +239,6 @@ const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sour
       integracaoId,
       sellerUserId: asNumberOrNull(ctx.conta.user_id),
       tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
-      tabelaPromocionalOuterRef: asStringOrNull(ctx.conta.tabelaPromocionalOuterRef),
       depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
     },
     itemId,
@@ -380,30 +388,6 @@ const runClaimImport: ClaimImportRunner = async (db, integracaoId, resourceId) =
 };
 
 /**
- * The Step 11 items_prices price-sync seam invoked for `items_prices`
- * notifications — shaped like `OrderImportRunner` but keyed by the ML item id
- * (topic handler → typed runner, injectable for tests, defaulted to the real
- * impl below). `itemId` is parsed from the notification's `resource`
- * (`/items/MLB123/prices` → `MLB123`).
- */
-export type ItemsPricesRunner = (
-  db: Firestore,
-  integracaoId: string,
-  itemId: string,
-) => Promise<ItemsPricesSyncOutcome>;
-
-/**
- * The production Step 11 price sync: `syncItemPrices` with its real default
- * deps (omitting `deps` makes it resolve the account's live ML API — same
- * seller-token path as the runners above — and the conta's price-table refs
- * itself). Wired as `processNotificationPayload`'s default for `items_prices`
- * so an ordinary notification needs no caller change; tests inject their own
- * runner.
- */
-const runItemsPricesSync: ItemsPricesRunner = async (db, integracaoId, itemId) =>
-  syncItemPrices(db, integracaoId, itemId);
-
-/**
  * The ML order/pack/payment/shipment/claim id from a notification `resource`
  * (`/orders/123` / `/payments/123` / `/shipments/123` / `/claims/123` →
  * `123`). Tolerates a
@@ -423,7 +407,7 @@ export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
-  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders/payments/shipments/items_prices/claims resource had no parseable id
+  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders/payments/shipments/claims resource had no parseable id
 
 /**
  * The per-topic runner seams the dispatch pipeline threads — ONE options bag
@@ -438,7 +422,6 @@ export interface NotificationRunners {
   orderImportRunner?: OrderImportRunner;
   paymentImportRunner?: PaymentImportRunner;
   shipmentImportRunner?: ShipmentImportRunner;
-  itemsPricesRunner?: ItemsPricesRunner;
   claimImportRunner?: ClaimImportRunner;
 }
 
@@ -459,7 +442,6 @@ export async function processNotificationPayload(
   const orderImportRunner = runners.orderImportRunner ?? runOrderImport;
   const paymentImportRunner = runners.paymentImportRunner ?? runPaymentImport;
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
-  const itemsPricesRunner = runners.itemsPricesRunner ?? runItemsPricesSync;
   const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
 
   const integracaoId = await resolveIntegracaoByUserId(db, payload.user_id ?? null);
@@ -547,28 +529,6 @@ export async function processNotificationPayload(
     return { kind: 'done', integracaoId };
   }
 
-  // `items_prices` — price sync of an already-linked listing (Step 11):
-  // re-fetch `GET /items/{id}/prices` and write the produto's `precos` entries
-  // for the conta's price tables. Idempotent, keyed by the ML item id. THROWS
-  // on a transient failure (ML API / Firestore / network) so the queue/sweep
-  // retry. An unlinked item, a conta with no price-table refs, a listing with
-  // no standard price, or a 404'd listing are deterministic skips (logged),
-  // still acked `done`. A resource that is not `/items/{id}/prices` is
-  // malformed: dropped WITHOUT dispatching a bogus sync.
-  if (payload.topic === 'items_prices') {
-    const itemId = parseItemIdFromPricesResource(payload.resource);
-    if (itemId == null) return { kind: 'malformed-resource', integracaoId };
-    const outcome = await itemsPricesRunner(db, integracaoId, itemId);
-    if (outcome !== 'synced' && outcome !== 'unchanged') {
-      console.warn('[mercado-livre] items_prices sync skipped', {
-        integracaoId,
-        itemId,
-        outcome,
-      });
-    }
-    return { kind: 'done', integracaoId };
-  }
-
   // `claims` — claim → incidente/conversa/mensagens import (Step 14).
   // Idempotent, keyed by the byte-exact legacy doc ids (`claimIds.ts`).
   // THROWS on a transient failure (ML API / Firestore / network) so the
@@ -592,12 +552,18 @@ export async function processNotificationPayload(
     return { kind: 'done', integracaoId };
   }
 
-  // Other known topics (orders_feedback/questions/messages/stock-location):
-  // their per-topic handlers land in later steps; here the foundation acks
-  // them so the pipeline is exercisable end-to-end. A future handler MUST
-  // THROW on a transient failure (so the queue/sweep retry) and be idempotent
-  // keyed by the ML resource id — it must never fall through to a silent
-  // success.
+  // Other known topics, acked with NOTHING persisted. Two different reasons:
+  //
+  //  - `items_prices` is a PERMANENT no-op (#803). The ERP owns both price
+  //    tables — Mercado Livre is not a writer of `produto.precos` — so there is
+  //    nothing to do with a price notification. It stays a KNOWN topic purely
+  //    so it lands here instead of parking a document per delivery; see
+  //    `KNOWN_TOPICS`. Do not add a handler for it.
+  //  - orders_feedback/questions/messages/stock-location: their per-topic
+  //    handlers land in later steps; here the foundation acks them so the
+  //    pipeline is exercisable end-to-end. A future handler MUST THROW on a
+  //    transient failure (so the queue/sweep retry) and be idempotent keyed by
+  //    the ML resource id — it must never fall through to a silent success.
   return { kind: 'done', integracaoId };
 }
 

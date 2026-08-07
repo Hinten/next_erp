@@ -141,6 +141,76 @@ export interface MercadoLivrePriceSyncStatus {
   erro: string | null;
 }
 
+/** A node of the ML category tree (`GET categorias`). */
+export interface MercadoLivreCategoriaNo {
+  id: string;
+  name: string | null;
+}
+
+export interface MercadoLivreCategorias {
+  /** Populated only when no `categoryId` was asked for. */
+  roots: MercadoLivreCategoriaNo[] | null;
+  node: {
+    id: string;
+    name: string | null;
+    /** Ancestors, root-first — the cascade's breadcrumb. */
+    pathFromRoot: MercadoLivreCategoriaNo[];
+    children: MercadoLivreCategoriaNo[];
+    /** Only a leaf has listing types and attributes. */
+    isLeaf: boolean;
+    settings: Record<string, unknown> | null;
+  } | null;
+}
+
+/** One ML category suggestion (`GET categorias/sugestoes`). */
+export interface MercadoLivreCategoriaSugestao {
+  categoryId: string;
+  categoryName: string | null;
+  domainId: string | null;
+  domainName: string | null;
+}
+
+/**
+ * One editable ML category attribute (`GET categorias/atributos`).
+ *
+ * Already filtered and normalised server-side: ERP-owned ids (SELLER_SKU,
+ * PACKAGE_*), hidden attributes, size-chart attributes and out-of-scope
+ * variation attributes never appear here, and the list arrives ordered
+ * required-first.
+ */
+export interface MercadoLivreCategoriaAtributo {
+  id: string;
+  name: string | null;
+  /** `string | number | number_unit | boolean | list`, or whatever ML adds. */
+  valueType: string | null;
+  values: Array<{ id: string | null; name: string | null }>;
+  /** Helper text (`hint`, falling back to `tooltip`). */
+  hint: string | null;
+  valueMaxLength: number | null;
+  defaultUnit: string | null;
+  allowedUnits: Array<{ id: string | null; name: string | null }>;
+  groupId: string | null;
+  groupName: string | null;
+  required: boolean;
+  multivalued: boolean;
+  readOnly: boolean;
+  relevance: number | null;
+}
+
+export interface MercadoLivreCategoriaAtributos {
+  /** False ⇒ a mid-tree category; keep the operator in the cascade. */
+  leaf: boolean;
+  atributos: MercadoLivreCategoriaAtributo[];
+  /** Why an attribute was withheld, so a gap is explainable. */
+  omitidos: Array<{ id: string; motivo: string }>;
+}
+
+/** The listing types available for a leaf category (`GET tipos-anuncio`). */
+export interface MercadoLivreTiposAnuncio {
+  leaf: boolean;
+  tipos: MercadoLivreCategoriaNo[];
+}
+
 /** One chart-enabled ML domain (`GET size-charts/domains`). */
 export interface MercadoLivreChartDomain {
   domain_id: string;
@@ -252,6 +322,40 @@ export interface MercadoLivreClient {
     integracaoId: string;
     jobId: string;
   }): Promise<MercadoLivrePriceSyncStatus>;
+  /**
+   * One level of the ML category tree for the listing editor's cascade picker
+   * (PERM.integracao.read). Omit `categoryId` for the roots.
+   */
+  categorias(input: {
+    integracaoId: string;
+    categoryId?: string | null;
+  }): Promise<MercadoLivreCategorias>;
+  /**
+   * ML's ranked category suggestions for a title (PERM.integracao.read).
+   *
+   * OFFERS them — publish no longer applies a suggestion itself (#799), so the
+   * operator picks from this list.
+   */
+  sugerirCategorias(input: {
+    integracaoId: string;
+    q: string;
+    limit?: number;
+  }): Promise<{ sugestoes: MercadoLivreCategoriaSugestao[] }>;
+  /**
+   * The attribute definitions to render for a LEAF category, already filtered
+   * and ordered required-first (PERM.integracao.read). `leaf: false` means the
+   * operator has not reached a leaf yet — show the cascade, not an empty grid.
+   */
+  categoriaAtributos(input: {
+    integracaoId: string;
+    categoryId: string;
+    escopo?: 'item' | 'variacao';
+  }): Promise<MercadoLivreCategoriaAtributos>;
+  /** The listing types ML offers for a LEAF category (PERM.integracao.read). */
+  tiposAnuncio(input: {
+    integracaoId: string;
+    categoryId: string;
+  }): Promise<MercadoLivreTiposAnuncio>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
   sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
   /**
@@ -440,6 +544,28 @@ export function createMercadoLivreClient(config: {
     priceSyncStatus: (input) =>
       call<MercadoLivrePriceSyncStatus>(
         `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
+      ),
+    categorias: (input) =>
+      call<MercadoLivreCategorias>(
+        `/api/marketplace/mercado-livre/categorias?integracaoId=${encodeURIComponent(input.integracaoId)}` +
+          (input.categoryId ? `&categoryId=${encodeURIComponent(input.categoryId)}` : ''),
+      ),
+    sugerirCategorias: (input) =>
+      call<{ sugestoes: MercadoLivreCategoriaSugestao[] }>(
+        `/api/marketplace/mercado-livre/categorias/sugestoes?integracaoId=${encodeURIComponent(input.integracaoId)}` +
+          `&q=${encodeURIComponent(input.q)}` +
+          (input.limit == null ? '' : `&limit=${String(input.limit)}`),
+      ),
+    categoriaAtributos: (input) =>
+      call<MercadoLivreCategoriaAtributos>(
+        `/api/marketplace/mercado-livre/categorias/atributos?integracaoId=${encodeURIComponent(input.integracaoId)}` +
+          `&categoryId=${encodeURIComponent(input.categoryId)}` +
+          (input.escopo == null ? '' : `&escopo=${input.escopo}`),
+      ),
+    tiposAnuncio: (input) =>
+      call<MercadoLivreTiposAnuncio>(
+        `/api/marketplace/mercado-livre/tipos-anuncio?integracaoId=${encodeURIComponent(input.integracaoId)}` +
+          `&categoryId=${encodeURIComponent(input.categoryId)}`,
       ),
     sizeChartDomains: (integracaoId) =>
       call<{ domains: MercadoLivreChartDomain[] }>(

@@ -10,6 +10,7 @@ import {
   whereOp,
 } from '@delfrance/data';
 import { telefoneQueryShapes } from '@delfrance/core/phone';
+import { type ClienteIdentityKeys, isSameCliente, normalizeDocumento } from '@delfrance/schemas';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 
 const CANDIDATE_LIMIT = 5;
@@ -24,6 +25,17 @@ export interface DedupCandidate {
   idEstrangeiro: string | null;
   email: string | null;
   telefone: string | null;
+  /**
+   * The candidate's strong identifiers CONTRADICT what was typed — same phone
+   * or e-mail, different document, so it is probably a different person
+   * (recycled mobile numbers and shared household e-mails are routine).
+   *
+   * Advisory only. It never promotes a candidate to `blocking` and never
+   * demotes one: the same predicate that makes the server importer refuse to
+   * merge here (`@delfrance/schemas`, #786) just labels the warning, because
+   * on this screen a human is the one deciding.
+   */
+  identityConflict: boolean;
 }
 
 export interface ClienteDedupInput {
@@ -50,23 +62,31 @@ function readString(data: Record<string, unknown>, key: string): string | null {
   return typeof v === 'string' && v !== '' ? v : null;
 }
 
-function toCandidate(id: string, data: Record<string, unknown>): DedupCandidate {
+function toCandidate(
+  id: string,
+  data: Record<string, unknown>,
+  typed: ClienteIdentityKeys,
+): DedupCandidate {
+  const cpf_cnpj = readString(data, 'cpf_cnpj');
+  const idEstrangeiro = readString(data, 'idEstrangeiro');
   return {
     id,
     nome: readString(data, 'nome'),
-    cpf_cnpj: readString(data, 'cpf_cnpj'),
-    idEstrangeiro: readString(data, 'idEstrangeiro'),
+    cpf_cnpj,
+    idEstrangeiro,
     email: readString(data, 'email'),
     telefone: readString(data, 'telefone'),
+    identityConflict: !isSameCliente({ cpf_cnpj, idEstrangeiro }, typed),
   };
 }
 
 async function queryCandidates(
   db: Firestore,
   constraints: Parameters<typeof buildQuery>[1],
+  typed: ClienteIdentityKeys,
 ): Promise<DedupCandidate[]> {
   const snap = await getDocs(buildQuery(clienteCollection.ref(db, {}), constraints));
-  return snap.docs.map((d) => toCandidate(d.id, d.data() as Record<string, unknown>));
+  return snap.docs.map((d) => toCandidate(d.id, d.data() as Record<string, unknown>, typed));
 }
 
 /**
@@ -75,7 +95,11 @@ async function queryCandidates(
  * classic prefix-range query when the SDK lacks the Pipelines API; any
  * other error (FirebaseError, …) propagates to the caller.
  */
-async function querySimilarNome(db: Firestore, term: string): Promise<DedupCandidate[]> {
+async function querySimilarNome(
+  db: Firestore,
+  term: string,
+  typed: ClienteIdentityKeys,
+): Promise<DedupCandidate[]> {
   try {
     const pipeline = buildPipeline(db, {
       collection: clienteCollection.resolvePath({}),
@@ -84,16 +108,20 @@ async function querySimilarNome(db: Firestore, term: string): Promise<DedupCandi
     });
     const snap = await execute(pipeline);
     return snap.results.map((r) =>
-      toCandidate(r.ref?.id ?? r.id ?? '', r.data() as Record<string, unknown>),
+      toCandidate(r.ref?.id ?? r.id ?? '', r.data() as Record<string, unknown>, typed),
     );
   } catch (err) {
     if (err instanceof PipelineUnsupportedError) {
-      return queryCandidates(db, [
-        orderByField('nome', 'asc'),
-        whereOp('nome', '>=', term),
-        whereOp('nome', '<=', `${term}${PREFIX_MAX}`),
-        limit(CANDIDATE_LIMIT),
-      ]);
+      return queryCandidates(
+        db,
+        [
+          orderByField('nome', 'asc'),
+          whereOp('nome', '>=', term),
+          whereOp('nome', '<=', `${term}${PREFIX_MAX}`),
+          limit(CANDIDATE_LIMIT),
+        ],
+        typed,
+      );
     }
     throw err;
   }
@@ -116,27 +144,36 @@ export async function checkClienteDuplicates(
   db: Firestore,
   input: ClienteDedupInput,
 ): Promise<ClienteDedupResult> {
-  const cpfCnpj = input.cpf_cnpj.replace(/[.\-/\s]/g, '').toUpperCase();
+  const cpfCnpj = normalizeDocumento(input.cpf_cnpj);
   const idEstrangeiro = input.idEstrangeiro.trim();
   const nome = input.nome.trim();
   const email = input.email.trim();
   const telefoneShapes = telefoneQueryShapes(input.telefone);
   const emailShapes = [...new Set([email, email.toLowerCase()])];
+  const typed: ClienteIdentityKeys = { cpf_cnpj: cpfCnpj, idEstrangeiro };
 
   const [byCpfCnpj, byIdEstrangeiro, byNome, byTelefone, byEmail] = await Promise.all([
     cpfCnpj === ''
       ? []
-      : queryCandidates(db, [whereEqual('cpf_cnpj', cpfCnpj), limit(CANDIDATE_LIMIT)]),
+      : queryCandidates(db, [whereEqual('cpf_cnpj', cpfCnpj), limit(CANDIDATE_LIMIT)], typed),
     idEstrangeiro === ''
       ? []
-      : queryCandidates(db, [whereEqual('idEstrangeiro', idEstrangeiro), limit(CANDIDATE_LIMIT)]),
-    nome === '' ? [] : querySimilarNome(db, nome),
+      : queryCandidates(
+          db,
+          [whereEqual('idEstrangeiro', idEstrangeiro), limit(CANDIDATE_LIMIT)],
+          typed,
+        ),
+    nome === '' ? [] : querySimilarNome(db, nome, typed),
     telefoneShapes.length === 0
       ? []
-      : queryCandidates(db, [whereOp('telefone', 'in', telefoneShapes), limit(CANDIDATE_LIMIT)]),
+      : queryCandidates(
+          db,
+          [whereOp('telefone', 'in', telefoneShapes), limit(CANDIDATE_LIMIT)],
+          typed,
+        ),
     email === ''
       ? []
-      : queryCandidates(db, [whereOp('email', 'in', emailShapes), limit(CANDIDATE_LIMIT)]),
+      : queryCandidates(db, [whereOp('email', 'in', emailShapes), limit(CANDIDATE_LIMIT)], typed),
   ]);
 
   const blocking = [...byCpfCnpj, ...byIdEstrangeiro.filter((c) => !hasId(byCpfCnpj, c.id))];

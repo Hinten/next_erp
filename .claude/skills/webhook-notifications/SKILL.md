@@ -240,8 +240,27 @@ persists instead of enqueuing — never a silent drop); `<CANAL>_TASKS_REGION`
 **Signature posture today** — verify before copying a pattern: WhatsApp is
 mandatory-fail-closed (`X-Hub-Signature-256`; secret unset → 503); Melhor Envio
 is mandatory (`X-ME-Signature`); Mercado Pago is **skipped when the secret is
-unset**; Mercado Livre has **none at all** (ML doesn't sign — the trust anchor is
-refetch-before-mutate). The last two are known gaps, not models to follow.
+unset** — a known gap, not a model to follow.
+
+**Mercado Livre signs nothing, and this is settled** (#811, re-verified against
+the 03/08/2026 Notificações reference): no `x-signature`, no timestamp, no
+manifest, no shared secret; the app manager offers only the OAuth
+`Client_Id`/`Secret_Key` pair. The `ts=…,v1=…` scheme every web search surfaces
+is **Mercado Pago**, a different product — don't port it. The trust anchor is
+refetch-before-mutate; the only inbound check is
+`apps/mercado-livre/lib/marketplace/webhookOrigin.ts`, an `application_id`
+comparison (foreign ⇒ 403 pre-enqueue) that fails OPEN when unconfigured or when
+the field is absent, because ML disables a topic after ~1h of non-200. ML's
+published notification source IPs were considered and **declined** — an
+undocumented rotation would reject every genuine notification. The same file's
+`logWebhookHeaders` is the standing evidence-gatherer for whether that ever
+changes.
+
+**Adding a receiver for a new channel?** Establish the signature posture from the
+provider's *notification* reference, not its security-recommendations page — the
+latter tends to carry generic "validate the webhook signature with HMAC-SHA256"
+advice aimed at integrators, which is what sent #811 looking for a Mercado Livre
+signature that does not exist.
 
 **Key files**
 

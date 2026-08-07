@@ -100,10 +100,16 @@ export class PedidoConflictError extends Error {
 
 /**
  * Doc metadata excluded from the concurrency snapshot: `ultimaModificacao` /
- * `timestamp` are stamps, not user data, so a difference in them alone is not a
- * meaningful conflict to warn about.
+ * `timestamp` / `lastMarketplaceUpdate` are stamps, not user data, so a
+ * difference in them alone is not a meaningful conflict to warn about.
+ *
+ * `lastMarketplaceUpdate` joined the list with #791. It is the marketplace
+ * event-clock watermark, so it moves whenever a channel import runs — and while
+ * it was compared, any such import hard-failed the save of an operator who
+ * merely had the pedido editor open, with a conflict modal naming a field they
+ * cannot see or edit.
  */
-const CONCURRENCY_IGNORE = new Set(['ultimaModificacao', 'timestamp']);
+const CONCURRENCY_IGNORE = new Set(['ultimaModificacao', 'timestamp', 'lastMarketplaceUpdate']);
 
 /**
  * Field keys whose value changed between the doc as loaded into the editor

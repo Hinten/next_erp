@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { formatCNPJ, formatCPF, validateCNPJ, validateCPF, validateCpfCnpj } from './br';
+import {
+  formatCNPJ,
+  formatCPF,
+  normalizeDocumento,
+  validateCNPJ,
+  validateCPF,
+  validateCpfCnpj,
+} from './br';
 
 // Valid samples generated with public algorithms; use widely-known
 // test fixtures so failures are easy to reason about.
@@ -130,5 +137,29 @@ describe('formatCNPJ', () => {
   it('formats an alphanumeric CNPJ with the same mask', () => {
     expect(formatCNPJ(VALID_CNPJ_ALPHA)).toBe(VALID_CNPJ_ALPHA_FORMATTED);
     expect(formatCNPJ('12abc34501de35')).toBe(VALID_CNPJ_ALPHA_FORMATTED);
+  });
+});
+
+describe('normalizeDocumento', () => {
+  it('strips the usual punctuation and whitespace', () => {
+    expect(normalizeDocumento(VALID_CPF_FORMATTED)).toBe(VALID_CPF);
+    expect(normalizeDocumento(VALID_CNPJ_FORMATTED)).toBe(VALID_CNPJ);
+    expect(normalizeDocumento(' 529.982.247-25 ')).toBe(VALID_CPF);
+  });
+
+  it('keeps letters and uppercases them — the alphanumeric CNPJ must survive', () => {
+    expect(normalizeDocumento(VALID_CNPJ_ALPHA_FORMATTED)).toBe(VALID_CNPJ_ALPHA);
+    expect(normalizeDocumento('12.abc.345/01de-35')).toBe(VALID_CNPJ_ALPHA);
+  });
+
+  it('is idempotent — an already-canonical value is returned unchanged', () => {
+    expect(normalizeDocumento(VALID_CPF)).toBe(VALID_CPF);
+    expect(normalizeDocumento(normalizeDocumento(VALID_CNPJ_ALPHA_FORMATTED))).toBe(
+      VALID_CNPJ_ALPHA,
+    );
+  });
+
+  it('maps an empty string to an empty string', () => {
+    expect(normalizeDocumento('')).toBe('');
   });
 });

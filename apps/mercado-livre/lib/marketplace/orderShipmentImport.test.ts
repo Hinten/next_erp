@@ -15,18 +15,25 @@ vi.mock('./orderPrazoDespacho', () => ({
 
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { importShipmentMercadoLivre, type ShipmentImportDeps } from './orderShipmentImport';
+import {
+  OccEngine,
+  type OccOpKind,
+  type OccTransaction,
+  type OccWriteKind,
+} from './testing/occTransaction';
 
 /* ------------------------------ fake Firestore ---------------------------- */
-// Own copy (a concurrent agent owns `orderPaymentImport.test.ts` — not shared).
+// Own copy of the STORE (a concurrent agent owns `orderPaymentImport.test.ts`);
+// the transaction semantics are the SHARED `OccEngine` (`./testing/occTransaction`),
+// because a per-file OCC model that drifts is worse than none.
 // Scoped to what `orderShipmentImport.ts` touches: `integracao`, `int_frete`,
 // `pedidos/{pedidoId}/orderML` (collectionGroup, docs carry `ref.parent.parent.id`
 // — same pattern as `import.test.ts`), and `pedidos` (doc get/update inside the
-// one transaction). `opLog` + a reads-before-writes guard inside
-// `runTransaction` mirror `orderPedidoTx.test.ts`'s FakeDb — this handler's own
-// "exactly one read" contract relies on the guard being real, not decorative.
+// one transaction). `opLog` + the engine's reads-before-writes guard back this
+// handler's own "exactly one read" contract — it relies on the guard being
+// real, not decorative.
 
 type DocData = Record<string, unknown>;
-type OpKind = 'get' | 'update';
 
 interface FakeSnap {
   exists: boolean;
@@ -36,13 +43,10 @@ interface FakeSnap {
 
 interface FakeDocRef {
   id: string;
+  /** Firestore path — the engine's version key. Real refs carry this too. */
+  path: string;
   get: () => Promise<FakeSnap>;
   update: (patch: DocData) => Promise<void>;
-}
-
-interface FakeTransaction {
-  get: (ref: FakeDocRef) => Promise<FakeSnap>;
-  update: (ref: FakeDocRef, patch: DocData) => Promise<void>;
 }
 
 function parentDocId(colPath: string): string {
@@ -52,14 +56,37 @@ function parentDocId(colPath: string): string {
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
-  readonly opLog: Array<{ op: OpKind; path: string }> = [];
+  readonly opLog: Array<{ op: OccOpKind; path: string }> = [];
   private readonly patches = new Map<string, DocData>();
   private autoN = 0;
+
+  /** Exposed so a test can set `db.occ.beforeCommit` / read `db.occ.txLog`. */
+  readonly occ = new OccEngine({
+    applyWrite: (kind, path, data) => this.applyWrite(kind, path, data),
+    logWrite: (op, path) => this.opLog.push({ op, path }),
+    // `lastPatch` means "the patch actually stored", so it is recorded at
+    // COMMIT — an attempt that aborts must not leave its patch behind.
+    recordPatch: (path, patch) => this.patches.set(path, patch),
+  });
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
     if (!c) this.cols.set(path, (c = new Map()));
     return c;
+  }
+
+  /** Commit-time write. Never logs — the engine logged it at call time. */
+  private applyWrite(kind: OccWriteKind, docPath: string, data: DocData): void {
+    const cut = docPath.lastIndexOf('/');
+    const col = this.col(docPath.slice(0, cut));
+    const id = docPath.slice(cut + 1);
+    if (kind === 'create' && col.has(id)) {
+      throw Object.assign(new Error('already exists'), { code: 6 });
+    }
+    if (kind === 'update' && !col.has(id)) {
+      throw Object.assign(new Error('not found'), { code: 5 });
+    }
+    col.set(id, kind === 'update' ? { ...(col.get(id) ?? {}), ...data } : { ...data });
   }
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
@@ -106,6 +133,7 @@ class FakeDb {
     const col = this.col(path);
     return {
       id,
+      path: `${path}/${id}`,
       get: async () => {
         self.opLog.push({ op: 'get', path: `${path}/${id}` });
         return { exists: col.has(id), id, data: () => col.get(id) };
@@ -113,7 +141,7 @@ class FakeDb {
       update: async (patch: DocData) => {
         self.opLog.push({ op: 'update', path: `${path}/${id}` });
         self.patches.set(`${path}/${id}`, patch);
-        col.set(id, { ...(col.get(id) ?? {}), ...patch });
+        self.applyWrite('update', `${path}/${id}`, patch);
       },
     };
   }
@@ -122,6 +150,7 @@ class FakeDb {
     const self = this;
     const col = this.col(path);
     return {
+      path,
       doc: (id?: string) => self.makeDocRef(path, id ?? `auto-${++self.autoN}`),
       where: (field: string, op: string, value: unknown) =>
         self.query([...col.entries()].map(([id, d]) => [id, d, path])).where(field, op, value),
@@ -141,27 +170,8 @@ class FakeDb {
     return this.query(entries);
   }
 
-  // Admin SDK invariant: every read in a transaction must happen before its
-  // first write. `wroteAlready` is scoped to THIS call, not the FakeDb
-  // instance, so sequential transactions in the same test don't bleed.
-  async runTransaction<T>(fn: (tx: FakeTransaction) => Promise<T>): Promise<T> {
-    let wroteAlready = false;
-    const guardRead = (): void => {
-      if (wroteAlready) {
-        throw new Error('read after write in transaction (Admin SDK invariant)');
-      }
-    };
-    const tx: FakeTransaction = {
-      get: (ref) => {
-        guardRead();
-        return ref.get();
-      },
-      update: async (ref, patch) => {
-        await ref.update(patch);
-        wroteAlready = true;
-      },
-    };
-    return fn(tx);
+  async runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
+    return this.occ.runTransaction(fn);
   }
 }
 
@@ -400,7 +410,7 @@ describe('importShipmentMercadoLivre — staleness', () => {
 });
 
 describe('importShipmentMercadoLivre — happy path write', () => {
-  it('merges freteInicial (preserving unmapped + null-mapped fields and estado) and writes EXACTLY {freteInicial, lastMarketplaceUpdate}', async () => {
+  it('merges freteInicial (preserving unmapped + null-mapped fields and estado) and writes EXACTLY {freteInicial, ultimaModificacao}', async () => {
     const db = new FakeDb();
     seedConta(db);
     seedIntFrete(db);
@@ -439,8 +449,8 @@ describe('importShipmentMercadoLivre — happy path write', () => {
     expect(pedidoOps.map((e) => e.op)).toEqual(['get', 'update']);
 
     const patch = db.lastPatch('pedidos', 'pedido-1')!;
-    expect(Object.keys(patch).sort()).toEqual(['freteInicial', 'lastMarketplaceUpdate']);
-    expect(patch.lastMarketplaceUpdate).toBe(NOW_US);
+    expect(Object.keys(patch).sort()).toEqual(['freteInicial', 'ultimaModificacao']);
+    expect(patch.ultimaModificacao).toBe(NOW_US);
 
     const freteInicial = patch.freteInicial as DocData;
     expect(freteInicial.estado).toBe('despachoAutorizado'); // preserved, not regressed to 'iniciado'
