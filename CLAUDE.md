@@ -114,6 +114,26 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    **ms** on the ML links, and `historicoFtIni.data` is ms while
    `historicoEstadoPedido.data` is µs, so a cross-unit comparison is a guard that
    never fires. See ADR 0011.
+8. **The production data has not moved yet — everything here runs on staging.**
+   The real data still sits in the legacy Flutter project on Firestore
+   **Standard**, with the Flutter app live-writing to it. It moves exactly once,
+   in a coordinated window, into a **new project on Enterprise with its own
+   billing** — phase order, what an export silently leaves behind, and the
+   rollback are ADR 0013. **Agents never run any of it.** What this means while
+   you work: anything your change needs *done* to real data or real
+   infrastructure is not yours to do, and is not a TODO — **surface it and
+   stop.** Backfills, seed imports, index/rule/TTL deploys, claim re-mints, URL
+   rewrites, provider webhook re-registration, secret re-creation: all of it
+   belongs to that window, and a run done earlier is silently undone by the
+   still-live Flutter writer (#869 is the worked example). Say what needs
+   running and why it cannot happen now, **ask whether to open the tracking
+   issue, and open it only once you have a yes** — the migration queue is
+   curated, not a place agents append to unasked. When approved, label it
+   `needs-migration-window` plus a `task:` label (usually `ops-deploy`) and match
+   the shape of the two that exist, **#856** and **#869**: why the timing is
+   load-bearing, the exact commands, how you verify it worked. ⚠️ A Firestore
+   **import fires no Cloud Functions triggers** — nothing is recomputed on
+   arrival, so any state a trigger would derive must already be in the export.
 
 ## Layout
 
@@ -202,6 +222,34 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   the shared pipeline (`defineNotificationPipeline` in
   `@delfrance/data/admin/notifications`) via the `webhook-notifications` skill —
   never hand-roll the persistence/retry/sweep triad again.
+- **Does your change need something *run* against production data or infra?**
+  Don't do it and don't leave a TODO — surface it, **ask whether to open the
+  tracking issue**, and open it only on a yes. Then label it
+  **`needs-migration-window`** (plus a `task:` label, usually `ops-deploy`), link
+  it from the PR, and say in the issue *why earlier is wrong*. Shape: #856, #869.
+  Rule 8 / ADR 0013.
+- **Changing the shape of data that already exists? Write a one-time migration
+  script — do not migrate gradually.** A one-time `tools/migrations` script beats
+  every incremental alternative here: dual-shape reads, a compat/fallback branch,
+  lazy backfill-on-read, a derived field kept in sync by a trigger. All of those
+  buy one thing — *surviving indefinitely without a cutover* — and there **is** a
+  cutover (rule 8), so they pay for something already bought and leave permanent
+  compat code nobody deletes. #869 worked this exact trade and rejected the
+  derived-field version: schema change → both rulesets regenerate → both
+  snapshots refresh → a sync trigger → a new index → every query site touched →
+  *and it still needs a backfill*. The script is strictly less machinery. Follow
+  the `tools/migrations` contract (`README.md`): `--project` required and matched
+  against the service account, dry-run the default, JSONL log in `out/`, a pure
+  `transform.ts` with unit tests. **Idempotent and re-runnable is not optional** —
+  the Flutter app is still writing, so a run before the window is partially undone
+  and the authoritative run is the one *inside* it. ⚠️ **Staging data does not
+  need to migrate.** The window moves *production* data; staging is disposable and
+  re-seedable from `tools/test-fixtures`, so a script only has to be correct
+  against production shapes — if staging is easier to re-seed than to fix, re-seed
+  it, and never hold a design hostage to staging rows. A staging run is a
+  **rehearsal** (dry-run counts, then a clean second pass as the idempotence
+  check), never a data-preservation goal. ⚠️ **The script is not done until its
+  issue exists** — a merged script nobody runs is a no-op.
 - **New e2e test** → the **filename suffix picks the lane**, nothing else to
   wire: `.cadastros.e2e.spec.ts` (master data), `.vendas.e2e.spec.ts`
   (sales/fiscal/config), `.emulator.e2e.spec.ts` (offline), `.smoke.spec.ts`.
