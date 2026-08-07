@@ -94,6 +94,40 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     ⚠️ That one execution can be the expensive one — B's index range is
 //     EVERY published parent, which is precisely the number being measured.
 //     Set CHECK_ANCHOR_AB=0 to skip it.
+//
+//     ---- RESULT (staging run 2026-08-07, owner decision: KEEP shape A) ----
+//     | metric              | A (shipped) | B (post-filter) |
+//     |---------------------|-------------|-----------------|
+//     | data bytes read     | 6.41 KiB    | 48.27 KiB  ×7.5 |
+//     | entity rows scanned | 10          | 15         +5   |
+//     | index rows scanned  | 16          | 16         —    |
+//     | estoque probe nodes | 8 × 1 rec   | 8 × 1 rec  —    |
+//     Sample ratio was 6 published parents : 1 on the conta.
+//
+//     What it PROVED: the `links.length() > 0` post-filter DOES prune before
+//     the three estoque rollups — the per-node counters are identical, so the
+//     expensive subqueries never fanned out. B's overhead is therefore exactly
+//     the predicted one and nothing more: the anchor scan + one link probe per
+//     published parent that is NOT on the conta. The `+5 entity rows` is
+//     literally the 5 non-conta parents. Cost model confirmed:
+//         B/A  ≈  published parents ÷ conta-linked anchors
+//     (observed 7.5× against a 6.0 ratio — slightly above, because B also
+//     materializes the link array for parents it then discards).
+//
+//     What it did NOT settle: the MAGNITUDE for produção. The run self-seeded
+//     (discovery found no real linked anchor) on a 6-produto staging project;
+//     produção is ~19k produtos. Plug the real ratio into the formula above.
+//
+//     ⚠️ Trap the run exposed: B rode `/produtos (paiId ASC, publicado ASC,
+//     __key__ ASC)` — an index the #779 audit DELETED from
+//     firestore.indexes.json, still present on staging as a leftover. B only
+//     looked healthy BECAUSE of that stale index. Anyone reviving shape B must
+//     re-declare it first, or B full-scans wherever the leftover is absent.
+//
+//     Decision: A stays. `integracoesComProduto` is kept as the pre-filter, and
+//     the cluster is retired instead by moving its MAINTENANCE into a trigger
+//     (#920) so `marketplace` + `marketplaceIds` + the stamping can still die
+//     at the Flutter decommission. See #431 for the three locks.
 //  4. A daily-mode PAGE-2 call with the SHIPPED daily predicate
 //     (`changedSinceMs = now − dailyWindowHours − overlap`, `afterAnchorId`
 //     keyset) and prints its plan — the keyset-over-computed-filter cost
