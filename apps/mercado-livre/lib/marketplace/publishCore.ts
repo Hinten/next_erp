@@ -58,6 +58,8 @@ export interface PublishProduto {
 export interface PublishLink {
   docId: string;
   id: string | null;
+  /** Operator-authored listing title. Blank/absent falls back to `produto.nome`. */
+  title?: string | null;
   condition?: 'new' | 'used' | null;
   listing_type_id?: string | null;
   category_id?: string | null;
@@ -141,6 +143,26 @@ export function resolveCondition(
   if (condicao != null && condicao !== 1) return 'used';
   return 'new';
 }
+
+/**
+ * Attribute ids `buildParentAttributes` DERIVES from the produto on every run.
+ *
+ * Publish persists the assembled parent attributes back onto the link doc
+ * (#799 bug 7) so a produto published from scratch stops carrying
+ * `attributes: null` forever. These ids must be excluded from that write: they
+ * are appended unconditionally below, so storing them would duplicate them on
+ * the next publish. `SIZE_GRID_ID` is deliberately NOT here — the link doc is
+ * where the chart binding lives between publishes, and a fresh resolution
+ * replaces it rather than adding a second one.
+ */
+export const ML_DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set([
+  'SELLER_SKU',
+  'WEIGHT',
+  'SELLER_PACKAGE_HEIGHT',
+  'SELLER_PACKAGE_LENGTH',
+  'SELLER_PACKAGE_WIDTH',
+  'SELLER_PACKAGE_WEIGHT',
+]);
 
 /**
  * Parent-level attributes (mapper prunes any combination ids from these).
@@ -292,10 +314,16 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
 
   if (issues.length > 0) throw new MercadoLivrePublishError(issues);
 
+  // #799 bug 4a: the link doc's own `title` wins. It used to be ignored here
+  // entirely — and then clobbered with `produto.nome` on the way back — so an
+  // operator could never give the listing an ML-optimised name of its own.
+  // Blank means absent, the same rule `descricao` already follows.
+  const linkTitle = args.link?.title?.trim() ?? '';
+
   return {
     isUpdate,
     isUserProductSeller: args.isUserProductSeller,
-    title: args.produto.nome,
+    title: linkTitle.length > 0 ? linkTitle : args.produto.nome,
     condition: resolveCondition(args.link, args.produto, args.condicao),
     sellerCustomField: args.linkDocId,
     categoryId: args.categoryId,
