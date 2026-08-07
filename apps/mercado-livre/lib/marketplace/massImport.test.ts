@@ -210,7 +210,6 @@ function runDeps(
       api,
       sellerUserId: 55,
       tabelaNormalOuterRef: 'documents/tabelasDePrecos/tabNormal',
-      tabelaPromocionalOuterRef: 'documents/tabelasDePrecos/tabPromo',
       depositoOuterRef: 'documents/depositos/dep1',
     }),
     scheduler: { enqueue: vi.fn(async () => {}) },
@@ -437,7 +436,6 @@ describe('processMassImportJob — infra failure handling', () => {
         api,
         sellerUserId: null,
         tabelaNormalOuterRef: null,
-        tabelaPromocionalOuterRef: null,
         depositoOuterRef: null,
       }),
     });

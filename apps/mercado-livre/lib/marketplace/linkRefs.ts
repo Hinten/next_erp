@@ -32,20 +32,3 @@ export function parseItemIdFromResource(resource: string): string | null {
   const id = parts[parts.length - 1];
   return id && id.length > 0 ? id : null;
 }
-
-/**
- * The ML item id from an `items_prices`-topic notification `resource`
- * (`/items/MLB123/prices` → `MLB123`). The resource nests one level deeper
- * than the `items` topic's, so `parseItemIdFromResource` would return the
- * trailing collection word `prices` — this parser requires that literal last
- * segment and returns the second-to-last instead. Anything else (no `prices`
- * suffix, no id segment) is null.
- */
-export function parseItemIdFromPricesResource(resource: string): string | null {
-  const parts = resource.split('/').filter(Boolean);
-  // `/items/{id}/prices` = 3 segments — a 2-segment `/items/prices` has no id
-  // and must not parse its collection word as one.
-  if (parts.length < 3 || parts[parts.length - 1] !== 'prices') return null;
-  const id = parts[parts.length - 2];
-  return id && id.length > 0 ? id : null;
-}
