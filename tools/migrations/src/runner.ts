@@ -1,6 +1,6 @@
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { resolve } from 'node:path';
-import type { DocumentReference, Firestore, WriteBatch } from 'firebase-admin/firestore';
+import type { DocumentReference, FieldPath, Firestore, WriteBatch } from 'firebase-admin/firestore';
 import { migrationDb } from './admin';
 
 /* -------------------------------------------------------------------------- */
@@ -152,6 +152,37 @@ export class BatchWriter {
     if (!this.apply) return;
     this.batch ??= this.db.batch();
     this.batch.update(ref, data);
+    this.ops += 1;
+    if (this.ops >= this.maxOps) await this.flush();
+  }
+
+  /**
+   * `update()` addressed by explicit {@link FieldPath}s instead of an object of
+   * dotted string keys — the ONLY way to touch a field whose name contains a
+   * character the dotted-string form forbids.
+   *
+   * The Admin SDK runs `validateFieldPath` over every string key of the object
+   * form and rejects any matching `/[*~/[\]]/` outright ("Paths can't be empty
+   * and must not contain \"*~/[]\""). It never reaches the splitter, so a key
+   * like `precos.listaDePrecos/L1` throws rather than addressing the map entry
+   * `listaDePrecos/L1`. A `FieldPath` carries its segments already separated,
+   * so the SDK skips that validation and backtick-quotes each segment when it
+   * serializes — `new FieldPath('precos', 'listaDePrecos/L1')` becomes
+   * ``precos.`listaDePrecos/L1` ``. Segments containing `.` are fine too, for
+   * the same reason: nothing is ever split.
+   *
+   * Takes the same alternating `field, value, field, value…` varargs the SDK
+   * does, and counts as ONE op regardless of how many fields it carries.
+   */
+  async updateFields(
+    ref: DocumentReference,
+    field: FieldPath,
+    value: unknown,
+    ...more: unknown[]
+  ): Promise<void> {
+    if (!this.apply) return;
+    this.batch ??= this.db.batch();
+    this.batch.update(ref, field, value, ...more);
     this.ops += 1;
     if (this.ops >= this.maxOps) await this.flush();
   }

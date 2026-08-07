@@ -46,8 +46,10 @@ These are hard exclusions, not guidelines. Each has a live instance in this repo
    between. The cautionary shape is
    `apps/mercado-livre/lib/marketplace/import.ts`, which *creates* the produto when
    its SKU lookup misses — a cached miss manufactures a duplicate produto. Same
-   story at `itemsStatusSync.ts` and `itemsPricesSync.ts`, which read a produto and
-   then write to that same document.
+   story at `itemsStatusSync.ts`, which reads a produto and then writes to that
+   same document. `import.ts` also shows the mitigation: its produto read feeds a
+   `lastUpdateTime` precondition on the follow-up write (ADR 0011 tier 1), and a
+   cached read would carry a stale `updateTime` that fails that guard forever.
 
 3. **OAuth credentials / tokens.** `apps/mercado-livre/lib/marketplace/tokenStore.ts`
    picks the newest valid token by query, and all three of its reads are load-bearing

@@ -69,7 +69,7 @@ describe('POST /api/webhooks/mercado-livre', () => {
     expect(h.create).not.toHaveBeenCalled(); // happy path writes nothing
   });
 
-  it('refetch-delay topics (orders_v2/orders/payments/shipments/items_prices/claims) enqueue with a 10s schedule delay', async () => {
+  it('refetch-delay topics (orders_v2/orders/payments/shipments/claims) enqueue with a 10s schedule delay', async () => {
     await POST(req({ _id: 'N2', resource: '/orders/2', topic: 'orders_v2', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
 
@@ -78,18 +78,20 @@ describe('POST /api/webhooks/mercado-livre', () => {
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
 
     h.enqueue.mockClear();
-    await POST(
-      req({ _id: 'N3b', resource: '/items/MLB1/prices', topic: 'items_prices', user_id: 1 }),
-    );
-    expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
-
-    h.enqueue.mockClear();
     await POST(req({ _id: 'N3c', resource: '/claims/4', topic: 'claims', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
   });
 
-  it('non-refetch-delay topics (e.g. items) enqueue with no schedule delay', async () => {
+  it('non-refetch-delay topics (items, and items_prices since #803) enqueue with no schedule delay', async () => {
     await POST(req({ _id: 'N4', resource: '/items/MLB1', topic: 'items', user_id: 1 }));
+    expect(h.enqueue.mock.calls[0]![1]).toBeUndefined();
+
+    // #803 removed the items_prices handler; with no GET to race, the delay
+    // only postponed an ack-and-drop.
+    h.enqueue.mockClear();
+    await POST(
+      req({ _id: 'N4b', resource: '/items/MLB1/prices', topic: 'items_prices', user_id: 1 }),
+    );
     expect(h.enqueue.mock.calls[0]![1]).toBeUndefined();
   });
 

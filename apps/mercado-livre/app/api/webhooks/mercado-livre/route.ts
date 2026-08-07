@@ -58,20 +58,21 @@ export const runtime = 'nodejs';
 
 /**
  * Topics whose handlers re-fetch the very resource the notification announces
- * (order/payment/shipment/item prices/claim + its messages) — ML is eventually
- * consistent, so an immediate GET can 404 or return data predating the change
- * the notification is about; a short scheduling delay avoids racing ML's own
- * write. Legacy delayed EVERY topic 10s before dispatch
- * (`functions.dart:17-48`); we scope the delay to the topics that actually
- * need it (approved deviation — `items` and the rest keep today's immediate
- * dispatch).
+ * (order/payment/shipment/claim + its messages) — ML is eventually consistent,
+ * so an immediate GET can 404 or return data predating the change the
+ * notification is about; a short scheduling delay avoids racing ML's own write.
+ * Legacy delayed EVERY topic 10s before dispatch (`functions.dart:17-48`); we
+ * scope the delay to the topics that actually need it (approved deviation —
+ * `items` and the rest keep today's immediate dispatch).
+ *
+ * `items_prices` was here until #803 removed its handler: with no GET to race,
+ * the delay only postponed an ack-and-drop.
  */
 const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'orders_v2',
   'orders',
   'payments',
   'shipments',
-  'items_prices',
   'claims',
 ]);
 const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
