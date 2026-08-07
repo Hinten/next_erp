@@ -485,6 +485,61 @@ export type MlShipmentPayment = z.infer<typeof mlShipmentPaymentSchema>;
 /** The array wrapper for `getShipmentPayments` — see `mlShipmentPaymentSchema`. */
 export const mlShipmentPaymentsSchema = z.array(mlShipmentPaymentSchema);
 
+/**
+ * One entry of `GET /shipments/{shipmentId}/orders` — "Vendas associadas a um
+ * envio" (ML docs, *Gerenciamento de Envios*). **The endpoint returns a bare
+ * JSON ARRAY** and requires the `X-New-Domain: true` header. One row per
+ * (order, listing, variation) covered by the shipment, carrying the units the
+ * buyer asked for.
+ *
+ * This is the modern replacement for legacy's `get_shipment_items`
+ * (`GET /shipments/{id}/items`, api.dart:1679-1685), used by the
+ * shipment↔pedido item cross-check (`applyFreteStep`, #669). Chosen over
+ * `/items` on three counts:
+ *  - `requested_quantity` is the quantity the buyer ORDERED, which is what
+ *    `ItemDoPedido.quantidade` holds (it comes from `order_items[].quantity`);
+ *    `/items`' `quantity` is the quantity in THIS shipment, which legitimately
+ *    differs on a partial shipment and would flag correct orders.
+ *  - `variation_id` here is a documented nullable Long. `/items` uses `0` as
+ *    its "no variation" sentinel, which does not exist on the order side — an
+ *    asymmetry that silently mismatches variation sales.
+ *  - ML declared `order_id`/`external_reference` discontinued in the shipments
+ *    resources as of 2025-10-12; `/items` carries them, this resource is the
+ *    one ML is steering toward.
+ *
+ * Tolerant per house style: the docs type `order_id`/`pack_id` as String and
+ * `variation_id`/`seller_id` as Long, but ML has sent ids both ways across this
+ * API, so every id takes the number|string union. Everything not consumed by
+ * the cross-check rides through `.passthrough()`.
+ */
+export const mlShipmentOrderSchema = z
+  .object({
+    order_id: z.union([z.number(), z.string()]).nullable().optional(),
+    pack_id: z.union([z.number(), z.string()]).nullable().optional(),
+    item_id: z.string().nullable().optional(),
+    variation_id: z.union([z.number(), z.string()]).nullable().optional(),
+    user_product_id: z.string().nullable().optional(),
+    seller_id: z.union([z.number(), z.string()]).nullable().optional(),
+    requested_quantity: z.union([z.number(), z.string()]).nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentOrder = z.infer<typeof mlShipmentOrderSchema>;
+
+/**
+ * The array wrapper for `getShipmentOrders` — see `mlShipmentOrderSchema`.
+ *
+ * ⚠️ The `.nullish().transform()` is load-bearing, not cosmetic. The docs list
+ * `204 No Content` ("Shipment não possui pedidos") as a normal response, and
+ * `parseOk` leaves the parsed body `null` when it is empty — which a bare
+ * `z.array(...)` rejects, turning a documented 204 into a
+ * `MercadoLivreValidationError` and a parked import. Callers must therefore
+ * treat `[]` as "ML told us nothing", never as "the shipment covers no items".
+ */
+export const mlShipmentOrdersSchema = z
+  .array(mlShipmentOrderSchema)
+  .nullish()
+  .transform((v) => v ?? []);
+
 /** `GET /shipments/{shipmentId}/sla` (legacy `get_shipment_sla`, api.dart:1671-1677) — only `expected_date` is consumed (legacy `_getPrazoDespacho`, tasks.dart:38-43). */
 export const mlShipmentSlaSchema = z
   .object({

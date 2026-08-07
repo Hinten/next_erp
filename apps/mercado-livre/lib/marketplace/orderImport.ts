@@ -23,14 +23,25 @@
  * ---- Deviations from legacy (see the call site for the full rationale) ----
  *  1. No inline estoque movement — `onPedidoEstoqueSync` owns stock
  *     (pre-approved Step 9 deviation, tasks.dart:256-306 not ported).
- *  2. The shipment/pedido item-quantity CROSS-CHECK (tasks.dart:536-568 — the
- *     `shipping_itens` reconciliation that can flip `error`) is NOT ported:
- *     the plugin has no `getShipmentItems` (only the endpoints this Step 9
- *     contract lists), so `totalItens` is ALWAYS the pedido's own item
- *     subtotal — the legacy `hasUserInteraction == true` branch
- *     (tasks.dart:570), applied unconditionally. FORCED deviation (missing
- *     plugin surface, out of this file's ownership) — tracked as a follow-up
- *     to add `get_shipment_items` + port the mismatch guard faithfully.
+ *  2. The shipment/pedido item-quantity CROSS-CHECK (tasks.dart:536-568) is now
+ *     PORTED (#669) — see `orderShipmentConference.ts` and the conference block
+ *     in `applyFreteStep`. Three deliberate departures from legacy, each argued
+ *     at its site:
+ *      a. It reads `GET /shipments/{id}/orders`, not legacy's
+ *         `get_shipment_items`. That resource reports `requested_quantity` (the
+ *         units BOUGHT, which is what `ItemDoPedido.quantidade` holds) instead
+ *         of the units in this shipment, and types `variation_id` as a nullable
+ *         Long instead of using `0` as a sentinel the order side never uses.
+ *      b. The match is a per-`mktplaceId` TOTAL, not legacy's per-line float
+ *         equality inside an O(n·m) no-break loop, and it looks BOTH ways —
+ *         legacy's `seen.length != itensPedido.length` could only ever see a
+ *         pedido with a surplus, never one missing a line.
+ *      c. A blocking divergence PERSISTS `estado: error` and then throws;
+ *         legacy only threw (tasks.dart:616), and its local `bool error` never
+ *         touched the document. A throw alone rolls the transaction back, so
+ *         nothing is written — and `podeAvancarParaPago` needs `freteInicial`,
+ *         so the pedido would strand at `emProcessamento` with no
+ *         operator-visible sign of why.
  *  3. The order-import's own inline frete-merge (tasks.dart:592-607) and the
  *     shipments-topic merge (tasks.dart:1306-1315, PR 1's
  *     `mergeEstadoFretePreservando`) are UNIFIED onto one shared helper,
@@ -68,6 +79,7 @@ import {
   type MlPack,
   type MlPayment,
   type MlShipment,
+  type MlShipmentOrder,
   type MlShipmentPayment,
 } from '@delfrance/integrations-mercado-livre';
 import {
@@ -75,6 +87,7 @@ import {
   ORIGEM_INCIDENTE,
   STATUS_PAGAMENTO,
   TIPO_INCIDENTE,
+  TIPO_RESOLUCAO,
   flattenPedidoItens,
   itemSubtotal,
   toOuterRef,
@@ -97,6 +110,11 @@ import {
 import { isAlreadyExists } from '@delfrance/data/admin';
 
 import { buscarIntFreteDaConta } from './intFreteSync';
+import {
+  conferirItensDoEnvio,
+  descreverDivergencia,
+  type ResultadoConferencia,
+} from './orderShipmentConference';
 import { assertOrderItemsComplete, mlOrderItemToItemDoPedido } from './orderMapping';
 import { resolveOrderLineProduto } from './orderProdutoResolve';
 import { estadoPedidoFromOrderStatus } from './orderStatusMaps';
@@ -780,6 +798,111 @@ function registerMissingPagamentos(
   return registered;
 }
 
+/* -------------------------------------------------------------------------- */
+/*                  Shipment ↔ pedido item conference (#669)                   */
+/* -------------------------------------------------------------------------- */
+
+/** A divergence plus the shipment it was found against. */
+interface DivergenciaDeEnvio {
+  readonly conferencia: Extract<ResultadoConferencia, { tipo: 'divergente' }>;
+  readonly shipmentId: number | string;
+}
+
+/**
+ * Thrown when the pedido holds items — or quantities — the shipment is not
+ * selling (legacy's `Exception('Erro ao atualizar frete …')`, tasks.dart:616).
+ *
+ * 🔒 Carries IDENTIFIERS AND COUNTS ONLY. The legacy exception interpolated the
+ * entire pedido (`$pedido`), whose `toString()` dumps buyer name, CPF/CNPJ,
+ * delivery address, phone and every item price — and the sweep then rethrew it
+ * out of the Cloud Run handler, putting customer PII in the function logs and in
+ * a 500 body. `descreverDivergencia` is built to be safe to print; nothing else
+ * about the pedido may join it.
+ */
+export class MlEnvioItensDivergentesError extends Error {
+  constructor(
+    readonly pedidoId: string,
+    readonly divergencia: DivergenciaDeEnvio,
+  ) {
+    super(
+      `Conteúdo do pedido ${pedidoId} diverge do envio ${divergencia.shipmentId}: ` +
+        descreverDivergencia(divergencia.conferencia, divergencia.shipmentId),
+    );
+    this.name = 'MlEnvioItensDivergentesError';
+  }
+}
+
+/**
+ * Deterministic incidente id, one per shipment. Makes the write idempotent
+ * across the retries this path is guaranteed to see, and — because the id is
+ * derivable — lets the recovery branch look the incidente up with a plain `get`
+ * instead of a query. An OPEN one at this id is how `applyFreteStep` knows the
+ * `error` it is looking at is one IT set.
+ */
+function incidenteDivergenciaId(shipmentId: number | string): string {
+  return `ml-envio-div-${shipmentId}`;
+}
+
+/**
+ * `GET /shipments/{id}/orders`, degrading a 404 to "no data".
+ *
+ * A 404 here means ML has no order rows for this shipment — an answer about the
+ * shipment, not a failure of ours — and it must not park an import that is
+ * otherwise fine; same narrow degrade `orderShipmentImport.ts` already applies
+ * to `getShipment`. Everything else (5xx, 401, a validation failure) PROPAGATES,
+ * per this file's THROW-ON-TRANSIENT discipline: a conference skipped because ML
+ * was briefly down would silently price the pedido unchecked, which is the exact
+ * outcome this check exists to prevent.
+ */
+async function fetchLinhasDoEnvio(
+  api: MercadoLivreApi,
+  shipmentId: number | string,
+): Promise<MlShipmentOrder[] | null> {
+  try {
+    return await api.getShipmentOrders(shipmentId);
+  } catch (err) {
+    if (err instanceof MercadoLivreHttpError && err.status === 404) {
+      console.warn('[mercado-livre] conferência de itens: envio sem orders (404)', { shipmentId });
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * One incidente per divergent shipment, so the block is visible where the
+ * operator works (the pedido's Incidentes tab) rather than only in a parked
+ * notification. Mirrors `recordItensSemProduto`'s idempotency contract:
+ * `.create()` at a deterministic id, swallowing ONLY `ALREADY_EXISTS`, so a
+ * replay keeps the first row's `timestamp` instead of re-dating it.
+ */
+async function registrarIncidenteDeDivergencia(
+  db: Firestore,
+  pedidoId: string,
+  divergencia: DivergenciaDeEnvio,
+  nowUs: number,
+): Promise<void> {
+  try {
+    await incidenteCollection
+      .docRef(db, { pedidoId }, incidenteDivergenciaId(divergencia.shipmentId))
+      .create(
+        incidenteCollection.parse({
+          origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
+          tipo: TIPO_INCIDENTE.outros,
+          subtipo: 'ml-envio-itens-divergentes',
+          motivoDoIncidente: descreverDivergencia(divergencia.conferencia, divergencia.shipmentId),
+          comentarios: null,
+          timestamp: nowUs,
+          ultimaModificacao: nowUs,
+          externalId: String(divergencia.shipmentId),
+          resolucao: null,
+        }),
+      );
+  } catch (err) {
+    if (!isAlreadyExists(err)) throw err;
+  }
+}
+
 /**
  * `if (shippingInstance != null && (staleness...)) { ... }` (tasks.dart:497-658).
  * Runs the "full conference" branch (522-620) when the pedido has a fiscal
@@ -818,6 +941,12 @@ async function applyFreteStep(args: {
    * `ultimaModificacao` with the ORDER's timestamp on the full-conference
    * write (tasks.dart:609-613), not the current clock. */
   orderLastUpdatedUs: number | null;
+  /**
+   * The initial order's raw ML `status`. Used ONLY to re-derive `estado` when a
+   * pedido this step previously put into `error` re-validates — see the
+   * conference block below.
+   */
+  orderStatus: string | null;
   nowUs: number;
   /** Run-scoped memo, shared with `applyPagoAdvanceOrDowngrade`. */
   loadShipmentPayments: () => Promise<MlShipmentPayment[]>;
@@ -831,6 +960,7 @@ async function applyFreteStep(args: {
     integracaoId,
     contaBag,
     orderLastUpdatedUs,
+    orderStatus,
     nowUs,
     loadShipmentPayments,
   } = args;
@@ -856,6 +986,31 @@ async function applyFreteStep(args: {
     fallbackUs: freteAntigo?.prazoDespacho ?? null,
   });
 
+  // Shipment↔pedido item conference (#669). Fetched HERE, never inside the
+  // transaction: an ML round-trip in the OCC window would hold a document the
+  // Flutter app, `applyPagoAdvanceOrDowngrade` and the shipments handler all
+  // contend for, and every other step in this file already fetches first.
+  //
+  // The predicate below is a NETWORK EARLY-OUT and decides nothing (root
+  // `CLAUDE.md` rule 7, same role as the `talvezMaisNovo` gate above): it only
+  // says whether spending the call is worth it. The authoritative verdict is
+  // re-derived from the tx-fresh document, and when we skipped the fetch the
+  // transaction simply falls through to the behaviour it had before this check
+  // existed. Do NOT "tighten" this into a guard.
+  //
+  // `hasUserInteraction` is safe to read from the stale copy specifically
+  // because it is MONOTONIC — `null → true`, and nothing ever writes it back —
+  // so a pre-read `true` guarantees the tx-fresh value is `true` too, i.e. the
+  // conference would be skipped anyway. (Asserted by a test, so a future "clear
+  // the flag" path can't silently invalidate this.)
+  const podeConferir =
+    pedido.enderecoFiscalOuterRef != null &&
+    pedido.hasUserInteraction !== true &&
+    (freteAntigo == null ||
+      freteAntigo.prazoDespacho == null ||
+      ESTADOS_CONFERIR_PAGAMENTO.has(pedido.estado));
+  const linhasDoEnvio = podeConferir ? await fetchLinhasDoEnvio(api, shippingInstance.id) : null;
+
   // `enderecoOuterRef` is deliberately NULL here: it is the ONE mapper input
   // that comes from OUR document rather than ML's payload, so it must not ride
   // in from the stale read (nor be re-applied verbatim on an OCC retry). It is
@@ -869,7 +1024,16 @@ async function applyFreteStep(args: {
     modalidadeOverride: contaBag.modalidadeFreteImportacao,
   });
 
+  // Set by the FINAL (committed) attempt. Held in a record rather than a bare
+  // `let` so the reset below is unmistakable: legacy declared the equivalent
+  // flag OUTSIDE its transaction closure (`bool error`, tasks.dart:511) and
+  // wrote it inside, so on an ODM retry a divergence found by a first attempt
+  // poisoned every subsequent one. Firestore re-runs this callback verbatim.
+  const veredito: { divergencia: DivergenciaDeEnvio | null } = { divergencia: null };
+
   await db.runTransaction(async (tx) => {
+    veredito.divergencia = null; // ⚠️ per-attempt reset — see above.
+
     /* ======================= READ PHASE (no writes yet) ======================= */
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
     const pedidoSnap = await tx.get(pedidoRef);
@@ -878,6 +1042,19 @@ async function applyFreteStep(args: {
       pedidoSnap.data() ?? {},
       pedidoCollection.docPath({}, pedidoId),
     );
+    // Only when the pedido is sitting in `error` can this step have anything to
+    // undo, so the extra read is paid only there. An OPEN divergence incidente
+    // at our own deterministic id is the proof that WE set that `error` — the
+    // one thing that makes the restore below safe.
+    const incidenteRef = incidenteCollection.docRef(
+      db,
+      { pedidoId },
+      incidenteDivergenciaId(shippingInstance.id),
+    );
+    const incidenteAberto =
+      freshPedido.estado === ESTADO_PEDIDO.error
+        ? await tx.get(incidenteRef).then((s) => s.exists && s.data()?.resolucao == null)
+        : false;
 
     /* ==================== DECIDE (tx-fresh inputs only) ====================== */
     const freshFrete = freshPedido.freteInicial;
@@ -966,15 +1143,99 @@ async function applyFreteStep(args: {
       return;
     }
 
-    // Full conference (tasks.dart:522-620) — see the file docstring's deviation
-    // #2 for why the shipment-item quantity cross-check is still not ported.
-    const totalItens = roundReais(
-      flattenPedidoItens(freshPedido.itens).reduce((sum, item) => sum + itemSubtotal(item), 0),
-    );
+    // Full conference (tasks.dart:522-620).
+    const itensDoPedido = flattenPedidoItens(freshPedido.itens);
+
+    // ---- Shipment↔pedido item cross-check (tasks.dart:536-568, #669) ----
+    // `linhasDoEnvio == null` means the pre-tx gate skipped the fetch, so there
+    // is nothing to judge: fall through to exactly the behaviour this branch had
+    // before the check existed. Same for `indeterminado`, which the conference
+    // returns when ML sent nothing (a documented 204) or sent a row we cannot key
+    // or count — refusing to judge beats judging on data we cannot read.
+    const conferencia: ResultadoConferencia =
+      linhasDoEnvio == null
+        ? { tipo: 'indeterminado', motivo: 'conferência não solicitada nesta execução' }
+        : conferirItensDoEnvio({
+            linhasDoEnvio,
+            itensDoPedido,
+            sellerUserId: contaBag.sellerUserId,
+          });
+
+    if (conferencia.tipo === 'divergente') {
+      veredito.divergencia = { conferencia, shipmentId: shippingInstance.id };
+      if (conferencia.bloqueia) {
+        // The pedido holds units ML is not selling. Park it in `error` and write
+        // NOTHING else — no `freteInicial`, no `valorCobrado`.
+        //
+        // This is the one place the port deliberately goes FURTHER than legacy,
+        // which only threw (tasks.dart:616) and left the document untouched. A
+        // throw alone rolls this transaction back, so nothing is recorded, and
+        // `podeAvancarParaPago` requires `freteInicial != null` — the pedido
+        // would sit at `emProcessamento` with no operator-visible sign of why.
+        // Persisting `error` is what actually stops a wrong dispatch:
+        //  - `podeAvancarParaPago` can never fire, so no auto-`pago`;
+        //  - `ITENS_EDITAVEIS` contains `error`, so the pedido form unlocks the
+        //    items for repair;
+        //  - `ESTADOS_PEDIDO_MOVIMENTACAO` excludes `error`, so
+        //    `onPedidoEstoqueSync` returns the reserved stock.
+        // `historicoEstadoPedido` is appended by the `onPedidoEstadoChanged`
+        // trigger observing this very write — never write that trail from here.
+        if (freshPedido.estado !== ESTADO_PEDIDO.error) {
+          tx.update(
+            pedidoRef,
+            pedidoCollection.parseMerge({
+              estado: ESTADO_PEDIDO.error,
+              ultimaModificacao: avancarWatermark(
+                coerceToMicros(freshPedido.ultimaModificacao),
+                nowUs,
+              ),
+            }) as DocumentData,
+          );
+        }
+        return;
+      }
+      // Non-blocking: ML is selling units this pedido does not hold YET. Routine
+      // during pack assembly (a sibling order not imported yet), self-healing,
+      // and the under-counted total it produces already has its own repair in
+      // the `!maisNovo` branch above — so it is logged, not raised, and the
+      // write proceeds.
+      console.warn(
+        '[mercado-livre] conferência de itens do envio: pedido incompleto',
+        descreverDivergencia(conferencia, shippingInstance.id),
+      );
+    }
+
+    const totalItens = roundReais(itensDoPedido.reduce((sum, item) => sum + itemSubtotal(item), 0));
     const patch: Record<string, unknown> = {
       freteInicial: targetFrete,
       valorCobrado: roundReais(totalItens + (mappedFrete.valorCobrado ?? 0)),
     };
+
+    // Recovery. A divergence we recorded has cleared, so undo what we did:
+    // resolve the incidente and give the pedido its estado back. The estado is
+    // RE-DERIVED from the live ML status rather than restored from a snapshot —
+    // by the time a divergence resolves the order has usually moved on (`paid` →
+    // `emProcessamento`), so the current status is the more correct answer, and
+    // it needs no new field to remember the old one. Gated on the OPEN incidente
+    // at our own deterministic id, so an `error` set by an operator or another
+    // flow is never silently cleared and the restore fires at most once.
+    if (conferencia.tipo === 'ok' && incidenteAberto) {
+      tx.update(
+        incidenteRef,
+        incidenteCollection.parseMerge({
+          resolucao: {
+            data: nowUs,
+            valor: 0,
+            tipo: TIPO_RESOLUCAO.outro,
+            comentarios:
+              `Divergência resolvida automaticamente: o conteúdo do pedido voltou a ` +
+              `conferir com o envio ${shippingInstance.id}.`,
+          },
+          ultimaModificacao: nowUs,
+        }) as DocumentData,
+      );
+      patch.estado = estadoPedidoFromOrderStatus(orderStatus ?? '');
+    }
 
     // Wall clock, monotonic. Legacy stamped the ORDER's own timestamp here
     // (tasks.dart:613), but this field is the display / recency-sort / TableView
@@ -990,6 +1251,24 @@ async function applyFreteStep(args: {
 
     tx.update(pedidoRef, pedidoCollection.parseMerge(patch) as DocumentData);
   });
+
+  // Outside the transaction ON PURPOSE, and in this order.
+  //
+  // The incidente is written after the commit so it reuses `recordItensSemProduto`'s
+  // create-once idiom (deterministic id + swallow ALREADY_EXISTS), which keeps the
+  // FIRST occurrence's `timestamp` across the retries this path is guaranteed to
+  // see. And the throw has to come after the commit or it would roll the
+  // `estado: error` write back — which is the whole reason that write exists.
+  const divergencia = veredito.divergencia;
+  if (divergencia != null && divergencia.conferencia.bloqueia) {
+    await registrarIncidenteDeDivergencia(db, pedidoId, divergencia, nowUs);
+    // Transient by contract, per this file's THROW-ON-TRANSIENT discipline: the
+    // notification queue retries and, if the divergence is real and permanent,
+    // parks the notification after `MAX_TENTATIVAS`. The pedido is already
+    // parked in `error` at that point, so nothing depends on the retry
+    // succeeding — it is the operator's signal, not the recovery mechanism.
+    throw new MlEnvioItensDivergentesError(pedidoId, divergencia);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1311,6 +1590,7 @@ export async function importPedidoMercadoLivre(
       integracaoId,
       contaBag,
       orderLastUpdatedUs: coerceToMicros(initialOrder.last_updated ?? null),
+      orderStatus: initialOrder.status ?? null,
       nowUs,
       loadShipmentPayments,
     });
