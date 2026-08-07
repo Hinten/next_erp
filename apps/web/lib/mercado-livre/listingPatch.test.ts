@@ -32,6 +32,18 @@ describe('buildListingPatch', () => {
     expect(patch.attributes).toEqual([{ id: 'BRAND', value_name: 'Acme' }]);
   });
 
+  it('skips a dirty key whose value is undefined, but writes an explicit null', () => {
+    // Firebase REJECTS undefined outright, and a key present-but-empty would
+    // also make detectConflict treat it as written. Clearing is `null`.
+    const patch = buildListingPatch(
+      { title: undefined, descricao: null },
+      { title: true, descricao: true },
+      1,
+    );
+    expect('title' in patch).toBe(false);
+    expect(patch.descricao).toBeNull();
+  });
+
   it('stamps ultimaModificacao in MILLISECONDS', () => {
     // µs elsewhere in the repo; a cross-unit comparison is a guard that never
     // fires (root CLAUDE.md rule 7).
@@ -88,6 +100,22 @@ describe('detectConflict', () => {
     const patch = { attributes: [], ultimaModificacao: 3000 } as never;
     expect(detectConflict(withAttrs, same, patch, 1000).conflict).toBe(false);
     expect(detectConflict(withAttrs, different, patch, 1000).conflict).toBe(true);
+  });
+
+  it('does not raise a phantom conflict when only KEY ORDER differs', () => {
+    // Two Firestore reads of the same attributes array can serialise their keys
+    // in a different order; a JSON.stringify compare would show a conflict modal
+    // for a document nobody changed.
+    const before = {
+      attributes: [{ id: 'BRAND', value_name: 'Acme' }],
+      ultimaModificacao: 1000,
+    };
+    const after = {
+      attributes: [{ value_name: 'Acme', id: 'BRAND' }],
+      ultimaModificacao: 2000,
+    };
+    const patch = { attributes: [], ultimaModificacao: 3000 } as never;
+    expect(detectConflict(before, after, patch, 1000).conflict).toBe(false);
   });
 
   it('does not block when there is no baseline stamp to compare', () => {

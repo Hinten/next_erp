@@ -13,6 +13,7 @@
  *    listing raise a conflict for a human instead of silently overwriting.
  */
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import { valuesEqual } from '@delfrance/core/equality';
 
 /**
  * Keys the OPERATOR owns. Everything else on the link doc is server-written and
@@ -67,6 +68,12 @@ export function buildListingPatch(
   const patch: Record<string, unknown> = {};
   for (const key of OPERATOR_OWNED_KEYS) {
     if (!isDirty(dirty[key])) continue;
+    // A dirty key with no value is a form bug, not an instruction. The Firebase
+    // SDK REJECTS `undefined` outright (the repo's `.nullable().default(null)`
+    // rule exists for this), and letting it through would also make
+    // `detectConflict` treat the key as written when it carries nothing.
+    // Clearing a field is `null`, which passes.
+    if (values[key] === undefined) continue;
     patch[key] = values[key];
   }
   patch.ultimaModificacao = nowMs;
@@ -113,15 +120,14 @@ export function detectConflict(
   if (!live || !baseline || liveMs == null || baselineMs == null || liveMs <= baselineMs) {
     return { conflict: false, fields: [], nextBaselineMs: liveMs };
   }
+  // `valuesEqual` is the repo's canonical non-serializing deep compare
+  // (`@delfrance/core/equality`), already used by the pedido concurrency guard
+  // and the ObjectView dirty check. A `JSON.stringify` comparison would be
+  // key-ORDER dependent — two Firestore reads of the same `attributes` array
+  // can differ only in key order and would raise a phantom conflict modal —
+  // and it throws outright on a BigInt.
   const fields = OPERATOR_OWNED_KEYS.filter(
     (key) => key in patch && !valuesEqual(baseline[key], live[key]),
   );
   return { conflict: fields.length > 0, fields, nextBaselineMs: liveMs };
-}
-
-/** Structural equality good enough for the link doc's scalar/array/object mix. */
-function valuesEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a == null || b == null) return a == null && b == null;
-  return JSON.stringify(a) === JSON.stringify(b);
 }
