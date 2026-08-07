@@ -23,7 +23,7 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `lib/marketplace/webhookOrigin.ts` — **#811**: the receiver's only inbound origin check.
   There is no signature to verify (confirmed against the 03/08/2026 Notificações reference:
   no `x-signature`, no manifest, no shared secret — the `ts=…,v1=…` scheme people find is
-  **Mercado Pago**), so this is a `application_id` comparison against `MERCADO_LIVRE_CLIENT_ID`
+  **Mercado Pago**), so this is an `application_id` comparison against `MERCADO_LIVRE_CLIENT_ID`
   (foreign ⇒ 403 before any enqueue or write) plus `logWebhookHeaders`, a self-silencing
   header-name inventory that settles the signature question empirically during the migration
   window. It fails OPEN when unconfigured or when `application_id` is absent — a misconfigured

@@ -138,6 +138,33 @@ describe('logWebhookHeaders', () => {
     );
   });
 
+  // `meli`/`mercado` are broad enough to match a credential-shaped name, so the
+  // credential deny-list has to win over the signature-candidate allow-list.
+  it.each([
+    'x-meli-token',
+    'x-mercado-secret',
+    'x-meli-api-key',
+    'x-mercado-auth',
+    'x-meli-cookie',
+  ])('redacts the value of the credential-shaped candidate %s', (name) => {
+    logWebhookHeaders(req({ [name]: 'super-secret-value' }));
+
+    expect(console.warn).toHaveBeenCalledWith(
+      '[mercado-livre/webhook] header-inventory',
+      // The NAME still surfaces — that alone answers "does ML send this?".
+      expect.objectContaining({ names: [name], values: { [name]: '<redacted>' } }),
+    );
+  });
+
+  it('no longer value-logs a plain token header', () => {
+    logWebhookHeaders(req({ 'x-auth-token': 'super-secret-value' }));
+
+    expect(console.warn).toHaveBeenCalledWith(
+      '[mercado-livre/webhook] header-inventory',
+      expect.objectContaining({ names: ['x-auth-token'], values: {} }),
+    );
+  });
+
   it('truncates a long candidate value', () => {
     logWebhookHeaders(req({ 'x-signature': 'a'.repeat(400) }));
 

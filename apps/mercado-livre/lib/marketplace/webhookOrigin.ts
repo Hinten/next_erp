@@ -102,7 +102,16 @@ export function checkApplicationId(body: unknown): ApplicationIdVerdict {
 }
 
 /** Headers whose value is logged in full (truncated) — the signature candidates. */
-const VALUE_LOGGED_HEADER = /signature|signed|hmac|digest|hub|meli|mercado|token/i;
+const VALUE_LOGGED_HEADER = /signature|signed|hmac|digest|hub|meli|mercado/i;
+/**
+ * Credential indicators — NEVER value-logged, even when the name also looks like
+ * a signature candidate. This wins over `VALUE_LOGGED_HEADER` because `meli` and
+ * `mercado` are deliberately broad and would otherwise match `x-meli-token` or
+ * `x-mercado-secret`. The inventory only needs the NAME to answer "does ML sign
+ * anything?", so redacting the value costs nothing and keeps credentials out of
+ * Cloud Logging — which ML's own security guide requires.
+ */
+const CREDENTIAL_HEADER = /token|secret|key|auth|cookie|credential|password/i;
 /** Headers logged as their auth scheme only — never their credential. */
 const SCHEME_ONLY_HEADERS = new Set(['authorization', 'proxy-authorization']);
 const MAX_LOGGED_VALUE_CHARS = 256;
@@ -128,8 +137,9 @@ function authSchemeOf(value: string | null): string {
  *
  * Header NAMES are always safe to log and are the whole point; values are not,
  * and ML's own security guide requires masked logs — so values are emitted only
- * for the signature-candidate names, truncated, with credential headers reduced
- * to their scheme.
+ * for the signature-candidate names, truncated, with `authorization` reduced to
+ * its scheme and any credential-looking name (`token`, `secret`, `key`, …)
+ * redacted outright.
  *
  * `MERCADO_LIVRE_WEBHOOK_LOG_HEADERS=all` logs every request (a focused window);
  * `=off` disables it entirely. Grep Cloud Logging for `header-inventory`.
@@ -154,7 +164,11 @@ export function logWebhookHeaders(req: Request): void {
     if (SCHEME_ONLY_HEADERS.has(name)) {
       values[name] = `<${authSchemeOf(req.headers.get(name))}>`;
     } else if (VALUE_LOGGED_HEADER.test(name)) {
-      values[name] = (req.headers.get(name) ?? '').slice(0, MAX_LOGGED_VALUE_CHARS);
+      // The name still surfaces in `names` either way — a credential-ish
+      // signature candidate is reported as present, never quoted.
+      values[name] = CREDENTIAL_HEADER.test(name)
+        ? '<redacted>'
+        : (req.headers.get(name) ?? '').slice(0, MAX_LOGGED_VALUE_CHARS);
     }
   }
 
