@@ -406,7 +406,13 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       // failure must leave its reason on the doc (the old app stamped these
       // from the same catch), not just a transient HTTP error to the UI.
       if (err instanceof MercadoLivreError) {
-        await produtoMercadoLivreLinkCollection.merge(db, { produtoId }, linkDocId, {
+        // Through `writeLinkDoc`, not a bare `merge`: the item IS published by
+        // now, so if the link doc was deleted meanwhile an upsert would leave a
+        // key-only ghost holding an error and no `id` — a live listing nothing
+        // can find. The fallback path recreates a schema-complete doc, so the
+        // item id has to ride the patch.
+        await writeLinkDoc({
+          id: item.id,
           estado: 'E',
           errors: [err.message],
           ultimaModificacao: Date.now(),

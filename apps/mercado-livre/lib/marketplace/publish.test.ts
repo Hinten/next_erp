@@ -81,7 +81,9 @@ class FakeDb {
             self.bump(key);
           },
           update: async (patch: DocData, precondition?: { lastUpdateTime?: unknown }) => {
-            self.updates.push({ path: key, patch });
+            // Recorded only once the write COMMITS — a rejected update never
+            // reaches Firestore, so a test asserting on `updates` must not see
+            // one (the CAS retry below issues two attempts, one of which loses).
             const current = col.get(docId);
             if (!current) {
               // Real Firestore rejects update() on a missing doc with gRPC 5;
@@ -102,6 +104,7 @@ class FakeDb {
             }
             col.set(docId, { ...current, ...patch });
             self.bump(key);
+            self.updates.push({ path: key, patch });
           },
         };
       },
@@ -567,6 +570,34 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(link.id).toBe('MLB777');
     expect(link.estado).toBe('E');
     expect(link.errors).toEqual(['description rate limited']);
+  });
+
+  it('a description failure on a link deleted mid-publish still records the item id', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    const { api } = makeApi({
+      setItemDescription: vi.fn(async () => {
+        // The operator removes the listing between the item write and the
+        // description call — the window a bare merge() would fill with a
+        // key-only ghost holding an error and no `id`.
+        db.docs(LINKS_PATH).delete('ML-DOC-1');
+        throw new MercadoLivreHttpError('description rate limited', 429, {});
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'description rate limited',
+    );
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    // A live ML listing must never end up with no id on record.
+    expect(link.id).toBe('MLB777');
+    expect(link.estado).toBe('E');
+    // …and the recreated doc is schema-complete, not a key-only ghost.
+    expect(link.contaOuterRef).toBe(`documents/integracao/${CONTA}`);
+    expect(link.title).toBe('Título antigo');
+    expect(link.site_id).toBe('MLB');
   });
 
   it('stamps the parent deprecated arrays in the legacy order-import shape (#431)', async () => {
