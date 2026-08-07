@@ -250,23 +250,32 @@ function sumApprovedOnly(
 }
 
 /**
- * The new value for a monotonic watermark, or `null` when the stored one is
- * already at least as fresh (so the caller omits the key from its patch).
+ * The value a monotonic watermark should hold after this write: the candidate,
+ * or the stored one when that is already fresher. Never lower than either.
  *
- * Both arguments are MICROSECONDS; read the stored side through
- * `coerceToMicros` before calling, because legacy Flutter wrote these fields in
- * milliseconds and a cross-unit comparison is a guard that never fires (root
- * `CLAUDE.md` rule 7).
+ * ⚠️ It returns the VALUE TO WRITE, never a "nothing to do" sentinel, and that
+ * is deliberate. An earlier revision returned `null` to mean "omit this key",
+ * which is a footgun on a nullable field: `parseMergePatch` strips `undefined`
+ * but deliberately KEEPS `null` (`packages/data/src/zodParse.ts` — "null is
+ * kept, it stores fine"), so inlining the result into a patch object wrote
+ * `ultimaModificacao: null` and ERASED the stamp. It bit hardest on the very
+ * first import, where `discoverPedidoMercadoLivre` had just stamped `nowUs` and
+ * the next step compared that same `nowUs` against itself.
  *
- * Plain `Math.max` rather than `FieldValue.maximum`: every caller here already
- * sits inside a transaction that `tx.get`s the same document, so the two are
- * equivalent — and the sentinel cannot survive `parseMerge` anyway, since
+ * Writing a value equal to the stored one is a no-op in effect, so callers can
+ * inline this unconditionally — which is the whole point.
+ *
+ * `armazenadoUs` is MICROSECONDS and must be read through `coerceToMicros`:
+ * legacy Flutter wrote these fields in milliseconds, and a cross-unit
+ * comparison is a guard that never fires (root `CLAUDE.md` rule 7).
+ *
+ * Plain arithmetic rather than `FieldValue.maximum`: every caller already sits
+ * inside a transaction that `tx.get`s the same document, so the two are
+ * equivalent — and the sentinel could not survive `parseMerge` anyway, since
  * `microsSinceEpoch`'s preprocess coerces it to `NaN` and Zod then throws.
  */
-function avancarWatermark(armazenadoUs: number | null, candidatoUs: number | null): number | null {
-  if (candidatoUs == null) return null;
-  if (armazenadoUs == null) return candidatoUs;
-  return candidatoUs > armazenadoUs ? candidatoUs : null;
+function avancarWatermark(armazenadoUs: number | null, candidatoUs: number): number {
+  return armazenadoUs != null && armazenadoUs > candidatoUs ? armazenadoUs : candidatoUs;
 }
 
 async function readPedido(db: Firestore, pedidoId: string): Promise<Pedido> {
@@ -974,8 +983,10 @@ async function applyFreteStep(args: {
     // the row jump BACKWARDS in the list and let the monitor miss the change.
     // The ML ORDER clock lives in `lastMarketplaceUpdate` instead (#791/O15),
     // written by `discoverPedidoMercadoLivre` alone.
-    const avancado = avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs);
-    if (avancado != null) patch.ultimaModificacao = avancado;
+    patch.ultimaModificacao = avancarWatermark(
+      coerceToMicros(freshPedido.ultimaModificacao),
+      nowUs,
+    );
 
     tx.update(pedidoRef, pedidoCollection.parseMerge(patch) as DocumentData);
   });
@@ -1136,8 +1147,10 @@ async function applyPagoAdvanceOrDowngrade(args: {
       // Wall clock, monotonic — see the frete conference above for why this
       // field is not the event clock. Legacy stamped `nowUs` here too, but
       // unguarded, so a replay could pull it backwards.
-      const avancado = avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs);
-      if (avancado != null) patch.ultimaModificacao = avancado;
+      patch.ultimaModificacao = avancarWatermark(
+        coerceToMicros(freshPedido.ultimaModificacao),
+        nowUs,
+      );
       tx.update(pedidoRef, pedidoCollection.parseMerge(patch) as DocumentData);
     }
   });

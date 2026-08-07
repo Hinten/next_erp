@@ -354,7 +354,17 @@ beforeEach(() => {
   vi.mocked(discoverPedidoMercadoLivre).mockImplementation(async (args) => {
     const fake = args.db as unknown as FakeDb;
     if (!fake.docs('pedidos').has('pedido-1')) {
-      fake.seed('pedidos', 'pedido-1', { estado: 'iniciado', itens: {}, itensIds: [] });
+      // `ultimaModificacao: NOW_US` is what the REAL `discoverPedidoMercadoLivre`
+      // stamps. Seeding it matters: without it the later steps compare against
+      // `undefined` and every monotonic-watermark path takes its easy branch,
+      // which is exactly how a bug that only fires when stored == nowUs slipped
+      // past this suite.
+      fake.seed('pedidos', 'pedido-1', {
+        estado: 'iniciado',
+        itens: {},
+        itensIds: [],
+        ultimaModificacao: NOW_US,
+      });
     }
     return { pedidoId: 'pedido-1', created: true };
   });
@@ -731,6 +741,54 @@ describe('importPedidoMercadoLivre — cliente', () => {
     expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
       clientePedidoOuterRef: 'documents/clientes/cli-1',
     });
+  });
+
+  it('never writes a NULL ultimaModificacao, even when the stored stamp already equals nowUs', async () => {
+    // Regression (review of #791). `avancarWatermark` used to return `null` to
+    // mean "omit this key", but `parseMergePatch` deliberately KEEPS `null`
+    // (`zodParse.ts` — "null is kept, it stores fine"), so inlining the result
+    // ERASED the stamp. It bit exactly here: `discoverPedidoMercadoLivre` stamps
+    // `nowUs`, and this step then compares that same `nowUs` against itself.
+    //
+    // The order carries NO shipping and cannot advance, so the cliente step is
+    // the LAST writer — nothing downstream re-stamps the field and papers over
+    // the null. That is what makes this a durable pin rather than a lucky one.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      clientePedidoOuterRef: null,
+      itens: {},
+      ultimaModificacao: NOW_US, // what discoverPedidoMercadoLivre just wrote
+    });
+    const order = makeOrder({ id: 1 });
+    delete (order as { shipping?: unknown }).shipping;
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+
+    vi.mocked(billingInfoToClienteFields).mockReturnValue({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Fulano',
+      cpf_cnpj: '11122233344',
+      idEstrangeiro: null,
+      ie: null,
+      telefone: null,
+      email: null,
+    });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-1',
+      created: true,
+      matchedBy: null,
+      rejected: [],
+      dropped: [],
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const pedido = db.docs('pedidos').get('pedido-1')!;
+    expect(pedido.clientePedidoOuterRef).toBe('documents/clientes/cli-1');
+    // The stamp survives — and stays a real timestamp, never null.
+    expect(pedido.ultimaModificacao).toBe(NOW_US);
+    expect(db.lastPatch('pedidos', 'pedido-1')!.ultimaModificacao).not.toBeNull();
   });
 
   it('skips the cliente step (and continues the import) on MlBillingInfoUnsupportedError', async () => {
