@@ -162,7 +162,6 @@ export interface MassImportContext {
   api: MercadoLivreApi;
   sellerUserId: number | null;
   tabelaNormalOuterRef: string | null;
-  tabelaPromocionalOuterRef: string | null;
   depositoOuterRef: string | null;
   /** Storage bucket for photo import; omitted degrades to "skip photos" (see `resolveOptionalBucket`). */
   bucket?: Bucket;
@@ -215,7 +214,6 @@ const defaultResolveImportDeps: NonNullable<MassImportRunDeps['resolveImportDeps
     api,
     sellerUserId: asNumberOrNull(ctx.conta.user_id),
     tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
-    tabelaPromocionalOuterRef: asStringOrNull(ctx.conta.tabelaPromocionalOuterRef),
     depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
     bucket: resolveOptionalBucket(),
   };
@@ -358,7 +356,6 @@ export async function processMassImportJob(
           integracaoId: payload.integracaoId,
           sellerUserId: ctx.sellerUserId,
           tabelaNormalOuterRef: ctx.tabelaNormalOuterRef,
-          tabelaPromocionalOuterRef: ctx.tabelaPromocionalOuterRef,
           depositoOuterRef: ctx.depositoOuterRef,
           bucket: ctx.bucket,
           options: toImportOptions(job.options),

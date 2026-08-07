@@ -36,6 +36,11 @@ describe('formatTelefone', () => {
   it('returns other lengths unchanged', () => {
     expect(formatTelefone('999')).toBe('999');
   });
+  it('formats a value stored in this repo’s wire format', () => {
+    // The re-export from @delfrance/core/phone strips the `55` before masking.
+    // Every print sheet importing this used to render the raw 13 digits.
+    expect(formatTelefone('5511987654321')).toBe('(11) 98765-4321');
+  });
 });
 
 describe('obscure', () => {

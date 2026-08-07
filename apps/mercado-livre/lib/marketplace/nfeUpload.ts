@@ -42,7 +42,7 @@
  */
 import { z } from 'zod';
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
-import { millisToMicros } from '@delfrance/core/datetime';
+import { coerceToMicros, millisToMicros } from '@delfrance/core/datetime';
 import { ESTADO_FRETE, ESTADO_NFE, INTEGRACAO_FRETE, idFromRef } from '@delfrance/schemas';
 import {
   MercadoLivreHttpError,
@@ -55,6 +55,13 @@ import {
 import { nfev4Collection, pedidoCollection } from '@delfrance/data/admin/collections';
 
 import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';
+
+/** The larger of two µs watermarks (either may be absent). */
+function maiorUsNfe(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return a > b ? a : b;
+}
 
 /* ------------------------------- queue contract ----------------------------- */
 
@@ -627,7 +634,7 @@ export async function processNfeUploadTask(
 /* ------------------------------ frete stamp --------------------------------- */
 
 /**
- * Stamp `freteInicial.estado = 'error'` (+ `lastMarketplaceUpdate`) on the
+ * Stamp `freteInicial.estado = 'error'` (+ `ultimaModificacao`) on the
  * pedido — single-read transaction (orderShipmentImport.ts shape). Guards
  * re-check the TX-FRESH pedido (it may have changed since the task's read):
  * pedido gone → warn + skip; frete gone → silent skip; frete owned by another
@@ -672,7 +679,11 @@ async function stampFreteErro(
       ref,
       pedidoCollection.parseMerge({
         freteInicial: { ...frete, estado: ESTADO_FRETE.error },
-        lastMarketplaceUpdate: nowUs,
+        // Wall clock, monotonic. NOT `lastMarketplaceUpdate`: that is the ML
+        // ORDER-clock watermark and the order import is its single writer
+        // (#791/O15) — this stamp records that WE modified the doc, which is
+        // exactly what `ultimaModificacao` means everywhere else in the repo.
+        ultimaModificacao: maiorUsNfe(coerceToMicros(pedido.ultimaModificacao), nowUs),
       }),
     );
   });

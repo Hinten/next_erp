@@ -272,12 +272,69 @@ export const categorySchema = z
       .array(z.object({ id: z.string(), name: z.string().nullable().optional() }).passthrough())
       .nullable()
       .optional(),
+    /**
+     * Empty ⇒ this is a LEAF. The whole category walk keys on it, and ML only
+     * serves listing types and attributes for leaves (`cadastroSlim.dart:93-96`,
+     * `:114-116` both early-return `[]` on a non-leaf).
+     */
+    children_categories: z
+      .array(z.object({ id: z.string(), name: z.string().nullable().optional() }).passthrough())
+      .nullable()
+      .optional(),
     settings: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .passthrough();
 export type MlCategory = z.infer<typeof categorySchema>;
 
-/** One entry of `GET /categories/{id}/attributes`. */
+/** `GET /sites/MLB/categories` — the root of the category tree. */
+export const siteCategoriesSchema = z.array(
+  z.object({ id: z.string(), name: z.string().nullable().optional() }).passthrough(),
+);
+export type MlSiteCategory = z.infer<typeof siteCategoriesSchema>[number];
+
+/** `GET /categories/{id}/listing_types` — the types available for a LEAF category. */
+export const categoryListingTypesSchema = z.array(
+  z
+    .object({
+      id: z.string(),
+      name: z.string().nullable().optional(),
+      site_id: z.string().nullable().optional(),
+    })
+    .passthrough(),
+);
+export type MlCategoryListingType = z.infer<typeof categoryListingTypesSchema>[number];
+
+/**
+ * `GET /sites/MLB/listing_prices?price=&listing_type_id=&category_id=`
+ *
+ * ML answers an OBJECT when `listing_type_id` is supplied and an ARRAY when it
+ * is not; only the single-type form is wrapped, because the fee preview is
+ * always asked for one chosen listing type.
+ */
+export const listingPricesSchema = z
+  .object({
+    listing_type_id: z.string().nullable().optional(),
+    /** Commission charged on a sale — the link doc's `comissao`. */
+    sale_fee_amount: z.number().nullable().optional(),
+    /** Up-front listing fee (0 for the free/classic types). */
+    listing_fee_amount: z.number().nullable().optional(),
+    currency_id: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlListingPrices = z.infer<typeof listingPricesSchema>;
+
+/**
+ * One entry of `GET /categories/{id}/attributes`.
+ *
+ * ⚠️ Almost every predicate a form needs — `required`, `catalog_required`,
+ * `hidden`, `multivalued`, `variation_attribute`, `allow_variations`,
+ * `read_only` — lives inside **`tags`**, not at the root (the legacy Dart
+ * getters at `api_response.dart:287-308` all read through it). Use
+ * {@link attrTag} rather than indexing `tags` by hand.
+ *
+ * ⚠️ ML sends `tags` as a MAP on some categories and as an ARRAY of names on
+ * others; {@link attrTag} normalises both (`_tagsFromJson`, `api_response.dart:225`).
+ */
 export const categoryAttributeSchema = z
   .object({
     id: z.string(),
@@ -291,11 +348,45 @@ export const categoryAttributeSchema = z
       )
       .nullable()
       .optional(),
-    tags: z.record(z.string(), z.unknown()).nullable().optional(),
+    tags: z
+      .union([z.record(z.string(), z.unknown()), z.array(z.string())])
+      .nullable()
+      .optional(),
+    /** `FAMILY` marks an attribute that identifies a User-Products family. */
+    hierarchy: z.string().nullable().optional(),
+    /** ML's own ordering hint — lower is more important. */
+    relevance: z.number().nullable().optional(),
+    tooltip: z.string().nullable().optional(),
+    hint: z.string().nullable().optional(),
+    /** Max characters ML accepts; over-long values are rejected on publish. */
+    value_max_length: z.number().int().nullable().optional(),
+    default_unit: z.string().nullable().optional(),
+    default_unit_id: z.string().nullable().optional(),
+    allowed_units: z
+      .array(
+        z
+          .object({ id: z.string().nullable().optional(), name: z.string().nullable().optional() })
+          .passthrough(),
+      )
+      .nullable()
+      .optional(),
+    attribute_group_id: z.string().nullable().optional(),
+    attribute_group_name: z.string().nullable().optional(),
   })
   .passthrough();
 export const categoryAttributesSchema = z.array(categoryAttributeSchema);
 export type MlCategoryAttribute = z.infer<typeof categoryAttributeSchema>;
+
+/**
+ * Read a boolean ML attribute tag, tolerating both wire shapes ML uses:
+ * `{ required: true }` and `['required', 'hidden']`.
+ */
+export function attrTag(attr: MlCategoryAttribute, tag: string): boolean {
+  const tags = attr.tags;
+  if (tags == null) return false;
+  if (Array.isArray(tags)) return tags.includes(tag);
+  return tags[tag] === true;
+}
 
 /** One entry of `GET /sites/MLB/domain_discovery/search?q=` (category suggestion). */
 export const domainDiscoverySchema = z.array(

@@ -53,3 +53,60 @@ export function telefoneQueryShapes(input: string): string[] {
   }
   return [...shapes];
 }
+
+/* --------------------------------- display --------------------------------- */
+
+/**
+ * Drop the BR country code from a stored phone, yielding the local number
+ * (DDD + subscriber) as digits. The inverse of {@link normalizeTelefone} for
+ * the BR case, and a no-op for everything else:
+ *
+ *  - legacy raw values are 10/11 digits, so they can never be mistaken for a
+ *    normalized one;
+ *  - a foreign number keeps its own country code, since only `55` is stripped.
+ */
+export function localTelefone(input: string): string {
+  const digits = input.replace(/\D/g, '');
+  return (digits.length === 12 || digits.length === 13) && digits.startsWith('55')
+    ? digits.slice(2)
+    : digits;
+}
+
+/**
+ * Mask a BR **local** number: 11 digits → `(00) 00000-0000`, 10 →
+ * `(00) 0000-0000`. Any other length is returned unchanged.
+ *
+ * Takes the local shape, not this repo's stored shape — for a stored value use
+ * {@link formatTelefone}. The two are separate because the DANFE renders the
+ * `fone` parsed back out of a SIGNED XML, which is in SEFAZ's shape (6–14
+ * digits, no country code — the opposite of this repo's standard). A fiscal
+ * document must show the value that is in the signed XML, so it masks without
+ * ever stripping.
+ */
+export function formatTelefoneLocal(input: string): string {
+  const digits = input.replace(/\D/g, '');
+  if (digits.length === 11)
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10)
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  return input;
+}
+
+/**
+ * Format a telefone **as this repo stores it** — strip the `55`, then mask.
+ *
+ * Stripping happens inside the formatter on purpose. The two steps used to be
+ * separate, and the `55`-stripping half lived inlined in a single page, so
+ * every other surface (the orçamento, the comum sheet, the etiqueta genérica)
+ * printed a 13-digit `5511999998888` raw: `formatTelefoneLocal` returns any
+ * non-10/11-digit input unchanged. Folding them together removes the class of
+ * bug rather than one instance — no call site can forget the first step.
+ */
+export function formatTelefone(input: string): string {
+  const local = localTelefone(input);
+  const masked = formatTelefoneLocal(local);
+  // `formatTelefoneLocal` echoes its INPUT when it cannot mask; for a foreign
+  // or malformed number return the caller's original string, not the stripped
+  // digits, so nothing is silently mangled.
+  return masked === local ? input : masked;
+}

@@ -1,9 +1,11 @@
 ---
 title: Coexisting with the Flutter app
-description: How Next.js and Flutter share the same Firestore during the migration.
+description: How Next.js and Flutter share the same Firestore documents during dual-run (and why today differs).
 ---
 
-Delfrance's production app is currently Flutter; this Next.js rewrite is replacing it incrementally. Both apps run against the **same Firebase project** during the migration window. This guide explains how that's safe.
+Delfrance's production app is currently Flutter; this Next.js rewrite is replacing it incrementally. Wherever the two run against the same Firestore data they read and write the **same documents**, and this guide explains how that's safe.
+
+⚠️ That is not the situation *today*. The rewrite runs against **staging** (Firestore Enterprise); the live data sits in the legacy Flutter project on Firestore **Standard**, with the Flutter app as its only writer. That data moves into a new Enterprise project in one cutover window — see ADR 0013 for the phase order and the rollback. The identical data model described below is what makes both the dual-run and that migration possible.
 
 ## Shared substrate
 
@@ -44,3 +46,5 @@ When the migration is done:
 1. Flip rule deployment to the Next.js repo (after Phase 6.1 split).
 2. Retire Flutter app code paths one feature at a time.
 3. Eventually delete fields the Next.js app no longer authors (denormalisations, cascade triggers).
+
+The data side of that decoupling — moving production into the new Enterprise project, and the queue of one-time migration scripts that runs inside the same window — is ADR 0013.
