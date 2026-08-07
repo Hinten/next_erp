@@ -898,9 +898,10 @@ try {
               .filter((l) => l !== '');
       nodes.push({
         type: m[1],
-        // Bullet position in the plan text — printed by the A/B spike so the
-        // reader can see where the filter sits without eyeballing the whole plan.
-        line: i,
+        // Bullet position in the printed plan — 1-BASED, because that is how a
+        // human counts lines in the plan text dumped above. `i` is a 0-based
+        // array index; printing it raw is off by one (review catch on #890).
+        line: i + 1,
         identifier,
         kind,
         partition,
@@ -1295,16 +1296,23 @@ try {
       // If the post-filter prunes first, B's estoque nodes execute about as
       // often as A's; if the optimizer hoists the rollups, B's counts blow up
       // toward `publishedParents`.
+      //
+      // ⚠️ NOT `uniqueNodes` here. That dedupes on SHAPE
+      // (type|identifier|kind|filter|bounds) and ignores `execution` — so two
+      // estoque probes riding the same index with WILDLY different execution
+      // counts collapse into one, and the survivor may be the cheap one. That
+      // would hide the exact signal this section exists to read. Every node is
+      // printed, in plan order. (Review catch on #890.)
       const estoqueNodes = (list) =>
-        uniqueNodes(list.filter((n) => n.identifier != null && /estoques \(/.test(n.identifier)));
+        list.filter((n) => n.identifier != null && /estoques \(/.test(n.identifier));
       const printExec = (label, list) => {
-        console.log(`\n  ${label}`);
+        console.log(`\n  ${label}  (${list.length} node(s), no dedupe)`);
         if (list.length === 0) {
           console.log('    (no estoque access node in this plan)');
           return;
         }
         for (const n of list) {
-          console.log(`    • ${n.type}  ${n.identifier}`);
+          console.log(`    • line ${n.line}  ${n.type}  ${n.identifier}`);
           for (const l of n.execution) console.log(`        ${l}`);
           if (n.execution.length === 0) console.log('        (no Execution: stats on this node)');
         }
@@ -1321,20 +1329,23 @@ try {
 
       // Where the filter node actually sits, for the reader who wants the tree.
       const abLines = abPlan.split('\n');
-      const linksFilterLine = abLines.findIndex(
+      // `findIndex` is 0-based too — normalized to 1-based below, so both
+      // numbers in this block are countable against the printed plan.
+      const linksFilterIdx = abLines.findIndex(
         (l, i) =>
           /•\s+Filter\b/.test(l) &&
           abLines
             .slice(i + 1, i + 6)
             .some((b) => /\bexpression:/.test(b) && /links|array_length/i.test(b)),
       );
+      const linksFilterLine = linksFilterIdx === -1 ? null : linksFilterIdx + 1;
       const firstEstoqueLine = abNodes
         .filter((n) => n.identifier != null && /estoques \(/.test(n.identifier))
         .map((n) => n.line)
         .sort((a, b) => a - b)[0];
       console.log(
         `\n  plan-text positions (a TREE, not an execution order — corroboration only):\n` +
-          `    links post-filter node: ${linksFilterLine === -1 ? 'not found' : `line ${linksFilterLine}`}\n` +
+          `    links post-filter node: ${linksFilterLine == null ? 'not found' : `line ${linksFilterLine}`}\n` +
           `    first estoque probe:    ${firstEstoqueLine == null ? 'not found' : `line ${firstEstoqueLine}`}`,
       );
 
