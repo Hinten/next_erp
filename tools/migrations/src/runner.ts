@@ -12,6 +12,14 @@ export interface MigrationArgs {
   projectId: string;
   /** Write changes. Default false (dry-run). */
   apply: boolean;
+  /**
+   * Classify and COUNT what is stored, without writing and without listing
+   * per-document changes. The pre-flight pass you read before trusting a
+   * dry-run: it answers "what shapes are actually in this corpus?" — which is
+   * the question a change log cannot, because it only shows what the transform
+   * already knows how to handle.
+   */
+  reportOnly: boolean;
   /** Optional explicit service-account file (else env). */
   serviceAccountPath?: string;
 }
@@ -39,18 +47,22 @@ function requireValue(next: string | undefined, flag: string): string {
  * Parse the migration CLI contract (see `tools/migrations/README.md`):
  *   --project <id>   REQUIRED — never defaults, so prod is never touched by accident
  *   --apply          write changes (omit for a dry-run that only logs)
+ *   --report-only    classify + count stored shapes, write nothing
  *   --service-account <path>   optional credential override
  * Throws `MigrationArgError` on a missing/unknown flag.
  */
 export function parseArgs(argv: readonly string[]): MigrationArgs {
   let projectId: string | undefined;
   let apply = false;
+  let reportOnly = false;
   let serviceAccountPath: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === '--apply') {
       apply = true;
+    } else if (arg === '--report-only') {
+      reportOnly = true;
     } else if (arg === '--project') {
       projectId = requireValue(argv[i + 1], '--project');
       i += 1;
@@ -71,7 +83,10 @@ export function parseArgs(argv: readonly string[]): MigrationArgs {
       '--project <id> is required. The migration refuses to guess the target project.',
     );
   }
-  return { projectId: projectId.trim(), apply, serviceAccountPath };
+  if (apply && reportOnly) {
+    throw new MigrationArgError('--report-only cannot be combined with --apply.');
+  }
+  return { projectId: projectId.trim(), apply, reportOnly, serviceAccountPath };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -131,6 +146,8 @@ export class BatchWriter {
 export interface MigrationContext {
   db: Firestore;
   apply: boolean;
+  /** See {@link MigrationArgs.reportOnly}. Never true together with `apply`. */
+  reportOnly: boolean;
   sink: ChangeSink;
   writer: BatchWriter;
 }
@@ -167,9 +184,10 @@ export async function runMigration(
   const sink = new ChangeSink(stream);
   const writer = new BatchWriter(db, args.apply);
 
-  log(`[${name}] project=${args.projectId} mode=${args.apply ? 'APPLY' : 'DRY-RUN'} → ${logPath}`);
+  const mode = args.apply ? 'APPLY' : args.reportOnly ? 'REPORT-ONLY' : 'DRY-RUN';
+  log(`[${name}] project=${args.projectId} mode=${mode} → ${logPath}`);
 
-  const summary = await body({ db, apply: args.apply, sink, writer });
+  const summary = await body({ db, apply: args.apply, reportOnly: args.reportOnly, sink, writer });
   await writer.flush();
   await new Promise<void>((res) => stream.end(res));
 
