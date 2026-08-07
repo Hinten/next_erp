@@ -47,14 +47,20 @@
  *     new value unconditionally and every other field is null-tolerant
  *     (`other ?? this`).
  *  7. `estado` advance (:1230-1245) — ONLY inside the write branch (a stale
- *     skip never reaches this), ONLY when the pedido's stored `estado` is
- *     `'emProcessamento'` AND it has a `valorCobrado`: `totalPago` = (this
- *     payment's mapped `valor` if its mapped `status_pagamento` is `aprovado`,
- *     else 0) + the sum of every OTHER stored pagamento (read in the SAME
- *     transaction, excluding this doc's id) whose `status_pagamento` is
- *     `aprovado`. `totalPago >= valorCobrado` → patch the pedido to
- *     `{ estado: 'pago', ultimaModificacao: nowUs, lastMarketplaceUpdate:
- *     nowUs }`. Deliberately NOT `reconcilePedidoFromPagamento` (that generic
+ *     skip never reaches this), ONLY when the pedido satisfies the SHARED
+ *     `podeAvancarParaPago` predicate (`orderImport.ts`) and has a
+ *     `valorCobrado`. Since #791 that predicate is the same one the order
+ *     import uses — estado `emProcessamento` PLUS cliente, endereço and
+ *     freteInicial — because `pago` authorizes dispatch and NF-e emission and
+ *     the two ML paths that can trigger it must not disagree about what it
+ *     means. `totalPago` = (this payment's mapped `valor` if its mapped
+ *     `status_pagamento` is `aprovado`, else 0) + the sum of every OTHER stored
+ *     pagamento (read in the SAME transaction, excluding this doc's id) whose
+ *     `status_pagamento` is `aprovado`. `totalPago >= valorCobrado` → patch the
+ *     pedido to `{ estado: 'pago', ultimaModificacao: <wall clock, monotonic> }`.
+ *     NOT `lastMarketplaceUpdate`: that is the ML ORDER-clock watermark and the
+ *     order import is its single writer (#791/O15) — this path carries a
+ *     PAYMENT clock, which already lives on the pagamento doc. Deliberately NOT `reconcilePedidoFromPagamento` (that generic
  *     path is Mercado Pago's) — NO downgrade, NO `freteInicial` flip. The
  *     `historicoEstadoPedido` row is no longer this path's concern either: the
  *     `onPedidoEstadoChanged` trigger observes the pedido write and records the
