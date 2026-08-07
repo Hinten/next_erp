@@ -145,10 +145,17 @@ export function resolveCondition(
 /**
  * Parent-level attributes (mapper prunes any combination ids from these).
  *
- * `includeSku: false` when the item has variations: each variation carries its
- * own `SELLER_SKU`, and ML must not also see the parent's. The mapper strips it
- * defensively too, but suppressing it here keeps the assembled input honest —
- * publish persists these attributes onto the link doc (#799 bug 7).
+ * `includeSku: false` only when the payload will actually EMIT variations, each
+ * of which carries its own `SELLER_SKU` that ML must not see duplicated at the
+ * parent. The mapper strips it defensively too, but suppressing it here keeps
+ * the assembled input honest — publish persists these attributes onto the link
+ * doc (#799 bug 7).
+ *
+ * ⚠️ "has children" is NOT the same condition. `buildItemPayload` drops the
+ * variations array entirely for a User-Products seller, so a UP produto with
+ * children emits no per-variation SKUs at all — suppressing the parent's too
+ * would ship a payload with NO SKU anywhere. The caller must mirror the
+ * mapper's own test, not the child count.
  */
 export function buildParentAttributes(
   produto: PublishProduto,
@@ -298,7 +305,10 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     pictures: args.pictures,
     videoId: args.link?.video_id ?? null,
     attributes: buildParentAttributes(args.produto, args.link, args.sizeChart?.chartId ?? null, {
-      includeSku: variations.length === 0,
+      // Mirrors buildItemPayload's own `hasVariations`, which is
+      // `!isUserProductSeller && variations.length > 0` — a UP seller emits no
+      // variations array, so its parent SKU is the only one there is.
+      includeSku: args.isUserProductSeller || variations.length === 0,
     }),
     variations,
   };

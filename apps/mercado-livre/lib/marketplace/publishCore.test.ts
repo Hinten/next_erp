@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildItemPayload } from '@delfrance/integrations-mercado-livre';
 import {
   MercadoLivrePublishError,
   type PublishGrupoVariacao,
@@ -188,6 +189,29 @@ describe('assemblePublishInput', () => {
       attributeCombinations: [{ id: 'SIZE', value_name: 'M' }],
       attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-1-M' }],
     });
+  });
+
+  it('keeps the parent SELLER_SKU for a User-Products seller even with children', () => {
+    // buildItemPayload drops the variations array entirely for a UP seller, so
+    // no per-variation SKU is ever emitted. Suppressing the parent's on child
+    // count alone would ship a payload with NO SKU anywhere.
+    const input = assemblePublishInput({
+      ...baseArgs,
+      isUserProductSeller: true,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M', sku: 'SKU-1-M', ordem: 1 },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+      ],
+    });
+    expect(input.attributes!.map((a) => a.id)).toContain('SELLER_SKU');
+
+    const data = buildItemPayload(input);
+    expect(data.variations).toBeUndefined();
+    expect((data.attributes as Array<{ id: string }>).map((a) => a.id)).toContain('SELLER_SKU');
   });
 
   it('binds the size chart: SIZE_GRID_ID on the parent, SIZE_GRID_ROW_ID + SIZE replacement per variation', () => {
