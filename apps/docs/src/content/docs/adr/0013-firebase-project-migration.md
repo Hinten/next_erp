@@ -41,7 +41,7 @@ that carry the project id.
 
 Managed **export/import** for Firestore, **Storage Transfer Service** for the
 bucket, **`auth:export`/`auth:import`** for users, and a short freeze made short
-by a PITR snapshot. Four phases. **Agents never run any of this** — it is a
+by a PITR snapshot. Four operational phases (plus the pre-window Phase 0). **Agents never run any of this** — it is a
 coordinated human operation, and every step below is a step a person takes.
 
 ### Phase 0 — before the window, no downtime
