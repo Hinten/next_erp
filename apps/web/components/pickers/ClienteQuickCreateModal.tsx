@@ -36,7 +36,7 @@ import {
 } from '@delfrance/schemas';
 import { saveRecord } from '@delfrance/ui';
 import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
-import { normalizeTelefone } from '@delfrance/core/phone';
+import { formatTelefone, normalizeTelefone } from '@delfrance/core/phone';
 import { CpfCnpjTextInput } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
 import { EnderecoFormModal } from '@/components/pickers/EnderecoFormModal';
@@ -119,7 +119,11 @@ function candidateLabel(c: DedupCandidate): string {
 }
 
 function CandidateRow({ candidate, onUse }: { candidate: DedupCandidate; onUse: () => void }) {
-  const detail = [candidateDoc(candidate), candidate.telefone, candidate.email]
+  const detail = [
+    candidateDoc(candidate),
+    candidate.telefone && formatTelefone(candidate.telefone),
+    candidate.email,
+  ]
     .filter(Boolean)
     .join(' · ');
   return (
