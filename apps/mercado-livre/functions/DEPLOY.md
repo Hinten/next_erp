@@ -16,12 +16,15 @@ analysis. `firebase.mercado-livre.deploy.json` points `source` at the generated
 - `pnpm install` at the repo root (the junction needs `apps/mercado-livre/node_modules`).
 - The App Hosting backend for `apps/mercado-livre` created in the Firebase console
   (GCP-side; not declared in any repo config).
-- Env / secrets on the deployed function: `FIREBASE_PROJECT_ID` + admin creds; and,
-  once the ML API calls are wired (Phase 5), `MERCADO_LIVRE_CLIENT_SECRET` via
-  `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_SECRET` (declared in
-  `src/options.ts`). `processMercadoLivreMassImport` additionally needs
-  `MERCADO_LIVRE_CLIENT_ID` (bound per-function — see below):
-  `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_ID --project <project-id>`.
+- Env / secrets on the deployed functions: `FIREBASE_PROJECT_ID` + admin creds, plus
+  **both** ML app credentials —
+  `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_ID --project <project-id>` and
+  `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_SECRET --project <project-id>`.
+  **9 of the 11** functions bind both **per-function** — every one whose deps refresh
+  an ML access token (see the list in `src/options.ts`). The binding is per-function
+  rather than codebase-wide precisely so the two Firestore triggers (`onNfeAprovada`,
+  `onIntegracaoMercadoLivreChanged`), which never call the ML API, carry **no**
+  credentials at all.
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves the region from
   `MERCADO_LIVRE_TASKS_REGION ?? FUNCTIONS_REGION ?? us-east5` (App Hosting / Cloud
@@ -49,17 +52,28 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 
 ## Functions in this codebase
 
-| Export                               | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `importMercadoLivreOrders`           | `onSchedule('every 15 minutes')`       | Incremental order pull per connected account (#362) — **skeleton no-op** until that milestone.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `processMercadoLivreNotification`    | `onTaskDispatched` (Cloud Tasks queue) | Step 6 — process a queued ML notification (resolve account by `user_id`, dispatch by topic). Rate-limited + retry-with-backoff; the receiver enqueues, this runs in-process. Persists to `notificacoesMercadoLivre` ONLY on retry-exhaustion / no-account / unknown topic.                                                                                                                                                                                                                                                                                                                                                                                      |
-| `reprocessMercadoLivreNotifications` | `onSchedule('every 30 minutes')`       | Step 6 — reprocess backstop for persisted `failed` notifications older than 1h (deletes on success, parks at the cap).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `processMercadoLivreMassImport`      | `onTaskDispatched` (Cloud Tasks queue) | Step 8 (#621) — "Importar todos os anúncios": scans the seller's full listing via `scanSellerItems`, drains up to `MASS_IMPORT_ITEMS_PER_DISPATCH` items per dispatch through `importProduto`, and re-enqueues itself onto its OWN queue until the job (`importacoesMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` from Secret Manager per-function (see `src/options.ts`) for the ML token refresh.                                                                                                          |
-| `sweepMercadoLivreStock`             | `onSchedule('every 15 minutes')`       | Step 10 PR C — the **incremental** stock sweep: per conta it runs THE produtos-first joined discovery from the durable cursor (`estoqueMercadoLivreSync/{integracaoId}`), applies the 30-day activity filter and enqueues one `sendMercadoLivreStock` task per ML call. Bounded pages + tasks per tick; a truncated tick persists `continuacao` (frozen window + keyset) and the NEXT tick resumes it. Skips a conta whose 429 `pausedUntilUs` is still live, and skips ONLY the 02:00 America/Sao_Paulo tick in code (`isSlotDoDaily` — that slot belongs to the daily sweep; 02:15/30/45 run normally). **No-op until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1`.** |
-| `sweepMercadoLivreStockDaily`        | `onSchedule('0 2 * * *')`              | Step 10 PR C — the **daily** full-reconciliation sweep, 02:00 America/Sao_Paulo: the same discovery over a flat 24h window (`MERCADO_LIVRE_STOCK_DAILY_WINDOW_H`), with no activity filter and no pedidos probe. It owns its slot alone — the incremental wrapper skips exactly the 02:00 tick — so the two never contend for one conta's caps and state doc. Same flag, same no-op while OFF.                                                                                                                                                                                                                                                                  |
-| `processMercadoLivrePriceSync`       | `onTaskDispatched` (Cloud Tasks queue) | Step 11 PR-C — "Atualizar preços": manual bulk price sync for one conta. Pages the conta's linked produtos, prices from the tabela normal, GETs the item before every PUT (skip-if-equal, fresh status gate, decrease guard unless `baixarPreco`), sends **price-only** bodies (`item.price.not_modifiable` maps to a terminal skip), and re-enqueues itself onto its OWN queue until the job (`enviosPrecoMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.              |
-| `onNfeAprovada`                      | `onDocumentWritten` (Firestore)        | Step 12 (#739) — the codebase's **first Firestore trigger**: fires on every `pedidos/{pedidoId}/nfev4/{nfeId}` write (named `default` database); when a production (`<tpAmb>1`) NF-e reaches `aprovada` with `xml_nfe_proc` present, ONE pedido read filters non-ML pedidos and it enqueues one `{ pedidoId, nfeId }` task onto the NF-e upload queue — **zero Firestore writes** (a non-ML approval costs exactly that 1 read; no task, no doc). Binds **no secrets** (never touches the ML API — see `src/options.ts`).                                                                                                                                       |
-| `processMercadoLivreNfeUpload`       | `onTaskDispatched` (Cloud Tasks queue) | Step 12 (#739) — uploads the raw signed nfeProc XML to ML `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment leaves `invoice_pending`. One task = one NF-e (no self-continuation); 6 attempts over a ≈25–30 min backoff envelope. **Zero writes on the happy path** — idempotency is the live shipment-status gate; the flow's only Firestore write is the failure stamp `freteInicial.estado = 'error'` on the pedido, with the detail in structured Cloud Logging. Single in-flight dispatch. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                        |
+| Export                               | Trigger                                                                                     | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `importMercadoLivreOrders`           | `onSchedule('every 15 minutes')`                                                            | Step 9 PR 4 (#360) — the **order-backfill** sweep: pages `GET /orders/search` per active conta from its durable cursor and enqueues one synthetic `orders_v2` notification per order onto the notification queue, i.e. the same idempotent, staleness-gated import path a real webhook takes. **No-op until `MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1`** (see "Runtime env" below): while off it deploys, ticks, logs one info line and reads nothing. `timeoutSeconds: 540`; binds both secrets.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `processMercadoLivreNotification`    | `onTaskDispatched` (Cloud Tasks queue)                                                      | Step 6 — process a queued ML notification (resolve account by `user_id`, dispatch by topic). Rate-limited + retry-with-backoff; the receiver enqueues, this runs in-process. Persists to `notificacoesMercadoLivre` ONLY on retry-exhaustion / no-account / unknown topic.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `reprocessMercadoLivreNotifications` | `onSchedule('every 30 minutes')`                                                            | Step 6 — reprocess backstop for persisted `failed` notifications older than 1h (deletes on success, parks at the cap).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `processMercadoLivreMassImport`      | `onTaskDispatched` (Cloud Tasks queue)                                                      | Step 8 (#621) — "Importar todos os anúncios": scans the seller's full listing via `scanSellerItems`, drains up to `MASS_IMPORT_ITEMS_PER_DISPATCH` items per dispatch through `importProduto`, and re-enqueues itself onto its OWN queue until the job (`importacoesMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` from Secret Manager per-function (see `src/options.ts`) for the ML token refresh.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `sweepMercadoLivreStock`             | `onSchedule('every 15 minutes')`                                                            | Step 10 PR C — the **incremental** stock sweep: per conta it runs THE produtos-first joined discovery from the durable cursor (`estoqueMercadoLivreSync/{integracaoId}`), applies the 30-day activity filter and enqueues one `sendMercadoLivreStock` task per ML call. Bounded pages + tasks per tick; a truncated tick persists `continuacao` (frozen window + keyset) and the NEXT tick resumes it. Skips a conta whose 429 `pausedUntilUs` is still live, and skips ONLY the 02:00 America/Sao_Paulo tick in code (`isSlotDoDaily` — that slot belongs to the daily sweep; 02:15/30/45 run normally). **No-op until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1`.**                                                                                                                                                                                                                                                                                                                                                           |
+| `sweepMercadoLivreStockDaily`        | `onSchedule('0 2 * * *')`                                                                   | Step 10 PR C — the **daily** full-reconciliation sweep, 02:00 America/Sao_Paulo: the same discovery over a flat 24h window (`MERCADO_LIVRE_STOCK_DAILY_WINDOW_H`), with no activity filter and no pedidos probe. It owns its slot alone — the incremental wrapper skips exactly the 02:00 tick — so the two never contend for one conta's caps and state doc. Same flag, same no-op while OFF.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `sendMercadoLivreStock`              | `onTaskDispatched` (Cloud Tasks queue)                                                      | Step 10 PR B — the stock **send** queue that both sweeps above feed: **one task = one ML call** (the listing's `available_quantity`). It transmits the SWEEP-COMPUTED quantities verbatim — zero produto/estoque reads at send time (owner-locked legacy parity) — so a retried or pause-parked task can send numbers up to `now − sweepComputedAtMs` old; the handler logs `ageMs` on every send and the next sweep converges any staleness. A task landing on a 429-paused conta re-enqueues itself (delay + jitter) instead of burning queue retries; a 429 pauses the conta and rethrows so the retry rides the queue backoff into that pause gate. A 4xx is rethrown until the LAST attempt, which then asks ML for the listing's real state and records it. Its `rateLimits` are **deploy-time** reads (`MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND` / `..._CONCURRENT_DISPATCHES`, defaults 2/2 — see "Runtime env" below). Idle until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1`, since only the sweeps enqueue onto it. |
+| `processMercadoLivrePriceSync`       | `onTaskDispatched` (Cloud Tasks queue)                                                      | Step 11 PR-C — "Atualizar preços": manual bulk price sync for one conta. Pages the conta's linked produtos, prices from the tabela normal, GETs the item before every PUT (skip-if-equal, fresh status gate, decrease guard unless `baixarPreco`), sends **price-only** bodies (`item.price.not_modifiable` maps to a terminal skip), and re-enqueues itself onto its OWN queue until the job (`enviosPrecoMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                                                                                                                                                                                                                                                                                                                                                        |
+| `onNfeAprovada`                      | `onDocumentWritten` (`pedidos/{pedidoId}/nfev4/{nfeId}`, named `default` DB, `retry: true`) | Step 12 (#739) — the codebase's **first Firestore trigger**: fires on every `pedidos/{pedidoId}/nfev4/{nfeId}` write (named `default` database); when a production (`<tpAmb>1`) NF-e reaches `aprovada` with `xml_nfe_proc` present, ONE pedido read filters non-ML pedidos and it enqueues one `{ pedidoId, nfeId }` task onto the NF-e upload queue — **zero Firestore writes** (a non-ML approval costs exactly that 1 read; no task, no doc). Binds **no secrets** (never touches the ML API — see `src/options.ts`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `onIntegracaoMercadoLivreChanged`    | `onDocumentWritten` (`integracao/{integracaoId}`, named `default` DB, `retry: true`)        | #782 — mirrors a Mercado Livre conta onto its Mercado Envios `int_frete` doc: created on connect, re-synced when `nome` / `ativo` / filial / `dataCadastro` change, **deactivated** (never deleted) when the conta is deleted or its `tipo` is edited away. Restores what the legacy Flutter conta screen did inline on every save. Every gate runs before the first read, so any non-ML conta write — and any ML token refresh or `user_id` stamp — costs zero reads and zero writes. Binds **no secrets** (pure Firestore — see `src/options.ts`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `processMercadoLivreNfeUpload`       | `onTaskDispatched` (Cloud Tasks queue)                                                      | Step 12 (#739) — uploads the raw signed nfeProc XML to ML `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment leaves `invoice_pending`. One task = one NF-e (no self-continuation); 6 attempts over a ≈25–30 min backoff envelope. **Zero writes on the happy path** — idempotency is the live shipment-status gate; the flow's only Firestore write is the failure stamp `freteInicial.estado = 'error'` on the pedido, with the detail in structured Cloud Logging. Single in-flight dispatch. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+**All 11 exports above are deployed targets** — one `firebase deploy --only functions:mercado-livre`
+creates or updates every one of them, and the table is the complete list. The five
+queue-backed handlers additionally have their name asserted at module load
+(`src/index.ts:53-115`): the deployed function name **is** the queue name the enqueuers
+target, so a rename that updates only one side fails loudly during Firebase's deploy
+codebase-analysis instead of silently enqueuing onto a queue that does not exist. The four
+schedules and the two Firestore triggers get no such assertion — Eventarc binds a document
+path, and nothing enqueues against a schedule's name.
 
 ### Durability & the residual loss window
 
@@ -265,6 +279,65 @@ Optional, later: delete the now-orphaned `nfe-ml` Cloud Run service itself
 once the new path has soaked — the trigger deletion above is what stops the
 double-fire; the idle service is only cost/noise.
 
+## Mercado Envios `int_frete` sync trigger (#782)
+
+`onIntegracaoMercadoLivreChanged` needs **no queue, no secrets and no IAM grant** — it
+is pure Firestore. It does need one new composite index, deployed **before** the
+function, or its first invocations silently full-scan `int_frete` (Enterprise
+auto-creates nothing and bills data scanned):
+
+```json
+{
+  "collectionGroup": "int_frete",
+  "queryScope": "COLLECTION",
+  "fields": [
+    { "fieldPath": "tipo", "order": "ASCENDING" },
+    { "fieldPath": "contaMercadoLivreMercadoEnviosOuterRef", "order": "ASCENDING" },
+    { "fieldPath": "ativo", "order": "ASCENDING" },
+    { "fieldPath": "dataCadastro", "order": "DESCENDING" }
+  ]
+}
+```
+
+It is already in `firestore.indexes.json`; deploy with
+`firebase deploy --only firestore:indexes`. The same entry also converts the order
+importer's `resolveMercadoEnviosIntFreteOuterRef` from a full scan into an
+index-bound equality — that one was live on the import hot path.
+
+**Deploy order**: indexes → this functions codebase → the backfill. Then verify the
+Eventarc trigger:
+
+```bash
+gcloud eventarc triggers list --project <project-id>
+# expect a trigger for onintegracaomercadolivrechanged,
+# event type google.cloud.firestore.document.v1.written,
+# filtered to database 'default' + the integracao/* document path
+```
+
+**Backfill** — contas connected in the new UI have no `int_frete` doc at all, and the
+trigger's skip-if-unchanged means a no-op touch will not create one. Dry-run first:
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <project-id>
+```
+
+then apply:
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <project-id> --apply
+```
+
+It drives the trigger's own `sincronizarIntFreteDaConta`, so the two can never
+disagree. Idempotent (re-running an already-synced project writes nothing), so it is
+safe to run again; it also normalizes any `contaMercadoLivreMercadoEnviosOuterRef`
+still stored in the bare `integracao/<id>` form. A conta reported `incompleto` has no
+filial (or no nome) yet — `int_frete` cannot represent that, so fill the field in and
+re-run.
+
+**No legacy cutover.** Unlike the NF-e trigger, this one can ship while the Flutter
+conta screen is still live: both writers converge on the same doc via the same
+back-ref, writing the same values, and whichever runs second finds nothing to change.
+
 ## Runtime env (stock sync, Step 10)
 
 The stock sync has no Secret Manager needs of its own — every knob is a
@@ -290,57 +363,80 @@ it on). Three separate places matter, and they are NOT interchangeable:
    only.** It documents the same names for the App Hosting backend (which loads
    the repo-root `.env.local`), and that env does **not** reach this separate
    functions codebase — the same caveat the mass-import secrets carry above.
-   (One root `.env.example` is the repo convention — #730.)
+   (One root template set — `.env.example` for config, `.env.secrets.example` for
+   credentials — is the repo convention; #730.)
 
-### Setting (1) — the honest state of the mechanism
+### Setting (1) — runtime env via `.env.deploy`
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
 directory is the generated `.deploy/mercado-livre-functions`, and
 `scripts/prepare-deploy.mjs` opens with
 `rmSync(deployDir, { recursive: true, force: true })` — it **wipes and
-regenerates the whole folder** as the `predeploy` hook, i.e. after you would
-have dropped a file in it and before firebase reads the source. So a hand-placed
-`.env` there does not survive; there is no `--no-predeploy` escape hatch either.
-Two lanes work today:
+regenerates the whole folder** as the `predeploy` hook, i.e. after you would have
+dropped a file in it and before firebase reads the source. So a hand-placed `.env`
+**there** still does not survive, and there is no `--no-predeploy` escape hatch.
 
-- **Post-deploy on Cloud Run** (a gen2 function IS a Cloud Run service, named
-  after the function in lowercase). After the deploy, per function:
+Instead, put it in the **package** directory and let the hook carry it across the
+wipe. Create `apps/mercado-livre/functions/.env.deploy` (gitignored):
 
-  ```bash
-  gcloud run services list --project <project-id>   # confirm the service names
-  gcloud run services update sweepmercadolivrestock \
-    --region <functions-region> --project <project-id> \
-    --update-env-vars MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
-  # repeat for sweepmercadolivrestockdaily and sendmercadolivrestock
-  ```
+```bash
+MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
+MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN=15
+MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
+```
 
-  ⚠️ Treat this as **not surviving a redeploy**: `firebase deploy` rewrites the
-  service's env from what it computes for the source (an empty `.env` set), so
-  re-apply and re-verify (`gcloud run services describe … --format='value(spec.template.spec.containers[0].env)'`)
-  after every functions deploy.
+`prepare-deploy.mjs` copies it into the artifact **as `.env`** after the wipe, and
+firebase-tools applies it at deploy. It survives redeploys — no
+`gcloud run services update` to re-apply, and no Secret Manager entry for a
+non-secret tunable.
 
-- **Bind it as a secret** — the mechanism this codebase already proves works
-  per-function (`firebase functions:secrets:set` + the `secrets: [...]` option,
-  see the mass-import section). It survives redeploys, but it costs a code edit
-  per variable and Secret Manager is the wrong tool for a non-secret tunable, so
-  it is worth it only for the master flag, if at all.
+**Per-project targeting.** `.env.deploy` applies to whatever project you deploy to,
+so a staging file deployed to produção takes its values with it — and this flag is
+the one that must flip only at the coordinated cutover. For values that belong to
+ONE project, name the file `.env.deploy.<project-id>`: it lands as
+`.env.<project-id>`, which firebase-tools applies only for that `--project`. Both
+can coexist; firebase-tools layers the project-specific file over `.env`.
 
-The durable fix is to have `prepare-deploy.mjs` copy a committed-out
-`apps/mercado-livre/functions/.env.<project-id>` into the artifact **after** the
-wipe, which turns lane 1 into plain firebase-tools behaviour. That change is not
-part of PR C — track it before the cutover if you want a repeatable flip.
+⚠️ **The four deploy-time-only tuning knobs**
+(`MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND` / `MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES`
+for stock sync, and `MERCADO_LIVRE_PRECO_DISPATCHES_PER_SECOND` /
+`MERCADO_LIVRE_PRECO_CONCURRENT_DISPATCHES` for price sync) are read at **deploy**
+time by the `onTaskDispatched.rateLimits` option (see `src/sendStock.ts` +
+`src/processPriceSync.ts`) and baked into the queue config. They do **not** belong
+in `.env.deploy` — that file becomes the function's RUNTIME env, which is read too
+late. Export them in the shell you run `firebase deploy` from:
 
-`MERCADO_LIVRE_ORDER_BACKFILL_ENABLED` (Step 9's order-backfill sweep) rides
-**exactly the same mechanism** and has the same constraint — it was never
-documented here, which is why the sweep has been shipping dark.
+```bash
+export MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND=2
+export MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES=2
+firebase deploy --only functions:mercado-livre \
+  --config firebase.mercado-livre.deploy.json \
+  --project <project-id>
+```
+
+⚠️ The allowlist is anchored and shared by all five `prepare-deploy.mjs` scripts
+(`tools/deploy-env/env-files.mjs`). Exactly two source names are copied —
+`.env.deploy` and `.env.deploy.<project-id>`. A `.env.secrets*` **fails the hook**,
+and so does a bare `.env` (with a rename instruction): everything that reaches the
+artifact is uploaded to the project's `gcf-sources-*` bucket and baked in plaintext
+into the Cloud Run revision, so real secrets stay in Secret Manager
+(`firebase functions:secrets:set` + the `secrets: [...]` option, as the mass-import
+section already does).
+
+`MERCADO_LIVRE_ORDER_BACKFILL_ENABLED` (Step 9's order-backfill sweep, `#360`) rides
+**exactly the same mechanism** — put it in `.env.deploy` alongside the stock flag.
+It ships OFF and only the literal `1` enables it; while off `importMercadoLivreOrders`
+ticks, logs one info line and reads nothing. It is named in the repo-root `.env.example`
+(Mercado Livre section) too, so an operator finds it from either file.
 
 ### ⚠️ The flag ships OFF — flip it only at the coordinated cutover
 
 `MERCADO_LIVRE_STOCK_SYNC_ENABLED` is unset in every environment. Both sweeps
 and the send handler deploy, tick and do nothing while it is off, which is the
 intended steady state until the cutover. Flip it to `1` **only in the same
-window the legacy Flutter stock sender is disabled** — the two writing
+window the legacy Flutter stock sender — the `estoque-ml-periodic` Cloud Run
+service, see the cutover table below — is disabled** — the two writing
 `available_quantity` for the same listings at once is the exact double-send
 hazard the callback-URL cutover below describes for notifications. Order of
 operations: the new Firestore indexes deployed and verified (`scripts/check-stock-indexes.mjs`)
@@ -354,17 +450,57 @@ which the legacy query excluded).
 The Step-6 pipeline processes notifications through a **Cloud Tasks queue** and
 persists to the **top-level** `notificacoesMercadoLivre` collection **only on
 failure** (retry-exhaustion / no-account / unknown topic). The still-running
-Flutter app watches that same collection with its own `onCreate` trigger
-(`notificationMercadoLivreRealTime`) + periodic sweep
-(`manageNotificationsMercadoLivre`) — it likewise only stored a doc on a
+Flutter app watches that same collection — it likewise only stored a doc on a
 processing error.
 
 **When you switch a seller's ML notifications callback URL to this backend's
 `/api/webhooks/mercado-livre`, you MUST disable the legacy Flutter notification
 functions in the same window.** Two overlap hazards otherwise: (1) any failure
-doc this backend writes fires the legacy `onCreate` trigger, which fetches the
-resource and mutates `pedidos`/`produtos` — a double-process; (2) the legacy
+doc this backend writes fires the legacy created/updated trigger, which fetches
+the resource and mutates `pedidos`/`produtos` — a double-process; (2) the legacy
 sweep scans the same collection and reprocesses. Same cutover discipline as the
 estoque functions. Until the cutover the callback URL still points at Flutter and
 this backend's queue never runs — so there is no overlap either side of a
 _correctly sequenced_ cutover.
+
+### What you actually disable
+
+The legacy ML backend is a set of **Cloud Run services** (deployed via
+`functions_framework` from `.old/packages/canais_de_venda/mercado_livre`; deploy
+commands in `.old/docker-repos-local`). The Dart `@CloudFunction` entrypoints and
+their handler functions are what you read in the source — they are **not** what
+you find in the console. Disable the SERVICE (or delete its Eventarc trigger);
+the handler names are listed only so you can match the two:
+
+| Cloud Run service (what you disable) | Eventarc trigger                                                                                                       | Dart handler                        | Replaced here by                                   |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------- |
+| `notifications-ml-rt`                | `notifications-ml-rt--created-trigger`, `notifications-ml-rt--updated-trigger` (on `notificacoesMercadoLivre/{notif}`) | `notificationMercadoLivreRealTime`  | `processMercadoLivreNotification`                  |
+| `notifications-ml-periodic`          | — (Cloud Scheduler)                                                                                                    | `manageNotificationsMercadoLivre`   | `reprocessMercadoLivreNotifications`               |
+| `notifications-ml-2`                 | —                                                                                                                      | `notificationMercadoLivreRealTime2` | `processMercadoLivreNotification`                  |
+| `estoque-ml-periodic`                | — (Cloud Scheduler)                                                                                                    | —                                   | `sweepMercadoLivreStock` + `sendMercadoLivreStock` |
+| `nfe-ml`                             | `nfe-ml--updated-trigger` (**us-east1**)                                                                               | `enviarNFePedidoMercadoLivre`       | `onNfeAprovada` + `processMercadoLivreNfeUpload`   |
+
+`nfe-ml` is the one hard cutover with its own sequenced steps and `gcloud` commands
+— see "⚠️ HARD CUTOVER" above; do not duplicate that work here. `estoque-ml-periodic`
+is the "legacy Flutter stock sender" the stock-flag section refers to. There is also a
+`notifications-ml-recebedor` service in the legacy deploy script, but it is **commented
+out** and not deployed — do not go hunting for it.
+
+### ⚠️ MUST SURVIVE — do not delete `mercadoLivreToken`
+
+The legacy Python callable **`mercadoLivreToken`** is **not** part of the cutover and
+must stay deployed until the Flutter app stops refreshing ML tokens. It is the
+Flutter app's token-refresh proxy: an auth-gated callable that injects the ML client
+secret server-side and forwards to the ML/MP auth hosts.
+
+- Source: `.old/functions_python/main.py` (the `@https_fn.on_call` registration) →
+  `.old/functions_python/mercadoLivre/tokenClientSecret.py` (the helper).
+- Region **us-east1**, secret `client_secret_mercado_livre`.
+
+Deleting it early is a second way to kill the legacy ML integration — the Flutter app
+loses its ability to refresh, and every connected account's token dies at expiry.
+
+⚠️ **It is also load-bearing for Mercado Pago.** The sibling callable `mercadoPagoToken`
+delegates to the **same** `mercadoLivre/tokenClientSecret.py` helper with
+`client_secret_mercado_pago`. Deleting that module — or decommissioning the Python
+functions codebase as "the ML legacy" — breaks Mercado Pago's token proxy too.

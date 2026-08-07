@@ -16,6 +16,7 @@ vi.mock('@/lib/etiqueta-generica', () => ({
 import { emitirOuImprimirEtiqueta, resolveEtiquetaProvider } from './registry';
 import { genericLabelProvider } from './providers/genericLabel';
 import { melhorEnviosProvider } from './providers/melhorEnvios';
+import { mercadoLivreProvider } from './providers/mercadoLivre';
 import { unsupportedMarketplaceProvider } from './providers/unsupportedMarketplace';
 import type { EtiquetaProviderInput } from './types';
 
@@ -24,6 +25,7 @@ const caps = (over: Partial<FreightTipoCapabilities> = {}): FreightTipoCapabilit
   canQuote: false,
   canBuy: false,
   canPrint: false,
+  canFetchLabel: false,
   canTrack: false,
   labelMode: 'none',
   channel: null,
@@ -45,6 +47,9 @@ describe('resolveEtiquetaProvider', () => {
         INTEGRACAO_FRETE.mercadoLivre,
         freightCapsFor(INTEGRACAO_FRETE.mercadoLivre),
       ),
+    ).toBe(mercadoLivreProvider);
+    expect(
+      resolveEtiquetaProvider(INTEGRACAO_FRETE.shopee, freightCapsFor(INTEGRACAO_FRETE.shopee)),
     ).toBe(unsupportedMarketplaceProvider);
     const genericos: IntegracaoFrete[] = [
       INTEGRACAO_FRETE.motoboy,
@@ -95,7 +100,12 @@ function makeInput(over: {
     } as never,
     intFrete: { id: 'if1', tipo: over.tipo ?? INTEGRACAO_FRETE.melhorEnvios, data: {} as never },
     formato: 'pdf',
-    deps: { freightClient: { imprimir: vi.fn() } as never, nfeClient: null, printJob: vi.fn() },
+    deps: {
+      freightClient: { imprimir: vi.fn() } as never,
+      nfeClient: null,
+      mercadoLivreClient: null,
+      printJob: vi.fn(),
+    },
     ui: {
       confirmRisk: over.confirmRisk ?? vi.fn(async () => true),
       notify: vi.fn(),

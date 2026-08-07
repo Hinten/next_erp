@@ -6,6 +6,7 @@ import {
 } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { IntFrete, IntegracaoFrete, Pedido } from '@delfrance/schemas';
+import type { MercadoLivreClient } from '../mercado-livre/client';
 import { pedidoCollection } from '../data/pedidoCollection';
 import { dereferenceOuterRef } from '../data/dereferenceOuterRef';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
@@ -60,11 +61,12 @@ export async function reprintCheckoutEtiqueta(args: {
   pedidoId: string;
   freightClient: FreightHttpClient | null;
   nfeClient: NFeHttpClient | null;
+  mercadoLivreClient: MercadoLivreClient | null;
   formato: 'pdf' | 'zpl2';
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
 }): Promise<ReprintEtiquetaResult> {
-  const { db, pedidoId, freightClient, nfeClient, formato, ui } = args;
+  const { db, pedidoId, freightClient, nfeClient, mercadoLivreClient, formato, ui } = args;
 
   const snap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));
   if (!snap.exists()) return { status: 'no-pedido' };
@@ -82,7 +84,7 @@ export async function reprintCheckoutEtiqueta(args: {
     frete,
     intFrete,
     formato,
-    deps: { freightClient, nfeClient, printJob: args.printJobFn ?? printJob },
+    deps: { freightClient, nfeClient, mercadoLivreClient, printJob: args.printJobFn ?? printJob },
     ui,
   });
 }

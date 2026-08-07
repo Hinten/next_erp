@@ -47,6 +47,7 @@ export {
   docIdSchema,
   outerRefLooseSchema,
   toOuterRef,
+  toOuterRefOrNull,
   idFromRef,
   parseRef,
   type OuterRef,
@@ -63,10 +64,36 @@ export {
   tipoClienteSchema,
   TIPO_CLIENTE,
   TIPO_CLIENTE_LABELS,
+  IE_SENTINELA,
+  normalizarIe,
   refineClienteTipoDocumento,
   type Cliente,
   type TipoCliente,
 } from './cliente';
+
+// The shared cliente-resolution DECISION (#786): telefone/e-mail are signals,
+// cpf_cnpj/idEstrangeiro are identity. Consumed by the web dedup screen and by
+// every unattended server importer, so the two can never drift apart again.
+// `normalizeDocumento` rides along for the same reason `valuesEqual` does above.
+export {
+  CLIENTE_MATCH_KEY,
+  CLIENTE_STRONG_KEYS,
+  CLIENTE_WEAK_KEYS,
+  emailLookupShapes,
+  idCompatible,
+  identityValue,
+  isSameCliente,
+  isSameEmail,
+  isSameTelefone,
+  normalizeDocumento,
+  normalizeNome,
+  sanitizeTelefone,
+  shouldUpdateName,
+  telefoneLookupShapes,
+  type ClienteIdentityKeys,
+  type ClienteMatchKey,
+  type ClienteResolveFields,
+} from './clienteIdentity';
 
 export {
   endereco,
@@ -77,6 +104,21 @@ export {
   type Endereco,
   type UF,
 } from './endereco';
+
+export {
+  ENDERECO_FALLBACKS,
+  ENDERECO_PREFIXOS_MINIMO,
+  NFE_ENDERECO_LIMITES,
+  buildEnderecoForcado,
+  rawEnderecoInputSchema,
+  recoverEnderecoFromCep,
+  resolveUf,
+  sanitizeCep,
+  type EnderecoBuildOutcome,
+  type EnderecoForcado,
+  type EnderecoRecuperado,
+  type RawEnderecoInput,
+} from './enderecoBuilder';
 
 // All produto-owned schemas + logic live in ./produto, grouped by kind
 // (collections, embedded objects, pure logic, page model). Domains produto only
@@ -222,9 +264,15 @@ export {
   // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
   credenciaisIntegracaoSchema,
   credenciaisIntegracaoMeta,
-  // `tokenDuravel` is likewise admin-only / default-deny (Mercado Livre durable
-  // credential in the old Flutter wire shape, shared during dual-run) — not a
-  // DomainSchema, not in ALL_DOMAINS; only its schema/meta/type are public.
+  // ⚠️ `token6h` / `tokenDuravel` are the ONE exception to the deny-all rule
+  // above: the old Flutter Mercado Livre credential shapes, REGISTERED in
+  // ALL_DOMAINS so the generated ruleset keeps granting the still-running
+  // Flutter client the access its own ruleset gives it today. Time-boxed —
+  // #829 reverts them to the bare-constant deny-all shape.
+  token6h,
+  token6hSchema,
+  token6hMeta,
+  tokenDuravel,
   tokenDuravelSchema,
   tokenDuravelMeta,
   // `credenciaisWhatsapp` mirrors `credenciaisIntegracao`: admin-only,
@@ -238,18 +286,45 @@ export {
   type HorarioWhatsapp,
   type PeriodoWhatsapp,
   type CredenciaisIntegracao,
+  type Token6h,
   type TokenDuravel,
   type CredenciaisWhatsapp,
 } from './integracao';
 
 export {
-  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log.
+  // ⚠️ The inbound webhook log. Unlike its Mercado Pago / WhatsApp siblings this
+  // one IS registered in ALL_DOMAINS — dual-run parity with the legacy ruleset,
+  // reverted by #829. The new app reaches it only through the Admin SDK.
+  notificacaoMercadoLivre,
   notificacaoStatusSchema,
   notificacaoMercadoLivreSchema,
+  notificacaoMercadoLivreMeta,
   notificacaoResourceId,
   type NotificacaoStatus,
   type NotificacaoMercadoLivre,
 } from './notificacaoMercadoLivre';
+
+export {
+  // ⚠️ DUAL-RUN ONLY (#829) — pre-sale ML questions, written exclusively by the
+  // legacy backend. Registered for literal parity with the legacy ruleset; the
+  // new app routes questions into `chat`/`mensagem` instead (#532, #533).
+  questionMercadoLivre,
+  questionMercadoLivreSchema,
+  questionMercadoLivreMeta,
+  statusQuestionMercadoLivreSchema,
+  STATUS_QUESTION_MERCADO_LIVRE,
+  statusAnswerMercadoLivreSchema,
+  STATUS_ANSWER_MERCADO_LIVRE,
+  answerMercadoLivreSchema,
+  fromMercadoLivreSchema,
+  phoneMercadoLivreSchema,
+  type QuestionMercadoLivre,
+  type StatusQuestionMercadoLivre,
+  type StatusAnswerMercadoLivre,
+  type AnswerMercadoLivre,
+  type FromMercadoLivre,
+  type PhoneMercadoLivre,
+} from './questionMercadoLivre';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
@@ -341,6 +416,16 @@ export {
   encodePermissoes,
   type Cargo,
 } from './cargo';
+export {
+  cmun,
+  cmunSchema,
+  cmunMeta,
+  cmunDocId,
+  origemCmunSchema,
+  ORIGEM_CMUN,
+  type Cmun,
+  type OrigemCmun,
+} from './cmun';
 
 export {
   usuario,

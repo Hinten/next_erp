@@ -12,8 +12,26 @@ export interface MigrationArgs {
   projectId: string;
   /** Write changes. Default false (dry-run). */
   apply: boolean;
+  /**
+   * Classify and COUNT what is stored, without writing and without listing
+   * per-document changes. The pre-flight pass you read before trusting a
+   * dry-run: it answers "what shapes are actually in this corpus?" — which is
+   * the question a change log cannot, because it only shows what the transform
+   * already knows how to handle.
+   */
+  reportOnly: boolean;
   /** Optional explicit service-account file (else env). */
   serviceAccountPath?: string;
+  /**
+   * Comma-separated selector for migrations that can touch more than one
+   * collection/field and want them enabled one group at a time. Empty when the
+   * flag was not passed; a migration that does not use it ignores this.
+   *
+   * Parsed here rather than per-migration so `parseArgs` can keep REJECTING
+   * genuinely unknown flags — that guard is what stops `--project --apply` from
+   * silently running against a project literally named "--apply".
+   */
+  targets: string[];
 }
 
 export class MigrationArgError extends Error {
@@ -39,18 +57,24 @@ function requireValue(next: string | undefined, flag: string): string {
  * Parse the migration CLI contract (see `tools/migrations/README.md`):
  *   --project <id>   REQUIRED — never defaults, so prod is never touched by accident
  *   --apply          write changes (omit for a dry-run that only logs)
+ *   --report-only    classify + count stored shapes, write nothing
  *   --service-account <path>   optional credential override
+ *   --target <a,b>   optional migration-specific selector (see MigrationArgs)
  * Throws `MigrationArgError` on a missing/unknown flag.
  */
 export function parseArgs(argv: readonly string[]): MigrationArgs {
   let projectId: string | undefined;
   let apply = false;
+  let reportOnly = false;
   let serviceAccountPath: string | undefined;
+  let targetsRaw: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === '--apply') {
       apply = true;
+    } else if (arg === '--report-only') {
+      reportOnly = true;
     } else if (arg === '--project') {
       projectId = requireValue(argv[i + 1], '--project');
       i += 1;
@@ -61,6 +85,11 @@ export function parseArgs(argv: readonly string[]): MigrationArgs {
       i += 1;
     } else if (arg.startsWith('--service-account=')) {
       serviceAccountPath = arg.slice('--service-account='.length);
+    } else if (arg === '--target') {
+      targetsRaw = requireValue(argv[i + 1], '--target');
+      i += 1;
+    } else if (arg.startsWith('--target=')) {
+      targetsRaw = arg.slice('--target='.length);
     } else {
       throw new MigrationArgError(`Unknown argument: ${arg}`);
     }
@@ -71,7 +100,15 @@ export function parseArgs(argv: readonly string[]): MigrationArgs {
       '--project <id> is required. The migration refuses to guess the target project.',
     );
   }
-  return { projectId: projectId.trim(), apply, serviceAccountPath };
+  if (apply && reportOnly) {
+    throw new MigrationArgError('--report-only cannot be combined with --apply.');
+  }
+  const targets = (targetsRaw ?? '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t !== '');
+
+  return { projectId: projectId.trim(), apply, reportOnly, serviceAccountPath, targets };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -131,8 +168,12 @@ export class BatchWriter {
 export interface MigrationContext {
   db: Firestore;
   apply: boolean;
+  /** See {@link MigrationArgs.reportOnly}. Never true together with `apply`. */
+  reportOnly: boolean;
   sink: ChangeSink;
   writer: BatchWriter;
+  /** The parsed CLI arguments, so a migration body can read `--target`. */
+  args: MigrationArgs;
 }
 
 export interface MigrationSummary {
@@ -167,9 +208,17 @@ export async function runMigration(
   const sink = new ChangeSink(stream);
   const writer = new BatchWriter(db, args.apply);
 
-  log(`[${name}] project=${args.projectId} mode=${args.apply ? 'APPLY' : 'DRY-RUN'} → ${logPath}`);
+  const mode = args.apply ? 'APPLY' : args.reportOnly ? 'REPORT-ONLY' : 'DRY-RUN';
+  log(`[${name}] project=${args.projectId} mode=${mode} → ${logPath}`);
 
-  const summary = await body({ db, apply: args.apply, sink, writer });
+  const summary = await body({
+    db,
+    apply: args.apply,
+    reportOnly: args.reportOnly,
+    sink,
+    writer,
+    args,
+  });
   await writer.flush();
   await new Promise<void>((res) => stream.end(res));
 

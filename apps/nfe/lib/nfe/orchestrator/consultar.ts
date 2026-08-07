@@ -3,8 +3,6 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
-  buildNFeProcSafe,
-  classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
   isEstadoFinalNFe,
@@ -25,12 +23,13 @@ import { sefazCallFor } from './sefaz-call';
 import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
+  buildProcForAuthorizedOutcome,
   enviNfeCollection,
   existingToEmitResult,
   findLatestEnviNFeMsgWithNRec,
   outcomeFromConsReci,
   persistPatchUnlessFinal,
-  procPersistExtras,
+  swapAnchorForProc,
 } from './audit';
 
 /** What one persisted-chave SEFAZ consulta produced. */
@@ -167,25 +166,18 @@ export async function consultarChavePersistida(params: {
 
   // Build `<nfeProc>` when SEFAZ authorized this chave and we still hold the
   // matching signed XML — same atomic anchor-clear as the emit path (#128).
-  // The digest-safe stitch (#396) refuses to pair the protocol with bytes it
-  // did not authorize; the doc then stays aprovada WITHOUT proc for a
-  // DistDFe/manual fetch. A 539 chave-swap skips the build (our local signed
-  // XML points at the old chave).
-  const proc =
-    !chaveSwapped &&
-    classifyCStat(patch.cStat) === 'autorizada' &&
-    protNFeRaw != null &&
-    nota.xml_assinado != null
-      ? buildNFeProcSafe(nota.xml_assinado, protNFeRaw)
-      : null;
-  const nfeProcXml = proc?.xml ?? null;
-  if (proc?.digest === 'mismatch') {
-    console.warn(
-      `[nfe/consultar] chave ${chave}: local DigestValue differs from the protNFe ` +
-        `digVal — skipping the <nfeProc> build; the doc stays aprovada WITHOUT ` +
-        `xml_nfe_proc (xml_assinado kept; fetch the authorized XML via DistDFe/manual import)`,
-    );
-  }
+  // The digest-safe stitch (#396, via `buildProcForAuthorizedOutcome`) refuses
+  // to pair the protocol with bytes it did not authorize; the doc then stays
+  // aprovada WITHOUT proc for a DistDFe/manual fetch. A 539 chave-swap skips
+  // the build (our local signed XML points at the old chave).
+  const nfeProcXml = buildProcForAuthorizedOutcome({
+    cStat: patch.cStat,
+    chaveMatches: !chaveSwapped,
+    signedXml: nota.xml_assinado,
+    prot: protNFeRaw,
+    logTag: 'nfe/consultar',
+    chave,
+  });
 
   // TOCTOU guard: `applyOutcome`'s anti-regression defense ran against the
   // estado read BEFORE the SEFAZ round-trip — a doc that became final
@@ -194,7 +186,7 @@ export async function consultarChavePersistida(params: {
     fs,
     nfeRef,
     patch,
-    nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined,
+    nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
   );
   if (!persisted.written) {
     // Nothing was written — report the doc's live truth, not the stale patch.

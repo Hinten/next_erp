@@ -1698,6 +1698,8 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
   retiradaNome: string;
   motoboyId: string;
   motoboyNome: string;
+  mlIntId: string;
+  mlContaId: string;
   mktPedidoId: string;
 }> {
   const base = await seedPedidoFixtures(prefix);
@@ -1708,6 +1710,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
   const motoboyId = `${prefix}-fr-mot`;
   const motoboyNome = `${prefix}-frete-motoboy`;
   const mlIntId = `${prefix}-fr-ml`;
+  const mlContaId = `${prefix}-conta-ml`;
   const mktPedidoId = `${prefix}-mkt-001`;
 
   // Cut-off at 23:59 every weekday: the inclusive same-day check always
@@ -1731,6 +1734,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
     prazoExtra: 0,
     client_id: null,
     client_secret: null,
+    contaMercadoLivreMercadoEnviosOuterRef: null,
   };
 
   const batch = db().batch();
@@ -1766,11 +1770,35 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
     nome: motoboyNome,
     faixaCep: [{ cepInicial: '01000000', cepFinal: '01999999', custo: 15, valor: 20, prazo: 1 }],
   });
+  // The ML conta this freight doc belongs to. In production the pair is created by
+  // the `onIntegracaoMercadoLivreChanged` trigger (#782), which mirrors the conta
+  // onto the freight doc and stamps the back-ref — so the fixture seeds BOTH, and
+  // the back-ref in the canonical `documents/integracao/<id>` form the trigger and
+  // the order importer agree on. Omitting it (as this fixture used to) validated a
+  // shape the product never produces.
+  batch.set(db().collection('integracao').doc(mlContaId), {
+    tipo: 1, // INTEGRACAO_TIPO.mercadoLivre
+    padrao: false,
+    nome: `${prefix}-conta-ml`,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: `documents/filiais/${prefix}-fil-001`,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: Date.now(),
+  });
   batch.set(db().collection('int_frete').doc(mlIntId), {
     ...intFreteBase,
     tipo: 'mercadoLivre',
     nome: `${prefix}-frete-ml`,
     faixaCep: null,
+    contaMercadoLivreMercadoEnviosOuterRef: `documents/integracao/${mlContaId}`,
   });
   batch.set(db().collection('pedidos').doc(mktPedidoId), {
     ehSaida: true,
@@ -1782,7 +1810,10 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
     timestamp: millisToMicros(Date.now()),
     freteInicial: {
       externalId: 'ML-0001',
-      externalOptionId: 'ml-opt-1',
+      // Real ML importers (legacy and new) NEVER write externalOptionId (nor
+      // printLabelId) — the fetch-label UI must light up off
+      // externalOptionIntegracao alone, and this fixture pins that shape.
+      externalOptionId: null,
       externalOptionIntegracao: 'mercadoLivre',
       externalOptionData: { shipment_id: 'SHP-123' },
       estado: 'postado',
@@ -1820,6 +1851,8 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
     retiradaNome,
     motoboyId,
     motoboyNome,
+    mlIntId,
+    mlContaId,
     mktPedidoId,
   };
 }
@@ -1839,7 +1872,12 @@ export async function cleanupPedidoFreteFixtures(prefix: string): Promise<void> 
   await cleanupEnderecos(`${prefix}-cli-001`);
   await cleanupPedidoSubcollectionByPrefix('historicoFtIni', prefix);
   await cleanupPedidoSubcollectionByPrefix('historicoEstadoPedido', prefix);
-  await Promise.all([cleanupPedidoFixtures(prefix), cleanupByNamePrefix('int_frete', prefix)]);
+  await Promise.all([
+    cleanupPedidoFixtures(prefix),
+    cleanupByNamePrefix('int_frete', prefix),
+    // The ML conta seeded alongside the marketplace freight doc (#782).
+    cleanupByNamePrefix('integracao', prefix),
+  ]);
 }
 
 /**

@@ -20,6 +20,7 @@ export {
   buildPagamentoOp,
   savePagamento,
   deletePagamento,
+  saveChequeSplit,
   nextPedidoEstado,
   cancelarPedido,
   PedidoConflictError,

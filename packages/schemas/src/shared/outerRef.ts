@@ -74,6 +74,23 @@ export function toOuterRef(raw: string): OuterRef {
   return outerRefSchema.parse(`documents/${segments(raw).join('/')}`);
 }
 
+/**
+ * Non-throwing {@link toOuterRef}, widened to `unknown`: returns the canonical
+ * `documents/<col>/<id>`, or `null` when `raw` is not a string or cannot form a
+ * valid (even-segment) document path.
+ *
+ * Reach for this whenever the input is UNTRUSTED — a raw Firestore snapshot
+ * field, a legacy doc written by the Flutter app, a webhook payload — and a
+ * malformed value must degrade to "ref not resolvable" instead of aborting the
+ * caller. A Cloud Function trigger is the canonical case: `toOuterRef`'s throw
+ * there rides the Eventarc retry forever on a permanently bad doc.
+ */
+export function toOuterRefOrNull(raw: unknown): OuterRef | null {
+  if (typeof raw !== 'string') return null;
+  const parsed = outerRefSchema.safeParse(`documents/${segments(raw).join('/')}`);
+  return parsed.success ? parsed.data : null;
+}
+
 /** The document id (last path segment) of any ref form. */
 export function idFromRef(raw: string): string {
   const segs = segments(raw);

@@ -89,6 +89,51 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    deliberately opt out (the nfe package via an explicit `'no-restricted-syntax': 'off'`
    block) — there the catch rule is OFF and the convention is on you, which is
    exactly where a swallowed SEFAZ error costs most.
+7. **Every write can lose a race — decide what happens when yours is the
+   loser.** Firestore imposes no ordering: a `merge()`/`update()` lands whenever
+   it arrives, and `runTransaction`'s OCC retries the callback but does **not**
+   re-derive anything captured in the closure, so a value read before an `await`
+   is re-applied verbatim over the winner. A second writer is always plausible
+   here — the legacy Flutter app is a **live concurrent writer** to the same
+   documents, provider webhooks arrive out of order, and the notification sweep
+   re-drives hours-old payloads through the same handler as a fresh task. Pick
+   the cheapest tier that holds. **(0) Make the race impossible** —
+   `FieldValue.increment`/`maximum`/`minimum`, or a deterministic doc id from
+   `event.id`; nothing to compare, nothing to drop. **(1) Native precondition** —
+   `ref.update(patch, { lastUpdateTime: snap.updateTime })` (Admin only) when the
+   patch is derived from a doc you just read; a concurrent change fails
+   `FAILED_PRECONDITION` instead of silently losing. **(2) Event-clock
+   watermark** — for out-of-order provider events, re-read inside a transaction,
+   compare stored against incoming, drop when not fresher, and **always advance
+   the watermark on the write that wins** (a watermark that is never advanced is
+   a guard that never rejects anything). **(3) Tell the human** — an interactive
+   edit that loses raises a conflict, never a silent drop. Re-checking a
+   predicate against a binding read *outside* the transaction is not a guard:
+   re-derive it from the `tx.get` result. ⚠️ The stamps are **not
+   interchangeable** — `ultimaModificacao` is µs on pedido/pagamento/produto but
+   **ms** on the ML links, and `historicoFtIni.data` is ms while
+   `historicoEstadoPedido.data` is µs, so a cross-unit comparison is a guard that
+   never fires. See ADR 0011.
+8. **The production data has not moved yet — everything here runs on staging.**
+   The real data still sits in the legacy Flutter project on Firestore
+   **Standard**, with the Flutter app live-writing to it. It moves exactly once,
+   in a coordinated window, into a **new project on Enterprise with its own
+   billing** — phase order, what an export silently leaves behind, and the
+   rollback are ADR 0013. **Agents never run any of it.** What this means while
+   you work: anything your change needs *done* to real data or real
+   infrastructure is not yours to do, and is not a TODO — **surface it and
+   stop.** Backfills, seed imports, index/rule/TTL deploys, claim re-mints, URL
+   rewrites, provider webhook re-registration, secret re-creation: all of it
+   belongs to that window, and a run done earlier is silently undone by the
+   still-live Flutter writer (#869 is the worked example). Say what needs
+   running and why it cannot happen now, **ask whether to open the tracking
+   issue, and open it only once you have a yes** — the migration queue is
+   curated, not a place agents append to unasked. When approved, label it
+   `needs-migration-window` plus a `task:` label (usually `ops-deploy`) and match
+   the shape of the two that exist, **#856** and **#869**: why the timing is
+   load-bearing, the exact commands, how you verify it worked. ⚠️ A Firestore
+   **import fires no Cloud Functions triggers** — nothing is recomputed on
+   arrival, so any state a trigger would derive must already be in the export.
 
 ## Layout
 
@@ -144,10 +189,29 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `undefined` in `addDoc`/`setDoc`. `.nullable().optional()` is correct for
   server-stamped fields the client never writes. Enforced by
   `delfrance/no-optional-without-nullable`.
+- **Porting a query from `.old/`? Re-derive it, don't transcribe it.** The
+  Flutter app ran on Firestore **Standard**, and several of its query shapes are
+  workarounds for limits that no longer exist — above all the old ban on
+  inequality filters over two different fields, which forced cursor tricks like
+  `TabelaoCmun`'s (a `startAt` standing in for the second bound; it was **inert**,
+  so a value landing in a gap silently matched the WRONG row — #785). Always ask
+  what the query *means* and how you would express it today.
+  ⚠️ Then check that answer against rule 1, because a modern shape is **not**
+  automatically cheaper. A second inequality is a *post-filter*: Firestore's docs
+  are explicit that the extra constraint "does not reduce the number of index
+  entries scanned", and Enterprise bills **data scanned**. #785 measured it and
+  kept the single-inequality shape — `where('cepFinal','>=',n).orderBy('cepFinal').limit(1)`
+  with the lower bound checked in code reads ONE document; the "obvious"
+  two-inequality version scans half the table on a hit and the entire tail on a
+  miss. Cheapest ≠ most readable: measure the scan, not the syntax.
 - **New collection** → `defineCollection({ path, schema })`. Partial updates go
   through the handle's `merge()`, never `setDoc(ref, patch, { merge: true })` on
   a converted ref — the converter full-parses the patch and the merge mask then
   overwrites stored sibling fields.
+- **Repeated read of a slow-changing doc/query** on a server surface →
+  `@delfrance/data/admin/cache` (`createReadCache` / `createCachedDocReader`)
+  via the `firestore-read-cache` skill; TTL is mandatory and *is* the staleness
+  bound. **Never** cache a `tx.get()`, an OAuth token, or a value you write back.
 - **New CRUD screen** (`TableView` + `ObjectView`) → the `schema-driven-crud`
   skill. **New page or form in `apps/web`** → `apps/web/CLAUDE.md`.
 - **New channel webhook or OAuth callback** → its **own app**,
@@ -158,6 +222,34 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   the shared pipeline (`defineNotificationPipeline` in
   `@delfrance/data/admin/notifications`) via the `webhook-notifications` skill —
   never hand-roll the persistence/retry/sweep triad again.
+- **Does your change need something *run* against production data or infra?**
+  Don't do it and don't leave a TODO — surface it, **ask whether to open the
+  tracking issue**, and open it only on a yes. Then label it
+  **`needs-migration-window`** (plus a `task:` label, usually `ops-deploy`), link
+  it from the PR, and say in the issue *why earlier is wrong*. Shape: #856, #869.
+  Rule 8 / ADR 0013.
+- **Changing the shape of data that already exists? Write a one-time migration
+  script — do not migrate gradually.** A one-time `tools/migrations` script beats
+  every incremental alternative here: dual-shape reads, a compat/fallback branch,
+  lazy backfill-on-read, a derived field kept in sync by a trigger. All of those
+  buy one thing — *surviving indefinitely without a cutover* — and there **is** a
+  cutover (rule 8), so they pay for something already bought and leave permanent
+  compat code nobody deletes. #869 worked this exact trade and rejected the
+  derived-field version: schema change → both rulesets regenerate → both
+  snapshots refresh → a sync trigger → a new index → every query site touched →
+  *and it still needs a backfill*. The script is strictly less machinery. Follow
+  the `tools/migrations` contract (`README.md`): `--project` required and matched
+  against the service account, dry-run the default, JSONL log in `out/`, a pure
+  `transform.ts` with unit tests. **Idempotent and re-runnable is not optional** —
+  the Flutter app is still writing, so a run before the window is partially undone
+  and the authoritative run is the one *inside* it. ⚠️ **Staging data does not
+  need to migrate.** The window moves *production* data; staging is disposable and
+  re-seedable from `tools/test-fixtures`, so a script only has to be correct
+  against production shapes — if staging is easier to re-seed than to fix, re-seed
+  it, and never hold a design hostage to staging rows. A staging run is a
+  **rehearsal** (dry-run counts, then a clean second pass as the idempotence
+  check), never a data-preservation goal. ⚠️ **The script is not done until its
+  issue exists** — a merged script nobody runs is a no-op.
 - **New e2e test** → the **filename suffix picks the lane**, nothing else to
   wire: `.cadastros.e2e.spec.ts` (master data), `.vendas.e2e.spec.ts`
   (sales/fiscal/config), `.emulator.e2e.spec.ts` (offline), `.smoke.spec.ts`.
@@ -184,11 +276,15 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Seven custom lint rules in `packages/config-eslint/rules/`:
+- Eight custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
-  `no-optional-without-nullable`, `no-client-estado-history-write` and
+  `no-optional-without-nullable`, `no-client-estado-history-write`,
+  `no-env-secrets-access` and
   `prefer-schema-enum` (error), `no-inline-admin-collection` and
-  `no-error-as-sole-instanceof` (warn). `no-client-estado-history-write` guards
+  `no-error-as-sole-instanceof` (warn). `no-env-secrets-access` bans any literal
+  naming `.env.secrets` — the repo's credential template, which nothing automated
+  may read; its non-JS half (workflows, firebase configs, shell) is the
+  `env-secrets-no-copy` backstop test, since ESLint parses neither. `no-client-estado-history-write` guards
   BOTH server-owned pedido audit trails — `historicoEstadoPedido` and
   `historicoFtIni` — whose sole writer is the `onPedidoEstadoChanged` trigger.
   `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside
@@ -218,3 +314,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   and never pins a version. Do not re-add a `corepack prepare pnpm@x.y.z`:
   it is silently overridden, which is exactly how the workflows drifted to
   declaring a version they never used (#612).
+- **Turbo is the only test aggregator — there is no root vitest config.** Each
+  workspace owns a `vitest.config.ts` and a `test` script; `pnpm test`
+  (= `turbo run test`) fans out across them with caching, and `ci.yml` filters
+  out the six workspaces needing live creds or emulators. Do not re-add a
+  `vitest.workspace.ts`: Vitest 4 **removed** workspace files, so the one that
+  used to sit at the root was inert — `vitest --project <name>` matched nothing
+  and a bare root `vitest` just globbed the repo with the root config, failing on
+  every app-level path alias. A root `projects: [...]` config would "work" but is
+  a trap: it runs the live-credential suites turbo's filters exist to skip.

@@ -47,14 +47,20 @@
  *     new value unconditionally and every other field is null-tolerant
  *     (`other ?? this`).
  *  7. `estado` advance (:1230-1245) — ONLY inside the write branch (a stale
- *     skip never reaches this), ONLY when the pedido's stored `estado` is
- *     `'emProcessamento'` AND it has a `valorCobrado`: `totalPago` = (this
- *     payment's mapped `valor` if its mapped `status_pagamento` is `aprovado`,
- *     else 0) + the sum of every OTHER stored pagamento (read in the SAME
- *     transaction, excluding this doc's id) whose `status_pagamento` is
- *     `aprovado`. `totalPago >= valorCobrado` → patch the pedido to
- *     `{ estado: 'pago', ultimaModificacao: nowUs, lastMarketplaceUpdate:
- *     nowUs }`. Deliberately NOT `reconcilePedidoFromPagamento` (that generic
+ *     skip never reaches this), ONLY when the pedido satisfies the SHARED
+ *     `podeAvancarParaPago` predicate (`orderImport.ts`) and has a
+ *     `valorCobrado`. Since #791 that predicate is the same one the order
+ *     import uses — estado `emProcessamento` PLUS cliente, endereço and
+ *     freteInicial — because `pago` authorizes dispatch and NF-e emission and
+ *     the two ML paths that can trigger it must not disagree about what it
+ *     means. `totalPago` = (this payment's mapped `valor` if its mapped
+ *     `status_pagamento` is `aprovado`, else 0) + the sum of every OTHER stored
+ *     pagamento (read in the SAME transaction, excluding this doc's id) whose
+ *     `status_pagamento` is `aprovado`. `totalPago >= valorCobrado` → patch the
+ *     pedido to `{ estado: 'pago', ultimaModificacao: <wall clock, monotonic> }`.
+ *     NOT `lastMarketplaceUpdate`: that is the ML ORDER-clock watermark and the
+ *     order import is its single writer (#791/O15) — this path carries a
+ *     PAYMENT clock, which already lives on the pagamento doc. Deliberately NOT `reconcilePedidoFromPagamento` (that generic
  *     path is Mercado Pago's) — NO downgrade, NO `freteInicial` flip. The
  *     `historicoEstadoPedido` row is no longer this path's concern either: the
  *     `onPedidoEstadoChanged` trigger observes the pedido write and records the
@@ -79,14 +85,12 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import { STATUS_PAGAMENTO } from '@delfrance/schemas';
 import { roundReais } from '@delfrance/core/money';
-import {
-  orderMLCollection,
-  pagamentoCollection,
-  pedidoCollection,
-} from '@delfrance/data/admin/collections';
+import { coerceToMicros } from '@delfrance/core/datetime';
+import { pagamentoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
 
-import { loadContaBag } from './orderImport';
+import { loadContaBag, podeAvancarParaPago } from './orderImport';
 import { makePagamentoIdMercadoLivre } from './orderIds';
+import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
 
 export interface PaymentImportDeps {
@@ -127,32 +131,6 @@ function parsePaymentOrderKey(payment: MlPayment): number | null {
   return Number(raw);
 }
 
-/**
- * Resolve the pedido owning an ML order/pack id via the `orderML`
- * collection-group mirror — `pack_id == orderId` first, else `id == orderId`
- * (tasks.dart:1178-1191). Both fields are numbers on `orderMLSchema`. Not
- * transactional (a plain collection-group scan, same precedent as
- * `import.ts`'s `resolveExistingProduto` and the order-import's own pack
- * resolution) — the transaction below re-derives every write decision from
- * fresh in-tx reads, so a resolve-then-tx race only risks a benign retry on
- * the next notification delivery, never a wrong write.
- */
-async function resolveOrderMlPedidoId(db: Firestore, orderId: number): Promise<string | null> {
-  const byPackId = await orderMLCollection
-    .groupQuery(db)
-    .where('pack_id', '==', orderId)
-    .limit(1)
-    .get();
-  const packHit = byPackId.docs[0];
-  if (packHit) return packHit.ref.parent?.parent?.id ?? null;
-
-  const byId = await orderMLCollection.groupQuery(db).where('id', '==', orderId).limit(1).get();
-  const idHit = byId.docs[0];
-  if (idHit) return idHit.ref.parent?.parent?.id ?? null;
-
-  return null;
-}
-
 /** Strict `status_pagamento === aprovado` sum — mirrors `orderImport.ts`'s own
  * private `sumApprovedOnly` (not exported; this handler keeps its own copy
  * rather than reaching into that module's internals). */
@@ -169,6 +147,26 @@ function sumApprovedOnly(
 function readNumberField(raw: Record<string, unknown>, key: string): number | null {
   const v = raw[key];
   return typeof v === 'number' ? v : null;
+}
+
+/**
+ * Read a stored epoch field and normalize it to MICROSECONDS. Legacy Flutter
+ * wrote `pagamento` datetimes as ISO-8601 STRINGS, which a raw numeric read
+ * returns as `null` — and `null` means "proceed" on the gate below, so the
+ * guard is fail-open on every legacy-written pagamento today (#791/O3).
+ * `coerceToMicros` handles the string, the legacy millisecond int and the
+ * current µs int alike, so the gate is correct with or without the pending
+ * backfill.
+ */
+function readMicrosField(raw: Record<string, unknown>, key: string): number | null {
+  return coerceToMicros(raw[key]);
+}
+
+/** The larger of two µs watermarks (either may be absent). */
+function maiorUs(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return a > b ? a : b;
 }
 
 /**
@@ -207,8 +205,8 @@ export async function importPagamentoMercadoLivre(
     return { pedidoId: null, skipped: 'sem-order-key' };
   }
 
-  // (4) tasks.dart:1178-1191.
-  const pedidoId = await resolveOrderMlPedidoId(db, orderId);
+  // (4) tasks.dart:1178-1191 — the shared pack-first resolver (`orderPedidoResolve.ts`).
+  const pedidoId = await resolvePedidoIdByOrderId(db, orderId);
   if (pedidoId == null) {
     // SEAM — see module doc point (4): no import fallback, by design.
     console.warn('[mercado-livre] payment import: pedido não encontrado para a order', {
@@ -239,7 +237,7 @@ export async function importPagamentoMercadoLivre(
       ? (pagamentoSnap.data() as Record<string, unknown>)
       : null;
     const existingUltimaModificacao = existingRaw
-      ? readNumberField(existingRaw, 'ultimaModificacao')
+      ? readMicrosField(existingRaw, 'ultimaModificacao')
       : null;
     const proceed =
       existingRaw == null ||
@@ -258,7 +256,30 @@ export async function importPagamentoMercadoLivre(
     if (pedidoSnap.exists) {
       const pedidoRaw = pedidoSnap.data() as Record<string, unknown>;
       const valorCobrado = readNumberField(pedidoRaw, 'valorCobrado');
-      if (pedidoRaw.estado === 'emProcessamento' && valorCobrado != null) {
+      // ONE definition of what `pago` requires, shared with the order import
+      // (#791). This path used to check only `estado` + `valorCobrado`, so the
+      // payments topic could advance a pedido the order import deliberately
+      // refuses (no cliente, no endereço, no frete) — and `pago` authorizes
+      // dispatch and NF-e emission. Strictly more conservative than before; the
+      // log below makes the delta observable rather than silent.
+      const podeAvancar = podeAvancarParaPago({
+        estado: pedidoRaw.estado as never,
+        clientePedidoOuterRef: (pedidoRaw.clientePedidoOuterRef ?? null) as string | null,
+        enderecoFiscalOuterRef: (pedidoRaw.enderecoFiscalOuterRef ?? null) as string | null,
+        freteInicial: pedidoRaw.freteInicial ?? null,
+      });
+      if (!podeAvancar && pedidoRaw.estado === 'emProcessamento' && valorCobrado != null) {
+        console.warn(
+          '[mercado-livre] payment import: avanço para pago recusado por pré-requisito ausente',
+          {
+            pedidoId,
+            temCliente: pedidoRaw.clientePedidoOuterRef != null,
+            temEndereco: pedidoRaw.enderecoFiscalOuterRef != null,
+            temFrete: pedidoRaw.freteInicial != null,
+          },
+        );
+      }
+      if (podeAvancar && valorCobrado != null) {
         const outrosPagamentos = allPagamentosSnap.docs
           .filter((d) => d.id !== pagamentoId)
           .map((d) => d.data() as Record<string, unknown>)
@@ -275,8 +296,12 @@ export async function importPagamentoMercadoLivre(
             pedidoRef,
             pedidoCollection.parseMerge({
               estado: 'pago',
-              ultimaModificacao: nowUs,
-              lastMarketplaceUpdate: nowUs,
+              // Wall clock, monotonic. `lastMarketplaceUpdate` is NOT written
+              // here: it is the ML ORDER-clock watermark and the order import is
+              // its single writer (#791/O15). Stamping it from this path — with
+              // a PAYMENT clock, or worse a wall clock — would push the order
+              // watermark past every order payload currently in flight.
+              ultimaModificacao: maiorUs(readMicrosField(pedidoRaw, 'ultimaModificacao'), nowUs),
             }),
           );
         }

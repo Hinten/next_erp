@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   MercadoLivreHttpError,
+  MercadoLivreLabelUnavailableError,
   MercadoLivreNetworkError,
   MercadoLivreReauthRequiredError,
   MercadoLivreValidationError,
@@ -12,10 +13,16 @@ import {
   type MlCatalogDomain,
   type MlCategory,
   type MlCategoryAttribute,
+  type MlCategoryListingType,
+  type MlClaim,
+  type MlClaimMessage,
+  type MlClaimReason,
+  type MlClaimSearch,
   type MlDomainDiscovery,
   type MlItem,
   type MlItemDescription,
   type MlItemPrices,
+  type MlListingPrices,
   type MlMigrationLiveListing,
   type MlOrder,
   type MlOrderSearch,
@@ -28,6 +35,7 @@ import {
   type MlShipmentInvoice,
   type MlShipmentPayment,
   type MlShipmentSla,
+  type MlSiteCategory,
   type MlSizeChartApi,
   type MlTechnicalSpecs,
   type MlUser,
@@ -36,13 +44,19 @@ import {
   activeChartDomainsSchema,
   catalogDomainSchema,
   categoryAttributesSchema,
+  categoryListingTypesSchema,
   categorySchema,
   domainDiscoverySchema,
   itemDescriptionSchema,
   itemPricesSchema,
   itemSchema,
+  listingPricesSchema,
   migrationLiveListingSchema,
   mlBillingInfoSchema,
+  mlClaimMessagesSchema,
+  mlClaimReasonSchema,
+  mlClaimSchema,
+  mlClaimSearchSchema,
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentInvoiceSchema,
@@ -54,6 +68,7 @@ import {
   packSchema,
   pictureUploadSchema,
   sellerItemsScanSchema,
+  siteCategoriesSchema,
   sizeChartApiSchema,
   technicalSpecsSchema,
   tokenErrorSchema,
@@ -93,6 +108,29 @@ export interface PictureFile {
   readonly data: Uint8Array;
 }
 
+/** Raw label bytes from `getShipmentLabels` (a ZIP for both pdf and zpl2). */
+export interface MlShipmentLabelResult {
+  readonly bytes: Uint8Array;
+  readonly contentType: string | null;
+}
+
+/** Raw file bytes from `downloadClaimAttachment` (claims import, Step 14). */
+export interface MlClaimAttachmentDownload {
+  readonly bytes: Uint8Array;
+  readonly contentType: string | null;
+}
+
+/**
+ * A `GET /orders/{id}` answer plus whether ML returned a COMPLETE
+ * representation (HTTP 200) or a partial one (HTTP 206 Partial Content).
+ * `complete: false` also covers any other 2xx we can't positively call
+ * complete — the flag is only ever trusted in the affirmative.
+ */
+export interface MlOrderResponse {
+  order: MlOrder;
+  complete: boolean;
+}
+
 export interface MercadoLivreApi {
   getMe(): Promise<MlUser>;
   getUser(id: number | string): Promise<MlUser>;
@@ -100,6 +138,15 @@ export interface MercadoLivreApi {
   /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
   getPrices(itemId: string): Promise<MlItemPrices>;
   getOrder(id: number | string): Promise<MlOrder>;
+  /**
+   * `GET /orders/{id}` with the response's completeness exposed. ML answers
+   * **`206 Partial Content`** for an order it can only partly materialize, and a
+   * partial body simply OMITS fields rather than nulling them. Only a caller
+   * that must tell "ML said this field is null" from "ML didn't say" needs this
+   * — today that is the `orderML` mirror refresh (#793); everything else should
+   * use the plain `getOrder`.
+   */
+  getOrderResponse(id: number | string): Promise<MlOrderResponse>;
   getPack(id: number | string): Promise<MlPack>;
   searchOrders(params: {
     seller: number | string;
@@ -127,6 +174,14 @@ export interface MercadoLivreApi {
   sendShipmentInvoiceData(shipmentId: number | string, xml: string): Promise<MlShipmentInvoice>;
   /** `GET /shipments/{shipmentId}/invoice_data?siteId=MLB` — the saved invoice for a shipment (diagnosis/smoke). */
   getShipmentInvoiceData(shipmentId: number | string): Promise<MlShipmentInvoice>;
+  /**
+   * `GET /shipment_labels?shipment_ids=&response_type=` — the shipment label
+   * as raw ZIP bytes (both formats come zipped: pdf → a PDF inside, zpl2 → a
+   * `.txt` of ZPL). A 400 with a `failed_shipments` body throws
+   * `MercadoLivreLabelUnavailableError` carrying the ML message so the caller
+   * can react to `invoice_pending` (upload the NF-e first).
+   */
+  getShipmentLabels(shipmentId: string, format: 'pdf' | 'zpl2'): Promise<MlShipmentLabelResult>;
   /**
    * `GET /users/{sellerId}/shipping/schedule/{logisticType}` — the seller's
    * weekly dispatch-window schedule, used to compute the next valid dispatch
@@ -186,6 +241,23 @@ export interface MercadoLivreApi {
   suggestCategories(query: string, limit?: number): Promise<MlDomainDiscovery>;
   getCategory(id: string): Promise<MlCategory>;
   getCategoryAttributes(id: string): Promise<MlCategoryAttribute[]>;
+  /** `GET /sites/MLB/categories` — the roots of the category tree. */
+  listSiteCategories(): Promise<MlSiteCategory[]>;
+  /**
+   * `GET /categories/{id}/listing_types` — the types available for a LEAF
+   * category. ML serves nothing useful for a non-leaf, so callers gate on
+   * `children_categories` being empty first.
+   */
+  getCategoryListingTypes(categoryId: string): Promise<MlCategoryListingType[]>;
+  /**
+   * `GET /sites/MLB/listing_prices` — fee preview for a price + listing type,
+   * the source of the link doc's `comissao`.
+   */
+  getListingPrices(input: {
+    price: number;
+    listingTypeId: string;
+    categoryId?: string | null;
+  }): Promise<MlListingPrices>;
   /** `POST /pictures/items/upload` (multipart) — returns the ML picture id. */
   uploadPicture(file: PictureFile): Promise<MlPictureUpload>;
 
@@ -216,6 +288,35 @@ export interface MercadoLivreApi {
   getActiveChartDomains(): Promise<MlActiveChartDomains>;
   /** `GET /catalog_domains/{id}` — domain label for pickers. */
   getCatalogDomain(domainId: string): Promise<MlCatalogDomain>;
+
+  /** `GET /post-purchase/v1/claims/{claimId}` — one claim (claims import, Step 14). */
+  getClaim(claimId: number): Promise<MlClaim>;
+  /**
+   * `GET /post-purchase/v1/claims/{claimId}/messages` — the claim's message
+   * thread. **The endpoint returns a bare JSON array**, not a `results`
+   * envelope (claims import, Step 14).
+   */
+  getClaimMessages(claimId: number): Promise<MlClaimMessage[]>;
+  /**
+   * `GET /post-purchase/v1/claims/reasons/{reasonId}` — the human-readable
+   * claim reason. The legacy client needed a token-in-header special case for
+   * exactly this endpoint (api.dart:1501 `tokenOnHeader: true`) — moot here
+   * because `request()` ALWAYS sends the Bearer header.
+   */
+  getClaimReason(reasonId: string): Promise<MlClaimReason>;
+  /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
+  searchClaims(params: {
+    status?: string;
+    stage?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MlClaimSearch>;
+  /**
+   * `GET /post-purchase/v1/claims/{claimId}/attachments/{filename}/download` —
+   * a claim-message attachment as raw bytes (legacy `getAttachment`,
+   * api.dart:1533-1539). The `filename` ML issues is the download key.
+   */
+  downloadClaimAttachment(claimId: number, filename: string): Promise<MlClaimAttachmentDownload>;
 }
 
 export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLivreApi {
@@ -266,12 +367,12 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     }
   }
 
-  async function request<T>(
+  async function requestWithStatus<T>(
     method: 'GET' | 'POST' | 'PUT',
     path: string,
     schema: z.ZodType<T>,
     opts: RequestOpts = {},
-  ): Promise<T> {
+  ): Promise<{ data: T; status: number }> {
     const url = buildUrl(path, opts.query);
     // Fetch the token once; it stays valid across the (few, quick) retries.
     const token = await config.getAccessToken();
@@ -293,8 +394,21 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     );
 
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
-    if (res.ok) return parseOk(res, schema);
+    if (res.ok) return { data: await parseOk(res, schema), status: res.status };
     throw await toHttpError(res);
+  }
+
+  /** `requestWithStatus` for the (overwhelming) majority of callers, which only
+   * ever need the body. Reach for `requestWithStatus` when 200-vs-206 changes
+   * what the caller does — today only the order mirror, see `getOrderResponse`. */
+  async function request<T>(
+    method: 'GET' | 'POST' | 'PUT',
+    path: string,
+    schema: z.ZodType<T>,
+    opts: RequestOpts = {},
+  ): Promise<T> {
+    const { data } = await requestWithStatus(method, path, schema, opts);
+    return data;
   }
 
   /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
@@ -354,6 +468,88 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     throw await toHttpError(res);
   }
 
+  /**
+   * Binary download — same auth/retry mapping as `request`, but the 2xx body
+   * is raw bytes, not JSON. The token rides the Bearer header — NEVER the
+   * legacy `access_token` query param (deprecated by ML). A 400 whose body is
+   * not the `failed_shipments` shape falls through to the standard HTTP error.
+   */
+  async function getShipmentLabels(
+    shipmentId: string,
+    format: 'pdf' | 'zpl2',
+  ): Promise<MlShipmentLabelResult> {
+    const token = await config.getAccessToken();
+    const res = await fetchWithNetworkRetry(
+      buildUrl('/shipment_labels', { shipment_ids: shipmentId, response_type: format }),
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'User-Agent': userAgent,
+        },
+      },
+      'Falha de rede ao obter a etiqueta do Mercado Livre',
+    );
+    if (!res.ok) {
+      if (res.status === 400) {
+        const text = await res.text();
+        const mlMessage = extractFailedShipmentMessage(text);
+        if (mlMessage !== null) {
+          throw new MercadoLivreLabelUnavailableError(
+            `Etiqueta indisponível no Mercado Livre: ${mlMessage}`,
+            mlMessage,
+          );
+        }
+        throw httpErrorFromBody(res, text);
+      }
+      throw await toHttpError(res);
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    // Legacy guard: ML has returned 2xx with an empty body — that is a failed
+    // label, not a printable one.
+    if (bytes.length === 0) {
+      throw new MercadoLivreLabelUnavailableError(
+        'O Mercado Livre retornou uma etiqueta vazia.',
+        '',
+      );
+    }
+    return { bytes, contentType: res.headers.get('content-type') };
+  }
+
+  /**
+   * Binary download — same auth/retry/error mapping as `getShipmentLabels`,
+   * for claim-message attachments. The token rides the Bearer header — NEVER
+   * the legacy `access_token` query param. Mirrors the label empty-body guard:
+   * a 2xx with no bytes is thrown as an HTTP error (carrying the 2xx status so
+   * the caller can tell "empty body" from a genuine non-2xx) instead of handing
+   * the importer a zero-byte file to upload.
+   */
+  async function downloadClaimAttachment(
+    claimId: number,
+    filename: string,
+  ): Promise<MlClaimAttachmentDownload> {
+    const token = await config.getAccessToken();
+    const res = await fetchWithNetworkRetry(
+      buildUrl(
+        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
+      ),
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'User-Agent': userAgent,
+        },
+      },
+      'Falha de rede ao baixar o anexo do Mercado Livre',
+    );
+    if (!res.ok) throw await toHttpError(res);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length === 0) {
+      throw new MercadoLivreHttpError('O Mercado Livre retornou um anexo vazio.', res.status, null);
+    }
+    return { bytes, contentType: res.headers.get('content-type') };
+  }
+
   return {
     getMe: () => request('GET', '/users/me', userSchema),
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
@@ -361,6 +557,10 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
+    getOrderResponse: async (id) => {
+      const { data, status } = await requestWithStatus('GET', `/orders/${id}`, orderSchema);
+      return { order: data, complete: status === 200 };
+    },
     getPack: (id) => request('GET', `/packs/${id}`, packSchema),
     searchOrders: (params) =>
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
@@ -376,6 +576,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', `/shipments/${shipmentId}/invoice_data`, mlShipmentInvoiceSchema, {
         query: { siteId: 'MLB' },
       }),
+    getShipmentLabels,
     getSellerShippingSchedule: (sellerId, logisticType) =>
       request(
         'GET',
@@ -419,6 +620,17 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCategory: (id) => request('GET', `/categories/${id}`, categorySchema),
     getCategoryAttributes: (id) =>
       request('GET', `/categories/${id}/attributes`, categoryAttributesSchema),
+    listSiteCategories: () => request('GET', '/sites/MLB/categories', siteCategoriesSchema),
+    getCategoryListingTypes: (categoryId) =>
+      request('GET', `/categories/${categoryId}/listing_types`, categoryListingTypesSchema),
+    getListingPrices: (input) =>
+      request('GET', '/sites/MLB/listing_prices', listingPricesSchema, {
+        query: {
+          price: input.price,
+          listing_type_id: input.listingTypeId,
+          ...(input.categoryId != null ? { category_id: input.categoryId } : {}),
+        },
+      }),
     uploadPicture,
 
     getDomainTechnicalSpecs: (domainId) =>
@@ -442,6 +654,15 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', '/catalog/charts/MLB/configurations/active_domains', activeChartDomainsSchema),
     getCatalogDomain: (domainId) =>
       request('GET', `/catalog_domains/${domainId}`, catalogDomainSchema),
+
+    getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),
+    getClaimMessages: (claimId) =>
+      request('GET', `/post-purchase/v1/claims/${claimId}/messages`, mlClaimMessagesSchema),
+    getClaimReason: (reasonId) =>
+      request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
+    searchClaims: (params) =>
+      request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
+    downloadClaimAttachment,
   };
 }
 
@@ -469,7 +690,11 @@ async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {
 }
 
 async function toHttpError(res: Response): Promise<Error> {
-  const text = await res.text();
+  return httpErrorFromBody(res, await res.text());
+}
+
+/** `toHttpError` for a body that was already consumed (the label 400 branch). */
+function httpErrorFromBody(res: Response, text: string): Error {
   let body: unknown = text.length > 0 ? text : null;
   if (text.length > 0) {
     try {
@@ -497,6 +722,31 @@ async function toHttpError(res: Response): Promise<Error> {
     body,
     parseRetryAfterSec(res.headers.get('retry-after')),
   );
+}
+
+/** The 400 body `shipment_labels` sends when a label cannot be emitted (yet). */
+const failedShipmentsSchema = z
+  .object({
+    failed_shipments: z.array(z.object({ message: z.string() }).passthrough()).min(1),
+  })
+  .passthrough();
+
+/**
+ * `failed_shipments[0].message` from a 400 body, or null when the body is not
+ * that shape. The message is kept in FULL — the caller substring-matches
+ * `invoice_pending` on it (legacy parity, utils.dart).
+ */
+function extractFailedShipmentMessage(text: string): string | null {
+  if (text.length === 0) return null;
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch (err) {
+    if (err instanceof SyntaxError) return null;
+    throw err;
+  }
+  const parsed = failedShipmentsSchema.safeParse(body);
+  return parsed.success ? parsed.data.failed_shipments[0]!.message : null;
 }
 
 /**

@@ -58,11 +58,21 @@ describe('pedidoSchema', () => {
     expect(out.itens.NONE?.[0]?.descontoUnitario).toBe(1);
   });
 
-  it('rejects item with precoDeVenda below minimum', () => {
+  it('accepts a zero-priced item line (100% coupon / marketplace bonus) — #794', () => {
+    const parsed = pedidoSchema.safeParse({
+      ...baseInput,
+      itens: { x: [{ precoDeVenda: 0, quantidade: 1 }] },
+    });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.itens.x?.[0]?.precoDeVenda).toBe(0);
+  });
+
+  it('rejects item with a negative precoDeVenda', () => {
     expect(
       pedidoSchema.safeParse({
         ...baseInput,
-        itens: { x: [{ precoDeVenda: 0, quantidade: 1 }] },
+        itens: { x: [{ precoDeVenda: -1, quantidade: 1 }] },
       }).success,
     ).toBe(false);
   });

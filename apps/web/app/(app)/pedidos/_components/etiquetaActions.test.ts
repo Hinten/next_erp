@@ -4,7 +4,12 @@ import { etiquetaMismatch, etiquetaRowState } from './etiquetaActions';
 import { INTEGRACAO_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
 
 describe('etiquetaRowState', () => {
-  const base = { tipo: 'melhorEnvios' as const, printLabelId: null, externalOptionId: null };
+  const base = {
+    tipo: 'melhorEnvios' as const,
+    printLabelId: null,
+    externalOptionId: null,
+    externalId: null,
+  };
 
   it('returns none while the tipo is still resolving', () => {
     expect(etiquetaRowState({ ...base, tipo: null, estado: ESTADO_FRETE.iniciado }).action).toBe(
@@ -12,7 +17,7 @@ describe('etiquetaRowState', () => {
     );
   });
 
-  it('marks non-Melhor-Envio carriers as unsupported (v1)', () => {
+  it('marks carriers without a label flow as unsupported', () => {
     expect(
       etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.motoboy, estado: ESTADO_FRETE.iniciado })
         .action,
@@ -21,6 +26,55 @@ describe('etiquetaRowState', () => {
       etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.fob, estado: ESTADO_FRETE.iniciado })
         .action,
     ).toBe('unsupported');
+  });
+
+  it('offers fetch-label for Mercado Livre with or without an externalId', () => {
+    // NOT gated on externalId: the provider surfaces the missing-shipment
+    // support error itself (same rule as the checkout dispatch).
+    expect(
+      etiquetaRowState({
+        ...base,
+        tipo: INTEGRACAO_FRETE.mercadoLivre,
+        externalId: 'ML-0001',
+        estado: ESTADO_FRETE.iniciado,
+      }).action,
+    ).toBe('fetch-label');
+    expect(
+      etiquetaRowState({
+        ...base,
+        tipo: INTEGRACAO_FRETE.mercadoLivre,
+        estado: ESTADO_FRETE.iniciado,
+      }).action,
+    ).toBe('fetch-label');
+  });
+
+  it('threads needsPostedConfirm through the fetch-label action', () => {
+    expect(
+      etiquetaRowState({
+        ...base,
+        tipo: INTEGRACAO_FRETE.mercadoLivre,
+        externalId: 'ML-0001',
+        estado: ESTADO_FRETE.postado,
+      }),
+    ).toEqual({ action: 'fetch-label', needsPostedConfirm: true });
+    expect(
+      etiquetaRowState({
+        ...base,
+        tipo: INTEGRACAO_FRETE.mercadoLivre,
+        externalId: 'ML-0001',
+        estado: ESTADO_FRETE.iniciado,
+      }),
+    ).toEqual({ action: 'fetch-label', needsPostedConfirm: false });
+  });
+
+  it('leaves the Melhor Envio dispatch untouched by the fetch-label branch', () => {
+    // ME never fetches: a bought label still reprints, a quote still buys.
+    expect(
+      etiquetaRowState({ ...base, printLabelId: 'ME-1', estado: ESTADO_FRETE.iniciado }).action,
+    ).toBe('imprimir');
+    expect(
+      etiquetaRowState({ ...base, externalOptionId: '2', estado: ESTADO_FRETE.iniciado }).action,
+    ).toBe('comprar');
   });
 
   it('offers reprint when a label is already bought', () => {

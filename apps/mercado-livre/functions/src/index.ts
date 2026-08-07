@@ -127,6 +127,16 @@ export { processMercadoLivreNfeUpload } from './processNfeUpload';
 export { onNfeAprovada } from './onNfeAprovada';
 
 /**
+ * The Mercado Livre conta → Mercado Envios `int_frete` sync trigger (#782). Keeps the
+ * account's freight config doc in step with its `integracao` doc — created on connect,
+ * re-synced on edit, deactivated on delete — restoring what the legacy Flutter conta
+ * screen did inline on every save. Same "no rename-safety assertion" reasoning as
+ * `onNfeAprovada` above: Eventarc binds a document path, and this one feeds no queue
+ * at all. Binds no secrets (see `src/options.ts`).
+ */
+export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChanged';
+
+/**
  * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep
  * + the 2AM daily full sweep, both feeding the `sendMercadoLivreStock` queue.
  * Plain `onSchedule` exports — nothing enqueues against THEIR names, so no
@@ -194,9 +204,24 @@ export const importMercadoLivreOrders = onSchedule(
  * connected). Runs each inline, per-doc isolated, deduped by `resource`,
  * bounded — success deletes the doc, a persistent failure parks it at the cap.
  * Mirrors the legacy `manageNotificationsMercadoLivre` sweep.
+ *
+ * Secrets: every topic runner routes through `loadMercadoLivreContext()`, which
+ * calls `mercadoLivreOAuthConfig()` unconditionally, so — like
+ * `processNotification.ts`/`importMercadoLivreOrders` above — this needs the ML
+ * app credentials bound. Without them every doc throws `MercadoLivreConfigError`,
+ * which the pipeline treats as transient and parks after `MAX_TENTATIVAS` (#778).
  */
 export const reprocessMercadoLivreNotifications = onSchedule(
-  { schedule: 'every 30 minutes', timeZone: 'America/Sao_Paulo' },
+  {
+    schedule: 'every 30 minutes',
+    timeZone: 'America/Sao_Paulo',
+    secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
+    // Each doc's topic runner routes through loadMercadoLivreContext(), which calls
+    // mercadoLivreOAuthConfig() unconditionally — up to 50 docs processed
+    // sequentially can't fit the gen2 60s onSchedule default; 540s matches the
+    // other ML-API-bound sweeps (importMercadoLivreOrders above).
+    timeoutSeconds: 540,
+  },
   async () => {
     const result = await reprocessNotifications(getDb());
     logger.info('[mercado-livre] reprocess sweep', {

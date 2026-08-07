@@ -123,6 +123,8 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
 
 vi.mock('@google-cloud/firestore/pipelines', () => mockPipelinesExports);
 
+import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
+
 import {
   ESTADOS_VENDA,
   ESTOQUE_MIN,
@@ -660,6 +662,31 @@ describe('podeEnviarEstoque — listing-status whitelist', () => {
         podeEnviarEstoque(c.status, c.sub),
         `status=${String(c.status)} sub=${JSON.stringify(c.sub)}`,
       ).toEqual({ enviar: c.enviar, desconhecido: c.desconhecido });
+    }
+  });
+
+  // #780 — the contract that keeps the legacy arm confined to `buildSendTasks`.
+  // Three of this gate's four callers hand it a LIVE `GET /items` response
+  // (#781's send-time verification, the `items` re-arm in `itemsStatusSync`,
+  // and the `reverificar-anuncio` route), and `MlItem.status` is
+  // `z.string().nullable().optional()` — so a null CAN arrive from ML, meaning
+  // "ML reported no status". Answering `enviar: true` there would let
+  // `itemsStatusSync`'s `errorsToClear` re-arm a listing #781 had just latched,
+  // restarting the very loop it closed. The legacy-doc question is asked in
+  // `buildSendTasks` instead, where a null comes from a stored Flutter-written
+  // link and means something else entirely.
+  it('answers enviar:false for a null status — a live-ML null is NOT a legacy doc', () => {
+    for (const status of [null, undefined]) {
+      expect(podeEnviarEstoque(status, null), `status=${String(status)}`).toEqual({
+        enviar: false,
+        desconhecido: true,
+      });
+      // Not even out_of_stock rescues it: that sub_status is only meaningful
+      // alongside `paused`, and here there is no status to scope it to.
+      expect(podeEnviarEstoque(status, ['out_of_stock']), `status=${String(status)}`).toEqual({
+        enviar: false,
+        desconhecido: true,
+      });
     }
   });
 });
@@ -1251,6 +1278,29 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
+  // #781: the send handler stamps 'E' only after ML has CONFIRMED the anúncio is
+  // healthy — i.e. it was our payload that was refused. Rebuilding that same
+  // payload every tick just re-earns the rejection, 96×/day.
+  it("estado 'E' (payload refused by a healthy anúncio) → anuncio-em-erro", () => {
+    expect(run(familyRow({ links: [{ estado: 'E' }] })).skips).toEqual([
+      { produtoId: 'PROD', reason: 'anuncio-em-erro' },
+    ]);
+  });
+
+  it("estado 'E' is skipped even while ML still reports the listing active", () => {
+    // The exact shape the bug produced: a latched estado next to a status the
+    // whitelist happily sends to. Before the rung, this row rebuilt a task.
+    const res = run(familyRow({ links: [{ estado: 'E', status: 'active', sub_status: [] }] }));
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'anuncio-em-erro' }]);
+  });
+
+  it("a healthy estado 'p' on an active listing still sends (the rung is narrow)", () => {
+    const res = run(familyRow({ links: [{ estado: 'p', status: 'active' }] }));
+    expect(res.tasks).toHaveLength(1);
+    expect(res.skips).toEqual([]);
+  });
+
   it('non-enviável documented status → status-nao-enviavel, NO warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
     const res = run(familyRow({ links: [{ status: 'paused', sub_status: ['paused_by_seller'] }] }));
@@ -1266,6 +1316,75 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       expect.stringContaining('status'),
       expect.objectContaining({ produtoId: 'PROD', itemId: 'MLB111', status: 'brand_new_status' }),
     );
+  });
+
+  // #780 — THE regression this issue is about: before the fix a legacy link
+  // (`status == null`, every doc the Flutter app authored) was skipped, so
+  // flipping MERCADO_LIVRE_STOCK_SYNC_ENABLED enqueued nothing at all.
+  it('legacy link (status == null) IS enqueued — the send backfills the status', () => {
+    const res = run(
+      familyRow({
+        links: [{ status: null, sub_status: null, estado: ESTADO_PUBLICACAO_ML.publicado }],
+      }),
+    );
+    expect(res.skips).toEqual([]);
+    expect(res.tasks).toHaveLength(1);
+    expect(res.tasks[0]).toMatchObject({ itemId: 'MLB111', linkDocId: 'link1' });
+  });
+
+  // Loop termination for a legacy link is #781's, not the legacy arm's: a
+  // rejected send is verified against ML on the last attempt and stamps either
+  // the listing's real status or `estado: 'E'`, and BOTH are already skipped
+  // before the legacy arm is reached. Pinned here because it is the reason the
+  // arm needs no `'E'` trim of its own.
+  it('legacy link stamped `estado: E` by #781 → anuncio-em-erro, before the legacy arm', () => {
+    const res = run(
+      familyRow({ links: [{ status: null, sub_status: null, estado: ESTADO_PUBLICACAO_ML.erro }] }),
+    );
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'anuncio-em-erro' }]);
+  });
+
+  // The other #781 outcome: the verification recorded the listing's real status,
+  // so the link is no longer legacy at all and the whitelist handles it.
+  it('legacy link whose real status #781 recorded → whitelist, not the legacy arm', () => {
+    const res = run(
+      familyRow({ links: [{ status: 'closed', sub_status: ['deleted'], estado: 'c' }] }),
+    );
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+  });
+
+  it('legacy link on a closed listing (`estado: c`) → skipped, no doomed PUT', () => {
+    const res = run(
+      familyRow({
+        links: [{ status: null, sub_status: null, estado: ESTADO_PUBLICACAO_ML.cancelado }],
+      }),
+    );
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+  });
+
+  // Log-noise guard: a missing status is the EXPECTED legacy shape, so it must
+  // NOT take the loud `warn` path — at one line per listing per tick it would
+  // bury the tick summary on the first sweeps after the cutover. The warn is
+  // reserved for a status that is PRESENT and undocumented (the test above).
+  it('legacy link does not emit the undocumented-status warn', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockClear();
+    run(familyRow({ links: [{ status: null, sub_status: null }] }));
+    expect(warnSpy).not.toHaveBeenCalled();
+    // …including on the trimmed path, where the listing is skipped.
+    run(familyRow({ links: [{ status: null, estado: ESTADO_PUBLICACAO_ML.cancelado }] }));
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // `estado: 'am'` keeps winning over the legacy arm — a listing awaiting
+  // migration is Flutter-driven and must not be touched (#441).
+  it('estado `am` still wins over the legacy arm', () => {
+    expect(
+      run(familyRow({ links: [{ estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao, status: null }] }))
+        .skips,
+    ).toEqual([{ produtoId: 'PROD', reason: 'aguardando-migracao' }]);
   });
 
   it('ehKitVirtual anchor → kit-virtual', () => {

@@ -49,19 +49,26 @@
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
- *  - anchors (S1): `produtos(paiId ASC, publicado ASC, __name__ ASC)` plus
- *    BOTH declared twins for the array term —
+ *  - anchors (S1): the single array-term composite the staging gate (spike
+ *    (b), #705) proved `arrayContains` rides —
  *    `produtos(paiId ASC, publicado ASC, integracoesComProduto ASC,
- *    __name__ ASC)` and `produtos(paiId ASC, publicado ASC,
- *    integracoesComProduto CONTAINS, __name__ ASC)`. Which form an
- *    `arrayContains` predicate actually seeks is spike (b)'s question: the
- *    staging gate PRINTS the ridden index, and the LOSER is dropped in a
- *    follow-up (they are declared together only so the gate can adjudicate);
+ *    __name__ ASC)`. A CONTAINS twin was declared alongside it only so the
+ *    gate could adjudicate which form the planner seeks; ASC won, CONTAINS
+ *    was dropped (#705). The bare `produtos(paiId ASC, publicado ASC,
+ *    __name__ ASC)` prefix that used to sit alongside them was dropped by the
+ *    #779 audit: every S1 call site also filters `integracoesComProduto`, so
+ *    it was dead weight — the surviving composite's leading two fields
+ *    already serve it as a prefix;
  *  - estoque joins: `estoques(parentId ASC, depositoOuterRef ASC,
  *    ultimaModificacao ASC)` COLLECTION_GROUP — `parentId` carries the
  *    `equalAny` seek, `ultimaModificacao` covers the MAX branch;
  *  - subcollection() probes: two COLLECTION-scope entries —
- *    `estoques(depositoOuterRef)` and `produtoMercadoLivre(contaOuterRef)`.
+ *    `estoques(depositoOuterRef ASC, ultimaModificacao ASC)` and
+ *    `produtoMercadoLivre(contaOuterRef)`. The estoques entry widened past
+ *    the bare `depositoOuterRef` PR C shipped (still fine for `ownEstoque`'s
+ *    `select`) once the #779 audit found `ownEstoqueMax`'s
+ *    `aggregate(maximum('ultimaModificacao'))` needed it too — same reason
+ *    the COLLECTION_GROUP sibling above carries that trailing field.
  *    Staging explain evidence (gate run 2, 2026-07-28): with no
  *    COLLECTION-scope index a `subcollection()` probe carrying a WHERE
  *    compiles to a COLLECTION-GROUP index scan with the PARENT as a RESIDUAL
@@ -94,17 +101,17 @@
  * The 128 MiB materialization ceiling spans the WHOLE query including every
  * joined document — hence every subquery `select`s a minimal field set.
  *
- * Two API spikes stay open until PR C finalizes the query shape (TODO
- * markers at the call sites): (a) nested `define` inside BOTH the maxChildren
- * rollup and the S6 childrenJoin subqueries (and the same-name question — the
- * two sites deliberately bind different variable names); (b) whether
- * pipelines seek CONTAINS or ASCENDING index entries for the
- * `integracoesComProduto` array predicate. Spike (c) — "does `define` accept
- * a correlated-subquery expression?" — is RETIRED: proven live on staging
- * 2026-07-28 (a subquery-valued `define` executes fine), then made moot the
- * same day when the per-anchor sales probe (the `childIds` variable's only
- * consumer) moved out of THE query into the uncorrelated
- * `fetchSoldProdutoIds` pre-pass; nothing defines a subquery anymore.
+ * Spike (a) stays open until the nested-`define` call sites are finalized
+ * (TODO markers at the maxChildren rollup and S6 childrenJoin subqueries —
+ * the two sites deliberately bind different variable names). Spike (b) —
+ * "does `arrayContains` on `integracoesComProduto` seek CONTAINS or
+ * ASCENDING?" — is RETIRED: staging gate printed ASC; the CONTAINS twin was
+ * dropped (#705). Spike (c) — "does `define` accept a correlated-subquery
+ * expression?" — is RETIRED: proven live on staging 2026-07-28 (a
+ * subquery-valued `define` executes fine), then made moot the same day when
+ * the per-anchor sales probe (the `childIds` variable's only consumer) moved
+ * out of THE query into the uncorrelated `fetchSoldProdutoIds` pre-pass;
+ * nothing defines a subquery anymore.
  *
  * ---- Legacy parity anchors (`.old/packages/canais_de_venda`, verified
  * 2026-07-24):
@@ -143,6 +150,22 @@
  * `sub_status` includes `'out_of_stock'`). Anything outside the documented set
  * is `desconhecido` — never sent, loudly logged (status tracking, per Lucas).
  *
+ * ---- Legacy-authored links (#780): `status`/`sub_status` arrived with the
+ * `items` status-sync (#440); the Flutter app authoring the same docs during
+ * dual-run never wrote them, so EVERY pre-cutover link has `status == null`.
+ * Gating those out would make the flag flip a total, silent stock outage — a
+ * listing that never changes never fires `items`, so it never self-heals. They
+ * are therefore sent OPTIMISTICALLY, on a `buildSendTasks` rung of their own
+ * (NOT inside `podeEnviarEstoque`, whose null must stay non-sendable for its
+ * live-ML callers). The send is its own backfill and both outcomes record the
+ * real status: an accepted `PUT /items` returns the listing and `estoqueSend`
+ * writes `status`/`sub_status` straight back, and a rejected one is verified
+ * against ML on the last attempt (#781) and writes them back too. Each legacy
+ * listing therefore resolves to real data at ZERO extra API cost on the happy
+ * path — cheaper than any `GET`-based pre-flip pass, which would pay one call
+ * per listing for exactly the majority that needed none, and would have to be
+ * ordered against the flag flip.
+ *
  * ---- Config: business tunables read `process.env` LAZILY (at call time,
  * never at module load — mirrors `orderBackfill`'s flag check) so functions
  * cold starts and the unit tests both see current values; pure mechanics stay
@@ -154,6 +177,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   type ComponentesKit,
+  ESTADO_PUBLICACAO_ML,
   estoqueDisponivel,
   kitEstoqueDisponivel,
   toOuterRef,
@@ -170,6 +194,15 @@ export const STOCK_SYNC_FLAG_ENV = 'MERCADO_LIVRE_STOCK_SYNC_ENABLED';
 
 /** Cloud Tasks queue name for the stock send tasks (PR B's `onTaskDispatched`). */
 export const MERCADO_LIVRE_STOCK_SEND_QUEUE = 'sendMercadoLivreStock';
+
+/**
+ * In-task retry cap — the Cloud Tasks `retryConfig.maxAttempts` (kept in sync;
+ * `sendStock.ts` reads THIS constant, and `estoqueSend.stockSendMaxAttempts.test.ts`
+ * pins the two together). Mirrors `MASS_IMPORT_MAX_ATTEMPTS` /
+ * `PRICE_SYNC_MAX_ATTEMPTS`: the 4xx branch only writes its terminal state on
+ * the LAST attempt, so the handler must know the cap the queue was deployed with.
+ */
+export const STOCK_SEND_MAX_ATTEMPTS = 3;
 
 /** Lower clamp of every quantity sent to ML (legacy clamp >= 0). */
 export const ESTOQUE_MIN = 0;
@@ -839,6 +872,15 @@ export interface StatusGate {
  * (`'paused'` AND `sub_status` includes `'out_of_stock'` — ML auto-reactivates
  * on qty>0). A null/undefined/undocumented status is `desconhecido` and never
  * `enviar`.
+ *
+ * ⚠️ A null answers `enviar: false` for EVERY caller, deliberately. Three of the
+ * four call sites pass a LIVE `GET /items` response (#781's send-time
+ * verification, the `items` re-arm in `itemsStatusSync`, and the
+ * `reverificar-anuncio` route), where a null status means ML reported none —
+ * which must never read as sendable, or a latched listing re-arms itself. Only
+ * `buildSendTasks` passes a stored link doc, where a null instead means "written
+ * by the Flutter app before the field existed" (#780) — a different question,
+ * answered by its own rung there rather than by widening this contract.
  */
 export function podeEnviarEstoque(
   status: string | null | undefined,
@@ -992,6 +1034,7 @@ export type SendSkipReason =
   | 'sem-link'
   | 'sem-item-id'
   | 'aguardando-migracao'
+  | 'anuncio-em-erro'
   | 'status-nao-enviavel'
   | 'kit-virtual'
   | 'nao-publicado'
@@ -1070,9 +1113,14 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
  * OTHER listings still send): `'sem-link'` (listing without a doc id,
  * defensive — server-projected), `'sem-item-id'` (never published),
  * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration, Flutter-driven),
- * `'status-nao-enviavel'` (whitelist gate PER listing; `desconhecido`
- * statuses additionally warn with that listing's itemId — status tracking per
- * Lucas).
+ * `'anuncio-em-erro'` (`estado 'E'` — the send handler verified with ML that the
+ * anúncio is healthy and it was our PAYLOAD that was refused, so re-sending it
+ * unchanged only re-earns the rejection, #781), `'status-nao-enviavel'`
+ * (whitelist gate PER listing; `desconhecido` statuses additionally warn with
+ * that listing's itemId — status tracking per Lucas). A listing whose `status`
+ * is ABSENT skips the whitelist entirely and sends optimistically (#780 — the
+ * legacy arm, module doc), the sole exception being `estado 'c'`, which reuses
+ * `'status-nao-enviavel'`.
  *
  * Per surviving listing — every task carries THAT listing's `linkDocId`
  * (writeback per listing): old model (`isUserProductModel !== true`) with
@@ -1144,24 +1192,75 @@ export function buildSendTasks(
       skips.push({ produtoId: anchorId, reason: 'aguardando-migracao' });
       continue;
     }
-
-    const statusGate = podeEnviarEstoque(
-      typeof link.status === 'string' ? link.status : null,
-      Array.isArray(link.sub_status)
-        ? link.sub_status.filter((s): s is string => typeof s === 'string')
-        : null,
-    );
-    if (statusGate.desconhecido) {
-      console.warn('[mercado-livre] stock-sync: status de anúncio fora do conjunto documentado', {
-        integracaoId: opts.integracaoId,
-        produtoId: anchorId,
-        itemId,
-        status: link.status ?? null,
-      });
-    }
-    if (!statusGate.enviar) {
-      skips.push({ produtoId: anchorId, reason: 'status-nao-enviavel' });
+    // #781: the send handler's terminal branch stamps `'E'` when ML confirmed the
+    // anúncio is healthy and it was therefore OUR payload it refused — rebuilding
+    // the identical payload next tick just re-earns the same rejection. Every
+    // other terminal case records the listing's real ML status instead, and the
+    // whitelist below skips those. Cleared by an `items` webhook or the produto
+    // tab's "Reverificar anúncio" action.
+    if (link.estado === ESTADO_PUBLICACAO_ML.erro) {
+      skips.push({ produtoId: anchorId, reason: 'anuncio-em-erro' });
       continue;
+    }
+
+    if (link.status == null) {
+      // #780 — LEGACY-authored link. `status`/`sub_status` arrived with the
+      // `items` status-sync (#440); the Flutter app authoring the same docs
+      // during dual-run never wrote them, so EVERY pre-cutover link is null
+      // here. Running them through the whitelist would answer "não enviável"
+      // for the whole catalogue, making the flag flip a total, silent stock
+      // outage — and a listing that never changes never fires `items`, so it
+      // would never self-heal either.
+      //
+      // They are therefore sent OPTIMISTICALLY, because the send is its own
+      // backfill and both of its outcomes record the real status: an accepted
+      // PUT returns the listing and `estoqueSend` writes `status`/`sub_status`
+      // straight back, and a rejected one is verified against ML on the last
+      // attempt (#781) and writes them back too. So the null resolves to real
+      // ML data either way — at zero extra API cost on the happy path, which no
+      // pre-flip `GET` pass can match, and with no ordering requirement against
+      // the flag flip.
+      //
+      // The one trim: `estado 'c'` is the Flutter app already telling us the
+      // listing is closed, so the send is a doomed 3 PUTs + 1 GET (#781's
+      // ladder) that teaches nothing. `'E'` needs no rung here — the
+      // `anuncio-em-erro` rung above already took it. `'pa'` is deliberately
+      // NOT trimmed: `estado` cannot express sub-status, so a paused legacy
+      // link may well be `paused/out_of_stock`, which the whitelist admits, and
+      // trimming it would leave it unsent forever — the very outage this closes.
+      //
+      // This rung lives HERE rather than inside `podeEnviarEstoque` because the
+      // question is specific to a STORED link doc. The gate's other callers
+      // pass a live ML response, where a null status means something else
+      // entirely — see its docblock.
+      if (link.estado === ESTADO_PUBLICACAO_ML.cancelado) {
+        skips.push({ produtoId: anchorId, reason: 'status-nao-enviavel' });
+        continue;
+      }
+    } else {
+      const statusGate = podeEnviarEstoque(
+        typeof link.status === 'string' ? link.status : null,
+        Array.isArray(link.sub_status)
+          ? link.sub_status.filter((s): s is string => typeof s === 'string')
+          : null,
+      );
+      // Reached only for a status that is PRESENT, so `desconhecido` here is a
+      // real ML-side surprise and stays loud (status tracking, per Lucas). The
+      // legacy null above is the expected shape, not an anomaly, and is not
+      // logged at all: at one line per listing per tick it would bury the tick
+      // summary on the first sweeps after the flag flip.
+      if (statusGate.desconhecido) {
+        console.warn('[mercado-livre] stock-sync: status de anúncio fora do conjunto documentado', {
+          integracaoId: opts.integracaoId,
+          produtoId: anchorId,
+          itemId,
+          status: link.status,
+        });
+      }
+      if (!statusGate.enviar) {
+        skips.push({ produtoId: anchorId, reason: 'status-nao-enviavel' });
+        continue;
+      }
     }
 
     const base = {

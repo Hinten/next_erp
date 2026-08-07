@@ -69,3 +69,23 @@ export class MercadoLivreNetworkError extends MercadoLivreError {
     this.name = 'MercadoLivreNetworkError';
   }
 }
+
+/**
+ * `shipment_labels` refused to emit the label: a 400 with a `failed_shipments`
+ * body (e.g. substatus `invoice_pending` until the NF-e is uploaded), or a 2xx
+ * with an empty body (legacy guard). Distinct from `MercadoLivreHttpError` so
+ * the route can branch on the ML reason instead of a generic HTTP failure.
+ */
+export class MercadoLivreLabelUnavailableError extends MercadoLivreError {
+  constructor(
+    message: string,
+    /**
+     * The raw `failed_shipments[0].message`, in FULL — callers substring-match
+     * `invoice_pending` on it (legacy parity). `''` on the empty-body case.
+     */
+    readonly mlMessage: string,
+  ) {
+    super(message);
+    this.name = 'MercadoLivreLabelUnavailableError';
+  }
+}

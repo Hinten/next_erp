@@ -11,6 +11,7 @@ import { estoqueMercadoLivreSyncCollection } from '@delfrance/data/admin/collect
 
 import {
   PAUSE_REENQUEUE_JITTER_MAX_S,
+  STOCK_SEND_MAX_ATTEMPTS,
   STOCK_SYNC_FLAG_ENV,
   type StockFamilyRow,
   buildSendTasks,
@@ -42,11 +43,12 @@ interface FakeDocRef {
   id: string;
   get: () => Promise<FakeSnap>;
   set: (data: DocData, opts?: { merge?: boolean }) => void;
+  update: (data: DocData) => Promise<void>;
 }
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
-  readonly opLog: Array<{ op: 'get' | 'set'; path: string }> = [];
+  readonly opLog: Array<{ op: 'get' | 'set' | 'update'; path: string }> = [];
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -77,6 +79,20 @@ class FakeDb {
             if (opts?.merge) col.set(id, { ...(col.get(id) ?? {}), ...data });
             else col.set(id, { ...data });
           },
+          // `update()` backs both the parent-denorm arm of `applyItemStatusToLink`
+          // and every `mergeIfExists` link writeback. The missing-doc failure
+          // MUST carry gRPC code 5, because that is what `isNotFound` narrows on
+          // — a bare Error would make `mergeIfExists` rethrow instead of
+          // resolving false, and the ghost-doc regression would go unnoticed.
+          // FieldValue sentinels are stored verbatim (the denorm's own semantics
+          // are covered in itemsStatusSync.test.ts).
+          update: async (data: DocData) => {
+            self.opLog.push({ op: 'update', path: `${path}/${id}` });
+            if (!col.has(id)) {
+              throw Object.assign(new Error(`NOT_FOUND: ${path}/${id}`), { code: 5 });
+            }
+            col.set(id, { ...(col.get(id) ?? {}), ...data });
+          },
         };
       },
     };
@@ -93,6 +109,8 @@ const CONTA = 'conta-A';
 const DEP_REF = 'documents/depositos/DEP';
 const NOW_MS = Date.parse('2026-07-24T12:00:00.000Z');
 const NOW_US = NOW_MS * 1000;
+/** The 0-based attempt index on which the 4xx branch stops retrying and records. */
+const LAST_ATTEMPT = STOCK_SEND_MAX_ATTEMPTS - 1;
 /** When "the sweep" computed the payload's quantities — 42s before NOW. */
 const SWEEP_MS = NOW_MS - 42_000;
 
@@ -133,8 +151,16 @@ interface HarnessOpts {
   /** The integração doc the context loader resolves (default: has the depósito). */
   conta?: DocData;
   updateItem?: (id: string, body: Record<string, unknown>) => Promise<MlItem>;
+  /** Only the terminal 4xx branch calls this — default: a healthy listing. */
+  getItem?: (id: string) => Promise<MlItem>;
   resolveChannelContext?: () => Promise<{ accessToken: string }>;
   jitterSec?: (maxS: number) => number;
+  /**
+   * Cloud Tasks attempt index. Defaults to 0 — the FIRST attempt, exactly as a
+   * fresh dispatch arrives — so a spec that wants the terminal branch has to say
+   * `retryCount: LAST_ATTEMPT` out loud.
+   */
+  retryCount?: number;
 }
 
 function makeHarness(opts: HarnessOpts = {}) {
@@ -147,7 +173,18 @@ function makeHarness(opts: HarnessOpts = {}) {
         sub_status: [],
       })),
   );
-  const apiFactory = vi.fn((_cfg: { getAccessToken: () => Promise<string> }) => ({ updateItem }));
+  const getItem = vi.fn(
+    opts.getItem ??
+      (async (_id: string): Promise<MlItem> => ({
+        id: 'MLB111',
+        status: 'active',
+        sub_status: [],
+      })),
+  );
+  const apiFactory = vi.fn((_cfg: { getAccessToken: () => Promise<string> }) => ({
+    updateItem,
+    getItem,
+  }));
   const contextLoader: StockContextLoader = vi.fn(async () => ({
     conta: opts.conta ?? { depositoOuterRef: DEP_REF },
     resolveChannelContext: opts.resolveChannelContext ?? (async () => ({ accessToken: 'tok' })),
@@ -160,8 +197,9 @@ function makeHarness(opts: HarnessOpts = {}) {
     contextLoader,
     apiFactory,
     jitterSec,
+    retryCount: opts.retryCount ?? 0,
   };
-  return { db, deps, enqueue, updateItem, apiFactory, jitterSec };
+  return { db, deps, enqueue, updateItem, getItem, apiFactory, jitterSec };
 }
 
 type Harness = ReturnType<typeof makeHarness>;
@@ -171,15 +209,17 @@ function run(h: Harness, p: unknown = payload()) {
 }
 
 beforeEach(() => {
-  // Enable stock sync for tests (the sweep and send handler are no-ops while disabled).
-  process.env[STOCK_SYNC_FLAG_ENV] = '1';
+  // The handler is gated on the master flag (#805), which is unset in this
+  // process — without this every spec below would short-circuit into the gate.
+  vi.stubEnv(STOCK_SYNC_FLAG_ENV, '1');
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
-  delete process.env[STOCK_SYNC_FLAG_ENV];
+  // `restoreAllMocks` does NOT unstub envs — both calls are required.
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -259,23 +299,46 @@ describe('processStockSendTask — payload parse', () => {
   });
 });
 
-describe('processStockSendTask — stock sync flag gate', () => {
-  it('MERCADO_LIVRE_STOCK_SYNC_ENABLED=0 → dropped, no queue drain reads or ML calls', async () => {
-    // Disable the stock sync flag for this test to verify the check works (set to '0').
-    process.env[STOCK_SYNC_FLAG_ENV] = '0';
+describe('processStockSendTask — master flag (#805)', () => {
+  // '0' is the acceptance criterion's own wording ("flipping the flag to 0");
+  // unset is the DEPLOYED steady state, since the flag ships off. `envFlag` is
+  // true only on exactly '1', so both are off — and an already-enqueued backlog
+  // must reach ML on neither.
+  for (const [label, value] of [
+    ['flipped to 0', '0'],
+    ['unset', undefined],
+  ] as const) {
+    it(`${label} → skipped, zero Firestore reads, no token resolve, no ML call`, async () => {
+      vi.stubEnv(STOCK_SYNC_FLAG_ENV, value);
+      const h = makeHarness();
+
+      const res = await run(h);
+
+      expect(res).toEqual({ outcome: 'skipped', reason: 'sync-desabilitado' });
+      // The gate sits before the pause-gate get, so a drained task reads nothing.
+      expect(h.db.opLog).toHaveLength(0);
+      // No API client is ever built ⇒ no access token is resolved or refreshed.
+      expect(h.apiFactory).not.toHaveBeenCalled();
+      expect(h.updateItem).not.toHaveBeenCalled();
+      expect(h.enqueue).not.toHaveBeenCalled();
+      // The conta has to be identifiable in the log — an operator draining a
+      // backlog needs to know WHICH conta went quiet.
+      expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+        expect.stringContaining(STOCK_SYNC_FLAG_ENV),
+        expect.objectContaining({ integracaoId: CONTA, itemId: 'MLB111', sweepId: 'sweep-1' }),
+      );
+    });
+  }
+
+  it("stays enabled on exactly '1' — the gate does not swallow a live send", async () => {
+    vi.stubEnv(STOCK_SYNC_FLAG_ENV, '1');
     const h = makeHarness();
+    seedLink(h.db);
 
     const res = await run(h);
 
-    expect(res).toEqual({ outcome: 'dropped', reason: 'stock-sync-desabilitado' });
-    // No Firestore reads — the check happens before the pause-gate get.
-    expect(h.db.opLog).toHaveLength(0);
-    expect(h.enqueue).not.toHaveBeenCalled();
-    expect(h.apiFactory).not.toHaveBeenCalled();
-    expect(h.updateItem).not.toHaveBeenCalled();
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(expect.stringContaining('stock-send'));
-
-    // afterEach will delete the flag; beforeEach of the next test will set it back to '1'
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 10 });
   });
 });
 
@@ -351,16 +414,19 @@ describe('processStockSendTask — deterministic skips', () => {
 describe('processStockSendTask — request bodies (payload verbatim)', () => {
   it('quantidade → exactly { available_quantity }, and ONLY the state-doc read', async () => {
     const h = makeHarness();
+    seedLink(h.db);
 
     const res = await run(h, payload({ quantidade: 7 }));
 
     expect(res).toEqual({ outcome: 'sent', reason: null });
     expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { available_quantity: 7 });
     // The WHOLE Firestore op log: the pause-state get before the call, then
-    // the link writeback — no produto/link/children/estoque read anywhere.
+    // the link writeback — no produto/link/children/estoque read anywhere. The
+    // writeback is an `update` (mergeIfExists), never a `set`: a link deleted
+    // mid-flight must not be resurrected as a ghost.
     expect(h.db.opLog).toEqual([
       { op: 'get', path: `${STATE_PATH}/${CONTA}` },
-      { op: 'set', path: `${LINK_PATH}/link1` },
+      { op: 'update', path: `${LINK_PATH}/link1` },
     ]);
   });
 
@@ -440,6 +506,11 @@ describe('processStockSendTask — writeback', () => {
 
   it('the target comes from the payload — linkDocId under produtoId, never re-resolved', async () => {
     const h = makeHarness();
+    h.db.seed('produtos/OTHER/produtoMercadoLivre', 'lk9', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      id: 'MLB111',
+      estado: 'p',
+    });
 
     await run(h, payload({ produtoId: 'OTHER', linkDocId: 'lk9' }));
 
@@ -448,6 +519,23 @@ describe('processStockSendTask — writeback', () => {
       status: 'active',
       ultimaModificacao: NOW_MS,
     });
+  });
+
+  it('a link deleted mid-flight is NOT recreated — the writeback resolves to nothing', async () => {
+    const h = makeHarness();
+    // No seedLink: the sweep enqueued this task, then the link doc was deleted
+    // (produto delete cascade, an operator unlinking, the UP-migration prune).
+    const res = await run(h, payload({ quantidade: 7 }));
+
+    // The send itself still succeeded — only the writeback had nowhere to land.
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    // The ghost regression: `merge` would have CREATED this doc holding only
+    // the writeback keys — no contaOuterRef, no title, no id.
+    expect(h.db.docs(LINK_PATH).has('link1')).toBe(false);
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('link removido durante o envio'),
+      expect.objectContaining({ linkDocId: 'link1', produtoId: 'PROD' }),
+    );
   });
 
   it('a response without sub_status writes [] (never undefined on the wire)', async () => {
@@ -507,23 +595,25 @@ describe('processStockSendTask — error policy', () => {
     });
   });
 
-  it("404 (deterministic 4xx) → estado 'E' stamped on the payload's link, SUCCESS", async () => {
-    const h = makeHarness({
-      updateItem: async (): Promise<MlItem> => {
-        throw new MercadoLivreHttpError('ML 404: item not found', 404, null);
-      },
-    });
-    seedLink(h.db);
+  it('4xx before the last attempt → RETHROW, nothing written, no verification GET', async () => {
+    const boom = new MercadoLivreHttpError('ML 400: invalid', 400, null);
+    for (const retryCount of [0, LAST_ATTEMPT - 1]) {
+      const h = makeHarness({
+        retryCount,
+        updateItem: async (): Promise<MlItem> => {
+          throw boom;
+        },
+      });
+      seedLink(h.db);
 
-    const res = await run(h);
+      await expect(run(h)).rejects.toBe(boom);
 
-    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'http-4xx' });
-    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
-      estado: 'E',
-      errors: ['ML 404: item not found'],
-      ultimaModificacao: NOW_MS,
-    });
-    expect(vi.mocked(console.error)).toHaveBeenCalledTimes(1);
+      // ML answers 4xx for transient reasons too — one sample latches nothing.
+      expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'p', status: 'active' });
+      expect(h.db.docs(LINK_PATH).get('link1')).not.toHaveProperty('errors');
+      // ...and it must not burn a quota call verifying something it will retry.
+      expect(h.getItem).not.toHaveBeenCalled();
+    }
   });
 
   it('5xx → RETHROW, nothing stamped anywhere', async () => {
@@ -570,5 +660,138 @@ describe('processStockSendTask — error policy', () => {
     });
     expect(h.updateItem).not.toHaveBeenCalled();
     expect(vi.mocked(console.error)).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * #781. The old handler answered every 4xx by writing `estado: 'E'` and nothing
+ * else — leaving `status: 'active'` on the link, which is the value the sweep's
+ * gate reads. So the next tick rebuilt the identical payload and re-sent it, 96×
+ * a day, forever. The fix asks ML what the listing actually IS and records THAT,
+ * so the existing status whitelist can do its job.
+ */
+describe('processStockSendTask — terminal 4xx (last attempt verifies with ML)', () => {
+  /** A 4xx from the PUT, with whatever the verification GET should then answer. */
+  function terminal(getItem: HarnessOpts['getItem'], linkExtra: DocData = {}) {
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      updateItem: async (): Promise<MlItem> => {
+        throw new MercadoLivreHttpError('ML 400: invalid quantity', 400, null);
+      },
+      getItem,
+    });
+    seedLink(h.db, linkExtra);
+    return h;
+  }
+
+  it("ML says the listing is HEALTHY → our payload is the problem → estado 'E'", async () => {
+    const h = terminal(async () => ({ id: 'MLB111', status: 'active', sub_status: [] }));
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      // The one case that genuinely needs a latch: ML is fine, we are not.
+      estado: 'E',
+      status: 'active',
+      errors: ['ML 400: invalid quantity'],
+      ultimaModificacao: NOW_MS,
+    });
+  });
+
+  it.each([
+    ['closed', 'c', null],
+    ['under_review', 'v', null],
+    ['inactive', 'E', null],
+    ['paused', 'pa', null],
+  ])(
+    'ML says %s → the REAL status is recorded (estado %s), no payload latch',
+    async (mlStatus, estado, subStatus) => {
+      const h = terminal(async () => ({
+        id: 'MLB111',
+        status: mlStatus,
+        sub_status: subStatus ?? [],
+      }));
+
+      const res = await run(h);
+
+      expect(res).toEqual({ outcome: 'erro-registrado', reason: 'anuncio-nao-enviavel' });
+      expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+        estado,
+        status: mlStatus,
+        errors: ['ML 400: invalid quantity'],
+      });
+    },
+  );
+
+  it('a listing ML still reports as sendable via paused+out_of_stock IS latched', async () => {
+    // `podeEnviarEstoque` sends to this one, so leaving it unlatched would loop.
+    const h = terminal(async () => ({
+      id: 'MLB111',
+      status: 'paused',
+      sub_status: ['out_of_stock'],
+    }));
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E', status: 'paused' });
+  });
+
+  it('the verification GET 404s (listing gone) → recorded as closed, NOT left active', async () => {
+    // syncItemStatus answers 'item-gone' and writes nothing; doing that here
+    // would leave `status: 'active'` standing and the sweep looping.
+    const h = terminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: item not found', 404, null);
+    });
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'anuncio-inexistente' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      estado: 'c',
+      status: 'closed',
+      sub_status: [],
+      errors: ['ML 400: invalid quantity'],
+    });
+  });
+
+  it('the verification GET itself fails → conservative stop, never a false verdict', async () => {
+    const h = terminal(async () => {
+      throw new MercadoLivreHttpError('ML 503: unavailable', 503, null);
+    });
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'verificacao-indisponivel' });
+    const link = h.db.docs(LINK_PATH).get('link1');
+    // `estado 'E'` still stops the loop, but nothing was CONFIRMED, so the
+    // unverified status must not be overwritten with a guess.
+    expect(link).toMatchObject({ estado: 'E', errors: ['ML 400: invalid quantity'] });
+    expect(link).toMatchObject({ status: 'active' });
+  });
+
+  it('a non-ML failure during verification RETHROWS (Firestore / coding bug)', async () => {
+    const boom = new TypeError('db exploded');
+    const h = terminal(async () => {
+      throw boom;
+    });
+
+    await expect(run(h)).rejects.toBe(boom);
+  });
+});
+
+describe('processStockSendTask — success clears the previous diagnosis', () => {
+  it('a landed send wipes the errors a past failure left on the link', async () => {
+    const h = makeHarness();
+    seedLink(h.db, { estado: 'E', errors: ['ML 400: invalid quantity'] });
+
+    await run(h);
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      estado: 'p',
+      status: 'active',
+      errors: [],
+    });
   });
 });

@@ -114,17 +114,22 @@ export function mpPaymentToPagamento(
 
   // tarifas — MP's take: marketplace fee + itemized fee_details + the
   // collector→mp charges (original − refunded); other account pairs are ignored.
-  // Left unrounded to mirror legacy exactly.
+  // Left unrounded to mirror legacy exactly, but clamped at 0 like `valor`: a
+  // refunded fee (`refunded > original`) or a negative `fee_details[].amount`
+  // makes the sum negative, and `pagamentoSchema.tarifas` is min(0) — the raw
+  // negative would fail the parse and park the whole delivery (#794).
   const collectorToMpCharges = (payment.charges_details ?? []).filter(
     (c) => c.accounts?.from === 'collector' && c.accounts?.to === 'mp',
   );
-  const tarifas =
+  const tarifas = Math.max(
+    0,
     (payment.marketplace_fee ?? 0) +
-    sumAmounts((payment.fee_details ?? []).map((f) => f.amount)) +
-    collectorToMpCharges.reduce<number>(
-      (acc, c) => acc + ((c.amounts?.original ?? 0) - (c.amounts?.refunded ?? 0)),
-      0,
-    );
+      sumAmounts((payment.fee_details ?? []).map((f) => f.amount)) +
+      collectorToMpCharges.reduce<number>(
+        (acc, c) => acc + ((c.amounts?.original ?? 0) - (c.amounts?.refunded ?? 0)),
+        0,
+      ),
+  );
 
   // status — base table, then the approved+refund post-adjust. NOTE: the
   // partial/full split compares Σrefunds against valorSemJuros (the pre-refund

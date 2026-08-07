@@ -10,10 +10,26 @@
  *    import/notification flows use).
  *  - Update: `status: 'active'` (reactivates a paused listing on edit).
  *  - Legacy variations move `available_quantity`/`price` down to each
- *    variation (parent `available_quantity` removed; parent `price` removed
- *    on update), carry `seller_custom_field` = the variation produto doc id,
+ *    variation, carry `seller_custom_field` = the variation produto doc id,
  *    inherit the parent pictures when they have none, and any attribute id
- *    used in a combination is dropped from the parent `attributes`.
+ *    used in a combination — plus `SELLER_SKU` — is dropped from the parent
+ *    `attributes`.
+ *
+ * Two legacy invariants that read as bugs until you follow them through the
+ * Dart, both restored here (#799):
+ *
+ *  - **The item-root `price` reaches ML only on a CREATE with no variations.**
+ *    `models.dart:1425` declares `final bool update = id == null` — a misnomer:
+ *    that flag is true when the item has NEVER been published, i.e. on create.
+ *    Guarded by it, `models.dart:1530` strips the parent `price` on a create
+ *    WITH variations, and both publish call sites strip it again on every real
+ *    update (`exportarProdutos.dart:586` legacy, `:466` User-Products). A price
+ *    *change* is a dedicated `PUT /items/{id}` (precoSync), never a publish.
+ *  - **`_order` never reaches ML.** It is an internal sort key: the legacy
+ *    builds it, sorts the variation list by it, then deletes it
+ *    (`models.dart:1392-1395`). So we sort and omit — previously we leaked the
+ *    ERP's `produto.ordem` into an ML-internal field AND skipped the sort it
+ *    existed for.
  */
 import { type MlAttribute, attributeToMercadoLivre, attributesWithValue } from './attributes';
 
@@ -27,7 +43,11 @@ export interface ItemVariationInput {
   mlVariationId?: number | string | null;
   /** The variation child produto doc id → `seller_custom_field` (back-ref). */
   produtoId: string;
-  /** Display order (`_order`), from the child produto's `ordem`. */
+  /**
+   * Display order, from the child produto's `ordem`. Sorts the emitted
+   * `variations` array and is then DROPPED — ML never receives it. Absent
+   * orders sort as 0 (first), matching `models.dart:1392`'s `?? 0`.
+   */
   order?: number | null;
   availableQuantity: number;
   /** ML picture ids; when empty the parent's pictures are inherited. */
@@ -82,34 +102,43 @@ export function buildItemPayload(input: BuildItemPayloadInput): Record<string, u
   }
 
   const variations = input.isUserProductSeller ? [] : (input.variations ?? []);
+  const hasVariations = variations.length > 0;
 
   // Any attribute id used as a variation combination must NOT repeat at the
-  // parent level (ML rejects the overlap).
+  // parent level (ML rejects the overlap). `SELLER_SKU` needs the same
+  // treatment but the combination prune can never catch it: each variation
+  // carries its own SKU in `attributes`, never in `attributeCombinations`, so
+  // the parent's would survive alongside them. The legacy removes it by id
+  // (models.dart:1508-1515) and only re-adds it on the no-variations branch.
   const combinationIds = new Set(
     variations.flatMap((v) => v.attributeCombinations.map((a) => a.id)),
   );
   const parentAttributes = attributesWithValue(input.attributes ?? []).filter(
-    (a) => !combinationIds.has(a.id),
+    (a) => !combinationIds.has(a.id) && !(hasVariations && a.id === 'SELLER_SKU'),
   );
   data.attributes = parentAttributes.map(attributeToMercadoLivre);
 
-  if (input.price != null) data.price = input.price;
+  // Create-only, and never alongside variations — see the module docblock.
+  if (input.price != null && !input.isUpdate && !hasVariations) data.price = input.price;
   data.pictures = (input.pictures ?? []).map((p) => ({ id: p.id }));
-  if (input.availableQuantity != null) data.available_quantity = input.availableQuantity;
+  // Quantities live at the variation level once there are variations.
+  if (input.availableQuantity != null && !hasVariations) {
+    data.available_quantity = input.availableQuantity;
+  }
   if (input.videoId != null) data.video_id = input.videoId;
 
-  if (variations.length > 0) {
-    // Quantities (and, on update, the price) live at the variation level.
-    delete data.available_quantity;
+  if (hasVariations) {
     const parentPictureIds = (input.pictures ?? []).map((p) => p.id);
-    data.variations = variations.map((v) =>
+    // Sort by the internal `order` key, then emit without it. Array#sort is
+    // stable, so equal orders keep the caller's sequence.
+    const ordered = [...variations].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    data.variations = ordered.map((v) =>
       buildVariationPayload(v, {
         isUpdate: input.isUpdate,
         price: input.price ?? null,
         parentPictureIds,
       }),
     );
-    if (input.isUpdate) delete data.price;
   }
 
   return data;
@@ -122,7 +151,7 @@ function buildVariationPayload(
   const out: Record<string, unknown> = {};
   if (ctx.isUpdate && v.mlVariationId != null) out.id = v.mlVariationId;
   out.seller_custom_field = v.produtoId;
-  if (v.order != null) out._order = v.order;
+  // `order` deliberately not emitted — it only sorted the caller's array.
   out.attributes = attributesWithValue(v.attributes ?? []).map(attributeToMercadoLivre);
   const pictureIds = v.pictureIds && v.pictureIds.length > 0 ? v.pictureIds : ctx.parentPictureIds;
   out.picture_ids = [...pictureIds];

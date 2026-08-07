@@ -11,17 +11,16 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
     pedido: {} as never,
     pedidoId: 'p1',
     frete: {} as never,
-    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.mercadoLivre, data: {} as never },
+    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.shopee, data: {} as never },
     formato: 'pdf',
-    deps: { freightClient: null, nfeClient: null, printJob: vi.fn() },
+    deps: { freightClient: null, nfeClient: null, mercadoLivreClient: null, printJob: vi.fn() },
     ui: { confirmRisk: vi.fn(), notify, openUrl: vi.fn(), comprarEtiqueta: vi.fn() },
   };
 }
 
 describe('unsupportedMarketplaceProvider', () => {
-  it('registers the five marketplace tipos', () => {
+  it('registers the four not-yet-ported marketplace tipos (mercadoLivre graduated)', () => {
     expect(unsupportedMarketplaceProvider.tipos).toEqual([
-      'mercadoLivre',
       'lojaIntegrada',
       'amz',
       'magalu',
@@ -33,7 +32,7 @@ describe('unsupportedMarketplaceProvider', () => {
     const notify = vi.fn();
     const out = await unsupportedMarketplaceProvider.emitirOuImprimir(makeInput(notify));
     expect(out).toMatchObject({ status: 'unsupported' });
-    if (out.status === 'unsupported') expect(out.reason).toContain('mercadoLivre');
+    if (out.status === 'unsupported') expect(out.reason).toContain('shopee');
     expect(notify).toHaveBeenCalledTimes(1);
   });
 });

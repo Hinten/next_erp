@@ -1,12 +1,22 @@
 /**
  * `POST /api/webhooks/mercado-livre` — #290
  *
- * Mercado Livre notification receiver. ML posts unauthenticated `topic` +
- * `resource` callbacks to the URL registered per connected account (the legacy
- * `distribuidorDeNotificacoes` ran `--allow-unauthenticated`); the security is
- * the obscure callback URL plus re-fetching the resource from the ML API with
- * the account token before acting on it — ML does NOT HMAC-sign the body
- * (contrast Shopee, which does — see lib/signatures/hmac.ts for that path).
+ * Mercado Livre notification receiver. ML posts `topic` + `resource` callbacks
+ * to the URL registered per connected account (the legacy
+ * `distribuidorDeNotificacoes` ran `--allow-unauthenticated`); the trust anchor
+ * is re-fetching the resource from the ML API with the account token before
+ * acting on it — ML does NOT HMAC-sign the body (contrast Shopee, which does —
+ * see lib/signatures/hmac.ts for that path), so there is no signature to verify.
+ *
+ * Origin (#811): the only inbound check available is `checkApplicationId` —
+ * a payload announcing a foreign `application_id` is refused 403 before anything
+ * is enqueued or written, which removes the anonymous amplification (an enqueue,
+ * a Firestore create on the failure path, up to 5 sweep re-drives and one
+ * rate-limited ML API call per POST). It fails OPEN when unconfigured or when
+ * the field is absent — see lib/marketplace/webhookOrigin.ts for why, and for
+ * why ML's published source-IP list was declined. `logWebhookHeaders` runs first
+ * so the migration window produces evidence of whether ML ever sends a signature
+ * header; that verdict decides the follow-up (real check vs secret path segment).
  *
  * The receiver must answer `200` FAST so ML stops retrying, and do the heavy
  * work asynchronously. Step 6 (#290/#360): validate the body and ENQUEUE the
@@ -41,18 +51,20 @@ import { ZodError } from 'zod';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { parseNotificationBody, persistNotificationFailure } from '@/lib/marketplace/notificacao';
 import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
+import { checkApplicationId, logWebhookHeaders } from '@/lib/marketplace/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
  * Topics whose handlers re-fetch the very resource the notification announces
- * (order/payment/shipment/item prices) — ML is eventually consistent, so an
- * immediate GET can 404 or return data predating the change the notification
- * is about; a short scheduling delay avoids racing ML's own write. Legacy
- * delayed EVERY topic 10s before dispatch (`functions.dart:17-48`); we scope
- * the delay to the topics that actually need it (approved deviation — `items`
- * and the rest keep today's immediate dispatch).
+ * (order/payment/shipment/item prices/claim + its messages) — ML is eventually
+ * consistent, so an immediate GET can 404 or return data predating the change
+ * the notification is about; a short scheduling delay avoids racing ML's own
+ * write. Legacy delayed EVERY topic 10s before dispatch
+ * (`functions.dart:17-48`); we scope the delay to the topics that actually
+ * need it (approved deviation — `items` and the rest keep today's immediate
+ * dispatch).
  */
 const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'orders_v2',
@@ -60,11 +72,15 @@ const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'payments',
   'shipments',
   'items_prices',
+  'claims',
 ]);
 const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
 
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();
+
+  // Before any rejection, so a refused request's headers are still captured.
+  logWebhookHeaders(req);
 
   let body: unknown;
   try {
@@ -77,6 +93,20 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ok: true, accepted: false });
     }
     throw err;
+  }
+
+  // Origin gate (#811). A foreign `application_id` cannot have come from ML, so
+  // ML never observes this 403 and the topic-disable risk does not apply —
+  // unlike the acks above, which exist precisely because ML IS watching.
+  const origin = checkApplicationId(body);
+  if (origin === 'foreign') {
+    console.warn('[mercado-livre/webhook] rejecting notification from a foreign application_id');
+    return NextResponse.json({ error: 'application_id desconhecido' }, { status: 403 });
+  }
+  if (origin === 'absent') {
+    // Accepted (see webhookOrigin.ts), but ML documents this field on every
+    // topic — if this ever fires for genuine traffic we want to know.
+    console.warn('[mercado-livre/webhook] notification without application_id — origin unverified');
   }
 
   // Noise (health ping / missing topic+resource) → ack without enqueuing.

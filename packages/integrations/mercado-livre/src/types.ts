@@ -272,12 +272,69 @@ export const categorySchema = z
       .array(z.object({ id: z.string(), name: z.string().nullable().optional() }).passthrough())
       .nullable()
       .optional(),
+    /**
+     * Empty ⇒ this is a LEAF. The whole category walk keys on it, and ML only
+     * serves listing types and attributes for leaves (`cadastroSlim.dart:93-96`,
+     * `:114-116` both early-return `[]` on a non-leaf).
+     */
+    children_categories: z
+      .array(z.object({ id: z.string(), name: z.string().nullable().optional() }).passthrough())
+      .nullable()
+      .optional(),
     settings: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .passthrough();
 export type MlCategory = z.infer<typeof categorySchema>;
 
-/** One entry of `GET /categories/{id}/attributes`. */
+/** `GET /sites/MLB/categories` — the root of the category tree. */
+export const siteCategoriesSchema = z.array(
+  z.object({ id: z.string(), name: z.string().nullable().optional() }).passthrough(),
+);
+export type MlSiteCategory = z.infer<typeof siteCategoriesSchema>[number];
+
+/** `GET /categories/{id}/listing_types` — the types available for a LEAF category. */
+export const categoryListingTypesSchema = z.array(
+  z
+    .object({
+      id: z.string(),
+      name: z.string().nullable().optional(),
+      site_id: z.string().nullable().optional(),
+    })
+    .passthrough(),
+);
+export type MlCategoryListingType = z.infer<typeof categoryListingTypesSchema>[number];
+
+/**
+ * `GET /sites/MLB/listing_prices?price=&listing_type_id=&category_id=`
+ *
+ * ML answers an OBJECT when `listing_type_id` is supplied and an ARRAY when it
+ * is not; only the single-type form is wrapped, because the fee preview is
+ * always asked for one chosen listing type.
+ */
+export const listingPricesSchema = z
+  .object({
+    listing_type_id: z.string().nullable().optional(),
+    /** Commission charged on a sale — the link doc's `comissao`. */
+    sale_fee_amount: z.number().nullable().optional(),
+    /** Up-front listing fee (0 for the free/classic types). */
+    listing_fee_amount: z.number().nullable().optional(),
+    currency_id: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlListingPrices = z.infer<typeof listingPricesSchema>;
+
+/**
+ * One entry of `GET /categories/{id}/attributes`.
+ *
+ * ⚠️ Almost every predicate a form needs — `required`, `catalog_required`,
+ * `hidden`, `multivalued`, `variation_attribute`, `allow_variations`,
+ * `read_only` — lives inside **`tags`**, not at the root (the legacy Dart
+ * getters at `api_response.dart:287-308` all read through it). Use
+ * {@link attrTag} rather than indexing `tags` by hand.
+ *
+ * ⚠️ ML sends `tags` as a MAP on some categories and as an ARRAY of names on
+ * others; {@link attrTag} normalises both (`_tagsFromJson`, `api_response.dart:225`).
+ */
 export const categoryAttributeSchema = z
   .object({
     id: z.string(),
@@ -291,11 +348,45 @@ export const categoryAttributeSchema = z
       )
       .nullable()
       .optional(),
-    tags: z.record(z.string(), z.unknown()).nullable().optional(),
+    tags: z
+      .union([z.record(z.string(), z.unknown()), z.array(z.string())])
+      .nullable()
+      .optional(),
+    /** `FAMILY` marks an attribute that identifies a User-Products family. */
+    hierarchy: z.string().nullable().optional(),
+    /** ML's own ordering hint — lower is more important. */
+    relevance: z.number().nullable().optional(),
+    tooltip: z.string().nullable().optional(),
+    hint: z.string().nullable().optional(),
+    /** Max characters ML accepts; over-long values are rejected on publish. */
+    value_max_length: z.number().int().nullable().optional(),
+    default_unit: z.string().nullable().optional(),
+    default_unit_id: z.string().nullable().optional(),
+    allowed_units: z
+      .array(
+        z
+          .object({ id: z.string().nullable().optional(), name: z.string().nullable().optional() })
+          .passthrough(),
+      )
+      .nullable()
+      .optional(),
+    attribute_group_id: z.string().nullable().optional(),
+    attribute_group_name: z.string().nullable().optional(),
   })
   .passthrough();
 export const categoryAttributesSchema = z.array(categoryAttributeSchema);
 export type MlCategoryAttribute = z.infer<typeof categoryAttributeSchema>;
+
+/**
+ * Read a boolean ML attribute tag, tolerating both wire shapes ML uses:
+ * `{ required: true }` and `['required', 'hidden']`.
+ */
+export function attrTag(attr: MlCategoryAttribute, tag: string): boolean {
+  const tags = attr.tags;
+  if (tags == null) return false;
+  if (Array.isArray(tags)) return tags.includes(tag);
+  return tags[tag] === true;
+}
 
 /** One entry of `GET /sites/MLB/domain_discovery/search?q=` (category suggestion). */
 export const domainDiscoverySchema = z.array(
@@ -738,3 +829,150 @@ export const catalogDomainSchema = z
   })
   .passthrough();
 export type MlCatalogDomain = z.infer<typeof catalogDomainSchema>;
+
+/* --------------------- Claims / reclamações (Step 14) --------------------- */
+
+/**
+ * One `players[]` entry of a claim (legacy `_Players`, models.dart:4007-4034).
+ * `role` is `complainant`/`respondent`/`mediator` and `type` is the per-resource
+ * party name (`buyer`/`seller`, `payer`/`collector`, `receiver`/`sender`,
+ * `internal`) — both stay plain strings (NEVER enums): ML adds vocabulary
+ * without notice and an unknown value must not fail the claim parse.
+ * `available_actions` rides through `.passthrough()` untyped.
+ */
+export const mlClaimPlayerSchema = z
+  .object({
+    role: z.string().nullable().default(null),
+    type: z.string().nullable().default(null),
+    user_id: z.number().int().nullable().default(null),
+  })
+  .passthrough();
+export type MlClaimPlayer = z.infer<typeof mlClaimPlayerSchema>;
+
+/**
+ * `claim.resolution` (legacy `_Resolution`, models.dart:4105-4135) — how the
+ * claim was closed. Every field tolerates null AND absence (→ null): the legacy
+ * DTO required `reason`/`closed_by`, but ML has drifted fields before and a
+ * missing one must not fail the whole claim parse. `benefited` rides through
+ * `.passthrough()` untyped (only `decision` feeds the legacy comment line).
+ */
+export const mlClaimResolutionSchema = z
+  .object({
+    reason: z.string().nullable().default(null),
+    date_created: z.string().nullable().default(null),
+    decision: z.array(z.string()).nullable().default(null),
+    closed_by: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlClaimResolution = z.infer<typeof mlClaimResolutionSchema>;
+
+/**
+ * `GET /post-purchase/v1/claims/{claimId}` (legacy `Claims` DTO,
+ * models.dart:3827-3951; a verbatim payload sample sits at models.dart:3762-3825).
+ * Only the identifiers are required; every vocabulary field (`type`, `stage`,
+ * `status`, `reason_id`) is a plain nullable string — the legacy Dart enums
+ * (`_typeClaims`/`_StageClaims`/`_StatusClaims`) THREW on unknown values, which
+ * is exactly the failure mode this schema avoids. `labels`, `coverages`,
+ * `fulfilled`, `site_id`… ride through `.passthrough()` untyped.
+ */
+export const mlClaimSchema = z
+  .object({
+    id: z.number().int(),
+    type: z.string().nullable().default(null),
+    stage: z.string().nullable().default(null),
+    status: z.string().nullable().default(null),
+    /** The complained-about resource id — an order/pack/shipment/payment id depending on `resource`. */
+    resource_id: z.number().int(),
+    /** `order`/`pack`/`shipment`/`payment`/`purchase` (legacy `_ResourceClaims`, models.dart:3724-3755). */
+    resource: z.string(),
+    reason_id: z.string().nullable().default(null),
+    players: z
+      .array(mlClaimPlayerSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    resolution: mlClaimResolutionSchema.nullable().default(null),
+    date_created: z.string(),
+    last_updated: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlClaim = z.infer<typeof mlClaimSchema>;
+
+/**
+ * One `attachments[]` entry of a claim message (legacy `_Attachment`,
+ * models.dart:3611-3634). `filename` is the download key
+ * (`…/attachments/{filename}/download`); everything else is display-only.
+ */
+export const mlClaimMessageAttachmentSchema = z
+  .object({
+    filename: z.string(),
+    original_filename: z.string().nullable().optional(),
+    type: z.string().nullable().optional(),
+    size: z.number().nullable().optional(),
+    date_created: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlClaimMessageAttachment = z.infer<typeof mlClaimMessageAttachmentSchema>;
+
+/**
+ * One entry of `GET /post-purchase/v1/claims/{claimId}/messages` — **the
+ * endpoint returns a bare JSON ARRAY** (legacy `getClaimMessages`,
+ * api.dart:1505-1511, returns `List<Map<String,dynamic>>`; DTO `ClaimsMessage`,
+ * models.dart:3540-3600). The role/stage vocabulary stays plain strings and the
+ * legacy doc-id recipe hashes `sender_role`+`receiver_role`+`stage`+
+ * `date_created`+`message` — so those five drive dedup, not display.
+ */
+export const mlClaimMessageSchema = z
+  .object({
+    sender_role: z.string().nullable().default(null),
+    receiver_role: z.string().nullable().default(null),
+    stage: z.string().nullable().default(null),
+    message: z.string().default(''),
+    date_created: z.string(),
+    attachments: z
+      .array(mlClaimMessageAttachmentSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+  })
+  .passthrough();
+export type MlClaimMessage = z.infer<typeof mlClaimMessageSchema>;
+/** The array wrapper for `getClaimMessages` — see `mlClaimMessageSchema`. */
+export const mlClaimMessagesSchema = z.array(mlClaimMessageSchema);
+
+/**
+ * `GET /post-purchase/v1/claims/reasons/{reasonId}` (legacy `getClaimReason`,
+ * api.dart:1496-1503) — the human-readable claim reason. The legacy handler
+ * reads `detail ?? name` for the motivo text (tasks.dart:1778) and `id`/
+ * `date_created`/`last_updated` for the motivo message doc — all tolerated
+ * missing so an ML drift degrades to "unknown reason", never a parse failure.
+ */
+export const mlClaimReasonSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]).nullable().optional(),
+    detail: z.string().nullable().default(null),
+    name: z.string().nullable().default(null),
+    date_created: z.string().nullable().optional(),
+    last_updated: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlClaimReason = z.infer<typeof mlClaimReasonSchema>;
+
+/**
+ * `GET /post-purchase/v1/claims/search` (legacy `searchClaims`,
+ * api.dart:1478-1494) — paged claims, keyed by `data` (NOT the `results`
+ * envelope other ML searches use) + `paging`. Both default when absent so a
+ * degenerate response yields an empty page instead of a parse failure.
+ */
+export const mlClaimSearchSchema = z
+  .object({
+    paging: z
+      .object({
+        total: z.number().nullable().optional(),
+        offset: z.number().nullable().optional(),
+        limit: z.number().nullable().optional(),
+      })
+      .passthrough()
+      .default({}),
+    data: z.array(mlClaimSchema).default([]),
+  })
+  .passthrough();
+export type MlClaimSearch = z.infer<typeof mlClaimSearchSchema>;

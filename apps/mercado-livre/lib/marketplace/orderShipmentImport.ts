@@ -89,8 +89,11 @@
  *  - No `orderML` match, or `shipment.order_id == null` → skip + log (a
  *    marked seam, NOT an import fallback — this handler only ever refreshes a
  *    pedido that already exists).
- *  - `lastMarketplaceUpdate: nowUs` is stamped alongside `freteInicial` on
- *    every write (new-app observability convention, additive — see PR 2).
+ *  - `ultimaModificacao` (wall clock, monotonic) is stamped alongside
+ *    `freteInicial` on every write. `lastMarketplaceUpdate` deliberately is
+ *    NOT: it is the ML ORDER-clock watermark whose single writer is the order
+ *    import (#791/O15). This path carries the SHIPMENT clock, which already
+ *    lives inside the frete block.
  *
  * THROW-ON-TRANSIENT discipline: every error EXCEPT a 404 on the primary
  * `getShipment` call propagates (the calling notification queue retries);
@@ -103,19 +106,28 @@ import {
   type MercadoLivreApi,
   type MlShipment,
 } from '@delfrance/integrations-mercado-livre';
-import { orderMLCollection, pedidoCollection } from '@delfrance/data/admin/collections';
+import { coerceToMicros } from '@delfrance/core/datetime';
+import { pedidoCollection } from '@delfrance/data/admin/collections';
 
+import { loadContaBag, resolveMercadoEnviosIntFreteOuterRef } from './orderImport';
+import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import {
-  loadContaBag,
-  mergeFreteInicial,
-  resolveMercadoEnviosIntFreteOuterRef,
-} from './orderImport';
-import { mlShipmentToFreteInicial } from './orderShipmentMapping';
+  POLITICA_FRESCOR_TOPICO_SHIPMENTS,
+  mergeFreteInicialSeMaisNovo,
+  mlShipmentToFreteInicial,
+} from './orderShipmentMapping';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 
 /* -------------------------------------------------------------------------- */
 /*                                  Contract                                  */
 /* -------------------------------------------------------------------------- */
+
+/** The larger of two µs watermarks (either may be absent). */
+function maiorUs(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return a > b ? a : b;
+}
 
 export interface ShipmentImportDeps {
   db: Firestore;
@@ -133,31 +145,6 @@ export interface ShipmentImportResult {
     | 'sem-frete-inicial'
     | 'stale'
     | null;
-}
-
-/* -------------------------------------------------------------------------- */
-/*                          orderML → pedido resolution                      */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Resolve the pedido owning a Mercado Livre order id via its `orderML`
- * mirror — pack_id first, then plain id (the same two-step collection-group
- * resolve `orderPaymentImport.ts` and legacy both use; the pack-first order
- * is a faithful legacy quirk, tasks.dart:1266-1270). Returns `null` when
- * neither key matches any `orderML` doc.
- */
-async function resolvePedidoIdByOrderId(db: Firestore, orderId: number): Promise<string | null> {
-  const byPack = await orderMLCollection
-    .groupQuery(db)
-    .where('pack_id', '==', orderId)
-    .limit(1)
-    .get();
-  const packDoc = byPack.docs[0];
-  if (packDoc) return packDoc.ref.parent?.parent?.id ?? null;
-
-  const byId = await orderMLCollection.groupQuery(db).where('id', '==', orderId).limit(1).get();
-  const idDoc = byId.docs[0];
-  return idDoc ? (idDoc.ref.parent?.parent?.id ?? null) : null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -250,21 +237,31 @@ export async function importShipmentMercadoLivre(
       modalidadeOverride: contaBag.modalidadeFreteImportacao,
     });
 
-    const oldUltimaModificacao = oldFrete.ultimaModificacao;
-    const isFresh =
-      oldUltimaModificacao != null &&
-      mapped.ultimaModificacao != null &&
-      oldUltimaModificacao < mapped.ultimaModificacao;
-    if (!isFresh) {
+    // The freshness verdict and the overlay are ONE call (#791): a `null` here
+    // means "write nothing at all" — neither the fields nor the watermark — so
+    // this call site cannot produce a document whose watermark advertises data
+    // it does not contain. The policy constant names the null cases, which this
+    // path answers the OPPOSITE way from the order import (see the docstring).
+    // Units: the predicate coerces both sides to µs, so a legacy Flutter
+    // MILLISECOND `ultimaModificacao` still compares as the same instant.
+    const targetFrete = mergeFreteInicialSeMaisNovo(
+      oldFrete,
+      mapped,
+      POLITICA_FRESCOR_TOPICO_SHIPMENTS,
+    );
+    if (targetFrete == null) {
       return { pedidoId, skipped: 'stale' };
     }
 
-    const targetFrete = mergeFreteInicial(oldFrete, mapped);
     tx.update(
       pedidoRef,
       pedidoCollection.parseMerge({
         freteInicial: targetFrete,
-        lastMarketplaceUpdate: nowUs,
+        // Wall clock, monotonic. `lastMarketplaceUpdate` is NOT written here:
+        // it is the ML ORDER-clock watermark, and its single writer is the
+        // order import (#791). This path carries the SHIPMENT clock, which
+        // already lives in `freteInicial.ultimaModificacao`.
+        ultimaModificacao: maiorUs(coerceToMicros(pedido.ultimaModificacao), nowUs),
       }),
     );
 

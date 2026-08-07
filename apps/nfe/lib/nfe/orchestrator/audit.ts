@@ -3,6 +3,8 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   autorizarLote,
+  buildNFeProcSafe,
+  classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
   isEstadoFinalNFe,
@@ -192,11 +194,66 @@ export function markAsLost(patch: NFeStatePatch, reason: string): NFeStatePatch 
  * `null` (not `FieldValue.delete()`) because the nfev4 schema requires the
  * field to be present (`.nullable()` without `.optional()`).
  */
-export function procPersistExtras(nfeProcXml: string): {
+export function swapAnchorForProc(nfeProcXml: string): {
   xml_nfe_proc: string;
   xml_assinado: null;
 } {
   return { xml_nfe_proc: nfeProcXml, xml_assinado: null };
+}
+
+/**
+ * The SEFAZ protocol shape `buildNFeProcSafe` pairs with a signed `<NFe>` —
+ * pulled from its own signature so this file needs no direct `TProtNFe`
+ * import (mirrors how callers already derive it from a SOAP response type).
+ */
+type ProtNFe = Parameters<typeof buildNFeProcSafe>[1];
+
+/**
+ * Single guard + build + warn for the digest-safe `<nfeProc>` stitch (#396),
+ * shared by every site that can reach an 'autorizada' outcome:
+ * `applyAutorizadoOutcome` (emit), `reconcileByRecibo`, `consultarChavePersistida`
+ * and the backstop sweep's consSit branch. Each of those differs only in HOW
+ * it knows the protocol still belongs to the bytes it holds — a
+ * `finalChave === chave` compare, a `!chaveSwapped` flag, or a `chNFe` field
+ * match — so that check is the caller's `chaveMatches` argument; everything
+ * else (the 'autorizada' gate, the presence checks, the digest guard via
+ * `buildNFeProcSafe`, the mismatch warning) lives here exactly once.
+ *
+ * Returns the nfeProc XML on success, or `null` when the outcome isn't
+ * authorized, the inputs are incomplete, `chaveMatches` is false, or the
+ * digest guard refused the pairing. Callers feed a non-null result into
+ * `swapAnchorForProc` to build the persist extras.
+ */
+export function buildProcForAuthorizedOutcome(params: {
+  /** `applyOutcome`'s resulting cStat for this NF-e. */
+  cStat: string;
+  /** False whenever the local signed bytes no longer match `prot`'s chave. */
+  chaveMatches: boolean;
+  /** The signed `<NFe>` bytes this protocol would be paired with. */
+  signedXml: string | null;
+  /** The SEFAZ protocol for our chave, when the round-trip surfaced one. */
+  prot: ProtNFe | null;
+  /** Log-line source tag, e.g. `nfe/orchestrator`, `nfe/reconcile`. */
+  logTag: string;
+  chave: string;
+}): string | null {
+  if (
+    !params.chaveMatches ||
+    classifyCStat(params.cStat) !== 'autorizada' ||
+    params.prot == null ||
+    params.signedXml == null
+  ) {
+    return null;
+  }
+  const proc = buildNFeProcSafe(params.signedXml, params.prot);
+  if (proc.digest === 'mismatch') {
+    console.warn(
+      `[${params.logTag}] chave ${params.chave}: local DigestValue differs from the ` +
+        'protNFe digVal — skipping the <nfeProc> build; the doc stays aprovada WITHOUT ' +
+        'xml_nfe_proc (xml_assinado kept; fetch the authorized XML via DistDFe/manual import)',
+    );
+  }
+  return proc.xml;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MlPayment } from '@delfrance/integrations-mercado-livre';
-import { BANDEIRA, FORMA_PAGAMENTO, STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { BANDEIRA, FORMA_PAGAMENTO, STATUS_PAGAMENTO, pagamentoSchema } from '@delfrance/schemas';
 import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
 
 const NOW_US = 1_753_200_000_000_000;
@@ -142,6 +142,37 @@ describe('mlPaymentToPagamento — tarifas composition', () => {
 
   it('defaults tarifas to 0 when no fee/charge data is present', () => {
     const mapped = mlPaymentToPagamento({ payment: payment(), contaCpfCnpj: null, nowUs: NOW_US });
+    expect(mapped.tarifas).toBe(0);
+  });
+
+  it('clamps a negative total at 0 so a fully refunded payment still parses (#794)', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({
+        transaction_amount: 100,
+        refunds: [{ amount: 100 }],
+        marketplace_fee: 0,
+        // The sale fee was refunded along with the order: refunded > original
+        // makes the raw sum -3.5, which `pagamentoSchema.tarifas` (.min(0))
+        // would reject — a ZodError the pipeline retries until it parks.
+        charge_details: [
+          { accounts: { from: 'collector', to: 'mp' }, amounts: { original: 12, refunded: 15.5 } },
+        ],
+      }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+
+    expect(mapped.tarifas).toBe(0);
+    expect(() => pagamentoSchema.parse(mapped)).not.toThrow();
+  });
+
+  it('clamps a negative fee_details amount at 0 as well', () => {
+    const mapped = mlPaymentToPagamento({
+      payment: payment({ marketplace_fee: 1, fee_details: [{ amount: -4 }] }),
+      contaCpfCnpj: null,
+      nowUs: NOW_US,
+    });
+
     expect(mapped.tarifas).toBe(0);
   });
 });

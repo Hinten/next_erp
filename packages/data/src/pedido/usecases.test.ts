@@ -14,6 +14,7 @@ import {
   nextPedidoEstado,
   remotelyChangedFields,
   savePedido,
+  saveChequeSplit,
   saveIncidente,
   savePagamento,
 } from './usecases';
@@ -278,6 +279,38 @@ describe('pagamentos', () => {
     const { port, committed } = fakePort(null);
     await deletePagamento(port, { pedidoId: 'ped1', pagamentoId: 'pg1' });
     expect(committed()).toEqual([{ type: 'delete', path: 'pedidos/ped1/pagamentos/pg1' }]);
+  });
+
+  it('saveChequeSplit commits one set op per pagamento, each with a fresh id', async () => {
+    let n = 0;
+    const committed: PedidoWriteOp[] = [];
+    const port: PedidoDataPort = {
+      now: () => 555,
+      newId: () => `id${++n}`,
+      async updatePedido() {},
+      async commit(ops) {
+        committed.push(...ops);
+      },
+    };
+    const rows = [
+      { ...pgto, valor: 33.33 },
+      { ...pgto, valor: 33.33 },
+      { ...pgto, valor: 33.34 },
+    ];
+    await saveChequeSplit(port, { pedidoId: 'ped1', pagamentos: rows });
+    expect(committed).toHaveLength(3);
+    expect(committed.map((op) => op.path)).toEqual([
+      'pedidos/ped1/pagamentos/id1',
+      'pedidos/ped1/pagamentos/id2',
+      'pedidos/ped1/pagamentos/id3',
+    ]);
+    for (const op of committed) {
+      expect(op.type).toBe('set');
+      expect((op as { data: Record<string, unknown> }).data).toMatchObject({
+        ultimaModificacao: 555,
+        dataCadastro: 555,
+      });
+    }
   });
 });
 
