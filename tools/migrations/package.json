@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "migrate:ml-lastmarketplaceupdate": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-lastmarketplaceupdate/backfill.ts",
     "migrate:pedido-pagamento-micros": "dotenv -e ../../.env.local -- tsx src/2026-06-pedido-pagamento-micros/migrate.ts",
+    "migrate:telefone-e164": "dotenv -e ../../.env.local -- tsx src/2026-08-telefone-e164/migrate.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

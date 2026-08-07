@@ -22,6 +22,16 @@ export interface MigrationArgs {
   reportOnly: boolean;
   /** Optional explicit service-account file (else env). */
   serviceAccountPath?: string;
+  /**
+   * Comma-separated selector for migrations that can touch more than one
+   * collection/field and want them enabled one group at a time. Empty when the
+   * flag was not passed; a migration that does not use it ignores this.
+   *
+   * Parsed here rather than per-migration so `parseArgs` can keep REJECTING
+   * genuinely unknown flags — that guard is what stops `--project --apply` from
+   * silently running against a project literally named "--apply".
+   */
+  targets: string[];
 }
 
 export class MigrationArgError extends Error {
@@ -49,6 +59,7 @@ function requireValue(next: string | undefined, flag: string): string {
  *   --apply          write changes (omit for a dry-run that only logs)
  *   --report-only    classify + count stored shapes, write nothing
  *   --service-account <path>   optional credential override
+ *   --target <a,b>   optional migration-specific selector (see MigrationArgs)
  * Throws `MigrationArgError` on a missing/unknown flag.
  */
 export function parseArgs(argv: readonly string[]): MigrationArgs {
@@ -56,6 +67,7 @@ export function parseArgs(argv: readonly string[]): MigrationArgs {
   let apply = false;
   let reportOnly = false;
   let serviceAccountPath: string | undefined;
+  let targetsRaw: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -73,6 +85,11 @@ export function parseArgs(argv: readonly string[]): MigrationArgs {
       i += 1;
     } else if (arg.startsWith('--service-account=')) {
       serviceAccountPath = arg.slice('--service-account='.length);
+    } else if (arg === '--target') {
+      targetsRaw = requireValue(argv[i + 1], '--target');
+      i += 1;
+    } else if (arg.startsWith('--target=')) {
+      targetsRaw = arg.slice('--target='.length);
     } else {
       throw new MigrationArgError(`Unknown argument: ${arg}`);
     }
@@ -86,7 +103,12 @@ export function parseArgs(argv: readonly string[]): MigrationArgs {
   if (apply && reportOnly) {
     throw new MigrationArgError('--report-only cannot be combined with --apply.');
   }
-  return { projectId: projectId.trim(), apply, reportOnly, serviceAccountPath };
+  const targets = (targetsRaw ?? '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t !== '');
+
+  return { projectId: projectId.trim(), apply, reportOnly, serviceAccountPath, targets };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -150,6 +172,8 @@ export interface MigrationContext {
   reportOnly: boolean;
   sink: ChangeSink;
   writer: BatchWriter;
+  /** The parsed CLI arguments, so a migration body can read `--target`. */
+  args: MigrationArgs;
 }
 
 export interface MigrationSummary {
@@ -187,7 +211,14 @@ export async function runMigration(
   const mode = args.apply ? 'APPLY' : args.reportOnly ? 'REPORT-ONLY' : 'DRY-RUN';
   log(`[${name}] project=${args.projectId} mode=${mode} → ${logPath}`);
 
-  const summary = await body({ db, apply: args.apply, reportOnly: args.reportOnly, sink, writer });
+  const summary = await body({
+    db,
+    apply: args.apply,
+    reportOnly: args.reportOnly,
+    sink,
+    writer,
+    args,
+  });
   await writer.flush();
   await new Promise<void>((res) => stream.end(res));
 
