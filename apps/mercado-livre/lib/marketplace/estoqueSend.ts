@@ -408,10 +408,24 @@ export async function processStockSendTask(
     // already carries. `mergeIfExists`, never `merge`: the doc id rode from the
     // sweep and the child may have been deleted meanwhile; an upsert would
     // leave a ghost holding only these two keys.
-    if (payload.kind === 'variationItem' && modo === 'single' && payload.varLinkDocId != null) {
+    //
+    // ⚠️ `variacaoProdutoId` is REQUIRED here, never defaulted to `produtoId`.
+    // The subcollection is `produtos/{CHILD}/variacaoMercadoLivre`, so falling
+    // back to the anchor would write this child's number into a DIFFERENT
+    // produto's subcollection — and `varLinkDocId` is a plausible id there too,
+    // so `mergeIfExists` would happily land it on an unrelated doc instead of
+    // resolving to false. A payload that reaches here without it (an older
+    // enqueue, a malformed task) must fail OPEN: skip the record, let that
+    // variation never skip. The status writeback above already happened.
+    if (
+      payload.kind === 'variationItem' &&
+      modo === 'single' &&
+      payload.varLinkDocId != null &&
+      payload.variacaoProdutoId != null
+    ) {
       const varApplied = await variacaoMercadoLivreLinkCollection.mergeIfExists(
         db,
-        { produtoId: payload.variacaoProdutoId ?? payload.produtoId },
+        { produtoId: payload.variacaoProdutoId },
         payload.varLinkDocId,
         { ultimoEstoqueEnviado: payload.quantidade, ultimoEnvioMs: nowMs },
       );

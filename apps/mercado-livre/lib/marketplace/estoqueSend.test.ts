@@ -629,6 +629,28 @@ describe('processStockSendTask — last-sent record (#695, write side)', () => {
     ]);
   });
 
+  it('UP without a variacaoProdutoId writes NOTHING — never falls back to the anchor', async () => {
+    // The subcollection is produtos/{CHILD}/variacaoMercadoLivre. Defaulting to
+    // the anchor would put this child's quantity in a DIFFERENT produto's
+    // subcollection — and since `varLinkDocId` is a plausible id there too,
+    // mergeIfExists would land it on an unrelated doc rather than resolve false.
+    const h = makeHarness();
+    seedLink(h.db, { isUserProductModel: true });
+    // A doc that WOULD be hit by the bad fallback path.
+    h.db.seed('produtos/PROD/variacaoMercadoLivre', 'vl-1', { itemId: 'ALHEIO' });
+
+    const res = await run(h, upPayload({ variacaoProdutoId: null }));
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.db.opLog.filter((o) => o.op === 'update').map((o) => o.path)).toEqual([
+      `${LINK_PATH}/link1`,
+    ]);
+    // The bystander is untouched — no last-sent keys leaked onto it.
+    expect(h.db.docs('produtos/PROD/variacaoMercadoLivre').get('vl-1')).toEqual({
+      itemId: 'ALHEIO',
+    });
+  });
+
   /* -- Failure paths record NOTHING. This is the load-bearing half: a value
      recorded for a send that did not land would latch the listing into a
      permanent skip, and the failure would be invisible. -- */
