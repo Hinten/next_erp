@@ -53,7 +53,6 @@ const h = vi.hoisted(() => ({
       skipped: null,
     }),
   ),
-  syncItemPrices: vi.fn(async () => 'synced' as const),
   // The Step 14 default claim wiring resolves the Storage bucket via
   // `tryGetAdminBucket` — a sentinel here proves it is threaded verbatim.
   fakeBucket: { __bucket: true },
@@ -70,10 +69,6 @@ vi.mock('./claimImport', () => ({ importClaimMercadoLivre: h.importClaimMercadoL
 vi.mock('../firebase/admin', async (importActual) => {
   const actual = await importActual<typeof import('../firebase/admin')>();
   return { ...actual, tryGetAdminBucket: () => h.fakeBucket as never };
-});
-vi.mock('./itemsPricesSync', async (importActual) => {
-  const actual = await importActual<typeof import('./itemsPricesSync')>();
-  return { ...actual, syncItemPrices: h.syncItemPrices };
 });
 vi.mock('./mercadoLivre', async (importActual) => {
   const actual = await importActual<typeof import('./mercadoLivre')>();
@@ -1225,92 +1220,45 @@ describe('handleNotificationTask — claims claim-import dispatch (Step 14)', ()
   });
 });
 
-/* --------------- items_prices price-sync dispatch (Step 11) --------------- */
+/* ------------- items_prices is a PERMANENT no-op (#803) ------------------- */
 
-describe('handleNotificationTask — items_prices price-sync dispatch (Step 11)', () => {
-  it('parses the item id from the /items/{id}/prices resource and routes it to the injected runner, acks done with nothing persisted', async () => {
+describe('handleNotificationTask — items_prices is acked and ignored (#803)', () => {
+  it('acks done and persists NOTHING — it must not park a doc per delivery', async () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
-    const itemsPricesRunner = vi.fn(async () => 'synced' as const);
     const r = await handleNotificationTask(
       asDb(db),
       payloadOf({ id: 'N90', resource: '/items/MLB777/prices', topic: 'items_prices' }),
       0,
-      { itemsPricesRunner },
+      // runners omitted: there is no items_prices runner to inject any more.
     );
+    // `done`, NOT `parked` — the whole point of keeping items_prices in
+    // KNOWN_TOPICS. A `parked` here means someone dropped it from the set and
+    // every price notification now costs a Firestore write.
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
-    expect(itemsPricesRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 'MLB777');
     expect(db.docs(NOTIF).size).toBe(0);
   });
 
-  it('default wiring (runners omitted): the real runItemsPricesSync path reaches syncItemPrices', async () => {
-    const db = new FakeDb();
-    seedConta(db, 'conta-A', 55);
-    const r = await handleNotificationTask(
-      asDb(db),
-      payloadOf({ id: 'N95', resource: '/items/MLB777/prices', topic: 'items_prices' }),
-      0,
-      // runners omitted entirely — the production default must be used.
-    );
-    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
-    expect(h.syncItemPrices).toHaveBeenCalledWith(asDb(db), 'conta-A', 'MLB777');
-    expect(db.docs(NOTIF).size).toBe(0);
+  it('is still known, so it never reaches the unknown-topic park arm', () => {
+    expect(isKnownTopic('items_prices')).toBe(true);
   });
 
-  it('a non-synced outcome (e.g. no-link) still acks done — deterministic, never retried — and warns', async () => {
+  it('a resource shape that used to be "malformed" is now simply ignored, still with no persist', async () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
-    const itemsPricesRunner = vi.fn(async () => 'no-link' as const);
-    const r = await handleNotificationTask(
-      asDb(db),
-      payloadOf({ id: 'N91', resource: '/items/MLB777/prices', topic: 'items_prices' }),
-      0,
-      { itemsPricesRunner },
-    );
-    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre] items_prices sync skipped',
-      expect.objectContaining({ integracaoId: 'conta-A', itemId: 'MLB777', outcome: 'no-link' }),
-    );
-    expect(db.docs(NOTIF).size).toBe(0);
-  });
-
-  it('a malformed resource (no /prices suffix, or garbage) is dropped WITHOUT dispatching to the runner', async () => {
-    const db = new FakeDb();
-    seedConta(db, 'conta-A', 55);
-    const itemsPricesRunner = vi.fn(async () => 'synced' as const);
-    const r = await handleNotificationTask(
-      asDb(db),
-      payloadOf({ id: 'N92', resource: '/items/MLB777', topic: 'items_prices' }),
-      0,
-      { itemsPricesRunner },
-    );
-    expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'items_prices' });
-    const g = await handleNotificationTask(
-      asDb(db),
-      payloadOf({ id: 'N93', resource: 'garbage', topic: 'items_prices' }),
-      0,
-      { itemsPricesRunner },
-    );
-    expect(g.outcome).toBe('dropped');
-    expect(itemsPricesRunner).not.toHaveBeenCalled();
-    expect(db.docs(NOTIF).size).toBe(0); // dropped — no persist
-  });
-
-  it('the runner throwing propagates (transient contract preserved — queue retries)', async () => {
-    const db = new FakeDb();
-    seedConta(db, 'conta-A', 55);
-    const itemsPricesRunner = vi.fn(async () => {
-      throw new Error('ml api unavailable');
-    });
-    await expect(
-      handleNotificationTask(
+    // Both of these used to be `dropped` by the resource parser. With no
+    // handler there is nothing to parse, so they ack like any other delivery.
+    for (const [id, resource] of [
+      ['N92', '/items/MLB777'],
+      ['N93', 'garbage'],
+    ] as const) {
+      const r = await handleNotificationTask(
         asDb(db),
-        payloadOf({ id: 'N94', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+        payloadOf({ id, resource, topic: 'items_prices' }),
         0,
-        { itemsPricesRunner },
-      ),
-    ).rejects.toThrow('ml api unavailable');
+      );
+      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A' });
+    }
     expect(db.docs(NOTIF).size).toBe(0);
   });
 });

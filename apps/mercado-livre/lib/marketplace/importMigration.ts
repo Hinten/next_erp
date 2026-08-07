@@ -149,7 +149,6 @@ export interface UptinMigrationDeps {
   integracaoId: string;
   sellerUserId: number | null;
   tabelaNormalOuterRef: string | null;
-  tabelaPromocionalOuterRef: string | null;
   depositoOuterRef: string | null;
 }
 
@@ -242,7 +241,6 @@ export async function handleUptinMigration(
         integracaoId,
         sellerUserId: deps.sellerUserId,
         tabelaNormalOuterRef: deps.tabelaNormalOuterRef,
-        tabelaPromocionalOuterRef: deps.tabelaPromocionalOuterRef,
         depositoOuterRef: deps.depositoOuterRef,
         options: MIGRATION_IMPORT_OPTIONS,
         familyFanOut: false,

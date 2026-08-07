@@ -52,7 +52,6 @@ beforeEach(() => {
     conta: {
       user_id: 55,
       tabelaNormalOuterRef: 'documents/listaDePrecos/lista-1',
-      tabelaPromocionalOuterRef: 'documents/listaDePrecos/lista-2',
       depositoOuterRef: 'documents/depositos/dep-1',
     },
     resolveChannelContext: h.resolveChannelContext,
@@ -84,7 +83,6 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
       integracaoId: 'int-1',
       sellerUserId: 55,
       tabelaNormalOuterRef: 'documents/listaDePrecos/lista-1',
-      tabelaPromocionalOuterRef: 'documents/listaDePrecos/lista-2',
       depositoOuterRef: 'documents/depositos/dep-1',
     });
   });
