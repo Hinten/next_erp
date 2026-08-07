@@ -6,15 +6,18 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
+    "audit:ml-pedido-pago": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-pedido-pago-audit/audit.ts",
+    "clean": "rm -rf dist .turbo out *.tsbuildinfo",
+    "lint": "eslint .",
+    "migrate:ml-lastmarketplaceupdate": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-lastmarketplaceupdate/backfill.ts",
     "migrate:pedido-pagamento-micros": "dotenv -e ../../.env.local -- tsx src/2026-06-pedido-pagamento-micros/migrate.ts",
     "migrate:telefone-e164": "dotenv -e ../../.env.local -- tsx src/2026-08-telefone-e164/migrate.ts",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "clean": "rm -rf dist .turbo out *.tsbuildinfo"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
     "firebase-admin": "catalog:"
   },
   "devDependencies": {
