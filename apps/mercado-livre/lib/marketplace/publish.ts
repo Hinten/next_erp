@@ -303,7 +303,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   //     on `produtos`. A correlated subquery over the link subcollection can
   //     only ever be a post-filter, and on Enterprise a post-filter does not
   //     reduce data scanned. Whether the post-filter is nonetheless cheap
-  //     enough is measurable (`scripts/check-stock-indexes.mjs`), not obvious.
+  //     enough is measurable (`apps/mercado-livre/scripts/check-stock-indexes.mjs`),
+  //     not obvious.
   //  2. COUPLING — `integracoesComProduto` is never removed on its own: both
   //     removal paths DERIVE it from `marketplace`
   //     (`importMigration.applyMarketplaceDeletion`,
