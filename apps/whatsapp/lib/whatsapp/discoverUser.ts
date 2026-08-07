@@ -23,7 +23,13 @@
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, usuarioCollection } from '@delfrance/data/admin/collections';
 import { telefoneQueryShapes } from '@delfrance/core/phone';
-import { idFromRef, type Cliente, type Conversa, type Usuario } from '@delfrance/schemas';
+import {
+  idFromRef,
+  sanitizeTelefone,
+  type Cliente,
+  type Conversa,
+  type Usuario,
+} from '@delfrance/schemas';
 
 import { WHATSAPP_CANAL, externalId } from './ids';
 
@@ -123,7 +129,15 @@ async function getOrCreateUsuarioSemAuth(
   }
 }
 
-/** Create the paired `clientes` doc for a freshly-minted sem-auth usuario. */
+/**
+ * Create the paired `clientes` doc for a freshly-minted sem-auth usuario.
+ *
+ * `telefone` is the Cloud API `wa_id`, which already carries a country code, so
+ * `sanitizeTelefone` is a no-op for every value Meta can send. It runs anyway:
+ * this is the ONE cliente write in the repo that used to store a phone without
+ * passing it through the shared normalizer, and "usually a no-op" is not a
+ * property worth relying on when a one-call detour makes it a guarantee.
+ */
 async function createClienteForUser(
   db: Firestore,
   usuarioId: string,
@@ -135,7 +149,7 @@ async function createClienteForUser(
     {},
     {
       nome: nome != null && nome !== '' ? nome : null,
-      telefone,
+      telefone: sanitizeTelefone(telefone),
       userCliente: usuarioOuterRef(usuarioId),
     },
   );

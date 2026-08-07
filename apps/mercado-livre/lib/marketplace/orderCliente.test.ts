@@ -16,7 +16,6 @@ import {
   billingInfoToClienteFields,
   billingInfoToEnderecoFields,
   ensureEndereco,
-  findOrCreateCliente,
   makeEnderecoId,
   shipmentToEnderecoFields,
 } from './orderCliente';
@@ -474,6 +473,41 @@ describe('shipmentToEnderecoFields', () => {
     expect(fields.numero).toBe('51');
     expect(fields.cidade).toBe(ENDERECO_FALLBACKS.cidade);
   });
+
+  it('degrades ONE unusable name-holder, not the whole endereço', () => {
+    // `city` as a bare string used to be recovered by a `.catch(null)` wrapping
+    // the whole object. Normalising it to null before validation keeps the
+    // damage local: the address still builds, with the city falling back.
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(
+        shipmentWithReceiverAddress({
+          street: 'Rua Visconde de Ouro Preto',
+          number: '51',
+          city: 'São Paulo',
+          neighborhood: { name: 'Consolação' },
+          state: { name: 'SP' },
+          postal_code: '01303060',
+        }),
+      ),
+    );
+    expect(fields.cidade).toBe(ENDERECO_FALLBACKS.cidade);
+    expect(fields.logradouro).toBe('Rua Visconde de Ouro Preto');
+    expect(fields.bairro).toBe('Consolação');
+    expect(fields.estado).toBe(UF_SIGLA.SP);
+  });
+
+  it.each([42, 'Rua X, 1', [], true])(
+    'treats a non-object receiver_address (%j) as no address, not as an error',
+    (lixo) => {
+      // The ONE remaining way the parse can fail. `null` is the honest answer —
+      // there is no address in that payload — and the caller's `sem-cep` is
+      // logged with the order id by applyEnderecoStep, so nothing is silent.
+      expect(shipmentToEnderecoFields(shipmentWithReceiverAddress(lixo))).toEqual({
+        kind: 'sem-cep',
+        cepRaw: null,
+      });
+    },
+  );
 });
 
 /**
@@ -672,152 +706,6 @@ describe('makeEnderecoId — mapper fallback vectors', () => {
     // records why (the `numero` fallback-text deviation).
     expect(makeEnderecoId(billingFallbackFields())).not.toBe(LEGACY_BILLING_NUMERO);
     expect(makeEnderecoId(shipmentFallbackFields())).not.toBe(LEGACY_SHIPMENT_NUMERO);
-  });
-});
-
-describe('findOrCreateCliente', () => {
-  const baseFields: ClienteImportFields = {
-    tipo: TIPO_CLIENTE.pessoaFisica,
-    nome: 'Maria Silva',
-    cpf_cnpj: '52998224725',
-    idEstrangeiro: null,
-    ie: null,
-    telefone: null,
-    email: null,
-  };
-
-  it('creates a new cliente, stamping timestamp + ultimaModificacao with nowMs', async () => {
-    const fake = new FakeDb();
-    const result = await findOrCreateCliente(db(fake), baseFields, NOW_MS);
-    expect(result.created).toBe(true);
-
-    const stored = fake.storedDoc('clientes', result.clienteId);
-    expect(stored).toMatchObject({
-      tipo: '0',
-      nome: 'Maria Silva',
-      cpf_cnpj: '52998224725',
-      timestamp: NOW_MS,
-      ultimaModificacao: NOW_MS,
-    });
-  });
-
-  it('dedups by cpf_cnpj (digits-only equality)', async () => {
-    const fake = new FakeDb();
-    fake.seed('clientes', 'cli-1', { nome: 'Maria Silva', cpf_cnpj: '52998224725', tipo: '0' });
-
-    const result = await findOrCreateCliente(db(fake), baseFields, NOW_MS);
-    expect(result).toEqual({ clienteId: 'cli-1', created: false });
-  });
-
-  it('dedups by idEstrangeiro when cpf_cnpj is absent', async () => {
-    const fake = new FakeDb();
-    fake.seed('clientes', 'cli-2', { nome: 'John Doe', idEstrangeiro: 'PASSPORT123', tipo: '2' });
-
-    const result = await findOrCreateCliente(
-      db(fake),
-      {
-        ...baseFields,
-        cpf_cnpj: null,
-        idEstrangeiro: 'PASSPORT123',
-        tipo: TIPO_CLIENTE.estrangeiro,
-      },
-      NOW_MS,
-    );
-    expect(result).toEqual({ clienteId: 'cli-2', created: false });
-  });
-
-  it('dedups by telefone (either wire shape, via telefoneQueryShapes)', async () => {
-    const fake = new FakeDb();
-    // Stored in the raw 10/11-digit shape the live Flutter app writes.
-    fake.seed('clientes', 'cli-3', { nome: 'Ana', telefone: '11999998888', tipo: '0' });
-
-    const result = await findOrCreateCliente(
-      db(fake),
-      { ...baseFields, cpf_cnpj: null, telefone: '11999998888' },
-      NOW_MS,
-    );
-    expect(result).toEqual({ clienteId: 'cli-3', created: false });
-  });
-
-  it('dedups by email as the last resort', async () => {
-    const fake = new FakeDb();
-    fake.seed('clientes', 'cli-4', { nome: 'Bea', email: 'bea@example.com', tipo: '0' });
-
-    const result = await findOrCreateCliente(
-      db(fake),
-      { ...baseFields, cpf_cnpj: null, email: 'bea@example.com' },
-      NOW_MS,
-    );
-    expect(result).toEqual({ clienteId: 'cli-4', created: false });
-  });
-
-  it('update path patches ONLY the changed fields, leaving others untouched', async () => {
-    const fake = new FakeDb();
-    fake.seed('clientes', 'cli-5', {
-      nome: 'Maria Silva Antiga',
-      cpf_cnpj: '52998224725',
-      tipo: '0',
-      email: 'old@example.com',
-      observacoesInternas: 'nota interna preservada',
-    });
-
-    const result = await findOrCreateCliente(
-      db(fake),
-      { ...baseFields, nome: 'Maria Silva Nova Sobrenome', email: 'new@example.com' },
-      NOW_MS,
-    );
-    expect(result).toEqual({ clienteId: 'cli-5', created: false });
-
-    const stored = fake.storedDoc('clientes', 'cli-5');
-    expect(stored?.nome).toBe('Maria Silva Nova Sobrenome');
-    expect(stored?.email).toBe('new@example.com');
-    expect(stored?.ultimaModificacao).toBe(NOW_MS);
-    // Untouched fields survive the merge unchanged — the whole point of a
-    // targeted patch over a full-document rewrite.
-    expect(stored?.observacoesInternas).toBe('nota interna preservada');
-    expect(stored?.cpf_cnpj).toBe('52998224725');
-  });
-
-  it('never lets a lone-word new name overwrite an existing multi-word name', async () => {
-    const fake = new FakeDb();
-    fake.seed('clientes', 'cli-6', {
-      nome: 'Maria Silva Santos',
-      cpf_cnpj: '52998224725',
-      tipo: '0',
-    });
-
-    await findOrCreateCliente(db(fake), { ...baseFields, nome: 'Maria' }, NOW_MS);
-
-    const stored = fake.storedDoc('clientes', 'cli-6');
-    expect(stored?.nome).toBe('Maria Silva Santos');
-  });
-
-  it('does not write at all when nothing changed', async () => {
-    // NOTE: `nome` MUST be '' here — `shouldUpdateName` (ported faithfully
-    // from legacy's `_shouldUpdateName`) only ever returns `false` for a
-    // non-empty name when the NEW name is a lone word AND the OLD name is
-    // multi-word; a same-VALUE multi-word name still returns `true` (legacy
-    // always treats a supplied nome as fresh-enough to reassert). So a
-    // genuinely no-op update needs an empty `nome` plus every other field
-    // either `null` (inert — the update guards are all `!= null`) or
-    // exactly matching the stored value (`tipo`, which has no null guard).
-    const fake = new FakeDb();
-    fake.seed('clientes', 'cli-7', {
-      nome: 'Maria Silva',
-      cpf_cnpj: '52998224725',
-      tipo: '0',
-      ie: null,
-      email: null,
-      telefone: null,
-      idEstrangeiro: null,
-    });
-
-    const result = await findOrCreateCliente(db(fake), { ...baseFields, nome: '' }, NOW_MS);
-    expect(result).toEqual({ clienteId: 'cli-7', created: false });
-
-    const stored = fake.storedDoc('clientes', 'cli-7');
-    expect(stored?.ultimaModificacao).toBeUndefined();
-    expect(stored?.nome).toBe('Maria Silva');
   });
 });
 

@@ -754,7 +754,7 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     expect(frete.estado).toBe(ESTADO_FRETE.error);
     expect(frete.externalId).toBe(SHIPMENT_ID); // preserved
     expect(frete.printLabelId).toBe('label-1'); // preserved
-    expect(pedidoDoc.lastMarketplaceUpdate).toBe(NOW_US);
+    expect(pedidoDoc.ultimaModificacao).toBe(NOW_US);
     error.mockRestore();
   });
 
@@ -894,7 +894,7 @@ describe('processNfeUploadTask — final attempt', () => {
     expect(nfeWrites(db)).toEqual([]);
     const pedidoDoc = db.docs('pedidos').get(PEDIDO_ID)!;
     expect((pedidoDoc.freteInicial as DocData).estado).toBe(ESTADO_FRETE.error);
-    expect(pedidoDoc.lastMarketplaceUpdate).toBe(NOW_US);
+    expect(pedidoDoc.ultimaModificacao).toBe(NOW_US);
     error.mockRestore();
   });
 

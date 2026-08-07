@@ -6,6 +6,12 @@
  * this handler executes exactly one `PUT /items/{itemId}` carrying the
  * payload's numbers.
  *
+ * ---- Master flag (#805): `isStockSyncEnabled()` gates this handler as well as
+ * the sweeps. The sweep's own check cannot stop a backlog it has already
+ * enqueued, so `MERCADO_LIVRE_STOCK_SYNC_ENABLED != '1'` drains the queue here
+ * without touching Firestore or ML. `MERCADO_LIVRE_TASKS_DISABLED` stays the
+ * shared everything-off valve; this one is stock-only.
+ *
  * ---- Payloads CARRY quantities, computed at sweep time (owner-locked
  * 2026-07-27 — the INVERSE of the first cut's "targets, never quantities"
  * contract; legacy BigQuery parity: the Flutter sender likewise transmitted
@@ -67,7 +73,9 @@ import {
 import {
   PAUSE_REENQUEUE_JITTER_MAX_S,
   STOCK_SEND_MAX_ATTEMPTS,
+  STOCK_SYNC_FLAG_ENV,
   fingerprintVariations,
+  isStockSyncEnabled,
   maxPauseReenqueues,
   podeEnviarEstoque,
   ratePauseMin,
@@ -186,7 +194,7 @@ function defaultJitterSec(maxS: number): number {
 
 export type StockSendOutcome =
   | 'sent' // the ONE ML call succeeded and the link writeback landed
-  | 'skipped' // deterministic no-send (conta misconfigured — no depósito)
+  | 'skipped' // deterministic no-send (master flag off, or conta misconfigured — no depósito)
   | 'paused-requeued' // conta paused → the task re-enqueued itself past the pause
   | 'dropped' // malformed/quantity-less payload or pause re-enqueue cap — never retried
   | 'erro-registrado'; // deterministic ML failure recorded — SUCCESS to the queue
@@ -223,6 +231,28 @@ export async function processStockSendTask(
       return { outcome: 'dropped', reason: 'payload-invalido' };
     }
     throw err;
+  }
+
+  // (0.5) Master flag (#805). The sweep gates on it too, but its backlog is
+  // ALREADY enqueued when the flag flips — up to `maxTasksPerSweep()` tasks per
+  // conta, ~17min of draining at the queue's 2/s — so without this check the
+  // documented kill switch keeps hitting ML for the whole drain. Runs BEFORE the
+  // pause gate so a drained task costs zero Firestore reads.
+  //
+  // Ack, never retry: a retry would only re-read the same env. The task is lost
+  // rather than deferred, which is the same bargain the pause re-enqueue cap
+  // takes — the next enabled sweep re-covers the produto.
+  //
+  // WARN, not info: the sweep logs its no-op at info because being off is its
+  // steady state (the flag ships OFF and it ticks every 15min). A task reaching
+  // THIS handler while off is abnormal — it means a backlog is draining behind
+  // an emergency stop.
+  if (!isStockSyncEnabled()) {
+    console.warn(
+      `[mercado-livre] stock-send: sync desabilitado (${STOCK_SYNC_FLAG_ENV} != '1') — task descartada`,
+      { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },
+    );
+    return { outcome: 'skipped', reason: 'sync-desabilitado' };
   }
 
   const nowMs = deps.nowMs;
@@ -408,10 +438,24 @@ export async function processStockSendTask(
     // already carries. `mergeIfExists`, never `merge`: the doc id rode from the
     // sweep and the child may have been deleted meanwhile; an upsert would
     // leave a ghost holding only these two keys.
-    if (payload.kind === 'variationItem' && modo === 'single' && payload.varLinkDocId != null) {
+    //
+    // ⚠️ `variacaoProdutoId` is REQUIRED here, never defaulted to `produtoId`.
+    // The subcollection is `produtos/{CHILD}/variacaoMercadoLivre`, so falling
+    // back to the anchor would write this child's number into a DIFFERENT
+    // produto's subcollection — and `varLinkDocId` is a plausible id there too,
+    // so `mergeIfExists` would happily land it on an unrelated doc instead of
+    // resolving to false. A payload that reaches here without it (an older
+    // enqueue, a malformed task) must fail OPEN: skip the record, let that
+    // variation never skip. The status writeback above already happened.
+    if (
+      payload.kind === 'variationItem' &&
+      modo === 'single' &&
+      payload.varLinkDocId != null &&
+      payload.variacaoProdutoId != null
+    ) {
       const varApplied = await variacaoMercadoLivreLinkCollection.mergeIfExists(
         db,
-        { produtoId: payload.variacaoProdutoId ?? payload.produtoId },
+        { produtoId: payload.variacaoProdutoId },
         payload.varLinkDocId,
         { ultimoEstoqueEnviado: payload.quantidade, ultimoEnvioMs: nowMs },
       );

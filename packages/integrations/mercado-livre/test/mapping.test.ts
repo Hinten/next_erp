@@ -92,8 +92,11 @@ describe('buildItemPayload — create (legacy seller, no variations)', () => {
     expect(data.site_id).toBeUndefined();
     expect(data.buying_mode).toBeUndefined();
     expect(data.seller_custom_field).toBeUndefined();
-    // Without variations the price/quantity stay at the parent on update.
-    expect(data.price).toBe(79.9);
+    // #799 bug 2: the item-root price is CREATE-only. Both legacy publish call
+    // sites strip it on update (exportarProdutos.dart:586 legacy, :466 UP); a
+    // price CHANGE is a dedicated PUT /items/{id} in precoSync, never a publish.
+    expect(data.price).toBeUndefined();
+    // Quantity is different — it only moves down when there ARE variations.
     expect(data.available_quantity).toBe(12);
   });
 });
@@ -121,6 +124,7 @@ describe('buildItemPayload — legacy variations', () => {
       {
         mlVariationId: 987,
         produtoId: 'prod-var-2',
+        order: 2,
         availableQuantity: 7,
         pictureIds: ['VAR-IMG'],
         attributeCombinations: [attrColor('Branco')],
@@ -129,33 +133,72 @@ describe('buildItemPayload — legacy variations', () => {
     ],
   };
 
-  it('moves quantity+price down, inherits parent pictures, prunes combination ids from parent attrs', () => {
+  it('moves quantity down, inherits parent pictures, prunes combination ids AND the parent SKU', () => {
     const data = buildItemPayload(base);
     expect(data.available_quantity).toBeUndefined();
-    expect(data.price).toBe(50); // kept at parent on CREATE
-    // COLOR was pruned from the parent attributes (it's a combination id).
-    expect(data.attributes).toEqual([{ id: 'SELLER_SKU', value_name: 'SKU-PAI' }]);
+    // #799 bug 2: a CREATE with variations carries no item-root price either
+    // (models.dart:1530, guarded by the `update = id == null` misnomer).
+    expect(data.price).toBeUndefined();
+    // COLOR pruned as a combination id; SELLER_SKU pruned because each variation
+    // carries its own and the combination prune can never reach it (#799 bug 3,
+    // models.dart:1508-1515). Nothing survives at the parent here.
+    expect(data.attributes).toEqual([]);
 
     const variations = data.variations as Array<Record<string, unknown>>;
     expect(variations).toHaveLength(2);
     expect(variations[0]).toMatchObject({
       seller_custom_field: 'prod-var-1',
-      _order: 1,
       available_quantity: 5,
       price: 50,
       picture_ids: ['PARENT-IMG'], // inherited
       attribute_combinations: [{ id: 'COLOR', value_name: 'Preto' }],
       attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-1' }],
     });
+    // #799 bug 1: `_order` is an internal sort key the legacy deletes before
+    // sending (models.dart:1394). We leaked produto.ordem into it.
+    expect(variations[0]!._order).toBeUndefined();
     expect(variations[0]!.id).toBeUndefined(); // create → no ML variation id
     expect(variations[1]).toMatchObject({
       seller_custom_field: 'prod-var-2',
       picture_ids: ['VAR-IMG'], // own pictures win
     });
+    expect(variations[1]!._order).toBeUndefined();
     expect(variations[1]!.id).toBeUndefined(); // id only rides on update
   });
 
-  it('update with variations removes the parent price and carries variation ids', () => {
+  it('keeps a non-SKU parent attribute that no variation claims', () => {
+    const data = buildItemPayload({
+      ...base,
+      attributes: [attrSku('SKU-PAI'), attrColor('Preto'), attrWeightKg(0.3)],
+    });
+    expect(data.attributes).toEqual([{ id: 'WEIGHT', value_name: '0.3 kg' }]);
+  });
+
+  it('sorts the emitted variations by order', () => {
+    const data = buildItemPayload({
+      ...base,
+      variations: [
+        { ...base.variations[1]!, produtoId: 'segundo', order: 9 },
+        { ...base.variations[0]!, produtoId: 'primeiro', order: 3 },
+      ],
+    });
+    const variations = data.variations as Array<Record<string, unknown>>;
+    expect(variations.map((v) => v.seller_custom_field)).toEqual(['primeiro', 'segundo']);
+  });
+
+  it('sorts an absent order first, matching the legacy `?? 0`', () => {
+    const data = buildItemPayload({
+      ...base,
+      variations: [
+        { ...base.variations[0]!, produtoId: 'com-ordem', order: 5 },
+        { ...base.variations[1]!, produtoId: 'sem-ordem', order: null },
+      ],
+    });
+    const variations = data.variations as Array<Record<string, unknown>>;
+    expect(variations.map((v) => v.seller_custom_field)).toEqual(['sem-ordem', 'com-ordem']);
+  });
+
+  it('update with variations carries the variation ids and prices them per variation', () => {
     const data = buildItemPayload({ ...base, isUpdate: true });
     expect(data.price).toBeUndefined();
     const variations = data.variations as Array<Record<string, unknown>>;

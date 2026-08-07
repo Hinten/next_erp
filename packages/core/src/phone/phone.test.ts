@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isValidTelefone, normalizeTelefone, telefoneQueryShapes } from './index';
+import {
+  formatTelefone,
+  formatTelefoneLocal,
+  isValidTelefone,
+  localTelefone,
+  normalizeTelefone,
+  telefoneQueryShapes,
+} from './index';
 
 describe('normalizeTelefone', () => {
   it('prepends 55 to a 10-digit BR landline (DDD + subscriber)', () => {
@@ -85,5 +92,72 @@ describe('telefoneQueryShapes', () => {
   it('returns an empty array for empty input', () => {
     expect(telefoneQueryShapes('')).toEqual([]);
     expect(telefoneQueryShapes('--')).toEqual([]);
+  });
+});
+
+describe('localTelefone', () => {
+  it('drops the BR country code from a normalized value', () => {
+    expect(localTelefone('5511999998888')).toBe('11999998888');
+    expect(localTelefone('551133334444')).toBe('1133334444');
+  });
+
+  it('leaves a legacy raw BR number alone — 10/11 digits are never normalized', () => {
+    expect(localTelefone('11999998888')).toBe('11999998888');
+    expect(localTelefone('1133334444')).toBe('1133334444');
+  });
+
+  it('leaves a foreign number alone — only 55 is stripped', () => {
+    expect(localTelefone('441632960961')).toBe('441632960961');
+  });
+
+  it('inverts normalizeTelefone for the BR case', () => {
+    expect(localTelefone(normalizeTelefone('11999998888'))).toBe('11999998888');
+  });
+
+  it('strips punctuation', () => {
+    expect(localTelefone('+55 (11) 99999-8888')).toBe('11999998888');
+  });
+});
+
+describe('formatTelefoneLocal', () => {
+  it('masks a local mobile and landline', () => {
+    expect(formatTelefoneLocal('11999998888')).toBe('(11) 99999-8888');
+    expect(formatTelefoneLocal('1133334444')).toBe('(11) 3333-4444');
+  });
+
+  it('NEVER strips a country code — this is the shape a DANFE renders', () => {
+    // The DANFE reads `fone` back out of a signed XML, in SEFAZ's shape. It
+    // must show what was signed, so a 13-digit value passes through untouched
+    // rather than being reinterpreted as `55` + a local number.
+    expect(formatTelefoneLocal('5511999998888')).toBe('5511999998888');
+  });
+
+  it('returns any other length unchanged', () => {
+    expect(formatTelefoneLocal('999')).toBe('999');
+    expect(formatTelefoneLocal('')).toBe('');
+  });
+});
+
+describe('formatTelefone', () => {
+  it('masks a value stored in this repo’s wire format', () => {
+    // The whole point: 13 digits used to fall through the mask and print raw.
+    expect(formatTelefone('5511999998888')).toBe('(11) 99999-8888');
+    expect(formatTelefone('551133334444')).toBe('(11) 3333-4444');
+  });
+
+  it('masks a legacy raw BR value the Flutter app wrote', () => {
+    expect(formatTelefone('11999998888')).toBe('(11) 99999-8888');
+    expect(formatTelefone('1133334444')).toBe('(11) 3333-4444');
+  });
+
+  it('returns the caller’s original string when it cannot mask', () => {
+    // Not the stripped digits — nothing is silently mangled.
+    expect(formatTelefone('441632960961')).toBe('441632960961');
+    expect(formatTelefone('+44 1632 960961')).toBe('+44 1632 960961');
+    expect(formatTelefone('999')).toBe('999');
+  });
+
+  it('is stable under repeated formatting of an already-masked value', () => {
+    expect(formatTelefone(formatTelefone('5511999998888'))).toBe('(11) 99999-8888');
   });
 });

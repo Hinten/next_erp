@@ -49,19 +49,17 @@ export function formatCep(raw: string): string {
 }
 
 /**
- * Format a Brazilian phone: 11 digits → `(00) 00000-0000`, 10 digits →
- * `(00) 0000-0000`. Other lengths (e.g. foreign numbers) are returned unchanged.
+ * Format a stored telefone. Re-exported from `@delfrance/core/phone` rather
+ * than reimplemented here — same as `formatReais` above — so every print
+ * surface masks the SAME way.
+ *
+ * It used to be a local copy that masked only 10/11-digit input and returned
+ * anything else raw. Once clientes started being stored as 13-digit
+ * `5511999998888`, every sheet importing this printed the raw string; the
+ * `55`-stripping fix existed but was inlined in one unrelated page. The shared
+ * version strips before masking, so the omission is no longer possible.
  */
-export function formatTelefone(raw: string): string {
-  const digits = onlyDigits(raw);
-  if (digits.length === 11) {
-    return digits.replace(/^(\d{2})(\d{5})(\d{4})$/, '($1) $2-$3');
-  }
-  if (digits.length === 10) {
-    return digits.replace(/^(\d{2})(\d{4})(\d{4})$/, '($1) $2-$3');
-  }
-  return raw;
-}
+export { formatTelefone } from '@delfrance/core/phone';
 
 /**
  * Mask all but the last `showLast` characters of `value` with `*` — the port of

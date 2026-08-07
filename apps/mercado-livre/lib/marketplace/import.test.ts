@@ -14,18 +14,71 @@ import { type Bucket } from './arquivoUpload';
 
 type DocData = Record<string, unknown>;
 
+/**
+ * Apply an `update()` patch, expanding dotted keys into nested writes the way
+ * Firestore does — `{'precos.tabNormal': v}` sets that ONE map entry and leaves
+ * its siblings alone, rather than creating a literal `'precos.tabNormal'`
+ * field. Without this the double cannot distinguish a surgical dotted write
+ * from a whole-map replace, which is the exact property #803 relies on.
+ */
+function applyUpdatePatch(base: DocData, patch: DocData): DocData {
+  const out: DocData = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    if (!key.includes('.')) {
+      out[key] = value;
+      continue;
+    }
+    const [head, ...rest] = key.split('.');
+    const existing = out[head!];
+    const nested: DocData =
+      existing != null && typeof existing === 'object' && !Array.isArray(existing)
+        ? { ...(existing as DocData) }
+        : {};
+    nested[rest.join('.')] = value;
+    out[head!] = nested;
+  }
+  return out;
+}
+
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
-  readonly updates: Array<{ path: string; patch: DocData }> = [];
+  readonly updates: Array<{ path: string; patch: DocData; precondition?: unknown }> = [];
+  /** Every write in issue order — `updates` alone cannot show set-vs-update ordering. */
+  readonly writeLog: Array<{ op: 'set' | 'create' | 'update'; path: string }> = [];
+  /**
+   * Fires after every doc `get()`. The seam for injecting a concurrent writer
+   * into the exact window a `lastUpdateTime` guard protects: between the read a
+   * patch is derived from and the write that applies it.
+   */
+  afterGet: ((path: string) => Promise<void> | void) | null = null;
   private autoN = 0;
+  /**
+   * Per-document write counter standing in for Firestore's `updateTime`. It
+   * exists so `lastUpdateTime` preconditions are actually ENFORCED here (see
+   * `update` below): a double that merely records the precondition and writes
+   * anyway hides exactly the bug the guard is meant to catch — a write ordered
+   * AFTER another write to the same doc, asserting a stamp we already burned.
+   */
+  private versions = new Map<string, number>();
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
     if (!c) this.cols.set(path, (c = new Map()));
     return c;
   }
+  private bump(key: string): void {
+    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
+  }
+  private stamp(key: string): string {
+    return `v${this.versions.get(key) ?? 0}`;
+  }
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
+    this.bump(`${path}/${id}`);
+  }
+  /** The current `updateTime` stand-in for a doc — for precondition assertions. */
+  stampOf(path: string, id: string): string {
+    return this.stamp(`${path}/${id}`);
   }
   docs(path: string): Map<string, DocData> {
     return this.col(path);
@@ -71,17 +124,45 @@ class FakeDb {
         const docId = id ?? `auto-${++self.autoN}`;
         return {
           id: docId,
-          get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
+          get: async () => {
+            const snap = {
+              exists: col.has(docId),
+              id: docId,
+              data: () => col.get(docId),
+              // The real SDK always carries an updateTime on an existing doc;
+              // the import threads it back as a `lastUpdateTime` precondition
+              // on the precos write (ADR 0011 tier 1), so the double must
+              // supply one or the guard would go untested.
+              updateTime: col.has(docId) ? (self.stamp(`${path}/${docId}`) as unknown) : undefined,
+            };
+            await self.afterGet?.(`${path}/${docId}`);
+            return snap;
+          },
           set: async (data: DocData, opts?: { merge?: boolean }) => {
             col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
+            self.writeLog.push({ op: 'set', path: `${path}/${docId}` });
+            self.bump(`${path}/${docId}`);
           },
           create: async (data: DocData) => {
             if (col.has(docId)) throw Object.assign(new Error('already exists'), { code: 6 });
             col.set(docId, { ...data });
+            self.writeLog.push({ op: 'create', path: `${path}/${docId}` });
+            self.bump(`${path}/${docId}`);
           },
-          update: async (patch: DocData) => {
-            self.updates.push({ path: `${path}/${docId}`, patch });
-            col.set(docId, { ...(col.get(docId) ?? {}), ...patch });
+          update: async (patch: DocData, precondition?: { lastUpdateTime?: unknown }) => {
+            const key = `${path}/${docId}`;
+            // Enforce, don't just record: a stale lastUpdateTime must throw
+            // gRPC 9 exactly as Firestore would.
+            if (
+              precondition?.lastUpdateTime !== undefined &&
+              precondition.lastUpdateTime !== self.stamp(key)
+            ) {
+              throw Object.assign(new Error('failed precondition'), { code: 9 });
+            }
+            self.updates.push({ path: key, patch, precondition });
+            self.writeLog.push({ op: 'update', path: key });
+            col.set(docId, applyUpdatePatch(col.get(docId) ?? {}, patch));
+            self.bump(key);
           },
         };
       },
@@ -201,7 +282,6 @@ function deps(db: FakeDb, api: MercadoLivreApi, over: Partial<ImportDeps> = {}):
     integracaoId: 'conta-A',
     sellerUserId: 55,
     tabelaNormalOuterRef: 'documents/tabelasDePrecos/tabNormal',
-    tabelaPromocionalOuterRef: 'documents/tabelasDePrecos/tabPromo',
     depositoOuterRef: 'documents/depositos/dep1',
     ...over,
   };
@@ -283,6 +363,64 @@ describe('importProduto — dedup to an existing produto', () => {
     const api = makeApi(SIMPLE_ITEM);
     const res = await importProduto(deps(db, api), 'MLB123');
     expect(res).toMatchObject({ produtoId: 'by-sku', created: false });
+  });
+});
+
+describe('importProduto — precos race guard (#803, ADR 0011 tier 1)', () => {
+  it('guards the precos write with the read it was derived from, and issues it BEFORE the produto merge', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'existing-prod', { nome: 'Já Existe', sku: 'OLD' });
+    db.seed('produtos/existing-prod/produtoMercadoLivre', 'lnk1', {
+      id: 'MLB123',
+      contaOuterRef: 'documents/integracao/conta-A',
+    });
+    const stampAtPlanTime = db.stampOf('produtos', 'existing-prod');
+
+    await importProduto(deps(db, makeApi(SIMPLE_ITEM)), 'MLB123');
+
+    const precosWrite = db.updates.find(
+      (u) => u.path === 'produtos/existing-prod' && 'precos.tabNormal' in u.patch,
+    );
+    expect(precosWrite?.precondition).toEqual({ lastUpdateTime: stampAtPlanTime });
+
+    // ORDERING, not decoration: the produto merge always writes on the update
+    // path (it carries ultimaModificacao, #800) and so BUMPS updateTime. If it
+    // ran first, the precondition above would assert a stamp we had already
+    // burned and every price-writing import would fail FAILED_PRECONDITION.
+    const produtoWrites = db.writeLog.filter((w) => w.path === 'produtos/existing-prod');
+    expect(produtoWrites[0]).toEqual({ op: 'update', path: 'produtos/existing-prod' });
+  });
+
+  it('re-plans ONCE when a concurrent writer wins the race, instead of reverting them', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'existing-prod', { nome: 'Já Existe', sku: 'OLD' });
+    db.seed('produtos/existing-prod/produtoMercadoLivre', 'lnk1', {
+      id: 'MLB123',
+      contaOuterRef: 'documents/integracao/conta-A',
+    });
+
+    // Land a competing write in the exact window the guard protects: right
+    // after the import reads the produto its plan is derived from. The Flutter
+    // app saving the WHOLE precos map is the real-world shape — a dotted-path
+    // write cannot defend against it, which is why the precondition exists.
+    let injected = false;
+    db.afterGet = (path) => {
+      if (injected || path !== 'produtos/existing-prod') return;
+      injected = true;
+      db.seed('produtos', 'existing-prod', {
+        ...db.docs('produtos').get('existing-prod'),
+        precos: { outra: { valor: 1 } },
+      });
+    };
+
+    const res = await importProduto(deps(db, makeApi(SIMPLE_ITEM)), 'MLB123');
+
+    // It succeeded — via the re-plan, not by blindly re-applying the patch.
+    expect(res).toMatchObject({ produtoId: 'existing-prod', created: false });
+    const stored = db.docs('produtos').get('existing-prod')!.precos as Record<string, unknown>;
+    // Both survive: the racer's key was NOT reverted, and ours still landed
+    // (79.9 = SIMPLE_ITEM's base_price, which wins over `price`).
+    expect(stored).toEqual({ outra: { valor: 1 }, tabNormal: { valor: 79.9 } });
   });
 });
 

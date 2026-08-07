@@ -58,6 +58,8 @@ export interface PublishProduto {
 export interface PublishLink {
   docId: string;
   id: string | null;
+  /** Operator-authored listing title. Blank/absent falls back to `produto.nome`. */
+  title?: string | null;
   condition?: 'new' | 'used' | null;
   listing_type_id?: string | null;
   category_id?: string | null;
@@ -142,11 +144,46 @@ export function resolveCondition(
   return 'new';
 }
 
-/** Parent-level attributes (mapper prunes any combination ids from these). */
+/**
+ * Attribute ids `buildParentAttributes` DERIVES from the produto on every run.
+ *
+ * Publish persists the assembled parent attributes back onto the link doc
+ * (#799 bug 7) so a produto published from scratch stops carrying
+ * `attributes: null` forever. These ids must be excluded from that write: they
+ * are appended unconditionally below, so storing them would duplicate them on
+ * the next publish. `SIZE_GRID_ID` is deliberately NOT here — the link doc is
+ * where the chart binding lives between publishes, and a fresh resolution
+ * replaces it rather than adding a second one.
+ */
+export const ML_DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set([
+  'SELLER_SKU',
+  'WEIGHT',
+  'SELLER_PACKAGE_HEIGHT',
+  'SELLER_PACKAGE_LENGTH',
+  'SELLER_PACKAGE_WIDTH',
+  'SELLER_PACKAGE_WEIGHT',
+]);
+
+/**
+ * Parent-level attributes (mapper prunes any combination ids from these).
+ *
+ * `includeSku: false` only when the payload will actually EMIT variations, each
+ * of which carries its own `SELLER_SKU` that ML must not see duplicated at the
+ * parent. The mapper strips it defensively too, but suppressing it here keeps
+ * the assembled input honest — publish persists these attributes onto the link
+ * doc (#799 bug 7).
+ *
+ * ⚠️ "has children" is NOT the same condition. `buildItemPayload` drops the
+ * variations array entirely for a User-Products seller, so a UP produto with
+ * children emits no per-variation SKUs at all — suppressing the parent's too
+ * would ship a payload with NO SKU anywhere. The caller must mirror the
+ * mapper's own test, not the child count.
+ */
 export function buildParentAttributes(
   produto: PublishProduto,
   link: PublishLink | null,
   sizeChartId?: string | null,
+  options?: { includeSku?: boolean },
 ): MlAttribute[] {
   // A freshly resolved chart REPLACES any stale SIZE_GRID_ID the link doc
   // carries (legacy toMercadoLivre: remove-then-add); with no resolution the
@@ -156,7 +193,7 @@ export function buildParentAttributes(
       ? (link?.attributes ?? []).filter((a) => a.id !== 'SIZE_GRID_ID')
       : [...(link?.attributes ?? [])];
   if (sizeChartId != null) attrs.push(attrSizeGridId(sizeChartId));
-  if (produto.sku) attrs.push(attrSku(produto.sku));
+  if (produto.sku && (options?.includeSku ?? true)) attrs.push(attrSku(produto.sku));
   if (produto.pesoLiquidoKg != null) attrs.push(attrWeightKg(produto.pesoLiquidoKg));
   const pesoKg = produto.pesoBrutoKg ?? produto.pesoLiquidoKg;
   if (
@@ -277,10 +314,16 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
 
   if (issues.length > 0) throw new MercadoLivrePublishError(issues);
 
+  // #799 bug 4a: the link doc's own `title` wins. It used to be ignored here
+  // entirely — and then clobbered with `produto.nome` on the way back — so an
+  // operator could never give the listing an ML-optimised name of its own.
+  // Blank means absent, the same rule `descricao` already follows.
+  const linkTitle = args.link?.title?.trim() ?? '';
+
   return {
     isUpdate,
     isUserProductSeller: args.isUserProductSeller,
-    title: args.produto.nome,
+    title: linkTitle.length > 0 ? linkTitle : args.produto.nome,
     condition: resolveCondition(args.link, args.produto, args.condicao),
     sellerCustomField: args.linkDocId,
     categoryId: args.categoryId,
@@ -289,7 +332,12 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     availableQuantity: args.availableQuantity,
     pictures: args.pictures,
     videoId: args.link?.video_id ?? null,
-    attributes: buildParentAttributes(args.produto, args.link, args.sizeChart?.chartId ?? null),
+    attributes: buildParentAttributes(args.produto, args.link, args.sizeChart?.chartId ?? null, {
+      // Mirrors buildItemPayload's own `hasVariations`, which is
+      // `!isUserProductSeller && variations.length > 0` — a UP seller emits no
+      // variations array, so its parent SKU is the only one there is.
+      includeSku: args.isUserProductSeller || variations.length === 0,
+    }),
     variations,
   };
 }

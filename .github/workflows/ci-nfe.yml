@@ -48,11 +48,11 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
   workflow_dispatch:
-  # NOTE: a scheduled (cron) run that treats the SVC live suite as FATAL
-  # is deliberately deferred — it will land together with the scheduled
-  # EPEC live test as one alerting workflow. Until then the SVC suite is
-  # advisory on PRs and fatal only on workflow_dispatch. See the
-  # follow-up issue referenced in PR #140.
+  # No cron here on purpose: the scheduled (weekly) FATAL run of the SVC
+  # live suite lives in nfe-epec-scheduled.yml's `svc-live` job instead,
+  # alongside the monthly EPEC live test, as one alerting workflow
+  # (issue #146). On this PR/push path the SVC suite stays advisory and
+  # is fatal only on workflow_dispatch.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -299,9 +299,11 @@ jobs:
         # the test logs the exact cStat+xMotivo so the rejection names what to
         # refine. Posture: ADVISORY on pull_request/push (continue-on-error →
         # warning), FATAL on workflow_dispatch (deliberate validation runs).
+        # This workflow has no `schedule:` trigger of its own, so the only
+        # FATAL case is workflow_dispatch.
         # Library-level — no Firestore; reuses the vendored SP HOM chain. #313.
         id: rtc-live
-        continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
         env:
           NFE_CERT_BASE64:   ${{ secrets.NFE_CERT_BASE64 }}
           NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
@@ -316,12 +318,14 @@ jobs:
         # client certs, so no amount of in-test retrying makes this lane
         # deterministic per-PR. Posture: ADVISORY on pull_request/push
         # (failure becomes a workflow warning via continue-on-error) and
-        # FATAL on workflow_dispatch. A scheduled fatal run (so a real SVC
-        # regression alerts on its own) is deferred to the EPEC scheduled
-        # workflow — see the follow-up issue referenced in PR #140.
+        # FATAL on workflow_dispatch. The scheduled FATAL run (so a real
+        # SVC regression alerts on its own) lives in
+        # nfe-epec-scheduled.yml's `svc-live` job (weekly, issue #146),
+        # not here — this workflow has no `schedule:` trigger of its own,
+        # so the only FATAL case here is workflow_dispatch.
         # Issue #129.
         id: svc-live
-        continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        continue-on-error: ${{ github.event_name != 'workflow_dispatch' }}
         env:
           NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
           NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
