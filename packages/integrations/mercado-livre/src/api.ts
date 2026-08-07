@@ -13,6 +13,7 @@ import {
   type MlCatalogDomain,
   type MlCategory,
   type MlCategoryAttribute,
+  type MlCategoryListingType,
   type MlClaim,
   type MlClaimMessage,
   type MlClaimReason,
@@ -21,6 +22,7 @@ import {
   type MlItem,
   type MlItemDescription,
   type MlItemPrices,
+  type MlListingPrices,
   type MlMigrationLiveListing,
   type MlOrder,
   type MlOrderSearch,
@@ -33,6 +35,7 @@ import {
   type MlShipmentInvoice,
   type MlShipmentPayment,
   type MlShipmentSla,
+  type MlSiteCategory,
   type MlSizeChartApi,
   type MlTechnicalSpecs,
   type MlUser,
@@ -41,11 +44,13 @@ import {
   activeChartDomainsSchema,
   catalogDomainSchema,
   categoryAttributesSchema,
+  categoryListingTypesSchema,
   categorySchema,
   domainDiscoverySchema,
   itemDescriptionSchema,
   itemPricesSchema,
   itemSchema,
+  listingPricesSchema,
   migrationLiveListingSchema,
   mlBillingInfoSchema,
   mlClaimMessagesSchema,
@@ -63,6 +68,7 @@ import {
   packSchema,
   pictureUploadSchema,
   sellerItemsScanSchema,
+  siteCategoriesSchema,
   sizeChartApiSchema,
   technicalSpecsSchema,
   tokenErrorSchema,
@@ -235,6 +241,23 @@ export interface MercadoLivreApi {
   suggestCategories(query: string, limit?: number): Promise<MlDomainDiscovery>;
   getCategory(id: string): Promise<MlCategory>;
   getCategoryAttributes(id: string): Promise<MlCategoryAttribute[]>;
+  /** `GET /sites/MLB/categories` — the roots of the category tree. */
+  listSiteCategories(): Promise<MlSiteCategory[]>;
+  /**
+   * `GET /categories/{id}/listing_types` — the types available for a LEAF
+   * category. ML serves nothing useful for a non-leaf, so callers gate on
+   * `children_categories` being empty first.
+   */
+  getCategoryListingTypes(categoryId: string): Promise<MlCategoryListingType[]>;
+  /**
+   * `GET /sites/MLB/listing_prices` — fee preview for a price + listing type,
+   * the source of the link doc's `comissao`.
+   */
+  getListingPrices(input: {
+    price: number;
+    listingTypeId: string;
+    categoryId?: string | null;
+  }): Promise<MlListingPrices>;
   /** `POST /pictures/items/upload` (multipart) — returns the ML picture id. */
   uploadPicture(file: PictureFile): Promise<MlPictureUpload>;
 
@@ -597,6 +620,17 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCategory: (id) => request('GET', `/categories/${id}`, categorySchema),
     getCategoryAttributes: (id) =>
       request('GET', `/categories/${id}/attributes`, categoryAttributesSchema),
+    listSiteCategories: () => request('GET', '/sites/MLB/categories', siteCategoriesSchema),
+    getCategoryListingTypes: (categoryId) =>
+      request('GET', `/categories/${categoryId}/listing_types`, categoryListingTypesSchema),
+    getListingPrices: (input) =>
+      request('GET', '/sites/MLB/listing_prices', listingPricesSchema, {
+        query: {
+          price: input.price,
+          listing_type_id: input.listingTypeId,
+          ...(input.categoryId != null ? { category_id: input.categoryId } : {}),
+        },
+      }),
     uploadPicture,
 
     getDomainTechnicalSpecs: (domainId) =>
