@@ -142,11 +142,26 @@ export function resolveCondition(
   return 'new';
 }
 
-/** Parent-level attributes (mapper prunes any combination ids from these). */
+/**
+ * Parent-level attributes (mapper prunes any combination ids from these).
+ *
+ * `includeSku: false` only when the payload will actually EMIT variations, each
+ * of which carries its own `SELLER_SKU` that ML must not see duplicated at the
+ * parent. The mapper strips it defensively too, but suppressing it here keeps
+ * the assembled input honest — publish persists these attributes onto the link
+ * doc (#799 bug 7).
+ *
+ * ⚠️ "has children" is NOT the same condition. `buildItemPayload` drops the
+ * variations array entirely for a User-Products seller, so a UP produto with
+ * children emits no per-variation SKUs at all — suppressing the parent's too
+ * would ship a payload with NO SKU anywhere. The caller must mirror the
+ * mapper's own test, not the child count.
+ */
 export function buildParentAttributes(
   produto: PublishProduto,
   link: PublishLink | null,
   sizeChartId?: string | null,
+  options?: { includeSku?: boolean },
 ): MlAttribute[] {
   // A freshly resolved chart REPLACES any stale SIZE_GRID_ID the link doc
   // carries (legacy toMercadoLivre: remove-then-add); with no resolution the
@@ -156,7 +171,7 @@ export function buildParentAttributes(
       ? (link?.attributes ?? []).filter((a) => a.id !== 'SIZE_GRID_ID')
       : [...(link?.attributes ?? [])];
   if (sizeChartId != null) attrs.push(attrSizeGridId(sizeChartId));
-  if (produto.sku) attrs.push(attrSku(produto.sku));
+  if (produto.sku && (options?.includeSku ?? true)) attrs.push(attrSku(produto.sku));
   if (produto.pesoLiquidoKg != null) attrs.push(attrWeightKg(produto.pesoLiquidoKg));
   const pesoKg = produto.pesoBrutoKg ?? produto.pesoLiquidoKg;
   if (
@@ -289,7 +304,12 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     availableQuantity: args.availableQuantity,
     pictures: args.pictures,
     videoId: args.link?.video_id ?? null,
-    attributes: buildParentAttributes(args.produto, args.link, args.sizeChart?.chartId ?? null),
+    attributes: buildParentAttributes(args.produto, args.link, args.sizeChart?.chartId ?? null, {
+      // Mirrors buildItemPayload's own `hasVariations`, which is
+      // `!isUserProductSeller && variations.length > 0` — a UP seller emits no
+      // variations array, so its parent SKU is the only one there is.
+      includeSku: args.isUserProductSeller || variations.length === 0,
+    }),
     variations,
   };
 }
