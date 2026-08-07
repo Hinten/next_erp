@@ -56,7 +56,13 @@ import {
   produtoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
-import { PAUSE_REENQUEUE_JITTER_MAX_S, maxPauseReenqueues, ratePauseMin } from './estoquePlan';
+import {
+  PAUSE_REENQUEUE_JITTER_MAX_S,
+  maxPauseReenqueues,
+  ratePauseMin,
+  isStockSyncEnabled,
+  STOCK_SYNC_FLAG_ENV,
+} from './estoquePlan';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { MlTasksDisabledError } from './mlTasks';
 import type { MlStockTaskScheduler } from './mlStockTasks';
@@ -184,6 +190,16 @@ export async function processStockSendTask(
       return { outcome: 'dropped', reason: 'payload-invalido' };
     }
     throw err;
+  }
+
+  // (0.5) Stock sync flag gate: if disabled, drop the task immediately (next
+  // sweep will re-cover the produto). This makes MERCADO_LIVRE_STOCK_SYNC_ENABLED=0
+  // behave as an emergency stop, draining the queue without further ML calls.
+  if (!isStockSyncEnabled()) {
+    console.info(
+      `[mercado-livre] stock-send (${payload.itemId}) desabilitado (${STOCK_SYNC_FLAG_ENV} != '1') — task descartada`,
+    );
+    return { outcome: 'dropped', reason: 'stock-sync-desabilitado' };
   }
 
   const nowMs = deps.nowMs;

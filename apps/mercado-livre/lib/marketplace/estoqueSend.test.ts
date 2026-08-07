@@ -9,7 +9,12 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import { estoqueMercadoLivreSyncCollection } from '@delfrance/data/admin/collections';
 
-import { PAUSE_REENQUEUE_JITTER_MAX_S, type StockFamilyRow, buildSendTasks } from './estoquePlan';
+import {
+  PAUSE_REENQUEUE_JITTER_MAX_S,
+  STOCK_SYNC_FLAG_ENV,
+  type StockFamilyRow,
+  buildSendTasks,
+} from './estoquePlan';
 import { MlTasksDisabledError } from './mlTasks';
 import {
   type MlStockSendTask,
@@ -166,12 +171,15 @@ function run(h: Harness, p: unknown = payload()) {
 }
 
 beforeEach(() => {
+  // Enable stock sync for tests (the sweep and send handler are no-ops while disabled).
+  process.env[STOCK_SYNC_FLAG_ENV] = '1';
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
+  delete process.env[STOCK_SYNC_FLAG_ENV];
   vi.restoreAllMocks();
 });
 
@@ -248,6 +256,26 @@ describe('processStockSendTask — payload parse', () => {
     expect(h.enqueue).not.toHaveBeenCalled();
     expect(h.apiFactory).not.toHaveBeenCalled();
     expect(vi.mocked(console.error)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('processStockSendTask — stock sync flag gate', () => {
+  it('MERCADO_LIVRE_STOCK_SYNC_ENABLED=0 → dropped, no queue drain reads or ML calls', async () => {
+    // Disable the stock sync flag for this test to verify the check works.
+    delete process.env[STOCK_SYNC_FLAG_ENV];
+    const h = makeHarness();
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'dropped', reason: 'stock-sync-desabilitado' });
+    // No Firestore reads — the check happens before the pause-gate get.
+    expect(h.db.opLog).toHaveLength(0);
+    expect(h.enqueue).not.toHaveBeenCalled();
+    expect(h.apiFactory).not.toHaveBeenCalled();
+    expect(h.updateItem).not.toHaveBeenCalled();
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(expect.stringContaining('stock-send'));
+
+    // afterEach will restore the flag to '1' for other tests
   });
 });
 
