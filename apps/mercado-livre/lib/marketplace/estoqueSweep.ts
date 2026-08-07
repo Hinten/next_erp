@@ -137,13 +137,20 @@ import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './
 export type StockSweepMode = 'incremental' | 'daily' | 'reconciliacao';
 
 /**
- * The completion stamp a NON-incremental mode writes. Each mode owns its own
+ * The completion stamp a NON-incremental sweep writes. Each pass owns its own
  * field: the 02:00 pass is a flat 24h window and does NOT reconcile (#806 S11),
  * so writing `lastDailyAtUs` for a reconciliation — or the reverse — would tell
  * an operator a pass ran that never did. Neither touches `cursorUs`.
+ *
+ * ⚠️ Keyed on the FROZEN WINDOW, not on the tick's `mode`. `continuacao` does
+ * not record which non-incremental mode produced it, and EVERY mode drains a
+ * continuation — so a truncated reconciliation picked up by an incremental tick
+ * would stamp `lastDailyAtUs` if this read `mode`. `changedSinceMs === -1` is
+ * the force-all signature and travels with the frozen window, so it survives the
+ * resume. (Review catch on #894.)
  */
-function carimboDoModo(mode: StockSweepMode, nowUs: number): Record<string, unknown> {
-  return mode === 'reconciliacao' ? { lastReconciliacaoAtUs: nowUs } : { lastDailyAtUs: nowUs };
+function carimboDaJanela(changedSinceMs: number, nowUs: number): Record<string, unknown> {
+  return changedSinceMs === -1 ? { lastReconciliacaoAtUs: nowUs } : { lastDailyAtUs: nowUs };
 }
 
 /**
@@ -156,17 +163,44 @@ function carimboDoModo(mode: StockSweepMode, nowUs: number): Record<string, unkn
  * Cloud Scheduler jitter on the 02:00 firing.
  */
 export function isSlotDoDaily(nowMs: number): boolean {
+  const { hour, minute } = saoPauloParts(nowMs);
+  return hour === 2 && minute < 15;
+}
+
+/**
+ * Is `nowMs` inside the Sunday 03:00 America/Sao_Paulo slot (03:00–03:14) that
+ * belongs to the weekly force-all RECONCILIATION?
+ *
+ * Same carve-out mechanism as `isSlotDoDaily`, and it exists for the same
+ * reason. The reconciliation re-sends the conta's whole linked catalogue, so an
+ * incremental tick firing into the same slot would contend for that conta's
+ * task cap and its `estoqueMercadoLivreSync` doc — the exact collision the daily
+ * pass avoids by owning 02:00. Nudging the cron off the quarter-hour would only
+ * narrow the window, not close it: the reconciliation runs for minutes, not
+ * instants. So the incremental skips this slot outright (review catch on #894).
+ */
+export function isSlotDaReconciliacao(nowMs: number): boolean {
+  const { hour, minute, weekday } = saoPauloParts(nowMs);
+  return weekday === 'Sun' && hour === 3 && minute < 15;
+}
+
+/** Shared São Paulo wall-clock extraction for the two slot predicates. */
+function saoPauloParts(nowMs: number): { hour: number; minute: number; weekday: string } {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Sao_Paulo',
     hour12: false,
     hour: 'numeric',
     minute: 'numeric',
+    weekday: 'short',
   }).formatToParts(new Date(nowMs));
-  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? Number.NaN);
-  // Intl emits hour '24' for midnight under hour12:false in some ICU versions
-  // — irrelevant here (we only compare against 2), but normalize anyway.
-  const hour = get('hour') % 24;
-  return hour === 2 && get('minute') < 15;
+  const num = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? Number.NaN);
+  return {
+    // Intl emits hour '24' for midnight under hour12:false in some ICU versions
+    // — irrelevant here (we only compare against 2 and 3), but normalize anyway.
+    hour: num('hour') % 24,
+    minute: num('minute'),
+    weekday: parts.find((p) => p.type === 'weekday')?.value ?? '',
+  };
 }
 
 /**
@@ -611,7 +645,7 @@ async function sweepConta(
     // the ORIGINAL sweep's start. Clear it and stamp the mode's own field.
     patch = filtroIncremental
       ? { continuacao: null, cursorUs: startedAtUs, lastSweepAtUs: nowUs, lastError: null }
-      : { continuacao: null, ...carimboDoModo(mode, nowUs), lastError: null };
+      : { continuacao: null, ...carimboDaJanela(changedSinceMs, nowUs), lastError: null };
   } else {
     // A complete fresh sweep: the incremental cursor advances to `nowMs`; the
     // daily sweep stamps `lastDailyAtUs` and never touches the cursor. Both
@@ -624,7 +658,7 @@ async function sweepConta(
             lastError: null,
             continuacao: null,
           }
-        : { ...carimboDoModo(mode, nowUs), lastError: null, continuacao: null };
+        : { ...carimboDaJanela(changedSinceMs, nowUs), lastError: null, continuacao: null };
   }
   await estoqueMercadoLivreSyncCollection.merge(db, {}, integracaoId, patch);
 

@@ -46,6 +46,7 @@ import {
   MAX_PAGES_PER_SWEEP,
   type StockSweepDeps,
   type StockSweepMode,
+  isSlotDaReconciliacao,
   isSlotDoDaily,
   janelaDoSweep,
   runStockSweep,
@@ -336,6 +337,27 @@ describe('isSlotDoDaily', () => {
     expect(isSlotDoDaily(Date.parse('2026-07-28T04:45:00Z'))).toBe(false); // 01:45 runs
     expect(isSlotDoDaily(Date.parse('2026-07-28T06:00:00Z'))).toBe(false); // 03:00 runs
     expect(isSlotDoDaily(Date.parse('2026-07-28T14:00:00Z'))).toBe(false); // 11:00 runs
+  });
+});
+
+describe('isSlotDaReconciliacao', () => {
+  // 2026-08-02 is a SUNDAY; 2026-07-28 is a Tuesday. UTC-3 fixed, so 03:MM
+  // local = 06:MM UTC. The weekly force-all owns this slot the same way the
+  // daily owns 02:00 — without the carve-out the incremental would fire into
+  // it and contend for the same conta's task cap and state doc (#894 review).
+  it('flags only the Sunday 03:00 São Paulo slot', () => {
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-02T06:00:00Z'))).toBe(true); // Sun 03:00
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-02T06:14:59Z'))).toBe(true); // still the slot
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-02T06:15:00Z'))).toBe(false); // Sun 03:15 runs
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-02T05:45:00Z'))).toBe(false); // Sun 02:45
+    expect(isSlotDaReconciliacao(Date.parse('2026-07-28T06:00:00Z'))).toBe(false); // TUE 03:00 runs
+  });
+
+  it('does not overlap the daily slot — each pass owns exactly one', () => {
+    const domingo0200 = Date.parse('2026-08-02T05:00:00Z');
+    const domingo0300 = Date.parse('2026-08-02T06:00:00Z');
+    expect([isSlotDoDaily(domingo0200), isSlotDaReconciliacao(domingo0200)]).toEqual([true, false]);
+    expect([isSlotDoDaily(domingo0300), isSlotDaReconciliacao(domingo0300)]).toEqual([false, true]);
   });
 });
 
@@ -1086,6 +1108,58 @@ describe('runStockSweep — skip-if-unchanged wiring (#695)', () => {
     expect(state).toMatchObject({ lastReconciliacaoAtUs: NOW_US });
     expect(state).not.toHaveProperty('lastDailyAtUs');
     expect(state.cursorUs).toBe((NOW_MS - 600_000) * 1000);
+  });
+
+  it('a truncated RECONCILIATION drained by an incremental tick stamps the right field', async () => {
+    // `continuacao` does not record which non-incremental mode froze it, and
+    // every mode drains a continuation — so keying the completion stamp on the
+    // TICK's mode would write `lastDailyAtUs` here, claiming a 24h pass ran
+    // when a force-all did. The frozen window (`changedSinceMs === -1`) is what
+    // survives the resume. (#894 review.)
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    db.seed(SYNC_PATH, 'INT-A', {
+      cursorUs: (NOW_MS - 600_000) * 1000,
+      continuacao: {
+        afterAnchorId: 'PROD-3',
+        changedSinceMs: -1, // the force-all signature
+        vendaCutoffUs: null,
+        startedAtUs: NOW_US - 900_000_000,
+      },
+    });
+    wireCtx();
+    const { fetchFamilies, calls } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { scheduler } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    expect(calls[0]?.changedSinceMs).toBe(-1);
+    const state = db.docs(SYNC_PATH).get('INT-A') ?? {};
+    expect(state).toMatchObject({ lastReconciliacaoAtUs: NOW_US, continuacao: null });
+    expect(state).not.toHaveProperty('lastDailyAtUs');
+  });
+
+  it('a truncated DAILY drained by an incremental tick still stamps lastDailyAtUs', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    db.seed(SYNC_PATH, 'INT-A', {
+      cursorUs: (NOW_MS - 600_000) * 1000,
+      continuacao: {
+        afterAnchorId: 'PROD-3',
+        changedSinceMs: NOW_MS - 24 * 3_600_000 - 20_000,
+        vendaCutoffUs: null,
+        startedAtUs: NOW_US - 900_000_000,
+      },
+    });
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { scheduler } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    const state = db.docs(SYNC_PATH).get('INT-A') ?? {};
+    expect(state).toMatchObject({ lastDailyAtUs: NOW_US, continuacao: null });
+    expect(state).not.toHaveProperty('lastReconciliacaoAtUs');
   });
 
   it('the kill switch restores the old behaviour with no data change', async () => {

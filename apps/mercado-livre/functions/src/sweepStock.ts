@@ -4,6 +4,7 @@ import { logger } from 'firebase-functions/v2';
 import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoquePlan';
 import {
   type StockSweepMode,
+  isSlotDaReconciliacao,
   isSlotDoDaily,
   runStockSweep,
 } from '../../lib/marketplace/estoqueSweep';
@@ -19,12 +20,12 @@ import { getDb } from './lib/admin';
  *    conta, discovers the produto families whose estoques changed since the
  *    durable cursor (state doc `estoqueMercadoLivreSync/{integracaoId}`),
  *    applies the 30-day activity filter and enqueues one send task per ML API
- *    call onto the `sendMercadoLivreStock` queue. The ONE tick at the 02:00
- *    slot is skipped in code (`isSlotDoDaily` — a single cron line cannot
- *    exclude just one slot): that slot belongs to the daily pass below, while
- *    02:15/02:30/02:45 still run (owner call — stock changed at 02:05 must
- *    sync at 02:15, not 03:00; the cursor makes the one skipped slot
- *    self-healing regardless).
+ *    call onto the `sendMercadoLivreStock` queue. TWO slots are skipped in code
+ *    — 02:00 (`isSlotDoDaily`) and Sunday 03:00 (`isSlotDaReconciliacao`) —
+ *    because a single cron line cannot express "every quarter-hour except
+ *    these". Each belongs to the pass below that owns it; 02:15/02:30/02:45 and
+ *    03:15 onward still run (owner call — stock changed at 02:05 must sync at
+ *    02:15, not 03:00; the cursor makes a skipped slot self-healing anyway).
  *  - `sweepMercadoLivreStockDaily` — 02:00 America/Sao_Paulo, `'daily'` mode:
  *    the same discovery over a FLAT `dailyWindowHours()` (24h) lookback, with
  *    no activity filter and no pedidos probe — everything that MOVED in the
@@ -111,9 +112,20 @@ async function runAndLog(mode: StockSweepMode): Promise<void> {
 export const sweepMercadoLivreStock = onSchedule(
   sweepScheduleOptions('every 15 minutes'),
   async () => {
-    if (isSlotDoDaily(Date.now())) {
+    const agora = Date.now();
+    // Each non-incremental pass OWNS its slot: the incremental skips 02:00
+    // (daily) and Sunday 03:00 (reconciliation) so the two never contend for a
+    // conta's task cap or its state doc. A single cron line cannot express
+    // "every quarter-hour except these", so the carve-out lives in code.
+    if (isSlotDoDaily(agora)) {
       logger.info(
         '[mercado-livre] stock sweep (incremental) — 02:00 America/Sao_Paulo slot belongs to the daily sweep, skipping this tick',
+      );
+      return;
+    }
+    if (isSlotDaReconciliacao(agora)) {
+      logger.info(
+        '[mercado-livre] stock sweep (incremental) — Sunday 03:00 America/Sao_Paulo slot belongs to the weekly reconciliation, skipping this tick',
       );
       return;
     }
@@ -143,11 +155,13 @@ export const sweepMercadoLivreStockDaily = onSchedule(
 export const STOCK_RECONCILIACAO_FLAG_ENV = 'MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED';
 
 /**
- * The weekly force-all reconciliation (Sunday 03:00 America/Sao_Paulo — clear
- * of the 02:00 daily slot, so the two never contend for a conta's caps or its
- * state doc). This is the pass that actually reconciles: `changedSinceMs = -1`
- * admits every anchor, and it force-sends, so a quantity that drifted on ML's
- * side with no ERP movement behind it is finally corrected.
+ * The weekly force-all reconciliation (Sunday 03:00 America/Sao_Paulo). It OWNS
+ * that slot the same way the daily owns 02:00 — `sweepMercadoLivreStock` skips
+ * it via `isSlotDaReconciliacao`, so neither the daily nor the incremental ever
+ * contends for a conta's caps or its state doc. This is the pass that actually
+ * reconciles: `changedSinceMs = -1` admits every anchor, and it force-sends, so
+ * a quantity that drifted on ML's side with no ERP movement behind it is
+ * finally corrected.
  */
 export const sweepMercadoLivreStockReconciliacao = onSchedule(
   sweepScheduleOptions('0 3 * * 0'),
