@@ -1,6 +1,6 @@
 ---
 title: Coexisting with the Flutter app
-description: How Next.js and Flutter share the same Firestore during the migration.
+description: How Next.js and Flutter share the same Firestore documents during dual-run (and why today differs).
 ---
 
 Delfrance's production app is currently Flutter; this Next.js rewrite is replacing it incrementally. Wherever the two run against the same Firestore data they read and write the **same documents**, and this guide explains how that's safe.
