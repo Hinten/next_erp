@@ -67,8 +67,9 @@ are deliberately off-ramp in colour so they never blend into it.
 ## Router-less issues are intentional
 
 An issue with **no** router is human-first or blocked work — console/deploy
-tasks and decisions waiting on the owner. The four router filters therefore
-cover 162 of 172 open issues, and the remainder is explicitly the human queue.
+tasks and decisions waiting on the owner. The four router filters cover the
+overwhelming majority of open issues; the remainder is explicitly the human
+queue.
 
 There is no `needs-clarification` label. Un-routable issues are already marked
 by the pre-existing triage labels, and duplicating them would mean two labels
@@ -100,6 +101,45 @@ gh issue list --state open --label "needs-migration-window"
 
 So a handful of issues (today `#379`, `#557`) carry **no** `task:` label at all.
 That is by design — find them via the three labels above, not a `task:` filter.
+
+## Reality gate
+
+| Label             | Colour   | Use it for                                                          |
+| ----------------- | -------- | ------------------------------------------------------------------- |
+| `needs-live-test` | `ff8800` | Cannot be verified by CI — needs a human against the real provider.  |
+
+Like the timing gate, this describes *how it gets confirmed*, not what it is: a
+model can write the change, but only a run against the live provider API closes
+it. Pairs with a `task:` router; never replaces one. Never age-flag it.
+
+## Everything outside `task:`
+
+The families below are not routing signals. They are listed here because the
+weekly janitor routine treats this file as the ownership contract — see
+`.github/routines/weekly-issue-janitor.md`.
+
+| Family        | Labels                                                                                                    | Who writes them        |
+| ------------- | --------------------------------------------------------------------------------------------------------- | ---------------------- |
+| Type          | `bug` · `enhancement` · `tech-debt` · `documentation` · `question`                                          | triage **or** janitor  |
+| Area / domain | `area/web` · `firestore` · `schemas` · `marketplace` · `mercado-livre` · `tests` · `ci` · `pipelines` · `investigation` | triage **or** janitor  |
+| Provenance    | `audit`                                                                                                     | audit author; janitor may retire |
+| Dedup         | `duplicate` · `possible-duplicate`                                                                          | janitor                |
+| Onboarding    | `good first issue`                                                                                          | janitor                |
+| Disposition   | `wontfix` · `invalid`                                                                                       | Lucas only             |
+
+Two need a note:
+
+- **`mercado-livre`** (`ffe600`) is the per-channel area label for
+  `apps/mercado-livre` + `packages/integrations/mercado-livre`. It sits
+  **alongside** `marketplace`, not instead of it. Later channels get their own
+  label the same way.
+- **`audit`** (`5319e7`) records *where a finding came from* — the Mercado Livre
+  port audit of 2026-08 — not what kind of work it is. It is never applied to
+  new issues; it is removed once the finding ships or is rejected. Two `audit`
+  issues from the same report are deliberately split findings, not duplicates.
+
+`good-first-issue` (no description, no colour) is a stray duplicate of
+`good first issue`. Normalize onto the described one and let the stray die.
 
 ## Querying
 
