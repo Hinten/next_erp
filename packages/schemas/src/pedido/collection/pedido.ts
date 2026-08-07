@@ -123,7 +123,11 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  *
  * A legacy-era pedido with `dataIndisponivelEstoque`/`dataRemocaoEstoque` set but
  * NO snapshot is Flutter-owned: the sync skips it (quantities unknown) instead of
- * guessing.
+ * guessing. The ONE exception is a Mercado Livre pack sibling appended to such a
+ * pedido (#795): the trigger's `before` revision holds exactly the items Flutter
+ * stock-moved, so the snapshot is REBUILT from that anchor rather than guessed —
+ * without it the appended units sell with no movement at all (overselling). See
+ * `detectarCrescimentoLegado` in `apps/functions`.
  */
 export const estoqueAplicadoSchema = z.object({
   /** Depósito that received the applied movements (id, not a path). */

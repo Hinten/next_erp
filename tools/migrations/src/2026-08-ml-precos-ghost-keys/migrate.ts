@@ -50,18 +50,20 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     for (const doc of docs) {
       docsScanned += 1;
       const plan = planGhostKeys((doc.data() as Record<string, unknown>).precos);
-
-      for (const s of plan.skips) ctx.sink.skip(doc.ref.path, s.key, null, s.reason);
       if (plan.deletes.length === 0) continue;
 
-      const patch: Record<string, unknown> = {};
+      // FieldPath varargs, NOT an object of dotted string keys: every key here
+      // contains a `/` by construction, which the SDK rejects in the string
+      // form (see `ghostFieldPath`). One `update` per doc regardless of count.
+      const fields: unknown[] = [];
       for (const key of plan.deletes) {
         // `to: null` in the log is the sentinel for "removed" — the sink writes
         // JSON, and a FieldValue sentinel does not serialize meaningfully.
-        ctx.sink.change(doc.ref.path, ghostFieldPath(key), 'ghost key', null);
-        patch[ghostFieldPath(key)] = FieldValue.delete();
+        ctx.sink.change(doc.ref.path, `precos.${key}`, 'ghost key', null);
+        fields.push(ghostFieldPath(key), FieldValue.delete());
       }
-      await ctx.writer.update(doc.ref, patch);
+      const [first, firstValue, ...rest] = fields;
+      await ctx.writer.updateFields(doc.ref, first as FieldPath, firstValue, ...rest);
       docsChanged += 1;
     }
   }

@@ -41,6 +41,16 @@ describe('danfe/format', () => {
     expect(formatTelefone('11933224455')).toBe('(11) 93322-4455');
   });
 
+  it('NEVER strips a country code from a phone — a DANFE shows the signed value', () => {
+    // The ERP's own display formatter (`@delfrance/core/phone`'s
+    // `formatTelefone`) DOES strip `55`, because that is how a cliente's
+    // telefone is stored. `fone` here comes from a signed XML in SEFAZ's shape
+    // (6-14 digits, no country code), so it must pass through untouched — and
+    // DDD 55 (Santa Maria/RS) means a 12-digit `55…` is not impossible.
+    expect(formatTelefone('5511933224455')).toBe('5511933224455');
+    expect(formatTelefone('551133224455')).toBe('551133224455');
+  });
+
   it('formats money pt-BR with two decimals and no symbol', () => {
     expect(formatMoney('1234.56')).toBe('1.234,56');
     expect(formatMoney('0')).toBe('0,00');

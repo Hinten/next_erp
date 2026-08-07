@@ -17,24 +17,16 @@
  * only be a path. No allow-list of collection names needed, and a legacy key
  * written with some other prefix is caught just the same.
  *
- * ---- Keys containing a `.` are SKIPPED, never deleted. The migration addresses
- * entries with a dotted update path (`precos.<key>`), which the SDK splits on
- * `.` before escaping each segment — so a key with a dot in it would silently
- * target the wrong (nested) field. Document ids may legally contain dots, so
- * this is reachable; it is left for manual handling and logged rather than
- * guessed at.
+ * ---- Addressing them requires a `FieldPath`, never a dotted string. See
+ * {@link ghostFieldPath}.
  */
+import { FieldPath } from 'firebase-admin/firestore';
 
 /** One produto's cleanup plan — `deletes` are `precos` map keys, not paths. */
 export interface GhostKeyPlan {
-  /** Ghost keys safe to remove, in stored order. */
+  /** Ghost keys to remove, in stored order. */
   deletes: string[];
-  /** Ghost-shaped keys this migration refuses to address (see module doc). */
-  skips: Array<{ key: string; reason: string }>;
 }
-
-export const SKIP_DOTTED_KEY =
-  'ghost key contains a "." — a dotted update path would target the wrong field; handle manually';
 
 /**
  * Classify one produto's `precos` map. Tolerates every legacy shape: a missing,
@@ -42,27 +34,31 @@ export const SKIP_DOTTED_KEY =
  * runs over years of Flutter-written documents).
  */
 export function planGhostKeys(precos: unknown): GhostKeyPlan {
-  const plan: GhostKeyPlan = { deletes: [], skips: [] };
+  const plan: GhostKeyPlan = { deletes: [] };
   if (precos == null || typeof precos !== 'object' || Array.isArray(precos)) return plan;
   for (const key of Object.keys(precos as Record<string, unknown>)) {
-    if (!key.includes('/')) continue; // a bare lista id — the real entry
-    if (key.includes('.')) {
-      plan.skips.push({ key, reason: SKIP_DOTTED_KEY });
-      continue;
-    }
-    plan.deletes.push(key);
+    // A bare lista id never contains `/`; anything that does is a legacy path.
+    if (key.includes('/')) plan.deletes.push(key);
   }
   return plan;
 }
 
 /**
- * The dotted field path for one ghost key. Kept as a named function because the
- * escaping is load-bearing and easy to "simplify" wrongly: the SDK splits this
- * string on `.` and then backtick-quotes any segment that is not
- * `^[_a-zA-Z][_a-zA-Z0-9]*$` (see `@google-cloud/firestore`'s
- * `FieldPath.formattedName`), so the `/` is escaped for us — but only because
- * `planGhostKeys` already excluded keys carrying a `.`.
+ * The field path for one ghost key, as a `FieldPath` — **not** a dotted string,
+ * and that is the whole point.
+ *
+ * The Admin SDK validates every string key of the `update(data)` object form
+ * against `/^[^*~/[\]]+$/` and throws on a match ("Paths can't be empty and must
+ * not contain \"*~/[]\""). Since EVERY key this migration targets contains `/`
+ * by construction, the dotted-string form cannot express a single one of them —
+ * it is rejected before the SDK ever splits it. A `FieldPath` carries its
+ * segments pre-separated, bypassing that validation, and the serializer
+ * backtick-quotes each one: this returns the path rendered as
+ * ``precos.`listaDePrecos/L1` ``.
+ *
+ * The same property is why keys containing `.` need no special handling — the
+ * segments are never split, so a dot inside one is just a character.
  */
-export function ghostFieldPath(key: string): string {
-  return `precos.${key}`;
+export function ghostFieldPath(key: string): FieldPath {
+  return new FieldPath('precos', key);
 }

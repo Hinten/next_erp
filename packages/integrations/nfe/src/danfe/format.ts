@@ -65,13 +65,19 @@ export function formatCep(value: string): string {
   return value;
 }
 
-/** Format a Brazilian phone (`(00) 0000-0000` / `(00) 00000-0000`). */
-export function formatTelefone(value: string): string {
-  const d = onlyDigits(value);
-  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
-  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
-  return value;
-}
+/**
+ * Format a Brazilian phone (`(00) 0000-0000` / `(00) 00000-0000`).
+ *
+ * Deliberately the LOCAL formatter, which masks without ever stripping a
+ * country code — NOT `@delfrance/core/phone`'s `formatTelefone`, which strips
+ * `55` first because that is how this ERP stores a telefone. What the DANFE
+ * renders is `fone` parsed back out of a SIGNED XML, in SEFAZ's shape (6–14
+ * digits, no country code). A DANFE is a legally reproduced fiscal document:
+ * it must show the value that is in the signed XML, so a future change to the
+ * ERP's display contract must not reach it. DDD 55 (Santa Maria/RS) also
+ * exists, so a 12-digit `55…` fone is not structurally impossible here.
+ */
+export { formatTelefoneLocal as formatTelefone } from '@delfrance/core/phone';
 
 /**
  * Pad the número to 9 digits and group it `000.000.000`. Mirrors `formatarNNF`.

@@ -24,12 +24,31 @@ export function isNotFound(err: unknown): boolean {
 }
 
 /**
- * gRPC FAILED_PRECONDITION (code 9) — from `docRef.update(patch, {
- * lastUpdateTime })` when the document changed after the read the patch was
- * derived from (ADR 0011 tier 1). This is the SUCCESS signal of that guard, not
- * an infrastructure failure: it means a concurrent writer won and our patch
- * would have silently reverted them. The call site's job is to re-read,
- * re-derive and re-apply — never to retry the same patch.
+ * gRPC FAILED_PRECONDITION (code 9) — from `docRef.update(patch, { lastUpdateTime })`
+ * when the document changed after the read the patch was derived from.
+ *
+ * Firestore imposes no write ordering, so a read-modify-write whose patch
+ * cannot be expressed as a `FieldValue` transform — a filtered array, a derived
+ * total — can silently overwrite a concurrent writer. Passing the read's
+ * `updateTime` as a precondition turns that silent loss into this error:
+ *
+ *     const snap = await ref.get();
+ *     const patch = derive(snap.data());          // cannot be an increment/arrayUnion
+ *     try {
+ *       await ref.update(patch, { lastUpdateTime: snap.updateTime });
+ *     } catch (err) {
+ *       if (!isFailedPrecondition(err)) throw err;
+ *       // re-READ and re-DERIVE, bounded; never retry the same `patch`
+ *     }
+ *
+ * The retry must recompute the patch from a fresh read. Re-applying the patch
+ * built from the snapshot that just lost reintroduces exactly the overwrite the
+ * precondition prevented. Bound the attempts: a persistent loser is a real
+ * contention problem and should surface rather than spin.
+ *
+ * Admin SDK only — the client SDK has no `lastUpdateTime` precondition. See
+ * ADR 0011 (`apps/docs/src/content/docs/adr/0011-write-path-concurrency.md`)
+ * for when this is the right rung and when a transform or a transaction is.
  */
 export function isFailedPrecondition(err: unknown): boolean {
   return err instanceof Error && (err as { code?: unknown }).code === 9;

@@ -338,6 +338,128 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect((await lerEstoque(db, produtoId, depositoId)).exists).toBe(false);
   });
 
+  it('moves ONLY the appended items when a pack sibling lands on a Flutter-era pedido (#795)', async () => {
+    const db = getDb();
+    const s = randomUUID().replace(/-/g, '').slice(0, 12);
+    const pA = `packa${s}`; // the produto the Flutter app already moved
+    const pB = `packb${s}`; // the sibling order's produto — the one that oversold
+
+    // Seed at a no-effect estado so the live trigger applies nothing and the
+    // pedido stays snapshot-less; then hand-build exactly what Flutter leaves
+    // behind — stock removed, marker stamped, NO `estoqueAplicado`.
+    const { depositoId, pedidoId } = await seed(db, {
+      estado: 'iniciado',
+      produtos: {
+        [pA]: { nome: 'Pack A', ehKit: false },
+        [pB]: { nome: 'Pack B', ehKit: false },
+      },
+      itens: { [pA]: [{ produtoUid: pA, quantidade: 4 }] },
+    });
+    const itensFlutter = { [pA]: [{ produtoUid: pA, quantidade: 4 }] };
+    await estoqueRef(db, pA, depositoId).set({
+      parentId: pA,
+      depositoOuterRef: `documents/depositos/${depositoId}`,
+      localizacao: null,
+      quantidade: -4,
+      quantidadeReservada: 0,
+      dataCriacao: 1,
+      ultimaModificacao: 1,
+    });
+    await mudarPedido(db, pedidoId, {
+      estado: 'pago',
+      dataRemocaoEstoque: 1_700_000_000_000_000,
+    });
+    // Precondition: without the anchor this pedido is still skipped outright.
+    expect(await sincronizarEstoquePedido(db, pedidoId)).toEqual({
+      status: 'ignorado',
+      motivo: 'marcadores legados sem snapshot',
+    });
+
+    // The pack sibling arrives through the new app — `orderPedidoTx` appends B's
+    // items to the pedido that already exists.
+    await mudarPedido(db, pedidoId, {
+      itens: { ...itensFlutter, [pB]: [{ produtoUid: pB, quantidade: 3 }] },
+    });
+    const r = await sincronizarEstoquePedido(db, pedidoId, {
+      itensLegadoAnteriores: itensFlutter,
+    });
+    expect(['aplicado', 'nada-a-fazer']).toContain(r.status);
+
+    // The whole point: B moves by exactly its own quantity, A is NOT moved twice.
+    expect((await lerEstoque(db, pB, depositoId)).quantidade).toBe(-3);
+    expect(await lerEstoque(db, pA, depositoId)).toMatchObject({
+      quantidade: -4,
+      reservada: 0,
+    });
+    expect(await historicos(db, pA, depositoId)).toHaveLength(0);
+    expect((await historicos(db, pB, depositoId)).map((h) => h.tipo)).toEqual(['saida']);
+
+    // The pedido now carries a COMPLETE snapshot (both produtos), so its future
+    // cancellation restocks everything — it has left the legacy shape for good.
+    const pedido = (await db.collection('pedidos').doc(pedidoId).get()).data()!;
+    expect(pedido.estoqueAplicado).toMatchObject({
+      depositoId,
+      ehSaida: true,
+      reservado: null,
+      removido: { [pA]: 4, [pB]: 3 },
+    });
+
+    // Convergent: a re-run moves nothing further, with or without the anchor.
+    expect(await sincronizarEstoquePedido(db, pedidoId)).toEqual({ status: 'nada-a-fazer' });
+    expect(
+      await sincronizarEstoquePedido(db, pedidoId, { itensLegadoAnteriores: itensFlutter }),
+    ).toEqual({ status: 'nada-a-fazer' });
+    expect((await lerEstoque(db, pB, depositoId)).quantidade).toBe(-3);
+
+    // Every reconstruction is reviewable (same mechanism as the drift incidente).
+    const incidentes = (
+      await db.collection('pedidos').doc(pedidoId).collection('incidentes').get()
+    ).docs.map((d) => d.data());
+    expect(
+      incidentes.filter((i) => i.subtipo === 'estoque-reconstrucao-legado').length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('holds the reconstructed movement instead of restocking it on a hold-only estado (#795)', async () => {
+    const db = getDb();
+    const s = randomUUID().replace(/-/g, '').slice(0, 12);
+    const pA = `holda${s}`;
+    const pB = `holdb${s}`;
+    const { depositoId, pedidoId } = await seed(db, {
+      estado: 'iniciado',
+      produtos: {
+        [pA]: { nome: 'Hold A', ehKit: false },
+        [pB]: { nome: 'Hold B', ehKit: false },
+      },
+      itens: { [pA]: [{ produtoUid: pA, quantidade: 4 }] },
+    });
+    const itensFlutter = { [pA]: [{ produtoUid: pA, quantidade: 4 }] };
+    await estoqueRef(db, pA, depositoId).set({
+      parentId: pA,
+      depositoOuterRef: `documents/depositos/${depositoId}`,
+      localizacao: null,
+      quantidade: -4,
+      quantidadeReservada: 0,
+      dataCriacao: 1,
+      ultimaModificacao: 1,
+    });
+    // `estornadoParcialmente` HOLDS an applied movement but never starts one, so
+    // the reconstruction must feed the removal marker into the hysteresis — read
+    // as "nothing applied", a partially-refunded delivered order would restock.
+    await mudarPedido(db, pedidoId, {
+      estado: 'estornadoParcialmente',
+      dataRemocaoEstoque: 1_700_000_000_000_000,
+      itens: { ...itensFlutter, [pB]: [{ produtoUid: pB, quantidade: 3 }] },
+    });
+
+    const r = await sincronizarEstoquePedido(db, pedidoId, {
+      itensLegadoAnteriores: itensFlutter,
+    });
+    expect(['aplicado', 'nada-a-fazer']).toContain(r.status);
+    expect(await lerEstoque(db, pA, depositoId)).toMatchObject({ quantidade: -4, reservada: 0 });
+    expect((await lerEstoque(db, pB, depositoId)).quantidade).toBe(-3);
+  });
+
   it('reverts a cancelled pedido even when its integração was deleted meanwhile', async () => {
     const db = getDb();
     const { produtoId, depositoId, pedidoId, integracaoId } = await seed(db, { estado: 'pago' });
