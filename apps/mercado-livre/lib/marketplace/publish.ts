@@ -329,17 +329,40 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     ultimaModificacao: now,
   });
 
-  // ---- Dual-run denorm stamps (DEPRECATED arrays — legacy consumers only) --
+  // ---- Dual-run denorm stamps (DEPRECATED arrays) -------------------------
   // The deployed Flutter backend resolves an incoming ML order item via
   // `marketplace array-contains {integracaoUid, externalId}` (EXACT map match
   // — hence no `relevantData`, the shape its own webhook repair writes) and
-  // gates its stock sender on `integracoesComProduto`. The new app never READS
-  // these fields (linkage is Firestore Pipelines); the stamps exist only so
-  // listings published here stay visible to the legacy flows during
-  // coexistence. They run once the ML item write has SUCCEEDED (the error
-  // path above never stamps) — a later failure (e.g. the description step)
-  // leaves them in place, same as the old app, which committed this batch
-  // before sending the description. Tracked removal: #431.
+  // gates its stock sender on `integracoesComProduto`. It is a LIVE concurrent
+  // reader AND writer of these same fields, so the stamps must keep running
+  // for as long as it is deployed.
+  //
+  // ⚠️ The claim that used to sit here — "the new app never READS these
+  // fields" — was FALSE and would have made #431 a silent stock + price
+  // outage: the sweeps would select zero produtos and log `SEM_LINK` skips
+  // rather than erroring. `integracoesComProduto` is read by
+  // `estoquePlan.fetchStockFamilies` (the stock sweep's anchor predicate) and
+  // by `precoPlan.fetchPrecoPage` (the price job's anchor query), and a
+  // `produtos` composite index exists to serve both.
+  //
+  // THREE independent locks keep these arrays alive; #431 tracks all of them:
+  //  1. ARCHITECTURE — the stock sweep needs an index-SEEKABLE per-conta term
+  //     on `produtos`. A correlated subquery over the link subcollection can
+  //     only ever be a post-filter, and on Enterprise a post-filter does not
+  //     reduce data scanned. Whether the post-filter is nonetheless cheap
+  //     enough is measurable (`apps/mercado-livre/scripts/check-stock-indexes.mjs`),
+  //     not obvious.
+  //  2. COUPLING — `integracoesComProduto` is never removed on its own: both
+  //     removal paths DERIVE it from `marketplace`
+  //     (`importMigration.applyMarketplaceDeletion`,
+  //     `itemsStatusSync.removeMarketplaceEntry`). Dropping `marketplace`
+  //     alone would make the array append-only.
+  //  3. DUAL-RUN — the Flutter backend above. Lifts at the decommission.
+  //
+  // The stamps run once the ML item write has SUCCEEDED (the error path above
+  // never stamps) — a later failure (e.g. the description step) leaves them in
+  // place, same as the old app, which committed this batch before sending the
+  // description. Tracked removal: #431.
   await produtoCollection.docRef(db, {}, produtoId).update({
     marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: item.id }),
     marketplaceIds: FieldValue.arrayUnion(item.id),
@@ -532,7 +555,12 @@ async function loadTabelaBinding(
  * the fresh `{integracaoUid, externalParentId, externalId}` entry (no
  * `relevantData` — the legacy order-import probe matches the map EXACTLY and
  * carries none). arrayUnion can't express the cleanup, so this mirrors the old
- * `transform(newValues:)` full-field write. Tracked removal: #431.
+ * `transform(newValues:)` full-field write.
+ *
+ * Removal is gated on the Flutter decommission (#431), NOT on the new app's own
+ * readers: the new app both READS these arrays (stock + price discovery) and
+ * MAINTAINS them (`itemsStatusSync` / `importMigration`) today — see the three
+ * locks spelled out at the parent stamp site in `publishProduto`.
  */
 async function stampChildMarketplace(
   db: Firestore,
