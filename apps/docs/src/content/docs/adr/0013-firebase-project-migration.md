@@ -23,7 +23,7 @@ So the shape is fixed: a **new project**, Firestore **Enterprise**, dedicated
 billing, and a one-time cutover. Staging is not a source and not a destination —
 it is unchanged and stays the CI/e2e target.
 
-| | Firestore | Role |
+| Project | Firestore | Role |
 |---|---|---|
 | `legacy-prod` | Standard, Flutter live writer | source; frozen, then retired |
 | `staging` | Enterprise | untouched — CI/e2e target |
