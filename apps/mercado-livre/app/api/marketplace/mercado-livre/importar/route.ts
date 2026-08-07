@@ -61,7 +61,6 @@ export async function POST(req: Request): Promise<NextResponse> {
         integracaoId: body.integracaoId,
         sellerUserId: asNumberOrNull(ctx.conta.user_id),
         tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
-        tabelaPromocionalOuterRef: asStringOrNull(ctx.conta.tabelaPromocionalOuterRef),
         depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
         options: sanitizeOptions(body.options),
       },

@@ -9,8 +9,14 @@ function digitsOnly(value: string): string {
  * uppercase. Unlike `digitsOnly` this keeps letters — required for the
  * alphanumeric CNPJ (IN RFB 2.229/2024: the 12 root+order positions may be
  * letters or digits; the 2 check digits stay numeric).
+ *
+ * This is the canonical stored form: `clienteSchema.cpf_cnpj` is
+ * `.regex(/^[0-9A-Z]*$/)`, so a punctuated value does not even round-trip the
+ * schema. It is also the ONLY form a `cpf_cnpj` equality lookup may query —
+ * comparing a raw value against a stored one is how #786's spurious
+ * self-overwrite happened.
  */
-function cleanDocumentChars(value: string): string {
+export function normalizeDocumento(value: string): string {
   return value.replace(/[.\-/\s]/g, '').toUpperCase();
 }
 
@@ -46,7 +52,7 @@ export function validateCPF(input: string): boolean {
  * value for 0-9, so purely numeric CNPJs validate exactly as before).
  */
 export function validateCNPJ(input: string): boolean {
-  const cnpj = cleanDocumentChars(input);
+  const cnpj = normalizeDocumento(input);
   if (!/^[A-Z0-9]{12}\d{2}$/.test(cnpj)) return false;
   if (/^(\d)\1{13}$/.test(cnpj)) return false;
 
@@ -73,7 +79,7 @@ export function validateCNPJ(input: string): boolean {
  * 14 chars → CNPJ (numeric or alphanumeric), anything else → invalid.
  */
 export function validateCpfCnpj(input: string): boolean {
-  const cleaned = cleanDocumentChars(input);
+  const cleaned = normalizeDocumento(input);
   if (cleaned.length === 11) return validateCPF(cleaned);
   if (cleaned.length === 14) return validateCNPJ(cleaned);
   return false;
@@ -86,7 +92,7 @@ export function formatCPF(input: string): string {
 }
 
 export function formatCNPJ(input: string): string {
-  const v = cleanDocumentChars(input).slice(0, 14);
+  const v = normalizeDocumento(input).slice(0, 14);
   if (v.length !== 14) return v;
   return `${v.slice(0, 2)}.${v.slice(2, 5)}.${v.slice(5, 8)}/${v.slice(8, 12)}-${v.slice(12)}`;
 }

@@ -16,10 +16,21 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   status (`/users/me` identity, or `connected: false` when the credential is dead).
 - `app/api/oauth/mercado-livre/callback` — **#291**: public browser redirect target;
   the signed `state` is the only trust anchor → verify → exchange code → persist.
-- `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (unauthenticated
-  `topic`+`resource` callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues
-  onto the `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
+- `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (`topic`+`resource`
+  callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues onto the
+  `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
   write on the happy path — see `lib/marketplace/mlTasks.ts` + `functions/DEPLOY.md`).
+- `lib/marketplace/webhookOrigin.ts` — **#811**: the receiver's only inbound origin check.
+  There is no signature to verify (confirmed against the 03/08/2026 Notificações reference:
+  no `x-signature`, no manifest, no shared secret — the `ts=…,v1=…` scheme people find is
+  **Mercado Pago**), so this is an `application_id` comparison against `MERCADO_LIVRE_CLIENT_ID`
+  (foreign ⇒ 403 before any enqueue or write) plus `logWebhookHeaders`, a self-silencing
+  header-name inventory that settles the signature question empirically during the migration
+  window. It fails OPEN when unconfigured or when `application_id` is absent — a misconfigured
+  backend must not be able to stall the stream, since ML disables a topic after ~1h of non-200.
+  ML's published notification source IPs were considered and **declined** (an undocumented
+  rotation would reject every genuine notification). Follow-up if the logs show no signature
+  header: a secret path segment on the registered callback URL.
 - `lib/marketplace/notificacao.ts` — this channel's webhook adapter: `parseNotificationBody`,
   the dispatch-by-topic `processNotificationPayload`, and a `defineNotificationPipeline({...})`
   binding. The resilience behaviour (retry disposition, failures-only persistence, the
@@ -52,7 +63,10 @@ See the repo-root `.env.example` (Mercado Livre section; the OAuth client SECRET
 the state HMAC key are in `.env.secrets.example` — one root template set is the
 repo convention, #730) + `apphosting.yaml`. App-wide ML app credentials
 (`MERCADO_LIVRE_CLIENT_ID/SECRET`, `..._STATE_SECRET`) live in env / Secret
-Manager — one registered ML app serves every connected account; the per-account
+Manager — one registered ML app serves every connected account (so
+`MERCADO_LIVRE_CLIENT_ID` is also the `application_id` every notification carries,
+which is what the webhook origin check compares against). The optional
+`MERCADO_LIVRE_WEBHOOK_LOG_HEADERS` is a plain env var, not a secret. The per-account
 OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
 (shared with the Flutter app during the dual-run migration; the move to the
 encrypted `credenciais` store is a tracked post-migration follow-up).

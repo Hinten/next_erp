@@ -6,7 +6,7 @@ import { Alert, Loader, Modal, Stack, Text, TextInput, UnstyledButton } from '@m
 import { FirebaseError } from 'firebase/app';
 import { getDocs } from 'firebase/firestore';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
-import { telefoneQueryShapes } from '@delfrance/core/phone';
+import { formatTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
@@ -136,7 +136,7 @@ export function ClientePickerModal({
                 {hit.nome}
               </Text>
               <Text size="xs" c="dimmed">
-                {hit.telefone ?? 'sem telefone'}
+                {hit.telefone ? formatTelefone(hit.telefone) : 'sem telefone'}
                 {!hit.usarioRef && ' · sem usuário vinculado'}
               </Text>
             </UnstyledButton>

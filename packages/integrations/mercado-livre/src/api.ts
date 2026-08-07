@@ -13,6 +13,7 @@ import {
   type MlCatalogDomain,
   type MlCategory,
   type MlCategoryAttribute,
+  type MlCategoryListingType,
   type MlClaim,
   type MlClaimMessage,
   type MlClaimReason,
@@ -21,6 +22,7 @@ import {
   type MlItem,
   type MlItemDescription,
   type MlItemPrices,
+  type MlListingPrices,
   type MlMigrationLiveListing,
   type MlOrder,
   type MlOrderSearch,
@@ -33,6 +35,7 @@ import {
   type MlShipmentInvoice,
   type MlShipmentPayment,
   type MlShipmentSla,
+  type MlSiteCategory,
   type MlSizeChartApi,
   type MlTechnicalSpecs,
   type MlUser,
@@ -41,11 +44,13 @@ import {
   activeChartDomainsSchema,
   catalogDomainSchema,
   categoryAttributesSchema,
+  categoryListingTypesSchema,
   categorySchema,
   domainDiscoverySchema,
   itemDescriptionSchema,
   itemPricesSchema,
   itemSchema,
+  listingPricesSchema,
   migrationLiveListingSchema,
   mlBillingInfoSchema,
   mlClaimMessagesSchema,
@@ -63,6 +68,7 @@ import {
   packSchema,
   pictureUploadSchema,
   sellerItemsScanSchema,
+  siteCategoriesSchema,
   sizeChartApiSchema,
   technicalSpecsSchema,
   tokenErrorSchema,
@@ -114,6 +120,17 @@ export interface MlClaimAttachmentDownload {
   readonly contentType: string | null;
 }
 
+/**
+ * A `GET /orders/{id}` answer plus whether ML returned a COMPLETE
+ * representation (HTTP 200) or a partial one (HTTP 206 Partial Content).
+ * `complete: false` also covers any other 2xx we can't positively call
+ * complete — the flag is only ever trusted in the affirmative.
+ */
+export interface MlOrderResponse {
+  order: MlOrder;
+  complete: boolean;
+}
+
 export interface MercadoLivreApi {
   getMe(): Promise<MlUser>;
   getUser(id: number | string): Promise<MlUser>;
@@ -121,6 +138,15 @@ export interface MercadoLivreApi {
   /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
   getPrices(itemId: string): Promise<MlItemPrices>;
   getOrder(id: number | string): Promise<MlOrder>;
+  /**
+   * `GET /orders/{id}` with the response's completeness exposed. ML answers
+   * **`206 Partial Content`** for an order it can only partly materialize, and a
+   * partial body simply OMITS fields rather than nulling them. Only a caller
+   * that must tell "ML said this field is null" from "ML didn't say" needs this
+   * — today that is the `orderML` mirror refresh (#793); everything else should
+   * use the plain `getOrder`.
+   */
+  getOrderResponse(id: number | string): Promise<MlOrderResponse>;
   getPack(id: number | string): Promise<MlPack>;
   searchOrders(params: {
     seller: number | string;
@@ -215,6 +241,23 @@ export interface MercadoLivreApi {
   suggestCategories(query: string, limit?: number): Promise<MlDomainDiscovery>;
   getCategory(id: string): Promise<MlCategory>;
   getCategoryAttributes(id: string): Promise<MlCategoryAttribute[]>;
+  /** `GET /sites/MLB/categories` — the roots of the category tree. */
+  listSiteCategories(): Promise<MlSiteCategory[]>;
+  /**
+   * `GET /categories/{id}/listing_types` — the types available for a LEAF
+   * category. ML serves nothing useful for a non-leaf, so callers gate on
+   * `children_categories` being empty first.
+   */
+  getCategoryListingTypes(categoryId: string): Promise<MlCategoryListingType[]>;
+  /**
+   * `GET /sites/MLB/listing_prices` — fee preview for a price + listing type,
+   * the source of the link doc's `comissao`.
+   */
+  getListingPrices(input: {
+    price: number;
+    listingTypeId: string;
+    categoryId?: string | null;
+  }): Promise<MlListingPrices>;
   /** `POST /pictures/items/upload` (multipart) — returns the ML picture id. */
   uploadPicture(file: PictureFile): Promise<MlPictureUpload>;
 
@@ -324,12 +367,12 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     }
   }
 
-  async function request<T>(
+  async function requestWithStatus<T>(
     method: 'GET' | 'POST' | 'PUT',
     path: string,
     schema: z.ZodType<T>,
     opts: RequestOpts = {},
-  ): Promise<T> {
+  ): Promise<{ data: T; status: number }> {
     const url = buildUrl(path, opts.query);
     // Fetch the token once; it stays valid across the (few, quick) retries.
     const token = await config.getAccessToken();
@@ -351,8 +394,21 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     );
 
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
-    if (res.ok) return parseOk(res, schema);
+    if (res.ok) return { data: await parseOk(res, schema), status: res.status };
     throw await toHttpError(res);
+  }
+
+  /** `requestWithStatus` for the (overwhelming) majority of callers, which only
+   * ever need the body. Reach for `requestWithStatus` when 200-vs-206 changes
+   * what the caller does — today only the order mirror, see `getOrderResponse`. */
+  async function request<T>(
+    method: 'GET' | 'POST' | 'PUT',
+    path: string,
+    schema: z.ZodType<T>,
+    opts: RequestOpts = {},
+  ): Promise<T> {
+    const { data } = await requestWithStatus(method, path, schema, opts);
+    return data;
   }
 
   /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
@@ -501,6 +557,10 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
+    getOrderResponse: async (id) => {
+      const { data, status } = await requestWithStatus('GET', `/orders/${id}`, orderSchema);
+      return { order: data, complete: status === 200 };
+    },
     getPack: (id) => request('GET', `/packs/${id}`, packSchema),
     searchOrders: (params) =>
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
@@ -560,6 +620,17 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCategory: (id) => request('GET', `/categories/${id}`, categorySchema),
     getCategoryAttributes: (id) =>
       request('GET', `/categories/${id}/attributes`, categoryAttributesSchema),
+    listSiteCategories: () => request('GET', '/sites/MLB/categories', siteCategoriesSchema),
+    getCategoryListingTypes: (categoryId) =>
+      request('GET', `/categories/${categoryId}/listing_types`, categoryListingTypesSchema),
+    getListingPrices: (input) =>
+      request('GET', '/sites/MLB/listing_prices', listingPricesSchema, {
+        query: {
+          price: input.price,
+          listing_type_id: input.listingTypeId,
+          ...(input.categoryId != null ? { category_id: input.categoryId } : {}),
+        },
+      }),
     uploadPicture,
 
     getDomainTechnicalSpecs: (domainId) =>

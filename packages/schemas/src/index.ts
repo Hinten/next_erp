@@ -71,6 +71,30 @@ export {
   type TipoCliente,
 } from './cliente';
 
+// The shared cliente-resolution DECISION (#786): telefone/e-mail are signals,
+// cpf_cnpj/idEstrangeiro are identity. Consumed by the web dedup screen and by
+// every unattended server importer, so the two can never drift apart again.
+// `normalizeDocumento` rides along for the same reason `valuesEqual` does above.
+export {
+  CLIENTE_MATCH_KEY,
+  CLIENTE_STRONG_KEYS,
+  CLIENTE_WEAK_KEYS,
+  emailLookupShapes,
+  idCompatible,
+  identityValue,
+  isSameCliente,
+  isSameEmail,
+  isSameTelefone,
+  normalizeDocumento,
+  normalizeNome,
+  sanitizeTelefone,
+  shouldUpdateName,
+  telefoneLookupShapes,
+  type ClienteIdentityKeys,
+  type ClienteMatchKey,
+  type ClienteResolveFields,
+} from './clienteIdentity';
+
 export {
   endereco,
   enderecoSchema,
