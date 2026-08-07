@@ -261,8 +261,8 @@ describe('processStockSendTask — payload parse', () => {
 
 describe('processStockSendTask — stock sync flag gate', () => {
   it('MERCADO_LIVRE_STOCK_SYNC_ENABLED=0 → dropped, no queue drain reads or ML calls', async () => {
-    // Disable the stock sync flag for this test to verify the check works.
-    delete process.env[STOCK_SYNC_FLAG_ENV];
+    // Disable the stock sync flag for this test to verify the check works (set to '0').
+    process.env[STOCK_SYNC_FLAG_ENV] = '0';
     const h = makeHarness();
 
     const res = await run(h);
@@ -275,7 +275,7 @@ describe('processStockSendTask — stock sync flag gate', () => {
     expect(h.updateItem).not.toHaveBeenCalled();
     expect(vi.mocked(console.info)).toHaveBeenCalledWith(expect.stringContaining('stock-send'));
 
-    // afterEach will restore the flag to '1' for other tests
+    // afterEach will delete the flag; beforeEach of the next test will set it back to '1'
   });
 });
 

@@ -193,8 +193,10 @@ export async function processStockSendTask(
   }
 
   // (0.5) Stock sync flag gate: if disabled, drop the task immediately (next
-  // sweep will re-cover the produto). This makes MERCADO_LIVRE_STOCK_SYNC_ENABLED=0
-  // behave as an emergency stop, draining the queue without further ML calls.
+  // sweep will re-cover the produto). The flag is enabled only when exactly '1';
+  // any other value (unset, '0', 'true', etc.) is treated as disabled. This makes
+  // setting MERCADO_LIVRE_STOCK_SYNC_ENABLED to any non-'1' value act as an emergency stop,
+  // draining the queue without further ML calls.
   if (!isStockSyncEnabled()) {
     console.info(
       `[mercado-livre] stock-send (${payload.itemId}) desabilitado (${STOCK_SYNC_FLAG_ENV} != '1') — task descartada`,
