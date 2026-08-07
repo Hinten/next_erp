@@ -36,7 +36,7 @@ import {
 } from '@delfrance/schemas';
 import { saveRecord } from '@delfrance/ui';
 import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
-import { normalizeTelefone } from '@delfrance/core/phone';
+import { formatTelefone, normalizeTelefone } from '@delfrance/core/phone';
 import { CpfCnpjTextInput } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
 import { EnderecoFormModal } from '@/components/pickers/EnderecoFormModal';
@@ -108,8 +108,22 @@ function candidateDoc(c: DedupCandidate): string | null {
   return c.idEstrangeiro;
 }
 
+/**
+ * Name for the telefone/e-mail warning line, flagging a candidate whose
+ * document contradicts what was typed — same number, almost certainly a
+ * different person. Still only a warning: the operator decides.
+ */
+function candidateLabel(c: DedupCandidate): string {
+  const name = c.nome ?? c.id;
+  return c.identityConflict ? `${name} (documento diferente)` : name;
+}
+
 function CandidateRow({ candidate, onUse }: { candidate: DedupCandidate; onUse: () => void }) {
-  const detail = [candidateDoc(candidate), candidate.telefone, candidate.email]
+  const detail = [
+    candidateDoc(candidate),
+    candidate.telefone && formatTelefone(candidate.telefone),
+    candidate.email,
+  ]
     .filter(Boolean)
     .join(' · ');
   return (
@@ -346,12 +360,10 @@ function QuickCreateForm({
   const similar = dedup?.similarNome ?? [];
   const warnings = [
     ...(dedup?.telefoneMatches.length
-      ? [
-          `telefone já cadastrado em: ${dedup.telefoneMatches.map((c) => c.nome ?? c.id).join(', ')}`,
-        ]
+      ? [`telefone já cadastrado em: ${dedup.telefoneMatches.map(candidateLabel).join(', ')}`]
       : []),
     ...(dedup?.emailMatches.length
-      ? [`e-mail já cadastrado em: ${dedup.emailMatches.map((c) => c.nome ?? c.id).join(', ')}`]
+      ? [`e-mail já cadastrado em: ${dedup.emailMatches.map(candidateLabel).join(', ')}`]
       : []),
   ];
 

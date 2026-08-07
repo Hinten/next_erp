@@ -42,8 +42,9 @@
  * GitHub-hosted runners (TCP-level, so client certs don't help), so
  * ci-nfe.yml runs this suite in its own step — ADVISORY on
  * pull_request/push (failure → workflow warning) and FATAL on
- * workflow_dispatch. A scheduled fatal run (self-alerting) is deferred
- * to the EPEC scheduled workflow; a SERPRO hiccup never blocks a merge.
+ * workflow_dispatch. A scheduled FATAL run (self-alerting) lives in
+ * nfe-epec-scheduled.yml's `svc-live` job (weekly, Mondays 06:00 UTC —
+ * issue #146); a SERPRO hiccup on the PR path never blocks a merge.
  *
  * **serie lane**: this suite owns **serie=3** (registry in
  * `../helpers/homologacao-seed.ts`); `numeracao` comes from `seedNNF()`.

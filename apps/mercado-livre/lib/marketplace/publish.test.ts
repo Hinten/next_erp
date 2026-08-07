@@ -19,6 +19,13 @@ class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly updates: Array<{ path: string; patch: DocData }> = [];
   private autoN = 0;
+  /** Monotonic per-doc version standing in for Firestore's `updateTime`. */
+  private readonly versions = new Map<string, number>();
+  /**
+   * Fires once, right after the next `get()` on this doc path, so a test can
+   * simulate a concurrent writer landing inside a read-modify-write window.
+   */
+  afterGet: { path: string; fn: () => void } | null = null;
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -29,8 +36,17 @@ class FakeDb {
     return c;
   }
 
+  versionOf(key: string): number {
+    return this.versions.get(key) ?? 1;
+  }
+
+  bump(key: string): void {
+    this.versions.set(key, this.versionOf(key) + 1);
+  }
+
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
+    this.bump(`${path}/${id}`);
   }
 
   docs(path: string): Map<string, DocData> {
@@ -43,14 +59,52 @@ class FakeDb {
     return {
       doc: (id?: string) => {
         const docId = id ?? `auto-${++self.autoN}`;
+        const key = `${path}/${docId}`;
         return {
           id: docId,
-          get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
+          get: async () => {
+            const snap = {
+              exists: col.has(docId),
+              id: docId,
+              data: () => col.get(docId),
+              updateTime: self.versionOf(key),
+            };
+            if (self.afterGet?.path === key) {
+              const { fn } = self.afterGet;
+              self.afterGet = null;
+              fn();
+            }
+            return snap;
+          },
           set: async (data: DocData, opts?: { merge?: boolean }) => {
             col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
+            self.bump(key);
           },
-          update: async (patch: DocData) => {
-            self.updates.push({ path: `${path}/${docId}`, patch });
+          update: async (patch: DocData, precondition?: { lastUpdateTime?: unknown }) => {
+            // Recorded only once the write COMMITS — a rejected update never
+            // reaches Firestore, so a test asserting on `updates` must not see
+            // one (the CAS retry below issues two attempts, one of which loses).
+            const current = col.get(docId);
+            if (!current) {
+              // Real Firestore rejects update() on a missing doc with gRPC 5;
+              // `mergeIfExists` narrows exactly that to `false`.
+              const err = new Error(`NOT_FOUND: ${key}`) as Error & { code: number };
+              err.code = 5;
+              throw err;
+            }
+            if (
+              precondition?.lastUpdateTime != null &&
+              precondition.lastUpdateTime !== self.versionOf(key)
+            ) {
+              // gRPC FAILED_PRECONDITION — the doc moved under the read the
+              // patch was derived from (rule 7, tier 1).
+              const err = new Error(`FAILED_PRECONDITION: ${key}`) as Error & { code: number };
+              err.code = 9;
+              throw err;
+            }
+            col.set(docId, { ...current, ...patch });
+            self.bump(key);
+            self.updates.push({ path: key, patch });
           },
         };
       },
@@ -119,6 +173,24 @@ function seedBase(db: FakeDb, opts: { externalIds?: DocData[] | null } = {}): vo
     contentType: 'image/jpeg',
     url: 'https://storage/foto.jpg',
     externalIds: opts.externalIds ?? null,
+  });
+  // The rascunho the listing editor saves before a first publish. Since #799
+  // publish no longer picks the ML category itself (a wrong domain_discovery
+  // hit was only discoverable once the listing existed), an unpublished
+  // listing must already carry `category_id` on its link doc. `id: null` is
+  // what still makes this a create. Tests that need the Flutter-authored shape
+  // overwrite this same doc id.
+  db.seed(LINKS_PATH, 'ML-DOC-1', {
+    contaOuterRef: `documents/integracao/${CONTA}`,
+    channels: ['marketplace'],
+    estado: 'r',
+    id: null,
+    site_id: 'MLB',
+    title: 'Camiseta Básica',
+    category_id: 'MLB31447',
+    condition: 'new',
+    listing_type_id: 'gold_special',
+    isUserProductModel: false,
   });
 }
 
@@ -265,6 +337,192 @@ describe('publishProduto — dual-run wire shape', () => {
     );
   });
 
+  it('sends and preserves an operator-edited title instead of produto.nome (#799)', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // The payload carries the LISTING's title, not the ERP produto name…
+    expect(mocks.updateItem!.mock.calls[0]![1]).toMatchObject({ title: 'Título antigo' });
+    // …and the publish no longer clobbers it on the way back.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')!.title).toBe('Título antigo');
+  });
+
+  it('sends produto.nome when the link title is blank, without rewriting the doc', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, title: '   ' });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // Blank means absent for the PAYLOAD…
+    expect(mocks.updateItem!.mock.calls[0]![1]).toMatchObject({ title: 'Camiseta Básica' });
+    // …but `title` is operator-owned, so publish leaves the stored value alone
+    // rather than deciding on the operator's behalf what it should have been.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')!.title).toBe('   ');
+  });
+
+  it('does not clobber a concurrent edit made during the ML round trip (rule 7)', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    const { api } = makeApi({
+      updateItem: vi.fn(async () => {
+        // The still-running Flutter app edits the listing while we are talking
+        // to ML — the window the old read-modify-write silently lost.
+        const cur = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+        db.seed(LINKS_PATH, 'ML-DOC-1', { ...cur, descricao: 'Editado durante a publicação' });
+        return ITEM_RESPONSE;
+      }),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    // Publish used to re-apply the snapshot it read at the top of the function,
+    // reverting this to 'Descrição custom do vendedor'.
+    expect(link.descricao).toBe('Editado durante a publicação');
+    // Publish-owned fields still land.
+    expect(link).toMatchObject({ estado: 'p', id: 'MLB777', errors: [] });
+  });
+
+  it('recreates a COMPLETE link doc when it was deleted mid-publish, never a ghost', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    const { api } = makeApi({
+      updateItem: vi.fn(async () => {
+        db.docs(LINKS_PATH).delete('ML-DOC-1');
+        return ITEM_RESPONSE;
+      }),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    // A live ML listing with no link doc is invisible to every sweep, so the
+    // write falls through rather than being dropped…
+    expect(link).toMatchObject({ id: 'MLB777', estado: 'p' });
+    // …and it is schema-complete, not the key-only ghost merge() would upsert.
+    expect(link.contaOuterRef).toBe(`documents/integracao/${CONTA}`);
+    expect(link.title).toBe('Título antigo');
+    expect(link.site_id).toBe('MLB');
+  });
+
+  it('re-derives the child denorm stamp when the doc moves under it (rule 7 tier 1)', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+    const { api } = makeApi({
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        variations: [{ id: 555, seller_custom_field: 'child-1' }],
+      })),
+    });
+    // Another writer lands on the child produto inside the stamp's
+    // read-modify-write window, exactly once.
+    db.afterGet = {
+      path: 'produtos/child-1',
+      fn: () => {
+        const cur = db.docs('produtos').get('child-1')!;
+        db.seed('produtos', 'child-1', { ...cur, integracoesComProduto: ['outra-conta'] });
+      },
+    };
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const child = db.docs('produtos').get('child-1')!;
+    // The first update failed the precondition; the retry re-READ and
+    // re-DERIVED, so the concurrent value is folded in rather than erased.
+    expect(child.integracoesComProduto).toEqual(
+      expect.arrayContaining(['outra-conta', CONTA]) as unknown,
+    );
+    expect(child.marketplace).toEqual([
+      { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
+    ]);
+  });
+
+  it('a link without category_id is blocked, and never asks ML to pick one (#799)', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      estado: 'r',
+      id: null,
+      title: 'Camiseta Básica',
+      category_id: null,
+      listing_type_id: 'gold_special',
+    });
+    const { api, mocks } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'categoria do Mercado Livre não definida (category_id)',
+    );
+    // Publish used to silently apply suggestCategories(nome, 1)[0]; a wrong
+    // first hit was only discoverable once the listing existed.
+    expect(mocks.suggestCategories).not.toHaveBeenCalled();
+    expect(mocks.createItem).not.toHaveBeenCalled();
+  });
+
+  it('writes status/sub_status from the ML response (#799)', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    const { api } = makeApi({
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        status: 'paused',
+        sub_status: ['out_of_stock'],
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // Without these the stock planner reads the fresh listing as a #780
+    // legacy-authored doc and sends optimistically for a cycle.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      status: 'paused',
+      sub_status: ['out_of_stock'],
+      estado: 'pa',
+    });
+  });
+
+  it('persists the authored attributes and never duplicates the derived ones (#799)', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...FLUTTER_LINK,
+      id: null,
+      attributes: [{ id: 'BRAND', value_name: 'Acme' }],
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // SELLER_SKU/WEIGHT/SELLER_PACKAGE_* are rebuilt from the produto on every
+    // publish — storing them would grow the array without bound.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')!.attributes).toEqual([
+      { id: 'BRAND', value_name: 'Acme' },
+    ]);
+    // They still reach ML on the wire.
+    const sent = mocks.createItem!.mock.calls[0]![0] as { attributes: Array<{ id: string }> };
+    expect(sent.attributes.map((a) => a.id)).toContain('SELLER_SKU');
+  });
+
   it('an ML failure stamps estado E + errors without wiping existing fields', async () => {
     const db = new FakeDb();
     seedBase(db, {
@@ -312,6 +570,34 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(link.id).toBe('MLB777');
     expect(link.estado).toBe('E');
     expect(link.errors).toEqual(['description rate limited']);
+  });
+
+  it('a description failure on a link deleted mid-publish still records the item id', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    const { api } = makeApi({
+      setItemDescription: vi.fn(async () => {
+        // The operator removes the listing between the item write and the
+        // description call — the window a bare merge() would fill with a
+        // key-only ghost holding an error and no `id`.
+        db.docs(LINKS_PATH).delete('ML-DOC-1');
+        throw new MercadoLivreHttpError('description rate limited', 429, {});
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'description rate limited',
+    );
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    // A live ML listing must never end up with no id on record.
+    expect(link.id).toBe('MLB777');
+    expect(link.estado).toBe('E');
+    // …and the recreated doc is schema-complete, not a key-only ghost.
+    expect(link.contaOuterRef).toBe(`documents/integracao/${CONTA}`);
+    expect(link.title).toBe('Título antigo');
+    expect(link.site_id).toBe('MLB');
   });
 
   it('stamps the parent deprecated arrays in the legacy order-import shape (#431)', async () => {

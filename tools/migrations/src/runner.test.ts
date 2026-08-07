@@ -11,7 +11,9 @@ describe('parseArgs', () => {
     expect(parseArgs(['--project', 'staging-x'])).toEqual({
       projectId: 'staging-x',
       apply: false,
+      reportOnly: false,
       serviceAccountPath: undefined,
+      targets: [],
     });
   });
 
@@ -23,8 +25,31 @@ describe('parseArgs', () => {
     expect(parseArgs(['--project=staging-x', '--service-account=/tmp/sa.json'])).toEqual({
       projectId: 'staging-x',
       apply: false,
+      reportOnly: false,
       serviceAccountPath: '/tmp/sa.json',
+      targets: [],
     });
+  });
+
+  it('parses --target as a trimmed, blank-free list', () => {
+    expect(parseArgs(['--project', 'x', '--target', 'clientes, cheque']).targets).toEqual([
+      'clientes',
+      'cheque',
+    ]);
+    expect(parseArgs(['--project=x', '--target=clientes']).targets).toEqual(['clientes']);
+    expect(parseArgs(['--project=x', '--target=,,']).targets).toEqual([]);
+  });
+
+  it('enables the pre-flight shape report with --report-only', () => {
+    expect(parseArgs(['--project', 'staging-x', '--report-only']).reportOnly).toBe(true);
+  });
+
+  it('refuses --report-only together with --apply', () => {
+    // The report writes nothing by definition; combining them would silently
+    // pick one, and the operator would not know which.
+    expect(() => parseArgs(['--project', 'x', '--report-only', '--apply'])).toThrow(
+      /cannot be combined/,
+    );
   });
 
   it('rejects an unknown flag', () => {
@@ -35,6 +60,9 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--project', '--apply'])).toThrow(/--project requires a value/);
     expect(() => parseArgs(['--project', 'x', '--service-account', '--apply'])).toThrow(
       /--service-account requires a value/,
+    );
+    expect(() => parseArgs(['--project', 'x', '--target', '--apply'])).toThrow(
+      /--target requires a value/,
     );
   });
 

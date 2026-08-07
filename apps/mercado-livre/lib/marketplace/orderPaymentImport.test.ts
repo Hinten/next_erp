@@ -9,10 +9,19 @@ import { FORMA_PAGAMENTO, STATUS_PAGAMENTO } from '@delfrance/schemas';
 
 import { importPagamentoMercadoLivre, type PaymentImportDeps } from './orderPaymentImport';
 import { makePagamentoIdMercadoLivre } from './orderIds';
+import {
+  OccEngine,
+  type OccOpKind,
+  type OccTransaction,
+  type OccWriteKind,
+} from './testing/occTransaction';
 
 /* ------------------------------ fake Firestore ---------------------------- */
-// Extends orderPedidoTx.test.ts's FakeDb (opLog + per-tx read-after-write
-// guard, scoped fresh per `runTransaction` call) with: a whole-collection
+// `runTransaction` delegates to the SHARED `OccEngine` (`./testing/occTransaction`),
+// which supplies the read-after-write guard, snapshot reads, buffered writes and
+// retry. Everything below stays this file's own.
+//
+// Extends orderPedidoTx.test.ts's FakeDb (opLog) with: a whole-collection
 // `.get()` (the in-tx all-pagamentos read), chained `where('==')/limit/get`
 // on a plain collection, and `db.collectionGroup(name)` scanning every seeded
 // path whose last segment matches — the `orderML` resolve reaches it via
@@ -20,7 +29,6 @@ import { makePagamentoIdMercadoLivre } from './orderIds';
 // owning pedido id), same convention as `import.test.ts`'s FakeDb.
 
 type DocData = Record<string, unknown>;
-type OpKind = 'get' | 'set' | 'create' | 'update';
 
 interface FakeSnap {
   exists: boolean;
@@ -30,6 +38,8 @@ interface FakeSnap {
 
 interface FakeDocRef {
   id: string;
+  /** Firestore path — the engine's version key. Real refs carry this too. */
+  path: string;
   get: () => Promise<FakeSnap>;
   set: (data: DocData) => void;
   create: (data: DocData) => void;
@@ -50,15 +60,11 @@ interface FakeQuery {
 }
 
 interface FakeCollection {
+  /** Firestore path — the in-tx whole-collection read is version-keyed on it. */
+  path: string;
   doc: (id?: string) => FakeDocRef;
   get: () => Promise<{ docs: FakeQueryDoc[] }>;
   where: (field: string, op: string, value: unknown) => FakeQuery;
-}
-
-interface FakeTransaction {
-  get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
-  set: (ref: FakeDocRef, data: DocData) => void;
-  update: (ref: FakeDocRef, patch: DocData) => void;
 }
 
 /** `pedidos/{pedidoId}/orderML` → `pedidoId` (second-to-last path segment). */
@@ -69,13 +75,33 @@ function parentDocId(path: string): string | null {
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
-  readonly opLog: Array<{ op: OpKind; path: string }> = [];
+  readonly opLog: Array<{ op: OccOpKind; path: string }> = [];
   private autoN = 0;
+
+  /** Exposed so a test can set `db.occ.beforeCommit` / read `db.occ.txLog`. */
+  readonly occ = new OccEngine({
+    applyWrite: (kind, path, data) => this.applyWrite(kind, path, data),
+    logWrite: (op, path) => this.opLog.push({ op, path }),
+  });
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
     if (!c) this.cols.set(path, (c = new Map()));
     return c;
+  }
+
+  /** Commit-time write. Never logs — the engine logged it at call time. */
+  private applyWrite(kind: OccWriteKind, docPath: string, data: DocData): void {
+    const cut = docPath.lastIndexOf('/');
+    const col = this.col(docPath.slice(0, cut));
+    const id = docPath.slice(cut + 1);
+    if (kind === 'create' && col.has(id)) {
+      throw Object.assign(new Error('already exists'), { code: 6 });
+    }
+    if (kind === 'update' && !col.has(id)) {
+      throw Object.assign(new Error('not found'), { code: 5 });
+    }
+    col.set(id, kind === 'update' ? { ...(col.get(id) ?? {}), ...data } : { ...data });
   }
 
   seed(path: string, id: string, data: DocData): void {
@@ -121,23 +147,22 @@ class FakeDb {
     const col = this.col(path);
     return {
       id,
+      path: `${path}/${id}`,
       get: async () => {
         self.opLog.push({ op: 'get', path: `${path}/${id}` });
         return { exists: col.has(id), id, data: () => col.get(id) };
       },
       set: (data: DocData) => {
         self.opLog.push({ op: 'set', path: `${path}/${id}` });
-        col.set(id, { ...data });
+        self.applyWrite('set', `${path}/${id}`, data);
       },
       create: (data: DocData) => {
         self.opLog.push({ op: 'create', path: `${path}/${id}` });
-        if (col.has(id)) throw Object.assign(new Error('already exists'), { code: 6 });
-        col.set(id, { ...data });
+        self.applyWrite('create', `${path}/${id}`, data);
       },
       update: (patch: DocData) => {
         self.opLog.push({ op: 'update', path: `${path}/${id}` });
-        if (!col.has(id)) throw Object.assign(new Error('not found'), { code: 5 });
-        col.set(id, { ...(col.get(id) ?? {}), ...patch });
+        self.applyWrite('update', `${path}/${id}`, patch);
       },
     };
   }
@@ -146,6 +171,7 @@ class FakeDb {
     const self = this;
     const col = this.col(path);
     return {
+      path,
       doc(id?: string) {
         const docId = id ?? `auto-${++self.autoN}`;
         return self.makeDocRef(path, docId);
@@ -178,30 +204,8 @@ class FakeDb {
     return this.makeQuery(entries);
   }
 
-  async runTransaction<T>(fn: (tx: FakeTransaction) => Promise<T>): Promise<T> {
-    // Same Admin SDK invariant guard as orderPedidoTx.test.ts's FakeDb — scoped
-    // fresh per call, not per-instance.
-    let wroteAlready = false;
-    const guardRead = (): void => {
-      if (wroteAlready) {
-        throw new Error('read after write in transaction (Admin SDK invariant)');
-      }
-    };
-    const tx: FakeTransaction = {
-      get: (ref) => {
-        guardRead();
-        return ref.get();
-      },
-      set: (ref, data) => {
-        ref.set(data);
-        wroteAlready = true;
-      },
-      update: (ref, patch) => {
-        ref.update(patch);
-        wroteAlready = true;
-      },
-    };
-    return fn(tx);
+  async runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
+    return this.occ.runTransaction(fn);
   }
 }
 
@@ -225,6 +229,13 @@ function seedPedido(db: FakeDb, pedidoId: string, over: DocData = {}): void {
   db.seed('pedidos', pedidoId, {
     estado: 'aguardandoConfirmacaoDePagamento',
     valorCobrado: null,
+    // The `pago` prerequisites (#791): this path now shares ONE definition with
+    // the order import (`podeAvancarParaPago`), so a pedido used to exercise the
+    // SUM logic has to be otherwise eligible. Tests that probe the guard itself
+    // override these to null.
+    clientePedidoOuterRef: 'documents/clientes/cli-1',
+    enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+    freteInicial: { estado: 'iniciado' },
     ...over,
   });
 }
@@ -537,7 +548,9 @@ describe('importPagamentoMercadoLivre — estado advance', () => {
     const pedido = db.docs('pedidos').get('PED-ADV')!;
     expect(pedido.estado).toBe('pago');
     expect(pedido.ultimaModificacao).toBe(nowUs);
-    expect(pedido.lastMarketplaceUpdate).toBe(nowUs);
+    // `lastMarketplaceUpdate` is the ML ORDER-clock watermark and the order
+    // import is its single writer — the payments topic must not touch it.
+    expect(pedido.lastMarketplaceUpdate).toBeUndefined();
     expect(pedido.numero).toBe('X'); // untouched field proves a TARGETED patch
   });
 
