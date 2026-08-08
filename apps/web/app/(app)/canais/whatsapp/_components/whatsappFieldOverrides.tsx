@@ -9,6 +9,7 @@ import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
+import { TelefoneField } from '@/components/inputs/TelefoneInput';
 import { applyWeekdayEdit, defaultHorario, hhmmToMs, msToHHMM } from './horarioFuncionamento';
 
 /**
@@ -181,8 +182,8 @@ export const whatsappFields: Record<string, FieldConfig> = {
   numero: {
     label: 'Número',
     section: 'Geral',
-    kind: 'tel',
     hint: 'Número de telefone conectado (com DDI/DDD, somente dígitos).',
+    renderInput: TelefoneField,
   },
   ativo: { label: 'Ativo', section: 'Geral' },
   padrao: { label: 'Padrão', section: 'Geral' },
