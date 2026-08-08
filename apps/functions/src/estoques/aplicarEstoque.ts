@@ -69,9 +69,11 @@ export async function aplicarLocalizacao(
  * transforms: `ultimaModificacao: maximum(now)` (monotonic — a stale `now` can't
  * move it backwards, #387) and `dataCriacao: minimum(now)` (set-if-missing; an
  * existing, older creation time always wins). Entrada/saída apply the signed
- * deltas as `increment` transforms; balanço writes the absolute counted values
- * with the reservada clamped ≥ 0 in code. `floorReservada` tells the caller to
- * append the follow-up `maximum(0)` write that floors the incremented reservada.
+ * deltas as `increment` transforms; balanço writes the plan's absolute counted
+ * values verbatim — `planMovimentacao` already clamped the balanço's reservada
+ * ≥ 0, and re-clamping here would be a second, silently divergent floor.
+ * `floorReservada` tells the caller to append the follow-up `maximum(0)` write
+ * that floors the incremented reservada.
  */
 function movimentoEstoqueWrite(
   produtoId: string,
@@ -90,7 +92,7 @@ function movimentoEstoqueWrite(
       base: {
         ...shared,
         quantidade: plan.quantidade,
-        quantidadeReservada: Math.max(0, plan.quantidadeReservada),
+        quantidadeReservada: plan.quantidadeReservada,
       },
       floorReservada: false,
     };
