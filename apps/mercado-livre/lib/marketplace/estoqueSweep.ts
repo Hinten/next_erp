@@ -337,15 +337,28 @@ function parseContinuacao(raw: unknown): SweepContinuacao | null {
   const startedAtUs = finiteNumber(o.startedAtUs);
   const modo =
     o.modo === 'incremental' || o.modo === 'daily' || o.modo === 'reconciliacao' ? o.modo : null;
-  // Explicitly `null` OR a finite number — an ABSENT key is malformed, never
-  // silently read as "no baseline" (which would force-send a whole catalogue).
-  const desdeOk = o.movimentosDesdeMs === null || finiteNumber(o.movimentosDesdeMs) != null;
+  // `movimentosDesdeMs` arrived after `modo` did, so a continuation written by
+  // the previous release carries `modo` and NOT this key. Dropping those would
+  // restart a truncated sweep at page 1 of a re-derived window — precisely the
+  // liveness hole continuations exist to close, and worst for the conta with the
+  // biggest backlog.
+  //
+  // On incremental/daily the two windows are identical by construction (see
+  // `SweepJanela.movimentosDesdeMs`), so an absent key RECONSTRUCTS exactly what
+  // that tier would have stored — a lossless default, not a guess.
+  //
+  // On a reconciliação they diverge on purpose and `null` is a MEANINGFUL state
+  // ("no baseline yet ⇒ force-send everything"), which `changedSinceMs` (`-1`)
+  // cannot stand in for. There the key must be present and explicit: absent is
+  // malformed, and the sweep restarts rather than invent a baseline.
+  const desdeExplicito = o.movimentosDesdeMs === null || finiteNumber(o.movimentosDesdeMs) != null;
+  const herdaJanela = modo !== 'reconciliacao' && o.movimentosDesdeMs === undefined;
   if (
     afterAnchorId == null ||
     changedSinceMs == null ||
     startedAtUs == null ||
     modo == null ||
-    !desdeOk
+    !(desdeExplicito || herdaJanela)
   ) {
     return null;
   }
@@ -353,7 +366,11 @@ function parseContinuacao(raw: unknown): SweepContinuacao | null {
     afterAnchorId,
     changedSinceMs,
     modo,
-    movimentosDesdeMs: o.movimentosDesdeMs === null ? null : finiteNumber(o.movimentosDesdeMs),
+    movimentosDesdeMs: herdaJanela
+      ? changedSinceMs
+      : o.movimentosDesdeMs === null
+        ? null
+        : finiteNumber(o.movimentosDesdeMs),
     startedAtUs,
   };
 }

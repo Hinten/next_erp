@@ -106,6 +106,15 @@ export const estoqueMercadoLivreSyncSchema = z.object({
        * `null` on a reconciliação with no previous full run, which force-sends.
        * Distinct from `changedSinceMs`: a reconciliação sets that to `-1`
        * (force-all) while still comparing against its own last completed pass.
+       *
+       * ⚠️ This key is NEWER than `modo`, so a continuation written by the
+       * previous release has one and not the other. `parseContinuacao` INHERITS
+       * an absent value from `changedSinceMs` on incremental/daily — where the
+       * two windows are identical by construction, so it is exact — and rejects
+       * the continuation outright on a reconciliação, where `null` is a
+       * meaningful state nothing else can stand in for. Dropping every such
+       * continuation instead would restart a truncated sweep at page 1, which
+       * is the liveness hole continuations exist to close.
        */
       movimentosDesdeMs: millisSinceEpoch().nullable(),
       /** When the ORIGINAL (pre-truncation) sweep started (µs). */

@@ -1192,6 +1192,48 @@ describe('runStockSweep — persistent continuation', () => {
     expect(result.contas[0]).toMatchObject({ enqueued: 1, pages: 1, truncated: false });
   });
 
+  it('INHERITS a missing movimentosDesdeMs from the frozen window on incremental', async () => {
+    // The key arrived after `modo` did, so a continuation stored by the
+    // PREVIOUS release lacks it. Dropping that would restart a truncated sweep
+    // at page 1 — the liveness hole continuations exist to close. On this tier
+    // the two windows are identical by construction, so inheriting is exact.
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    const { movimentosDesdeMs: _omitido, ...semDesde } = contInc;
+    db.seed(SYNC_PATH, 'INT-A', { cursorUs: (NOW_MS - 600_000) * 1000, continuacao: semDesde });
+    wireCtx();
+    const { fetchFamilies, calls } = makeFetch([{ rows: [activeRow()], nextAfterAnchorId: null }]);
+    const { fetchMovimentos, calls: movCalls } = makeMovimentos(movimentou('PROD-1', 1));
+    const { scheduler } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies, fetchMovimentos });
+
+    expect(calls[0]).toMatchObject({ changedSinceMs: FROZEN_CHANGED_MS, afterAnchorId: 'PROD-9' });
+    expect(movCalls).toEqual([{ desdeMs: FROZEN_CHANGED_MS, depositoId: 'dep-1' }]);
+  });
+
+  it('REJECTS a reconciliação continuation with no movimentosDesdeMs — null is meaningful there', async () => {
+    // A reconciliação's ledger window diverges from `changedSinceMs` (`-1`) on
+    // purpose, and `null` means "no baseline ⇒ force-send everything". Neither
+    // can be inferred, so the sweep restarts rather than invent a baseline.
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    const { movimentosDesdeMs: _omitido, ...semDesde } = contInc;
+    db.seed(SYNC_PATH, 'INT-A', {
+      cursorUs: (NOW_MS - 600_000) * 1000,
+      continuacao: { ...semDesde, modo: 'reconciliacao', changedSinceMs: -1 },
+    });
+    wireCtx();
+    const { fetchFamilies, calls } = makeFetch([{ rows: [], nextAfterAnchorId: null }]);
+    const { scheduler } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    // Not resumed: no frozen keyset, and the window is this tick's own.
+    expect(calls[0]).toMatchObject({ afterAnchorId: null });
+    expect(calls[0]!.changedSinceMs).not.toBe(-1);
+  });
+
   it('an incremental continuation that DRAINS advances cursorUs to startedAtUs', async () => {
     const db = new FakeDb();
     seedConta(db, 'INT-A');

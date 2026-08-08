@@ -417,9 +417,15 @@ MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
 # The high-stock skip on the incremental tier (ADR 0014). Default 100.
 MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
 # The MONTHLY reconciliation — see "The monthly reconciliation" below. Leave it
-# OUT until the normal sweeps have run cleanly for a while.
-MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED=1
+# COMMENTED OUT until the normal sweeps have run cleanly for a while: this
+# snippet is meant to be copy-pasted, so the safe state has to be the one
+# written down.
+# MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED=1
 ```
+
+⚠️ The scheduled function is deployed either way — the flag only decides whether
+a firing does any work. Uncommenting it is therefore a redeploy, not a code
+change, and turning it back off is the same one-line edit.
 
 `prepare-deploy.mjs` copies it into the artifact **as `.env`** after the wipe, and
 firebase-tools applies it at deploy. It survives redeploys — no
