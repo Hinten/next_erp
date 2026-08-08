@@ -213,13 +213,31 @@ describe('produto estoque — movimentação (planMovimentacao)', () => {
     });
   });
 
-  it('clamps a negative counted reservada into the recorded saldo', () => {
+  it('clamps a negative counted reservada into BOTH the write and the recorded saldo', () => {
+    // The plan describes exactly what lands on the doc, so a balanço's
+    // `quantidadeReservada` must equal its `historico.saldoReservada` — the
+    // caller writes it verbatim and must not need a second floor of its own.
     const plan = planMovimentacao(
       { tipo: 'balanco', quantidade: 5, quantidadeReservada: -3, motivo: null },
       1000,
       { quantidade: 5, quantidadeReservada: 1 },
     );
+    expect(plan.quantidadeReservada).toBe(0);
     expect(plan.historico).toMatchObject({ saldoReservada: 0, movimentoReservada: -1 });
+    expect(plan.quantidadeReservada).toBe(plan.historico.saldoReservada);
+  });
+
+  it('leaves a NEGATIVE entrada/saída reservada delta unclamped — there it is an increment', () => {
+    // Only the balanço's field is an absolute value. A saída's is the signed
+    // delta the caller `increment`s, so clamping it here would silently drop
+    // the release of a reservation.
+    const plan = planMovimentacao(
+      { tipo: 'saida', quantidade: 1, quantidadeReservada: 2, motivo: null },
+      1000,
+      { quantidade: 10, quantidadeReservada: 5 },
+    );
+    expect(plan.quantidadeReservada).toBe(-2);
+    expect(plan.historico).toMatchObject({ saldoReservada: 3, movimentoReservada: -2 });
   });
 });
 
