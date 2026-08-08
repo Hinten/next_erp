@@ -196,18 +196,22 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect(trail).toHaveLength(3);
     const porTipo = Object.fromEntries(trail.map((h) => [h.tipo, h]));
     expect(porTipo.reserva).toMatchObject({
-      quantidadeReservadaAntes: 0,
-      quantidadeReservadaDepois: 5,
+      movimentoReservada: 5,
+      saldoReservada: 5,
+      parentId: produtoId,
+      depositoOuterRef: `documents/depositos/${depositoId}`,
       pedidoOuterRef: `documents/pedidos/${pedidoId}`,
     });
     expect(porTipo.saida).toMatchObject({
-      quantidade: -5,
-      quantidadeAntes: 0,
-      quantidadeDepois: -5,
-      quantidadeReservadaAntes: 5,
-      quantidadeReservadaDepois: 0,
+      movimento: -5,
+      saldo: -5,
+      movimentoReservada: -5,
+      saldoReservada: 0,
     });
-    expect(porTipo.devolucao).toMatchObject({ quantidade: 5, quantidadeDepois: 0 });
+    expect(porTipo.devolucao).toMatchObject({ movimento: 5, saldo: 0 });
+    // `antes` is derived, not stored: saldo − movimento (ADR 0014).
+    const saida = porTipo.saida as { saldo: number; movimento: number };
+    expect(saida.saldo - saida.movimento).toBe(0);
   });
 
   it('is convergent: a second run writes nothing (loop guard 3, updateTime proof)', async () => {
@@ -246,9 +250,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect((await lerEstoque(db, produtoId, depositoId)).reservada).toBe(2);
 
     const trail = await historicos(db, produtoId, depositoId);
-    expect(trail.some((h) => h.tipo === 'ajusteReserva' && h.quantidadeReservada === -3)).toBe(
-      true,
-    );
+    expect(trail.some((h) => h.tipo === 'ajusteReserva' && h.movimentoReservada === -3)).toBe(true);
 
     // Cancellation releases the ADJUSTED amount exactly (snapshot, not items).
     await mudarPedido(db, pedidoId, { estado: 'cancelado' });

@@ -98,7 +98,8 @@ test.describe
       .toBe(5);
     const records = await listHistoricoEstoque(childId, depositoId);
     expect(records.length).toBeGreaterThanOrEqual(1);
-    expect(records.some((r) => r.quantidade === 5)).toBe(true);
+    // v2: the ledger records a SIGNED movimento, not a bare quantity (ADR 0014).
+    expect(records.some((r) => r.movimento === 5)).toBe(true);
   });
 
   test('the filter field accepts a variation SKU term', async ({ page }) => {

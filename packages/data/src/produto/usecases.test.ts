@@ -120,16 +120,18 @@ describe('produto estoque — localização (buildLocalizacaoOp)', () => {
 });
 
 describe('produto estoque — movimentação (planMovimentacao)', () => {
-  it('entrada keeps the magnitudes positive and records a non-balanço history', () => {
+  it('entrada keeps the magnitudes positive and records a signed movimento', () => {
     const plan = planMovimentacao(
       { tipo: 'entrada', quantidade: 5, quantidadeReservada: 0, motivo: 'compra' },
       1000,
     );
     expect(plan).toMatchObject({ ehBalanco: false, quantidade: 5, quantidadeReservada: 0 });
+    // Read-free: the delta is known, the resulting saldo is not.
     expect(plan.historico).toEqual({
-      ehBalanco: null,
-      quantidade: 5,
-      quantidadeReservada: 0,
+      movimento: 5,
+      movimentoReservada: 0,
+      saldo: null,
+      saldoReservada: null,
       motivo: 'compra',
       timestamp: 1000,
     });
@@ -141,16 +143,83 @@ describe('produto estoque — movimentação (planMovimentacao)', () => {
       1000,
     );
     expect(plan).toMatchObject({ ehBalanco: false, quantidade: -3, quantidadeReservada: -1 });
-    expect(plan.historico).toMatchObject({ quantidade: -3, quantidadeReservada: -1 });
+    expect(plan.historico).toMatchObject({ movimento: -3, movimentoReservada: -1 });
   });
 
-  it('balanço passes through the absolute counted values and flags ehBalanco', () => {
+  it('entrada/saída fill the saldo pair when `atual` is supplied', () => {
+    const plan = planMovimentacao(
+      { tipo: 'saida', quantidade: 3, quantidadeReservada: 1, motivo: null },
+      1000,
+      { quantidade: 10, quantidadeReservada: 4 },
+    );
+    expect(plan.historico).toMatchObject({
+      movimento: -3,
+      movimentoReservada: -1,
+      saldo: 7,
+      saldoReservada: 3,
+    });
+  });
+
+  it('records the CLAMPED reservada delta when `atual` makes the floor observable', () => {
+    // Releasing 5 against a stored 2: the caller floors reservada at 0, so only
+    // -2 actually applies. Recording the requested -5 would drift the ledger
+    // from the stored counter by exactly the clamped amount (ADR 0014).
+    const plan = planMovimentacao(
+      { tipo: 'saida', quantidade: 0, quantidadeReservada: 5, motivo: null },
+      1000,
+      { quantidade: 10, quantidadeReservada: 2 },
+    );
+    expect(plan.historico).toMatchObject({ movimentoReservada: -2, saldoReservada: 0 });
+  });
+
+  it('balanço writes the absolute value but records it as a SIGNED delta', () => {
+    // The whole point of v2: the estoque doc gets the counted value, the ledger
+    // gets `contado − atual` so `sum(movimento)` stays meaningful.
     const plan = planMovimentacao(
       { tipo: 'balanco', quantidade: 42, quantidadeReservada: 2, motivo: 'contagem' },
       1000,
+      { quantidade: 50, quantidadeReservada: 3 },
     );
     expect(plan).toMatchObject({ ehBalanco: true, quantidade: 42, quantidadeReservada: 2 });
-    expect(plan.historico).toMatchObject({ ehBalanco: true, quantidade: 42 });
+    expect(plan.historico).toMatchObject({
+      movimento: -8,
+      movimentoReservada: -1,
+      saldo: 42,
+      saldoReservada: 2,
+    });
+  });
+
+  it('a balanço against a missing/zero estoque records the full counted value as the delta', () => {
+    const plan = planMovimentacao(
+      { tipo: 'balanco', quantidade: 42, quantidadeReservada: 0, motivo: null },
+      1000,
+      { quantidade: 0, quantidadeReservada: 0 },
+    );
+    expect(plan.historico).toMatchObject({ movimento: 42, saldo: 42 });
+  });
+
+  it('a balanço planned WITHOUT `atual` records movimento null — unknown, never a fake delta', () => {
+    // Callers must read first; if one does not, consumers must see "unknown"
+    // and fail open rather than sum an absolute value as if it were a delta.
+    const plan = planMovimentacao(
+      { tipo: 'balanco', quantidade: 42, quantidadeReservada: 2, motivo: null },
+      1000,
+    );
+    expect(plan.historico).toMatchObject({
+      movimento: null,
+      movimentoReservada: null,
+      saldo: 42,
+      saldoReservada: 2,
+    });
+  });
+
+  it('clamps a negative counted reservada into the recorded saldo', () => {
+    const plan = planMovimentacao(
+      { tipo: 'balanco', quantidade: 5, quantidadeReservada: -3, motivo: null },
+      1000,
+      { quantidade: 5, quantidadeReservada: 1 },
+    );
+    expect(plan.historico).toMatchObject({ saldoReservada: 0, movimentoReservada: -1 });
   });
 });
 

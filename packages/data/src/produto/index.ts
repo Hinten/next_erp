@@ -14,6 +14,7 @@ export {
   type TipoMovimentacao,
   type MovimentacaoInput,
   type MovimentacaoPlan,
+  type EstoqueAtual,
   buildImpostoWriteOps,
   saveProdutoImpostos,
   buildChildrenComponentesKitOps,

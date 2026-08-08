@@ -17,6 +17,7 @@ import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import {
+  TIPO_MOVIMENTO_ESTOQUE_LABELS,
   estoqueDisponivel,
   historicoEstoqueMeta,
   historicoEstoqueSchema,
@@ -249,9 +250,17 @@ export function EstoqueMovimentacaoModal({
                   {historico.map((h, i) => (
                     <Table.Tr key={i}>
                       <Table.Td>{fmtDate(h.timestamp)}</Table.Td>
-                      <Table.Td>{fmt(h.quantidade)}</Table.Td>
-                      <Table.Td>{fmt(h.quantidadeReservada)}</Table.Td>
-                      <Table.Td>{h.ehBalanco ? 'Balanço' : 'Movimentação'}</Table.Td>
+                      {/* v2 rows carry a signed `movimento`; a row written by the
+                          still-running Flutter app has none, and an em-dash is the
+                          honest rendering — never a 0, which would read as "no
+                          movement" (ADR 0014). */}
+                      <Table.Td>{h.movimento == null ? '—' : fmt(h.movimento)}</Table.Td>
+                      <Table.Td>
+                        {h.movimentoReservada == null ? '—' : fmt(h.movimentoReservada)}
+                      </Table.Td>
+                      <Table.Td>
+                        {h.tipo == null ? '—' : TIPO_MOVIMENTO_ESTOQUE_LABELS[h.tipo]}
+                      </Table.Td>
                       <Table.Td>{h.motivo ?? ''}</Table.Td>
                     </Table.Tr>
                   ))}
