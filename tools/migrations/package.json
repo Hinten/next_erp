@@ -9,6 +9,7 @@
     "audit:ml-pedido-pago": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-pedido-pago-audit/audit.ts",
     "clean": "rm -rf dist .turbo out *.tsbuildinfo",
     "lint": "eslint .",
+    "migrate:historico-estoque-v2": "dotenv -e ../../.env.local -- tsx src/2026-08-historico-estoque-v2/migrate.ts",
     "migrate:ml-lastmarketplaceupdate": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-lastmarketplaceupdate/backfill.ts",
     "migrate:ml-precos-ghost-keys": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-precos-ghost-keys/migrate.ts",
     "migrate:pedido-pagamento-micros": "dotenv -e ../../.env.local -- tsx src/2026-06-pedido-pagamento-micros/migrate.ts",
