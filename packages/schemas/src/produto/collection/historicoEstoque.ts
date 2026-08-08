@@ -76,6 +76,15 @@ export const TIPO_MOVIMENTO_ESTOQUE_LABELS: Record<TipoMovimentoEstoque, string>
  * values; `ehBalanco` flags a balanço (`true`) vs a regular movement (null);
  * `motivo` is free text; `timestamp` is a ms-epoch int (`dateTimeToJson`).
  *
+ * ⚠️ That delta-or-absolute overload is exactly what **ADR 0014** removes: the
+ * ledger must be SUMMABLE, because the Mercado Livre sweep reconstructs "stock
+ * at time T" as `atual − sum(movimento since T)` in one grouped aggregate. A
+ * balanço that stores an absolute value in the same field as a delta poisons
+ * that sum, which is why the v2 shape records a real signed delta on EVERY row
+ * (the balanço write path takes a transaction to compute it) and carries
+ * `parentId` / `depositoOuterRef` as the aggregate's group keys. Do not
+ * reintroduce a field whose meaning depends on a discriminator.
+ *
  * The structured audit block (all nullable — legacy docs parse unchanged) fixes
  * the legacy trail's unqueryability (movements were findable only by
  * string-matching `motivo`): `tipo` names the business event, `pedidoOuterRef` /

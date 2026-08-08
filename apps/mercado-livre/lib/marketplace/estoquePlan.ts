@@ -10,6 +10,18 @@
  * applies the incremental activity filter (`deveEnviarIncremental`) and turns
  * one family row into ready-to-enqueue send-task drafts (`buildSendTasks`).
  *
+ * ---- ⚠️ READ **ADR 0014** (`apps/docs`, "Kit stock propagation and the
+ * tiered stock sweep") BEFORE changing what this query joins or which families
+ * it emits. Three things here look like bugs and are not:
+ *  - the window filter does NOT propagate a component movement to the kits
+ *    containing it, because ~2000 kits share one blank shirt + one print, so any
+ *    per-component fan-out is thousands of writes per sale (built and measured);
+ *  - the sweep therefore UNDER-sends by design — a kit whose component moved but
+ *    which did not itself sell waits for the monthly full pass;
+ *  - the high-stock skip compares `min(anterior, atual)`, never `atual` alone:
+ *    gating on the current value would skip 110 → 95, the movement that walks a
+ *    listing into the danger zone.
+ *
  * ---- Produtos-first joined discovery (the owner-approved redesign of the
  * first #678 cut, which ran two pipeline executions and re-read everything at
  * send time). The sweep template is the legacy BigQuery SQL
