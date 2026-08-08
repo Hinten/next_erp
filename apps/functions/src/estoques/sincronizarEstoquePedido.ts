@@ -1,3 +1,4 @@
+import { FieldValue } from 'firebase-admin/firestore';
 import type {
   DocumentData,
   DocumentSnapshot,
@@ -576,6 +577,64 @@ async function aplicarPlano(
 }
 
 /**
+ * Stamp `ultimaModificacao` on the estoque doc of every KIT sold on this pedido —
+ * the ONLY place a kit's own documents learn that it moved (ADR 0014).
+ *
+ * A kit holds no stock: `calcularAlteracoesEstoque` expands it into components and
+ * moves those, so the kit produto gets no delta, no history row and no timestamp
+ * bump. The Mercado Livre sweep needs "did this kit sell" and used to answer it
+ * with a separate pipeline pass over `pedidos`, capped at 10 000 ids (#806 S10).
+ * Stamping here turns that question into a property of the kit's own estoque doc.
+ *
+ * ⚠️ **This is per ORDER LINE, never per component.** The obvious alternative —
+ * react to a component movement and stamp every kit containing it — is
+ * unaffordable here: ~2000 kits share one blank shirt + one print, so a single
+ * sale would fan out into thousands of writes. Lucas built and measured that; see
+ * ADR 0014 before proposing it again. The kit id is already on the pedido line, so
+ * this costs **zero extra reads**.
+ *
+ * Race discipline: ADR 0011 **tier 0** — nothing to compare, so nothing to lose.
+ * `maximum` is monotonic (a stale `agoraMs` cannot move the stamp backwards),
+ * `minimum` is set-if-missing, and `increment(0)` is a get-or-create that
+ * initializes a missing counter to 0 while leaving an existing number **and any
+ * concurrent movement** untouched. Same transform idiom as `movimentoEstoqueWrite`
+ * in `aplicarEstoque.ts`.
+ *
+ * ⚠️ Writes NO `historicoEstoque` row: no quantity moved, and a row carrying a
+ * zero/absent `movimento` would dilute the very sums the ledger exists to answer.
+ * ⚠️ `ultimaModificacao` is **milliseconds** on this doc (ADR 0011's unit trap).
+ *
+ * Creating the doc when absent is required, not incidental: the sweep's window
+ * filter coalesces a missing estoque to 0, so an unstamped kit is invisible to
+ * every positive window no matter what else is true.
+ *
+ * Exported for the unit tests.
+ */
+export function carimbarKitsVendidos(
+  db: Firestore,
+  tx: Transaction,
+  kitIds: ReadonlySet<string>,
+  depositoId: string,
+  agoraMs: number,
+): number {
+  for (const produtoId of kitIds) {
+    tx.set(
+      estoqueCollection.docRef(db, { produtoId }, makeEstoqueUid(produtoId, depositoId)),
+      {
+        parentId: produtoId,
+        depositoOuterRef: `documents/depositos/${depositoId}`,
+        quantidade: FieldValue.increment(0),
+        quantidadeReservada: FieldValue.increment(0),
+        ultimaModificacao: FieldValue.maximum(agoraMs),
+        dataCriacao: FieldValue.minimum(agoraMs),
+      },
+      { merge: true },
+    );
+  }
+  return kitIds.size;
+}
+
+/**
  * Converge a pedido's stock effect — the pedido→estoque sync core (exported for
  * the emulator suite and the resync callable; the trigger wraps it).
  *
@@ -682,6 +741,17 @@ export async function sincronizarEstoquePedido(
     const itensAnteriores = reconstruirLegado ? (opts.itensLegadoAnteriores ?? {}) : null;
     let alteracoes: Record<string, number> = {};
     let aplicadoBase: EstoqueAplicado | null = pedido.aplicado;
+    // Kits sold on THIS pedido — the stamp set (ADR 0014). Filled from the same
+    // produtos read the kit expansion already performs, so it costs nothing.
+    // Scoped to the CURRENT items: a kit that only appears in the legacy
+    // reconstruction anchor is not being sold now.
+    const kitsVendidos = new Set<string>();
+    const idsDosItensAtuais = new Set(
+      Object.values(pedido.itens)
+        .flat()
+        .map((item) => item.produtoUid)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0 && id !== 'NONE'),
+    );
     if (efeito.reservar || efeito.remover || efeito.adicionar || itensAnteriores) {
       // The reconstruction kit-expands the PREVIOUS items with the same produtos
       // map — a growth write means before ⊆ after, so this reads nothing extra.
@@ -716,6 +786,13 @@ export async function sincronizarEstoquePedido(
                 ? (componentes as ProdutoParaEstoque['componentesKit'])
                 : null,
           });
+          // A virtual kit is never published, so stamping one would create an
+          // estoque doc nothing will ever read (`quantidadeParaEnvio` returns
+          // null for it). Non-kits need no stamp — their own movement bumps
+          // `ultimaModificacao` already.
+          if (dados.ehKit === true && dados.ehKitVirtual !== true && idsDosItensAtuais.has(id)) {
+            kitsVendidos.add(id);
+          }
         });
       }
       if (efeito.reservar || efeito.remover || efeito.adicionar) {
@@ -755,6 +832,13 @@ export async function sincronizarEstoquePedido(
       agoraMs,
       registrarDrift: true,
     });
+
+    // The kit stamp (ADR 0014). Reached only past the zero-deltas return above,
+    // so a pedido write that moved nothing stamps nothing. Reservations DO count:
+    // a reserva lowers `disponivel`, which is what the marketplace publishes.
+    // Write-only (transforms, no reads), so its position after `aplicarPlano` is
+    // free — unlike the audit reads above it.
+    if (depositoId) carimbarKitsVendidos(db, tx, kitsVendidos, depositoId, agoraMs);
 
     // ⚠️ AFTER `aplicarPlano` — it still issues reads, and a transaction rejects
     // any read that follows a write ("all reads before all writes").
