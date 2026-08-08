@@ -366,6 +366,36 @@ it on). Three separate places matter, and they are NOT interchangeable:
    (One root template set — `.env.example` for config, `.env.secrets.example` for
    credentials — is the repo convention; #730.)
 
+### The monthly reconciliation
+
+`sweepMercadoLivreStockReconciliacao` runs **03:00 America/Sao_Paulo on the 1st**
+behind its **own** flag (`MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED=1`) on top of
+the master one. Two gates, because it walks the entire linked catalogue.
+
+**Why it exists.** Neither the incremental nor the daily tier can see a listing
+whose ERP stock has not moved inside its window — drift on ML's side (a manual
+quantity edit, a dropped PUT, a task lost past `maxPauseReenqueues`) is invisible
+to both. Nor do they see a kit whose **component** moved without the kit itself
+selling, which is a deliberate cost decision (ADR 0014): ~2000 kits share one
+blank shirt and one print, so propagating every component movement is
+unaffordable. This pass is the corrector for both.
+
+**What keeps it affordable.** It force-alls the _query_ (`changedSinceMs: -1`, so
+even families with no estoque doc survive) but still **skips listings whose
+published number did not change since the last completed full pass** — the ledger
+sum over `lastReconciliacaoAtUs → now`. On a catalogue that is mostly seasonal,
+that is most of it.
+
+**Turning it on.** Only after the normal sweeps run cleanly. Watch the first run's
+`enqueued` against the linked-listing count; it drains across several ticks via
+`maxTasksPerSweep()` + `continuacao` rather than in one. Turn it off **alone** if
+it costs more ML quota than the drift it heals is worth — the other two tiers are
+unaffected.
+
+⚠️ A conta's **first** reconciliation has no baseline (`lastReconciliacaoAtUs` is
+null), so it force-sends that conta's whole catalogue once and reads no ledger at
+all. Expect exactly one expensive run per conta, then the cheap steady state.
+
 ### Setting (1) — runtime env via `.env.deploy`
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
@@ -384,6 +414,11 @@ wipe. Create `apps/mercado-livre/functions/.env.deploy` (gitignored):
 MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
 MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN=15
 MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
+# The high-stock skip on the incremental tier (ADR 0014). Default 100.
+MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
+# The MONTHLY reconciliation — see "The monthly reconciliation" below. Leave it
+# OUT until the normal sweeps have run cleanly for a while.
+MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED=1
 ```
 
 `prepare-deploy.mjs` copies it into the artifact **as `.env`** after the wipe, and

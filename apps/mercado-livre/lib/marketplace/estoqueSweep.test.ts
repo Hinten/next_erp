@@ -47,6 +47,7 @@ import {
   MAX_PAGES_PER_SWEEP,
   type StockSweepDeps,
   type StockSweepMode,
+  isSlotDaReconciliacao,
   isSlotDoDaily,
   janelaDoSweep,
   runStockSweep,
@@ -384,6 +385,25 @@ describe('janelaDoSweep', () => {
   it('incremental, junk cursor field → treated as no cursor', () => {
     const janela = janelaDoSweep('incremental', NOW_MS, { cursorUs: 'abc' });
     expect(janela.changedSinceMs).toBe(NOW_MS - 15 * 60_000 - 20_000);
+  });
+
+  it('reconciliacao → force-all window, ledger baseline = the last full pass', () => {
+    const lastUs = (NOW_MS - 30 * 86_400_000) * 1000;
+    const janela = janelaDoSweep('reconciliacao', NOW_MS, { lastReconciliacaoAtUs: lastUs });
+    // -1 is THE query's force-all: every anchor survives the window filter,
+    // including families with no estoque doc at all.
+    expect(janela.changedSinceMs).toBe(-1);
+    expect(janela.modo).toBe('reconciliacao');
+    // The COMPARISON window is its own last completed pass, not the query's.
+    expect(janela.movimentosDesdeMs).toBe(NOW_MS - 30 * 86_400_000 - 20_000);
+  });
+
+  it('reconciliacao with NO previous full pass → null baseline (force-send)', () => {
+    const janela = janelaDoSweep('reconciliacao', NOW_MS, {});
+    expect(janela.changedSinceMs).toBe(-1);
+    // Nothing to compare against, and summing all of history would be both
+    // expensive and meaningless — so the pass sends everything, once.
+    expect(janela.movimentosDesdeMs).toBeNull();
   });
 
   it('daily → flat dailyWindowHours lookback, modo daily (cursor ignored)', () => {
@@ -767,6 +787,7 @@ describe('runStockSweep — ledger pre-pass wiring', () => {
         afterAnchorId: 'PROD-9',
         changedSinceMs: FROZEN_CHANGED_MS,
         modo: 'incremental',
+        movimentosDesdeMs: FROZEN_CHANGED_MS,
         startedAtUs: NOW_US - 5 * 3_600_000_000,
       },
     });
@@ -858,6 +879,133 @@ describe('runStockSweep — ledger pre-pass wiring', () => {
   });
 });
 
+/* --------------------------- monthly reconciliation ------------------------ */
+
+describe('isSlotDaReconciliacao', () => {
+  // São Paulo is fixed UTC-3: 03:MM local = 06:MM UTC.
+  it('flags only the 03:00 slot on the 1st', () => {
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-01T06:00:00Z'))).toBe(true);
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-01T06:14:59Z'))).toBe(true);
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-01T06:15:00Z'))).toBe(false);
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-02T06:00:00Z'))).toBe(false); // the 2nd
+    expect(isSlotDaReconciliacao(Date.parse('2026-08-01T05:00:00Z'))).toBe(false); // 02:00
+  });
+
+  it('never overlaps the daily slot', () => {
+    const primeiro0200 = Date.parse('2026-08-01T05:00:00Z');
+    const primeiro0300 = Date.parse('2026-08-01T06:00:00Z');
+    expect([isSlotDoDaily(primeiro0200), isSlotDaReconciliacao(primeiro0200)]).toEqual([
+      true,
+      false,
+    ]);
+    expect([isSlotDoDaily(primeiro0300), isSlotDaReconciliacao(primeiro0300)]).toEqual([
+      false,
+      true,
+    ]);
+  });
+});
+
+describe('runStockSweep — monthly reconciliation', () => {
+  it('force-alls the query, skips what did not change, stamps its OWN field', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    // A previous full pass exists, so there IS a baseline to compare against.
+    const lastUs = (NOW_MS - 30 * 86_400_000) * 1000;
+    db.seed(SYNC_PATH, 'INT-A', {
+      cursorUs: (NOW_MS - 600_000) * 1000,
+      lastReconciliacaoAtUs: lastUs,
+    });
+    wireCtx();
+    const { fetchFamilies, calls } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { fetchMovimentos, calls: movCalls } = makeMovimentos(new Map()); // nothing moved
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'reconciliacao', { scheduler, fetchFamilies, fetchMovimentos });
+
+    expect(calls[0]?.changedSinceMs).toBe(-1);
+    // The ledger window is the LAST FULL PASS, not the -1 the query took.
+    expect(movCalls).toEqual([{ desdeMs: NOW_MS - 30 * 86_400_000 - 20_000, depositoId: 'dep-1' }]);
+    // A month of nothing moving ⇒ nothing re-sent. That comparison is what
+    // makes re-walking the whole catalogue affordable.
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1 });
+
+    const state = db.docs(SYNC_PATH).get('INT-A');
+    expect(state).toMatchObject({ lastReconciliacaoAtUs: NOW_US });
+    // Its own field: never lastDailyAtUs (which would claim a daily ran), and
+    // never cursorUs (which belongs to the incremental tier alone).
+    expect(state).not.toHaveProperty('lastDailyAtUs');
+    expect(state?.cursorUs).toBe((NOW_MS - 600_000) * 1000);
+  });
+
+  it('sends a family that DID change, and skips the high-stock rule', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    db.seed(SYNC_PATH, 'INT-A', { lastReconciliacaoAtUs: (NOW_MS - 30 * 86_400_000) * 1000 });
+    wireCtx();
+    // Comfortably high on both sides — the incremental tier would skip it.
+    const alto = familyRow({
+      anchor: member('PROD-1', {
+        estoque: { parentId: 'PROD-1', quantidade: 500, quantidadeReservada: 0 },
+      }),
+    });
+    const { fetchFamilies } = makeFetch([{ rows: [alto], nextAfterAnchorId: null }]);
+    const { fetchMovimentos } = makeMovimentos(movimentou('PROD-1', 1));
+    const { scheduler, enqueue } = makeScheduler();
+
+    await run(db, 'reconciliacao', { scheduler, fetchFamilies, fetchMovimentos });
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a conta with no previous full pass force-sends and reads NO ledger', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { fetchMovimentos, calls: movCalls } = makeMovimentos(new Map());
+    const { scheduler, enqueue } = makeScheduler();
+
+    await run(db, 'reconciliacao', { scheduler, fetchFamilies, fetchMovimentos });
+
+    // No baseline ⇒ nothing summed (the aggregate is never even issued) and
+    // everything is sent once.
+    expect(movCalls).toHaveLength(0);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a truncated reconciliação drained by an incremental tick keeps its semantics', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    const cursorUs = (NOW_MS - 600_000) * 1000;
+    db.seed(SYNC_PATH, 'INT-A', {
+      cursorUs,
+      continuacao: {
+        afterAnchorId: 'PROD-3',
+        changedSinceMs: -1,
+        modo: 'reconciliacao' as const,
+        movimentosDesdeMs: null,
+        startedAtUs: NOW_US - 900_000_000,
+      },
+    });
+    wireCtx();
+    const { fetchFamilies, calls } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { fetchMovimentos } = makeMovimentos(new Map());
+    const { scheduler, enqueue } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies, fetchMovimentos });
+
+    // The frozen force-all window survives the resume, and so does the frozen
+    // null baseline (force-send) — the incremental tick does not re-derive it.
+    expect(calls[0]?.changedSinceMs).toBe(-1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const state = db.docs(SYNC_PATH).get('INT-A');
+    expect(state).toMatchObject({ lastReconciliacaoAtUs: NOW_US, continuacao: null });
+    expect(state).not.toHaveProperty('lastSweepAtUs');
+    expect(state?.cursorUs).toBe(cursorUs); // untouched
+  });
+});
+
 /* --------------------------------- paging ---------------------------------- */
 
 describe('runStockSweep — page loop', () => {
@@ -928,6 +1076,7 @@ describe('runStockSweep — page loop', () => {
         afterAnchorId: 'PROD-1',
         changedSinceMs: cursorUs / 1000 - 20_000,
         modo: 'incremental',
+        movimentosDesdeMs: cursorUs / 1000 - 20_000,
         startedAtUs: NOW_US,
       },
     });
@@ -968,6 +1117,7 @@ describe('runStockSweep — page loop', () => {
         afterAnchorId: 'PROD-1',
         changedSinceMs: NOW_MS - 15 * 60_000 - 20_000,
         modo: 'incremental',
+        movimentosDesdeMs: NOW_MS - 15 * 60_000 - 20_000,
         startedAtUs: NOW_US,
       },
     });
@@ -1005,6 +1155,7 @@ describe('runStockSweep — persistent continuation', () => {
     afterAnchorId: 'PROD-9',
     changedSinceMs: FROZEN_CHANGED_MS,
     modo: 'incremental' as const,
+    movimentosDesdeMs: FROZEN_CHANGED_MS,
     startedAtUs: STARTED_US,
   };
 
@@ -1092,6 +1243,7 @@ describe('runStockSweep — persistent continuation', () => {
       afterAnchorId: 'PROD-3',
       changedSinceMs: NOW_MS - 24 * 3_600_000 - 20_000,
       modo: 'daily' as const,
+      movimentosDesdeMs: NOW_MS - 24 * 3_600_000 - 20_000,
       startedAtUs: NOW_US - 900_000_000,
     };
     db.seed(SYNC_PATH, 'INT-A', { cursorUs, continuacao: contDaily });
@@ -1159,6 +1311,7 @@ describe('runStockSweep — 429 pause gate', () => {
         afterAnchorId: 'PROD-9',
         changedSinceMs: NOW_MS - 7_200_000,
         modo: 'incremental',
+        movimentosDesdeMs: NOW_MS - 7_200_000,
         startedAtUs: NOW_US - 7_200_000_000,
       },
     };

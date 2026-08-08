@@ -137,14 +137,27 @@ export { onNfeAprovada } from './onNfeAprovada';
 export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChanged';
 
 /**
- * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep
- * + the 2AM daily full sweep, both feeding the `sendMercadoLivreStock` queue.
+ * The flag-gated stock sweeps: the 15-minute incremental tier, the 02:00 daily
+ * tier and the MONTHLY full reconciliation (03:00 on the 1st), all feeding the
+ * `sendMercadoLivreStock` queue. The three differ in window AND in send policy —
+ * see ADR 0014; the incremental one additionally skips a change that leaves the
+ * quantity comfortably high on both sides.
+ *
+ * The reconciliation is the corrector for what the first two deliberately do not
+ * see: ML-side drift, and a kit whose component moved without the kit selling.
+ * It carries its OWN flag on top of the master one, so it can be turned off
+ * alone if it costs more ML quota than the drift it heals is worth.
+ *
  * Plain `onSchedule` exports — nothing enqueues against THEIR names, so no
  * rename-safety assertion is needed (the queue they feed is covered by the
  * `MERCADO_LIVRE_STOCK_SEND_QUEUE` assertion above). No-ops until
  * `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` (the coordinated cutover).
  */
-export { sweepMercadoLivreStock, sweepMercadoLivreStockDaily } from './sweepStock';
+export {
+  sweepMercadoLivreStock,
+  sweepMercadoLivreStockDaily,
+  sweepMercadoLivreStockReconciliacao,
+} from './sweepStock';
 
 /**
  * Periodic backstop that pulls new/updated ML orders for each connected account

@@ -15,6 +15,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: null,
       pausedUntilUs: null,
       pauseCount: 0,
+      lastReconciliacaoAtUs: null,
       continuacao: null,
     });
   });
@@ -28,6 +29,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: null,
       pausedUntilUs: null,
       pauseCount: 0,
+      lastReconciliacaoAtUs: null,
       continuacao: null,
     };
     expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
@@ -42,6 +44,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: 1721801100000000,
       pausedUntilUs: null,
       pauseCount: 0,
+      lastReconciliacaoAtUs: null,
       continuacao: null,
     };
     expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
@@ -56,6 +59,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: null,
       pausedUntilUs: 1721801400000000,
       pauseCount: 3,
+      lastReconciliacaoAtUs: null,
       continuacao: null,
     };
     expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
@@ -70,10 +74,12 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: null,
       pausedUntilUs: null,
       pauseCount: 0,
+      lastReconciliacaoAtUs: null,
       continuacao: {
         afterAnchorId: 'PROD-42',
         changedSinceMs: 1721800780000,
         modo: 'incremental',
+        movimentosDesdeMs: 1721800780000,
         startedAtUs: 1721801100000000,
       },
     };
@@ -86,6 +92,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
         afterAnchorId: 'PROD-7',
         changedSinceMs: 1721715000000,
         modo: 'daily',
+        movimentosDesdeMs: 1721715000000,
         startedAtUs: 1721801100000000,
       },
     });
@@ -93,8 +100,33 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       afterAnchorId: 'PROD-7',
       changedSinceMs: 1721715000000,
       modo: 'daily',
+      movimentosDesdeMs: 1721715000000,
       startedAtUs: 1721801100000000,
     });
+  });
+
+  it('a RECONCILIAÇÃO continuation freezes the force-all window and a null baseline', () => {
+    // `changedSinceMs: -1` is the query's force-all; `movimentosDesdeMs: null`
+    // means there was no previous full pass to compare against, so the resumed
+    // tick force-sends rather than summing all of history.
+    const parsed = estoqueMercadoLivreSyncSchema.parse({
+      continuacao: {
+        afterAnchorId: 'PROD-7',
+        changedSinceMs: -1,
+        modo: 'reconciliacao',
+        movimentosDesdeMs: null,
+        startedAtUs: 1721801100000000,
+      },
+    });
+    expect(parsed.continuacao).toMatchObject({ modo: 'reconciliacao', movimentosDesdeMs: null });
+  });
+
+  it('lastReconciliacaoAtUs is its own field and defaults to null', () => {
+    // Reusing lastDailyAtUs would claim a full pass ran when none did — and it
+    // is also the baseline the next full pass sums against.
+    const parsed = estoqueMercadoLivreSyncSchema.parse({});
+    expect(parsed.lastReconciliacaoAtUs).toBeNull();
+    expect(parsed.lastDailyAtUs).toBeNull();
   });
 
   it('rejects a continuacao with an unknown modo', () => {
@@ -103,7 +135,8 @@ describe('estoqueMercadoLivreSyncSchema', () => {
         continuacao: {
           afterAnchorId: 'PROD-7',
           changedSinceMs: 1,
-          modo: 'reconciliacao',
+          modo: 'nao-existe',
+          movimentosDesdeMs: null,
           startedAtUs: 2,
         },
       }),
@@ -117,6 +150,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
           afterAnchorId: '',
           changedSinceMs: 1,
           modo: 'daily',
+          movimentosDesdeMs: null,
           startedAtUs: 2,
         },
       }),

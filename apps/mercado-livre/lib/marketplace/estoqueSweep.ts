@@ -122,7 +122,7 @@ import { MlTasksDisabledError } from './mlTasks';
 import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';
 
 /** Which of the two scheduled ticks is running (drives window + cursor rules). */
-export type StockSweepMode = 'incremental' | 'daily';
+export type StockSweepMode = 'incremental' | 'daily' | 'reconciliacao';
 
 /**
  * Is `nowMs` inside the 02:00 America/Sao_Paulo slot (02:00–02:14) that
@@ -145,6 +145,25 @@ export function isSlotDoDaily(nowMs: number): boolean {
   // — irrelevant here (we only compare against 2), but normalize anyway.
   const hour = get('hour') % 24;
   return hour === 2 && get('minute') < 15;
+}
+
+/**
+ * Is `nowMs` inside the 03:00 America/Sao_Paulo slot on the 1st of the month
+ * that belongs to the MONTHLY reconciliation? Same shape (and same reason) as
+ * {@link isSlotDoDaily}: one cron line cannot express "every quarter-hour except
+ * this one slot", so the incremental wrapper skips it in code. `< 15` absorbs
+ * Cloud Scheduler jitter on the 03:00 firing.
+ */
+export function isSlotDaReconciliacao(nowMs: number): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    hour12: false,
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+  }).formatToParts(new Date(nowMs));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? Number.NaN);
+  return get('day') === 1 && get('hour') % 24 === 3 && get('minute') < 15;
 }
 
 /**
@@ -218,8 +237,16 @@ const MULTIORIGIN_ERROR =
 
 /** The window `janelaDoSweep` derives — feeds THE query + the movement pass. */
 export interface SweepJanela {
-  /** Exclusive estoque-change window start (ms since epoch). */
+  /** Exclusive estoque-change window start (ms since epoch). `-1` = force-all. */
   changedSinceMs: number;
+  /**
+   * The LEDGER window the movement pre-pass sums over (ms). Normally identical
+   * to `changedSinceMs`; on a reconciliação they diverge on purpose — the query
+   * takes every anchor (`-1`) while the comparison is against the last COMPLETED
+   * full pass. `null` means there is no baseline (a conta's first full pass), so
+   * nothing is summed and every listing is force-sent.
+   */
+  movimentosDesdeMs: number | null;
   /**
    * The mode whose SEND POLICY this window carries. Recorded explicitly rather
    * than inferred: it used to be read off `vendaCutoffUs == null`, a field that
@@ -248,8 +275,22 @@ export function janelaDoSweep(
   stateRaw: Record<string, unknown>,
 ): SweepJanela {
   const overlapMs = windowOverlapSec() * 1000;
+  if (mode === 'reconciliacao') {
+    // `-1` is THE query's documented force-all: the S4 filter is
+    // `coalesce(logicalMaximum(...), 0) > changedSinceMs`, so EVERY anchor
+    // survives — including families with no estoque doc at all, which any
+    // positive window excludes by design. The comparison baseline is the last
+    // completed full pass, NOT this window.
+    const desdeUs = finiteNumber(stateRaw.lastReconciliacaoAtUs);
+    return {
+      changedSinceMs: -1,
+      modo: 'reconciliacao',
+      movimentosDesdeMs: desdeUs == null ? null : Math.floor(desdeUs / 1000) - overlapMs,
+    };
+  }
   if (mode === 'daily') {
-    return { changedSinceMs: nowMs - dailyWindowHours() * 3_600_000 - overlapMs, modo: 'daily' };
+    const changedSinceMs = nowMs - dailyWindowHours() * 3_600_000 - overlapMs;
+    return { changedSinceMs, modo: 'daily', movimentosDesdeMs: changedSinceMs };
   }
   const cursorUs = finiteNumber(stateRaw.cursorUs);
   const changedSinceMs =
@@ -257,7 +298,7 @@ export function janelaDoSweep(
       ? nowMs - incrementalWindowMin() * 60_000 - overlapMs
       : Math.max(Math.floor(cursorUs / 1000), nowMs - cursorMaxLookbackHours() * 3_600_000) -
         overlapMs;
-  return { changedSinceMs, modo: 'incremental' };
+  return { changedSinceMs, modo: 'incremental', movimentosDesdeMs: changedSinceMs };
 }
 
 /* ------------------------------- continuation ------------------------------- */
@@ -274,6 +315,8 @@ export interface SweepContinuacao {
   changedSinceMs: number;
   /** The frozen mode — decides the resumed tick's send policy. */
   modo: StockSweepMode;
+  /** The frozen ledger window (ms); `null` ⇒ no baseline, force-send. */
+  movimentosDesdeMs: number | null;
   /** When the ORIGINAL (pre-truncation) sweep started (µs). */
   startedAtUs: number;
 }
@@ -292,11 +335,50 @@ function parseContinuacao(raw: unknown): SweepContinuacao | null {
     typeof o.afterAnchorId === 'string' && o.afterAnchorId !== '' ? o.afterAnchorId : null;
   const changedSinceMs = finiteNumber(o.changedSinceMs);
   const startedAtUs = finiteNumber(o.startedAtUs);
-  const modo = o.modo === 'incremental' || o.modo === 'daily' ? o.modo : null;
-  if (afterAnchorId == null || changedSinceMs == null || startedAtUs == null || modo == null) {
+  const modo =
+    o.modo === 'incremental' || o.modo === 'daily' || o.modo === 'reconciliacao' ? o.modo : null;
+  // Explicitly `null` OR a finite number — an ABSENT key is malformed, never
+  // silently read as "no baseline" (which would force-send a whole catalogue).
+  const desdeOk = o.movimentosDesdeMs === null || finiteNumber(o.movimentosDesdeMs) != null;
+  if (
+    afterAnchorId == null ||
+    changedSinceMs == null ||
+    startedAtUs == null ||
+    modo == null ||
+    !desdeOk
+  ) {
     return null;
   }
-  return { afterAnchorId, changedSinceMs, modo, startedAtUs };
+  return {
+    afterAnchorId,
+    changedSinceMs,
+    modo,
+    movimentosDesdeMs: o.movimentosDesdeMs === null ? null : finiteNumber(o.movimentosDesdeMs),
+    startedAtUs,
+  };
+}
+
+/**
+ * The completion stamp for a finished sweep, keyed on the FROZEN mode rather
+ * than on the tick that happened to finish it: a daily continuation drained by
+ * an incremental tick completed a DAILY pass, and stamping `lastSweepAtUs` for
+ * it would advance a cursor over a window the incremental tier never covered.
+ *
+ * Each tier owns its own field. Reusing one would tell an operator a pass ran
+ * when a different one did — and `lastReconciliacaoAtUs` is not merely a report:
+ * it is the baseline the NEXT full pass sums movements against.
+ *
+ * `coberturaUs` is what an incremental pass advances its cursor to — the
+ * ORIGINAL sweep's start on a drained continuation, `now` on a fresh run.
+ */
+function carimboDoModo(
+  modo: StockSweepMode,
+  nowUs: number,
+  coberturaUs: number,
+): Record<string, unknown> {
+  if (modo === 'incremental') return { cursorUs: coberturaUs, lastSweepAtUs: nowUs };
+  if (modo === 'daily') return { lastDailyAtUs: nowUs };
+  return { lastReconciliacaoAtUs: nowUs };
 }
 
 /* ------------------------------- containment -------------------------------- */
@@ -405,10 +487,14 @@ async function sweepConta(
   // OWN window's work waits for the next tick, which is exactly what keeps the
   // caps meaningful (one tick is never two sweeps' worth of pages).
   const continuacao = parseContinuacao(stateRaw.continuacao);
-  const { changedSinceMs, modo } =
+  const { changedSinceMs, modo, movimentosDesdeMs } =
     continuacao == null
       ? janelaDoSweep(mode, nowMs, stateRaw)
-      : { changedSinceMs: continuacao.changedSinceMs, modo: continuacao.modo };
+      : {
+          changedSinceMs: continuacao.changedSinceMs,
+          modo: continuacao.modo,
+          movimentosDesdeMs: continuacao.movimentosDesdeMs,
+        };
   // A resumed sweep's send policy comes from the FROZEN window, never from the
   // tick that picks it up: a daily continuation drained by an incremental tick
   // must keep daily semantics, or the high-stock skip would silently suppress
@@ -462,8 +548,18 @@ async function sweepConta(
       // family rows never runs it. Both tiers need it — the daily one still has
       // to know whether the number actually changed; only the high-stock skip is
       // incremental-only.
-      movimentos ??= await getMovimentos(changedSinceMs, depositoId);
-      const anteriores = quantidadesAnteriores(row, depositoId, movimentos);
+      // `null` baseline ⇒ no ledger read at all and no reconstruction: the
+      // family is force-sent. That is a conta's FIRST full pass, where there is
+      // nothing to compare against and summing all of history would be both
+      // expensive and meaningless.
+      const anteriores =
+        movimentosDesdeMs == null
+          ? null
+          : quantidadesAnteriores(
+              row,
+              depositoId,
+              (movimentos ??= await getMovimentos(movimentosDesdeMs, depositoId)),
+            );
       if (!deveEnviarFamilia(quantidades, anteriores, filtroIncremental)) {
         // Either nothing the family publishes actually moved, or (incremental
         // only) it moved while staying comfortably high on both sides — the
@@ -532,7 +628,13 @@ async function sweepConta(
     // Forward progress: freeze the window + the position. `cursorUs` is NOT
     // advanced — the window is only covered once the continuation drains.
     patch = {
-      continuacao: { afterAnchorId: retomarDe, changedSinceMs, modo, startedAtUs },
+      continuacao: {
+        afterAnchorId: retomarDe,
+        changedSinceMs,
+        modo,
+        movimentosDesdeMs,
+        startedAtUs,
+      },
       lastError: null,
     };
   } else if (truncated) {
@@ -549,22 +651,16 @@ async function sweepConta(
   } else if (continuacao != null) {
     // The continuation DRAINED: the frozen window is now fully covered, up to
     // the ORIGINAL sweep's start. Clear it and stamp the mode's own field.
-    patch = filtroIncremental
-      ? { continuacao: null, cursorUs: startedAtUs, lastSweepAtUs: nowUs, lastError: null }
-      : { continuacao: null, lastDailyAtUs: nowUs, lastError: null };
+    patch = { continuacao: null, lastError: null, ...carimboDoModo(modo, nowUs, startedAtUs) };
   } else {
     // A complete fresh sweep: the incremental cursor advances to `nowMs`; the
     // daily sweep stamps `lastDailyAtUs` and never touches the cursor. Both
     // clear `continuacao` defensively (nothing is left to resume).
-    patch =
-      mode === 'incremental'
-        ? {
-            cursorUs: millisToMicros(nowMs),
-            lastSweepAtUs: nowUs,
-            lastError: null,
-            continuacao: null,
-          }
-        : { lastDailyAtUs: nowUs, lastError: null, continuacao: null };
+    patch = {
+      lastError: null,
+      continuacao: null,
+      ...carimboDoModo(modo, nowUs, millisToMicros(nowMs)),
+    };
   }
   await estoqueMercadoLivreSyncCollection.merge(db, {}, integracaoId, patch);
 
