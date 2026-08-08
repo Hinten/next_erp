@@ -6,8 +6,8 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // ⚠️ BLOCKING pre-merge gate for Step 10 PR C — run MANUALLY against staging
 // (agents never run firebase; index deploy is a coordinated human step).
 //
-// Live proof that `fetchStockFamilies` AND the sold-ids pre-pass
-// (`fetchSoldProdutoIds`) in lib/marketplace/estoquePlan.ts ride the declared
+// Live proof that `fetchStockFamilies` AND the ledger pre-pass
+// (`fetchMovimentosDaJanela`) in lib/marketplace/estoquePlan.ts ride the declared
 // indexes instead of silently full-scanning: this Firestore Enterprise
 // edition auto-creates NO indexes, an unindexed subquery scans its collection
 // ONCE PER OUTER ROW, and Enterprise bills data scanned. Pipelines have no
@@ -20,11 +20,12 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // caps OUTPUT ROWS, and rows are
 // discarded only AFTER the scan that produced them. The widened retries make
 // this worse on purpose: they LOWER the cutoff (changedSinceMs = -1,
-// cutoffUs = 0) so that more rows survive, which means more data scanned, not
-// less. Concretely, the sold-ids run is bounded by the 30d window ONLY once
-// an index actually serves `timestamp` as a range; while `timestamp` is
-// residual (see 3.) the run reads EVERY saída pedido in the collection. Run
-// this against staging, and expect the first run — before the new indexes
+// desdeMs = 0) so that more rows survive, which means more data scanned, not
+// less. Concretely, the ledger run is bounded by its window ONLY once an index
+// actually serves `timestamp` as a range; while `timestamp` is residual (see
+// 3.) the run reads EVERY historicoEstoque row in the database — and an
+// aggregate scans before it groups, so there is no output cap to hide behind.
+// Run this against staging, and expect the first run — before the new indexes
 // deploy — to be the expensive one.
 //
 // What it does, in order:
@@ -59,24 +60,29 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     firestore.indexes.json): reports the form the anchors scan rode.
 //     Verdict ASC (#705) — the CONTAINS twin was dropped; the gate still
 //     prints the form so a planner regression is visible.
-//  3. The sold-ids pre-pass (the fetchSoldProdutoIds shape). The sales signal
-//     moved OUT of THE query (owner-approved): the per-anchor correlated
-//     pedidos probe could never ride the itensIds indexes — its membership
-//     list is a per-row VARIABLE (anchor + childIds), and the planner binds
-//     variable candidate lists only as residual Filters (staging-proven,
-//     gate run 2). It is now ONE uncorrelated pedidos pass per conta per
-//     incremental sweep: `where ehSaida == true AND estado equalAny AND
-//     timestamp >= cutoff`, `unnest(itensIds as pid)`, `distinct('pid')`,
-//     `limit`. Explain-analyze asserts `ehSaida` AND `timestamp` are BOUND on
-//     an index-identified access node — the NEW `pedidos(ehSaida ASC, estado
-//     ASC, timestamp DESC)` entry, where all three predicates bind. A residual
-//     `timestamp` is a FAIL, not an accepted cost: in run 2, with `pedidos
-//     (ehSaida, timestamp DESC)` and `pedidos(ehSaida, estado, numero)` both
-//     deployed, the planner took the `estado` index and left `timestamp` in a
-//     residual Filter — unbounded over ALL time. Until the new entry deploys
-//     this check FAILS PENDING-DEPLOY by design. When the run seeds, the
-//     seeded paid saída pedido doubles as the correctness probe: its
-//     `itensIds` anchor id MUST appear in the distinct output.
+//  3. The LEDGER pre-pass (the fetchMovimentosDaJanela shape). The sales
+//     signal moved OUT of THE query (owner-approved) and then out of `pedidos`
+//     entirely (ADR 0014). Two facts drove that. First, the per-anchor
+//     correlated pedidos probe could never ride the itensIds indexes — its
+//     membership list is a per-row VARIABLE (anchor + childIds), and the
+//     planner binds variable candidate lists only as residual Filters
+//     (staging-proven, gate run 2). Second, "did something sell" was the wrong
+//     question: the sweep needs "did the PUBLISHED number change", which the
+//     summable v2 ledger answers exactly and without the old 10 000-id cap.
+//     It is now ONE uncorrelated `historicoEstoque` collection-group aggregate
+//     per (window, depósito) per tick: `where timestamp >= desde AND depósito`,
+//     grouped `sum(movimento)` / `sum(movimentoReservada)` plus the
+//     `countIf(not(exists('movimento')))` fail-open counter, `groups:
+//     ['parentId', 'depositoOuterRef']`. Explain-analyze asserts `timestamp` is
+//     BOUND on an index-identified access node — the NEW
+//     `historicoEstoque(timestamp, parentId, depositoOuterRef)`
+//     COLLECTION_GROUP entry. A residual `timestamp` is a FAIL, not an accepted
+//     cost: an aggregate scans before it groups, so an unbounded window reads
+//     the whole ledger at Enterprise's per-byte price. The run additionally
+//     NOTES whether `depositoOuterRef` came back as a residual Filter — served
+//     but not covered, i.e. the aggregate is reading documents rather than
+//     index entries. Until the new entry deploys this check FAILS
+//     PENDING-DEPLOY by design.
 //  5. SPIKE: anchor-predicate A/B (#431). THE question this spike exists to
 //     answer is whether the stock sweep can stop reading the DEPRECATED
 //     `integracoesComProduto` array. Shape A (shipped) puts the conta term IN
@@ -189,8 +195,9 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // visible in the printed values — every seeded estoque's `ultimaModificacao`
 // is `now` so the explain runs return rows >= 1 under the SHIPPED windows
 // (the widened-retry + honest zero-rows messages stay as fallbacks), and the
-// seeded pedido is the sold-ids correctness probe (its `itensIds` anchor
-// must surface in the distinct output). EVERY seeded doc is deleted in a
+// two seeded `historicoEstoque` rows are the ledger correctness probe (the v2
+// one must SUM, the legacy v1-shaped one must be COUNTED as unknown rather
+// than silently ignored). EVERY seeded doc is deleted in a
 // `finally` (reverse creation order) even when checks fail or throw;
 // anything left behind is logged AND fails the gate.
 //
@@ -366,10 +373,11 @@ const seedRefs = [];
  * a variation CHILD that is a KIT over the component — its
  * `componentesKitKeys` differ from the anchor's (null), the configuration
  * that makes spike (a)'s per-row binding visible — the anchor's
- * `produtoMercadoLivre` link, the child's `variacaoMercadoLivre` link, and a
- * paid saída pedido on the anchor (`timestamp` in µS, the pedido wire unit)
- * — the sold-ids pass correctness probe: its `itensIds` anchor id must
- * appear in the distinct output. Estoques sit at the deterministic
+ * `produtoMercadoLivre` link, the child's `variacaoMercadoLivre` link, and
+ * TWO `historicoEstoque` rows under the anchor's estoque (`timestamp` in mS,
+ * the ledger wire unit) — the pre-pass correctness probe: one v2 row that
+ * must SUM, one legacy v1-shaped row that must land in `nDesconhecido`.
+ * Estoques sit at the deterministic
  * `est-<produtoId>-<depositoId>` ids (makeEstoqueUid) with
  * `ultimaModificacao = now`, so the SHIPPED windows match them. Refs are
  * pushed BEFORE each write: a failed set still gets a delete attempt
@@ -383,6 +391,27 @@ async function seedProbeData() {
   const childId = `${SEED_PREFIX}-child`;
   const linkId = `${SEED_PREFIX}-link`;
   const produtos = db.collection('produtos');
+  const historicoDocs = (produtoId, ts) => {
+    const hist = produtos
+      .doc(produtoId)
+      .collection('estoques')
+      .doc(`est-${produtoId}-${depId}`)
+      .collection('historicoEstoque');
+    const chaves = { parentId: produtoId, depositoOuterRef: `documents/depositos/${depId}` };
+    return [
+      // v2: summable — contributes -3 / -1 to the group.
+      [
+        hist.doc(`${SEED_PREFIX}-hist-v2`),
+        { ...chaves, timestamp: ts, movimento: -3, movimentoReservada: -1, saldo: 7 },
+      ],
+      // v1 (legacy Flutter shape): NO `movimento` key — must land in
+      // `nDesconhecido`, never be read as "moved nothing".
+      [
+        hist.doc(`${SEED_PREFIX}-hist-v1`),
+        { ...chaves, timestamp: ts, quantidade: -2, ehBalanco: false },
+      ],
+    ];
+  };
   const estoqueDoc = (produtoId, quantidade) => [
     produtos.doc(produtoId).collection('estoques').doc(`est-${produtoId}-${depId}`),
     {
@@ -445,11 +474,14 @@ async function seedProbeData() {
         produtoMercadoLivreOuterRef: `documents/produtos/${anchorId}/produtoMercadoLivre/${linkId}`,
       },
     ],
-    [
-      db.collection('pedidos').doc(`${SEED_PREFIX}-ped`),
-      // Pedido `timestamp` is µS at rest (estoquePlan.ts module doc).
-      { ehSaida: true, estado: 'pago', itensIds: [anchorId], timestamp: now * 1000, itens: {} },
-    ],
+    // Two ledger rows under the ANCHOR's estoque — the pre-pass correctness
+    // probe. `historicoEstoque.timestamp` is MILLIseconds (schema v2), unlike
+    // the pedido/estado trails. The second row is deliberately shaped like a
+    // legacy Flutter v1 write (no `movimento` key at all): it is the only way
+    // to prove, live, that `countIf(not(exists('movimento')))` is accepted by
+    // the backend and actually counts — pipelines never run in the emulator,
+    // so this gate is the sole coverage for the fail-open accumulator.
+    ...historicoDocs(anchorId, now),
   ];
   for (const [ref, data] of docs) {
     seedRefs.push(ref); // BEFORE the write — a failed set still gets a delete attempt
@@ -483,8 +515,10 @@ async function cleanupProbeData() {
 }
 
 /* ---- THE query, mirrored from estoquePlan.ts (keep-in-sync note above) ----- */
-/* No childIds define, no vendaProbe, no temVenda30d — the sales signal is the
-   uncorrelated sold-ids pre-pass (mirrored after this section).              */
+/* No childIds define, no vendaProbe, no temVenda30d — the change signal is the
+   uncorrelated historicoEstoque ledger aggregate (mirrored after this
+   section), and no component rollup: sibling kits are a monthly concern
+   (ADR 0014).                                                               */
 
 const depMatch = () =>
   pipelines.or(
@@ -723,6 +757,7 @@ const buildMovimentosPipeline = (desdeMs) =>
       accumulators: [
         pipelines.sum('movimento').as('dq'),
         pipelines.sum('movimentoReservada').as('dr'),
+        pipelines.countIf(pipelines.not(pipelines.exists('movimento'))).as('nDesconhecido'),
       ],
       groups: ['parentId', 'depositoOuterRef'],
     });
@@ -1392,6 +1427,37 @@ try {
   }
   const movPlan = movSnap.explainStats?.text ?? '';
   console.log(`groups returned: ${movSnap.results.length} (${movLabel})`);
+
+  // Correctness probe (seeded runs only): the accumulators are the ONE part of
+  // this design the emulator can never exercise. Assert the seeded anchor's
+  // group both SUMS the v2 row and COUNTS the legacy one — a `nDesconhecido`
+  // of 0 here would mean the fail-open counter is silently inert, which reads
+  // in production as "nothing moved" on every Flutter-written movement.
+  if (shouldSeed) {
+    const grupo = movSnap.results
+      .map((r) => r.data())
+      .find((d) => d.parentId === `${SEED_PREFIX}-anchor`);
+    if (!grupo) {
+      fail(
+        `ledger probe: no aggregate group for the seeded anchor ` +
+          `(${SEED_PREFIX}-anchor) — the pre-pass would see its movement as absent`,
+      );
+    } else {
+      console.log(`ledger probe group: ${JSON.stringify(grupo)}`);
+      if (Number(grupo.dq) !== -3 || Number(grupo.dr) !== -1) {
+        fail(
+          `ledger probe: expected dq -3 / dr -1 from the seeded v2 row, got ${JSON.stringify(grupo)}`,
+        );
+      }
+      if (Number(grupo.nDesconhecido) !== 1) {
+        fail(
+          `ledger probe: expected nDesconhecido 1 from the seeded legacy row, got ` +
+            `${JSON.stringify(grupo.nDesconhecido)} — countIf(not(exists('movimento'))) ` +
+            `is not counting, so a v1 row would be read as "moved nothing"`,
+        );
+      }
+    }
+  }
   console.log('\n----- FULL PLAN (ledger pre-pass) -----\n');
   console.log(movPlan);
   if (movPlan.trim() === '') {

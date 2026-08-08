@@ -742,6 +742,20 @@ export interface MovimentoDaJanela {
   dq: number;
   /** Σ `movimentoReservada` — the signed change in `quantidadeReservada`. */
   dr: number;
+  /**
+   * At least one row in the window carries **no `movimento` key**, so the sums
+   * above do not account for the whole window and `anterior` cannot be
+   * reconstructed. Consumers must treat the pair as *unknown* and send —
+   * never as "the sums say it did not move", which is how a legacy row would
+   * otherwise silence a real movement.
+   *
+   * ⚠️ "Unknown" has exactly ONE wire representation: the field is **absent**.
+   * `historicoEstoque` v2 writes `movimento` on every row it creates, and the
+   * v1→v2 migration OMITS the key on a balanço whose delta it cannot recover
+   * rather than storing an explicit `null` — precisely so this single
+   * existence test is complete. Keep it that way.
+   */
+  desconhecido: boolean;
 }
 
 /** Map key for {@link MovimentosDaJanela}. Exported so tests build fixtures. */
@@ -786,11 +800,19 @@ export type FetchMovimentosDaJanela = (
  * COLLECTION_GROUP. An aggregate without a covering index buffers every group in
  * the 128 MiB budget and can `RESOURCE_EXHAUSTED` — this one is not optional.
  *
- * Fails OPEN by omission: a row whose `movimento` is absent (a Flutter-era row,
- * or the ML import's unaudited stock write) contributes nothing to the sum, so
- * the reconstructed `anterior` is wrong in the direction that makes
- * {@link deveEnviarFamilia} see a change and SEND. Never the direction that
- * silently skips.
+ * Fails OPEN **explicitly**, not by omission. A row whose `movimento` key is
+ * absent (a Flutter-era v1 row — and Flutter is a live concurrent writer during
+ * the dual run) is skipped by `sum`, which on its own would make the window look
+ * like it moved nothing and let {@link deveEnviarFamilia} SKIP a real movement.
+ * So the aggregate also counts those rows per group and reports
+ * {@link MovimentoDaJanela.desconhecido}; the reconstruction then drops the pair
+ * and the policy sends. A pair simply **absent** from the result did not move at
+ * all — that one is genuinely unchanged, and skipping it is the point.
+ *
+ * ⚠️ Still blind to a quantity written with **no ledger row whatsoever** (the ML
+ * import's unaudited `merge`, `import.ts` / `importVariations.ts`): there is
+ * nothing in the window to count. That gap is closed at the source, by making
+ * that writer append a row — tracked separately.
  *
  * NOT emulator-runnable (pipelines never are) — tested through the seam.
  */
@@ -811,6 +833,9 @@ export const fetchMovimentosDaJanela: FetchMovimentosDaJanela = async (db, args)
       accumulators: [
         pipelines.sum('movimento').as('dq'),
         pipelines.sum('movimentoReservada').as('dr'),
+        // The fail-open counter: rows `sum` silently ignored because they carry
+        // no `movimento` at all. Same scan, no extra query.
+        pipelines.countIf(pipelines.not(pipelines.exists('movimento'))).as('nDesconhecido'),
       ],
       groups: ['parentId', 'depositoOuterRef'],
     })
@@ -821,11 +846,17 @@ export const fetchMovimentosDaJanela: FetchMovimentosDaJanela = async (db, args)
     const row = result.data() as Record<string, unknown>;
     const parentId = row.parentId;
     if (typeof parentId !== 'string' || parentId === '') continue;
-    // The group value echoes whichever `depositoOuterRef` form the rows carry;
-    // the aggregate is already scoped to ONE depósito, so key on the arg.
-    movimentos.set(chaveMovimento(parentId, args.depositoId), {
-      dq: finiteNumber(row.dq) ?? 0,
-      dr: finiteNumber(row.dr) ?? 0,
+    // The aggregate groups by the RAW `depositoOuterRef`, and the filter above
+    // accepts both accepted encodings (`documents/depositos/x` and
+    // `depositos/x` — the outerRef.ts invariant), so ONE pair can come back as
+    // TWO groups. The scope is a single depósito either way, so key on the arg
+    // and ACCUMULATE — a `set` here would drop whichever group arrived first.
+    const chave = chaveMovimento(parentId, args.depositoId);
+    const anterior = movimentos.get(chave);
+    movimentos.set(chave, {
+      dq: (anterior?.dq ?? 0) + (finiteNumber(row.dq) ?? 0),
+      dr: (anterior?.dr ?? 0) + (finiteNumber(row.dr) ?? 0),
+      desconhecido: (anterior?.desconhecido ?? false) || (finiteNumber(row.nDesconhecido) ?? 0) > 0,
     });
   }
   return movimentos;
@@ -973,25 +1004,50 @@ export function quantidadesDaFamilia(row: StockFamilyRow): Map<string, number> {
   return out;
 }
 
+/** The window's net movement for the pair one estoque row belongs to. */
+function movimentoDaLinha(
+  row: RawEstoqueRow,
+  depositoId: string,
+  movimentos: MovimentosDaJanela,
+): MovimentoDaJanela | null {
+  const parentId = row.parentId;
+  // No join key ⇒ nothing in the ledger can be attributed to this row. Reads as
+  // "did not move", the same as a pair with no rows in the window.
+  if (typeof parentId !== 'string' || parentId === '') return null;
+  return movimentos.get(chaveMovimento(parentId, depositoId)) ?? null;
+}
+
 /**
  * Rebuild ONE member's estoque row as it stood at the window start, by undoing
  * the window's net movement. `null` when the pair never moved — the caller reads
  * that as "unchanged", which is exactly right.
+ *
+ * ⚠️ Only call this once {@link movimentoDesconhecido} has cleared the row. A
+ * pair with an unreadable row has meaningless sums, and subtracting them would
+ * manufacture a *confident* wrong `anterior` — the one outcome the fail-open
+ * contract exists to prevent.
  */
 function desfazerMovimento(
   row: RawEstoqueRow,
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): RawEstoqueRow | null {
-  const parentId = row.parentId;
-  if (typeof parentId !== 'string' || parentId === '') return null;
-  const mov = movimentos.get(chaveMovimento(parentId, depositoId));
+  const mov = movimentoDaLinha(row, depositoId, movimentos);
   if (mov == null) return null;
   return {
     ...row,
     quantidade: (finiteNumber(row.quantidade) ?? 0) - mov.dq,
     quantidadeReservada: (finiteNumber(row.quantidadeReservada) ?? 0) - mov.dr,
   };
+}
+
+/** True when this row's pair moved by an amount the ledger cannot report. */
+function movimentoDesconhecido(
+  row: RawEstoqueRow,
+  depositoId: string,
+  movimentos: MovimentosDaJanela,
+): boolean {
+  return movimentoDaLinha(row, depositoId, movimentos)?.desconhecido === true;
 }
 
 /**
@@ -1002,6 +1058,12 @@ function desfazerMovimento(
  * This is what lets the sweep answer "did the published number actually change"
  * without any per-family query: {@link fetchMovimentosDaJanela} pays once per
  * tick, and this is pure arithmetic on top of it.
+ *
+ * ⚠️ A member is **omitted** — not approximated — when any estoque its quantity
+ * depends on (its own, or a kit component's) moved by an unreadable amount.
+ * {@link deveEnviarFamilia} reads a missing entry as *unknown* and sends. This
+ * is the fail-open path, and it only works because the member is left out
+ * entirely: a fallback to the current row would read as "unchanged" and skip.
  */
 export function quantidadesAnteriores(
   row: StockFamilyRow,
@@ -1010,6 +1072,10 @@ export function quantidadesAnteriores(
 ): Map<string, number> {
   const out = new Map<string, number>();
   for (const member of [row.anchor, ...row.children]) {
+    const desconhecido =
+      (member.estoque != null && movimentoDesconhecido(member.estoque, depositoId, movimentos)) ||
+      member.componentEstoques.some((e) => movimentoDesconhecido(e, depositoId, movimentos));
+    if (desconhecido) continue;
     const anterior: FamilyMember = {
       ...member,
       estoque:
