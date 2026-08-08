@@ -4,11 +4,11 @@
  * (PR C) and the `sendMercadoLivreStock` task handler (PR B). No scheduling,
  * no task enqueue and no ML API call lives here: this module DISCOVERS the
  * produto FAMILIES with stock movement (`fetchStockFamilies` — THE query),
- * fetches the sold produto ids once per conta per incremental sweep
- * (`fetchSoldProdutoIds` — the uncorrelated sales pre-pass), computes every
- * family member's send quantity at sweep time (`quantidadesDaFamilia`),
- * applies the incremental activity filter (`deveEnviarIncremental`) and turns
- * one family row into ready-to-enqueue send-task drafts (`buildSendTasks`).
+ * sums the stock ledger once per tick (`fetchMovimentosDaJanela` — the
+ * uncorrelated movement pre-pass), computes every family member's send quantity
+ * at sweep time (`quantidadesDaFamilia`) and at the WINDOW START
+ * (`quantidadesAnteriores`), applies the send policy (`deveEnviarFamilia`) and
+ * turns one family row into ready-to-enqueue drafts (`buildSendTasks`).
  *
  * ---- ⚠️ READ **ADR 0014** (`apps/docs`, "Kit stock propagation and the
  * tiered stock sweep") BEFORE changing what this query joins or which families
@@ -36,28 +36,26 @@
  * produtos/estoques for.
  *
  * Owner decisions locked 2026-07-27:
- *  1. Sale estados = the `ESTADOS_VENDA` allow-list (emAnalise /
- *     emProcessamento / pago / finalizado / estornadoParcialmente).
- *  2. Standalone produtos (no children): the legacy query EXCLUDED the
+ *  1. Standalone produtos (no children): the legacy query EXCLUDED the
  *     anchor's own estoque as a change trigger — deliberately FIXED here: the
  *     anchor's own estoque is a first-class trigger (`maxOwn` in S3/S4).
  *     Expect a one-time correction burst on the first post-deploy sweep.
- *  3. Retry staleness: tasks are sent VERBATIM (legacy parity, zero extra
+ *  2. Retry staleness: tasks are sent VERBATIM (legacy parity, zero extra
  *     reads at send time). Quantities are computed once, at sweep time, and
  *     carried in the task payload; the send handler logs
  *     `ageMs = now − sweepComputedAtMs` on every send and the next sweep
  *     converges any staleness.
  *
- * Timestamp units: produto/estoque timestamps are MS since epoch; pedido
- * `timestamp` is µS (hence the sold-ids pass's `vendaCutoffUs`). Residual
- * risk: pre-µs-migration
- * pedidos still holding ms at rest silently miss the sales window — accepted,
- * bounded by the pedido µs migration having run. Residual risk 2: component
- * quantities depend on the `estoques.parentId` denorm (legal null at rest per
- * the schema) — all known writers set it (legacy Flutter models.dart:4301 +
- * aplicarEstoque / sincronizarEstoquePedido / usecases), but a null-parentId
- * estoque yields no join row and that component scores 0 (#238); staging
- * spot-check before the flag flips.
+ * Timestamp units: produto/estoque timestamps AND `historicoEstoque.timestamp`
+ * are MS since epoch — the movement pre-pass windows on ms, so nothing here
+ * touches µs any more (the retired sales pass was the only µs consumer).
+ * Residual risk: component quantities depend on the `estoques.parentId` denorm
+ * (legal null at rest per the schema) — all known writers set it (legacy Flutter
+ * models.dart:4301 + aplicarEstoque / sincronizarEstoquePedido / usecases), but
+ * a null-parentId estoque yields no join row and that component scores 0 (#238).
+ * ⚠️ `parentId` is now load-bearing TWICE: the component join AND the movement
+ * aggregate's group key, so a null there costs a wrong `anterior` as well — which
+ * fails OPEN (reads as changed ⇒ send). Staging spot-check before the flag flips.
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
@@ -92,15 +90,16 @@
  *    predicate to serve (a declared entry was dropped for exactly that reason);
  *  - children: the `paiId` equality rides the existing `produtos(paiId,
  *    nome)` index as a prefix;
- *  - sales pass (`fetchSoldProdutoIds` — NOT part of THE query): rides the NEW
- *    `pedidos(ehSaida ASC, estado ASC, timestamp DESC)` entry, where ALL
- *    THREE predicates bind. Do not assume a two-field index suffices: in run 2,
- *    with `pedidos(ehSaida, timestamp DESC)` AND `pedidos(ehSaida, estado,
- *    numero)` both deployed, the planner picked the `estado` one and left
- *    `timestamp` as a RESIDUAL filter — i.e. unbounded over ALL time, the
- *    opposite of the 30d window the pass is supposed to cost. The former
- *    per-anchor correlated pedidos probe (and its `itensIds` index twins) is
- *    GONE — see the fetchSoldProdutoIds docblock for why.
+ *  - movement pass (`fetchMovimentosDaJanela` — NOT part of THE query): needs
+ *    `historicoEstoque(timestamp ASC, parentId ASC, depositoOuterRef ASC)`,
+ *    scope COLLECTION_GROUP. It must COVER the aggregate, not merely serve the
+ *    `where`: an uncovered `aggregate` buffers every group in the 128 MiB budget
+ *    and can `RESOURCE_EXHAUSTED`. The retired `pedidos(ehSaida, estado,
+ *    timestamp DESC)` entry existed only for the sales pass and is dropped with
+ *    it (the deployed index still has to be deleted by hand — declaring is not
+ *    deleting). Its history is worth keeping in mind for the new entry: in gate
+ *    run 2 the planner picked a different `pedidos` index and left `timestamp`
+ *    as a RESIDUAL filter, i.e. unbounded over ALL time. Verify the same way.
  * ⚠️ Explain-dialect note (the staging gate's plans, 2026-07-28): a node
  * named `SequentialScan` that carries an `index: /<name>@[id=…]` identifier
  * AND bounded `ranges:`/`constraints:` IS an index range scan — healthy
@@ -113,9 +112,11 @@
  * The 128 MiB materialization ceiling spans the WHOLE query including every
  * joined document — hence every subquery `select`s a minimal field set.
  *
- * Spike (a) stays open until the nested-`define` call sites are finalized
- * (TODO markers at the maxChildren rollup and S6 childrenJoin subqueries —
- * the two sites deliberately bind different variable names). Spike (b) —
+ * Spike (a) — "does a nested `define` inside a correlated subquery bind per
+ * SUBQUERY row?" — is now MOOT at the rollup site: `maxChildren` no longer
+ * nests a component join, so it defines nothing (ADR 0014 removed the arm). The
+ * S6 `childrenJoin` remains the only nested-`define` site, one level deep.
+ * Spike (b) —
  * "does `arrayContains` on `integracoesComProduto` seek CONTAINS or
  * ASCENDING?" — is RETIRED: staging gate printed ASC; the CONTAINS twin was
  * dropped (#705). Spike (c) — "does `define` accept a correlated-subquery
@@ -142,14 +143,17 @@
  *    `quantidadeParaEnvio` returns null and `buildSendTasks` skips
  *    `'kit-virtual'`.
  *  - vendido30dias = a LEFT JOIN against a 30d order-items aggregate ON the
- *    SOLD produto id (kit sales attribute to the KIT, matching the legacy
- *    `produtoIdNoItem`) → here ONE UNCORRELATED pedidos pre-pass per conta
- *    per incremental sweep (`fetchSoldProdutoIds`) whose Set of sold produto
- *    ids feeds `deveEnviarIncremental` (a family "sold" when the ANCHOR or
- *    ANY child id is in the Set — legacy hasSales = own or any child), never
- *    a `historicoEstoque` probe (kit sales only move COMPONENT estoques —
- *    the probe on the produto's own history never flagged kits, the
- *    #678-review bug).
+ *    SOLD produto id (kit sales attribute to the KIT). **Retired** (ADR 0014):
+ *    the activity heuristic it fed existed only because change detection was
+ *    imprecise. A kit sale now stamps the kit's OWN estoque doc at the pedido
+ *    line, so the window filter carries the sales signal, and
+ *    `deveEnviarFamilia` answers the sharper question — *did the published
+ *    number change* — from the summed ledger.
+ *    ⚠️ Historical note worth preserving: a `historicoEstoque` probe **on the
+ *    produto's own history** never flagged kits (kit sales only move COMPONENT
+ *    estoques) — the #678-review bug. `fetchMovimentosDaJanela` does not repeat
+ *    it: it sums the COMPONENTS' rows and runs the result back through the kit
+ *    math, rather than looking for movement on the kit itself.
  *
  * Listing-status whitelist (developers.mercadolivre.com.br, read 2026-07-24 —
  * replaces the dropped legacy `statusProdMarketplace.podeEnviarEstoque` gate):
@@ -219,20 +223,6 @@ export const STOCK_SEND_MAX_ATTEMPTS = 3;
 /** Lower clamp of every quantity sent to ML (legacy clamp >= 0). */
 export const ESTOQUE_MIN = 0;
 
-/**
- * Pedido `estado` values that count as "had sales" for the incremental
- * sweep's 30-day activity filter — the owner-locked ALLOW-LIST (2026-07-27).
- * The sweep passes it into `fetchSoldProdutoIds` (kept as an arg so tests pin
- * the exact list wired into the pedidos pre-pass).
- */
-export const ESTADOS_VENDA = [
-  'emAnalise',
-  'emProcessamento',
-  'pago',
-  'finalizado',
-  'estornadoParcialmente',
-] as const;
-
 /** Max jitter (seconds) added when a paused conta's task re-enqueues itself (PR B). */
 export const PAUSE_REENQUEUE_JITTER_MAX_S = 30;
 
@@ -278,26 +268,23 @@ export function dailyWindowHours(): number {
   return envInt('MERCADO_LIVRE_STOCK_DAILY_WINDOW_H', 24);
 }
 
-/** Sales/created activity-filter lookback (days) for the incremental sweep. */
-export function atividadeLookbackDays(): number {
-  return envInt('MERCADO_LIVRE_STOCK_ATIVIDADE_LOOKBACK_D', 30);
-}
-
 /**
- * Cap on the `fetchSoldProdutoIds` distinct-ids result. Hitting it means some
- * sold ids are MISSING from the Set (see the truncation note on that
- * function) — the pass warns loudly and the daily sweep corrects.
+ * High-stock threshold: on the INCREMENTAL sweep only, a change is not worth a
+ * 15-minute send while the quantity stays comfortably above this on **both**
+ * sides of the movement. 100 → 99 cannot cause an oversell inside one window —
+ * nobody drains 99 units that fast — so it waits for the daily pass.
+ *
+ * ⚠️ The rule compares `min(anterior, atual)`, never `atual` alone. Gating on
+ * the current value would skip `110 → 95`, which is exactly the movement that
+ * walks a listing into the danger zone. See {@link deveEnviarFamilia} and ADR
+ * 0014; this is the single most likely line here to be "simplified" into a real
+ * oversell.
+ *
+ * Subsumes the old `limiarEstoqueBaixo` (default 5): low stock now always sends,
+ * because `min(...) <= LIMIAR_ALTO` holds for it.
  */
-export function soldIdsLimit(): number {
-  return envInt('MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT', 10_000);
-}
-
-/**
- * Low-stock override threshold: a changed produto with available stock below
- * this is sent even without recent sales/creation (legacy `disponivel < 5`).
- */
-export function limiarEstoqueBaixo(): number {
-  return envInt('MERCADO_LIVRE_STOCK_LIMIAR', 5);
+export function limiarEstoqueAlto(): number {
+  return envInt('MERCADO_LIVRE_STOCK_LIMIAR_ALTO', 100);
 }
 
 /** Upper clamp of every quantity sent to ML (`available_quantity` ceiling). */
@@ -464,14 +451,15 @@ export type FetchStockFamilies = (
  *  - S2 define: `anchorId` + `anchorKitKeys` (`coalesce(componentesKitKeys,
  *    [])` — NOT ifNull, an ABSENT field passes through ifNull) — PLAIN
  *    expressions only; `define` is documented for those.
- *  - S3 addFields (the DOCUMENTED subquery-embed site): `maxOwn`, `maxComp`,
- *    `maxChildren` — indexed MAX-aggregate seeks per anchor.
+ *  - S3 addFields (the DOCUMENTED subquery-embed site): `maxOwn` +
+ *    `maxChildren` — indexed MAX-aggregate seeks per anchor. ⚠️ The component
+ *    arm (`maxComp`) is deliberately ABSENT: see the window note below.
  *  - S4 window filter, SERVER-SIDE, over the added FIELDS (the documented
  *    HAVING-style where-after-addFields pattern):
- *    `coalesce(logicalMaximum(maxOwn, maxComp, maxChildren), 0) >
- *    changedSinceMs`. The heavy S6 projection then runs only for surviving
- *    anchors; `coalesce(..., 0)` keeps no-estoque families out for positive
- *    windows and gives `changedSinceMs = -1` force-all free.
+ *    `coalesce(logicalMaximum(maxOwn, maxChildren), 0) > changedSinceMs`. The
+ *    heavy S6 projection then runs only for surviving anchors;
+ *    `coalesce(..., 0)` keeps no-estoque families out for positive windows and
+ *    gives `changedSinceMs = -1` force-all free.
  *  - S5 `sort(__name__)` + `limit(pageLimit)` — `__name__` is unique, the
  *    keyset needs no tuple.
  *  - S6 the projection (minimal fields — the 128 MiB ceiling spans joins):
@@ -479,10 +467,13 @@ export type FetchStockFamilies = (
  *    (every listing this conta holds on the family — the legacy sender loops
  *    them all, functions.dart:275-282, one stock send per listing) + the
  *    children array (each with its own estoques + variação links).
- * The SALES signal is deliberately NOT part of THE query: the per-anchor
- * pedidos probe needed a per-row VARIABLE membership list, which the planner
- * can only bind as a residual Filter (never an array-index seek) — it lives
- * in the separate uncorrelated `fetchSoldProdutoIds` pre-pass instead.
+ * ⚠️ The window does NOT reach through a kit's components, and that is the
+ * central cost decision (ADR 0014). ~2000 kits share one blank shirt and one
+ * print, so a `maxComp` arm made every one of them a candidate on every sale,
+ * 96× a day. A kit sale instead stamps the kit's OWN estoque doc at the pedido
+ * line, so `maxOwn` sees it. The deliberate consequence: a kit whose component
+ * moved but which did not itself sell is NOT a candidate here — the monthly
+ * force-all pass is its corrector, not this query.
  * Returns ONE page: `rows` plus `nextAfterAnchorId` (the last row's
  * `anchorId` when the page came back full, else null — backlog drained).
  *
@@ -543,45 +534,26 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
       pipelines.array([]),
     );
 
-  const compEstoquesMax = (keysVar: string) =>
-    pipelines.conditional(
-      pipelines.variable(keysVar).length().greaterThan(0),
-      // eslint-disable-next-line no-restricted-syntax -- correlated-subquery SOURCE stage (see chain-start note above)
-      db
-        .pipeline()
-        .collectionGroup('estoques')
-        .where(
-          pipelines.and(
-            pipelines.field('parentId').equalAny(pipelines.variable(keysVar)),
-            depMatch(),
-          ),
-        )
-        .aggregate(pipelines.maximum('ultimaModificacao').as('max'))
-        .toScalarExpression(),
-      // NULL folds correctly into the downstream logicalMaximum + coalesce.
-      pipelines.constant(null),
-    );
-
   const kitKeysDefine = (name: string) =>
     pipelines.coalesce(pipelines.field('componentesKitKeys'), pipelines.array([])).as(name);
 
-  // TODO(pre-PR-C spike a): confirm a nested `define` inside a correlated
-  // subquery binds per SUBQUERY row — at BOTH nested-define sites: this
-  // maxChildren rollup (`maxChildKitKeys`) AND the S6 childrenJoin
-  // (`childKitKeys`). The two sites deliberately bind DIFFERENT names:
-  // variables are pipeline-global, and whether two sibling subqueries may
-  // rebind ONE global name is an extra unverified assumption we don't take.
-  // (The skill says variables reach nested subqueries; every published
-  // example defines top-level.) Fallback: drop the child-level component
-  // join and warn when a variation child has ehKit.
+  // Children's OWN estoques only. The component arm that used to nest inside
+  // here (and its anchor-level twin `compEstoquesMax`) is GONE — a component
+  // movement now reaches the kit through the pedido-line stamp on the kit's own
+  // estoque doc (ADR 0014), so the window no longer has to look through the
+  // kit's bill of materials to notice it.
+  //
+  // This also retires the repo's only THIRD-level correlated nesting, whose
+  // spike was still open at level two: one `produtos` subquery containing a
+  // `subcollection('estoques')` aggregate is a shape the planner is known to
+  // handle, and it is all that remains.
   const maxChildren = () =>
     // eslint-disable-next-line no-restricted-syntax -- correlated-subquery SOURCE stage (see chain-start note above)
     db
       .pipeline()
       .collection('produtos')
       .where(pipelines.equal(pipelines.field('paiId'), pipelines.variable('anchorId')))
-      .define(kitKeysDefine('maxChildKitKeys'))
-      .select(pipelines.logicalMaximum(ownEstoqueMax(), compEstoquesMax('maxChildKitKeys')).as('m'))
+      .select(ownEstoqueMax().as('m'))
       .aggregate(pipelines.maximum('m').as('max'))
       .toScalarExpression();
 
@@ -667,19 +639,11 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
       pipelines.documentId(pipelines.field('__name__')).as('anchorId'),
       kitKeysDefine('anchorKitKeys'),
     )
-    .addFields(
-      ownEstoqueMax().as('maxOwn'),
-      compEstoquesMax('anchorKitKeys').as('maxComp'),
-      maxChildren().as('maxChildren'),
-    )
+    .addFields(ownEstoqueMax().as('maxOwn'), maxChildren().as('maxChildren'))
     .where(
       pipelines.greaterThan(
         pipelines.coalesce(
-          pipelines.logicalMaximum(
-            pipelines.field('maxOwn'),
-            pipelines.field('maxComp'),
-            pipelines.field('maxChildren'),
-          ),
+          pipelines.logicalMaximum(pipelines.field('maxOwn'), pipelines.field('maxChildren')),
           0,
         ),
         args.changedSinceMs,
@@ -770,94 +734,101 @@ function coerceMember(produtoId: string, raw: Record<string, unknown>): FamilyMe
   };
 }
 
-/* --------------------------- sold-ids pre-pass ----------------------------- */
+/* ------------------------- ledger movement pre-pass ------------------------ */
 
-export interface FetchSoldProdutoIdsArgs {
-  /** Inclusive lower bound (µs since epoch) of the pedidos sales window. */
-  vendaCutoffUs: number;
-  /** Pedido estados counting as a sale — the sweep passes `ESTADOS_VENDA`. */
-  estadosVenda: readonly string[];
-  /** Distinct-ids cap override — defaults to `soldIdsLimit()`. */
-  limit?: number;
+/** Net movement of one `(produto, depósito)` pair over the sweep's window. */
+export interface MovimentoDaJanela {
+  /** Σ `movimento` — the signed change in `quantidade`. */
+  dq: number;
+  /** Σ `movimentoReservada` — the signed change in `quantidadeReservada`. */
+  dr: number;
 }
 
-/** The sold-ids seam the sweeps consume — injectable so tests stub it. */
-export type FetchSoldProdutoIds = (
+/** Map key for {@link MovimentosDaJanela}. Exported so tests build fixtures. */
+export function chaveMovimento(produtoId: string, depositoId: string): string {
+  return `${produtoId}/${depositoId}`;
+}
+
+export type MovimentosDaJanela = ReadonlyMap<string, MovimentoDaJanela>;
+
+export interface FetchMovimentosArgs {
+  /** Inclusive lower bound (ms since epoch) — the sweep's frozen window start. */
+  desdeMs: number;
+  /** Scopes the aggregate to the conta's depósito. */
+  depositoId: string;
+}
+
+/** The movement seam the sweeps consume — injectable so tests stub it. */
+export type FetchMovimentosDaJanela = (
   db: Firestore,
-  args: FetchSoldProdutoIdsArgs,
-) => Promise<Set<string>>;
+  args: FetchMovimentosArgs,
+) => Promise<MovimentosDaJanela>;
 
 /**
- * The UNCORRELATED sales pre-pass: ONE pipeline execution per conta per
- * incremental sweep returning the DISTINCT produto ids sold (any
- * `estadosVenda` pedido) since `vendaCutoffUs` —
- * `pedidos.where(...).unnest(itensIds → pid).distinct(pid).limit(cap)`.
- * The sweep runs it once BEFORE the page loop and `deveEnviarIncremental`
- * checks family membership (anchor OR any child) against the Set.
+ * The UNCORRELATED ledger pre-pass: **ONE** pipeline execution per tick,
+ * returning the net stock movement of every `(produto, depósito)` pair that
+ * moved inside the window. `anterior = atual − Σmovimento` then falls out
+ * locally, for every family, at no per-family cost.
  *
- * Why the correlated per-anchor probe was RETIRED (staging explain evidence,
- * gate run 2, 2026-07-28): the probe's `itensIds` membership list was a
- * per-row VARIABLE (anchor + childIds), and the planner binds variable
- * candidate lists only as RESIDUAL Filters — the plan scanned the OLD
- * `pedidos(ehSaida, estado, numero)` index with `itensIds` + `timestamp` as
- * residuals, once per anchor, never seeking the declared `itensIds` array
- * indexes (since removed). Owner decision: the sales signal moved out of THE
- * query into this single pre-pass.
+ * This REPLACES the `pedidos` sold-ids pass (ADR 0014). That pass existed only
+ * because a kit sale left no trace on the kit, and it answered a weaker
+ * question ("did something sell") with a silent 10 000-id cap (#806 S10). Asking
+ * the stock ledger instead answers the question the sweep actually has — *did
+ * the published number change* — and cannot truncate: the result is one row per
+ * moved pair, not per movement.
  *
- * Index: rides the NEW `pedidos(ehSaida ASC, estado ASC, timestamp DESC)`
- * entry — all three predicates bind (equality, equalAny, range). It is NOT
- * enough for the individual fields to be indexed somewhere: gate run 2
- * (2026-07-28) had both `pedidos(ehSaida, timestamp DESC)` and
- * `pedidos(ehSaida, estado, numero)` deployed and the planner chose the
- * `estado` one, leaving `timestamp` in a residual Filter — the pass would then
- * scan every saída pedido ever written instead of the 30d window. The staging
- * gate FAILS on exactly that shape (a residual `timestamp`).
+ * ⚠️ Requires `historicoEstoque` v2, where `movimento` is a signed delta on
+ * **every** row including a balanço. v1 stored a balanço's absolute counted
+ * value in the same field, which would make this sum silently wrong rather than
+ * visibly absent — the reason the schema had to change first.
  *
- * Truncation: hitting the cap (`limit`, default `soldIdsLimit()`) means some
- * sold produto ids are MISSING from the Set — the incremental sweep then
- * UNDER-sends (a sold-but-otherwise-quiet family is skipped); the daily
- * force-all sweep corrects within 24h. The pass warns LOUDLY when the result
- * size equals the cap so the operator can raise
- * `MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT`.
+ * ⚠️ **Index**: `historicoEstoque(timestamp, parentId, depositoOuterRef)`,
+ * COLLECTION_GROUP. An aggregate without a covering index buffers every group in
+ * the 128 MiB budget and can `RESOURCE_EXHAUSTED` — this one is not optional.
+ *
+ * Fails OPEN by omission: a row whose `movimento` is absent (a Flutter-era row,
+ * or the ML import's unaudited stock write) contributes nothing to the sum, so
+ * the reconstructed `anterior` is wrong in the direction that makes
+ * {@link deveEnviarFamilia} see a change and SEND. Never the direction that
+ * silently skips.
  *
  * NOT emulator-runnable (pipelines never are) — tested through the seam.
  */
-export const fetchSoldProdutoIds: FetchSoldProdutoIds = async (db, args) => {
-  const limit = args.limit ?? soldIdsLimit();
+export const fetchMovimentosDaJanela: FetchMovimentosDaJanela = async (db, args) => {
+  // Both accepted *OuterRef forms (outerRef.ts invariant: readers tolerate the
+  // bare form) — the same disjunction THE query uses.
+  const depMatch = pipelines.or(
+    pipelines.equal(pipelines.field('depositoOuterRef'), `documents/depositos/${args.depositoId}`),
+    pipelines.equal(pipelines.field('depositoOuterRef'), `depositos/${args.depositoId}`),
+  );
 
   // eslint-disable-next-line no-restricted-syntax -- pipeline SOURCE stage, not a raw ref; defineAdminCollection handles have no pipeline surface
   const snap = await db
     .pipeline()
-    .collection('pedidos')
-    .where(
-      pipelines.and(
-        pipelines.equal(pipelines.field('ehSaida'), true),
-        pipelines.field('estado').equalAny([...args.estadosVenda]),
-        pipelines.field('timestamp').greaterThanOrEqual(args.vendaCutoffUs),
-      ),
-    )
-    // unnest(selectable, indexField?): one row per itensIds element, aliased
-    // `pid`; distinct(group,...) then dedupes (a MERGING stage — only `pid`
-    // survives it, which is all the mapping below reads).
-    .unnest(pipelines.field('itensIds').as('pid'))
-    .distinct('pid')
-    .limit(limit)
+    .collectionGroup('historicoEstoque')
+    .where(pipelines.and(pipelines.field('timestamp').greaterThanOrEqual(args.desdeMs), depMatch))
+    .aggregate({
+      accumulators: [
+        pipelines.sum('movimento').as('dq'),
+        pipelines.sum('movimentoReservada').as('dr'),
+      ],
+      groups: ['parentId', 'depositoOuterRef'],
+    })
     .execute();
 
-  const soldIds = new Set<string>();
+  const movimentos = new Map<string, MovimentoDaJanela>();
   for (const result of snap.results) {
-    const pid = (result.data() as Record<string, unknown>).pid;
-    if (typeof pid === 'string' && pid !== '') soldIds.add(pid);
+    const row = result.data() as Record<string, unknown>;
+    const parentId = row.parentId;
+    if (typeof parentId !== 'string' || parentId === '') continue;
+    // The group value echoes whichever `depositoOuterRef` form the rows carry;
+    // the aggregate is already scoped to ONE depósito, so key on the arg.
+    movimentos.set(chaveMovimento(parentId, args.depositoId), {
+      dq: finiteNumber(row.dq) ?? 0,
+      dr: finiteNumber(row.dr) ?? 0,
+    });
   }
-  if (snap.results.length === limit) {
-    console.warn(
-      '[mercado-livre] stock-sync: sold-ids TRUNCADO no limite — ids vendidos faltando; ' +
-        'o sweep incremental sub-envia e o daily corrige; aumente ' +
-        'MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT',
-      { limit, distinctIds: soldIds.size },
-    );
-  }
-  return soldIds;
+  return movimentos;
 };
 
 /* ------------------------------- status gate ------------------------------- */
@@ -1003,26 +974,93 @@ export function quantidadesDaFamilia(row: StockFamilyRow): Map<string, number> {
 }
 
 /**
- * Incremental-sweep activity filter (the daily sweep sends ALL families):
- * send when the family sold in the lookback window (the ANCHOR id or ANY
- * child id is in `soldIds`, the `fetchSoldProdutoIds` Set — legacy hasSales =
- * own or any child), OR any member was created recently (`timestamp` within
- * `atividadeLookbackDays()`), OR any member's quantity is below
- * `limiarEstoqueBaixo()` (legacy `disponivel < 5` override).
+ * Rebuild ONE member's estoque row as it stood at the window start, by undoing
+ * the window's net movement. `null` when the pair never moved — the caller reads
+ * that as "unchanged", which is exactly right.
  */
-export function deveEnviarIncremental(
+function desfazerMovimento(
+  row: RawEstoqueRow,
+  depositoId: string,
+  movimentos: MovimentosDaJanela,
+): RawEstoqueRow | null {
+  const parentId = row.parentId;
+  if (typeof parentId !== 'string' || parentId === '') return null;
+  const mov = movimentos.get(chaveMovimento(parentId, depositoId));
+  if (mov == null) return null;
+  return {
+    ...row,
+    quantidade: (finiteNumber(row.quantidade) ?? 0) - mov.dq,
+    quantidadeReservada: (finiteNumber(row.quantidadeReservada) ?? 0) - mov.dr,
+  };
+}
+
+/**
+ * Every family member's send quantity **as it stood at the window start** —
+ * `atual − Σmovimento`, run back through the SAME kit math so a kit's floor is
+ * recomputed rather than approximated.
+ *
+ * This is what lets the sweep answer "did the published number actually change"
+ * without any per-family query: {@link fetchMovimentosDaJanela} pays once per
+ * tick, and this is pure arithmetic on top of it.
+ */
+export function quantidadesAnteriores(
   row: StockFamilyRow,
-  quantidades: ReadonlyMap<string, number>,
-  nowMs: number,
-  soldIds: ReadonlySet<string>,
+  depositoId: string,
+  movimentos: MovimentosDaJanela,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const member of [row.anchor, ...row.children]) {
+    const anterior: FamilyMember = {
+      ...member,
+      estoque:
+        member.estoque == null
+          ? null
+          : (desfazerMovimento(member.estoque, depositoId, movimentos) ?? member.estoque),
+      componentEstoques: member.componentEstoques.map(
+        (e) => desfazerMovimento(e, depositoId, movimentos) ?? e,
+      ),
+    };
+    const quantidade = quantidadeDoMembro(anterior);
+    if (quantidade != null) out.set(member.produtoId, quantidade);
+  }
+  return out;
+}
+
+/**
+ * The send policy (ADR 0014), replacing the old sold/recent/low-stock activity
+ * heuristic. Exact rather than approximate, because the ledger can now be summed:
+ *
+ * ```
+ * send  ⟺  ∃ member: anterior ≠ atual  ∧  ¬( incremental ∧ min(anterior, atual) > LIMIAR_ALTO )
+ * ```
+ *
+ * The first clause is the #695 ask — a component movement that does not change a
+ * kit's floored quantity produces no task. The second is the freshness tier: a
+ * listing sitting comfortably high on BOTH sides of the movement cannot oversell
+ * inside a 15-minute window, so it waits for the daily pass.
+ *
+ * ⚠️ `min(anterior, atual)`, never `atual` alone — see {@link limiarEstoqueAlto}.
+ * `110 → 95` must send; gating on the current value would skip it.
+ *
+ * Fails OPEN: a member with no reconstructed previous value is treated as
+ * changed. That covers the first sweep after deploy, a Flutter-era row with no
+ * `movimento`, and the ML import's unaudited write.
+ */
+export function deveEnviarFamilia(
+  quantidadesAtuais: ReadonlyMap<string, number>,
+  anteriores: ReadonlyMap<string, number> | null,
+  incremental: boolean,
 ): boolean {
-  if (soldIds.has(row.anchorId) || row.children.some((c) => soldIds.has(c.produtoId))) return true;
-  const criadoCutoffMs = nowMs - atividadeLookbackDays() * 24 * 60 * 60 * 1000;
-  const members = [row.anchor, ...row.children];
-  if (members.some((m) => m.timestampMs != null && m.timestampMs >= criadoCutoffMs)) return true;
-  const limiar = limiarEstoqueBaixo();
-  for (const quantidade of quantidades.values()) {
-    if (quantidade < limiar) return true;
+  if (anteriores == null) return true;
+  const limiar = limiarEstoqueAlto();
+  for (const [produtoId, atual] of quantidadesAtuais) {
+    const anterior = anteriores.get(produtoId);
+    if (anterior == null) return true; // unknown ⇒ send
+    if (anterior === atual) continue; // this member did not move
+    if (!incremental) return true; // daily/full: any change is enough
+    if (Math.min(anterior, atual) <= limiar) return true; // near the danger zone
+    // Changed, but high on both sides — not worth the fast lane. Keep looking:
+    // a sibling variation may still be low enough to justify the whole send.
   }
   return false;
 }

@@ -17,7 +17,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //
 // ⚠️ COST, honestly: `analyze` EXECUTES the query and Enterprise bills DATA
 // SCANNED, which the limits here do NOT bound — CHECK_PAGE_LIMIT (default 5)
-// and CHECK_SOLD_IDS_LIMIT (default 1000) cap OUTPUT ROWS, and rows are
+// caps OUTPUT ROWS, and rows are
 // discarded only AFTER the scan that produced them. The widened retries make
 // this worse on purpose: they LOWER the cutoff (changedSinceMs = -1,
 // cutoffUs = 0) so that more rows survive, which means more data scanned, not
@@ -214,26 +214,23 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // spike-(a) family, see 1. above). CHECK_SEED=1 FORCES the self-seeded
 // probe family even when discovery finds real linked anchors; seeding
 // always relocates the depósito probe — and, unless overridden, spike (a)
-// — to the seeded family. CHECK_SOLD_IDS_LIMIT bounds the sold-ids page.
-// CHECK_ANCHOR_AB=0 skips the anchor-predicate A/B spike (5. above).
+// — to the seeded family. CHECK_ANCHOR_AB=0 skips the anchor-predicate A/B spike (5. above).
 // Targets the named `default` database (Enterprise — never `(default)`),
 // overridable via FIREBASE_DATABASE_ID.
 //
-// ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchSoldProdutoIds` in
+// ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchMovimentosDaJanela` in
 // apps/mercado-livre/lib/marketplace/estoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
-// shape change there must be reflected here or the proof goes stale. (The
-// mirror follows the owner-approved rework spec: no childIds define, no
-// vendaProbe, no temVenda30d in THE query; the sales signal is the
-// uncorrelated sold-ids pre-pass.)
+// shape change there must be reflected here or the proof goes stale.
+// ⚠️ The window filter deliberately has NO component arm (ADR 0014): a kit sale
+// stamps the kit's own estoque doc, so `maxComp` was removed rather than being
+// forgotten here. The sales signal is likewise gone — the `pedidos` sold-ids
+// pass was replaced by the uncorrelated historicoEstoque ledger aggregate.
 
 const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
 const pageLimitRaw = Number(process.env.CHECK_PAGE_LIMIT ?? '5');
 const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimitRaw : 5;
-const soldIdsLimitRaw = Number(process.env.CHECK_SOLD_IDS_LIMIT ?? '1000');
-const soldIdsLimit =
-  Number.isInteger(soldIdsLimitRaw) && soldIdsLimitRaw > 0 ? soldIdsLimitRaw : 1000;
 // The A/B spike (header 5.) runs by default; '0' opts out of its one extra
 // analyze execution — the one whose cost IS the measurement.
 const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '1') !== '0';
@@ -243,14 +240,7 @@ const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '1') !== '0';
 const DAILY_WINDOW_MS = 24 * 3_600_000;
 const WINDOW_OVERLAP_MS = 20_000;
 
-// Mirrors ESTADOS_VENDA + INTEGRACAO_TIPO.mercadoLivre (packages/schemas).
-const ESTADOS_VENDA = [
-  'emAnalise',
-  'emProcessamento',
-  'pago',
-  'finalizado',
-  'estornadoParcialmente',
-];
+// Mirrors INTEGRACAO_TIPO.mercadoLivre (packages/schemas).
 const INTEGRACAO_TIPO_MERCADO_LIVRE = 1;
 
 const app = initializeApp({ projectId });
@@ -534,33 +524,17 @@ const compEstoques = (keysVar) =>
     pipelines.array([]),
   );
 
-const compEstoquesMax = (keysVar) =>
-  pipelines.conditional(
-    pipelines.variable(keysVar).length().greaterThan(0),
-    db
-      .pipeline()
-      .collectionGroup('estoques')
-      .where(
-        pipelines.and(
-          pipelines.field('parentId').equalAny(pipelines.variable(keysVar)),
-          depMatch(),
-        ),
-      )
-      .aggregate(pipelines.maximum('ultimaModificacao').as('max'))
-      .toScalarExpression(),
-    pipelines.constant(null),
-  );
-
 const kitKeysDefine = (name) =>
   pipelines.coalesce(pipelines.field('componentesKitKeys'), pipelines.array([])).as(name);
 
+// Children's OWN estoques only — the component arm is gone (ADR 0014), which
+// also removes this subquery's nested `define`.
 const maxChildren = () =>
   db
     .pipeline()
     .collection('produtos')
     .where(pipelines.equal(pipelines.field('paiId'), pipelines.variable('anchorId')))
-    .define(kitKeysDefine('maxChildKitKeys'))
-    .select(pipelines.logicalMaximum(ownEstoqueMax(), compEstoquesMax('maxChildKitKeys')).as('m'))
+    .select(ownEstoqueMax().as('m'))
     .aggregate(pipelines.maximum('m').as('max'))
     .toScalarExpression();
 
@@ -631,19 +605,11 @@ function buildFamiliesPipeline({ changedSinceMs, afterAnchorId }) {
       pipelines.documentId(pipelines.field('__name__')).as('anchorId'),
       kitKeysDefine('anchorKitKeys'),
     )
-    .addFields(
-      ownEstoqueMax().as('maxOwn'),
-      compEstoquesMax('anchorKitKeys').as('maxComp'),
-      maxChildren().as('maxChildren'),
-    )
+    .addFields(ownEstoqueMax().as('maxOwn'), maxChildren().as('maxChildren'))
     .where(
       pipelines.greaterThan(
         pipelines.coalesce(
-          pipelines.logicalMaximum(
-            pipelines.field('maxOwn'),
-            pipelines.field('maxComp'),
-            pipelines.field('maxChildren'),
-          ),
+          pipelines.logicalMaximum(pipelines.field('maxOwn'), pipelines.field('maxChildren')),
           0,
         ),
         changedSinceMs,
@@ -708,19 +674,11 @@ function buildFamiliesPipelineLinkFirst({ changedSinceMs, afterAnchorId }) {
       // The conta gate, computed ONCE and reused by S6 below.
       .addFields(linkJoin().as('links'))
       .where(pipelines.greaterThan(pipelines.field('links').length(), 0))
-      .addFields(
-        ownEstoqueMax().as('maxOwn'),
-        compEstoquesMax('anchorKitKeys').as('maxComp'),
-        maxChildren().as('maxChildren'),
-      )
+      .addFields(ownEstoqueMax().as('maxOwn'), maxChildren().as('maxChildren'))
       .where(
         pipelines.greaterThan(
           pipelines.coalesce(
-            pipelines.logicalMaximum(
-              pipelines.field('maxOwn'),
-              pipelines.field('maxComp'),
-              pipelines.field('maxChildren'),
-            ),
+            pipelines.logicalMaximum(pipelines.field('maxOwn'), pipelines.field('maxChildren')),
             0,
           ),
           changedSinceMs,
@@ -746,25 +704,28 @@ function buildFamiliesPipelineLinkFirst({ changedSinceMs, afterAnchorId }) {
   );
 }
 
-/* ------ the sold-ids pre-pass, mirrored from fetchSoldProdutoIds ----------- */
+/* --- the ledger pre-pass, mirrored from fetchMovimentosDaJanela ------------ */
 
-// ONE uncorrelated pedidos pass per conta per incremental sweep (header 3.):
-// where ehSaida + estado equalAny + timestamp >= cutoff, unnest itensIds,
-// distinct pid, limit. No per-anchor correlation — nothing here is a variable.
-const buildSoldIdsPipeline = (cutoffUs) =>
+// ONE uncorrelated historicoEstoque aggregate per (window, depósito) per tick
+// (header 3.): where timestamp >= desde AND depósito, grouped sum of the signed
+// movements. No per-anchor correlation — nothing here is a variable.
+//
+// ⚠️ This one must be COVERED, not merely served: an aggregate without a
+// covering index buffers every group in the 128 MiB budget and can
+// RESOURCE_EXHAUSTED. The declared entry is
+// `historicoEstoque(timestamp, parentId, depositoOuterRef)`, COLLECTION_GROUP.
+const buildMovimentosPipeline = (desdeMs) =>
   db
     .pipeline()
-    .collection('pedidos')
-    .where(
-      pipelines.and(
-        pipelines.equal(pipelines.field('ehSaida'), true),
-        pipelines.field('estado').equalAny([...ESTADOS_VENDA]),
-        pipelines.field('timestamp').greaterThanOrEqual(cutoffUs),
-      ),
-    )
-    .unnest(pipelines.field('itensIds').as('pid'))
-    .distinct('pid')
-    .limit(soldIdsLimit);
+    .collectionGroup('historicoEstoque')
+    .where(pipelines.and(pipelines.field('timestamp').greaterThanOrEqual(desdeMs), depMatch()))
+    .aggregate({
+      accumulators: [
+        pipelines.sum('movimento').as('dq'),
+        pipelines.sum('movimentoReservada').as('dr'),
+      ],
+      groups: ['parentId', 'depositoOuterRef'],
+    });
 
 /* -- everything below runs under try/finally so the seed ALWAYS cleans up ---- */
 
@@ -1411,93 +1372,66 @@ try {
     }
   }
 
-  /* -------------- sold-ids pre-pass (fetchSoldProdutoIds mirror) -------------- */
+  /* ------------ ledger pre-pass (fetchMovimentosDaJanela mirror) ------------- */
 
-  console.log('\n=== sold-ids pre-pass (fetchSoldProdutoIds mirror) — explain analyze ===');
-  const soldCutoffUs = (nowMs - 30 * 24 * 3_600_000) * 1000; // atividadeLookbackDays() default
-  let soldSnap = await buildSoldIdsPipeline(soldCutoffUs).execute({
+  console.log('\n=== ledger pre-pass (fetchMovimentosDaJanela mirror) — explain analyze ===');
+  const movDesdeMs = nowMs - 15 * 60_000 - 20_000; // the incremental window
+  let movSnap = await buildMovimentosPipeline(movDesdeMs).execute({
     explainOptions: { mode: 'analyze', outputFormat: 'text' },
   });
-  let soldLabel = 'shipped 30d cutoff';
-  if (soldSnap.results.length === 0 && soldSnap.explainStats === undefined) {
+  let movLabel = 'shipped 15min window';
+  if (movSnap.results.length === 0 && movSnap.explainStats === undefined) {
     console.log(
-      '0 rows in the 30d cutoff → SDK returns no explainStats; retrying with ' +
-        'cutoffUs = 0 (same stage shape — index proof unaffected)',
+      '0 rows in the 15min window → SDK returns no explainStats; retrying with ' +
+        'desdeMs = 0 (same stage shape — index proof unaffected)',
     );
-    soldLabel = 'widened cutoff (0) — 0 rows in the shipped one';
-    soldSnap = await buildSoldIdsPipeline(0).execute({
+    movLabel = 'widened window (0) — 0 rows in the shipped one';
+    movSnap = await buildMovimentosPipeline(0).execute({
       explainOptions: { mode: 'analyze', outputFormat: 'text' },
     });
   }
-  const soldPlan = soldSnap.explainStats?.text ?? '';
-  console.log(`distinct pids returned: ${soldSnap.results.length} (${soldLabel})`);
-  console.log('\n----- FULL PLAN (sold-ids pre-pass) -----\n');
-  console.log(soldPlan);
-  if (soldPlan.trim() === '') {
+  const movPlan = movSnap.explainStats?.text ?? '';
+  console.log(`groups returned: ${movSnap.results.length} (${movLabel})`);
+  console.log('\n----- FULL PLAN (ledger pre-pass) -----\n');
+  console.log(movPlan);
+  if (movPlan.trim() === '') {
     fail(
-      soldSnap.results.length === 0 && soldSnap.explainStats === undefined
-        ? 'sold-ids pre-pass: 0 rows even with cutoff 0 → no explainStats (v8.6.0, ' +
-            'probe-verified) — nothing proven. Staging has no ESTADOS_VENDA saída ' +
-            'pedidos at all; seed one (CHECK_SEED=1) and re-run'
-        : 'sold-ids pre-pass explainStats.text is empty — nothing proven',
+      movSnap.results.length === 0 && movSnap.explainStats === undefined
+        ? 'ledger pre-pass: 0 rows even with desdeMs 0 → no explainStats (v8.6.0, ' +
+            'probe-verified) — nothing proven. Staging has no historicoEstoque rows at ' +
+            'this depósito; seed one (CHECK_SEED=1) and re-run'
+        : 'ledger pre-pass explainStats.text is empty — nothing proven',
     );
   } else {
-    const soldNodes = parseAccessNodes(soldPlan);
-    failIdentifierlessScans('sold-ids plan', soldNodes);
+    const movNodes = parseAccessNodes(movPlan);
+    failIdentifierlessScans('ledger plan', movNodes);
     checkTarget({
-      label: 'sold-ids: pedidos ehSaida + timestamp BOUND on one index',
-      nodes: soldNodes,
-      plan: soldPlan,
-      // The NEW three-field entry is the target; the two-field
-      // pedidos(ehSaida, timestamp DESC) would also bind both predicates and
-      // is accepted. What is NOT accepted is pedidos(ehSaida, estado, numero)
-      // — run 2's actual pick, which leaves `timestamp` residual. `[^)]*`
-      // (not `.*`) keeps the match inside the index's own field list.
-      indexRe: /^\/pedidos \((?:ehSaida[^)]*estado[^)]*timestamp|ehSaida[^)]*timestamp)/,
-      fallbackRe: /\/pedidos \(/,
-      predicateRe: /\$ehSaida|\$timestamp/,
-      pendingDeploy: pendingDeployHint('pedidos(ehSaida ASC, estado ASC, timestamp DESC)'),
-      boundOf: (n) => {
-        const ehSaidaBound = n.boundedLines.some((l) => l.includes('[true]'));
-        // The timestamp cutoff shows as a numeric (half-)range constraint —
-        // `[1,782,652,331,060,000L..+∞)`. String bounds (`["pago"]`,
-        // `["depositos/…-1785…"]`) carry digits too, so match the numeric
-        // SHAPE, never a bare digit.
-        const timestampBound = n.boundedLines.some((l) => NUMERIC_BOUND_RE.test(l));
-        return ehSaidaBound && timestampBound
-          ? `ehSaida [true] + timestamp range bounds on ${n.identifier}`
-          : null;
-      },
+      label: 'ledger: historicoEstoque timestamp BOUND (the window actually bounds the scan)',
+      nodes: movNodes,
+      plan: movPlan,
+      indexRe: /^\/historicoEstoque \(timestamp/,
+      fallbackRe: /\/historicoEstoque \(/,
+      predicateRe: /\$timestamp|\$parentId/,
+      pendingDeploy: pendingDeployHint(
+        'historicoEstoque(timestamp ASC, parentId ASC, depositoOuterRef ASC) [COLLECTION_GROUP]',
+      ),
+      boundOf: (n) =>
+        n.boundedLines.some((l) => NUMERIC_BOUND_RE.test(l))
+          ? `timestamp range bounds on ${n.identifier}`
+          : null,
     });
-    // With the new entry all three predicates bind. A residual `estado` is no
-    // longer "accepted by design" — it means the planner did NOT take it.
+    // ⚠️ The aggregate must be COVERED, not merely served: an uncovered one
+    // buffers every group in the 128 MiB budget and can RESOURCE_EXHAUSTED.
+    // A residual `depositoOuterRef` means the declared entry was not fully
+    // taken, so the group keys are being read off the documents.
     console.log(
-      predicateInResidualFilters(soldPlan, /\$estado|equal_any\(\$estado/)
-        ? 'NOTE  sold-ids: `estado` equalAny is served by a residual Filter NODE — the ' +
-            'planner did not take pedidos(ehSaida, estado, timestamp DESC). Harmless ' +
-            'ONLY if the check above passed (timestamp bound ⇒ the 30d window still ' +
-            'bounds the scan); read the plan either way'
-        : 'NOTE  sold-ids: `estado` is not residual — it rides the index, as intended',
+      predicateInResidualFilters(movPlan, /\$depositoOuterRef/)
+        ? 'NOTE  ledger: `depositoOuterRef` is served by a residual Filter NODE — the ' +
+            'planner did not take the full covering entry. The window still bounds the ' +
+            'scan if the check above passed, but the aggregate is reading documents; ' +
+            'read the plan before trusting it at catalogue scale'
+        : 'NOTE  ledger: `depositoOuterRef` is not residual — the covering entry was taken',
     );
-  }
-
-  // Seeded-mode correctness probe: the seeded paid saída pedido's itensIds
-  // anchor MUST surface in the distinct output (header 3.).
-  if (shouldSeed) {
-    const seededAnchorId = `${SEED_PREFIX}-anchor`;
-    const pids = soldSnap.results.map((r) => r.data()?.pid).filter((p) => typeof p === 'string');
-    if (pids.includes(seededAnchorId)) {
-      console.log(
-        `PASS  sold-ids: seeded pedido's anchor id ${seededAnchorId} present in the ` +
-          `distinct output (${pids.length} pid(s) on this page)`,
-      );
-    } else {
-      fail(
-        `sold-ids: the seeded paid saída pedido (itensIds [${seededAnchorId}]) did NOT ` +
-          `surface in the distinct output — ${pids.length} pid(s) returned; raise ` +
-          `CHECK_SOLD_IDS_LIMIT (${soldIdsLimit}) or read the plan above`,
-      );
-    }
   }
 
   /* ------------- daily-mode PAGE 2: keyset over computed filter --------------- */

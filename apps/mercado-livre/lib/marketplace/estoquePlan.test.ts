@@ -111,6 +111,7 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     arrayConcat: (...xs: unknown[]) => new Expr({ kind: 'arrayConcat', xs }),
     logicalMaximum: (...xs: unknown[]) => new Expr({ kind: 'logicalMaximum', xs }),
     maximum: (f: unknown) => new Expr({ kind: 'maximum', f }),
+    sum: (f: unknown) => new Expr({ kind: 'sum', f }),
     subcollection: (path: string) => {
       const chain = new FakeChain();
       chain.stages.push({ stage: 'subcollection', args: [path] });
@@ -126,7 +127,6 @@ vi.mock('@google-cloud/firestore/pipelines', () => mockPipelinesExports);
 import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
 
 import {
-  ESTADOS_VENDA,
   ESTOQUE_MIN,
   type FamilyChild,
   type FamilyMember,
@@ -137,23 +137,22 @@ import {
   STOCK_SYNC_FLAG_ENV,
   type StockFamilyRow,
   anchorPageLimit,
-  atividadeLookbackDays,
   buildSendTasks,
   concurrentDispatches,
   cursorMaxLookbackHours,
   dailyWindowHours,
-  deveEnviarIncremental,
+  deveEnviarFamilia,
   dispatchesPerSecond,
   disponivelByProdutoIdFrom,
   envFlag,
   envInt,
   estoqueMax,
-  fetchSoldProdutoIds,
+  fetchMovimentosDaJanela,
   fetchStockFamilies,
   incrementalWindowMin,
   isStockSyncEnabled,
   kitIncluiEstoqueProprio,
-  limiarEstoqueBaixo,
+  limiarEstoqueAlto,
   maxPauseReenqueues,
   maxTasksPerSweep,
   podeEnviarEstoque,
@@ -161,7 +160,8 @@ import {
   quantidadeParaEnvio,
   quantidadesDaFamilia,
   ratePauseMin,
-  soldIdsLimit,
+  quantidadesAnteriores,
+  chaveMovimento,
   windowOverlapSec,
 } from './estoquePlan';
 
@@ -206,7 +206,6 @@ function asDb(db: FakeDb | Record<string, unknown>): Firestore {
 const DEPOSITO_ID = 'DEP';
 const CONTA = 'conta-A';
 const FROM_MS = Date.parse('2026-07-24T10:00:00.000Z');
-const CUTOFF_US = Date.parse('2026-06-24T10:00:00.000Z') * 1000;
 const T1 = Date.parse('2026-07-24T10:05:00.000Z');
 const T2 = Date.parse('2026-07-24T10:10:00.000Z');
 const T4 = Date.parse('2026-07-24T10:20:00.000Z');
@@ -216,12 +215,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const TOUCHED_ENV = [
   STOCK_SYNC_FLAG_ENV,
   'MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN',
-  'MERCADO_LIVRE_STOCK_LIMIAR',
+  'MERCADO_LIVRE_STOCK_LIMIAR_ALTO',
   'MERCADO_LIVRE_STOCK_MAX',
   'MERCADO_LIVRE_STOCK_KIT_INCLUI_PROPRIO',
   'MERCADO_LIVRE_STOCK_ANCHOR_PAGE_LIMIT',
   'MERCADO_LIVRE_STOCK_RATE_PAUSE_MIN',
-  'MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT',
   'ESTOQUE_PLAN_TEST_INT',
   'ESTOQUE_PLAN_TEST_FLAG',
 ];
@@ -244,6 +242,7 @@ const coal = (...xs: unknown[]) => ({ kind: 'coalesce', xs });
 const arr = (elements: unknown[]) => ({ kind: 'array', elements });
 const logicalMax = (...xs: unknown[]) => ({ kind: 'logicalMaximum', xs });
 const maxOf = (fld: string) => ({ kind: 'maximum', f: fld });
+const sumOf = (fld: string) => ({ kind: 'sum', f: fld });
 const contains = (l: unknown, v: unknown) => ({ kind: 'arrayContains', l, v });
 const inAny = (l: unknown, values: unknown) => ({ kind: 'equalAny', l, values });
 const cnst = (v: unknown) => ({ kind: 'constant', v });
@@ -295,35 +294,17 @@ const compEstoquesSub = (keysVar: string) =>
     arr([]),
   );
 
-const compEstoquesMaxSub = (keysVar: string) =>
-  cond(
-    gt(len(vr(keysVar)), 0),
-    {
-      kind: 'scalarSubquery',
-      stages: [
-        { stage: 'collectionGroup', args: ['estoques'] },
-        { stage: 'where', args: [AND(inAny(f('parentId'), vr(keysVar)), depOr)] },
-        { stage: 'aggregate', args: [alias('max', maxOf('ultimaModificacao'))] },
-      ],
-    },
-    cnst(null),
-  );
-
 const kitKeysDef = (name: string) => alias(name, coal(f('componentesKitKeys'), arr([])));
 
-// The rollup binds `maxChildKitKeys`, NOT the childrenJoin's `childKitKeys` —
-// sibling rebinding of one global variable name is an unverified assumption
-// (spike a).
+// Children's OWN estoques only — the component arm that used to nest here is
+// gone (ADR 0014), which also removes this subquery's `define` and with it the
+// repo's only third-level correlated nesting.
 const maxChildrenSub = () => ({
   kind: 'scalarSubquery',
   stages: [
     { stage: 'collection', args: ['produtos'] },
     { stage: 'where', args: [eq(f('paiId'), vr('anchorId'))] },
-    { stage: 'define', args: [kitKeysDef('maxChildKitKeys')] },
-    {
-      stage: 'select',
-      args: [alias('m', logicalMax(ownEstoqueMaxSub(), compEstoquesMaxSub('maxChildKitKeys')))],
-    },
+    { stage: 'select', args: [alias('m', ownEstoqueMaxSub())] },
     { stage: 'aggregate', args: [alias('max', maxOf('m'))] },
   ],
 });
@@ -402,9 +383,10 @@ const s1After = (anchorId: string) =>
 /**
  * The full documented THE-query stage tree for ONE page (one execution):
  * S1 where → S2 define (plain) → S3 addFields (the subquery-embed site) →
- * S4 where over the added FIELDS → S5 sort+limit → S6 select. The sales
- * signal is NOT here — it moved to the uncorrelated fetchSoldProdutoIds
- * pre-pass (its own describe below).
+ * S4 where over the added FIELDS → S5 sort+limit → S6 select. Neither the sales
+ * signal NOR the component window arm is here: a kit sale stamps the kit's own
+ * estoque doc, and "did the number change" is answered by the uncorrelated
+ * ledger pre-pass (its own describe below). ADR 0014.
  */
 function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): RecordedStage[] {
   return [
@@ -419,15 +401,11 @@ function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): R
     },
     {
       stage: 'addFields',
-      args: [
-        alias('maxOwn', ownEstoqueMaxSub()),
-        alias('maxComp', compEstoquesMaxSub('anchorKitKeys')),
-        alias('maxChildren', maxChildrenSub()),
-      ],
+      args: [alias('maxOwn', ownEstoqueMaxSub()), alias('maxChildren', maxChildrenSub())],
     },
     {
       stage: 'where',
-      args: [gt(coal(logicalMax(f('maxOwn'), f('maxComp'), f('maxChildren')), 0), changedSinceMs)],
+      args: [gt(coal(logicalMax(f('maxOwn'), f('maxChildren')), 0), changedSinceMs)],
     },
     { stage: 'sort', args: [asc('__name__')] },
     { stage: 'limit', args: [limit] },
@@ -447,29 +425,6 @@ function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): R
         alias('children', childrenSub()),
       ],
     },
-  ];
-}
-
-/** The full documented sold-ids pre-pass stage tree (ONE execution). */
-function expectedSoldStages(
-  limit: number,
-  estados: readonly unknown[] = [...ESTADOS_VENDA],
-): RecordedStage[] {
-  return [
-    { stage: 'collection', args: ['pedidos'] },
-    {
-      stage: 'where',
-      args: [
-        AND(
-          eq(f('ehSaida'), true),
-          inAny(f('estado'), [...estados]),
-          gte(f('timestamp'), CUTOFF_US),
-        ),
-      ],
-    },
-    { stage: 'unnest', args: [alias('pid', f('itensIds'))] },
-    { stage: 'distinct', args: ['pid'] },
-    { stage: 'limit', args: [limit] },
   ];
 }
 
@@ -537,13 +492,6 @@ afterEach(() => {
 describe('constants', () => {
   it('pure code constants keep their spec values', () => {
     expect(ESTOQUE_MIN).toBe(0);
-    expect(ESTADOS_VENDA).toEqual([
-      'emAnalise',
-      'emProcessamento',
-      'pago',
-      'finalizado',
-      'estornadoParcialmente',
-    ]);
     expect(PAUSE_REENQUEUE_JITTER_MAX_S).toBe(30);
     expect(MAX_VARIATIONS_PER_TASK).toBe(2000);
     expect(MERCADO_LIVRE_STOCK_SEND_QUEUE).toBe('sendMercadoLivreStock');
@@ -581,8 +529,7 @@ describe('env helpers', () => {
     expect(windowOverlapSec()).toBe(20);
     expect(cursorMaxLookbackHours()).toBe(24);
     expect(dailyWindowHours()).toBe(24);
-    expect(atividadeLookbackDays()).toBe(30);
-    expect(limiarEstoqueBaixo()).toBe(5);
+    expect(limiarEstoqueAlto()).toBe(100);
     expect(estoqueMax()).toBe(99999);
     expect(kitIncluiEstoqueProprio()).toBe(false);
     expect(anchorPageLimit()).toBe(250);
@@ -594,9 +541,9 @@ describe('env helpers', () => {
   });
 
   it('getters re-read the env on every call (no module-load caching)', () => {
-    expect(limiarEstoqueBaixo()).toBe(5);
-    process.env.MERCADO_LIVRE_STOCK_LIMIAR = '9';
-    expect(limiarEstoqueBaixo()).toBe(9);
+    expect(limiarEstoqueAlto()).toBe(100);
+    process.env.MERCADO_LIVRE_STOCK_LIMIAR_ALTO = '9';
+    expect(limiarEstoqueAlto()).toBe(9);
     process.env[STOCK_SYNC_FLAG_ENV] = '1';
     expect(isStockSyncEnabled()).toBe(true);
     process.env.MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN = '30';
@@ -854,7 +801,7 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
 
     expect(db.pipelineExecutions[0]![4]).toEqual({
       stage: 'where',
-      args: [gt(coal(logicalMax(f('maxOwn'), f('maxComp'), f('maxChildren')), 0), -1)],
+      args: [gt(coal(logicalMax(f('maxOwn'), f('maxChildren')), 0), -1)],
     });
   });
 
@@ -1015,79 +962,83 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
   });
 });
 
-describe('fetchSoldProdutoIds — the uncorrelated sales pre-pass', () => {
-  const SOLD_ARGS = { vendaCutoffUs: CUTOFF_US, estadosVenda: ESTADOS_VENDA };
+describe('fetchMovimentosDaJanela — the uncorrelated ledger pre-pass', () => {
+  const MOV_ARGS = { desdeMs: FROM_MS, depositoId: DEPOSITO_ID };
+  const DEP_REF = `documents/depositos/${DEPOSITO_ID}`;
 
-  it('single execution: the full documented stage tree (where → unnest → distinct → limit)', async () => {
+  it('single execution: the documented stage tree (where → grouped aggregate)', async () => {
     const db = new FakeDb();
-    db.queuePipelinePage([{ pid: 'A' }]);
+    db.queuePipelinePage([{ parentId: 'A', depositoOuterRef: DEP_REF, dq: -2, dr: 0 }]);
 
-    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 50 });
+    await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
 
     expect(db.pipelineExecutions).toHaveLength(1);
-    expect(db.pipelineExecutions[0]).toEqual(expectedSoldStages(50));
+    expect(db.pipelineExecutions[0]).toEqual([
+      { stage: 'collectionGroup', args: ['historicoEstoque'] },
+      { stage: 'where', args: [AND(gte(f('timestamp'), FROM_MS), depOr)] },
+      {
+        stage: 'aggregate',
+        args: [
+          {
+            accumulators: [
+              alias('dq', sumOf('movimento')),
+              alias('dr', sumOf('movimentoReservada')),
+            ],
+            groups: ['parentId', 'depositoOuterRef'],
+          },
+        ],
+      },
+    ]);
   });
 
-  it('carries exactly the estadosVenda ARG, not the constant', async () => {
-    const db = new FakeDb();
-    db.queuePipelinePage([]);
-    const SENTINEL = ['sentinel-estado-1', 'sentinel-estado-2'];
-
-    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, estadosVenda: SENTINEL, limit: 50 });
-
-    expect(db.pipelineExecutions[0]).toEqual(expectedSoldStages(50, SENTINEL));
-  });
-
-  it('maps rows into a Set of string pids, junk filtered', async () => {
+  it('maps rows into a (produto, depósito)-keyed map', async () => {
     const db = new FakeDb();
     db.queuePipelinePage([
-      { pid: 'PROD-A' },
-      { pid: '' }, // empty string dropped
-      { pid: 42 }, // non-string dropped
-      {}, // absent pid dropped
-      { pid: 'PROD-B' },
+      { parentId: 'A', depositoOuterRef: DEP_REF, dq: -2, dr: 1 },
+      { parentId: 'B', depositoOuterRef: DEP_REF, dq: 5, dr: 0 },
     ]);
 
-    const soldIds = await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 50 });
+    const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
 
-    expect(soldIds).toEqual(new Set(['PROD-A', 'PROD-B']));
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({ dq: -2, dr: 1 });
+    expect(movimentos.get(chaveMovimento('B', DEPOSITO_ID))).toEqual({ dq: 5, dr: 0 });
+    expect(movimentos.size).toBe(2);
   });
 
-  it('default cap comes from soldIdsLimit() (env-tunable, read lazily)', async () => {
-    expect(soldIdsLimit()).toBe(10_000);
+  it('keys on the ARG depósito, so either stored *OuterRef form maps the same', async () => {
+    // Readers tolerate the bare form (outerRef.ts invariant); the aggregate is
+    // already scoped to one depósito, so the echoed group value is irrelevant.
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      { parentId: 'A', depositoOuterRef: `depositos/${DEPOSITO_ID}`, dq: 3, dr: 0 },
+    ]);
+
+    const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
+
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({ dq: 3, dr: 0 });
+  });
+
+  it('drops rows with no usable parentId, and reads junk sums as 0', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      { parentId: null, depositoOuterRef: DEP_REF, dq: 9, dr: 9 },
+      { parentId: '', depositoOuterRef: DEP_REF, dq: 9, dr: 9 },
+      { parentId: 'A', depositoOuterRef: DEP_REF, dq: 'x', dr: undefined },
+    ]);
+
+    const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
+
+    expect(movimentos.size).toBe(1);
+    // A group that cannot be summed contributes nothing rather than a wrong
+    // delta — `anterior` then equals `atual` for that pair, and the family is
+    // judged on its other members.
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({ dq: 0, dr: 0 });
+  });
+
+  it('an empty window yields an empty map (no rows moved)', async () => {
     const db = new FakeDb();
     db.queuePipelinePage([]);
-    await fetchSoldProdutoIds(asDb(db), SOLD_ARGS);
-    expect(db.pipelineExecutions[0]![4]).toEqual({ stage: 'limit', args: [10_000] });
-
-    process.env.MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT = '7';
-    const db2 = new FakeDb();
-    db2.queuePipelinePage([]);
-    await fetchSoldProdutoIds(asDb(db2), SOLD_ARGS);
-    expect(db2.pipelineExecutions[0]![4]).toEqual({ stage: 'limit', args: [7] });
-  });
-
-  it('result size == limit → LOUD truncation warn (sold ids are missing)', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    const db = new FakeDb();
-    db.queuePipelinePage([{ pid: 'A' }, { pid: 'B' }]);
-
-    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 2 });
-
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('SOLD_IDS_LIMIT'),
-      expect.objectContaining({ limit: 2 }),
-    );
-  });
-
-  it('below the limit → no warn', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    const db = new FakeDb();
-    db.queuePipelinePage([{ pid: 'A' }]);
-
-    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 2 });
-
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect((await fetchMovimentosDaJanela(asDb(db), MOV_ARGS)).size).toBe(0);
   });
 });
 
@@ -1164,55 +1115,148 @@ describe('sweep-time quantities — pure reducers', () => {
   });
 });
 
-describe('deveEnviarIncremental — activity filter OR-arms', () => {
-  const NOW = T4;
-  const NO_SALES: ReadonlySet<string> = new Set();
-  const quietRow = () =>
+describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 0014)', () => {
+  const DEP = DEPOSITO_ID;
+  const mov = (entries: Array<[string, number]>) =>
+    new Map(entries.map(([id, dq]) => [chaveMovimento(id, DEP), { dq, dr: 0 }]));
+
+  /** A plain produto holding 10 − 2 = 8 available, with the `parentId` the join projects. */
+  const simples = () =>
     familyRow({
-      anchor: { timestampMs: NOW - 40 * DAY_MS },
-      children: [child('CH1', [], { timestampMs: NOW - 35 * DAY_MS })],
+      anchor: { estoque: { parentId: 'PROD', quantidade: 10, quantidadeReservada: 2 } },
     });
-  const okQty = new Map([
-    ['PROD', 10],
-    ['CH1', 8],
-  ]);
 
-  it('the ANCHOR id in soldIds → send', () => {
-    expect(deveEnviarIncremental(quietRow(), okQty, NOW, new Set(['PROD']))).toBe(true);
+  it('reconstructs a simple produto: anterior = atual − Σmovimento', () => {
+    // atual disponivel = 8; the window took 3 out ⇒ it was 11.
+    const anteriores = quantidadesAnteriores(simples(), DEP, mov([['PROD', -3]]));
+    expect(anteriores.get('PROD')).toBe(11);
   });
 
-  it('ANY child id in soldIds → send (legacy hasSales = own or any child)', () => {
-    expect(deveEnviarIncremental(quietRow(), okQty, NOW, new Set(['CH1']))).toBe(true);
+  it('a pair that never moved reconstructs to its current value', () => {
+    const anteriores = quantidadesAnteriores(simples(), DEP, new Map());
+    expect(anteriores.get('PROD')).toBe(8);
+    expect(deveEnviarFamilia(quantidadesDaFamilia(simples()), anteriores, true)).toBe(false);
   });
 
-  it('soldIds hits on OTHER produtos do not send this family', () => {
-    expect(deveEnviarIncremental(quietRow(), okQty, NOW, new Set(['OUTRO-PROD']))).toBe(false);
+  it('undoes the RESERVA arm too (disponivel = quantidade − reservada)', () => {
+    const anteriores = quantidadesAnteriores(
+      simples(),
+      DEP,
+      new Map([[chaveMovimento('PROD', DEP), { dq: 0, dr: 2 }]]),
+    );
+    // The window added 2 to the reservation, so disponivel used to be 8 + 2.
+    expect(anteriores.get('PROD')).toBe(10);
   });
 
-  it('any member created within the lookback → send (anchor or child)', () => {
-    const recentAnchor = familyRow({ anchor: { timestampMs: NOW - DAY_MS } });
-    expect(deveEnviarIncremental(recentAnchor, okQty, NOW, NO_SALES)).toBe(true);
-
-    const recentChild = familyRow({
-      anchor: { timestampMs: NOW - 40 * DAY_MS },
-      children: [child('CH1', [], { timestampMs: NOW - DAY_MS })],
+  it('an estoque row with NO parentId cannot be keyed → reads as unchanged', () => {
+    // The denorm is legal-null at rest (#238). Undoing nothing is the safe
+    // direction here: the family is then judged on its other members.
+    const semDenorm = familyRow({
+      anchor: { estoque: { quantidade: 10, quantidadeReservada: 2 } },
     });
-    expect(deveEnviarIncremental(recentChild, okQty, NOW, NO_SALES)).toBe(true);
+    expect(quantidadesAnteriores(semDenorm, DEP, mov([['PROD', -3]])).get('PROD')).toBe(8);
   });
 
-  it('any quantity below the limiar → send; the limiar is env-tunable', () => {
-    const lowQty = new Map([
-      ['PROD', 10],
-      ['CH1', 3], // < 5
+  it('THE #695 case: a component movement that does not change the kit floor', () => {
+    // Kit of 1× C1 + 1× C2. C2 is abundant (10 000); C1 is the binding one.
+    // A SIBLING kit sold, moving C2 by −1 — this kit's floor is unchanged.
+    const kit = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: {
+          C1: { quantidade: 1, limitarEstoque: true, timestamp: null },
+          C2: { quantidade: 1, limitarEstoque: true, timestamp: null },
+        },
+        estoque: null,
+        componentEstoques: [
+          { parentId: 'C1', quantidade: 15, quantidadeReservada: 0 },
+          { parentId: 'C2', quantidade: 9_999, quantidadeReservada: 0 },
+        ],
+      },
+    });
+    const atuais = quantidadesDaFamilia(kit);
+    const anteriores = quantidadesAnteriores(kit, DEP, mov([['C2', -1]]));
+
+    expect(atuais.get('PROD')).toBe(15);
+    expect(anteriores.get('PROD')).toBe(15); // min(15, 10 000) either way
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(false);
+    expect(deveEnviarFamilia(atuais, anteriores, false)).toBe(false); // daily too
+  });
+
+  it('a component movement that DOES change the floor still sends', () => {
+    const kit = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { C1: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+        estoque: null,
+        componentEstoques: [{ parentId: 'C1', quantidade: 9, quantidadeReservada: 0 }],
+      },
+    });
+    const atuais = quantidadesDaFamilia(kit);
+    const anteriores = quantidadesAnteriores(kit, DEP, mov([['C1', -1]]));
+    expect(atuais.get('PROD')).toBe(9);
+    expect(anteriores.get('PROD')).toBe(10);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true);
+  });
+
+  /* -------------------- the high-stock rule and its guard ------------------- */
+
+  it('incremental: 200 → 199 waits for the daily pass; daily sends it', () => {
+    const atuais = new Map([['PROD', 199]]);
+    const anteriores = new Map([['PROD', 200]]);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(false);
+    expect(deveEnviarFamilia(atuais, anteriores, false)).toBe(true);
+  });
+
+  it('the threshold is STRICT: landing exactly on it still sends', () => {
+    // The rule is "skip while min(...) > LIMIAR", so a value equal to the
+    // threshold is treated as inside the danger zone, not outside it.
+    expect(deveEnviarFamilia(new Map([['PROD', 100]]), new Map([['PROD', 101]]), true)).toBe(true);
+  });
+
+  it('⚠️ 110 → 95 SENDS on the incremental tier — the crossing guard', () => {
+    // This is why the rule is min(anterior, atual) and not `atual` alone:
+    // gating on the current value would skip the movement that walks a listing
+    // INTO the danger zone, and the next sale oversells.
+    expect(deveEnviarFamilia(new Map([['PROD', 95]]), new Map([['PROD', 110]]), true)).toBe(true);
+  });
+
+  it('95 → 110 sends too — the guard is symmetric', () => {
+    expect(deveEnviarFamilia(new Map([['PROD', 110]]), new Map([['PROD', 95]]), true)).toBe(true);
+  });
+
+  it('the threshold is env-tunable and read lazily', () => {
+    const atuais = new Map([['PROD', 40]]);
+    const anteriores = new Map([['PROD', 41]]);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true); // 40 <= 100 ⇒ sends
+    process.env.MERCADO_LIVRE_STOCK_LIMIAR_ALTO = '10';
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(false); // now comfortably high
+  });
+
+  it('one LOW sibling justifies the whole send even when another is high', () => {
+    const atuais = new Map([
+      ['PROD', 999],
+      ['CH1', 3],
     ]);
-    expect(deveEnviarIncremental(quietRow(), lowQty, NOW, NO_SALES)).toBe(true);
-    process.env.MERCADO_LIVRE_STOCK_LIMIAR = '2';
-    expect(deveEnviarIncremental(quietRow(), lowQty, NOW, NO_SALES)).toBe(false); // 3 >= 2
+    const anteriores = new Map([
+      ['PROD', 1000],
+      ['CH1', 4],
+    ]);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true);
   });
 
-  it('no sale, nothing recent, all quantities healthy → skip', () => {
-    expect(deveEnviarIncremental(quietRow(), okQty, NOW, NO_SALES)).toBe(false);
-    expect(deveEnviarIncremental(familyRow(), new Map(), NOW, NO_SALES)).toBe(false); // null timestamps
+  /* ------------------------------- fail open ------------------------------- */
+
+  it('no reconstruction at all → send (first sweep after deploy)', () => {
+    expect(deveEnviarFamilia(new Map([['PROD', 8]]), null, true)).toBe(true);
+  });
+
+  it('a member missing from the reconstruction → send (unknown, never skip)', () => {
+    expect(deveEnviarFamilia(new Map([['PROD', 8]]), new Map(), true)).toBe(true);
+  });
+
+  it('nothing to send at all → skip', () => {
+    expect(deveEnviarFamilia(new Map(), new Map(), true)).toBe(false);
   });
 });
 

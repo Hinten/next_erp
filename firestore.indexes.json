@@ -707,24 +707,6 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "estado",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "timestamp",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "ehSaida",
-          "order": "ASCENDING"
-        },
-        {
           "fieldPath": "dtImpressao",
           "order": "DESCENDING"
         }
@@ -1402,6 +1384,24 @@
       "fields": [
         {
           "fieldPath": "cepFinal",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "historicoEstoque",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "parentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "depositoOuterRef",
           "order": "ASCENDING"
         }
       ]

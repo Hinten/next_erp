@@ -73,28 +73,41 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       continuacao: {
         afterAnchorId: 'PROD-42',
         changedSinceMs: 1721800780000,
-        vendaCutoffUs: 1719208800000000,
+        modo: 'incremental',
         startedAtUs: 1721801100000000,
       },
     };
     expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
   });
 
-  it('a DAILY continuation keeps vendaCutoffUs null (probe skipped ⇒ daily semantics)', () => {
+  it('a DAILY continuation records modo explicitly (never inferred from a sibling field)', () => {
     const parsed = estoqueMercadoLivreSyncSchema.parse({
       continuacao: {
         afterAnchorId: 'PROD-7',
         changedSinceMs: 1721715000000,
-        vendaCutoffUs: null,
+        modo: 'daily',
         startedAtUs: 1721801100000000,
       },
     });
     expect(parsed.continuacao).toEqual({
       afterAnchorId: 'PROD-7',
       changedSinceMs: 1721715000000,
-      vendaCutoffUs: null,
+      modo: 'daily',
       startedAtUs: 1721801100000000,
     });
+  });
+
+  it('rejects a continuacao with an unknown modo', () => {
+    expect(() =>
+      estoqueMercadoLivreSyncSchema.parse({
+        continuacao: {
+          afterAnchorId: 'PROD-7',
+          changedSinceMs: 1,
+          modo: 'reconciliacao',
+          startedAtUs: 2,
+        },
+      }),
+    ).toThrow();
   });
 
   it('rejects a continuacao with an empty afterAnchorId (no keyset position)', () => {
@@ -103,7 +116,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
         continuacao: {
           afterAnchorId: '',
           changedSinceMs: 1,
-          vendaCutoffUs: null,
+          modo: 'daily',
           startedAtUs: 2,
         },
       }),
