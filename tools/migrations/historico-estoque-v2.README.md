@@ -3,12 +3,21 @@
 Reshapes every `historicoEstoque` row from v1 to v2 (ADR 0014, #695).
 
 ```bash
+# pre-flight — counts the stored shapes, logs no per-row lines, writes nothing
+pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- --project <project-id> --report-only
+
 # dry-run (default) — logs every row it WOULD touch, writes nothing
 pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- --project <project-id>
 
 # write
 pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- --project <project-id> --apply
 ```
+
+`--report-only` is the pass to run **first**. It answers the question a dry-run
+cannot — _what is actually stored?_ — and in particular the one number worth
+knowing before committing: how many balanços will come out with no recoverable
+delta. It prints a verdict tally plus a breakdown by reason. Same scan, same
+cost as a dry-run; it just tallies instead of enumerating.
 
 ## ⚠️ Read this before scheduling the run
 
@@ -54,24 +63,42 @@ wrote that pair. The **read-free manual path never did** — and a manual balan�
 is exactly the kind of row that path produces.
 
 So for many balanços the delta is **unrecoverable, and this script does not
-invent one**. It writes `movimento: null` and logs a skip with the reason.
+invent one**. It writes the row **without a `movimento` field at all** and logs a
+skip with the reason.
 
 | verdict                  | meaning                                                                |
 | ------------------------ | ---------------------------------------------------------------------- |
 | `migrado`                | converted, delta known                                                 |
-| `movimento-desconhecido` | converted, but `movimento: null` — logged as a skip                    |
+| `movimento-desconhecido` | converted, but `movimento` left **absent** — logged as a skip          |
 | `ja-migrado`             | already v2 (numeric `movimento`) — untouched                           |
 | `sem-dados`              | unrecognized row shape, or a path yielding no keys — untouched, logged |
 
-A null `movimento` reads downstream as _unknown_ and **fails open**: the Mercado
-Livre sweep sends rather than skips. Guessing the counted value as if it were a
-delta would instead be silently wrong in the one direction nothing can detect —
-`sum(movimento)` would drift and the sweep would skip sends it should make.
+⚠️ **Absent, not `movimento: null`.** The ML sweep spots an unreadable row with
+`countIf(not(exists('movimento')))`, so _absent_ is the single wire
+representation of "unknown" its fail-open path can see. An explicit null would
+read as present, be skipped by `sum` anyway, and drop the pair back into the
+silent-skip hole that counter exists to close. Zod still surfaces it to readers
+as `movimento: null` — absent on the wire, null in the model, both meaning
+unknown. Anything that later writes an explicit null here re-opens the hole.
 
-The run prints a final count of these; grep the JSONL for `balanço sem`.
+An unknown `movimento` **fails open**: the sweep sends rather than skips.
+Guessing the counted value as if it were a delta would instead be silently wrong
+in the one direction nothing can detect — `sum(movimento)` would drift and the
+sweep would skip sends it should make.
+
+The same reasoning applies to a _movimentação_ with no readable `quantidade`:
+that records nothing, so it takes the unknown path too rather than a confident
+`movimento: 0`. (A missing `quantidadeReservada` is different and genuinely
+means 0 — the reservation did not move.)
+
+The run prints a final count of these; grep the JSONL for `sem`, or read the
+`--report-only` breakdown.
 
 ## Verifying a run
 
+0. `--report-only` first, and keep the output. It is the baseline every later
+   count is judged against, and the only place the corpus is described rather
+   than enumerated.
 1. Dry-run and read `out/<stamp>-historico-estoque-v2-dryrun.jsonl`. Sanity
    check: `kind: 'skip'` lines should be dominated by balanços, and their count
    should be plausible against how many inventory counts the store has done.
