@@ -153,6 +153,12 @@ export interface MovimentacaoPlan {
   ehBalanco: boolean;
   /** Entrada/saída: the signed delta to `increment`. Balanço: the absolute value. */
   quantidade: number;
+  /**
+   * Same split as `quantidade` — and on a **balanço** it is already clamped ≥ 0,
+   * so it always equals `historico.saldoReservada`: the plan describes exactly
+   * what lands on the doc, and the caller writes it verbatim. On entrada/saída
+   * it is a signed delta, so a negative value is correct and expected there.
+   */
   quantidadeReservada: number;
   /**
    * The `HistoricoEstoque` v2 record to append. `movimento` is a **signed delta
@@ -200,13 +206,16 @@ export function planMovimentacao(
   const ehBalanco = input.tipo === 'balanco';
 
   if (ehBalanco) {
-    // The absolute set the caller writes; reservada is clamped here so the
-    // recorded saldo matches what actually lands on the doc.
+    // The absolute set the caller writes. Clamped ONCE, here, so the plan is
+    // self-consistent: for a balanço `quantidadeReservada` IS the value that
+    // lands on the doc, and it must equal the `saldoReservada` the ledger
+    // records. (Entrada/saída below stay unclamped — there the field is a
+    // signed delta the caller `increment`s, and a negative one is correct.)
     const saldoReservada = Math.max(0, input.quantidadeReservada);
     return {
       ehBalanco,
       quantidade: input.quantidade,
-      quantidadeReservada: input.quantidadeReservada,
+      quantidadeReservada: saldoReservada,
       historico: {
         movimento: atual ? input.quantidade - atual.quantidade : null,
         movimentoReservada: atual ? saldoReservada - atual.quantidadeReservada : null,

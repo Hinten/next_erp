@@ -23,10 +23,18 @@
  * `quantidadeAntes`. The pedido sync always wrote that pair; the read-free
  * manual path never did, and a balanço is exactly what the manual path writes.
  * So for most balanços the delta is **unrecoverable**, and this transform
- * **refuses to invent one**: it writes `movimento: null` and reports a skip.
+ * **refuses to invent one**: it OMITS `movimento` and reports a skip.
  *
- * A null reads as *unknown* downstream and fails OPEN (the sweep sends rather
- * than skips), which is the whole reason the v2 readers were written that way.
+ * ⚠️ Omits — it does not write `movimento: null`. The ML sweep detects an
+ * unreadable row with `countIf(not(exists('movimento')))`, so *absent* is the
+ * one wire representation of "unknown" the fail-open path can see (ADR 0014).
+ * An explicit null would read as present, be skipped by `sum` anyway, and land
+ * the pair back in the silent-skip hole the counter exists to close. Zod still
+ * surfaces it as `movimento: null` to readers — absent on the wire, null in the
+ * model, both meaning unknown.
+ *
+ * An unknown reads as *fail OPEN* downstream (the sweep sends rather than
+ * skips), which is the whole reason the v2 readers were written that way.
  * Guessing `contado` as if it were a delta would instead be silently wrong in
  * the one direction nothing can detect.
  *
@@ -44,7 +52,8 @@ export type HistoricoV2Verdict =
   | { kind: 'migrado'; patch: Record<string, unknown> }
   /**
    * Converted, but the signed delta could not be derived — `patch` carries
-   * everything else and leaves `movimento` null. `motivo` names why.
+   * everything else and OMITS `movimento` entirely (see the module doc: absent
+   * is what the sweep's fail-open counter looks for). `motivo` names why.
    */
   | { kind: 'movimento-desconhecido'; patch: Record<string, unknown>; motivo: string };
 
@@ -109,10 +118,20 @@ export function planHistoricoV2(data: unknown, path: string): HistoricoV2Verdict
   // structured `tipo` when the row has one).
   const ehBalanco = row.ehBalanco === true || row.tipo === 'balanco';
   if (!ehBalanco) {
-    // Every other row already held a signed delta — a straight rename.
+    // Every other row already held a signed delta — a straight rename. A row
+    // with NO `quantidade` at all records nothing readable, so it takes the
+    // unknown path rather than a confident 0. (A missing `quantidadeReservada`
+    // is different and genuinely means 0: the reservation did not move.)
+    if (quantidade == null) {
+      return {
+        kind: 'movimento-desconhecido',
+        patch: base,
+        motivo: 'movimentação sem quantidade — nada legível para converter (fail-open)',
+      };
+    }
     return {
       kind: 'migrado',
-      patch: { ...base, movimento: quantidade ?? 0, movimentoReservada: reservada ?? 0 },
+      patch: { ...base, movimento: quantidade, movimentoReservada: reservada ?? 0 },
     };
   }
 
@@ -136,10 +155,9 @@ export function planHistoricoV2(data: unknown, path: string): HistoricoV2Verdict
 
   return {
     kind: 'movimento-desconhecido',
+    // `movimento` / `movimentoReservada` are deliberately ABSENT from the patch.
     patch: {
       ...base,
-      movimento: null,
-      movimentoReservada: null,
       saldo: depois ?? quantidade,
       saldoReservada: reservadaDepois ?? reservada,
     },

@@ -112,6 +112,9 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     logicalMaximum: (...xs: unknown[]) => new Expr({ kind: 'logicalMaximum', xs }),
     maximum: (f: unknown) => new Expr({ kind: 'maximum', f }),
     sum: (f: unknown) => new Expr({ kind: 'sum', f }),
+    countIf: (b: unknown) => new Expr({ kind: 'countIf', b }),
+    not: (b: unknown) => new Expr({ kind: 'not', b }),
+    exists: (f: unknown) => new Expr({ kind: 'exists', f }),
     subcollection: (path: string) => {
       const chain = new FakeChain();
       chain.stages.push({ stage: 'subcollection', args: [path] });
@@ -243,6 +246,9 @@ const arr = (elements: unknown[]) => ({ kind: 'array', elements });
 const logicalMax = (...xs: unknown[]) => ({ kind: 'logicalMaximum', xs });
 const maxOf = (fld: string) => ({ kind: 'maximum', f: fld });
 const sumOf = (fld: string) => ({ kind: 'sum', f: fld });
+const countIfOf = (b: unknown) => ({ kind: 'countIf', b });
+const notOf = (b: unknown) => ({ kind: 'not', b });
+const existsOf = (fld: string) => ({ kind: 'exists', f: fld });
 const contains = (l: unknown, v: unknown) => ({ kind: 'arrayContains', l, v });
 const inAny = (l: unknown, values: unknown) => ({ kind: 'equalAny', l, values });
 const cnst = (v: unknown) => ({ kind: 'constant', v });
@@ -983,6 +989,7 @@ describe('fetchMovimentosDaJanela — the uncorrelated ledger pre-pass', () => {
             accumulators: [
               alias('dq', sumOf('movimento')),
               alias('dr', sumOf('movimentoReservada')),
+              alias('nDesconhecido', countIfOf(notOf(existsOf('movimento')))),
             ],
             groups: ['parentId', 'depositoOuterRef'],
           },
@@ -1000,8 +1007,16 @@ describe('fetchMovimentosDaJanela — the uncorrelated ledger pre-pass', () => {
 
     const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
 
-    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({ dq: -2, dr: 1 });
-    expect(movimentos.get(chaveMovimento('B', DEPOSITO_ID))).toEqual({ dq: 5, dr: 0 });
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({
+      dq: -2,
+      dr: 1,
+      desconhecido: false,
+    });
+    expect(movimentos.get(chaveMovimento('B', DEPOSITO_ID))).toEqual({
+      dq: 5,
+      dr: 0,
+      desconhecido: false,
+    });
     expect(movimentos.size).toBe(2);
   });
 
@@ -1015,7 +1030,11 @@ describe('fetchMovimentosDaJanela — the uncorrelated ledger pre-pass', () => {
 
     const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
 
-    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({ dq: 3, dr: 0 });
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({
+      dq: 3,
+      dr: 0,
+      desconhecido: false,
+    });
   });
 
   it('drops rows with no usable parentId, and reads junk sums as 0', async () => {
@@ -1032,7 +1051,71 @@ describe('fetchMovimentosDaJanela — the uncorrelated ledger pre-pass', () => {
     // A group that cannot be summed contributes nothing rather than a wrong
     // delta — `anterior` then equals `atual` for that pair, and the family is
     // judged on its other members.
-    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({ dq: 0, dr: 0 });
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({
+      dq: 0,
+      dr: 0,
+      desconhecido: false,
+    });
+  });
+
+  it('ACCUMULATES the two *OuterRef encodings of one pair instead of overwriting', async () => {
+    // The filter accepts both forms, but the aggregate groups by the RAW value,
+    // so a produto whose rows carry a mix comes back as TWO groups. Overwriting
+    // would drop one arm and reconstruct a confidently wrong `anterior`.
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      { parentId: 'A', depositoOuterRef: DEP_REF, dq: -2, dr: 1, nDesconhecido: 0 },
+      {
+        parentId: 'A',
+        depositoOuterRef: `depositos/${DEPOSITO_ID}`,
+        dq: -5,
+        dr: 2,
+        nDesconhecido: 0,
+      },
+    ]);
+
+    const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
+
+    expect(movimentos.size).toBe(1);
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))).toEqual({
+      dq: -7,
+      dr: 3,
+      desconhecido: false,
+    });
+  });
+
+  it('an unknown-movement group survives accumulation with the readable one', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      { parentId: 'A', depositoOuterRef: DEP_REF, dq: -2, dr: 0, nDesconhecido: 0 },
+      {
+        parentId: 'A',
+        depositoOuterRef: `depositos/${DEPOSITO_ID}`,
+        dq: 0,
+        dr: 0,
+        nDesconhecido: 4,
+      },
+    ]);
+
+    const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
+
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))?.desconhecido).toBe(true);
+  });
+
+  it('flags a group whose window holds a row with NO `movimento` key', async () => {
+    // A legacy Flutter v1 row: `sum` skips it, so without this counter the
+    // window would look like it moved nothing and the sweep would SKIP a real
+    // movement. Flutter is a live writer during the dual run.
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      { parentId: 'A', depositoOuterRef: DEP_REF, dq: 0, dr: 0, nDesconhecido: 1 },
+      { parentId: 'B', depositoOuterRef: DEP_REF, dq: -4, dr: 0, nDesconhecido: 0 },
+    ]);
+
+    const movimentos = await fetchMovimentosDaJanela(asDb(db), MOV_ARGS);
+
+    expect(movimentos.get(chaveMovimento('A', DEPOSITO_ID))?.desconhecido).toBe(true);
+    expect(movimentos.get(chaveMovimento('B', DEPOSITO_ID))?.desconhecido).toBe(false);
   });
 
   it('an empty window yields an empty map (no rows moved)', async () => {
@@ -1118,7 +1201,9 @@ describe('sweep-time quantities — pure reducers', () => {
 describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 0014)', () => {
   const DEP = DEPOSITO_ID;
   const mov = (entries: Array<[string, number]>) =>
-    new Map(entries.map(([id, dq]) => [chaveMovimento(id, DEP), { dq, dr: 0 }]));
+    new Map(
+      entries.map(([id, dq]) => [chaveMovimento(id, DEP), { dq, dr: 0, desconhecido: false }]),
+    );
 
   /** A plain produto holding 10 − 2 = 8 available, with the `parentId` the join projects. */
   const simples = () =>
@@ -1142,10 +1227,41 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     const anteriores = quantidadesAnteriores(
       simples(),
       DEP,
-      new Map([[chaveMovimento('PROD', DEP), { dq: 0, dr: 2 }]]),
+      new Map([[chaveMovimento('PROD', DEP), { dq: 0, dr: 2, desconhecido: false }]]),
     );
     // The window added 2 to the reservation, so disponivel used to be 8 + 2.
     expect(anteriores.get('PROD')).toBe(10);
+  });
+
+  it('OMITS a member whose own movement is unknown, so the policy fails OPEN', () => {
+    // A Flutter v1 row landed in this window: the sums cannot account for it,
+    // so there is no honest `anterior`. Leaving the member out is what makes
+    // `deveEnviarFamilia` send; a fallback to the current value would read as
+    // "unchanged" and silently skip a real movement.
+    const desconhecido = new Map([
+      [chaveMovimento('PROD', DEP), { dq: 0, dr: 0, desconhecido: true }],
+    ]);
+    const anteriores = quantidadesAnteriores(simples(), DEP, desconhecido);
+    expect(anteriores.has('PROD')).toBe(false);
+    expect(deveEnviarFamilia(quantidadesDaFamilia(simples()), anteriores, true)).toBe(true);
+  });
+
+  it('OMITS a kit whose COMPONENT moved by an unknown amount', () => {
+    // The kit's floor is computed from its components, so an unreadable
+    // component movement makes the kit's own `anterior` unknowable too.
+    const kitRow = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+        estoque: { parentId: 'PROD', quantidade: 0, quantidadeReservada: 0 },
+        componentEstoques: [{ parentId: 'COMP', quantidade: 10, quantidadeReservada: 0 }],
+      },
+    });
+    const desconhecido = new Map([
+      [chaveMovimento('COMP', DEP), { dq: 0, dr: 0, desconhecido: true }],
+    ]);
+    expect(quantidadesAnteriores(kitRow, DEP, desconhecido).has('PROD')).toBe(false);
+    expect(quantidadesAnteriores(kitRow, DEP, mov([['COMP', -1]])).has('PROD')).toBe(true);
   });
 
   it('an estoque row with NO parentId cannot be keyed → reads as unchanged', () => {

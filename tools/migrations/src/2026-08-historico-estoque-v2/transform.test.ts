@@ -69,9 +69,19 @@ describe('planHistoricoV2 — movements', () => {
     });
   });
 
-  it('reads missing/junk delta fields as 0 rather than dropping the row', () => {
+  it('a movimentação with NO readable quantidade is unknown, not a confident 0', () => {
+    // Writing `movimento: 0` here would assert "this row moved nothing" about a
+    // row that records nothing at all — a claim the sweep would then trust.
     const v = planHistoricoV2({ quantidade: 'x' }, PATH);
-    expect(v).toMatchObject({ kind: 'migrado', patch: { movimento: 0, movimentoReservada: 0 } });
+    expect(v.kind).toBe('movimento-desconhecido');
+    if (v.kind !== 'movimento-desconhecido') throw new Error('unreachable');
+    expect(v.patch).not.toHaveProperty('movimento');
+    expect(v.motivo).toContain('sem quantidade');
+  });
+
+  it('a missing quantidadeReservada DOES mean 0 — the reservation did not move', () => {
+    const v = planHistoricoV2({ quantidade: 4 }, PATH);
+    expect(v).toMatchObject({ kind: 'migrado', patch: { movimento: 4, movimentoReservada: 0 } });
   });
 });
 
@@ -101,17 +111,20 @@ describe('planHistoricoV2 — balanço (the case that cannot be assumed)', () =>
   it('⚠️ NEVER invents a delta when quantidadeAntes is absent', () => {
     // The read-free manual path wrote balanços without before/after, so this is
     // the COMMON case. Writing `quantidade` into `movimento` would silently
-    // corrupt every sum; a null reads as unknown and fails OPEN instead.
+    // corrupt every sum; an unknown fails OPEN instead.
     const v = planHistoricoV2({ ehBalanco: true, quantidade: 42, quantidadeReservada: 2 }, PATH);
     expect(v.kind).toBe('movimento-desconhecido');
     if (v.kind !== 'movimento-desconhecido') throw new Error('unreachable');
     expect(v.patch).toMatchObject({
-      movimento: null,
-      movimentoReservada: null,
       // The counted value IS the resulting saldo even without `quantidadeDepois`.
       saldo: 42,
       saldoReservada: 2,
     });
+    // ⚠️ ABSENT, never `movimento: null` — the ML sweep detects an unreadable
+    // row with `countIf(not(exists('movimento')))`, so an explicit null would
+    // read as present and put the pair back in the silent-skip hole.
+    expect(v.patch).not.toHaveProperty('movimento');
+    expect(v.patch).not.toHaveProperty('movimentoReservada');
     expect(v.motivo).toContain('quantidadeAntes');
   });
 

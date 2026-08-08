@@ -138,14 +138,38 @@ for a whole sweep tick:
 db.pipeline().collectionGroup('historicoEstoque')
   .where(field('timestamp').greaterThanOrEqual(janelaInicioMs))
   .aggregate({
-    accumulators: [sum('movimento').as('dq'), sum('movimentoReservada').as('dr')],
+    accumulators: [
+      sum('movimento').as('dq'),
+      sum('movimentoReservada').as('dr'),
+      countIf(not(exists('movimento'))).as('nDesconhecido'),
+    ],
     groups: ['parentId', 'depositoOuterRef'],
   })
 ```
 
 `anterior = (quantidade − dq) − (quantidadeReservada − dr)`, fed through the same
-`kitEstoqueDisponivel`. A product absent from the result never moved. The
-aggregate **fails open**: an absent or null `movimento` means *unknown* → send.
+`kitEstoqueDisponivel`. A product absent from the result never moved.
+
+**Failing open is an explicit accumulator, not an emergent property.** `sum`
+silently skips a row that carries no `movimento` — a legacy Flutter v1 row, and
+Flutter is a *live concurrent writer* through the whole dual run. Left at that,
+such a window sums to zero, `anterior` reconstructs to `atual`, and the sweep
+concludes "nothing changed" about a movement that certainly happened: a silent
+skip, the one failure mode this design cannot tolerate. So the aggregate
+**counts those rows per group**, and the reconstruction drops any member whose
+own estoque — or whose kit component's estoque — sits in a flagged pair. The
+send policy reads a missing member as *unknown* and sends.
+
+That makes the representation of "unknown" load-bearing: it is the **absent
+key**, tested with `exists`. v2 writers always write `movimento`, and the v1→v2
+migration omits the key rather than storing an explicit `null` when it cannot
+recover a balanço's delta — precisely so one existence test is complete. A
+future writer that stores `movimento: null` would defeat the counter.
+
+⚠️ Still blind to a quantity written with **no ledger row at all** — the ML
+import's unaudited `merge` (`import.ts`, `importVariations.ts`). There is
+nothing in the window to count, so that one is closed at the source by making
+the importer append a row, tracked separately.
 
 ⚠️ It needs the covering index `historicoEstoque(timestamp, parentId,
 depositoOuterRef)`, COLLECTION_GROUP. An uncovered aggregate buffers every group

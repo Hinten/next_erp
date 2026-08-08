@@ -236,7 +236,7 @@ function makeMovimentos(result: MovimentosDaJanela = new Map()) {
 
 /** A ledger map saying `produtoId` moved by `dq` at the default depósito. */
 function movimentou(produtoId: string, dq: number, depositoId = 'dep-1'): MovimentosDaJanela {
-  return new Map([[chaveMovimento(produtoId, depositoId), { dq, dr: 0 }]]);
+  return new Map([[chaveMovimento(produtoId, depositoId), { dq, dr: 0, desconhecido: false }]]);
 }
 
 /** Every anchor id the multi-row fixtures use, all reported as having moved. */
@@ -244,7 +244,7 @@ function movimentouTodos(depositoId = 'dep-1'): MovimentosDaJanela {
   return new Map(
     ['PROD-1', 'PROD-2', 'PROD-3', 'CH-1'].map((id) => [
       chaveMovimento(id, depositoId),
-      { dq: 1, dr: 0 },
+      { dq: 1, dr: 0, desconhecido: false },
     ]),
   );
 }
