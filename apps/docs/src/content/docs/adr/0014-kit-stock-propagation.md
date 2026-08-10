@@ -310,10 +310,10 @@ in `planMovimentacao` and follows an entrada/saída `increment` with
 `FieldValue.maximum(0)` on the same doc. Those floors are necessary and not
 sufficient — they only bind writes that go through them.
 
-**Auditing what is already stored** is
-`tools/migrations/src/2026-08-estoque-reservada-negativa/` — read-only, no `--apply`,
-and it attributes each hit to a writer via its `historicoEstoque`. Per root rule 8 the
-production run is a human step, tracked in its own issue.
+**Auditing what is already stored** is a separate read-only pass — no `--apply` — that
+attributes each hit to a writer via its `historicoEstoque`. It lands as
+`tools/migrations/src/2026-08-estoque-reservada-negativa/` (#936), and per root rule 8
+the production run itself is a human step tracked in its own issue.
 
 ## Consequences
 
