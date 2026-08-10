@@ -578,12 +578,14 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect(typeof kitDoc.ultimaModificacao).toBe('number');
     expect(kitDoc.ultimaModificacao).toBeGreaterThan(0);
 
-    // ⚠️ The payload is minimal ON PURPOSE. `parentId` + `depositoOuterRef` are
-    // the only two the sweep needs to REACH this doc (its estoque probe filters
-    // on the depósito, and the ledger pre-pass keys on `parentId`); everything
-    // else would be a field nobody reads. `dataCriacao` in particular: a stamp
-    // is not a creation event. Pinned as an exact key set so a future "while
-    // we're here" addition has to justify itself.
+    // ⚠️ The CREATE payload is minimal ON PURPOSE. `depositoOuterRef` is what
+    // lets the sweep REACH this doc at all (its estoque probe filters on the
+    // depósito); `parentId` is structural uniformity with every other estoque
+    // writer, not a reader's requirement — a kit can never be a component of
+    // another kit (#239), so the one query keying on it never reaches this row.
+    // Everything else would be a field nobody reads; `dataCriacao` in
+    // particular, since a stamp is not a creation event. Pinned as an exact key
+    // set so a future "while we're here" addition has to justify itself.
     expect(Object.keys(kitDoc).sort()).toEqual([
       'depositoOuterRef',
       'parentId',
@@ -620,6 +622,31 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     // writes it.
     expect(kitDoc.ultimaModificacao).toBeGreaterThan(1);
     expect(kitDoc.dataCriacao).toBe(1);
+  });
+
+  it("⚠️ leaves an EXISTING doc's identity denorms exactly as it found them", async () => {
+    // The stamp authors `parentId`/`depositoOuterRef` only when it CREATES the
+    // doc. Re-asserting them on every stamp was a blind last-write-wins
+    // overwrite of two fields this code never read (ADR 0011), and it would
+    // silently re-encode a `depositoOuterRef` stored in the bare form the
+    // outerRef invariant tolerates — which the Flutter app may still be writing
+    // during the dual run. Both values below are deliberately "wrong"; the point
+    // is that the stamp is not the thing that gets to decide.
+    const db = getDb();
+    const { depositoId, pedidoId, kitId } = await seedKit(db);
+    await estoqueRef(db, kitId, depositoId).set({
+      parentId: 'NAO-SOU-EU',
+      depositoOuterRef: `depositos/${depositoId}`, // bare form, not `documents/…`
+      ultimaModificacao: 1,
+    });
+
+    await aplicarConvergindo(db, pedidoId);
+
+    const kitDoc = (await estoqueRef(db, kitId, depositoId).get()).data()!;
+    expect(kitDoc.parentId).toBe('NAO-SOU-EU');
+    expect(kitDoc.depositoOuterRef).toBe(`depositos/${depositoId}`);
+    // …while the signal itself still moved forward.
+    expect(kitDoc.ultimaModificacao).toBeGreaterThan(1);
   });
 
   it('stamps a VIRTUAL kit too — virtual changes the upload shape, not the sale', async () => {

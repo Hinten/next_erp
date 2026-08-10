@@ -440,6 +440,37 @@ export {
 export { deposito, depositoSchema, depositoMeta, type Deposito } from './deposito';
 
 export {
+  balanco,
+  balancoSchema,
+  balancoMeta,
+  movimentoBalanco,
+  movimentoBalancoSchema,
+  movimentoBalancoMeta,
+  relatorioBalanco,
+  relatorioBalancoSchema,
+  relatorioBalancoMeta,
+  itemRelatorioBalancoSchema,
+  finalizacaoBalancoSchema,
+  estadoBalancoSchema,
+  estadoBalanco,
+  balancoAceitaLancamento,
+  podeFinalizarBalanco,
+  relatorioBalancoShardId,
+  RELATORIO_BALANCO_SHARD_SIZE,
+  ESTADO_BALANCO,
+  ESTADO_BALANCO_VALUES,
+  ESTADO_BALANCO_LABELS,
+  ESTADO_BALANCO_VISIVEL_LABELS,
+  type Balanco,
+  type EstadoBalanco,
+  type EstadoBalancoVisivel,
+  type FinalizacaoBalanco,
+  type MovimentoBalanco,
+  type RelatorioBalanco,
+  type ItemRelatorioBalanco,
+} from './balanco';
+
+export {
   grupoDeVariacoes,
   grupoDeVariacoesSchema,
   grupoDeVariacoesMeta,

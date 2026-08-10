@@ -42,7 +42,10 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
-import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import {
+  createMercadoLivreApi,
+  MercadoLivreHttpError,
+} from '@delfrance/integrations-mercado-livre';
 import {
   integracaoCollection,
   notificacaoMercadoLivreCollection,
@@ -402,12 +405,39 @@ function parseOrderResourceId(resource: string): number | null {
   return Number(last);
 }
 
+/**
+ * Wrapper for topic-specific runners (order/payment/shipment/claim import) that
+ * catches ML 500 errors (N7) and converts them to a non-retryable outcome
+ * instead of throwing. A known routine ML-side transient (HTTP 500) should not
+ * consume the full retry envelope — persist immediately as `failed` with a note
+ * that it's an ML-side issue, and the sweep re-drives it up to the cap.
+ */
+async function wrapImportRunner<T extends { skipped?: unknown }>(
+  integracaoId: string,
+  runner: () => Promise<T>,
+): Promise<T | { skipped: 'ML_500'; message: string }> {
+  try {
+    return await runner();
+  } catch (err) {
+    if (err instanceof MercadoLivreHttpError && err.status === 500) {
+      const message = err.message ?? 'ML HTTP 500';
+      console.warn('[mercado-livre] import runner hit ML 500 — not retrying', {
+        integracaoId,
+        message,
+      });
+      return { skipped: 'ML_500', message };
+    }
+    throw err;
+  }
+}
+
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
-  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders/payments/shipments/claims resource had no parseable id
+  | { kind: 'malformed-resource'; integracaoId: string } // items/orders_v2/orders/payments/shipments/claims resource had no parseable id
+  | { kind: 'ml-500'; integracaoId: string; message: string }; // known routine ML 500 (N7) — non-retryable
 
 /**
  * The per-topic runner seams the dispatch pipeline threads — ONE options bag
@@ -452,12 +482,14 @@ export async function processNotificationPayload(
   // #441 UP-migration takeover for a closed `variations_migration_source`
   // listing. THROWS on a transient failure (so the queue/sweep retry) and is
   // idempotent, keyed by the item id. A malformed resource (no id segment) is
-  // deterministic → ack it.
+  // deterministic → drop it, logged explicitly (matches the behavior of other
+  // topics below).
   if (payload.topic === 'items') {
     const itemId = parseItemIdFromResource(payload.resource);
+    if (!itemId) return { kind: 'malformed-resource', integracaoId };
     // The resolver is threaded (not a pre-built API) so syncItemStatus can go
     // link-first and skip the ML call entirely for an unlinked item.
-    if (itemId) await syncItemStatus(db, integracaoId, itemId, resolveItemsApi, migrationRunner);
+    await syncItemStatus(db, integracaoId, itemId, resolveItemsApi, migrationRunner);
     return { kind: 'done', integracaoId };
   }
 
@@ -469,10 +501,16 @@ export async function processNotificationPayload(
   // tasks.dart:363-787) — logged, still acked `done`. A resource with no
   // parseable numeric id is malformed: dropped WITHOUT dispatching a bogus
   // import (mirrors the top-level schema-parse drop — no persist, no retry).
+  // ML 500 errors (N7) are caught and converted to non-retryable outcomes.
   if (payload.topic === 'orders_v2' || payload.topic === 'orders') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await orderImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      orderImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] order import skipped', {
         integracaoId,
@@ -491,11 +529,17 @@ export async function processNotificationPayload(
   // pedido, or a stale update are deterministic skips (logged), still acked
   // `done`. A resource with no parseable numeric id is malformed: dropped
   // WITHOUT dispatching a bogus import (mirrors the orders_v2 malformed-
-  // resource drop above).
+  // resource drop above). ML 500 errors (N7) are caught and converted to
+  // non-retryable outcomes.
   if (payload.topic === 'payments') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await paymentImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      paymentImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] payment import skipped', {
         integracaoId,
@@ -514,11 +558,17 @@ export async function processNotificationPayload(
   // no `freteInicial` yet (only the order-import path creates it), or a stale
   // update are deterministic skips (logged), still acked `done`. A resource
   // with no parseable numeric id is malformed: dropped WITHOUT dispatching a
-  // bogus import.
+  // bogus import. ML 500 errors (N7) are caught and converted to
+  // non-retryable outcomes.
   if (payload.topic === 'shipments') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await shipmentImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      shipmentImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] shipment import skipped', {
         integracaoId,
@@ -537,11 +587,17 @@ export async function processNotificationPayload(
   // are deterministic skips (logged inside the handler and here), still
   // acked `done` — a retry cannot fix any of them. A resource with no
   // parseable numeric id is malformed: dropped WITHOUT dispatching a bogus
-  // import (mirrors the orders_v2 malformed-resource drop above).
+  // import (mirrors the orders_v2 malformed-resource drop above). ML 500
+  // errors (N7) are caught and converted to non-retryable outcomes.
   if (payload.topic === 'claims') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await claimImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      claimImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] claim import skipped', {
         integracaoId,
@@ -606,6 +662,17 @@ function pipelineFor(runners: NotificationRunners = {}) {
     toDocFields: (p) => ({ ...p }),
     fromDoc: (parsed) => {
       const doc = parsed as MlNotificationPayload;
+      // N6 validation: prevent downstream processing of ghost documents. When a
+      // notification doc is concurrently deleted, the sweep's `store.mark()`
+      // merge can recreate it with only {status, tentativas, erro, processedAt}.
+      // This validation throws on rehydration of such corrupted docs, causing
+      // the sweep to park them (with error message as audit trail) rather than
+      // processing them as ghosts with undefined resource/topic fields.
+      if (!doc.resource || !doc.topic) {
+        throw new Error(
+          `Notificação mercado-livre corrompida: campos obrigatórios ausentes (resource: ${doc.resource}, topic: ${doc.topic})`,
+        );
+      }
       return {
         id: doc.id,
         resource: doc.resource,
@@ -633,6 +700,14 @@ function pipelineFor(runners: NotificationRunners = {}) {
           topic: payload.topic,
         });
         return { kind: 'drop' };
+      }
+      if (outcome.kind === 'ml-500') {
+        // ML 500 errors (N7) are known routine transients — don't retry immediately,
+        // persist as failed and let the sweep re-drive it up to the cap with backoff.
+        return {
+          kind: 'fail',
+          reason: `ML API retornou 500 (não é erro do cliente): ${outcome.message}`,
+        };
       }
       return { kind: 'resolve' }; // done
     },

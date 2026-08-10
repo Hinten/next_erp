@@ -80,7 +80,7 @@ export function emitRules(
       ),
     );
 
-    if (collectionPath.includes('/')) {
+    if (collectionPath.includes('/') && !domain.meta.noCollectionGroupRead) {
       const leaf = collectionPath.split('/').at(-1)!;
       // Distinct collections may share a subcollection leaf name — the
       // legacy-aligned `produtos/{id}/imposto` + `categorias/{id}/imposto`
@@ -95,7 +95,7 @@ export function emitRules(
         checks.push(perms.read);
       }
       groupReads.set(leaf, checks);
-    } else {
+    } else if (!collectionPath.includes('/')) {
       topLevel.add(collectionPath);
     }
   }

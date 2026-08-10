@@ -18,6 +18,7 @@
     "./admin/grpcErrors": "./src/admin/grpcErrors.ts",
     "./admin/notifications": "./src/admin/notifications/index.ts",
     "./produto": "./src/produto/index.ts",
+    "./balanco": "./src/balanco/index.ts",
     "./pedido": "./src/pedido/index.ts"
   },
   "scripts": {

@@ -4,10 +4,10 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
+import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import { type FieldConfig, ObjectView } from '@delfrance/ui';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
-import { deleteOperacaoCascade } from '@/lib/operacoes/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { MacrosTab } from '../_components/MacrosTab';
@@ -38,8 +38,11 @@ export default function OperacaoPage() {
     [params.id],
   );
 
+  // The `onOperacaoDeleted` Cloud Function trigger is the authoritative
+  // cascade — it sweeps `regras` server-side (#354). This only deletes the
+  // parent doc.
   async function handleDelete(id: string) {
-    await deleteOperacaoCascade(db, id);
+    await deleteDoc(operacaoCollection.docRef(db, {}, id));
     router.replace('/operacoes');
   }
 
