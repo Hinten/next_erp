@@ -32,8 +32,13 @@ test.describe.serial('Balanço e2e — contagem, revisão e aplicação no estoq
   const prefix = e2ePrefix('balanco');
   let depositoId = '';
   let balancoId = '';
+  // Manual entry counts onto its OWN balanço: the shared one above is finalized
+  // mid-suite and every later assertion depends on its exact movimento counts.
+  let balancoManualId = '';
   let produtoId = '';
   let produtoSku = '';
+  let produtoNome = '';
+  let paiNome = '';
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(180_000);
@@ -43,14 +48,21 @@ test.describe.serial('Balanço e2e — contagem, revisão e aplicação no estoq
     // The variation child carries the SKU the scan box resolves.
     produtoId = seeded.childId;
     produtoSku = seeded.childSku;
+    produtoNome = seeded.childNome;
+    // The parent shares the child's nome as a prefix, so one search returns
+    // both — which is what makes the manual test exercise a real choice.
+    paiNome = seeded.parentNome;
     await seedEstoqueDoc(produtoId, depositoId, 8);
     const balanco = await seedBalancoAberto(prefix, depositoId);
     balancoId = balanco.id;
-    await warmRoutes(browser, [`/balanco/${balancoId}`]);
+    const manual = await seedBalancoAberto(`${prefix}-manual`, depositoId);
+    balancoManualId = manual.id;
+    await warmRoutes(browser, [`/balanco/${balancoId}`, `/balanco/${balancoManualId}`]);
   });
 
   test.afterAll(async () => {
     if (balancoId) await cleanupBalanco(balancoId);
+    if (balancoManualId) await cleanupBalanco(balancoManualId);
     if (produtoId) await cleanupProdutoEstoque(produtoId);
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupByNamePrefix('depositos', prefix);
@@ -95,6 +107,44 @@ test.describe.serial('Balanço e2e — contagem, revisão e aplicação no estoq
       quantidade: 0,
       errorInput: 'SKU-QUE-NAO-EXISTE',
       errorMessage: 'SKU não encontrado',
+    });
+  });
+
+  test('a produto chosen from the manual autocomplete is counted', async ({ page }) => {
+    await page.goto(`/balanco/${balancoManualId}`);
+    // Mantine's SegmentedControl keeps its radio input visually hidden, so the
+    // label is the only clickable target — `.check()` on the input times out.
+    await page.getByText('Manual', { exact: true }).click();
+
+    // By role, not by label: the Autocomplete's dropdown is `aria-labelledby`
+    // the same label, so `getByLabel('Produto')` matches the listbox too.
+    const campo = page.getByRole('combobox', { name: 'Produto' });
+    await expect(campo).toBeVisible({ timeout: 30_000 });
+    // A prefix both produtos share, so the dropdown offers a real choice.
+    await campo.fill(paiNome);
+
+    const opcao = page.getByRole('option', { name: `${produtoNome} — ${produtoSku}` });
+    await expect(opcao).toBeVisible({ timeout: 30_000 });
+    await opcao.click();
+
+    await page.getByLabel('Quantidade').fill('4');
+    await page.getByRole('button', { name: 'Lançar' }).click();
+
+    // The regression this guards: picking a suggestion makes Mantine report the
+    // option's LABEL as the field value. Searching that label as a `nome`
+    // prefix matches nothing, so the option list emptied — and the list was
+    // what resolved the produto. Lançar accepted the click and wrote nothing.
+    await expect
+      .poll(async () => (await listMovimentosBalanco(balancoManualId)).length, {
+        timeout: 30_000,
+      })
+      .toBe(1);
+
+    expect((await listMovimentosBalanco(balancoManualId))[0]).toMatchObject({
+      produtoId,
+      quantidade: 4,
+      error: false,
+      removido: false,
     });
   });
 

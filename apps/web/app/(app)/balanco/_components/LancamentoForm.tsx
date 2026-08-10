@@ -15,7 +15,6 @@ import {
 } from '@mantine/core';
 import { FirebaseError } from 'firebase/app';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
-import type { Produto } from '@delfrance/schemas';
 import { movimentoBalancoCollection } from '@/lib/data/movimentoBalancoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 
@@ -25,6 +24,7 @@ import {
   resolverSkuBalanco,
   type VerdictoSku,
 } from './resolveSkuBalanco';
+import { construirOpcoes, opcaoSelecionada, type OpcaoProduto } from './opcoesProduto';
 
 /**
  * Firestore prefix-range sentinel — the high private-use codepoint the produtos
@@ -61,7 +61,11 @@ export function LancamentoForm({
   const [modo, setModo] = useState<'scan' | 'manual'>('scan');
   const [sku, setSku] = useState('');
   const [busca, setBusca] = useState('');
-  const [opcoes, setOpcoes] = useState<Array<{ value: string; id: string; produto: Produto }>>([]);
+  const [opcoes, setOpcoes] = useState<OpcaoProduto[]>([]);
+  // The produto the operator actually picked. Held explicitly rather than
+  // re-derived from `opcoes` at submit time, because `opcoes` is search state
+  // and can be replaced or emptied between the click and the click on Lançar.
+  const [selecionado, setSelecionado] = useState<OpcaoProduto | null>(null);
   const [quantidade, setQuantidade] = useState<number | string>(1);
   const [ocupado, setOcupado] = useState(false);
   const skuRef = useRef<HTMLInputElement>(null);
@@ -117,6 +121,18 @@ export function LancamentoForm({
 
   async function buscarProdutos(termo: string) {
     setBusca(termo);
+
+    // Clicking a suggestion makes Mantine fire `onChange` with the option's
+    // LABEL, not the typed text. Re-querying with that label would search
+    // `nome >= "Nome — SKU"`, match nothing, and empty `opcoes` — so a term
+    // that already names an option is a selection, not a search.
+    const escolhido = opcaoSelecionada(opcoes, termo);
+    if (escolhido) {
+      setSelecionado(escolhido);
+      return;
+    }
+    setSelecionado(null);
+
     const t = termo.trim();
     if (t.length < 2) {
       setOpcoes([]);
@@ -130,28 +146,23 @@ export function LancamentoForm({
         limit(10),
       ]),
     );
-    setOpcoes(
-      achados.docs.map((d) => ({
-        value: `${d.data().nome ?? d.id} — ${d.data().sku ?? 'sem SKU'}`,
-        id: d.id,
-        produto: d.data(),
-      })),
-    );
+    setOpcoes(construirOpcoes(achados.docs.map((d) => ({ id: d.id, produto: d.data() }))));
   }
 
   async function lancarManual() {
-    const escolhido = opcoes.find((o) => o.value === busca);
+    const escolhido = selecionado;
     const unidades = typeof quantidade === 'number' ? quantidade : Number(quantidade);
     if (!escolhido || !Number.isFinite(unidades) || ocupado) return;
     setOcupado(true);
     try {
       await gravar(
         classificarProduto(escolhido.id, escolhido.produto),
-        busca,
+        escolhido.value,
         Math.trunc(unidades),
       );
       setBusca('');
       setOpcoes([]);
+      setSelecionado(null);
       setQuantidade(1);
     } finally {
       setOcupado(false);
@@ -215,7 +226,13 @@ export function LancamentoForm({
               disabled={disabled || ocupado}
               aria-label="Quantidade"
             />
-            <Button onClick={() => void lancarManual()} disabled={disabled || ocupado}>
+            {/* Disabled until a produto is actually chosen: typing a partial
+                name resolves to nothing, and a button that accepts the click
+                and does nothing is indistinguishable from a lost lançamento. */}
+            <Button
+              onClick={() => void lancarManual()}
+              disabled={disabled || ocupado || selecionado === null}
+            >
               Lançar
             </Button>
           </Group>
