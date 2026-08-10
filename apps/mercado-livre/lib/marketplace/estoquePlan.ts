@@ -196,6 +196,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   type ComponentesKit,
+  componentesKitEntries,
   ESTADO_PUBLICACAO_ML,
   estoqueDisponivel,
   kitEstoqueDisponivel,
@@ -1003,6 +1004,63 @@ export function quantidadeDoMembro(member: FamilyMember): number | null {
 }
 
 /**
+ * The constraining components this kit declares that the join did **not** bring
+ * back — i.e. the ones whose stock we cannot see. Empty for a non-kit, for a kit
+ * with no constraining component, and for a kit whose components all resolved.
+ *
+ * "Constraining" has to mean exactly what {@link kitEstoqueDisponivel} means by
+ * it, or the guard and the arithmetic drift apart: `limitarEstoque !== false`
+ * and a finite `quantidade > 0`, over `componentesKitEntries`' shape filter.
+ *
+ * The usual cause is a stale `componentesKitKeys` denorm: the join is keyed on
+ * that array, so a component missing from it is never fetched and
+ * `kitEstoqueDisponivel` scores it 0 (#238) — the kit floors to 0 without
+ * anything having gone wrong with its actual stock. A component that genuinely
+ * has no estoque doc at this depósito lands here too, and is treated the same,
+ * because from here the two are indistinguishable.
+ */
+export function componentesNaoResolvidos(member: FamilyMember): string[] {
+  if (!member.ehKit || member.ehKitVirtual) return [];
+  const disponiveis = disponivelByProdutoIdFrom(member.componentEstoques);
+  return componentesKitEntries(member.componentesKit)
+    .filter(([, kit]) => kit.limitarEstoque !== false)
+    .filter(([, kit]) => Number.isFinite(kit.quantidade) && kit.quantidade > 0)
+    .filter(([produtoId]) => typeof disponiveis[produtoId] !== 'number')
+    .map(([produtoId]) => produtoId);
+}
+
+/**
+ * True when a kit's published quantity **cannot be verified**: it declares
+ * constraining components and not one of them resolved.
+ *
+ * ⚠️ This does NOT suppress the send — it forces it. See
+ * {@link quantidadesAnteriores}, which omits such a member so
+ * {@link deveEnviarFamilia} fails open, and the `console.error` in
+ * {@link buildSendTasks}. The full reasoning lives in ADR 0014, but the short
+ * version belongs here because this is where it would be inverted:
+ *
+ * **An unverifiable kit publishes 0, and that is the safe direction.** ML
+ * auto-reactivates a listing paused as `out_of_stock` the moment a positive
+ * quantity arrives (see {@link podeEnviarEstoque}, which keeps sending to
+ * exactly that state), so a zeroed listing heals itself. Leaving ML holding
+ * whatever it already has does not: if that number is positive, the listing
+ * keeps selling stock the ERP cannot account for, and an oversell cannot be
+ * un-sold.
+ *
+ * ⚠️ #806 S12 proposed the opposite — skip rather than send 0 — and that was
+ * **deliberately inverted**, not left undone. Do not "restore" it from the issue
+ * text.
+ */
+export function kitNaoVerificavel(member: FamilyMember): boolean {
+  const declarados = componentesKitEntries(member.componentesKit).filter(
+    ([, kit]) =>
+      kit.limitarEstoque !== false && Number.isFinite(kit.quantidade) && kit.quantidade > 0,
+  );
+  if (declarados.length === 0) return false;
+  return componentesNaoResolvidos(member).length === declarados.length;
+}
+
+/**
  * Every family member's send quantity (anchor + children), keyed by produto
  * id. Members whose quantity is `null` (`ehKitVirtual`) are OMITTED — the
  * task builder treats a missing entry as "never send".
@@ -1100,12 +1158,24 @@ export function quantidadesAnteriores(
 ): Map<string, number> {
   const out = new Map<string, number>();
   for (const member of [row.anchor, ...row.children]) {
+    // ⚠️ THE OMISSION IS THE MECHANISM, for both arms below. A member left out
+    // of this map is read by `deveEnviarFamilia` as *unknown* and SENDS.
+    // Falling back to the current row instead would make `anterior === atual`
+    // and skip — which is a silent drop, not a safe default.
     const desconhecido =
       (member.estoque != null && movimentoDesconhecido(member.produtoId, depositoId, movimentos)) ||
       member.componentEstoques.some((e) =>
         movimentoDesconhecido(e.parentId, depositoId, movimentos),
       );
-    if (desconhecido) continue;
+    // A kit whose components did not resolve is unverifiable, and the ledger
+    // cannot tell us so: the reconstruction would rebuild `anterior` from the
+    // SAME broken component set, land on the same 0, and conclude "unchanged"
+    // about a listing whose published number may be badly wrong. Omitting it
+    // forces the send, and what gets sent is 0 — the safe direction, because ML
+    // auto-reactivates on qty > 0 while an oversell cannot be undone. This is
+    // #806 S12, resolved in the opposite direction to the one it proposed; see
+    // {@link kitNaoVerificavel} and ADR 0014 before changing it.
+    if (desconhecido || kitNaoVerificavel(member)) continue;
     const anterior: FamilyMember = {
       ...member,
       estoque:
@@ -1140,8 +1210,15 @@ export function quantidadesAnteriores(
  * `110 → 95` must send; gating on the current value would skip it.
  *
  * Fails OPEN: a member with no reconstructed previous value is treated as
- * changed. That covers the first sweep after deploy, a Flutter-era row with no
- * `movimento`, and the ML import's unaudited write.
+ * changed. That single rule is the inventory of every "this sends even though
+ * nothing looks like it moved" case, so keep it complete:
+ *  - the first sweep after deploy (no baseline at all);
+ *  - a Flutter-era `historicoEstoque` row carrying no `movimento`, which `sum`
+ *    silently ignores;
+ *  - the ML import's unaudited `merge`, which moves a quantity while writing no
+ *    ledger row;
+ *  - a kit whose constraining components did not resolve, so its quantity
+ *    cannot be verified at all ({@link kitNaoVerificavel}) — it sends 0.
  */
 export function deveEnviarFamilia(
   quantidadesAtuais: ReadonlyMap<string, number>,
@@ -1310,6 +1387,33 @@ export function buildSendTasks(
   // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1 term).
   if (!row.integracoesComProduto.includes(opts.integracaoId)) {
     return skipOnly(anchorId, 'conta-fora-do-produto');
+  }
+
+  // ⚠️ The alarm for an unverifiable kit — and it is ONLY an alarm. The member
+  // still emits, carrying the 0 that `kitEstoqueDisponivel` computed, because
+  // publishing 0 is the recoverable direction: ML auto-reactivates the listing
+  // when a positive quantity next arrives, whereas leaving it advertising a
+  // stale positive number sells stock the ERP cannot account for.
+  //
+  // Do NOT turn this into a `skips.push(...)` next to the `'kit-virtual'` rung
+  // below. That is #806 S12's proposal and it was deliberately inverted (ADR
+  // 0014); a skip here re-opens the oversell it was filed against.
+  //
+  // What the log is FOR: the zero itself is legitimate, but a kit reaching this
+  // state usually means a stale `componentesKitKeys` denorm, which is a data
+  // defect nothing else surfaces. Naming the components makes it findable.
+  for (const member of [row.anchor, ...row.children]) {
+    if (!kitNaoVerificavel(member)) continue;
+    console.error(
+      '[mercado-livre] stock-sync: kit sem componentes resolvíveis — publicando 0 ' +
+        '(provável `componentesKitKeys` desatualizado)',
+      {
+        integracaoId: opts.integracaoId,
+        produtoId: member.produtoId,
+        anchorId,
+        componentes: componentesNaoResolvidos(member).slice(0, 10),
+      },
+    );
   }
 
   const tasks: StockSendTaskDraft[] = [];

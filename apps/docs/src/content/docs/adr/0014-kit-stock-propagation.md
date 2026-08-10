@@ -247,6 +247,45 @@ in the whole design for someone to "simplify" into a real bug.
 This subsumes the old `limiarEstoqueBaixo` (default 5) heuristic: low stock now
 always sends, because `min(...) ≤ LIMIAR_ALTO` holds.
 
+### 5b. A kit whose stock cannot be verified publishes 0
+
+A kit declares its components in `componentesKit`, but the sweep fetches their
+stock through the `componentesKitKeys` denorm. When that array is stale, the
+component is never fetched, `kitEstoqueDisponivel` scores it 0 (#238), and the
+kit floors to 0 with nothing actually wrong with its stock.
+
+**That 0 is sent, deliberately.** The asymmetry decides it:
+
+- publishing 0 pauses the listing on Mercado Livre as `out_of_stock`, and ML
+  **auto-reactivates it** the moment a positive quantity arrives — which
+  `podeEnviarEstoque` is written to keep doing. A zeroed listing heals itself.
+- leaving ML with whatever it already holds does not heal. If that number is
+  positive, the listing keeps selling stock the ERP cannot account for, and an
+  oversell cannot be un-sold.
+
+⚠️ **#806 S12 proposed the opposite** — skip the listing rather than publish 0 —
+and it is **inverted here on purpose**, not left unimplemented.
+
+⚠️ **The change check would otherwise suppress that 0.** `quantidadesAnteriores`
+reconstructs `anterior` from the *same* broken component set, lands on the same
+`0`, and concludes "unchanged" — so the send never happens and a stale positive
+number on ML is never corrected. The fix is to **omit** the member from the
+reconstruction (`kitNaoVerificavel`), which is the existing fail-open path: a
+missing entry reads as unknown and sends. The omission *is* the mechanism;
+deleting it restores the silent skip.
+
+This exposes a limit worth stating plainly: **the ledger can only witness stock
+movements.** A quantity that changes for any other reason leaves nothing to sum,
+so the reconstruction reports "unchanged" about a number that did change. Two
+other instances are known and unfixed — the ML import's unaudited `merge`
+(`import.ts`, `importVariations.ts`), and a kit **composition** edit, which also
+fails to make the kit a candidate at all, since the denorm lives on `produtos`
+while the window filter keys on `estoques`.
+
+Because the 0 is legitimate but its *cause* usually is not, `buildSendTasks`
+logs `console.error` naming the unresolved components. The listing is protected
+either way; the log is what makes the stale denorm findable.
+
 ### 6. `estoque.ultimaModificacao` means "stock changed **or** sold"
 
 On a kit's estoque doc the field no longer means only "the quantities changed" —
