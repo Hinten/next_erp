@@ -799,11 +799,17 @@ export async function sincronizarEstoquePedido(
                 ? (componentes as ProdutoParaEstoque['componentesKit'])
                 : null,
           });
-          // A virtual kit is never published, so stamping one would create an
-          // estoque doc nothing will ever read (`quantidadeParaEnvio` returns
-          // null for it). Non-kits need no stamp — their own movement bumps
-          // `ultimaModificacao` already.
-          if (dados.ehKit === true && dados.ehKitVirtual !== true && idsDosItensAtuais.has(id)) {
+          // EVERY kit on the line gets stamped, virtual included. A virtual kit
+          // is published and sold like any other; what differs is only the
+          // upload SHAPE — the marketplace resolves its composition from the
+          // components we upload instead of us sending one assembled quantity
+          // (see `ehKitVirtual` in the produto schema). So its estoque needs the
+          // same sale signal, and the channels that support that shape consume
+          // it. Mercado Livre declining to send a quantity for a virtual kit is
+          // an ML limitation, not a reason to withhold the stamp from every
+          // channel. Non-kits need no stamp — their own movement already bumps
+          // `ultimaModificacao`.
+          if (dados.ehKit === true && idsDosItensAtuais.has(id)) {
             kitsVendidos.add(id);
           }
         });
