@@ -65,6 +65,13 @@ export const estoqueMercadoLivreSyncSchema = z.object({
   /** How many 429 pauses this conta has accumulated (observability counter). */
   pauseCount: z.number().int().default(0),
   /**
+   * When the MONTHLY full pass last completed (µs). Its own field on purpose:
+   * reusing `lastDailyAtUs` would tell an operator a full reconciliation ran
+   * when none did, and it is also the ledger window the next full pass sums
+   * over — "what changed since we last reconciled everything".
+   */
+  lastReconciliacaoAtUs: microsSinceEpoch().nullable().default(null),
+  /**
    * The frozen keyset position + window of a **TRUNCATED** sweep. A sweep that
    * hits the page cap or the task cap stores where it stopped
    * (`afterAnchorId`) together with the window it was running
@@ -93,7 +100,23 @@ export const estoqueMercadoLivreSyncSchema = z.object({
       /** The frozen window start (ms since epoch) the truncated sweep used. */
       changedSinceMs: millisSinceEpoch(),
       /** The frozen sweep mode — decides the resumed tick's send policy. */
-      modo: z.enum(['incremental', 'daily']),
+      modo: z.enum(['incremental', 'daily', 'reconciliacao']),
+      /**
+       * The frozen LEDGER window (ms) the resumed tick sums movements over —
+       * `null` on a reconciliação with no previous full run, which force-sends.
+       * Distinct from `changedSinceMs`: a reconciliação sets that to `-1`
+       * (force-all) while still comparing against its own last completed pass.
+       *
+       * ⚠️ This key is NEWER than `modo`, so a continuation written by the
+       * previous release has one and not the other. `parseContinuacao` INHERITS
+       * an absent value from `changedSinceMs` on incremental/daily — where the
+       * two windows are identical by construction, so it is exact — and rejects
+       * the continuation outright on a reconciliação, where `null` is a
+       * meaningful state nothing else can stand in for. Dropping every such
+       * continuation instead would restart a truncated sweep at page 1, which
+       * is the liveness hole continuations exist to close.
+       */
+      movimentosDesdeMs: millisSinceEpoch().nullable(),
       /** When the ORIGINAL (pre-truncation) sweep started (µs). */
       startedAtUs: microsSinceEpoch(),
     })

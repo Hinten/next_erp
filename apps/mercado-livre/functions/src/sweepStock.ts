@@ -2,7 +2,12 @@ import { type ScheduleOptions, onSchedule } from 'firebase-functions/v2/schedule
 import { logger } from 'firebase-functions/v2';
 
 import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoquePlan';
-import { isSlotDoDaily, runStockSweep } from '../../lib/marketplace/estoqueSweep';
+import {
+  type StockSweepMode,
+  isSlotDaReconciliacao,
+  isSlotDoDaily,
+  runStockSweep,
+} from '../../lib/marketplace/estoqueSweep';
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';
 
@@ -52,7 +57,7 @@ function sweepScheduleOptions(schedule: string): ScheduleOptions {
 }
 
 /** Run one sweep tick and log its summary (the importMercadoLivreOrders discipline). */
-async function runAndLog(mode: 'incremental' | 'daily'): Promise<void> {
+async function runAndLog(mode: StockSweepMode): Promise<void> {
   const result = await runStockSweep(getDb(), mode, {
     scheduler: createMlStockTaskScheduler(),
     nowMs: Date.now(),
@@ -90,9 +95,16 @@ async function runAndLog(mode: 'incremental' | 'daily'): Promise<void> {
 export const sweepMercadoLivreStock = onSchedule(
   sweepScheduleOptions('every 15 minutes'),
   async () => {
-    if (isSlotDoDaily(Date.now())) {
+    const agora = Date.now();
+    if (isSlotDoDaily(agora)) {
       logger.info(
         '[mercado-livre] stock sweep (incremental) — 02:00 America/Sao_Paulo slot belongs to the daily sweep, skipping this tick',
+      );
+      return;
+    }
+    if (isSlotDaReconciliacao(agora)) {
+      logger.info(
+        '[mercado-livre] stock sweep (incremental) — 03:00 slot on the 1st belongs to the monthly reconciliation, skipping this tick',
       );
       return;
     }
@@ -108,5 +120,45 @@ export const sweepMercadoLivreStockDaily = onSchedule(
   sweepScheduleOptions('0 2 * * *'),
   async () => {
     await runAndLog('daily');
+  },
+);
+
+/** Its OWN flag, on top of the master one — see the export below. */
+export const STOCK_RECONCILIACAO_FLAG_ENV = 'MERCADO_LIVRE_STOCK_RECONCILIACAO_ENABLED';
+
+/**
+ * The MONTHLY full reconciliation (flag-gated twice — module doc).
+ *
+ * Neither the incremental nor the daily tier can see a listing whose ERP stock
+ * has not moved inside its window: drift on ML's side — a manual quantity edit,
+ * a dropped PUT, a task lost past `maxPauseReenqueues` — is invisible to both.
+ * Nor do they see a kit whose COMPONENT moved without the kit itself selling,
+ * which is a deliberate cost decision (ADR 0014) and makes this pass the
+ * corrector for the ~2000 sibling kits sharing one shirt and one print.
+ *
+ * `janelaDoSweep('reconciliacao')` returns `changedSinceMs: -1` — THE query's
+ * documented force-all — so every anchor survives the window filter, including
+ * families with no estoque doc at all. It still SKIPS listings whose published
+ * number did not change since the last completed full pass; that comparison is
+ * what makes re-sending an entire catalogue affordable, and it is why the pass
+ * stamps its own `lastReconciliacaoAtUs` rather than borrowing `lastDailyAtUs`.
+ *
+ * Runs 03:00 America/Sao_Paulo on the 1st — clear of the 02:00 daily slot, so
+ * the two never contend for a conta's caps or its state doc. Bounded per tick by
+ * `maxTasksPerSweep()` plus the `continuacao` machinery, so a large catalogue
+ * drains across several ticks rather than in one. Turn it on only after the
+ * normal sweeps run cleanly, and turn it off alone if it costs more ML quota
+ * than the drift it heals is worth.
+ */
+export const sweepMercadoLivreStockReconciliacao = onSchedule(
+  sweepScheduleOptions('0 3 1 * *'),
+  async () => {
+    if (process.env[STOCK_RECONCILIACAO_FLAG_ENV] !== '1') {
+      logger.info(
+        `[mercado-livre] stock sweep (reconciliacao) disabled (${STOCK_RECONCILIACAO_FLAG_ENV} != '1') — no-op`,
+      );
+      return;
+    }
+    await runAndLog('reconciliacao');
   },
 );
