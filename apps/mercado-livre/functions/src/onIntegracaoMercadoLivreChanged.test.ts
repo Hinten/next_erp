@@ -65,13 +65,29 @@ beforeEach(() => {
 
 describe('onIntegracaoMercadoLivreChanged wiring', () => {
   it('binds to the named default database and the integracao path', () => {
-    const endpoint = (
-      onIntegracaoMercadoLivreChanged as unknown as { __endpoint: Record<string, unknown> }
+    const { eventTrigger } = (
+      onIntegracaoMercadoLivreChanged as unknown as {
+        __endpoint: {
+          eventTrigger: {
+            eventFilters: Record<string, string>;
+            eventFilterPathPatterns: Record<string, string>;
+          };
+        };
+      }
     ).__endpoint;
-    expect(JSON.stringify(endpoint)).toContain('integracao/{integracaoId}');
-    // `database` must be set — an omitted database binds to the non-existent
-    // `(default)` and the trigger never fires (root CLAUDE.md, rule 1).
-    expect(JSON.stringify(endpoint)).toContain('default');
+
+    expect(eventTrigger.eventFilterPathPatterns.document).toBe('integracao/{integracaoId}');
+
+    // ⚠️ Exact equality on the parsed field. This assertion USED to be
+    // `expect(JSON.stringify(endpoint)).toContain('default')`, which guarded
+    // nothing: the serialized endpoint always carries `"namespace":"(default)"`,
+    // and an omitted `database` defaults to `"(default)"` — both contain the
+    // substring, so it passed either way. Found by mutation-testing the #920
+    // triggers, which were written from this file as the model.
+    //
+    // The bug it is meant to catch is silent and total: the trigger binds to a
+    // database that does not exist and never fires (root CLAUDE.md, gotcha #8).
+    expect(eventTrigger.eventFilters.database).toBe('default');
   });
 
   it('syncs on create, passing the named db, the after-snapshot and the EVENT time', async () => {
