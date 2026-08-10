@@ -68,15 +68,23 @@ export const estoqueMercadoLivreSyncSchema = z.object({
    * The frozen keyset position + window of a **TRUNCATED** sweep. A sweep that
    * hits the page cap or the task cap stores where it stopped
    * (`afterAnchorId`) together with the window it was running
-   * (`changedSinceMs` / `vendaCutoffUs`) and the ORIGINAL sweep's start
-   * (`startedAtUs`); the next tick **RESUMES that same sweep** — same window,
-   * same filter mode (`vendaCutoffUs == null` ⇒ daily semantics: the pedidos
-   * probe was skipped, so nothing reads the sales flag) — instead of
-   * restarting page 1 of a re-derived window, which is how a conta with a
-   * standing backlog would otherwise never reach its tail. Cleared (`null`)
-   * the moment the continuation drains; an incremental continuation then
-   * advances `cursorUs` to `startedAtUs`, because the frozen window is covered
-   * exactly up to the original sweep's start.
+   * (`changedSinceMs`), the mode whose semantics it froze (`modo`) and the
+   * ORIGINAL sweep's start (`startedAtUs`); the next tick **RESUMES that same
+   * sweep** — same window, same send policy — instead of restarting page 1 of a
+   * re-derived window, which is how a conta with a standing backlog would
+   * otherwise never reach its tail. Cleared (`null`) the moment the
+   * continuation drains; an incremental continuation then advances `cursorUs`
+   * to `startedAtUs`, because the frozen window is covered exactly up to the
+   * original sweep's start.
+   *
+   * ⚠️ `modo` replaced the old `vendaCutoffUs`, which doubled as the
+   * daily-vs-incremental discriminator (`null` ⇒ daily) back when the sweep
+   * derived its sales signal from a `pedidos` pre-pass. That pass is gone (ADR
+   * 0014 — the signal now lives on the kit's own estoque doc), so the mode is
+   * recorded explicitly rather than inferred from a field that no longer has a
+   * reason to exist. A stored continuation missing `modo` is treated as
+   * malformed and simply dropped: the tick then runs its own freshly derived
+   * window, which is the safe direction.
    */
   continuacao: z
     .object({
@@ -84,8 +92,8 @@ export const estoqueMercadoLivreSyncSchema = z.object({
       afterAnchorId: z.string().min(1),
       /** The frozen window start (ms since epoch) the truncated sweep used. */
       changedSinceMs: millisSinceEpoch(),
-      /** The frozen sales-probe lower bound (µs) — null ⇒ daily semantics. */
-      vendaCutoffUs: microsSinceEpoch().nullable(),
+      /** The frozen sweep mode — decides the resumed tick's send policy. */
+      modo: z.enum(['incremental', 'daily']),
       /** When the ORIGINAL (pre-truncation) sweep started (µs). */
       startedAtUs: microsSinceEpoch(),
     })

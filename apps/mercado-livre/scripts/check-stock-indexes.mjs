@@ -6,8 +6,8 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // ⚠️ BLOCKING pre-merge gate for Step 10 PR C — run MANUALLY against staging
 // (agents never run firebase; index deploy is a coordinated human step).
 //
-// Live proof that `fetchStockFamilies` AND the sold-ids pre-pass
-// (`fetchSoldProdutoIds`) in lib/marketplace/estoquePlan.ts ride the declared
+// Live proof that `fetchStockFamilies` AND the ledger pre-pass
+// (`fetchMovimentosDaJanela`) in lib/marketplace/estoquePlan.ts ride the declared
 // indexes instead of silently full-scanning: this Firestore Enterprise
 // edition auto-creates NO indexes, an unindexed subquery scans its collection
 // ONCE PER OUTER ROW, and Enterprise bills data scanned. Pipelines have no
@@ -17,14 +17,15 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //
 // ⚠️ COST, honestly: `analyze` EXECUTES the query and Enterprise bills DATA
 // SCANNED, which the limits here do NOT bound — CHECK_PAGE_LIMIT (default 5)
-// and CHECK_SOLD_IDS_LIMIT (default 1000) cap OUTPUT ROWS, and rows are
+// caps OUTPUT ROWS, and rows are
 // discarded only AFTER the scan that produced them. The widened retries make
 // this worse on purpose: they LOWER the cutoff (changedSinceMs = -1,
-// cutoffUs = 0) so that more rows survive, which means more data scanned, not
-// less. Concretely, the sold-ids run is bounded by the 30d window ONLY once
-// an index actually serves `timestamp` as a range; while `timestamp` is
-// residual (see 3.) the run reads EVERY saída pedido in the collection. Run
-// this against staging, and expect the first run — before the new indexes
+// desdeMs = 0) so that more rows survive, which means more data scanned, not
+// less. Concretely, the ledger run is bounded by its window ONLY once an index
+// actually serves `timestamp` as a range; while `timestamp` is residual (see
+// 3.) the run reads EVERY historicoEstoque row in the database — and an
+// aggregate scans before it groups, so there is no output cap to hide behind.
+// Run this against staging, and expect the first run — before the new indexes
 // deploy — to be the expensive one.
 //
 // What it does, in order:
@@ -59,24 +60,29 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     firestore.indexes.json): reports the form the anchors scan rode.
 //     Verdict ASC (#705) — the CONTAINS twin was dropped; the gate still
 //     prints the form so a planner regression is visible.
-//  3. The sold-ids pre-pass (the fetchSoldProdutoIds shape). The sales signal
-//     moved OUT of THE query (owner-approved): the per-anchor correlated
-//     pedidos probe could never ride the itensIds indexes — its membership
-//     list is a per-row VARIABLE (anchor + childIds), and the planner binds
-//     variable candidate lists only as residual Filters (staging-proven,
-//     gate run 2). It is now ONE uncorrelated pedidos pass per conta per
-//     incremental sweep: `where ehSaida == true AND estado equalAny AND
-//     timestamp >= cutoff`, `unnest(itensIds as pid)`, `distinct('pid')`,
-//     `limit`. Explain-analyze asserts `ehSaida` AND `timestamp` are BOUND on
-//     an index-identified access node — the NEW `pedidos(ehSaida ASC, estado
-//     ASC, timestamp DESC)` entry, where all three predicates bind. A residual
-//     `timestamp` is a FAIL, not an accepted cost: in run 2, with `pedidos
-//     (ehSaida, timestamp DESC)` and `pedidos(ehSaida, estado, numero)` both
-//     deployed, the planner took the `estado` index and left `timestamp` in a
-//     residual Filter — unbounded over ALL time. Until the new entry deploys
-//     this check FAILS PENDING-DEPLOY by design. When the run seeds, the
-//     seeded paid saída pedido doubles as the correctness probe: its
-//     `itensIds` anchor id MUST appear in the distinct output.
+//  3. The LEDGER pre-pass (the fetchMovimentosDaJanela shape). The sales
+//     signal moved OUT of THE query (owner-approved) and then out of `pedidos`
+//     entirely (ADR 0014). Two facts drove that. First, the per-anchor
+//     correlated pedidos probe could never ride the itensIds indexes — its
+//     membership list is a per-row VARIABLE (anchor + childIds), and the
+//     planner binds variable candidate lists only as residual Filters
+//     (staging-proven, gate run 2). Second, "did something sell" was the wrong
+//     question: the sweep needs "did the PUBLISHED number change", which the
+//     summable v2 ledger answers exactly and without the old 10 000-id cap.
+//     It is now ONE uncorrelated `historicoEstoque` collection-group aggregate
+//     per (window, depósito) per tick: `where timestamp >= desde AND depósito`,
+//     grouped `sum(movimento)` / `sum(movimentoReservada)` plus the
+//     `countIf(not(exists('movimento')))` fail-open counter, `groups:
+//     ['parentId', 'depositoOuterRef']`. Explain-analyze asserts `timestamp` is
+//     BOUND on an index-identified access node — the NEW
+//     `historicoEstoque(timestamp, parentId, depositoOuterRef)`
+//     COLLECTION_GROUP entry. A residual `timestamp` is a FAIL, not an accepted
+//     cost: an aggregate scans before it groups, so an unbounded window reads
+//     the whole ledger at Enterprise's per-byte price. The run additionally
+//     NOTES whether `depositoOuterRef` came back as a residual Filter — served
+//     but not covered, i.e. the aggregate is reading documents rather than
+//     index entries. Until the new entry deploys this check FAILS
+//     PENDING-DEPLOY by design.
 //  5. SPIKE: anchor-predicate A/B (#431). THE question this spike exists to
 //     answer is whether the stock sweep can stop reading the DEPRECATED
 //     `integracoesComProduto` array. Shape A (shipped) puts the conta term IN
@@ -189,8 +195,9 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // visible in the printed values — every seeded estoque's `ultimaModificacao`
 // is `now` so the explain runs return rows >= 1 under the SHIPPED windows
 // (the widened-retry + honest zero-rows messages stay as fallbacks), and the
-// seeded pedido is the sold-ids correctness probe (its `itensIds` anchor
-// must surface in the distinct output). EVERY seeded doc is deleted in a
+// two seeded `historicoEstoque` rows are the ledger correctness probe (the v2
+// one must SUM, the legacy v1-shaped one must be COUNTED as unknown rather
+// than silently ignored). EVERY seeded doc is deleted in a
 // `finally` (reverse creation order) even when checks fail or throw;
 // anything left behind is logged AND fails the gate.
 //
@@ -214,26 +221,23 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // spike-(a) family, see 1. above). CHECK_SEED=1 FORCES the self-seeded
 // probe family even when discovery finds real linked anchors; seeding
 // always relocates the depósito probe — and, unless overridden, spike (a)
-// — to the seeded family. CHECK_SOLD_IDS_LIMIT bounds the sold-ids page.
-// CHECK_ANCHOR_AB=0 skips the anchor-predicate A/B spike (5. above).
+// — to the seeded family. CHECK_ANCHOR_AB=0 skips the anchor-predicate A/B spike (5. above).
 // Targets the named `default` database (Enterprise — never `(default)`),
 // overridable via FIREBASE_DATABASE_ID.
 //
-// ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchSoldProdutoIds` in
+// ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchMovimentosDaJanela` in
 // apps/mercado-livre/lib/marketplace/estoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
-// shape change there must be reflected here or the proof goes stale. (The
-// mirror follows the owner-approved rework spec: no childIds define, no
-// vendaProbe, no temVenda30d in THE query; the sales signal is the
-// uncorrelated sold-ids pre-pass.)
+// shape change there must be reflected here or the proof goes stale.
+// ⚠️ The window filter deliberately has NO component arm (ADR 0014): a kit sale
+// stamps the kit's own estoque doc, so `maxComp` was removed rather than being
+// forgotten here. The sales signal is likewise gone — the `pedidos` sold-ids
+// pass was replaced by the uncorrelated historicoEstoque ledger aggregate.
 
 const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
 const pageLimitRaw = Number(process.env.CHECK_PAGE_LIMIT ?? '5');
 const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimitRaw : 5;
-const soldIdsLimitRaw = Number(process.env.CHECK_SOLD_IDS_LIMIT ?? '1000');
-const soldIdsLimit =
-  Number.isInteger(soldIdsLimitRaw) && soldIdsLimitRaw > 0 ? soldIdsLimitRaw : 1000;
 // The A/B spike (header 5.) runs by default; '0' opts out of its one extra
 // analyze execution — the one whose cost IS the measurement.
 const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '1') !== '0';
@@ -243,14 +247,7 @@ const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '1') !== '0';
 const DAILY_WINDOW_MS = 24 * 3_600_000;
 const WINDOW_OVERLAP_MS = 20_000;
 
-// Mirrors ESTADOS_VENDA + INTEGRACAO_TIPO.mercadoLivre (packages/schemas).
-const ESTADOS_VENDA = [
-  'emAnalise',
-  'emProcessamento',
-  'pago',
-  'finalizado',
-  'estornadoParcialmente',
-];
+// Mirrors INTEGRACAO_TIPO.mercadoLivre (packages/schemas).
 const INTEGRACAO_TIPO_MERCADO_LIVRE = 1;
 
 const app = initializeApp({ projectId });
@@ -376,10 +373,11 @@ const seedRefs = [];
  * a variation CHILD that is a KIT over the component — its
  * `componentesKitKeys` differ from the anchor's (null), the configuration
  * that makes spike (a)'s per-row binding visible — the anchor's
- * `produtoMercadoLivre` link, the child's `variacaoMercadoLivre` link, and a
- * paid saída pedido on the anchor (`timestamp` in µS, the pedido wire unit)
- * — the sold-ids pass correctness probe: its `itensIds` anchor id must
- * appear in the distinct output. Estoques sit at the deterministic
+ * `produtoMercadoLivre` link, the child's `variacaoMercadoLivre` link, and
+ * TWO `historicoEstoque` rows under the anchor's estoque (`timestamp` in mS,
+ * the ledger wire unit) — the pre-pass correctness probe: one v2 row that
+ * must SUM, one legacy v1-shaped row that must land in `nDesconhecido`.
+ * Estoques sit at the deterministic
  * `est-<produtoId>-<depositoId>` ids (makeEstoqueUid) with
  * `ultimaModificacao = now`, so the SHIPPED windows match them. Refs are
  * pushed BEFORE each write: a failed set still gets a delete attempt
@@ -393,6 +391,27 @@ async function seedProbeData() {
   const childId = `${SEED_PREFIX}-child`;
   const linkId = `${SEED_PREFIX}-link`;
   const produtos = db.collection('produtos');
+  const historicoDocs = (produtoId, ts) => {
+    const hist = produtos
+      .doc(produtoId)
+      .collection('estoques')
+      .doc(`est-${produtoId}-${depId}`)
+      .collection('historicoEstoque');
+    const chaves = { parentId: produtoId, depositoOuterRef: `documents/depositos/${depId}` };
+    return [
+      // v2: summable — contributes -3 / -1 to the group.
+      [
+        hist.doc(`${SEED_PREFIX}-hist-v2`),
+        { ...chaves, timestamp: ts, movimento: -3, movimentoReservada: -1, saldo: 7 },
+      ],
+      // v1 (legacy Flutter shape): NO `movimento` key — must land in
+      // `nDesconhecido`, never be read as "moved nothing".
+      [
+        hist.doc(`${SEED_PREFIX}-hist-v1`),
+        { ...chaves, timestamp: ts, quantidade: -2, ehBalanco: false },
+      ],
+    ];
+  };
   const estoqueDoc = (produtoId, quantidade) => [
     produtos.doc(produtoId).collection('estoques').doc(`est-${produtoId}-${depId}`),
     {
@@ -455,11 +474,14 @@ async function seedProbeData() {
         produtoMercadoLivreOuterRef: `documents/produtos/${anchorId}/produtoMercadoLivre/${linkId}`,
       },
     ],
-    [
-      db.collection('pedidos').doc(`${SEED_PREFIX}-ped`),
-      // Pedido `timestamp` is µS at rest (estoquePlan.ts module doc).
-      { ehSaida: true, estado: 'pago', itensIds: [anchorId], timestamp: now * 1000, itens: {} },
-    ],
+    // Two ledger rows under the ANCHOR's estoque — the pre-pass correctness
+    // probe. `historicoEstoque.timestamp` is MILLIseconds (schema v2), unlike
+    // the pedido/estado trails. The second row is deliberately shaped like a
+    // legacy Flutter v1 write (no `movimento` key at all): it is the only way
+    // to prove, live, that `countIf(not(exists('movimento')))` is accepted by
+    // the backend and actually counts — pipelines never run in the emulator,
+    // so this gate is the sole coverage for the fail-open accumulator.
+    ...historicoDocs(anchorId, now),
   ];
   for (const [ref, data] of docs) {
     seedRefs.push(ref); // BEFORE the write — a failed set still gets a delete attempt
@@ -493,8 +515,10 @@ async function cleanupProbeData() {
 }
 
 /* ---- THE query, mirrored from estoquePlan.ts (keep-in-sync note above) ----- */
-/* No childIds define, no vendaProbe, no temVenda30d — the sales signal is the
-   uncorrelated sold-ids pre-pass (mirrored after this section).              */
+/* No childIds define, no vendaProbe, no temVenda30d — the change signal is the
+   uncorrelated historicoEstoque ledger aggregate (mirrored after this
+   section), and no component rollup: sibling kits are a monthly concern
+   (ADR 0014).                                                               */
 
 const depMatch = () =>
   pipelines.or(
@@ -534,33 +558,17 @@ const compEstoques = (keysVar) =>
     pipelines.array([]),
   );
 
-const compEstoquesMax = (keysVar) =>
-  pipelines.conditional(
-    pipelines.variable(keysVar).length().greaterThan(0),
-    db
-      .pipeline()
-      .collectionGroup('estoques')
-      .where(
-        pipelines.and(
-          pipelines.field('parentId').equalAny(pipelines.variable(keysVar)),
-          depMatch(),
-        ),
-      )
-      .aggregate(pipelines.maximum('ultimaModificacao').as('max'))
-      .toScalarExpression(),
-    pipelines.constant(null),
-  );
-
 const kitKeysDefine = (name) =>
   pipelines.coalesce(pipelines.field('componentesKitKeys'), pipelines.array([])).as(name);
 
+// Children's OWN estoques only — the component arm is gone (ADR 0014), which
+// also removes this subquery's nested `define`.
 const maxChildren = () =>
   db
     .pipeline()
     .collection('produtos')
     .where(pipelines.equal(pipelines.field('paiId'), pipelines.variable('anchorId')))
-    .define(kitKeysDefine('maxChildKitKeys'))
-    .select(pipelines.logicalMaximum(ownEstoqueMax(), compEstoquesMax('maxChildKitKeys')).as('m'))
+    .select(ownEstoqueMax().as('m'))
     .aggregate(pipelines.maximum('m').as('max'))
     .toScalarExpression();
 
@@ -631,19 +639,11 @@ function buildFamiliesPipeline({ changedSinceMs, afterAnchorId }) {
       pipelines.documentId(pipelines.field('__name__')).as('anchorId'),
       kitKeysDefine('anchorKitKeys'),
     )
-    .addFields(
-      ownEstoqueMax().as('maxOwn'),
-      compEstoquesMax('anchorKitKeys').as('maxComp'),
-      maxChildren().as('maxChildren'),
-    )
+    .addFields(ownEstoqueMax().as('maxOwn'), maxChildren().as('maxChildren'))
     .where(
       pipelines.greaterThan(
         pipelines.coalesce(
-          pipelines.logicalMaximum(
-            pipelines.field('maxOwn'),
-            pipelines.field('maxComp'),
-            pipelines.field('maxChildren'),
-          ),
+          pipelines.logicalMaximum(pipelines.field('maxOwn'), pipelines.field('maxChildren')),
           0,
         ),
         changedSinceMs,
@@ -708,19 +708,11 @@ function buildFamiliesPipelineLinkFirst({ changedSinceMs, afterAnchorId }) {
       // The conta gate, computed ONCE and reused by S6 below.
       .addFields(linkJoin().as('links'))
       .where(pipelines.greaterThan(pipelines.field('links').length(), 0))
-      .addFields(
-        ownEstoqueMax().as('maxOwn'),
-        compEstoquesMax('anchorKitKeys').as('maxComp'),
-        maxChildren().as('maxChildren'),
-      )
+      .addFields(ownEstoqueMax().as('maxOwn'), maxChildren().as('maxChildren'))
       .where(
         pipelines.greaterThan(
           pipelines.coalesce(
-            pipelines.logicalMaximum(
-              pipelines.field('maxOwn'),
-              pipelines.field('maxComp'),
-              pipelines.field('maxChildren'),
-            ),
+            pipelines.logicalMaximum(pipelines.field('maxOwn'), pipelines.field('maxChildren')),
             0,
           ),
           changedSinceMs,
@@ -746,25 +738,29 @@ function buildFamiliesPipelineLinkFirst({ changedSinceMs, afterAnchorId }) {
   );
 }
 
-/* ------ the sold-ids pre-pass, mirrored from fetchSoldProdutoIds ----------- */
+/* --- the ledger pre-pass, mirrored from fetchMovimentosDaJanela ------------ */
 
-// ONE uncorrelated pedidos pass per conta per incremental sweep (header 3.):
-// where ehSaida + estado equalAny + timestamp >= cutoff, unnest itensIds,
-// distinct pid, limit. No per-anchor correlation — nothing here is a variable.
-const buildSoldIdsPipeline = (cutoffUs) =>
+// ONE uncorrelated historicoEstoque aggregate per (window, depósito) per tick
+// (header 3.): where timestamp >= desde AND depósito, grouped sum of the signed
+// movements. No per-anchor correlation — nothing here is a variable.
+//
+// ⚠️ This one must be COVERED, not merely served: an aggregate without a
+// covering index buffers every group in the 128 MiB budget and can
+// RESOURCE_EXHAUSTED. The declared entry is
+// `historicoEstoque(timestamp, parentId, depositoOuterRef)`, COLLECTION_GROUP.
+const buildMovimentosPipeline = (desdeMs) =>
   db
     .pipeline()
-    .collection('pedidos')
-    .where(
-      pipelines.and(
-        pipelines.equal(pipelines.field('ehSaida'), true),
-        pipelines.field('estado').equalAny([...ESTADOS_VENDA]),
-        pipelines.field('timestamp').greaterThanOrEqual(cutoffUs),
-      ),
-    )
-    .unnest(pipelines.field('itensIds').as('pid'))
-    .distinct('pid')
-    .limit(soldIdsLimit);
+    .collectionGroup('historicoEstoque')
+    .where(pipelines.and(pipelines.field('timestamp').greaterThanOrEqual(desdeMs), depMatch()))
+    .aggregate({
+      accumulators: [
+        pipelines.sum('movimento').as('dq'),
+        pipelines.sum('movimentoReservada').as('dr'),
+        pipelines.countIf(pipelines.not(pipelines.exists('movimento'))).as('nDesconhecido'),
+      ],
+      groups: ['parentId', 'depositoOuterRef'],
+    });
 
 /* -- everything below runs under try/finally so the seed ALWAYS cleans up ---- */
 
@@ -1411,93 +1407,97 @@ try {
     }
   }
 
-  /* -------------- sold-ids pre-pass (fetchSoldProdutoIds mirror) -------------- */
+  /* ------------ ledger pre-pass (fetchMovimentosDaJanela mirror) ------------- */
 
-  console.log('\n=== sold-ids pre-pass (fetchSoldProdutoIds mirror) — explain analyze ===');
-  const soldCutoffUs = (nowMs - 30 * 24 * 3_600_000) * 1000; // atividadeLookbackDays() default
-  let soldSnap = await buildSoldIdsPipeline(soldCutoffUs).execute({
+  console.log('\n=== ledger pre-pass (fetchMovimentosDaJanela mirror) — explain analyze ===');
+  const movDesdeMs = nowMs - 15 * 60_000 - 20_000; // the incremental window
+  let movSnap = await buildMovimentosPipeline(movDesdeMs).execute({
     explainOptions: { mode: 'analyze', outputFormat: 'text' },
   });
-  let soldLabel = 'shipped 30d cutoff';
-  if (soldSnap.results.length === 0 && soldSnap.explainStats === undefined) {
+  let movLabel = 'shipped 15min window';
+  if (movSnap.results.length === 0 && movSnap.explainStats === undefined) {
     console.log(
-      '0 rows in the 30d cutoff → SDK returns no explainStats; retrying with ' +
-        'cutoffUs = 0 (same stage shape — index proof unaffected)',
+      '0 rows in the 15min window → SDK returns no explainStats; retrying with ' +
+        'desdeMs = 0 (same stage shape — index proof unaffected)',
     );
-    soldLabel = 'widened cutoff (0) — 0 rows in the shipped one';
-    soldSnap = await buildSoldIdsPipeline(0).execute({
+    movLabel = 'widened window (0) — 0 rows in the shipped one';
+    movSnap = await buildMovimentosPipeline(0).execute({
       explainOptions: { mode: 'analyze', outputFormat: 'text' },
     });
   }
-  const soldPlan = soldSnap.explainStats?.text ?? '';
-  console.log(`distinct pids returned: ${soldSnap.results.length} (${soldLabel})`);
-  console.log('\n----- FULL PLAN (sold-ids pre-pass) -----\n');
-  console.log(soldPlan);
-  if (soldPlan.trim() === '') {
-    fail(
-      soldSnap.results.length === 0 && soldSnap.explainStats === undefined
-        ? 'sold-ids pre-pass: 0 rows even with cutoff 0 → no explainStats (v8.6.0, ' +
-            'probe-verified) — nothing proven. Staging has no ESTADOS_VENDA saída ' +
-            'pedidos at all; seed one (CHECK_SEED=1) and re-run'
-        : 'sold-ids pre-pass explainStats.text is empty — nothing proven',
-    );
-  } else {
-    const soldNodes = parseAccessNodes(soldPlan);
-    failIdentifierlessScans('sold-ids plan', soldNodes);
-    checkTarget({
-      label: 'sold-ids: pedidos ehSaida + timestamp BOUND on one index',
-      nodes: soldNodes,
-      plan: soldPlan,
-      // The NEW three-field entry is the target; the two-field
-      // pedidos(ehSaida, timestamp DESC) would also bind both predicates and
-      // is accepted. What is NOT accepted is pedidos(ehSaida, estado, numero)
-      // — run 2's actual pick, which leaves `timestamp` residual. `[^)]*`
-      // (not `.*`) keeps the match inside the index's own field list.
-      indexRe: /^\/pedidos \((?:ehSaida[^)]*estado[^)]*timestamp|ehSaida[^)]*timestamp)/,
-      fallbackRe: /\/pedidos \(/,
-      predicateRe: /\$ehSaida|\$timestamp/,
-      pendingDeploy: pendingDeployHint('pedidos(ehSaida ASC, estado ASC, timestamp DESC)'),
-      boundOf: (n) => {
-        const ehSaidaBound = n.boundedLines.some((l) => l.includes('[true]'));
-        // The timestamp cutoff shows as a numeric (half-)range constraint —
-        // `[1,782,652,331,060,000L..+∞)`. String bounds (`["pago"]`,
-        // `["depositos/…-1785…"]`) carry digits too, so match the numeric
-        // SHAPE, never a bare digit.
-        const timestampBound = n.boundedLines.some((l) => NUMERIC_BOUND_RE.test(l));
-        return ehSaidaBound && timestampBound
-          ? `ehSaida [true] + timestamp range bounds on ${n.identifier}`
-          : null;
-      },
-    });
-    // With the new entry all three predicates bind. A residual `estado` is no
-    // longer "accepted by design" — it means the planner did NOT take it.
-    console.log(
-      predicateInResidualFilters(soldPlan, /\$estado|equal_any\(\$estado/)
-        ? 'NOTE  sold-ids: `estado` equalAny is served by a residual Filter NODE — the ' +
-            'planner did not take pedidos(ehSaida, estado, timestamp DESC). Harmless ' +
-            'ONLY if the check above passed (timestamp bound ⇒ the 30d window still ' +
-            'bounds the scan); read the plan either way'
-        : 'NOTE  sold-ids: `estado` is not residual — it rides the index, as intended',
-    );
-  }
+  const movPlan = movSnap.explainStats?.text ?? '';
+  console.log(`groups returned: ${movSnap.results.length} (${movLabel})`);
 
-  // Seeded-mode correctness probe: the seeded paid saída pedido's itensIds
-  // anchor MUST surface in the distinct output (header 3.).
+  // Correctness probe (seeded runs only): the accumulators are the ONE part of
+  // this design the emulator can never exercise. Assert the seeded anchor's
+  // group both SUMS the v2 row and COUNTS the legacy one — a `nDesconhecido`
+  // of 0 here would mean the fail-open counter is silently inert, which reads
+  // in production as "nothing moved" on every Flutter-written movement.
   if (shouldSeed) {
-    const seededAnchorId = `${SEED_PREFIX}-anchor`;
-    const pids = soldSnap.results.map((r) => r.data()?.pid).filter((p) => typeof p === 'string');
-    if (pids.includes(seededAnchorId)) {
-      console.log(
-        `PASS  sold-ids: seeded pedido's anchor id ${seededAnchorId} present in the ` +
-          `distinct output (${pids.length} pid(s) on this page)`,
+    const grupo = movSnap.results
+      .map((r) => r.data())
+      .find((d) => d.parentId === `${SEED_PREFIX}-anchor`);
+    if (!grupo) {
+      fail(
+        `ledger probe: no aggregate group for the seeded anchor ` +
+          `(${SEED_PREFIX}-anchor) — the pre-pass would see its movement as absent`,
       );
     } else {
-      fail(
-        `sold-ids: the seeded paid saída pedido (itensIds [${seededAnchorId}]) did NOT ` +
-          `surface in the distinct output — ${pids.length} pid(s) returned; raise ` +
-          `CHECK_SOLD_IDS_LIMIT (${soldIdsLimit}) or read the plan above`,
-      );
+      console.log(`ledger probe group: ${JSON.stringify(grupo)}`);
+      if (Number(grupo.dq) !== -3 || Number(grupo.dr) !== -1) {
+        fail(
+          `ledger probe: expected dq -3 / dr -1 from the seeded v2 row, got ${JSON.stringify(grupo)}`,
+        );
+      }
+      if (Number(grupo.nDesconhecido) !== 1) {
+        fail(
+          `ledger probe: expected nDesconhecido 1 from the seeded legacy row, got ` +
+            `${JSON.stringify(grupo.nDesconhecido)} — countIf(not(exists('movimento'))) ` +
+            `is not counting, so a v1 row would be read as "moved nothing"`,
+        );
+      }
     }
+  }
+  console.log('\n----- FULL PLAN (ledger pre-pass) -----\n');
+  console.log(movPlan);
+  if (movPlan.trim() === '') {
+    fail(
+      movSnap.results.length === 0 && movSnap.explainStats === undefined
+        ? 'ledger pre-pass: 0 rows even with desdeMs 0 → no explainStats (v8.6.0, ' +
+            'probe-verified) — nothing proven. Staging has no historicoEstoque rows at ' +
+            'this depósito; seed one (CHECK_SEED=1) and re-run'
+        : 'ledger pre-pass explainStats.text is empty — nothing proven',
+    );
+  } else {
+    const movNodes = parseAccessNodes(movPlan);
+    failIdentifierlessScans('ledger plan', movNodes);
+    checkTarget({
+      label: 'ledger: historicoEstoque timestamp BOUND (the window actually bounds the scan)',
+      nodes: movNodes,
+      plan: movPlan,
+      indexRe: /^\/historicoEstoque \(timestamp/,
+      fallbackRe: /\/historicoEstoque \(/,
+      predicateRe: /\$timestamp|\$parentId/,
+      pendingDeploy: pendingDeployHint(
+        'historicoEstoque(timestamp ASC, parentId ASC, depositoOuterRef ASC) [COLLECTION_GROUP]',
+      ),
+      boundOf: (n) =>
+        n.boundedLines.some((l) => NUMERIC_BOUND_RE.test(l))
+          ? `timestamp range bounds on ${n.identifier}`
+          : null,
+    });
+    // ⚠️ The aggregate must be COVERED, not merely served: an uncovered one
+    // buffers every group in the 128 MiB budget and can RESOURCE_EXHAUSTED.
+    // A residual `depositoOuterRef` means the declared entry was not fully
+    // taken, so the group keys are being read off the documents.
+    console.log(
+      predicateInResidualFilters(movPlan, /\$depositoOuterRef/)
+        ? 'NOTE  ledger: `depositoOuterRef` is served by a residual Filter NODE — the ' +
+            'planner did not take the full covering entry. The window still bounds the ' +
+            'scan if the check above passed, but the aggregate is reading documents; ' +
+            'read the plan before trusting it at catalogue scale'
+        : 'NOTE  ledger: `depositoOuterRef` is not residual — the covering entry was taken',
+    );
   }
 
   /* ------------- daily-mode PAGE 2: keyset over computed filter --------------- */
