@@ -117,6 +117,12 @@ export default function ProdutosPage() {
         defaultColumns={['nomeLink', 'sku', 'gtin', 'publicado']}
         virtualColumns={[nomeColumn]}
         fields={{
+          // The schema field is REPLACED by the `nomeLink` virtual column, not
+          // merely left out of `defaultColumns`: the ColumnPicker lists every
+          // schema field, so leaving it visible there put two identical "Nome"
+          // checkboxes in the picker and let a user toggle on a plain-text
+          // duplicate of the linked column.
+          nome: { hidden: true },
           publicado: {
             label: 'Status',
             renderCell: (value) =>
