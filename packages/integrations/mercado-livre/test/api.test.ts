@@ -7,6 +7,12 @@ import {
   MercadoLivreValidationError,
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
+import {
+  ehFormatoLegado,
+  shipmentBaseCost,
+  shipmentLeadTime,
+  shipmentLogisticType,
+} from '../src/shipmentFields';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -301,22 +307,37 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     });
   });
 
-  it('getShipment hits /shipments/{id} and parses the dispatch/delivery windows', async () => {
+  it('getShipment sends x-format-new and parses the NEW-format body', async () => {
+    // The `x-format-new` shape, trimmed to the branches we consume (ML docs,
+    // *Gerenciamento de Envios*). Deliberately carries NO `order_id`,
+    // `base_cost`, `logistic_type` or `shipping_option`: those are exactly what
+    // the migration removed, so a fixture that still had them would keep
+    // asserting the old world (#957).
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({
         id: 555,
-        order_id: 2000003508897196,
         status: 'ready_to_ship',
         substatus: 'ready_to_print',
         tracking_number: 'BR123456789',
         last_updated: '2022-08-22T00:00:00.000-03:00',
-        base_cost: 8.91,
-        logistic_type: 'cross_docking',
-        shipping_option: {
-          list_cost: 8.91,
-          estimated_handling_limit: { date: '2022-08-22T00:00:00.000-03:00' },
+        logistic: { mode: 'me2', type: 'cross_docking', direction: 'forward' },
+        lead_time: {
+          cost: 8.91,
+          list_cost: 12.5,
           estimated_delivery_limit: { date: '2022-08-24T00:00:00.000-03:00' },
           estimated_delivery_time: { date: '2022-08-24T00:00:00.000-03:00' },
+        },
+        destination: {
+          receiver_name: 'Fulana de Tal',
+          shipping_address: {
+            street_name: 'Rua das Flores',
+            street_number: '123',
+            zip_code: '01310100',
+            comment: 'Apto 42',
+            neighborhood: { name: 'Centro' },
+            city: { name: 'São Paulo' },
+            state: { name: 'São Paulo' },
+          },
         },
       }),
     );
@@ -324,11 +345,40 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     const shipment = await api.getShipment(555);
     expect(shipment.status).toBe('ready_to_ship');
     expect(shipment.substatus).toBe('ready_to_print');
-    expect(shipment.shipping_option?.estimated_handling_limit?.date).toBe(
-      '2022-08-22T00:00:00.000-03:00',
+    expect(shipment.logistic?.type).toBe('cross_docking');
+    expect(shipment.lead_time?.cost).toBe(8.91);
+    expect(shipment.lead_time?.list_cost).toBe(12.5);
+    expect(shipment.lead_time?.estimated_delivery_time?.date).toBe('2022-08-24T00:00:00.000-03:00');
+    expect(shipment.destination?.shipping_address?.zip_code).toBe('01310100');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe('https://api.mercadolibre.com/shipments/555');
+    expect((init!.headers as Record<string, string>)['x-format-new']).toBe('true');
+  });
+
+  it('getShipment still parses a LEGACY body, so the accessors can bridge it', async () => {
+    // ML rolled these deprecations out per-resource over more than a year, and
+    // the new shape here comes from documentation rather than a live call — so
+    // the schema must not reject an account still being served the old body.
+    // The legacy fields survive on `.passthrough()`; `shipmentFields.ts` reads
+    // them. Delete this test with the fallbacks (#957).
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 555,
+        order_id: 2000003508897196,
+        status: 'ready_to_ship',
+        base_cost: 8.91,
+        logistic_type: 'cross_docking',
+        shipping_option: { list_cost: 12.5 },
+      }),
     );
-    const url = String(fetchMock.mock.calls[0]![0]);
-    expect(url).toBe('https://api.mercadolibre.com/shipments/555');
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const shipment = await api.getShipment(555);
+    expect(shipment.status).toBe('ready_to_ship');
+    expect(shipment.lead_time).toBeUndefined();
+    expect(shipmentLogisticType(shipment)).toBe('cross_docking');
+    expect(shipmentBaseCost(shipment)).toBe(8.91);
+    expect(shipmentLeadTime(shipment)?.list_cost).toBe(12.5);
+    expect(ehFormatoLegado(shipment)).toBe(true);
   });
 
   it('getShipment maps a 500 to an HTTP error', async () => {

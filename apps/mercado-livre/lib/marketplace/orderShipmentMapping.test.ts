@@ -11,8 +11,10 @@ function shipment(over: Partial<MlShipment> = {}): MlShipment {
     substatus: null,
     tracking_number: 'MEL00002438290969',
     last_updated: '2026-07-20T14:38:37.322-03:00',
-    base_cost: 16.2,
-    shipping_option: {
+    // The `x-format-new` body (#957): costs and delivery windows live under
+    // `lead_time`, and there is no top-level `base_cost`.
+    lead_time: {
+      cost: 16.2,
       list_cost: 8.91,
       estimated_delivery_time: { date: '2026-07-24T00:00:00.000-03:00' },
     },
@@ -81,16 +83,20 @@ describe('mlShipmentToFreteInicial', () => {
     expect(mapped.valorCobrado).toBe(0);
   });
 
-  it('defaults custoFinal to 0 when shipping_option has no list_cost', () => {
+  it('reports a MISSING list_cost as null, never as a fabricated 0', () => {
+    // The distinction is load-bearing: `mergeFreteInicial` preserves the stored
+    // value on `null`, so an omitted cost can no longer overwrite a correct one
+    // with zero (#957). Legacy mapped `?? 0` and merged unconditionally.
     const mapped = mlShipmentToFreteInicial({
-      shipment: shipment({ shipping_option: { list_cost: null } }),
+      shipment: shipment({ lead_time: { cost: 16.2, list_cost: null } }),
       shippingPayments: [],
       integracaoFreteOuterRef: null,
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
     });
-    expect(mapped.custoFinal).toBe(0);
+    expect(mapped.custoFinal).toBeNull();
+    expect(mapped.custoCalculado).toBe(16.2); // present → still mapped
     expect(mapped.dataPrevisaoEntrega).toBeNull();
   });
 
@@ -142,16 +148,17 @@ describe('mlShipmentToFreteInicial', () => {
     }
   });
 
-  it('handles a null shipping_option (base_cost/tracking still map)', () => {
+  it('handles a null lead_time — every cost becomes null, nothing is invented', () => {
     const mapped = mlShipmentToFreteInicial({
-      shipment: shipment({ shipping_option: null, tracking_number: null }),
+      shipment: shipment({ lead_time: null, tracking_number: null }),
       shippingPayments: [],
       integracaoFreteOuterRef: null,
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
     });
-    expect(mapped.custoFinal).toBe(0);
+    expect(mapped.custoFinal).toBeNull();
+    expect(mapped.custoCalculado).toBeNull();
     expect(mapped.dataPrevisaoEntrega).toBeNull();
     expect(mapped.codRastreio).toBeNull();
   });

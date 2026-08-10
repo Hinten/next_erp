@@ -106,7 +106,11 @@ import {
   type EnderecoForcado,
   type TipoCliente,
 } from '@delfrance/schemas';
-import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
+import {
+  shipmentAddress,
+  type MlBillingInfo,
+  type MlShipment,
+} from '@delfrance/integrations-mercado-livre';
 import { isAlreadyExists } from '@delfrance/data/admin';
 
 /* --------------------------------- errors ---------------------------------- */
@@ -268,14 +272,33 @@ const nomeado = z.preprocess(
   z.object({ name: z.unknown().optional() }).nullable(),
 );
 
+/**
+ * The shipment's buyer address, under either wire shape (#957). The
+ * `x-format-new` body moved it to `destination.shipping_address` AND renamed
+ * every leaf; the legacy names are kept alongside so one parse handles both, and
+ * the reader below prefers whichever arrived.
+ *
+ * | legacy | `x-format-new` |
+ * | --- | --- |
+ * | `street` | `street_name` |
+ * | `number` | `street_number` |
+ * | `complement` | `comment` |
+ * | `postal_code` | `zip_code` |
+ *
+ * `neighborhood`/`city`/`state` keep their `{ name }` shape in both.
+ */
 const receiverAddressObject = z.object({
   street: z.unknown().optional(),
+  street_name: z.unknown().optional(),
   number: z.unknown().optional(),
+  street_number: z.unknown().optional(),
   complement: z.unknown().optional(),
+  comment: z.unknown().optional(),
   neighborhood: nomeado,
   city: nomeado,
   state: nomeado,
   postal_code: z.unknown().optional(),
+  zip_code: z.unknown().optional(),
 });
 
 const receiverAddressSchema = receiverAddressObject.nullish();
@@ -320,13 +343,15 @@ function parseReceiverAddress(raw: unknown): ReceiverAddress | null {
  * endereço.
  */
 export function shipmentToEnderecoFields(shipment: MlShipment): EnderecoBuildOutcome {
-  const addr = parseReceiverAddress((shipment as { receiver_address?: unknown }).receiver_address);
-  const complemento = typeof addr?.complement === 'string' ? addr.complement.slice(0, 30) : null;
+  const addr = parseReceiverAddress(shipmentAddress(shipment));
+  // `x-format-new` name first, legacy second — see `receiverAddressObject`.
+  const complementoRaw = addr?.comment ?? addr?.complement;
+  const complemento = typeof complementoRaw === 'string' ? complementoRaw.slice(0, 30) : null;
 
   return buildEnderecoForcado({
-    cepRaw: addr?.postal_code,
-    logradouro: addr?.street,
-    numero: addr?.number,
+    cepRaw: addr?.zip_code ?? addr?.postal_code,
+    logradouro: addr?.street_name ?? addr?.street,
+    numero: addr?.street_number ?? addr?.number,
     complemento,
     bairro: addr?.neighborhood?.name,
     cidade: addr?.city?.name,

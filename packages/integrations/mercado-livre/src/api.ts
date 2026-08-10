@@ -171,7 +171,12 @@ export interface MercadoLivreApi {
    * callers must read as "ML told us nothing", NOT as "the shipment is empty".
    */
   getShipmentOrders(shipmentId: number | string): Promise<MlShipmentOrder[]>;
-  /** `GET /shipments/{shipmentId}/sla` — the dispatch deadline for a shipment (order import, Step 9). */
+  /**
+   * `GET /shipments/{shipmentId}/sla` — the dispatch deadline for a shipment
+   * (order import, Step 9). Deliberately does NOT send `x-format-new` (#957):
+   * ML's documented example for this resource omits it and the response is
+   * unchanged by it, so sending it would be speculative.
+   */
   getShipmentSla(shipmentId: number | string): Promise<MlShipmentSla>;
   /**
    * `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` — uploads the signed
@@ -557,9 +562,18 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
 
     getPayment: (paymentId) => request('GET', `/collections/${paymentId}`, mlPaymentSchema),
-    getShipment: (shipmentId) => request('GET', `/shipments/${shipmentId}`, mlShipmentSchema),
+    getShipment: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}`, mlShipmentSchema, {
+        // Mandatory on shipments requests as of 2025-10-12, and it selects the
+        // body `mlShipmentSchema` types — see that schema for what moved (#957).
+        headers: { 'x-format-new': 'true' },
+      }),
     getShipmentPayments: (shipmentId) =>
-      request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema),
+      request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema, {
+        // Same mandate; this resource's body is unchanged by it (ML's own curl
+        // example for it carries the header).
+        headers: { 'x-format-new': 'true' },
+      }),
     getShipmentOrders: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/orders`, mlShipmentOrdersSchema, {
         // Mandatory on this resource per the ML docs — without it the call 404s.
