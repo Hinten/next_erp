@@ -62,7 +62,33 @@ export const produtoSchema = z
     // Kit + visibility + freight flags. Defaults match the Flutter
     // constructor defaults (`models.dart:1320-1333`): all false — a new produto
     // starts as a DRAFT (`publicado=false`), published explicitly by the user.
+    /**
+     * This produto is assembled from `componentesKit` rather than stocked on
+     * its own. Its availability is DERIVED at read time from the components
+     * (`kitEstoqueDisponivel`) and a sale moves the components' stock, never
+     * the kit's — see ADR 0014.
+     */
     ehKit: z.boolean().default(false),
+    /**
+     * A kit whose composition the **marketplace** resolves instead of us.
+     *
+     * ⚠️ Virtual does NOT mean unpublished, internal, or exempt from stock
+     * signals. A virtual kit is published and sold like any other kit; the only
+     * difference is the **shape of the upload**. For an ordinary kit we publish
+     * one listing and send the kit's own computed availability. For a virtual
+     * kit we upload the **components** and the marketplace manages the stock,
+     * deriving what can be assembled on its side.
+     *
+     * Consequence for anything reading this flag: its estoque doc still needs
+     * the same treatment as an ordinary kit's — notably the `ultimaModificacao`
+     * stamp a sale writes (ADR 0014) — because the channels that DO support
+     * this upload shape consume that signal.
+     *
+     * Mercado Livre has no proper support for it, which is why the ML sweep
+     * alone declines to send a quantity for a virtual kit
+     * (`quantidadeParaEnvio` → null). That is a per-channel limitation, **not**
+     * a property of virtual kits, and it must not be generalized into one.
+     */
     ehKitVirtual: z.boolean().default(false),
     publicado: z.boolean().default(false),
     ofereceFreteGratis: z.boolean().default(false),
