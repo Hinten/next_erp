@@ -1205,10 +1205,17 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
       entries.map(([id, dq]) => [chaveMovimento(id, DEP), { dq, dr: 0, desconhecido: false }]),
     );
 
-  /** A plain produto holding 10 − 2 = 8 available, with the `parentId` the join projects. */
+  /**
+   * A plain produto holding 10 − 2 = 8 available.
+   *
+   * ⚠️ The own estoque row carries **no `parentId`**, because `ownEstoque()`'s
+   * `select` does not project one — this fixture mirrors the real projection.
+   * It used to hand-write the field, which is precisely what hid #932: the
+   * reconstruction was keying off a value production never returns.
+   */
   const simples = () =>
     familyRow({
-      anchor: { estoque: { parentId: 'PROD', quantidade: 10, quantidadeReservada: 2 } },
+      anchor: { estoque: { quantidade: 10, quantidadeReservada: 2 } },
     });
 
   it('reconstructs a simple produto: anterior = atual − Σmovimento', () => {
@@ -1233,6 +1240,23 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     expect(anteriores.get('PROD')).toBe(10);
   });
 
+  it('⚠️ a reconstruction landing the reservation BELOW ZERO cannot invent stock (#931)', () => {
+    // The window both added 3 units and added 3 to the reservation, so
+    // `desfazerMovimento` synthesizes quantidadeReservada = 2 − 3 = −1. That
+    // negative is legitimate — it is arithmetic, not a stored value — and this
+    // is the sweep's one unfloored subtraction. `estoqueDisponivel` flooring it
+    // downstream is the ONLY thing that keeps it harmless.
+    const janela = new Map([[chaveMovimento('PROD', DEP), { dq: 3, dr: 3, desconhecido: false }]]);
+    const anteriores = quantidadesAnteriores(simples(), DEP, janela);
+
+    // Floored: (10−3) − max(0, −1) = 7. UNFLOORED it would be 7 − (−1) = 8 —
+    // exactly `atual`, so the sweep would read "nothing changed" and SKIP a
+    // movement that certainly happened. A silent skip is the one failure mode
+    // ADR 0014 says this design cannot tolerate.
+    expect(anteriores.get('PROD')).toBe(7);
+    expect(deveEnviarFamilia(quantidadesDaFamilia(simples()), anteriores, true)).toBe(true);
+  });
+
   it('OMITS a member whose own movement is unknown, so the policy fails OPEN', () => {
     // A Flutter v1 row landed in this window: the sums cannot account for it,
     // so there is no honest `anterior`. Leaving the member out is what makes
@@ -1253,7 +1277,8 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
       anchor: {
         ehKit: true,
         componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
-        estoque: { parentId: 'PROD', quantidade: 0, quantidadeReservada: 0 },
+        // No `parentId` on the own row — the real projection has none (#932).
+        estoque: { quantidade: 0, quantidadeReservada: 0 },
         componentEstoques: [{ parentId: 'COMP', quantidade: 10, quantidadeReservada: 0 }],
       },
     });
@@ -1264,13 +1289,38 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     expect(quantidadesAnteriores(kitRow, DEP, mov([['COMP', -1]])).has('PROD')).toBe(true);
   });
 
-  it('an estoque row with NO parentId cannot be keyed → reads as unchanged', () => {
-    // The denorm is legal-null at rest (#238). Undoing nothing is the safe
-    // direction here: the family is then judged on its other members.
-    const semDenorm = familyRow({
-      anchor: { estoque: { quantidade: 10, quantidadeReservada: 2 } },
+  it('⚠️ #932: an own-stock movement is reconstructed and SENT', () => {
+    // The regression test for the silent skip. The fixture carries no
+    // `parentId` on the own row (production projects none), so this passes ONLY
+    // because the reconstruction keys by `member.produtoId`. Reading the row's
+    // denorm instead makes `anterior === atual`, and every ordinary produto's
+    // stock change is dropped on every tier.
+    const atuais = quantidadesDaFamilia(simples());
+    const anteriores = quantidadesAnteriores(simples(), DEP, mov([['PROD', -3]]));
+    expect(atuais.get('PROD')).toBe(8);
+    expect(anteriores.get('PROD')).toBe(11);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true);
+  });
+
+  it('a COMPONENT row with no parentId cannot be keyed → reads as unchanged', () => {
+    // The denorm is legal-null at rest (#238) and the component join is the one
+    // consumer that keys on it. Such a row is invisible twice over: it resolves
+    // to no `disponivel` (so the kit floors to 0 by #238) AND it cannot be
+    // attributed a movement — so `anterior` reconstructs to the same 0 and the
+    // family reads as unchanged.
+    const kitSemDenorm = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+        estoque: null,
+        componentEstoques: [{ quantidade: 10, quantidadeReservada: 0 }],
+      },
     });
-    expect(quantidadesAnteriores(semDenorm, DEP, mov([['PROD', -3]])).get('PROD')).toBe(8);
+    const atuais = quantidadesDaFamilia(kitSemDenorm);
+    const anteriores = quantidadesAnteriores(kitSemDenorm, DEP, mov([['COMP', -3]]));
+    expect(atuais.get('PROD')).toBe(0);
+    expect(anteriores.get('PROD')).toBe(0);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(false);
   });
 
   it('THE #695 case: a component movement that does not change the kit floor', () => {
