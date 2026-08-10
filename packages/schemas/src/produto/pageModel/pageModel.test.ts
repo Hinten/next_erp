@@ -134,8 +134,16 @@ describe('produtoPageIssues (cross-document rules)', () => {
       'estoques.0.quantidadeReservada',
       'estoques.0.quantidadeReservada',
     ]);
-    expect(issues[0]?.message).toMatch(/não pode ser negativa/);
-    expect(issues[1]?.message).toMatch(/maior que a quantidade/);
+    // The contract is that BOTH fire, not the order they fire in — swapping the
+    // two `if`s upstream is a refactor, not a regression. `arrayContaining`
+    // still catches the real failure (one message emitted twice), because each
+    // pattern must match some element.
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/não pode ser negativa/),
+        expect.stringMatching(/maior que a quantidade/),
+      ]),
+    );
   });
 
   it('does not flag a zero reservation', () => {
