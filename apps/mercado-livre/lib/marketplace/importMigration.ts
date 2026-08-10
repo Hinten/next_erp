@@ -73,7 +73,15 @@
  *
  * ---- `applyMarketplaceDeletion` — ported from
  * `.old/packages/produtos/lib/src/models.dart:1132-1178`, pinned by
- * `produto_marketplace_delete_test.dart`. Quotes (produto_marketplace_delete_test.dart):
+ * `produto_marketplace_delete_test.dart`.
+ *
+ * ⛔ The two arrays it maintains are DEAD WEIGHT — write-only, zero readers in
+ * this repo, deleted at the decommission (#431 lock 3 / #961; canonical note on
+ * `produtoSchema`). The legacy-parity detail below is preserved because this
+ * function still runs until then, NOT because the shape is worth defending: do
+ * not extend it, and do not add a reader.
+ *
+ * Quotes (produto_marketplace_delete_test.dart):
  *  - test 1: a `marketplace` entry `{integracaoUid: 'integracoes/ml123',
  *    externalId: 'MLB_PARENT'}` deleted by target `{integracaoUid: 'ml123',
  *    externalId: 'MLB_PARENT'}` (integração compared by LAST PATH SEGMENT only,

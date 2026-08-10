@@ -391,7 +391,11 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Dual-run denorm (DEPRECATED arrays; #431). Runs after the produto exists
+  // Dual-run denorm (DEAD WEIGHT; #431 lock 3 / #961 — write-only, zero readers
+  // in this repo, deleted at the decommission. Canonical note on
+  // `produtoSchema`; do not repair, do not add a reader).
+  //
+  // Runs after the produto exists
   // (create sets it first). arrayUnion so a concurrent Flutter write to the
   // same shared arrays isn't dropped. User-Products stamps
   // `relevantData.isUserProductModel` on the PARENT's own entry too (parity —

@@ -329,11 +329,17 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     ultimaModificacao: now,
   });
 
-  // ---- Dual-run denorm stamps (DEPRECATED arrays) -------------------------
+  // ---- Dual-run denorm stamps (DEAD WEIGHT — see the schema note) ---------
+  // ⛔ `marketplace` / `marketplaceIds` are write-only with ZERO readers in this
+  // repo and are deleted at the decommission (#961 audited it; the canonical
+  // note is on `produtoSchema` in `packages/schemas`). Do not repair them, do
+  // not add a reader, do not give them a trigger — an entry is never removed
+  // when a link doc is deleted, and that is deliberate.
+  //
   // The deployed Flutter backend resolves an incoming ML order item via
   // `marketplace array-contains {integracaoUid, externalId}` (EXACT map match
   // — hence no `relevantData`, the shape its own webhook repair writes), so
-  // these two stamps must keep running for as long as it is deployed.
+  // these two stamps keep running until it is gone.
   //
   // ⚠️ `integracoesComProduto` is NOT stamped here any more (#920). It is not
   // legacy-only — the new app's own sweeps anchor on it
@@ -568,8 +574,10 @@ async function loadTabelaBinding(
  * listing still exists, and that failure is invisible (the sweeps just stop
  * selecting the produto).
  *
- * Removal of what remains is gated on the Flutter decommission (#431) — see the
- * lock list at the parent stamp site in `publishProduto`.
+ * ⛔ What remains is DEAD WEIGHT: write-only, zero readers in this repo, deleted
+ * at the decommission (#431 lock 3 / #961). The canonical note is on
+ * `produtoSchema`. Do not extend this to remove entries when a link doc is
+ * deleted — that gap is known and deliberate; the arrays die with the reader.
  */
 async function stampChildMarketplace(
   db: Firestore,
