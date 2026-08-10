@@ -115,6 +115,17 @@ here" addition has to justify itself.
 **No `historicoEstoque` row is written** for that stamp: no quantity moved, and
 the ledger must stay summable (see 4).
 
+**Every kit on the line is stamped, `ehKitVirtual` included.** A virtual kit is
+published and sold like any other; what differs is only the *upload shape* — the
+marketplace resolves its composition from the components we upload, instead of us
+sending one assembled quantity (the field's own doc comment in the produto schema
+is the canonical definition). The sale signal is therefore identical, and the
+channels supporting that shape consume it. Mercado Livre declining to send a
+quantity for a virtual kit (`quantidadeParaEnvio` → `null`) is a **per-channel
+limitation**, not a property of virtual kits, and must not be generalized into
+one — an earlier draft of this stamp excluded them on exactly that mistaken
+reading.
+
 ### 3. The sweep runs three tiers and deliberately under-sends
 
 | Tier | Cron | Window | Candidates | Send policy |
