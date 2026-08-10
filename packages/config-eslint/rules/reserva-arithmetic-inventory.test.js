@@ -127,6 +127,12 @@ const INVENTARIO = {
     'Displays `movimentoReservada` as a signed delta. No arithmetic.',
   'apps/mercado-livre/scripts/check-stock-indexes.mjs':
     'Index-verification script mirroring the sweep pipelines. Projections and seed fixtures only.',
+
+  // ---- Reads it in order to REPORT on it ---------------------------------
+  'tools/migrations/src/2026-08-estoque-reservada-negativa/predicate.ts':
+    'The #931 audit’s classifier. Reads the stored value RAW on purpose — it is the evidence — and only uses `estoqueDisponivel` to report what the row would have invented.',
+  'tools/migrations/src/2026-08-estoque-reservada-negativa/audit.ts':
+    'The audit’s walk. Filters `< 0` in memory and reads each hit’s ledger; writes nothing (`--apply` is rejected).',
 };
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */
