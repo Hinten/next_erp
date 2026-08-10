@@ -5,7 +5,13 @@ import {
   e2ePrefix,
   seedMercadoLivreFixtures,
 } from './_helpers/seed-data';
-import { applyTextFilter, expectRowHidden, expectRowVisible } from './helpers/table-view';
+import {
+  applyTextFilter,
+  clickAction,
+  expectRowHidden,
+  expectRowVisible,
+  selectRowByText,
+} from './helpers/table-view';
 import { clickSave, confirmDelete, fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -13,9 +19,10 @@ import { warmRoutes } from './helpers/warmup';
  * End-to-end coverage for the `/canais/mercado-livre` TableView + ObjectView
  * flow, driven by `integracaoSchema` filtered to `tipo == 1` (mercadoLivre).
  * Mirrors the Balcão suite; row lookup leans on the run-scoped `nome` prefix.
- * The Conta panel talks to the apps/mercado-livre backend, which does NOT run
- * in this suite — the assertions only require it to degrade gracefully
- * ("Não conectada" + error alert), never to connect.
+ * Two surfaces here talk to the apps/mercado-livre backend, which does NOT run
+ * in this suite — the Conta panel and the list's bulk job actions (#816). The
+ * assertions only require them to degrade gracefully ("Não conectada", a
+ * per-conta failure entry), never to reach it.
  */
 test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () => {
   const prefix = e2ePrefix('ml');
@@ -110,6 +117,36 @@ test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () =
 
     await page.goto(`/canais/mercado-livre/${row(4)}`);
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-004-editada`);
+  });
+
+  test('bulk job actions fan out one entry per selected conta', async ({ page }) => {
+    await page.goto('/canais/mercado-livre');
+    await applyTextFilter(page, 'Nome', prefix);
+
+    // requiresSelection — pure UI, no backend involved.
+    const importar = page.getByRole('button', { name: 'Importar todos os anúncios', exact: true });
+    await expect(importar).toBeDisabled();
+
+    await selectRowByText(page, row(1));
+    await selectRowByText(page, row(2));
+    await expect(importar).toBeEnabled();
+
+    // No `confirm` on the action: the options dialog IS the confirmation.
+    await clickAction(page, 'Importar todos os anúncios', { confirm: false });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('2 contas selecionadas')).toBeVisible();
+    await expect(dialog.getByText(row(1))).toBeVisible();
+    await expect(dialog.getByText(row(2))).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Iniciar importação' }).click();
+
+    // ONE entry per selected conta. Which entry each conta gets (a progress
+    // card or a failed-start alert) depends on whether the backend answered,
+    // so only the count and identity are asserted — those hold either way.
+    // Scoped to the region because the nome also appears in its table row.
+    const jobs = page.getByRole('region', { name: 'Jobs em andamento' });
+    await expect(jobs.getByText(row(1))).toBeVisible({ timeout: 15_000 });
+    await expect(jobs.getByText(row(2))).toBeVisible();
   });
 
   test('deletes a conta through the typed-confirm modal', async ({ page }) => {

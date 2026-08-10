@@ -92,6 +92,50 @@ describe('ActionSidePanel', () => {
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 
+  it('renders `extra` below the buttons when expanded and on the collapsed rail', () => {
+    const { rerender } = wrap(
+      <ActionSidePanel
+        actions={[makeAction('1')]}
+        selectedRows={[ROW]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+        extra={<span>progresso</span>}
+      />,
+    );
+    expect(screen.getByText('progresso')).toBeTruthy();
+
+    // Collapsing must not hide caller content — the caller decides what
+    // survives (a badge, typically), so `extra` renders on the rail too.
+    rerender(
+      <MantineProvider env="test">
+        <ActionSidePanel
+          actions={[makeAction('1')]}
+          selectedRows={[ROW]}
+          collapsed
+          onToggleCollapsed={() => {}}
+          extra={<span>progresso</span>}
+        />
+      </MantineProvider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Ação 1' })).toBeNull();
+    expect(screen.getByText('progresso')).toBeTruthy();
+  });
+
+  it('widens the expanded rail to `width`', () => {
+    wrap(
+      <ActionSidePanel
+        actions={[]}
+        selectedRows={[]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+        width={300}
+      />,
+    );
+    const aside = screen.getByRole('complementary', { name: 'Ações' });
+    // Mantine rewrites a numeric `w` to rem and scales it: 300 / 16 = 18.75rem.
+    expect(getComputedStyle(aside).width).toContain('18.75rem');
+  });
+
   it('the collapse chevron reports back via onToggleCollapsed', () => {
     const onToggle = vi.fn();
     wrap(
