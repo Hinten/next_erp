@@ -40,16 +40,24 @@ describe('planDepositoOuterRef', () => {
       ['the canonical prefix with no id', 'documents/depositos/'],
       ['the bare prefix with no id', 'depositos/'],
       ['a bare ref with a nested path', 'depositos/dep1/sub/x'],
+      // ⚠️ The canonical prefix does NOT exempt a value from validation. A
+      // nested tail is a broken join key no equality comparison will match, and
+      // reporting it as `ja-canonico` would tell the operator it is already
+      // fine — hiding the defect this pass exists to surface.
+      ['a canonical ref with a nested path', 'documents/depositos/dep1/sub'],
+      ['a canonical ref with a trailing slash', 'documents/depositos/dep1/'],
     ])('%s', (_label, valor) => {
       expect(planDepositoOuterRef(valor)).toMatchObject({ kind: 'desconhecido', valor });
     });
-  });
 
-  it('a canonical ref with a nested path is left as canonical, not rewritten', () => {
-    // Only the BARE branch rejects a nested path — there it would be ambiguous
-    // which segment is the id. A canonical value is already in the target form,
-    // so this pass has nothing to say about its tail.
-    expect(planDepositoOuterRef('documents/depositos/dep1/sub')).toEqual({ kind: 'ja-canonico' });
+    it('both encodings reject a bad id for the SAME reason', () => {
+      // Symmetry guard: the two branches share one validator, so neither can
+      // drift into accepting what the other rejects.
+      const canonico = planDepositoOuterRef('documents/depositos/a/b');
+      const bare = planDepositoOuterRef('depositos/a/b');
+      expect(canonico.kind).toBe('desconhecido');
+      expect(bare.kind).toBe('desconhecido');
+    });
   });
 
   it('is a fixed point: normalizing twice changes nothing', () => {

@@ -67,6 +67,13 @@ convert a visible defect into a plausible-looking wrong pointer, and this field
 is a **join key**: a wrong one silently attaches stock to the wrong depósito,
 which is far worse than an obviously broken one.
 
+⚠️ **Carrying the canonical prefix does not exempt a value from that check.**
+`depositos` is a root collection, so a valid ref is exactly one segment after the
+prefix — `documents/depositos/dep1/sub` is a broken join key that no equality
+comparison will ever match, and reporting it as `ja-canonico` would tell you it
+is already fine. Both encodings run through the same id validator for that
+reason.
+
 ## Why the field is worth normalizing at all
 
 Readers tolerate both forms by invariant, so nothing is _broken_ today. But the

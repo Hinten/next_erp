@@ -57,6 +57,20 @@ export type DepositoRefVerdict =
   | { kind: 'desconhecido'; valor: unknown; motivo: string };
 
 /**
+ * A depósito id is **exactly one path segment** after the prefix: `depositos` is
+ * a root collection, so `documents/depositos/<id>` has nothing below it.
+ *
+ * ⚠️ Both encodings are validated through this, and the symmetry is the point.
+ * Accepting a nested tail on the canonical branch while rejecting it on the bare
+ * one would report `documents/depositos/dep1/sub` as `ja-canonico` — "already
+ * fine" — when it is a broken join key that no equality comparison will ever
+ * match. Surfacing those is half of what this pass is for.
+ */
+function ehIdDeDeposito(id: string): boolean {
+  return id !== '' && !id.includes('/');
+}
+
+/**
  * Classify one document's stored `depositoOuterRef`.
  *
  * Deliberately takes the raw field rather than the document, so the same
@@ -72,18 +86,16 @@ export function planDepositoOuterRef(valor: unknown): DepositoRefVerdict {
   if (valor === '') return { kind: 'desconhecido', valor, motivo: 'string vazia' };
 
   if (valor.startsWith(PREFIXO_CANONICO)) {
-    // Canonical prefix but nothing after it is not canonical, it is broken —
-    // and a doc id is exactly what a join needs. Report rather than "fix".
-    return valor.length > PREFIXO_CANONICO.length
-      ? { kind: 'ja-canonico' }
-      : { kind: 'desconhecido', valor, motivo: 'prefixo canônico sem id de depósito' };
+    const id = valor.slice(PREFIXO_CANONICO.length);
+    if (!ehIdDeDeposito(id)) {
+      return { kind: 'desconhecido', valor, motivo: 'forma canônica com id ausente ou composto' };
+    }
+    return { kind: 'ja-canonico' };
   }
 
   if (valor.startsWith(PREFIXO_BARE)) {
     const id = valor.slice(PREFIXO_BARE.length);
-    // `depositos/` with no id, or with a nested path, is not the bare form of
-    // anything — the bare form is exactly one segment after the prefix.
-    if (id === '' || id.includes('/')) {
+    if (!ehIdDeDeposito(id)) {
       return { kind: 'desconhecido', valor, motivo: 'forma bare com id ausente ou composto' };
     }
     return { kind: 'normalizado', de: valor, para: `${PREFIXO_CANONICO}${id}` };
