@@ -10,8 +10,9 @@ import { migrationDb } from './admin';
 
 /**
  * True when this module is the process entrypoint (`tsx src/…/migrate.ts`),
- * false when a test imports it. Every script ends with
- * `if (isMainModule(import.meta.url)) await runMigration(…)`.
+ * false when a test imports it. Every script in this package ends with
+ * `if (isMainModule(import.meta.url)) …`, and a new one must too — it is the
+ * only guard shape here, deliberately, so there is nothing to choose between.
  *
  * ⚠️ **Use this, never a `` `file://${process.argv[1]}` `` template.** On Windows
  * `import.meta.url` is `file:///C:/…` — three slashes, because the drive letter
@@ -23,6 +24,13 @@ import { migrationDb } from './admin';
  * failure this package can have, and it reproduces only off Linux: CI is green,
  * the maintainer's own machine is a no-op. `pathToFileURL` builds the URL the
  * same way the loader does, on every platform.
+ *
+ * ⚠️ Nor a `process.argv[1].endsWith('migrate.ts')` test, which four scripts
+ * here used to carry. It is Windows-safe but identity-blind: **every** module in
+ * this package is named `migrate.ts`, so it answers "is the entrypoint called
+ * migrate.ts", not "is the entrypoint me". Nothing imports one migration from
+ * another today — that is the only reason it worked, and it is not a property
+ * anyone would think to preserve.
  */
 export function isMainModule(importMetaUrl: string): boolean {
   const entry = process.argv[1];

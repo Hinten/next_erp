@@ -95,6 +95,8 @@ async function lerHistorico(estoque: QueryDocumentSnapshot): Promise<HistoricoRe
       timestamp: ler('timestamp') as number | null | undefined,
       tipo: ler('tipo') as string | null | undefined,
       motivo: ler('motivo') as string | null | undefined,
+      pedidoNumero: ler('pedidoNumero') as string | null | undefined,
+      usuarioOuterRef: ler('usuarioOuterRef') as string | null | undefined,
     };
   });
 }
