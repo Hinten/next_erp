@@ -91,7 +91,13 @@ export function manualPushDeadlineMs(): number {
  * which stamps `pausedUntilUs` and breaks the SWEEP for the whole conta.
  */
 export function manualPushConcurrency(): number {
-  return envInt('MERCADO_LIVRE_STOCK_MANUAL_CONCURRENCY', concurrentDispatches());
+  // CLAMPED, not merely defaulted. The invariant above is a real one — a burst
+  // wider than the deployed queue earns a 429, which stamps `pausedUntilUs` and
+  // breaks the unattended SWEEP for the whole conta — so a misconfigured env var
+  // must not be able to violate it. The floor of 1 keeps a `0`/negative value
+  // from deadlocking the pool.
+  const teto = concurrentDispatches();
+  return Math.max(1, Math.min(envInt('MERCADO_LIVRE_STOCK_MANUAL_CONCURRENCY', teto), teto));
 }
 
 /** Cap on re-arm `GET /items` calls per request. */
@@ -586,7 +592,13 @@ export async function enviarEstoqueManual(
     } catch (err) {
       if (err instanceof MercadoLivreHttpError && err.status === 429) {
         abortado = true;
-        pausadoAte = new Date(nowMs + (err.retryAfterSec ?? 300) * 1000).toISOString();
+        // Wall clock AT THE 429, not the request's `nowMs`. `nowMs` is the one
+        // logical clock read taken before any ML call; a 429 arriving 90s into a
+        // run would report a pause window that already started 90s ago and tell
+        // the operator to retry too early. The send handler stamps
+        // `pausedUntilUs` off its own now for the same reason, so this keeps the
+        // reported window aligned with the one actually enforced.
+        pausadoAte = new Date(Date.now() + (err.retryAfterSec ?? 300) * 1000).toISOString();
         listings.push({
           ...base,
           outcome: 'nao-tentado',
