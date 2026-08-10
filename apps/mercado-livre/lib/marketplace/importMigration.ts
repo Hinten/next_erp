@@ -89,10 +89,18 @@
  *    status key is `'ml123_MLB_VAR_1'` (the MATCHED entry's own externalId).
  *  - test 3: no integração match ⇒ returns the produto UNCHANGED (`identical`)
  *    — ported here as returning `null` so the caller skips a no-op write.
- * `integracoesComProduto` is RECOMPUTED from the surviving `marketplace`
- * entries (not filtered from the old list); `marketplaceIds` is filtered
- * (last-segment-tolerant) then de-duplicated, insertion order preserved
- * (`.toSet().toList()`).
+ * `marketplaceIds` is filtered (last-segment-tolerant) then de-duplicated,
+ * insertion order preserved (`.toSet().toList()`).
+ *
+ * ⚠️ The port deliberately DROPS legacy's `integracoesComProduto` recompute
+ * (#920). It was one of the two paths that derived that array from
+ * `marketplace` — the coupling that made the three arrays an all-or-nothing
+ * cluster (#431 lock 2) — and it also carried a latent bug: `lastSegment()`
+ * normalized the entries it MATCHED on but not the ids it WROTE, so a
+ * path-form `integracaoUid` produced an array entry no reader's
+ * `arrayContains(<bare id>)` could ever match. `onProdutoMercadoLivreLinkChanged`
+ * owns the array now, and `pruneMigratedSource` deletes the source link in the
+ * same batch as this patch, which is the event that drives it.
  *
  * ---- Prune gating — verified directly against `tasks.dart:960-1012` (NOT
  * just the summarized version): the denorm-cleanup + SOURCE PML deletion
@@ -454,7 +462,6 @@ interface MarketplaceDeletionTarget {
 
 interface MarketplaceDeletionPatch {
   marketplace: Array<Record<string, unknown>>;
-  integracoesComProduto: string[];
   marketplaceIds: string[];
   statusProdutosMarketplace: Record<string, unknown>;
 }
@@ -506,10 +513,6 @@ function applyMarketplaceDeletion(
       (id) => !removedExternalIds.has(lastSegment(id)),
     ),
   );
-  const integracoesComProduto = uniqueFirstSeen(
-    updatedMarketplace.map((e) => String(e.integracaoUid)),
-  );
-
   const existingStatus = isPlainObject(produtoRaw.statusProdutosMarketplace)
     ? produtoRaw.statusProdutosMarketplace
     : {};
@@ -521,7 +524,6 @@ function applyMarketplaceDeletion(
 
   return {
     marketplace: updatedMarketplace,
-    integracoesComProduto,
     marketplaceIds,
     statusProdutosMarketplace,
   };

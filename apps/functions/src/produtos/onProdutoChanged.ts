@@ -27,6 +27,7 @@ import { buildModificationEntry, recordModification } from '../lib/modificationH
 export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   'componentesKitKeys',
   'fotosArquivosIds',
+  'integracoesComProduto',
   'marketplace',
   'nome_embedding',
   'statusProdutosMarketplace',

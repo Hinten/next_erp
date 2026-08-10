@@ -391,15 +391,18 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Dual-run denorm (DEPRECATED arrays; #431). NOT legacy-only — the new app's
-  // stock and price sweeps both anchor on `integracoesComProduto`, so a listing
-  // imported without this stamp never syncs; see the three locks at the parent
-  // stamp site in `publish.ts`. Runs after the produto exists (create sets it
-  // first). arrayUnion so a concurrent Flutter write to the same shared arrays
-  // isn't dropped. User-Products stamps
+  // Dual-run denorm (DEPRECATED arrays; #431). Runs after the produto exists
+  // (create sets it first). arrayUnion so a concurrent Flutter write to the
+  // same shared arrays isn't dropped. User-Products stamps
   // `relevantData.isUserProductModel` on the PARENT's own entry too (parity —
   // `ProdMarketplace.relevantData`, `models.dart:2333`); omitted for simple/
   // variations[] so their denorm shape stays byte-identical.
+  //
+  // ⚠️ `integracoesComProduto` is NOT stamped here (#920) — the link `.set()`
+  // above is what puts the produto in it, via
+  // `onProdutoMercadoLivreLinkChanged`. That is the point: the array now
+  // follows the links, so an import path that forgets to stamp can no longer
+  // leave a listing invisible to both sweeps.
   await produtoCollection.docRef(db, {}, produtoId).update({
     marketplace: FieldValue.arrayUnion({
       integracaoUid: integracaoId,
@@ -407,7 +410,6 @@ export async function importProduto(
       ...(isUserProduct ? { relevantData: { isUserProductModel: true } } : {}),
     }),
     marketplaceIds: FieldValue.arrayUnion(plan.denormItemId),
-    integracoesComProduto: FieldValue.arrayUnion(integracaoId),
   });
 
   // Children (#520 legacy variations[] / #521 User-Products member), run after

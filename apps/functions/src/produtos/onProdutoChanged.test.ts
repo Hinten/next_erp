@@ -3,11 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { PRODUTO_HISTORY_IGNORE_FIELDS, produtoExtraIgnores } from './onProdutoChanged';
 
 describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
-  it('is exactly the noisy/denorm-churn field set (owner list, 2026-07-21)', () => {
+  it('is exactly the noisy/denorm-churn field set (owner list, 2026-07-21; +integracoesComProduto #920)', () => {
     expect([...PRODUTO_HISTORY_IGNORE_FIELDS].sort()).toEqual(
       [
         'componentesKitKeys',
         'fotosArquivosIds',
+        // #920 moved this array's maintenance into the two ML link triggers, so
+        // every publish/import/cancel now writes it from the server. It is
+        // denorm churn exactly like its `marketplace` sibling above, and an
+        // operator never edits it by hand.
+        'integracoesComProduto',
         'marketplace',
         'nome_embedding',
         'statusProdutosMarketplace',
