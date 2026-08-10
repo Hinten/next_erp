@@ -60,12 +60,33 @@ export function shipmentLogisticType(shipment: MlShipment): string | null {
 }
 
 /**
- * What the sender is charged.
+ * What the shipment costs, feeding `freteInicial.custoCalculado`.
  *
- * The new body has no `base_cost`; `lead_time.cost` is its nearest analogue.
- * Returns `null` — never a fabricated `0` — when neither is present, so a caller
- * can tell "ML did not say" from "ML said zero". `GET /shipments/{id}/costs` is
- * the authoritative source if this ever has to be exact (#957).
+ * ⚠️ **This is a semantic shift, not a rename.** ML's own cost vocabulary
+ * (docs, *Custos de envio*) defines the three sibling fields as:
+ *
+ * | field | ML's definition |
+ * | --- | --- |
+ * | `base_cost` | "Custo base do envio" |
+ * | `cost` | "Custo total do envio **aplicando descontos**" |
+ * | `list_cost` | "Custo real do envio **antes de aplicar descontos**" |
+ *
+ * The legacy body's top-level `base_cost` has no counterpart in the
+ * `x-format-new` shape, so this falls back to `lead_time.cost` — which is the
+ * POST-discount figure, where `base_cost` was the pre-discount base. For a
+ * shipment carrying no discount the two agree; where a discount applies, this
+ * now reports what was actually charged rather than the list basis. That is
+ * arguably the better number for a cost field, but it IS a change and a reader
+ * comparing historical `custoCalculado` values across the migration should know
+ * it.
+ *
+ * `null` — never a fabricated `0` — when neither is present, so a caller can
+ * tell "ML did not say" from "ML said zero".
+ *
+ * The authoritative source for what the SELLER pays is `GET /shipments/{id}/costs`
+ * (`senders[].cost`), which the plugin does not implement; legacy did
+ * (`api.dart:1645-1650`). Adding it would remove this guess entirely — tracked
+ * as a follow-up on #957.
  */
 export function shipmentBaseCost(shipment: MlShipment): number | null {
   return shipment.lead_time?.cost ?? legacy(shipment).base_cost ?? null;
