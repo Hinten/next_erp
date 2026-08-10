@@ -173,6 +173,23 @@ export interface StockSendDeps {
    * `Math.random`-based, capped at `PAUSE_REENQUEUE_JITTER_MAX_S`.
    */
   jitterSec?: (maxS: number) => number;
+  /**
+   * Skip the `MERCADO_LIVRE_STOCK_SYNC_ENABLED` gate below. Set ONLY by the
+   * manual push (#819), never by the queue handler.
+   *
+   * The flag governs the UNATTENDED blast radius — three sweeps enqueuing for
+   * the whole catalogue, 96× a day — and it stays off until the window in which
+   * the legacy Flutter stock sender is decommissioned. An operator pushing a
+   * hand-picked selection is a different risk class: it is permission-gated,
+   * bounded, reported per listing, and the legacy app exposes its own manual
+   * "Enviar Estoque" button doing the same thing today. Gating the manual route
+   * on this flag would ship it INERT until the cutover, leaving the new send
+   * path unexercised exactly when we most want it proven.
+   *
+   * ⚠️ `functions/src/sendStock.ts` must never set this — pinned by
+   * `stockSendMaxAttempts.test.ts`, which reads that file's source.
+   */
+  ignoreSyncFlag?: boolean;
 }
 
 function defaultJitterSec(maxS: number): number {
@@ -236,7 +253,7 @@ export async function processStockSendTask(
   // steady state (the flag ships OFF and it ticks every 15min). A task reaching
   // THIS handler while off is abnormal — it means a backlog is draining behind
   // an emergency stop.
-  if (!isStockSyncEnabled()) {
+  if (deps.ignoreSyncFlag !== true && !isStockSyncEnabled()) {
     console.warn(
       `[mercado-livre] stock-send: sync desabilitado (${STOCK_SYNC_FLAG_ENV} != '1') — task descartada`,
       { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },

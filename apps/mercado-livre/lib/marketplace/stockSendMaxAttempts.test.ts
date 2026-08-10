@@ -41,4 +41,19 @@ describe('STOCK_SEND_MAX_ATTEMPTS', () => {
   it('reaches the handler — the ladder is dead without req.retryCount', () => {
     expect(source).toMatch(/retryCount:\s*req\.retryCount\s*\?\?\s*0/);
   });
+
+  /**
+   * `ignoreSyncFlag` exists so the MANUAL push (#819) can run before
+   * `MERCADO_LIVRE_STOCK_SYNC_ENABLED` flips. The queue handler must never set
+   * it: the flag is the documented emergency stop for the unattended sweeps,
+   * and a backlog that keeps hitting ML after the stop is exactly the failure
+   * the re-check in `processStockSendTask` step 0.5 was added to prevent.
+   *
+   * Read from the source because the nested functions codebase is not a
+   * workspace member and has no test runner of its own — the same technique the
+   * `retryConfig` pins above use.
+   */
+  it('the QUEUE handler never bypasses the master flag', () => {
+    expect(source).not.toMatch(/ignoreSyncFlag/);
+  });
 });
