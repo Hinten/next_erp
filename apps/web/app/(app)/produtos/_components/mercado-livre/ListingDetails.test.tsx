@@ -35,7 +35,7 @@ function link(over: Partial<ProdutoMercadoLivreLink> = {}): ProdutoMercadoLivreL
   } as ProdutoMercadoLivreLink;
 }
 
-function renderDetails(over: Partial<ProdutoMercadoLivreLink> = {}, fotos = 3) {
+function renderDetails(over: Partial<ProdutoMercadoLivreLink> = {}, fotos: number | null = 3) {
   render(
     <MantineProvider env="test">
       <ListingDetails link={link(over)} produtoFotoCount={fotos} />
@@ -96,5 +96,14 @@ describe('ListingDetails', () => {
     renderDetails({}, 4);
     expect(screen.queryByText(/Produto sem fotos/)).toBeNull();
     expect(screen.queryByText(/no máximo 10 fotos/)).toBeNull();
+  });
+
+  it('stays silent while the photo count is still unknown', () => {
+    // The produto snapshot reports `undefined` on its first render. Treating
+    // that as 0 flashed "a publicação será bloqueada" on EVERY open — a false
+    // alarm that trains operators to ignore the warning that matters.
+    renderDetails({}, null);
+    expect(screen.queryByText(/Produto sem fotos/)).toBeNull();
+    expect(screen.queryByText(/foto\(s\)/)).toBeNull();
   });
 });

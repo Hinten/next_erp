@@ -97,8 +97,15 @@ export function MercadoLivreEditor({
   // link doc has no picture field — so the count is what tells the operator, up
   // front, whether the publish will be blocked for "produto sem fotos" or will
   // silently drop everything past the 10th.
-  const produtoSnap = useDocSnapshot(produtoCollection.docRef(db, {}, produtoId));
-  const produtoFotoCount = produtoSnap.data?.data.fotos?.length ?? 0;
+  //
+  // The ref MUST be memoized: `useDocSnapshot`'s effect depends on `[ref]` and
+  // `docRef()` returns a fresh object every call, so an inline ref tears the
+  // `onSnapshot` listener down and re-subscribes on every render.
+  const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, produtoId), [db, produtoId]);
+  const produtoSnap = useDocSnapshot(produtoDocRef);
+  // `null` while the snapshot is still loading — NOT 0. Collapsing the two made
+  // the "produto sem fotos" alert flash on every open (see `ListingDetails`).
+  const produtoFotoCount = produtoSnap.loading ? null : (produtoSnap.data?.data.fotos?.length ?? 0);
 
   const [publishing, setPublishing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */

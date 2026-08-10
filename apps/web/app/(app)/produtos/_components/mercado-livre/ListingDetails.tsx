@@ -23,8 +23,16 @@ function channelsLabel(channels: string[] | null | undefined): string {
 
 export interface ListingDetailsProps {
   link: ProdutoMercadoLivreLink;
-  /** The produto's own photo count — publish derives listing pictures from it. */
-  produtoFotoCount: number;
+  /**
+   * The produto's own photo count — publish derives listing pictures from it.
+   *
+   * **`null` means "not known yet"**, not "zero". The count comes from a live
+   * snapshot that reports `undefined` on its first render, and collapsing that
+   * to `0` made the "publicação será bloqueada" alert flash on every open, for
+   * every produto — a false alarm about a blocked publish is exactly the kind
+   * of warning that teaches operators to ignore the real one.
+   */
+  produtoFotoCount: number | null;
 }
 
 /**
@@ -90,17 +98,20 @@ export function ListingDetails({ link, produtoFotoCount }: ListingDetailsProps) 
 
       <Fieldset legend="Mídia" variant="unstyled">
         <SimpleGrid cols={cols} spacing="sm" verticalSpacing="xs">
-          <ListingField label="Fotos do produto">{`${produtoFotoCount} foto(s)`}</ListingField>
+          <ListingField label="Fotos do produto">
+            {produtoFotoCount == null ? EMPTY_VALUE : `${produtoFotoCount} foto(s)`}
+          </ListingField>
           <ListingField label="Vídeo (YouTube)">{textOr(link.video_id)}</ListingField>
         </SimpleGrid>
         {/* Both of these are 422s waiting to happen, surfaced BEFORE the
-            operator clicks publish and gets a rejection they can't read. */}
+            operator clicks publish and gets a rejection they can't read.
+            Neither fires on a null count — see the prop docs. */}
         {produtoFotoCount === 0 && (
           <Alert color="yellow" variant="light" mt="xs">
             Produto sem fotos — a publicação será bloqueada. Adicione fotos na aba Fotos.
           </Alert>
         )}
-        {produtoFotoCount > MAX_PICTURES && (
+        {produtoFotoCount != null && produtoFotoCount > MAX_PICTURES && (
           <Alert color="yellow" variant="light" mt="xs">
             O Mercado Livre publica no máximo {MAX_PICTURES} fotos; as demais são ignoradas.
           </Alert>

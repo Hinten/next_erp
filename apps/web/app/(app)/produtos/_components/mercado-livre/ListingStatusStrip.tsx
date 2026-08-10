@@ -82,7 +82,7 @@ export function ListingStatusStrip({
             {link.id != null ? `Anúncio ${link.id}` : 'Rascunho — ainda não publicado'}
           </Text>
           {permalink != null && (
-            <Anchor href={permalink} target="_blank" rel="noreferrer" size="sm">
+            <Anchor href={permalink} target="_blank" rel="noopener noreferrer" size="sm">
               ver no Mercado Livre
             </Anchor>
           )}
