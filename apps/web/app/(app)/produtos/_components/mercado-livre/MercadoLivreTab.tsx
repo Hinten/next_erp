@@ -9,6 +9,14 @@ export interface MercadoLivreTabProps {
   produtoId: string;
   db: Firestore;
   disabled?: boolean;
+  /** True while any listing holds unsaved edits — feeds ObjectView's `extraDirty`. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Receives the closure that commits pending listing edits. Stays `null` until
+   * the tab is opened, which is exactly the "never visited ⇒ nothing to flush"
+   * case the page's optional call relies on.
+   */
+  flushRef?: React.MutableRefObject<(() => Promise<void>) | null>;
 }
 
 /**
