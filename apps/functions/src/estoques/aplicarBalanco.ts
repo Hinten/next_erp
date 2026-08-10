@@ -61,8 +61,19 @@ import {
  */
 const PRODUTOS_POR_TRANSACAO = 100;
 
-/** Estoque docs per page of the depósito-wide scan. */
+/** Estoque docs per page of the depósito-wide scan (`varrerDepositoClassico`). */
 const PAGINA_ESTOQUES = 500;
+
+/**
+ * Movimento docs per page of the classic aggregate fallback
+ * (`agregarContagemClassico`). Deliberately its own constant rather than a reuse
+ * of {@link PAGINA_ESTOQUES}: the two scans read different collections for
+ * different reasons — this one pages a single balanço's movimentos (rows are
+ * tiny, and the whole point of the fallback is that the volume is bounded by one
+ * count), the other pages a depósito's estoque docs. Sharing one number would
+ * mean tuning either scan silently retunes the other.
+ */
+const PAGINA_MOVIMENTOS = 500;
 
 /** Produtos per field-masked detail `getAll`. */
 const PRODUTOS_POR_LEITURA = 300;
@@ -160,7 +171,7 @@ export const agregarContagemClassico: AgregarContagem = async (db, balancoId) =>
     .where('error', '==', false)
     .where('removido', '==', false)
     .orderBy(FieldPath.documentId())
-    .limit(PAGINA_ESTOQUES);
+    .limit(PAGINA_MOVIMENTOS);
   let cursor: DocumentSnapshot | null = null;
   for (;;) {
     const pagina: QuerySnapshot = await (cursor ? base.startAfter(cursor) : base).get();
@@ -169,7 +180,7 @@ export const agregarContagemClassico: AgregarContagem = async (db, balancoId) =>
       const dados = doc.data();
       linhas.push({ produtoId: dados.produtoId, total: dados.quantidade });
     }
-    if (pagina.size < PAGINA_ESTOQUES) break;
+    if (pagina.size < PAGINA_MOVIMENTOS) break;
     cursor = pagina.docs[pagina.size - 1] ?? null;
     if (!cursor) break;
   }
