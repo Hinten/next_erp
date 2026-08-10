@@ -20,6 +20,7 @@ import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
 import { movimentoBalancoCollection } from '@/lib/data/movimentoBalancoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { relatorioBalancoCollection } from '@/lib/data/relatorioBalancoCollection';
+import { isUsingFirebaseEmulator } from '@/lib/firebase/client';
 
 /** One line of the review table / CSV, whatever its source. */
 export interface LinhaRevisao {
@@ -50,13 +51,16 @@ export function reduzirTotais(linhas: Array<{ produtoId: unknown; total: unknown
 /**
  * Units counted per produto, for a balanço still open.
  *
- * One pipeline aggregate grouped by the denormalized `produtoId` when the SDK
- * exposes pipelines, otherwise a paged read reduced in memory. Legacy walked
- * distinct produtos with a cursor and ran one `sum()` per produto — 2 round
- * trips each, and the review screen re-did the whole walk on every open.
+ * One pipeline aggregate grouped by the denormalized `produtoId`, otherwise a
+ * paged read reduced in memory. Legacy walked distinct produtos with a cursor
+ * and ran one `sum()` per produto — 2 round trips each, and the review screen
+ * re-did the whole walk on every open.
  *
- * ⚠️ The fallback is not dead code: pipelines do not run against the Firestore
- * emulator, which is where the balanço e2e lane runs.
+ * ⚠️ The fallback is not dead code, and the gate is NOT `isPipelineSupported`
+ * alone. Against the emulator the SDK still exposes `db.pipeline()`, so that
+ * probe answers yes and the aggregate then fails at execution — which is
+ * exactly where the balanço e2e lane runs. `isUsingFirebaseEmulator()` is a
+ * build-time fact and cannot be wrong.
  */
 export async function carregarTotaisLancados(
   db: Firestore,
@@ -64,7 +68,7 @@ export async function carregarTotaisLancados(
 ): Promise<Map<string, number>> {
   const caminho = movimentoBalancoCollection.resolvePath({ balancoId });
 
-  if (isPipelineSupported(db)) {
+  if (!isUsingFirebaseEmulator() && isPipelineSupported(db)) {
     const snap = await execute(
       db
         .pipeline()
