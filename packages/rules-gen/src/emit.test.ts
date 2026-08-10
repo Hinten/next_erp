@@ -149,6 +149,49 @@ describe('emitRules', () => {
     expect(out).not.toContain('/{path=**}/top/');
   });
 
+  it('omits the group block for a leaf that opted out with noCollectionGroupRead', () => {
+    // The flat, parent-scoped block still exists — only the recursive
+    // `{path=**}` read surface is dropped, for collections every read of which
+    // is scoped to one parent anyway (balanço's movimentos / relatorios).
+    const opted: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'a/{aId}/quieto',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        noCollectionGroupRead: true,
+      },
+    };
+    const out = emitRules([opted], [], new Set());
+    expect(out).toContain('match /a/{aId}/quieto/{docId} {');
+    expect(out).not.toContain('/{path=**}/quieto/');
+  });
+
+  it('does not treat an opted-out subcollection as a top-level name', () => {
+    // Regression guard: the opt-out must not fall through to the `topLevel`
+    // branch, or a same-named sibling leaf would falsely trip the collision
+    // check and break generation.
+    const opted: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'a/{aId}/leaf',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        noCollectionGroupRead: true,
+      },
+    };
+    expect(() => emitRules([opted, domain('b/{bId}/leaf')], [], new Set())).not.toThrow();
+    const out = emitRules([opted, domain('b/{bId}/leaf')], [], new Set());
+    // `b`'s leaf still gets its group block — the opt-out is per-domain.
+    expect(out.match(/match \/\{path=\*\*\}\/leaf\/\{docId\}/g)).toHaveLength(1);
+  });
+
   it('unions the read claims when metas share a subcollection leaf', () => {
     // The legacy-aligned tax paths made this real: `produtos/{id}/imposto`
     // and `categorias/{id}/imposto` both end in `imposto`. The group block
