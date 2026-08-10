@@ -622,11 +622,29 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect(kitDoc.dataCriacao).toBe(1);
   });
 
-  it('does not stamp a virtual kit (never published, so never swept)', async () => {
+  it('stamps a VIRTUAL kit too — virtual changes the upload shape, not the sale', async () => {
+    // A virtual kit is published and sold like any other kit; the marketplace
+    // just resolves its composition from the components we upload instead of us
+    // sending one assembled quantity. So the sale signal is identical. Mercado
+    // Livre declining to send a quantity for one is an ML limitation, not a
+    // reason to withhold the stamp from the channels that do support it.
     const db = getDb();
     const { depositoId, pedidoId, kitId } = await seedKit(db, { ehKitVirtual: true });
+
     await aplicarConvergindo(db, pedidoId);
-    expect((await estoqueRef(db, kitId, depositoId).get()).exists).toBe(false);
+
+    const kitDoc = (await estoqueRef(db, kitId, depositoId).get()).data();
+    expect(kitDoc).toBeDefined();
+    expect(kitDoc!.parentId).toBe(kitId);
+    expect(kitDoc!.depositoOuterRef).toBe(`documents/depositos/${depositoId}`);
+    expect(typeof kitDoc!.ultimaModificacao).toBe('number');
+    // Still not a movement: no history row, and no counters written.
+    expect((await historicos(db, kitId, depositoId)).length).toBe(0);
+    expect(Object.keys(kitDoc!).sort()).toEqual([
+      'depositoOuterRef',
+      'parentId',
+      'ultimaModificacao',
+    ]);
   });
 
   it('stamps nothing when the plan produced no deltas', async () => {
