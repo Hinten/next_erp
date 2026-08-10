@@ -93,6 +93,8 @@ const INVENTARIO = {
     'Transactional pedido→estoque sync. Floors with `Math.max(0, …)` and raises an `estoque-drift` incidente when the floor absorbs a release.',
   'packages/data/src/produto/usecases.ts':
     '`planMovimentacao`. Clamps a balanço’s counted reservation and the resulting saldo; the entrada/saída DELTA stays signed by design (it is an increment).',
+  'packages/data/src/balanco/finalizePlan.ts':
+    'Balanço finalize planner. `contadoresSaos` treats a negative reservation as STORED JUNK, so such a row is deliberately not `inalterado` — it gets a real write and self-heals; the clamp itself happens once, inside `planMovimentacao`.',
 
   // ---- Rejects a bad value at a boundary ----------------------------------
   'packages/data/src/produto/estoqueComando.ts':
@@ -111,6 +113,8 @@ const INVENTARIO = {
     '`readEstoque` returns the stored value RAW on purpose (nothing launders the evidence); its only consumer is `importCore`, which floors.',
   'apps/mercado-livre/lib/marketplace/importVariations.ts':
     'Second copy of `readEstoque`, same contract.',
+  'apps/functions/src/estoques/aplicarBalanco.ts':
+    'Passes the stored counters into `planejarItemBalanco` straight off `.data()`, uncoerced on purpose — `finalizePlan` owns both the coercion and the `>= 0` sanity check.',
 
   // ---- Declarations, display, diagnostics — no arithmetic -----------------
   'packages/schemas/src/produto/collection/historicoEstoque.ts':
