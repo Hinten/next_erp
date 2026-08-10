@@ -87,30 +87,54 @@ to compute the number it sends.
 `sincronizarEstoquePedido` stamps `ultimaModificacao` on the estoque doc of every
 produto that appears as a **pedido line** but received no stock delta — i.e. the
 kits. The kit ids come from `pedido.itens[*].produtoUid`, which the sync
-transaction has already loaded, so this costs **zero extra reads** and is
-`O(lines in the pedido)` — not `O(kits containing the component)`.
+transaction has already loaded, so this is `O(lines in the pedido)` — not
+`O(kits containing the component)`, which is the whole point.
 
-The write is read-free and ADR 0011 **tier 0**: `FieldValue.maximum(now)` for the
-monotonic stamp, so a stale `now` cannot move it backwards and a concurrent
-movement's own bump wins if it is later.
+`FieldValue.maximum(now)` makes the stamp itself ADR 0011 **tier 0**: a stale
+`now` cannot move it backwards and a concurrent movement's own bump wins if it is
+later.
 
-**The payload is exactly three fields**, and the two besides the stamp are
-reachability keys rather than decoration — dropping either turns the stamp into a
-no-op for the case it exists to serve, a kit whose estoque doc does not exist yet
-(the norm, since a kit holds no stock):
+**One field is written on every stamp; two more only when the doc is created.**
 
-| field | why it cannot be dropped |
-|---|---|
-| `ultimaModificacao` | the signal itself |
-| `depositoOuterRef` | the sweep reaches an estoque via `subcollection('estoques').where(depositoOuterRef == …)`; without it the doc matches no depósito and the window filter never sees the stamp |
-| `parentId` | the ledger pre-pass keys `(produto, depósito)` off this denorm; without it `desfazerMovimento` cannot key the row and reads it as *unchanged* — the one verdict a just-sold kit must never get |
+| field | when | why |
+|---|---|---|
+| `ultimaModificacao` | always | the signal itself, and the only tier-0 field |
+| `depositoOuterRef` | on create | the sweep reaches an estoque via `subcollection('estoques').where(depositoOuterRef == …)`; a doc created without it matches no depósito and the window filter never sees the stamp — the case this exists to serve, since a kit holds no stock and has no other reason to own an estoque doc |
+| `parentId` | on create | structural uniformity with every other estoque writer, **not** a reader's requirement — see below |
+
+⚠️ **`parentId` here has no reader, and that is fine as long as it is recorded.**
+A kit can never be a component of another kit (#239 — enforced by the KitManager
+picker and the PageModel validation; the picker-less agent/MCP path is #347), so
+`compEstoques`' `parentId equalAny <kit keys>` join — the only query that matches
+on the field — can never reach a kit's own estoque row. It is **not** what the
+ledger pre-pass keys on either: that is `historicoEstoque.parentId`, and the
+window-start reconstruction keys a member's own estoque row by
+`member.produtoId`, because `ownEstoque()` projects no `parentId` and a
+subcollection probe never needed one (#932).
+
+⚠️ **Neither denorm may be re-asserted on an existing doc.** They are plain
+scalars with no transform, so writing them on every stamp is a blind
+last-write-wins overwrite of fields this code never read — ADR 0011's own hazard —
+and it would silently re-encode a `depositoOuterRef` stored in the bare
+`depositos/<id>` form the outerRef invariant tolerates, which the Flutter app may
+still be writing during the dual run.
+
+**The cost of that split, stated rather than buried.** Firestore has no
+set-if-missing for a string, so the sync must READ the sold kits' estoque docs —
+hoisted above `aplicarPlano`, since a transaction rejects a read after a write.
+Two consequences: the stamp's original "zero extra reads" property is gone (it is
+now `O(kit lines on the pedido)`, still nothing like the ~2 000-write fan-out
+rejected above), and those docs join the transaction's read set, so two pedidos
+selling the same kit now contend and retry. Harmless — the stamp is monotonic —
+but no longer contention-free.
 
 Nothing else is written. **`dataCriacao` is deliberately absent**: a stamp is not
 a creation event and has no business authoring one. The quantity counters are
 absent too — the sweep coalesces a missing `quantidade`/`quantidadeReservada` to
 `0` and the Zod schema defaults them, so initializing them would write two fields
-nobody reads. The emulator suite pins the exact key set, so a later "while we're
-here" addition has to justify itself.
+nobody reads. The emulator suite pins the exact key set on create **and** pins
+that an existing doc's denorms survive untouched, so a later "while we're here"
+addition has to justify itself.
 
 **No `historicoEstoque` row is written** for that stamp: no quantity moved, and
 the ledger must stay summable (see 4).
@@ -310,10 +334,10 @@ in `planMovimentacao` and follows an entrada/saída `increment` with
 `FieldValue.maximum(0)` on the same doc. Those floors are necessary and not
 sufficient — they only bind writes that go through them.
 
-**Auditing what is already stored** is
-`tools/migrations/src/2026-08-estoque-reservada-negativa/` — read-only, no `--apply`,
-and it attributes each hit to a writer via its `historicoEstoque`. Per root rule 8 the
-production run is a human step, tracked in its own issue.
+**Auditing what is already stored** is a separate read-only pass — no `--apply` — that
+attributes each hit to a writer via its `historicoEstoque`. It lands as
+`tools/migrations/src/2026-08-estoque-reservada-negativa/` (#936), and per root rule 8
+the production run itself is a human step tracked in its own issue.
 
 ## Consequences
 

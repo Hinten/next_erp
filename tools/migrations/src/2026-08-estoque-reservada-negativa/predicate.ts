@@ -32,6 +32,16 @@ export interface HistoricoResumo {
   /** Display label only — never computed from (ADR 0014 §4). Carried for forensics. */
   tipo: string | null | undefined;
   motivo: string | null | undefined;
+  /**
+   * The two fields that actually NAME the writer, which is this audit's whole
+   * job: `pedidoNumero` ties the row to an order, so the sale or return that
+   * moved the reservation is findable; `usuarioOuterRef` is written on manual
+   * movements only, so its presence separates "a human moved this in the app"
+   * from "a trigger did" — a distinction the `kind` classification cannot make.
+   * Both are `null` on a legacy row, which is itself informative.
+   */
+  pedidoNumero: string | null | undefined;
+  usuarioOuterRef: string | null | undefined;
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   type MlSellerShippingSchedule,
   type MlShipment,
   type MlShipmentInvoice,
+  type MlShipmentOrder,
   type MlShipmentPayment,
   type MlShipmentSla,
   type MlSiteCategory,
@@ -60,6 +61,7 @@ import {
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentInvoiceSchema,
+  mlShipmentOrdersSchema,
   mlShipmentPaymentsSchema,
   mlShipmentSchema,
   mlShipmentSlaSchema,
@@ -163,6 +165,18 @@ export interface MercadoLivreApi {
    * envelope (order import, Step 9).
    */
   getShipmentPayments(shipmentId: number | string): Promise<MlShipmentPayment[]>;
+  /**
+   * `GET /shipments/{shipmentId}/orders` — the orders covered by a shipment and,
+   * per (order, listing, variation) row, the units the buyer requested.
+   * **Returns a bare JSON array**, not a `results` envelope, and requires the
+   * `X-New-Domain: true` header.
+   *
+   * Feeds the shipment↔pedido item cross-check (`applyFreteStep`, #669); see
+   * `mlShipmentOrderSchema` for why this resource rather than the legacy
+   * `/shipments/{id}/items`. A documented `204 No Content` parses to `[]`, which
+   * callers must read as "ML told us nothing", NOT as "the shipment is empty".
+   */
+  getShipmentOrders(shipmentId: number | string): Promise<MlShipmentOrder[]>;
   /** `GET /shipments/{shipmentId}/sla` — the dispatch deadline for a shipment (order import, Step 9). */
   getShipmentSla(shipmentId: number | string): Promise<MlShipmentSla>;
   /**
@@ -569,6 +583,11 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getShipment: (shipmentId) => request('GET', `/shipments/${shipmentId}`, mlShipmentSchema),
     getShipmentPayments: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema),
+    getShipmentOrders: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}/orders`, mlShipmentOrdersSchema, {
+        // Mandatory on this resource per the ML docs — without it the call 404s.
+        headers: { 'X-New-Domain': 'true' },
+      }),
     getShipmentSla: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/sla`, mlShipmentSlaSchema),
     sendShipmentInvoiceData,

@@ -24,7 +24,6 @@ import {
   type EstadoPublicacaoMl,
   INTEGRACAO_TIPO,
   type ProdutoMercadoLivreLink,
-  estadoPublicacaoMlSchema,
 } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -37,6 +36,7 @@ import {
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { estadoLabel, parseEstado, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
 
 /**
  * The produto editor's **Mercado Livre** tab: one row per registered ML account
@@ -77,7 +77,7 @@ const LISTING_TYPES = [
  */
 const MAX_CONTAS = 50;
 
-export function MercadoLivreManager({
+export function MercadoLivreEditor({
   produtoId,
   db,
   disabled,
@@ -365,25 +365,6 @@ export function MercadoLivreManager({
   );
 }
 
-/**
- * The old wire shape stores the account pointer as `documents/integracao/<id>`
- * (`pathWithDocuments` — the form the new publish flow writes too); the bare
- * `integracao/<id>` form is tolerated on read only, defensively. Same matcher
- * as the server-side `publishProduto`.
- */
-function refMatchesIntegracao(ref: string | null | undefined, integracaoId: string): boolean {
-  if (!ref) return false;
-  return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
-}
-
-/** Soft-parse the short estado code (Flutter may hold unknown values). */
-function parseEstado(value: string | null | undefined): EstadoPublicacaoMl | null {
-  const parsed = estadoPublicacaoMlSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
-}
-
-/** Human label for an estado code coming back from the publish response. */
-function estadoLabel(estado: string): string {
-  const parsed = parseEstado(estado);
-  return parsed ? ESTADO_PUBLICACAO_ML_LABELS[parsed] : estado;
-}
+// `refMatchesIntegracao`, `parseEstado` and `estadoLabel` now live in
+// `@/lib/mercado-livre/listingLinks` — the listing editor, the status strip and
+// their unit tests all read the same implementation.

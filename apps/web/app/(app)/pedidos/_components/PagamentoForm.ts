@@ -1,3 +1,4 @@
+import { normalizeTelefone } from '@delfrance/core/phone';
 import { roundReais } from '@delfrance/core/money';
 import {
   FORMA_PAGAMENTO,
@@ -276,6 +277,7 @@ function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<s
 function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
   const numeroStr = form.numeroCheque.trim();
   const numero = Number(numeroStr);
+  const telefoneStr = trimToNull(form.telefone);
   return {
     ...asRecord(base?.cheque),
     banco: trimToNull(form.banco),
@@ -284,7 +286,7 @@ function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<s
     numero: numeroStr === '' || !Number.isFinite(numero) ? null : Math.trunc(numero),
     titular: trimToNull(form.titular),
     cpf_cnpj: trimToNull(form.cpfCnpj),
-    telefone: trimToNull(form.telefone),
+    telefone: telefoneStr ? normalizeTelefone(telefoneStr) : null,
     bomPara: form.bomPara,
   };
 }

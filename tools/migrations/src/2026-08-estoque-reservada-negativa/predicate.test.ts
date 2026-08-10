@@ -25,6 +25,8 @@ function v2(
     timestamp: 1_700_000_000_000,
     tipo: 'saida',
     motivo: null,
+    pedidoNumero: null,
+    usuarioOuterRef: null,
     ...over,
   };
 }
@@ -37,6 +39,9 @@ function v1(over: Partial<HistoricoResumo> = {}): HistoricoResumo {
     timestamp: 1_699_000_000_000,
     tipo: null,
     motivo: 'ajuste',
+    // The structured-audit block is absent on a Flutter row, not null.
+    pedidoNumero: undefined,
+    usuarioOuterRef: undefined,
     ...over,
   };
 }

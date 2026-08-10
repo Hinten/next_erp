@@ -27,6 +27,19 @@ const PERM_ESTOQUE_DELETE = 1n << 66n;
  */
 export const estoqueProdutoSchema = z
   .object({
+    /**
+     * The owning produto's id, denormalized so a **collection-group** query can
+     * key on it — that is its only purpose, and its only consumer is the kit
+     * component join (`compEstoques` in the ML sweep's `estoquePlan.ts`, which
+     * matches `parentId equalAny <a kit's componentesKitKeys>`).
+     *
+     * ⚠️ Anything reading a doc it already located by path must take the owner
+     * from the path, never from here: a subcollection probe's projection carries
+     * no `parentId`, and treating its absence as data is #932. On a KIT's own
+     * estoque doc the field has no reader at all — a kit can never be a
+     * component of another kit (#239) — and is written purely for uniformity
+     * (ADR 0014 §2).
+     */
     parentId: z.string().nullable().default(null),
     depositoOuterRef: outerRefSchema,
     quantidade: z.number().default(0),
