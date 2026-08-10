@@ -208,6 +208,48 @@ overload breaks nothing today.
 documents use microseconds (ADR 0011's named trap) — a stamp builder copied
 across is wrong by 1000×.
 
+### 7. A negative reservation can never increase availability
+
+`estoqueDisponivel` floors the reservation at zero **before** subtracting:
+
+```ts
+return e.quantidade - Math.max(0, e.quantidadeReservada);
+```
+
+Without that floor a negative reservation *adds* to availability — `8 − (−2) = 10`
+— so one bad value invents two units that do not exist. This is the worst failure
+direction in this whole design: every other inaccuracy here makes the sweep send a
+number redundantly, while this one makes Mercado Livre **sell stock the store does
+not have**. The same helper feeds the pedido form's availability check and the
+print assembler, so the invention spreads well beyond the sweep.
+
+The floor belongs in `estoqueDisponivel` because that helper is the single
+derivation of `disponivel` in the repo — kits included, since `kitEstoqueDisponivel`
+consumes its output rather than re-deriving. Fixing it anywhere else would leave a
+consumer behind.
+
+⚠️ **`quantidadeReservada: z.number().min(0)` in the schema is not the guarantee.**
+It validates a write through a Zod converter, and three live paths reach the
+availability calculation around it:
+
+- the ML sweep consumes **raw** pipeline rows, never Zod-parsed;
+- the sweep's window-start reconstruction *synthesizes*
+  `quantidadeReservada − ΣmovimentoReservada`, arithmetic that can land below zero
+  on its own whenever the stored counter was floored but the ledger recorded the
+  unclamped delta;
+- the live Flutter app and every Admin SDK writer bypass this schema entirely
+  (root `CLAUDE.md` rule 7 — assume a second writer).
+
+The write paths do floor: `aplicarMovimento` clamps a balanço's counted reservation
+in `planMovimentacao` and follows an entrada/saída `increment` with
+`FieldValue.maximum(0)` on the same doc. Those floors are necessary and not
+sufficient — they only bind writes that go through them.
+
+📌 **Open follow-up:** nothing yet *audits* production for a stored negative
+`quantidadeReservada`. The floor above makes such a row harmless to availability,
+but it would still be a real data defect worth finding and explaining. A tracking
+issue for that audit is to be opened after this stack merges.
+
 ## Consequences
 
 **Easier.** The window filter loses its correlated component aggregate and one
