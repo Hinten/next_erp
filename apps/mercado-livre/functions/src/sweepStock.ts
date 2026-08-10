@@ -79,9 +79,14 @@ async function runAndLog(mode: StockSweepMode): Promise<void> {
     contas: result.contas.length,
     enqueued: result.contas.reduce((sum, c) => sum + c.enqueued, 0),
     skipped: result.contas.reduce((sum, c) => sum + c.skipped, 0),
-    // A SUBSET of `skipped`: the families whose published number did not change.
-    // Read against `enqueued` — that ratio is the whole point of the ledger
-    // comparison, and without this line it is not observable (#695).
+    // A SUBSET of `skipped`: the families the SEND POLICY rejected. Read against
+    // `enqueued` — that ratio is the whole point of the ledger comparison, and
+    // without this line it is not observable (#695).
+    // ⚠️ On the INCREMENTAL tier it is not purely "nothing changed": the policy
+    // also rejects a family that DID change while staying above
+    // `limiarEstoqueAlto()` on both sides (the freshness arm), and that lands
+    // here too. The daily and monthly passes carry no such arm, so only THEIR
+    // `inalterados` reads as "nothing moved".
     inalterados: result.contas.reduce((sum, c) => sum + c.inalterados, 0),
     pages: result.contas.reduce((sum, c) => sum + c.pages, 0),
     truncated: result.contas.filter((c) => c.truncated).length,
