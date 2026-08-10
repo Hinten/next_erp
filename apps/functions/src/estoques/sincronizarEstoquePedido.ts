@@ -594,19 +594,33 @@ async function aplicarPlano(
  * this costs **zero extra reads**.
  *
  * Race discipline: ADR 0011 **tier 0** — nothing to compare, so nothing to lose.
- * `maximum` is monotonic (a stale `agoraMs` cannot move the stamp backwards),
- * `minimum` is set-if-missing, and `increment(0)` is a get-or-create that
- * initializes a missing counter to 0 while leaving an existing number **and any
- * concurrent movement** untouched. Same transform idiom as `movimentoEstoqueWrite`
- * in `aplicarEstoque.ts`.
+ * `maximum` is monotonic: a stale `agoraMs` cannot move the stamp backwards, and
+ * a concurrent movement's own bump always wins if it is later.
  *
- * ⚠️ Writes NO `historicoEstoque` row: no quantity moved, and a row carrying a
- * zero/absent `movimento` would dilute the very sums the ledger exists to answer.
+ * ---- The payload is exactly three fields, and the other two are NOT decoration.
+ *
+ * `ultimaModificacao` is the signal. `parentId` and `depositoOuterRef` are what
+ * make the signal *reachable*, and dropping either silently turns this whole
+ * function into a no-op for the case it exists to serve — a kit whose estoque doc
+ * does not exist yet, which is the norm precisely because a kit holds no stock:
+ *
+ * - **`depositoOuterRef`** — the sweep reaches an estoque through
+ *   `subcollection('estoques').where(depositoOuterRef == …)` (`ownEstoque` /
+ *   `ownEstoqueMax` in `estoquePlan.ts`). A doc created without it matches no
+ *   depósito, so the window filter never sees the stamp at all.
+ * - **`parentId`** — the ledger pre-pass keys `(produto, depósito)` off this
+ *   denorm; without it `desfazerMovimento` cannot key the row and reads it as
+ *   *unchanged*, which is the one verdict a just-sold kit must never get.
+ *
+ * Nothing else is written. In particular **`dataCriacao` is deliberately absent**:
+ * a stamp is not a creation event and has no business authoring one, and no
+ * consumer of this doc needs it. The quantity counters are absent too — the sweep
+ * coalesces a missing `quantidade`/`quantidadeReservada` to `0` and the Zod schema
+ * defaults them, so initializing them here would write two fields nobody reads.
+ *
+ * ⚠️ Writes NO `historicoEstoque` row: no quantity moved, and a row carrying an
+ * absent `movimento` would dilute the very sums the ledger exists to answer.
  * ⚠️ `ultimaModificacao` is **milliseconds** on this doc (ADR 0011's unit trap).
- *
- * Creating the doc when absent is required, not incidental: the sweep's window
- * filter coalesces a missing estoque to 0, so an unstamped kit is invisible to
- * every positive window no matter what else is true.
  *
  * Exported for the unit tests.
  */
@@ -621,12 +635,11 @@ export function carimbarKitsVendidos(
     tx.set(
       estoqueCollection.docRef(db, { produtoId }, makeEstoqueUid(produtoId, depositoId)),
       {
+        // The two reachability keys — see the docblock; neither is optional.
         parentId: produtoId,
         depositoOuterRef: `documents/depositos/${depositoId}`,
-        quantidade: FieldValue.increment(0),
-        quantidadeReservada: FieldValue.increment(0),
+        // The signal itself.
         ultimaModificacao: FieldValue.maximum(agoraMs),
-        dataCriacao: FieldValue.minimum(agoraMs),
       },
       { merge: true },
     );
