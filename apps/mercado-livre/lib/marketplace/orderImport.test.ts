@@ -1444,9 +1444,10 @@ describe('importPedidoMercadoLivre — conferência de itens do envio (#669)', (
   });
 
   it('skips the check entirely when hasUserInteraction is true — no ML call at all', async () => {
-    // The operator's override, restored by the `apps/web` stamp. It is read from
-    // the PRE-transaction copy, which is only sound because the flag is
-    // monotonic (null → true, never back) — see the gate's docblock.
+    // The operator's override, restored by the `apps/web` stamp. Reading it from
+    // the PRE-transaction copy to skip the CALL is sound only because the flag is
+    // monotonic (null → true, never back) — see the gate's docblock, and the
+    // race test below for the direction that argument does NOT cover.
     const db = new FakeDb();
     seedConta(db);
     seedPedidoConferivel(db, {
@@ -1473,6 +1474,69 @@ describe('importPedidoMercadoLivre — conferência de itens do envio (#669)', (
     const written = db.docs('pedidos').get('pedido-1')!;
     expect(written.estado).toBe('iniciado');
     expect(written.valorCobrado).toBe(720); // 7 × 100 + frete 20 — the pre-#669 behaviour
+  });
+
+  it('honours an override set DURING the ML round-trips, not the stale pre-read', async () => {
+    // The race the pre-tx gate cannot see. An operator repairs the pedido —
+    // stamping `hasUserInteraction` — while this step is still fetching from ML,
+    // so the pre-read says `false` and the fetch happens, but the tx-fresh
+    // document says `true`. Honouring the stale value would flip the very pedido
+    // they just fixed to `error`. The verdict is re-derived inside the
+    // transaction (root CLAUDE.md rule 7).
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, {
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB-ADICIONADO-PELO-OPERADOR',
+            precoDeVenda: 100,
+            quantidade: 3,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+    // `getShipmentOrders` is awaited in exactly the window between the pre-read
+    // and `runTransaction`, so it is the precise injection point for the save.
+    const api = apiConferencia(async () => {
+      db.seed('pedidos', 'pedido-1', {
+        ...db.docs('pedidos').get('pedido-1')!,
+        hasUserInteraction: true,
+      });
+      return [linhaML()]; // divergent — would block if the override were missed
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(api.getShipmentOrders).toHaveBeenCalled(); // the stale read did fetch
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.estado).toBe('iniciado'); // …but the fresh read waived the check
+    expect(written.valorCobrado).toBe(320); // 3 × 100 + frete 20
+    expect(db.docs(INCIDENTE_PATH).has(INCIDENTE_ID)).toBe(false);
+  });
+
+  it('does NOT auto-release an error pedido once the override is set', async () => {
+    // A waived conference yields `indeterminado`, never `ok`, so the recovery
+    // branch cannot fire. Deliberate: with the check skipped there is no
+    // evidence the divergence is gone, so releasing the block stays the
+    // operator's call — which is what the incidente text tells them to do.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, { estado: 'error', hasUserInteraction: true });
+    db.seed(INCIDENTE_PATH, INCIDENTE_ID, {
+      subtipo: 'ml-envio-itens-divergentes',
+      resolucao: null,
+      timestamp: NOW_US - 1000,
+    });
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('error');
+    expect(db.docs(INCIDENTE_PATH).get(INCIDENTE_ID)!.resolucao).toBeNull();
   });
 
   it('falls through to the pre-#669 behaviour on an empty (204) response', async () => {

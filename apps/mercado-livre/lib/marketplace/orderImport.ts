@@ -998,11 +998,13 @@ async function applyFreteStep(args: {
   // transaction simply falls through to the behaviour it had before this check
   // existed. Do NOT "tighten" this into a guard.
   //
-  // `hasUserInteraction` is safe to read from the stale copy specifically
-  // because it is MONOTONIC — `null → true`, and nothing ever writes it back —
-  // so a pre-read `true` guarantees the tx-fresh value is `true` too, i.e. the
-  // conference would be skipped anyway. (Asserted by a test, so a future "clear
-  // the flag" path can't silently invalidate this.)
+  // `hasUserInteraction` appears here for ONE reason: it is MONOTONIC (`null →
+  // true`, nothing ever writes it back), so a pre-read `true` guarantees the
+  // tx-fresh value is `true` too and the call would be wasted. That argument
+  // runs in one direction only — a pre-read `false` says nothing about the
+  // tx-fresh value, because an operator can save the pedido during the ML
+  // round-trips above. The override is therefore RE-CHECKED inside the
+  // transaction; this gate only decides whether to spend the call.
   const podeConferir =
     pedido.enderecoFiscalOuterRef != null &&
     pedido.hasUserInteraction !== true &&
@@ -1152,20 +1154,40 @@ async function applyFreteStep(args: {
     // before the check existed. Same for `indeterminado`, which the conference
     // returns when ML sent nothing (a documented 204) or sent a row we cannot key
     // or count — refusing to judge beats judging on data we cannot read.
+    //
+    // The operator override is re-derived HERE, from the tx-fresh document, not
+    // taken from the pre-read that decided whether to fetch (root `CLAUDE.md`
+    // rule 7). A human can save the pedido — stamping `hasUserInteraction` —
+    // during the ML round-trips this step makes before opening the transaction,
+    // and honouring the stale `false` would flip the very pedido they just
+    // repaired to `error`.
     const conferencia: ResultadoConferencia =
       linhasDoEnvio == null
         ? { tipo: 'indeterminado', motivo: 'conferência não solicitada nesta execução' }
-        : conferirItensDoEnvio({
-            linhasDoEnvio,
-            itensDoPedido,
-            sellerUserId: contaBag.sellerUserId,
-          });
+        : freshPedido.hasUserInteraction === true
+          ? { tipo: 'indeterminado', motivo: 'pedido editado por um humano (override do operador)' }
+          : conferirItensDoEnvio({
+              linhasDoEnvio,
+              itensDoPedido,
+              sellerUserId: contaBag.sellerUserId,
+            });
 
     if (conferencia.tipo === 'divergente') {
       veredito.divergencia = { conferencia, shipmentId: shippingInstance.id };
       if (conferencia.bloqueia) {
-        // The pedido holds units ML is not selling. Park it in `error` and write
-        // NOTHING else — no `freteInicial`, no `valorCobrado`.
+        // The pedido holds units ML is not selling. Park it in `error` and touch
+        // no other field — this patch does NOT overwrite `freteInicial` or
+        // `valorCobrado`, and deliberately does not clear whatever an earlier
+        // successful conference left there:
+        //  - a stale `valorCobrado` cannot drive anything, because every
+        //    automatic advance runs through `podeAvancarParaPago`, which
+        //    requires `emProcessamento` — including the independent payments
+        //    path (`orderPaymentImport.ts`). An `error` pedido is excluded
+        //    everywhere, so the number is inert until a human acts on it;
+        //  - clearing `freteInicial` would destroy real data — the tracking
+        //    number, `prazoDespacho` and the ML shipment mirror that the
+        //    etiqueta flow and `historicoFtIni` depend on. Losing that to
+        //    signal a QUANTITY problem is a bad trade.
         //
         // This is the one place the port deliberately goes FURTHER than legacy,
         // which only threw (tasks.dart:616) and left the document untouched. A
@@ -1219,6 +1241,11 @@ async function applyFreteStep(args: {
     // it needs no new field to remember the old one. Gated on the OPEN incidente
     // at our own deterministic id, so an `error` set by an operator or another
     // flow is never silently cleared and the restore fires at most once.
+    //
+    // Note this cannot fire once the operator override is set: a waived check
+    // yields `indeterminado`, never `ok`. That is deliberate — with the
+    // conference skipped we have no evidence the divergence is gone, so
+    // releasing the block stays the human's call. The incidente text says so.
     if (conferencia.tipo === 'ok' && incidenteAberto) {
       tx.update(
         incidenteRef,

@@ -261,6 +261,17 @@ describe('descreverDivergencia', () => {
     expect(descreverDivergencia(naoBloqueante, 777)).toContain('continua liberado');
   });
 
+  it('tells the operator to change the estado, not just to save', () => {
+    // Saving stamps `hasUserInteraction`, which WAIVES the conference on the next
+    // import — it does not take the pedido out of `error`. An instruction to
+    // "save to release it" would leave the pedido stuck and the operator puzzled.
+    const texto = descreverDivergencia(
+      divergente(conferir([linha()], [item({ quantidade: 2 })])),
+      777,
+    );
+    expect(texto).toContain('mude o estado do pedido');
+  });
+
   it('reports unidentifiable lines by count', () => {
     const r = divergente(conferir([linha()], [item(), item({ mktplaceId: null, ordem: 2 })]));
     expect(descreverDivergencia(r, 777)).toContain('1 item(ns) do pedido sem identificação');

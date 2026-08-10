@@ -263,7 +263,8 @@ export function descreverDivergencia(
     `${partes.join('; ')}. ` +
     (divergencia.bloqueia
       ? 'O pedido foi colocado em erro para não ser despachado com o conteúdo errado. ' +
-        'Corrija os itens e salve o pedido para liberá-lo.'
+        'Corrija os itens e mude o estado do pedido para liberá-lo — salvar o pedido ' +
+        'dispensa esta conferência, mas não tira o pedido do estado de erro.'
       : 'O pedido continua liberado; o total cobrado pode estar subestimado até que os ' +
         'itens restantes sejam importados.')
   );
