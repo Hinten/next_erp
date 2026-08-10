@@ -60,36 +60,39 @@ export function shipmentLogisticType(shipment: MlShipment): string | null {
 }
 
 /**
- * What the shipment costs, feeding `freteInicial.custoCalculado`.
+ * The legacy top-level `base_cost`, feeding `freteInicial.custoCalculado`.
  *
- * ⚠️ **This is a semantic shift, not a rename.** ML's own cost vocabulary
- * (docs, *Custos de envio*) defines the three sibling fields as:
+ * WARNING: there is deliberately NO substitute when it is absent, and
+ * `lead_time.cost` is emphatically not one. The two captured ML shipment bodies
+ * in `.old/` settle it — `base_cost` is a DISTINCT quantity, not a discount
+ * variant of the others:
  *
- * | field | ML's definition |
- * | --- | --- |
- * | `base_cost` | "Custo base do envio" |
- * | `cost` | "Custo total do envio **aplicando descontos**" |
- * | `list_cost` | "Custo real do envio **antes de aplicar descontos**" |
+ * | captured shipment | `base_cost` | `cost` | `list_cost` |
+ * | --- | --- | --- | --- |
+ * | free shipping (`models.dart:3128,3150,3154`) | 38.90 | **0** | 19.45 |
+ * | paid, NO discount (`models.dart:5122,5142,5147`) | 16.20 | 8.91 | 8.91 |
  *
- * The legacy body's top-level `base_cost` has no counterpart in the
- * `x-format-new` shape, so this falls back to `lead_time.cost` — which is the
- * POST-discount figure, where `base_cost` was the pre-discount base. For a
- * shipment carrying no discount the two agree; where a discount applies, this
- * now reports what was actually charged rather than the list basis. That is
- * arguably the better number for a cost field, but it IS a change and a reader
- * comparing historical `custoCalculado` values across the migration should know
- * it.
+ * The second row is decisive: `cost === list_cost`, so nothing was discounted,
+ * and `base_cost` is still nearly double — reading `cost` would understate that
+ * shipment's cost by 45%. The first row is worse: free shipping is a 100%
+ * discount, so `cost` is a genuine `0`, which `??` does NOT treat as missing. It
+ * would flow through `mergeFreteInicial` and overwrite a correct stored value,
+ * then win the `custoCalculado ?? custoFinal` precedence in
+ * `derivePedidoFreteTotals` — wiping the freight cost from the pedido on exactly
+ * the orders where it is largest.
  *
- * `null` — never a fabricated `0` — when neither is present, so a caller can
- * tell "ML did not say" from "ML said zero".
+ * So when the `x-format-new` body drops `base_cost`, this returns `null`, which
+ * means "ML did not say": the merge preserves whatever is stored and the totals
+ * fall through to `custoFinal` (`list_cost`). Losing the field is acceptable;
+ * silently replacing it with a different quantity is not.
  *
- * The authoritative source for what the SELLER pays is `GET /shipments/{id}/costs`
- * (`senders[].cost`), which the plugin does not implement; legacy did
- * (`api.dart:1645-1650`). Adding it would remove this guess entirely — tracked
- * as a follow-up on #957.
+ * The authoritative source for what the SELLER actually pays is
+ * `GET /shipments/{id}/costs` (`senders[].cost`), which this plugin does not
+ * implement and legacy did (`api.dart:1645-1650`). That is the real fix, once
+ * someone can verify it against a live shipment — tracked on #957.
  */
 export function shipmentBaseCost(shipment: MlShipment): number | null {
-  return shipment.lead_time?.cost ?? legacy(shipment).base_cost ?? null;
+  return legacy(shipment).base_cost ?? null;
 }
 
 /** The buyer's shipping address: `destination.shipping_address` (new) or `receiver_address` (legacy). */

@@ -444,13 +444,17 @@ const mlShipmentEstimatedDateSchema = z
  * `resolvePrazoDespacho` reads the SLA resource first anyway. Typing a field ML
  * has stopped filling would only invite a reader that silently gets null.
  *
- * `cost` is what the sender is charged and is the nearest analogue of the legacy
- * top-level `base_cost`, which the new body does not carry. `GET /shipments/{id}/costs`
- * is the authoritative source if this ever needs to be exact — see #957.
+ * ⚠️ `cost` is deliberately NOT typed here, even though the payload carries it.
+ * It looks like a replacement for the legacy top-level `base_cost` and is not
+ * one: on the free-shipping shipment captured at `.old/…/models.dart:3150` it is
+ * `0` (a 100% discount) while `base_cost` is 38.90, and on the paid one at
+ * `:5142` it equals `list_cost` with no discount at all while `base_cost` is
+ * nearly double. Typing it invites exactly the substitution that would wipe
+ * `custoCalculado` — see `shipmentBaseCost` for the full autopsy (#957). It
+ * still rides through `.passthrough()` for anyone who needs it knowingly.
  */
 export const mlShipmentLeadTimeSchema = z
   .object({
-    cost: z.number().nullable().optional(),
     list_cost: z.number().nullable().optional(),
     estimated_delivery_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
     estimated_delivery_time: mlShipmentEstimatedDateSchema.nullable().optional(),

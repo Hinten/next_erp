@@ -346,8 +346,10 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     expect(shipment.status).toBe('ready_to_ship');
     expect(shipment.substatus).toBe('ready_to_print');
     expect(shipment.logistic?.type).toBe('cross_docking');
-    expect(shipment.lead_time?.cost).toBe(8.91);
     expect(shipment.lead_time?.list_cost).toBe(12.5);
+    // `cost` rides the passthrough but is deliberately UNtyped: it is not the
+    // legacy `base_cost` and must never be read as one (#957).
+    expect((shipment.lead_time as Record<string, unknown>).cost).toBe(8.91);
     expect(shipment.lead_time?.estimated_delivery_time?.date).toBe('2022-08-24T00:00:00.000-03:00');
     expect(shipment.destination?.shipping_address?.zip_code).toBe('01310100');
     const [url, init] = fetchMock.mock.calls[0]!;
