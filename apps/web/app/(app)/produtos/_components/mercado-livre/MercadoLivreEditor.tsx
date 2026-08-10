@@ -18,25 +18,22 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
-import {
-  ESTADO_PUBLICACAO_ML,
-  ESTADO_PUBLICACAO_ML_LABELS,
-  type EstadoPublicacaoMl,
-  INTEGRACAO_TIPO,
-  type ProdutoMercadoLivreLink,
-} from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
-import { useSnapshot } from '@delfrance/data/hooks';
+import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
+import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivreLinkCollection';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
-import { estadoLabel, parseEstado, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
+import { estadoLabel, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
+import { ListingDetails } from './ListingDetails';
+import { ListingStatusStrip } from './ListingStatusStrip';
 
 /**
  * The produto editor's **Mercado Livre** tab: one row per registered ML account
@@ -48,19 +45,6 @@ import { estadoLabel, parseEstado, refMatchesIntegracao } from '@/lib/mercado-li
  * Self-contained like the Estoque tab: publishing is decoupled from the form's
  * save — the backend reads the SAVED produto, so unsaved edits don't ride along.
  */
-
-/** Badge color per old-shape estado code. */
-const ESTADO_COLORS: Record<EstadoPublicacaoMl, string> = {
-  r: 'gray',
-  a: 'blue',
-  ep: 'blue',
-  v: 'yellow',
-  p: 'green',
-  pa: 'yellow',
-  c: 'gray',
-  E: 'red',
-  am: 'orange',
-};
 
 /**
  * MLB listing types offered on a FIRST publish (a re-publish reuses the link
@@ -108,6 +92,13 @@ export function MercadoLivreEditor({
   );
   const linksSnap = useSnapshot(linksQuery);
   const links = useMemo(() => linksSnap.data ?? [], [linksSnap.data]);
+
+  // Listing pictures are DERIVED from the produto's fotos at publish time — the
+  // link doc has no picture field — so the count is what tells the operator, up
+  // front, whether the publish will be blocked for "produto sem fotos" or will
+  // silently drop everything past the 10th.
+  const produtoSnap = useDocSnapshot(produtoCollection.docRef(db, {}, produtoId));
+  const produtoFotoCount = produtoSnap.data?.data.fotos?.length ?? 0;
 
   const [publishing, setPublishing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
@@ -261,59 +252,18 @@ export function MercadoLivreEditor({
                 )}
               </Group>
 
-              {contaLinks.map((l) => {
-                const d: ProdutoMercadoLivreLink = l.data;
-                const estado = parseEstado(d.estado);
-                const persistedErrors = (d.errors ?? []).filter(
-                  (e): e is string => typeof e === 'string' && e.length > 0,
-                );
-                const latched = estado === ESTADO_PUBLICACAO_ML.erro && d.id != null;
-
-                return (
-                  <Stack key={l.id} gap="xs" data-testid={`ml-anuncio-${l.id}`}>
-                    <Group justify="space-between">
-                      <Text size="sm">
-                        {d.id != null ? `Anúncio ${d.id}` : 'Rascunho — ainda não publicado'}
-                      </Text>
-                      <Badge color={estado ? ESTADO_COLORS[estado] : 'gray'}>
-                        {estado ? ESTADO_PUBLICACAO_ML_LABELS[estado] : 'Desconhecido'}
-                      </Badge>
-                    </Group>
-
-                    {persistedErrors.length > 0 && (
-                      // `errors` is written by the publish flow, the price sync AND
-                      // the stock sender, so the title must not blame any one of
-                      // them — it used to read "Última publicação falhou" and
-                      // reported stock failures as publish failures (#781).
-                      <Alert color="red" variant="light" title="Última falha do Mercado Livre">
-                        <List size="sm">
-                          {persistedErrors.map((e) => (
-                            <List.Item key={e}>{e}</List.Item>
-                          ))}
-                        </List>
-                      </Alert>
-                    )}
-
-                    {latched && (
-                      <Group gap="sm" align="center">
-                        <Button
-                          type="button"
-                          variant="default"
-                          size="xs"
-                          onClick={() => handleReverificar(conta.id, l.id)}
-                          loading={rechecking === l.id}
-                          disabled={disabled || !client || !canPublish || rechecking !== null}
-                        >
-                          Reverificar anúncio
-                        </Button>
-                        <Text size="xs" c="dimmed">
-                          O envio de estoque está parado para este anúncio.
-                        </Text>
-                      </Group>
-                    )}
-                  </Stack>
-                );
-              })}
+              {contaLinks.map((l) => (
+                <Stack key={l.id} gap="sm" data-testid={`ml-anuncio-${l.id}`}>
+                  <ListingStatusStrip
+                    link={l.data}
+                    canWrite={Boolean(client) && canPublish}
+                    disabled={Boolean(disabled) || rechecking !== null}
+                    rechecking={rechecking === l.id}
+                    onReverificar={() => handleReverificar(conta.id, l.id)}
+                  />
+                  <ListingDetails link={l.data} produtoFotoCount={produtoFotoCount} />
+                </Stack>
+              ))}
 
               {issues.length > 0 && (
                 <Alert color="red" variant="light" title="Publicação bloqueada">
