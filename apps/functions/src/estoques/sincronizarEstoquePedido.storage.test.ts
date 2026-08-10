@@ -285,7 +285,16 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     await aplicarConvergindo(db, pedidoId);
     expect((await lerEstoque(db, compA, depositoId)).reservada).toBe(6); // 3 kits × 2
     expect((await lerEstoque(db, compB, depositoId)).exists).toBe(false); // not limited
-    expect((await lerEstoque(db, kitId, depositoId)).exists).toBe(false); // kit untouched
+    // The kit's QUANTITIES still move nothing — that is what "expands into
+    // components" means. Its estoque doc now exists all the same, because the
+    // sale is stamped there so the marketplace sweep can see it (ADR 0014). The
+    // stamp writes no counters at all, so these read 0 by absence (`lerEstoque`
+    // coalesces) rather than by being initialized — either way, nothing moved.
+    expect(await lerEstoque(db, kitId, depositoId)).toMatchObject({
+      exists: true,
+      quantidade: 0,
+      reservada: 0,
+    });
   });
 
   it('entrada pedido adds stock and reverts on cancellation', async () => {
@@ -528,5 +537,138 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect(incidentes).toHaveLength(1);
     expect(incidentes[0]).toMatchObject({ tipo: 'o', subtipo: 'estoque-drift' });
     expect(incidentes[0]!.motivoDoIncidente).toContain(makeEstoqueUid(produtoId, depositoId));
+  });
+
+  /* ------------------ the kit stamp (ADR 0014 / #695) --------------------- */
+
+  /** Seed a kit sold as an order line: kit → 1× component, only the kit on the pedido. */
+  async function seedKit(db: Firestore, over: { ehKitVirtual?: boolean } = {}) {
+    const s = randomUUID().replace(/-/g, '').slice(0, 8);
+    const kitId = `kit${s}`;
+    const compId = `comp${s}`;
+    const base = await seed(db, {
+      estado: 'pago',
+      produtos: {
+        [kitId]: {
+          nome: `Kit ${s}`,
+          ehKit: true,
+          ...(over.ehKitVirtual ? { ehKitVirtual: true } : {}),
+          componentesKit: { [compId]: { quantidade: 1, limitarEstoque: true } },
+        },
+        [compId]: { nome: `Comp ${s}`, ehKit: false },
+      },
+      itens: { [kitId]: [{ produtoUid: kitId, quantidade: 2 }] },
+    });
+    return { ...base, kitId, compId };
+  }
+
+  it('stamps the SOLD kit even though its own stock never moves', async () => {
+    const db = getDb();
+    const { depositoId, pedidoId, kitId, compId } = await seedKit(db);
+
+    await aplicarConvergindo(db, pedidoId);
+
+    // The component carries the movement — that is what a kit sale actually does.
+    expect((await lerEstoque(db, compId, depositoId)).reservada).toBe(2);
+
+    // The kit's own doc exists and IS stamped — with EXACTLY three fields.
+    const kitDoc = (await estoqueRef(db, kitId, depositoId).get()).data()!;
+    expect(kitDoc.parentId).toBe(kitId);
+    expect(kitDoc.depositoOuterRef).toBe(`documents/depositos/${depositoId}`);
+    expect(typeof kitDoc.ultimaModificacao).toBe('number');
+    expect(kitDoc.ultimaModificacao).toBeGreaterThan(0);
+
+    // ⚠️ The payload is minimal ON PURPOSE. `parentId` + `depositoOuterRef` are
+    // the only two the sweep needs to REACH this doc (its estoque probe filters
+    // on the depósito, and the ledger pre-pass keys on `parentId`); everything
+    // else would be a field nobody reads. `dataCriacao` in particular: a stamp
+    // is not a creation event. Pinned as an exact key set so a future "while
+    // we're here" addition has to justify itself.
+    expect(Object.keys(kitDoc).sort()).toEqual([
+      'depositoOuterRef',
+      'parentId',
+      'ultimaModificacao',
+    ]);
+
+    // The stamp is NOT a movement: no history row on the kit (the ledger must
+    // stay summable), while the component has its own.
+    expect((await historicos(db, kitId, depositoId)).length).toBe(0);
+    expect((await historicos(db, compId, depositoId)).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('never clobbers a kit estoque that already holds stock', async () => {
+    const db = getDb();
+    const { depositoId, pedidoId, kitId } = await seedKit(db);
+    // A kit may hold real stock of its own (pre-assembled units). The stamp is a
+    // merge that writes no counters, so it has to leave them exactly where they
+    // were — and leave `dataCriacao` alone for the same reason: it is not in the
+    // payload at all.
+    await estoqueRef(db, kitId, depositoId).set({
+      parentId: kitId,
+      depositoOuterRef: `documents/depositos/${depositoId}`,
+      quantidade: 7,
+      quantidadeReservada: 3,
+      ultimaModificacao: 1,
+      dataCriacao: 1,
+    });
+
+    await aplicarConvergindo(db, pedidoId);
+
+    const kitDoc = (await estoqueRef(db, kitId, depositoId).get()).data()!;
+    expect(kitDoc).toMatchObject({ quantidade: 7, quantidadeReservada: 3 });
+    // Stamped forward; `dataCriacao` survives untouched because the stamp never
+    // writes it.
+    expect(kitDoc.ultimaModificacao).toBeGreaterThan(1);
+    expect(kitDoc.dataCriacao).toBe(1);
+  });
+
+  it('stamps a VIRTUAL kit too — virtual changes the upload shape, not the sale', async () => {
+    // A virtual kit is published and sold like any other kit; the marketplace
+    // just resolves its composition from the components we upload instead of us
+    // sending one assembled quantity. So the sale signal is identical. Mercado
+    // Livre declining to send a quantity for one is an ML limitation, not a
+    // reason to withhold the stamp from the channels that do support it.
+    const db = getDb();
+    const { depositoId, pedidoId, kitId } = await seedKit(db, { ehKitVirtual: true });
+
+    await aplicarConvergindo(db, pedidoId);
+
+    const kitDoc = (await estoqueRef(db, kitId, depositoId).get()).data();
+    expect(kitDoc).toBeDefined();
+    expect(kitDoc!.parentId).toBe(kitId);
+    expect(kitDoc!.depositoOuterRef).toBe(`documents/depositos/${depositoId}`);
+    expect(typeof kitDoc!.ultimaModificacao).toBe('number');
+    // Still not a movement: no history row, and no counters written.
+    expect((await historicos(db, kitId, depositoId)).length).toBe(0);
+    expect(Object.keys(kitDoc!).sort()).toEqual([
+      'depositoOuterRef',
+      'parentId',
+      'ultimaModificacao',
+    ]);
+  });
+
+  it('stamps nothing when the plan produced no deltas', async () => {
+    const db = getDb();
+    // `movimentaEstoque: false` + no reservation ⇒ zero deltas ⇒ zero writes.
+    const s = randomUUID().replace(/-/g, '').slice(0, 8);
+    const kitId = `kit${s}`;
+    const compId = `comp${s}`;
+    const { depositoId, pedidoId } = await seed(db, {
+      estado: 'pago',
+      movimentaEstoque: false,
+      movimentaIndisponivelEstoque: false,
+      produtos: {
+        [kitId]: {
+          nome: `Kit ${s}`,
+          ehKit: true,
+          componentesKit: { [compId]: { quantidade: 1, limitarEstoque: true } },
+        },
+        [compId]: { nome: `Comp ${s}`, ehKit: false },
+      },
+      itens: { [kitId]: [{ produtoUid: kitId, quantidade: 2 }] },
+    });
+
+    await sincronizarEstoquePedido(db, pedidoId);
+    expect((await estoqueRef(db, kitId, depositoId).get()).exists).toBe(false);
   });
 });
