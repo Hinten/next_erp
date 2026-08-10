@@ -420,11 +420,12 @@ async function wrapImportRunner<T extends { skipped?: unknown }>(
     return await runner();
   } catch (err) {
     if (err instanceof MercadoLivreHttpError && err.status === 500) {
+      const message = err.message ?? 'ML HTTP 500';
       console.warn('[mercado-livre] import runner hit ML 500 — not retrying', {
         integracaoId,
-        message: err.message,
+        message,
       });
-      return { skipped: 'ML_500', message: err.message } as any;
+      return { skipped: 'ML_500', message };
     }
     throw err;
   }
@@ -435,7 +436,7 @@ export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
-  | { kind: 'malformed-resource'; integracaoId: string } // orders_v2/orders/payments/shipments/claims resource had no parseable id
+  | { kind: 'malformed-resource'; integracaoId: string } // items/orders_v2/orders/payments/shipments/claims resource had no parseable id
   | { kind: 'ml-500'; integracaoId: string; message: string }; // known routine ML 500 (N7) — non-retryable
 
 /**
@@ -508,7 +509,7 @@ export async function processNotificationPayload(
       orderImportRunner(db, integracaoId, resourceId),
     );
     if (result.skipped === 'ML_500') {
-      return { kind: 'ml-500', integracaoId, message: (result as any).message };
+      return { kind: 'ml-500', integracaoId, message: result.message };
     }
     if (result.skipped) {
       console.warn('[mercado-livre] order import skipped', {
@@ -537,7 +538,7 @@ export async function processNotificationPayload(
       paymentImportRunner(db, integracaoId, resourceId),
     );
     if (result.skipped === 'ML_500') {
-      return { kind: 'ml-500', integracaoId, message: (result as any).message };
+      return { kind: 'ml-500', integracaoId, message: result.message };
     }
     if (result.skipped) {
       console.warn('[mercado-livre] payment import skipped', {
@@ -566,7 +567,7 @@ export async function processNotificationPayload(
       shipmentImportRunner(db, integracaoId, resourceId),
     );
     if (result.skipped === 'ML_500') {
-      return { kind: 'ml-500', integracaoId, message: (result as any).message };
+      return { kind: 'ml-500', integracaoId, message: result.message };
     }
     if (result.skipped) {
       console.warn('[mercado-livre] shipment import skipped', {
@@ -595,7 +596,7 @@ export async function processNotificationPayload(
       claimImportRunner(db, integracaoId, resourceId),
     );
     if (result.skipped === 'ML_500') {
-      return { kind: 'ml-500', integracaoId, message: (result as any).message };
+      return { kind: 'ml-500', integracaoId, message: result.message };
     }
     if (result.skipped) {
       console.warn('[mercado-livre] claim import skipped', {
@@ -661,9 +662,12 @@ function pipelineFor(runners: NotificationRunners = {}) {
     toDocFields: (p) => ({ ...p }),
     fromDoc: (parsed) => {
       const doc = parsed as MlNotificationPayload;
-      // Validate that required fields are present; a concurrent delete that
-      // removes channel fields would create a ghost document with undefined
-      // payload fields downstream (N6).
+      // N6 validation: prevent downstream processing of ghost documents. When a
+      // notification doc is concurrently deleted, the sweep's `store.mark()`
+      // merge can recreate it with only {status, tentativas, erro, processedAt}.
+      // This validation throws on rehydration of such corrupted docs, causing
+      // the sweep to park them (with error message as audit trail) rather than
+      // processing them as ghosts with undefined resource/topic fields.
       if (!doc.resource || !doc.topic) {
         throw new Error(
           `Notificação mercado-livre corrompida: campos obrigatórios ausentes (resource: ${doc.resource}, topic: ${doc.topic})`,
