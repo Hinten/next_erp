@@ -1,11 +1,12 @@
 import type { Firestore } from 'firebase-admin/firestore';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreError, MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 
 import {
   MANUAL_PUSH_MAX_ATTEMPTS,
   ManualPushGuardError,
   enviarEstoqueManual,
+  manualPushConcurrency,
   resolverAnchors,
   toPushOutcome,
 } from './estoqueManual';
@@ -105,6 +106,43 @@ function baseDeps(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+/* -------------------------------- tunables --------------------------------- */
+
+describe('manualPushConcurrency', () => {
+  const setEnv = (manual: string | undefined, queue: string) => {
+    if (manual === undefined) delete process.env.MERCADO_LIVRE_STOCK_MANUAL_CONCURRENCY;
+    else process.env.MERCADO_LIVRE_STOCK_MANUAL_CONCURRENCY = manual;
+    process.env.MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES = queue;
+  };
+
+  afterEach(() => {
+    delete process.env.MERCADO_LIVRE_STOCK_MANUAL_CONCURRENCY;
+    delete process.env.MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES;
+  });
+
+  it('defaults to the deployed queue concurrency', () => {
+    setEnv(undefined, '3');
+    expect(manualPushConcurrency()).toBe(3);
+  });
+
+  /**
+   * The clamp is the point: a burst wider than the deployed queue earns a 429,
+   * which stamps `pausedUntilUs` and breaks the unattended SWEEP for the whole
+   * conta. A misconfigured env var must not be able to cause that.
+   */
+  it('CLAMPS above the queue, so a misconfigured env cannot 429 the conta', () => {
+    setEnv('50', '2');
+    expect(manualPushConcurrency()).toBe(2);
+  });
+
+  it('honours a value below the queue, and never returns 0', () => {
+    setEnv('1', '4');
+    expect(manualPushConcurrency()).toBe(1);
+    setEnv('0', '4');
+    expect(manualPushConcurrency()).toBe(1); // 0 would deadlock the pool
+  });
 });
 
 /* ------------------------------- toPushOutcome ------------------------------ */
