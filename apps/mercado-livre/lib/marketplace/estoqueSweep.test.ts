@@ -257,9 +257,10 @@ function member(produtoId: string, over: Partial<FamilyMember> = {}): FamilyMemb
     publicado: true,
     componentesKit: null,
     timestampMs: null,
-    // disponivel = 10 − 2 = 8. `parentId` is what the ledger pre-pass keys on,
-    // and the real projection always selects it.
-    estoque: { parentId: produtoId, quantidade: 10, quantidadeReservada: 2 },
+    // disponivel = 10 − 2 = 8. NO `parentId`: `ownEstoque()` does not project one
+    // and the reconstruction keys the own row by `produtoId` instead (#932).
+    // Hand-writing the field here would re-hide exactly the bug that shipped.
+    estoque: { quantidade: 10, quantidadeReservada: 2 },
     componentEstoques: [],
     ...over,
   };
@@ -946,7 +947,7 @@ describe('runStockSweep — monthly reconciliation', () => {
     // Comfortably high on both sides — the incremental tier would skip it.
     const alto = familyRow({
       anchor: member('PROD-1', {
-        estoque: { parentId: 'PROD-1', quantidade: 500, quantidadeReservada: 0 },
+        estoque: { quantidade: 500, quantidadeReservada: 0 },
       }),
     });
     const { fetchFamilies } = makeFetch([{ rows: [alto], nextAfterAnchorId: null }]);
@@ -1294,7 +1295,7 @@ describe('runStockSweep — persistent continuation', () => {
     // would skip it, so it only survives if the frozen daily policy is honoured.
     const alto = familyRow({
       anchor: member('PROD-1', {
-        estoque: { parentId: 'PROD-1', quantidade: 500, quantidadeReservada: 0 },
+        estoque: { quantidade: 500, quantidadeReservada: 0 },
       }),
     });
     const { fetchFamilies } = makeFetch([{ rows: [alto], nextAfterAnchorId: null }]);

@@ -1,11 +1,11 @@
 'use client';
 
 import Link from 'next/link';
+import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
 import { TIPO_NFE_LABELS, operacaoMeta, operacaoSchema, type TipoNFe } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
-import { deleteOperacaoCascade } from '@/lib/operacoes/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
 export default function OperacoesPage() {
@@ -57,7 +57,7 @@ export default function OperacoesPage() {
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();
-            await Promise.all(rows.map((r) => deleteOperacaoCascade(db, r.id)));
+            await Promise.all(rows.map((r) => deleteDoc(operacaoCollection.docRef(db, {}, r.id))));
           },
         },
       ]}

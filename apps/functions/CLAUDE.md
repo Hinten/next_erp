@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-two exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -118,7 +118,25 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   inline and import nothing, so it asserted nothing about shipped code).
   Covers a standalone estoque delete; the produto-wide cascade already deletes
   history directly, so its re-fires of this trigger are idempotent no-ops.
-- ⚠️ **None of the three cascades may use `db.recursiveDelete` (#728).** It
+- **`onOperacaoDeleted`** (`onDocumentDeleted('operacao/{operacaoId}')`) — sweeps
+  an operação's `regras` subcollection, core `cascadeOperacaoDeletion` (exported
+  for the emulator suite). Retires the client-side batched cascade
+  `deleteOperacaoCascade` used to run from `apps/web/lib/operacoes/clientPort.ts`
+  (#354); the two `/operacoes` pages now `deleteDoc` the parent only.
+- **`onCategoriaDeleted`** (`onDocumentDeleted('categorias/{categoriaId}')`) —
+  sweeps a categoria's `imposto` subcollection (the legacy Dart getter was named
+  `impostocategoria`; the Firestore collection id is `imposto`), core
+  `cascadeCategoriaDeletion` (exported for the emulator suite). Categoria had NO
+  client-side cascade at all before this (#354) — a plain `deleteDoc` left
+  `imposto` permanently orphaned.
+- **`onBalancoDeleted`** (`onDocumentDeleted('balanco/{balancoId}')`) — sweeps a
+  balanço's `movimentos` + `relatorios` subcollections, core
+  `cascadeBalancoDeletion` (exported for the emulator suite). Unlike the other
+  cascades this one is not merely a convenience: `relatorioBalancoMeta` is
+  `serverOwned`, so the client is *denied* the writes its own delete cascade
+  would need — deleting a balanço from the UI can only remove the parent doc, and
+  without this trigger every finalize report would be orphaned permanently.
+- ⚠️ **None of the six cascades may use `db.recursiveDelete` (#728).** It
   issues a kindless all-descendants query — `COLLECTION_GROUP * SELECT __name__
   LIMIT 5000` — which this Enterprise edition cannot index and cannot be *given*
   an index for: there is no wildcard index and no field predicate to seek on, so
@@ -204,6 +222,33 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
   Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
   estado auto-transition only works once this is DEPLOYED — see the Deploying section in `apps/functions/CLAUDE.md`.
+- **`finalizarBalanco`** (`onCall`) + **`processarBalanco`** (`onTaskDispatched`)
+  — the server-owned stock-apply half of the balanço feature (#458), replacing a
+  legacy Flutter finalize that wrote client-supplied quantities straight to
+  `estoques` with no server validation. The payload is only
+  `{ balancoId, zerarNaoContados }`: **every** quantity, plus `motivo`, `tipo`
+  and `usuarioOuterRef`, is derived server-side from the balanço's own
+  `movimentos` and its server-owned fields. The callable enforces
+  `PERM.estoque.write` (with the `su` short-circuit) and takes the workflow lock
+  in ONE transaction — the lock is unforgeable because both fields it tests
+  (`estado`, `dataFinalizado`) are in `balancoMeta.serverOwnedFields`, so a
+  double-finalize fails `failed-precondition` rather than re-applying. The worker
+  then runs two phases: (A) aggregate the movimentos into deterministic
+  `relatorios` shards, (B) apply each shard in 100-produto transactions. ⚠️ It is
+  **resumable, not atomic** — Cloud Tasks redelivery and the 540s timeout are
+  both normal, so idempotency is per-produto via a deterministic
+  `historicoEstoque` doc id (`balanco-<balancoId>`): a produto whose marker
+  already exists is skipped, which is what stops a retry recomputing
+  `contado − atual` against a value the first run already moved. Reuses
+  `planMovimentacao` + `movimentoEstoqueWrite` (both exported from
+  `aplicarEstoque.ts`) so the balanço and manual-editor paths cannot drift on the
+  reservada clamp or the `maximum(now)` stamp. ⚠️ The phase-A aggregate is a
+  **Pipelines** query gated on `FIRESTORE_EMULATOR_HOST`, not on a caught error:
+  the emulator is Standard edition and rejects pipelines while still exposing
+  `db.pipeline()`, so probing for support answers yes and then fails at
+  execution. ⚠️ `processarBalanco`'s export name **is** its Cloud Tasks queue name
+  (`BALANCO_QUEUE` in `balancoTasks.ts`) — rename both together, and note the
+  queue is NEW infrastructure the deploy has to create.
 - ⚠️ Every trigger and callable above is a **second writer** on a document the
   web client, the still-running Flutter app, or another handler may be writing at
   the same instant — pick a tier from root `CLAUDE.md` Critical rule 7 and record

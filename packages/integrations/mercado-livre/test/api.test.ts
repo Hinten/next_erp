@@ -370,6 +370,83 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     });
   });
 
+  it('getShipmentOrders hits /shipments/{id}/orders with X-New-Domain and parses the BARE ARRAY', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        {
+          order_id: '2000014428837134',
+          pack_id: '2000015428123455',
+          item_id: 'MLB2041819084',
+          variation_id: null,
+          user_product_id: 'MLBU147563159',
+          seller_id: 12345,
+          requested_quantity: 1,
+        },
+        {
+          order_id: 2000014428837136,
+          pack_id: null,
+          item_id: 'MLB2041819099',
+          variation_id: 9876543210,
+          user_product_id: null,
+          seller_id: 12345,
+          // ML has sent numerics as strings across this API — the union covers it.
+          requested_quantity: '2',
+        },
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const rows = await api.getShipmentOrders(555);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ item_id: 'MLB2041819084', requested_quantity: 1 });
+    expect(rows[1]).toMatchObject({ variation_id: 9876543210, requested_quantity: '2' });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe('https://api.mercadolibre.com/shipments/555/orders');
+    expect((init!.headers as Record<string, string>)['X-New-Domain']).toBe('true');
+  });
+
+  it('getShipmentOrders keeps unknown fields via passthrough', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ item_id: 'MLB1', requested_quantity: 1, campo_novo_do_ml: 'x' }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).resolves.toEqual([
+      { item_id: 'MLB1', requested_quantity: 1, campo_novo_do_ml: 'x' },
+    ]);
+  });
+
+  it('getShipmentOrders parses a 204 No Content as an empty array', async () => {
+    // Documented response ("Shipment não possui pedidos"). `parseOk` leaves the
+    // body null on an empty response, which a bare `z.array()` would reject —
+    // the schema's `.nullish().transform()` is what keeps a 204 from parking an
+    // import on a MercadoLivreValidationError.
+    const fetchMock = vi.fn(
+      async (_u: string | URL | Request, _i?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).resolves.toEqual([]);
+  });
+
+  it('getShipmentOrders REJECTS a results-envelope response', async () => {
+    // Locks the bare-array contract: if ML ever wraps this resource, the call
+    // must fail loudly rather than silently reconcile against zero rows.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: [{ item_id: 'MLB1', requested_quantity: 1 }] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).rejects.toBeInstanceOf(MercadoLivreValidationError);
+  });
+
+  it('getShipmentOrders maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+
   it('getShipmentSla hits /shipments/{id}/sla and parses expected_date', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ expected_date: '2022-08-22T00:00:00.000-03:00' }),

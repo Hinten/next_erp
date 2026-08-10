@@ -53,9 +53,12 @@
  * (legal null at rest per the schema) — all known writers set it (legacy Flutter
  * models.dart:4301 + aplicarEstoque / sincronizarEstoquePedido / usecases), but
  * a null-parentId estoque yields no join row and that component scores 0 (#238).
- * ⚠️ `parentId` is now load-bearing TWICE: the component join AND the movement
- * aggregate's group key, so a null there costs a wrong `anterior` as well — which
- * fails OPEN (reads as changed ⇒ send). Staging spot-check before the flag flips.
+ * ⚠️ That denorm is load-bearing for the **component join only**. The movement
+ * reconstruction keys a member's OWN row by `member.produtoId` instead (#932):
+ * the subcollection probe is already bound to that produto, so the projection
+ * carries no `parentId` and never needed to. Do not "restore" a `row.parentId`
+ * read there — it is absent by construction, and an unkeyable row reads as
+ * *unchanged*, which is a silent skip rather than a fail-open send.
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
@@ -341,6 +344,15 @@ export function concurrentDispatches(): number {
  * a `doc.data()` record. Component rows (`componentEstoques`) carry the
  * `parentId` produto-id denorm the join keys on; the member's own estoque row
  * omits it (the owner is the member itself).
+ *
+ * ⚠️ "Omits it" is a fact about the PROJECTION, not a hint to compensate for.
+ * Any consumer that needs the owner of an own row must take it from
+ * `member.produtoId`; reading `row.parentId` there always yields `undefined`
+ * and silently degrades to "no data" (#932). The stored document does carry the
+ * field — a kit's own estoque doc is written with it for structural uniformity
+ * (ADR 0014 §2) — but nothing projects it, and nothing reads it: a kit can never
+ * be a component of another kit (#239), so the one query that matches on
+ * `parentId` can never reach a kit's own row.
  */
 export interface RawEstoqueRow {
   parentId?: unknown;
@@ -1011,17 +1023,27 @@ export function quantidadesDaFamilia(row: StockFamilyRow): Map<string, number> {
   return out;
 }
 
-/** The window's net movement for the pair one estoque row belongs to. */
+/**
+ * The window's net movement for the pair one estoque row belongs to.
+ *
+ * ⚠️ The owning produto is passed **in**, never read off the row — that is #932.
+ * THE query does not project `parentId` on a member's OWN estoque row
+ * (`ownEstoque`'s `select`, and it has no reason to: a `subcollection('estoques')`
+ * probe is already bound to the produto being processed, so the owner IS
+ * `member.produtoId`). Reading the denorm here instead made every own row
+ * unkeyable, and an unkeyable row reads as "did not move" — a silent skip that
+ * dropped every ordinary produto's stock change on every tier. Component rows
+ * DO carry the denorm, because their join (`compEstoques`) matches on it.
+ */
 function movimentoDaLinha(
-  row: RawEstoqueRow,
+  produtoId: unknown,
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): MovimentoDaJanela | null {
-  const parentId = row.parentId;
   // No join key ⇒ nothing in the ledger can be attributed to this row. Reads as
   // "did not move", the same as a pair with no rows in the window.
-  if (typeof parentId !== 'string' || parentId === '') return null;
-  return movimentos.get(chaveMovimento(parentId, depositoId)) ?? null;
+  if (typeof produtoId !== 'string' || produtoId === '') return null;
+  return movimentos.get(chaveMovimento(produtoId, depositoId)) ?? null;
 }
 
 /**
@@ -1036,10 +1058,11 @@ function movimentoDaLinha(
  */
 function desfazerMovimento(
   row: RawEstoqueRow,
+  produtoId: unknown,
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): RawEstoqueRow | null {
-  const mov = movimentoDaLinha(row, depositoId, movimentos);
+  const mov = movimentoDaLinha(produtoId, depositoId, movimentos);
   if (mov == null) return null;
   return {
     ...row,
@@ -1050,11 +1073,11 @@ function desfazerMovimento(
 
 /** True when this row's pair moved by an amount the ledger cannot report. */
 function movimentoDesconhecido(
-  row: RawEstoqueRow,
+  produtoId: unknown,
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): boolean {
-  return movimentoDaLinha(row, depositoId, movimentos)?.desconhecido === true;
+  return movimentoDaLinha(produtoId, depositoId, movimentos)?.desconhecido === true;
 }
 
 /**
@@ -1071,6 +1094,11 @@ function movimentoDesconhecido(
  * {@link deveEnviarFamilia} reads a missing entry as *unknown* and sends. This
  * is the fail-open path, and it only works because the member is left out
  * entirely: a fallback to the current row would read as "unchanged" and skip.
+ *
+ * ⚠️ The two row classes are keyed DIFFERENTLY and must stay that way (#932): a
+ * member's OWN row by `member.produtoId` (the subcollection probe is bound to
+ * that produto, so the projection has no `parentId` to give), a component row by
+ * its `parentId` denorm (its collection-group join matches on exactly that).
  */
 export function quantidadesAnteriores(
   row: StockFamilyRow,
@@ -1080,17 +1108,20 @@ export function quantidadesAnteriores(
   const out = new Map<string, number>();
   for (const member of [row.anchor, ...row.children]) {
     const desconhecido =
-      (member.estoque != null && movimentoDesconhecido(member.estoque, depositoId, movimentos)) ||
-      member.componentEstoques.some((e) => movimentoDesconhecido(e, depositoId, movimentos));
+      (member.estoque != null && movimentoDesconhecido(member.produtoId, depositoId, movimentos)) ||
+      member.componentEstoques.some((e) =>
+        movimentoDesconhecido(e.parentId, depositoId, movimentos),
+      );
     if (desconhecido) continue;
     const anterior: FamilyMember = {
       ...member,
       estoque:
         member.estoque == null
           ? null
-          : (desfazerMovimento(member.estoque, depositoId, movimentos) ?? member.estoque),
+          : (desfazerMovimento(member.estoque, member.produtoId, depositoId, movimentos) ??
+            member.estoque),
       componentEstoques: member.componentEstoques.map(
-        (e) => desfazerMovimento(e, depositoId, movimentos) ?? e,
+        (e) => desfazerMovimento(e, e.parentId, depositoId, movimentos) ?? e,
       ),
     };
     const quantidade = quantidadeDoMembro(anterior);

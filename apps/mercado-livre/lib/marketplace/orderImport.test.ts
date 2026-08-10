@@ -304,6 +304,11 @@ function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): Me
       shipping_option: {},
     })),
     getShipmentPayments: vi.fn(async () => []),
+    // Default `[]` = "ML told us nothing", which the conference reports as
+    // `indeterminado` and `applyFreteStep` treats as "not checked" — so every
+    // test that predates the cross-check (#669) keeps its original behaviour and
+    // only the tests that opt in by overriding this actually exercise the guard.
+    getShipmentOrders: vi.fn(async () => []),
     getShipmentSla: vi.fn(),
     getSellerShippingSchedule: vi.fn(),
     getOrderBillingInfo: vi.fn(async () => ({ site_id: 'MLB', buyer: {}, seller: {} })),
@@ -1057,6 +1062,7 @@ describe('importPedidoMercadoLivre — frete', () => {
           {
             produtoUid: 'produto-1',
             ordem: 1,
+            mktplaceId: 'MLB1',
             precoDeVenda: 100,
             quantidade: 1,
             descontoUnitario: 0,
@@ -1081,6 +1087,18 @@ describe('importPedidoMercadoLivre — frete', () => {
         },
       })),
       getShipmentPayments: vi.fn(async () => [{ payment_id: 900, status: 'approved', amount: 20 }]),
+      // A MATCHING conference (#669). Without it the default `[]` stub makes the
+      // check indeterminate and this test would silently assert the skip path
+      // instead of the full conference it is named for.
+      getShipmentOrders: vi.fn(async () => [
+        {
+          order_id: '1',
+          item_id: 'MLB1',
+          variation_id: null,
+          seller_id: 555,
+          requested_quantity: 1,
+        },
+      ]),
     });
     const prazoDespachoUs = Date.parse('2026-01-08T00:00:00.000Z') * 1000;
     vi.mocked(resolvePrazoDespacho).mockResolvedValue(prazoDespachoUs);
@@ -1252,6 +1270,496 @@ describe('mergeFreteInicial', () => {
     );
     expect(mergedWithValues.codRastreio).toBe('BR999NEW'); // replaced — mapped is non-null
     expect(mergedWithValues.prazoDespacho).toBe(newPrazo); // replaced — mapped is non-null
+  });
+});
+
+/* -------------- shipment ↔ pedido item cross-check (#669) ------------------ */
+// The guard `applyFreteStep`'s full conference runs before it prices a pedido.
+// The pure matching rules live in `orderShipmentConference.test.ts`; these cases
+// pin the CONSEQUENCES — what is written, what is withheld, what throws.
+
+describe('importPedidoMercadoLivre — conferência de itens do envio (#669)', () => {
+  const SHIPMENT_ID = 777;
+  const INCIDENTE_PATH = 'pedidos/pedido-1/incidentes';
+  const INCIDENTE_ID = `ml-envio-div-${SHIPMENT_ID}`;
+
+  function seedPedidoConferivel(db: FakeDb, over: DocData = {}): void {
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: null,
+      ultimaModificacao: NOW_US,
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB1',
+            precoDeVenda: 100,
+            quantidade: 1,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+      ...over,
+    });
+  }
+
+  function apiConferencia(linhas: DocData[] | (() => Promise<DocData[]>)): MercadoLivreApi {
+    return makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: SHIPMENT_ID })),
+      getShipment: vi.fn(async () => ({
+        id: SHIPMENT_ID,
+        order_id: 1,
+        status: 'ready_to_ship',
+        substatus: null,
+        last_updated: '2026-01-02T00:00:00.000-03:00',
+        shipping_option: {},
+      })),
+      getShipmentPayments: vi.fn(async () => [{ payment_id: 900, status: 'approved', amount: 20 }]),
+      getShipmentOrders: vi.fn(typeof linhas === 'function' ? linhas : async () => linhas),
+    });
+  }
+
+  const linhaML = (over: DocData = {}): DocData => ({
+    order_id: '1',
+    pack_id: null,
+    item_id: 'MLB1',
+    variation_id: null,
+    seller_id: SELLER_USER_ID,
+    requested_quantity: 1,
+    ...over,
+  });
+
+  it('prices the pedido normally when the shipment matches', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db);
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.valorCobrado).toBe(120); // itens 100 + frete 20
+    expect(written.estado).toBe('iniciado');
+    // Scoped to OUR id: the subcollection also holds `recordItensSemProduto`'s
+    // own `ml-prod-*` row for a line that resolved to no produto (#792).
+    expect(db.docs(INCIDENTE_PATH).has(INCIDENTE_ID)).toBe(false);
+  });
+
+  it('BLOCKS on a surplus: estado error, no frete, no valorCobrado, an incidente, and it throws', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    // ML sold 1 unit; the pedido carries 2. Shipping this would send goods the
+    // buyer never bought — the case #669 exists for.
+    seedPedidoConferivel(db, {
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB1',
+            precoDeVenda: 100,
+            quantidade: 2,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+
+    await expect(
+      importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1),
+    ).rejects.toMatchObject({ name: 'MlEnvioItensDivergentesError' });
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    // The estado write COMMITS even though the call throws — the throw is
+    // deliberately outside the transaction, or it would roll this back and the
+    // pedido would strand at `emProcessamento` with nothing to show for it.
+    expect(written.estado).toBe('error');
+    // Nothing else is written: pricing a pedido we know is wrong is the failure
+    // mode this guard exists to prevent.
+    expect(written.freteInicial).toBeNull();
+    expect(written.valorCobrado).toBeUndefined();
+    const patch = db.lastPatch('pedidos', 'pedido-1')!;
+    expect(patch).not.toHaveProperty('valorCobrado');
+    expect(patch).not.toHaveProperty('freteInicial');
+
+    const incidente = db.docs(INCIDENTE_PATH).get(INCIDENTE_ID)!;
+    expect(incidente).toMatchObject({
+      subtipo: 'ml-envio-itens-divergentes',
+      externalId: String(SHIPMENT_ID),
+      resolucao: null,
+    });
+    expect(incidente.motivoDoIncidente).toContain('MLB1');
+  });
+
+  it('BLOCKS on a line ML is not selling at all', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, {
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB-FANTASMA',
+            precoDeVenda: 100,
+            quantidade: 1,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+
+    await expect(
+      importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1),
+    ).rejects.toMatchObject({ name: 'MlEnvioItensDivergentesError' });
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('error');
+  });
+
+  it('does NOT block when the pedido is merely INCOMPLETE — the pack-assembly race', async () => {
+    // `pack_id` can be absent from a partial order payload (#793), so between
+    // the first order's import and its siblings' the pedido legitimately holds a
+    // subset of the sale. Blocking here would error a healthy pedido on a
+    // routine race; pinned so nobody "symmetrises" the check later.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db);
+
+    await importPedidoMercadoLivre(
+      deps(db, apiConferencia([linhaML(), linhaML({ item_id: 'MLB-IRMAO', order_id: '2' })])),
+      1,
+    );
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.estado).toBe('iniciado');
+    expect(written.valorCobrado).toBe(120);
+    expect(written.freteInicial).not.toBeNull();
+    // Scoped to OUR id: the subcollection also holds `recordItensSemProduto`'s
+    // own `ml-prod-*` row for a line that resolved to no produto (#792).
+    expect(db.docs(INCIDENTE_PATH).has(INCIDENTE_ID)).toBe(false);
+  });
+
+  it('skips the check entirely when hasUserInteraction is true — no ML call at all', async () => {
+    // The operator's override, restored by the `apps/web` stamp. Reading it from
+    // the PRE-transaction copy to skip the CALL is sound only because the flag is
+    // monotonic (null → true, never back) — see the gate's docblock, and the
+    // race test below for the direction that argument does NOT cover.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, {
+      hasUserInteraction: true,
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB-QUE-NAO-EXISTE-NO-ML',
+            precoDeVenda: 100,
+            quantidade: 7,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+    const api = apiConferencia([linhaML()]);
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(api.getShipmentOrders).not.toHaveBeenCalled();
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.estado).toBe('iniciado');
+    expect(written.valorCobrado).toBe(720); // 7 × 100 + frete 20 — the pre-#669 behaviour
+  });
+
+  it('honours an override set DURING the ML round-trips, not the stale pre-read', async () => {
+    // The race the pre-tx gate cannot see. An operator repairs the pedido —
+    // stamping `hasUserInteraction` — while this step is still fetching from ML,
+    // so the pre-read says `false` and the fetch happens, but the tx-fresh
+    // document says `true`. Honouring the stale value would flip the very pedido
+    // they just fixed to `error`. The verdict is re-derived inside the
+    // transaction (root CLAUDE.md rule 7).
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, {
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB-ADICIONADO-PELO-OPERADOR',
+            precoDeVenda: 100,
+            quantidade: 3,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+    // `getShipmentOrders` is awaited in exactly the window between the pre-read
+    // and `runTransaction`, so it is the precise injection point for the save.
+    const api = apiConferencia(async () => {
+      db.seed('pedidos', 'pedido-1', {
+        ...db.docs('pedidos').get('pedido-1')!,
+        hasUserInteraction: true,
+      });
+      return [linhaML()]; // divergent — would block if the override were missed
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(api.getShipmentOrders).toHaveBeenCalled(); // the stale read did fetch
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.estado).toBe('iniciado'); // …but the fresh read waived the check
+    expect(written.valorCobrado).toBe(320); // 3 × 100 + frete 20
+    expect(db.docs(INCIDENTE_PATH).has(INCIDENTE_ID)).toBe(false);
+  });
+
+  it('does NOT auto-release an error pedido once the override is set', async () => {
+    // A waived conference yields `indeterminado`, never `ok`, so the recovery
+    // branch cannot fire. Deliberate: with the check skipped there is no
+    // evidence the divergence is gone, so releasing the block stays the
+    // operator's call — which is what the incidente text tells them to do.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, { estado: 'error', hasUserInteraction: true });
+    db.seed(INCIDENTE_PATH, INCIDENTE_ID, {
+      subtipo: 'ml-envio-itens-divergentes',
+      resolucao: null,
+      timestamp: NOW_US - 1000,
+    });
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('error');
+    expect(db.docs(INCIDENTE_PATH).get(INCIDENTE_ID)!.resolucao).toBeNull();
+  });
+
+  it('falls through to the pre-#669 behaviour on an empty (204) response', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, {
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB1',
+            precoDeVenda: 100,
+            quantidade: 5,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([])), 1);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.estado).toBe('iniciado');
+    expect(written.valorCobrado).toBe(520);
+  });
+
+  it('PROPAGATES a 5xx from getShipmentOrders and writes nothing', async () => {
+    // Transient: the queue retries. Degrading here would silently price the
+    // pedido unchecked, which is exactly what the guard exists to prevent.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db);
+    const api = apiConferencia(async () => {
+      throw new MercadoLivreHttpError('ML 500: boom', 500, null);
+    });
+
+    await expect(importPedidoMercadoLivre(deps(db, api), 1)).rejects.toBeInstanceOf(
+      MercadoLivreHttpError,
+    );
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.freteInicial).toBeNull();
+    expect(written.valorCobrado).toBeUndefined();
+  });
+
+  it('degrades a 404 from getShipmentOrders to "not checked"', async () => {
+    // A 404 is an answer about the shipment, not a failure of ours — the same
+    // narrow degrade `orderShipmentImport.ts` already applies to `getShipment`.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db);
+    const api = apiConferencia(async () => {
+      throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.estado).toBe('iniciado');
+    expect(written.valorCobrado).toBe(120);
+  });
+
+  it('RECOVERS: a re-validated pedido leaves error and its incidente is resolved', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    // The state a previous blocking run left behind: estado error + an OPEN
+    // incidente at our deterministic id. The items now agree with ML again.
+    seedPedidoConferivel(db, { estado: 'error' });
+    db.seed(INCIDENTE_PATH, INCIDENTE_ID, {
+      subtipo: 'ml-envio-itens-divergentes',
+      externalId: String(SHIPMENT_ID),
+      resolucao: null,
+      timestamp: NOW_US - 1000,
+    });
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    // Re-derived from the LIVE ML status (`paid` → emProcessamento), not restored
+    // from a snapshot — by the time a divergence clears the order has usually
+    // moved on, so the current status is the more correct answer.
+    expect(written.estado).toBe('emProcessamento');
+    expect(written.valorCobrado).toBe(120);
+    expect(db.docs(INCIDENTE_PATH).get(INCIDENTE_ID)!.resolucao).toMatchObject({ tipo: 7 });
+  });
+
+  it('does NOT clear an error it did not set (no open incidente)', async () => {
+    // The open incidente is the ownership proof. Without one, the `error` came
+    // from an operator or another flow and is not ours to undo.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, { estado: 'error' });
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('error');
+  });
+
+  it('does NOT clear an error whose incidente was already resolved', async () => {
+    // Keeps the restore firing at most once.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, { estado: 'error' });
+    db.seed(INCIDENTE_PATH, INCIDENTE_ID, {
+      subtipo: 'ml-envio-itens-divergentes',
+      resolucao: { tipo: 7, valor: 0, data: NOW_US - 500, comentarios: null, frete: null },
+    });
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('error');
+  });
+
+  it('re-derives the verdict on an OCC retry instead of carrying it over', async () => {
+    // The direct regression test for legacy's `bool error` (tasks.dart:511),
+    // declared OUTSIDE the transaction closure and written inside it: on an ODM
+    // retry a divergence found by the first attempt poisoned every later one.
+    // Here the first attempt sees a divergent pedido, then a concurrent writer
+    // fixes the items and forces a retry — the retry must conclude "ok".
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, {
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB1',
+            precoDeVenda: 100,
+            quantidade: 2, // surplus → the first attempt would block
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+
+    let primeira = true;
+    db.occ.beforeCommit = async () => {
+      // Guard set BEFORE the nested transaction, which fires this hook again.
+      if (!primeira) return;
+      primeira = false;
+      // A concurrent writer repairs the items. Going through a real transaction
+      // (rather than `db.seed`) is what bumps the document's version, which is
+      // how the engine detects the conflict and re-runs our callback.
+      await db.runTransaction(async (tx) => {
+        const ref = pedidoCollection.docRef(asDb(db), {}, 'pedido-1') as never;
+        await tx.get(ref);
+        tx.update(ref, {
+          itens: {
+            'produto-1': [
+              {
+                produtoUid: 'produto-1',
+                ordem: 1,
+                ensureUniqueId: 'uid-1',
+                mktplaceId: 'MLB1',
+                precoDeVenda: 100,
+                quantidade: 1,
+                descontoUnitario: 0,
+              },
+            ],
+          },
+        });
+      });
+    };
+
+    await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1);
+
+    // The retry really happened — otherwise this test would prove nothing.
+    expect(db.occ.txLog.some((e) => e.phase === 'abort')).toBe(true);
+    const written = db.docs('pedidos').get('pedido-1')!;
+    // The first attempt's verdict (blocking) was DISCARDED, not carried over:
+    // no `error`, no throw, and no incidente.
+    expect(written.estado).toBe('iniciado');
+    expect(written.valorCobrado).toBe(120);
+    // Scoped to OUR id: the subcollection also holds `recordItensSemProduto`'s
+    // own `ml-prod-*` row for a line that resolved to no produto (#792).
+    expect(db.docs(INCIDENTE_PATH).has(INCIDENTE_ID)).toBe(false);
+  });
+
+  it('🔒 puts NO buyer data in the thrown error or the incidente', async () => {
+    // Legacy's `throw Exception('Erro ao atualizar frete \n $pedido …')`
+    // (tasks.dart:616) interpolated the whole pedido and the sweep rethrew it out
+    // of the Cloud Run handler — buyer name, CPF/CNPJ, address, phone and prices
+    // straight into the logs.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoConferivel(db, {
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            ensureUniqueId: 'uid-1',
+            mktplaceId: 'MLB1',
+            nomeDeVenda: 'Camiseta Preta M',
+            sku: 'SKU-SEGREDO',
+            precoDeVenda: 1234.56,
+            quantidade: 2,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+
+    const erro = await importPedidoMercadoLivre(deps(db, apiConferencia([linhaML()])), 1).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(erro).not.toBeNull();
+    const mensagem = erro!.message;
+    const motivo = String(db.docs(INCIDENTE_PATH).get(INCIDENTE_ID)!.motivoDoIncidente);
+    for (const texto of [mensagem, motivo]) {
+      expect(texto).not.toContain('Camiseta');
+      expect(texto).not.toContain('SKU-SEGREDO');
+      expect(texto).not.toContain('1234.56');
+      expect(texto).not.toContain('cli-1');
+    }
+    // …but it DOES say which pedido, which shipment and by how much.
+    expect(mensagem).toContain('pedido-1');
+    expect(mensagem).toContain(String(SHIPMENT_ID));
+    expect(motivo).toContain('MLB1');
   });
 });
 
