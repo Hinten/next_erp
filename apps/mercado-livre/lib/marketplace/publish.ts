@@ -392,6 +392,13 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         produtoMercadoLivreOuterRef:
           (existing?.raw.produtoMercadoLivreOuterRef as string | undefined) ??
           toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`),
+        // #920: the conta, denormalized onto the child link the same way the
+        // parent link has always carried it. Unconditional (not
+        // preserved-or-null like the two refs above) so a re-publish self-heals
+        // a row that predates the field — `onVariacaoMercadoLivreLinkChanged`
+        // otherwise has to dereference the parent link, which yields nothing
+        // once that link is gone.
+        contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
         sku: child.produto.sku ?? null,
       }),
     );

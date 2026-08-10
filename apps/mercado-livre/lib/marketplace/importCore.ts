@@ -589,6 +589,14 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     itemId: args.up ? args.up.itemId : ((existingLink.itemId as string | null | undefined) ?? null),
     produtoVariacaoOuterRef: toOuterRef(`produtos/${args.produtoId}`),
     produtoMercadoLivreOuterRef: parent.linkOuterRef,
+    // #920: the conta, denormalized onto the child link the same way the parent
+    // link has always carried it. Written unconditionally (it sits AFTER the
+    // spread) so a re-import self-heals a row that predates the field. Without
+    // it `onVariacaoMercadoLivreLinkChanged` would have to dereference
+    // `produtoMercadoLivreOuterRef` on every event — a second read that yields
+    // NOTHING once the parent link is gone, which is exactly when a variation
+    // link is deleted (`pruneMigratedSource` drops both in one batch).
+    contaOuterRef: toOuterRef(`integracao/${args.integracaoId}`),
     // Deliberate deviation: legacy sourced this from attribute_combinations
     // (models.dart:1726), where SELLER_SKU never appears — so Flutter writes null.
     // The variation's real SELLER_SKU is strictly more useful, and link.sku is
