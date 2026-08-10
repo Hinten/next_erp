@@ -116,10 +116,11 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(card).toBeVisible({ timeout: 30_000 });
     await card.getByRole('button', { name: 'Enviar estoque' }).click();
 
-    // A per-listing failure lands INLINE on the anúncio, not as a toast — a
-    // conta can hold several listings and one toast could only describe one.
+    // A CONTA-level failure (the request never reached the backend) names no
+    // listing, so it has nowhere inline to land and surfaces as a toast. Only a
+    // per-LISTING outcome — which requires a response — renders on the anúncio.
     await expect(
-      card.getByText('Não foi possível contatar o serviço do Mercado Livre.'),
+      page.getByText('Não foi possível contatar o serviço do Mercado Livre.'),
     ).toBeVisible({ timeout: 15_000 });
   });
 });
