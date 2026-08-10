@@ -37,6 +37,8 @@ import {
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
+import type { StockPushRow } from '@/lib/marketplace/estoque/types';
 
 /**
  * The produto editor's **Mercado Livre** tab: one row per registered ML account
@@ -112,6 +114,14 @@ export function MercadoLivreManager({
   const [publishing, setPublishing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
+  /** The conta whose stock push is in flight (#819), if any. */
+  const [sendingStock, setSendingStock] = useState<string | null>(null);
+  /**
+   * The last push outcome per LISTING, keyed by link doc id. Rendered inline in
+   * each anúncio block rather than as a toast, because a conta can hold several
+   * listings on one produto and one toast could only describe one of them.
+   */
+  const [stockResultByLink, setStockResultByLink] = useState<Record<string, StockPushRow>>({});
   // 422 ML_PUBLISH_BLOCKED issue lists, kept per account so they render inline
   // in the offending row instead of a transient toast.
   const [blockedIssues, setBlockedIssues] = useState<Record<string, string[]>>({});
@@ -179,7 +189,8 @@ export function MercadoLivreManager({
         color: result.enviavel ? 'green' : 'yellow',
         title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
         message: result.enviavel
-          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos).'
+          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
+            'Enviar estoque para enviar agora.'
           : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
       });
     } catch (err) {
@@ -197,6 +208,58 @@ export function MercadoLivreManager({
       throw err;
     } finally {
       setRechecking(null);
+    }
+  }
+
+  /**
+   * Push this produto's CURRENT stock to every listing this conta holds on it
+   * (#819) — the on-demand twin of the 15-minute sweep.
+   *
+   * Per CONTA, not per listing: the backend takes `{ integracaoId, produtoIds }`
+   * and the sender loops every anúncio the conta holds (the link join
+   * deliberately has no `limit(1)` — see the comment below and #781). A
+   * per-listing button would imply an endpoint that does not exist.
+   *
+   * `reenviarComErro` is passed for a LATCHED listing only. An explicit click on
+   * a listing the UI is already showing as "parado" is unambiguous consent, so
+   * the tab does not need the bulk dialog's checkbox.
+   */
+  async function handleEnviarEstoque(
+    conta: { id: string; nome: string; tipo: number; ativo: boolean },
+    temLatched: boolean,
+  ) {
+    setSendingStock(conta.id);
+    try {
+      const result = await enviarEstoqueParaIntegracao({
+        integracao: {
+          id: conta.id,
+          nome: conta.nome,
+          tipo: conta.tipo as never,
+          ativo: conta.ativo,
+        },
+        produtoIds: [produtoId],
+        nomePorProdutoId: new Map(),
+        reenviarComErro: temLatched,
+        deps: { mercadoLivre: client },
+      });
+      setStockResultByLink((prev) => {
+        const next = { ...prev };
+        for (const row of result.rows) {
+          if (row.linkDocId != null) next[row.linkDocId] = row;
+        }
+        return next;
+      });
+      // A row that names no listing (conta-level failure, or a produto with no
+      // anúncio here) has nowhere inline to land — surface it as a toast.
+      const semAnuncio = result.rows.filter((r) => r.linkDocId == null);
+      for (const row of semAnuncio) {
+        notifications.show({
+          color: row.outcome === 'enviado' ? 'green' : row.outcome === 'falha' ? 'red' : 'yellow',
+          message: row.mensagem,
+        });
+      }
+    } finally {
+      setSendingStock(null);
     }
   }
 
@@ -311,6 +374,22 @@ export function MercadoLivreManager({
                         </Text>
                       </Group>
                     )}
+
+                    {stockResultByLink[l.id] && (
+                      <Text
+                        size="xs"
+                        c={
+                          stockResultByLink[l.id]!.outcome === 'enviado'
+                            ? 'green'
+                            : stockResultByLink[l.id]!.outcome === 'falha'
+                              ? 'red'
+                              : 'dimmed'
+                        }
+                        data-testid={`ml-envio-estoque-${l.id}`}
+                      >
+                        {stockResultByLink[l.id]!.mensagem}
+                      </Text>
+                    )}
                   </Stack>
                 );
               })}
@@ -326,6 +405,34 @@ export function MercadoLivreManager({
               )}
 
               <Group align="flex-end" gap="sm">
+                {contaLinks.length > 0 && (
+                  // Deliberately NOT disabled while a listing is latched: the
+                  // push is precisely the operation whose skip row explains WHY
+                  // it is latched, and after a re-arm it is how the operator
+                  // verifies. The legacy action sent regardless and let the
+                  // per-listing gate answer.
+                  <Button
+                    type="button"
+                    variant="default"
+                    onClick={() =>
+                      void handleEnviarEstoque(
+                        {
+                          id: conta.id,
+                          nome: conta.data.nome,
+                          tipo: conta.data.tipo,
+                          ativo: conta.data.ativo !== false,
+                        },
+                        contaLinks.some(
+                          (l) => parseEstado(l.data.estado) === ESTADO_PUBLICACAO_ML.erro,
+                        ),
+                      )
+                    }
+                    loading={sendingStock === conta.id}
+                    disabled={disabled || !client || !canPublish || sendingStock !== null}
+                  >
+                    Enviar estoque
+                  </Button>
+                )}
                 {needsListingType && (
                   <Select
                     label="Tipo de anúncio"

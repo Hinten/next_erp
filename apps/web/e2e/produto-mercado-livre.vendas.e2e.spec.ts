@@ -87,4 +87,39 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
       page.getByText('Não foi possível contatar o serviço do Mercado Livre.'),
     ).toBeVisible({ timeout: 15_000 });
   });
+
+  test('offers an on-demand stock push only where the account holds a listing', async ({
+    page,
+  }) => {
+    // #819: before this button the only way to fix a wrong quantity was to wait
+    // for the sweep. It is per CONTA (the sender loops every anúncio the conta
+    // holds), so it appears exactly where there is something to send to.
+    await page.goto(`/produtos/${produtoId}/editar`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    const linked = page.getByTestId(`ml-conta-${contaLinked}`);
+    await expect(linked).toBeVisible({ timeout: 30_000 });
+    await expect(linked.getByRole('button', { name: 'Enviar estoque' })).toBeEnabled();
+
+    const unlinked = page.getByTestId(`ml-conta-${contaUnlinked}`);
+    await expect(unlinked.getByRole('button', { name: 'Enviar estoque' })).toHaveCount(0);
+  });
+
+  test('reports a stock push it could not deliver', async ({ page }) => {
+    // Same route-abort technique as the publish degradation test above: the
+    // mercado-livre backend does not run in this suite.
+    await page.route('**/api/marketplace/mercado-livre/enviar-estoque', (route) => route.abort());
+    await page.goto(`/produtos/${produtoId}/editar`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    const card = page.getByTestId(`ml-conta-${contaLinked}`);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await card.getByRole('button', { name: 'Enviar estoque' }).click();
+
+    // A per-listing failure lands INLINE on the anúncio, not as a toast — a
+    // conta can hold several listings and one toast could only describe one.
+    await expect(
+      card.getByText('Não foi possível contatar o serviço do Mercado Livre.'),
+    ).toBeVisible({ timeout: 15_000 });
+  });
 });
