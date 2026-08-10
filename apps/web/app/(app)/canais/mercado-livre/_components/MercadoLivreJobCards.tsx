@@ -13,7 +13,7 @@
  * component per job is the only shape that works. Polling stops on its own the
  * moment the job leaves `running`.
  */
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { Alert, Anchor, Card, CloseButton, Group, Loader, Modal, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 
@@ -44,7 +44,7 @@ function JobCardShell({
   flowLabel: string;
   running: boolean;
   onDismiss: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <Card withBorder padding="xs">
