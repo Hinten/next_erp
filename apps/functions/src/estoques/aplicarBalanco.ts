@@ -126,9 +126,8 @@ export function reduzirContagem(linhas: Array<Record<string, unknown>>): Map<str
  * denormalized `produtoId`. Legacy walked distinct produtos with a cursor and
  * ran a `sum()` per produto — 2 reads per distinct produto; this is one query.
  *
- * ⚠️ NOT emulator-runnable (pipelines never are) — the emulator suite injects
- * {@link agregarContagemClassico} through the seam, and {@link reduzirContagem}
- * is unit-tested on its own.
+ * ⚠️ NOT emulator-runnable — see {@link agregarContagemPadrao} for the gate.
+ * {@link reduzirContagem}, the piece both paths share, is unit-tested on its own.
  */
 export const agregarContagemPipeline: AgregarContagem = async (db, balancoId) => {
   const snap = await db
@@ -176,6 +175,22 @@ export const agregarContagemClassico: AgregarContagem = async (db, balancoId) =>
   }
   return reduzirContagem(linhas);
 };
+
+/**
+ * The aggregate the deployed worker uses.
+ *
+ * ⚠️ Gated on `FIRESTORE_EMULATOR_HOST`, a fact about the backend, rather than
+ * on a caught error: the Firestore emulator is Standard edition and rejects the
+ * Pipelines API, but the SDK still exposes `db.pipeline()`, so probing the
+ * client for support answers yes and the call then fails at execution. Making
+ * this a capability gate instead of an injected test double is deliberate — it
+ * means the e2e lane exercises the function as DEPLOYED, with only the query
+ * shape degraded.
+ */
+export const agregarContagemPadrao: AgregarContagem = (db, balancoId) =>
+  process.env.FIRESTORE_EMULATOR_HOST
+    ? agregarContagemClassico(db, balancoId)
+    : agregarContagemPipeline(db, balancoId);
 
 /* -------------------------------------------------------------------------- */
 /* Depósito scan                                                               */
@@ -706,7 +721,7 @@ export const processarBalanco = onTaskDispatched(
       {
         db: getDb(),
         scheduler: createBalancoScheduler(),
-        agregar: agregarContagemPipeline,
+        agregar: agregarContagemPadrao,
         varrer: varrerDepositoClassico,
         agora: () => Date.now(),
       },
