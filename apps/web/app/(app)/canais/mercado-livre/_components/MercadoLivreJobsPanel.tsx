@@ -27,6 +27,7 @@ import { Badge, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 
 import {
+  type MercadoLivreJobsEmAndamento,
   type MercadoLivreMassImportStatus,
   type MercadoLivrePriceSyncStatus,
   useMercadoLivreClient,
@@ -110,30 +111,19 @@ export function MercadoLivreJobsPanel({
     staleTime: LOOKUP_STALE_MS,
   });
 
-  // Latch every newly-seen job. Never drops one: see the docblock. This is
-  // the one place a setState-in-effect is right — the lookup is an external
-  // system whose answers accumulate here, and the merge is a no-op (returns
-  // `prev`) for a job already latched, so it settles after one pass.
-  useEffect(() => {
-    const data = lookup.data;
-    if (!data) return;
-    setDiscovered((prev) => {
-      const massImportJobs = { ...prev.massImport };
-      const priceSyncJobs = { ...prev.priceSync };
-      let changed = false;
-      for (const job of data.importacoes) {
-        if (massImportJobs[job.integracaoId]?.jobId === job.jobId) continue;
-        massImportJobs[job.integracaoId] = { jobId: job.jobId, initialStatus: job };
-        changed = true;
-      }
-      for (const job of data.enviosPreco) {
-        if (priceSyncJobs[job.integracaoId]?.jobId === job.jobId) continue;
-        priceSyncJobs[job.integracaoId] = { jobId: job.jobId, initialStatus: job };
-        changed = true;
-      }
-      return changed ? { massImport: massImportJobs, priceSync: priceSyncJobs } : prev;
-    });
-  }, [lookup.data]);
+  // Latch every newly-seen job. Never drops one: see the docblock.
+  //
+  // Adjusted during render rather than in an effect — React's documented
+  // "adjust state when an input changes" shape. An effect would paint one
+  // frame without the newly-found card and then re-render, and it is not what
+  // an effect is for: nothing outside React is being synchronised, the lookup
+  // result is just an input a derived value accumulates from. `latch` returns
+  // `prev` unchanged once a job is known, so this settles in one pass.
+  const [latchedFrom, setLatchedFrom] = useState<MercadoLivreJobsEmAndamento | null>(null);
+  if (lookup.data && lookup.data !== latchedFrom) {
+    setLatchedFrom(lookup.data);
+    setDiscovered((prev) => latch(prev, lookup.data));
+  }
 
   const cards = useMemo(
     () => buildCards({ tracked, discovered, dismissedJobIds, massImport, priceSync }),
@@ -223,6 +213,28 @@ export function MercadoLivreJobsPanel({
       )}
     </Stack>
   );
+}
+
+/**
+ * Fold a lookup answer into what is already known, keyed by conta. A job
+ * already latched is skipped entirely — including its `initialStatus`, which
+ * is only a first paint: from then on the card polls its own `jobId`.
+ */
+function latch(prev: Discovered, data: MercadoLivreJobsEmAndamento): Discovered {
+  const massImportJobs = { ...prev.massImport };
+  const priceSyncJobs = { ...prev.priceSync };
+  let changed = false;
+  for (const job of data.importacoes) {
+    if (massImportJobs[job.integracaoId]?.jobId === job.jobId) continue;
+    massImportJobs[job.integracaoId] = { jobId: job.jobId, initialStatus: job };
+    changed = true;
+  }
+  for (const job of data.enviosPreco) {
+    if (priceSyncJobs[job.integracaoId]?.jobId === job.jobId) continue;
+    priceSyncJobs[job.integracaoId] = { jobId: job.jobId, initialStatus: job };
+    changed = true;
+  }
+  return changed ? { massImport: massImportJobs, priceSync: priceSyncJobs } : prev;
 }
 
 const FLOW_LABEL = {
