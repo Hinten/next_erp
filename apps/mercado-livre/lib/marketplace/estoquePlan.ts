@@ -1019,7 +1019,7 @@ export function quantidadeDoMembro(member: FamilyMember): number | null {
  * has no estoque doc at this depósito lands here too, and is treated the same,
  * because from here the two are indistinguishable.
  */
-export function componentesNaoResolvidos(member: FamilyMember): string[] {
+function componentesNaoResolvidos(member: FamilyMember): string[] {
   if (!member.ehKit || member.ehKitVirtual) return [];
   const disponiveis = disponivelByProdutoIdFrom(member.componentEstoques);
   return componentesKitEntries(member.componentesKit)
@@ -1051,7 +1051,7 @@ export function componentesNaoResolvidos(member: FamilyMember): string[] {
  * **deliberately inverted**, not left undone. Do not "restore" it from the issue
  * text.
  */
-export function kitNaoVerificavel(member: FamilyMember): boolean {
+function kitNaoVerificavel(member: FamilyMember): boolean {
   const declarados = componentesKitEntries(member.componentesKit).filter(
     ([, kit]) =>
       kit.limitarEstoque !== false && Number.isFinite(kit.quantidade) && kit.quantidade > 0,
