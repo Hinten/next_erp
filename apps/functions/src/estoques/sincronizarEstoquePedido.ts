@@ -550,18 +550,24 @@ async function aplicarPlano(
     tx.set(
       historicoRef,
       historicoEstoqueCollection.parse({
-        ehBalanco: null,
-        quantidade: delta.deltaQuantidade,
-        quantidadeReservada: delta.deltaReservada,
+        // v2 (ADR 0014): signed deltas, always. This writer is transactional and
+        // already holds the exact before/after, so it fills the saldo pair too —
+        // the read-free manual path is the one that leaves them null. The
+        // reservada delta is the CLAMPED one (`reservadaDepois − reservadaAntes`),
+        // not `delta.deltaReservada`: when the floor absorbs a release the ledger
+        // must record what actually landed, or `sum(movimento)` drifts from the
+        // stored counter by exactly the clamped amount.
+        movimento: delta.deltaQuantidade,
+        movimentoReservada: reservadaDepois - reservadaAntes,
+        saldo: quantidadeDepois,
+        saldoReservada: reservadaDepois,
+        parentId: delta.produtoId,
+        depositoOuterRef: `documents/depositos/${delta.depositoId}`,
         motivo: delta.motivo,
         timestamp: contexto.agoraMs,
         tipo: delta.tipo,
         pedidoOuterRef: `documents/pedidos/${contexto.pedidoId}`,
         pedidoNumero: contexto.pedidoNumero,
-        quantidadeAntes,
-        quantidadeDepois,
-        quantidadeReservadaAntes: reservadaAntes,
-        quantidadeReservadaDepois: reservadaDepois,
         usuarioOuterRef: contexto.usuarioOuterRef,
         eventId: contexto.eventId,
       }),

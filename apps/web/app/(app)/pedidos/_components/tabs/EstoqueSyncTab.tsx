@@ -34,7 +34,10 @@ const MOVIMENTOS_LIMIT = 50;
 
 const fmtQtd = (n: number) =>
   n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-const fmtDelta = (n: number) => (n > 0 ? `+${fmtQtd(n)}` : fmtQtd(n));
+/** Signed movement. `null` is *unknown*, not zero — a row written by the still-running
+ *  Flutter app carries no `movimento` (ADR 0014), and rendering it as 0 would claim
+ *  nothing moved. */
+const fmtDelta = (n: number | null) => (n == null ? '—' : n > 0 ? `+${fmtQtd(n)}` : fmtQtd(n));
 /** historicoEstoque timestamps are ms-epoch. */
 const fmtMs = (ms: number | null | undefined) =>
   typeof ms === 'number' ? new Date(ms).toLocaleString('pt-BR') : '—';
@@ -313,11 +316,14 @@ function EstoqueSyncView({ pedidoId }: { pedidoId: string }) {
                         {nomePorProduto.get(origem.produtoId) ?? origem.produtoId}
                       </Table.Td>
                       <Table.Td>{origem.depositoId}</Table.Td>
-                      <Table.Td ta="right">{fmtDelta(mov.data.quantidade)}</Table.Td>
-                      <Table.Td ta="right">{fmtDelta(mov.data.quantidadeReservada)}</Table.Td>
+                      <Table.Td ta="right">{fmtDelta(mov.data.movimento)}</Table.Td>
+                      <Table.Td ta="right">{fmtDelta(mov.data.movimentoReservada)}</Table.Td>
                       <Table.Td ta="right">
-                        {mov.data.quantidadeAntes != null && mov.data.quantidadeDepois != null
-                          ? `${fmtQtd(mov.data.quantidadeAntes)} → ${fmtQtd(mov.data.quantidadeDepois)}`
+                        {/* `antes` is derived (`saldo − movimento`) rather than stored —
+                            v2 keeps only the resulting saldo (ADR 0014). Both parts are
+                            needed, so a row missing either renders the em-dash. */}
+                        {mov.data.saldo != null && mov.data.movimento != null
+                          ? `${fmtQtd(mov.data.saldo - mov.data.movimento)} → ${fmtQtd(mov.data.saldo)}`
                           : '—'}
                       </Table.Td>
                     </Table.Tr>

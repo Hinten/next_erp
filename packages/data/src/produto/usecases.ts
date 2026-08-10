@@ -136,44 +136,111 @@ export interface MovimentacaoInput {
   motivo: string | null;
 }
 
-/** The resolved movement: signed deltas (or absolutes for balanço) + audit record. */
+/**
+ * The estoque counters the movement lands ON TOP of. Optional for entrada/saída
+ * (their delta is known without reading anything, which is what keeps that path
+ * read-free — #387), **required for a balanço**, whose signed delta exists only
+ * relative to the value it replaces.
+ */
+export interface EstoqueAtual {
+  quantidade: number;
+  quantidadeReservada: number;
+}
+
+/** The resolved movement: what to write on the estoque doc + the audit record. */
 export interface MovimentacaoPlan {
   /** `true` for a balanço (absolute set) vs a regular increment movement. */
   ehBalanco: boolean;
   /** Entrada/saída: the signed delta to `increment`. Balanço: the absolute value. */
   quantidade: number;
+  /**
+   * Same split as `quantidade` — and on a **balanço** it is already clamped ≥ 0,
+   * so it always equals `historico.saldoReservada`: the plan describes exactly
+   * what lands on the doc, and the caller writes it verbatim. On entrada/saída
+   * it is a signed delta, so a negative value is correct and expected there.
+   */
   quantidadeReservada: number;
-  /** The `HistoricoEstoque` audit record to append (signed delta, Flutter parity). */
+  /**
+   * The `HistoricoEstoque` v2 record to append. `movimento` is a **signed delta
+   * on every row, balanço included** — the ledger has to stay summable (ADR
+   * 0014). `null` only when a balanço was planned without `atual`, which every
+   * caller should avoid; consumers read null as *unknown* and fail open.
+   */
   historico: {
-    ehBalanco: boolean | null;
-    quantidade: number;
-    quantidadeReservada: number;
+    movimento: number | null;
+    movimentoReservada: number | null;
+    saldo: number | null;
+    saldoReservada: number | null;
     motivo: string | null;
     timestamp: number;
   };
 }
 
 /**
- * Resolve a movement into signed quantities + its audit record — pure mirror of
+ * Resolve a movement into the estoque write + its audit record — pure mirror of
  * the Flutter `Estoque.movimentar` (`models.dart:4164`). Saída negates the
  * magnitudes (the delta the caller `increment`s); balanço passes them through as
- * the absolute counted values. The caller (client adapter) applies the
- * conflict-safe write: `increment` for entrada/saída (never overwrites the server
- * count), an absolute set for balanço — plus this `historico` record.
+ * the absolute counted values. The caller applies the conflict-safe write:
+ * `increment` for entrada/saída (never overwrites the server count), an absolute
+ * set for balanço — plus this `historico` record.
+ *
+ * ⚠️ `atual` is what makes a **balanço** summable: its `movimento` is
+ * `contado − atual`, so the caller must read the doc inside a transaction first.
+ * Entrada/saída need no read and pass `null`, so their `saldo` is null too —
+ * best-effort by design, not an omission.
+ *
+ * ⚠️ Known imprecision on the read-free path: `quantidadeReservada` is floored at
+ * 0 by the caller's follow-up transform, so a saída that would drive the
+ * reservation negative records the *requested* `movimentoReservada` rather than
+ * the effective one. Supplying `atual` removes the gap (the floor is applied
+ * here too); without it there is nothing to floor against.
  */
-export function planMovimentacao(input: MovimentacaoInput, now: number): MovimentacaoPlan {
+export function planMovimentacao(
+  input: MovimentacaoInput,
+  now: number,
+  atual: EstoqueAtual | null = null,
+): MovimentacaoPlan {
   const sign = input.tipo === 'saida' ? -1 : 1;
   const quantidade = sign * input.quantidade;
   const quantidadeReservada = sign * input.quantidadeReservada;
   const ehBalanco = input.tipo === 'balanco';
+
+  if (ehBalanco) {
+    // The absolute set the caller writes. Clamped ONCE, here, so the plan is
+    // self-consistent: for a balanço `quantidadeReservada` IS the value that
+    // lands on the doc, and it must equal the `saldoReservada` the ledger
+    // records. (Entrada/saída below stay unclamped — there the field is a
+    // signed delta the caller `increment`s, and a negative one is correct.)
+    const saldoReservada = Math.max(0, input.quantidadeReservada);
+    return {
+      ehBalanco,
+      quantidade: input.quantidade,
+      quantidadeReservada: saldoReservada,
+      historico: {
+        movimento: atual ? input.quantidade - atual.quantidade : null,
+        movimentoReservada: atual ? saldoReservada - atual.quantidadeReservada : null,
+        saldo: input.quantidade,
+        saldoReservada,
+        motivo: input.motivo,
+        timestamp: now,
+      },
+    };
+  }
+
+  const saldoReservada = atual
+    ? Math.max(0, atual.quantidadeReservada + quantidadeReservada)
+    : null;
   return {
     ehBalanco,
     quantidade,
     quantidadeReservada,
     historico: {
-      ehBalanco: ehBalanco ? true : null,
-      quantidade,
-      quantidadeReservada,
+      movimento: quantidade,
+      // With `atual` the floor is observable, so record the delta that actually
+      // applied; without it, the requested one is the best available answer.
+      movimentoReservada: atual ? saldoReservada! - atual.quantidadeReservada : quantidadeReservada,
+      saldo: atual ? atual.quantidade + quantidade : null,
+      saldoReservada,
       motivo: input.motivo,
       timestamp: now,
     },

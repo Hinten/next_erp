@@ -47,6 +47,24 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
 
+## Stock sweep tiers — read ADR 0014 first
+
+The stock sweep (`lib/marketplace/estoquePlan.ts` + `estoqueSweep.ts`) runs three
+tiers — a 15-minute incremental, a 02:00 daily and a monthly force-all — and it
+**deliberately under-sends**. A kit whose component moved but which did not itself
+sell is not a candidate on the first two tiers; the monthly pass corrects it.
+
+That is not an oversight. The catalogue is mostly printed t-shirts modelled as a
+kit of `{blank shirt, print}`, and **thousands of kits share the same two
+components**, so propagating a component movement to the kits containing it costs
+~2000 writes per sale — built, measured, rejected. Only per-order-line work is
+affordable, which is why `sincronizarEstoquePedido` stamps `ultimaModificacao`
+solely on kits named directly on a pedido line.
+
+`apps/docs` → **ADR 0014, "Kit stock propagation and the tiered stock sweep"**,
+carries the full arithmetic, the tier table, the `min(anterior, atual)` guard and
+the rejected alternatives. Check any change in this area against it.
+
 ## Status
 
 OAuth connect is **live**: code exchange + persistence (tokenDuravel) + the

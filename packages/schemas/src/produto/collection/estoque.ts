@@ -30,6 +30,13 @@ export const estoqueProdutoSchema = z
     parentId: z.string().nullable().default(null),
     depositoOuterRef: outerRefSchema,
     quantidade: z.number().default(0),
+    /**
+     * ⚠️ `.min(0)` validates a WRITE through a Zod converter — it is NOT a read
+     * guarantee, and nothing may assume the stored value is non-negative. The ML
+     * sweep reads raw pipeline rows, the Flutter app and the Admin SDK write
+     * these docs without this schema, and a negative here would *increase*
+     * computed availability. `estoqueDisponivel` floors it; see ADR 0014 §7.
+     */
     quantidadeReservada: z.number().min(0).default(0),
     localizacao: z.string().max(50).nullable().default(null),
     variacoes: z.record(z.string(), z.unknown()).nullable().default(null),
@@ -40,11 +47,33 @@ export const estoqueProdutoSchema = z
 
 export type EstoqueProduto = z.infer<typeof estoqueProdutoSchema>;
 
-/** Available quantity = total − reserved (Flutter `Estoque.disponivel`). */
+/**
+ * Available quantity = total − reserved (Flutter `Estoque.disponivel`).
+ *
+ * ⚠️ The reservation is **floored at 0 before subtracting**, and that floor is
+ * load-bearing rather than defensive. A negative reservation would otherwise
+ * *increase* availability — `8 − (−2) = 10` — so a single bad value invents
+ * stock that does not exist, and every consumer of this helper inherits the
+ * invention: the ML sweep publishes a quantity Mercado Livre will happily sell,
+ * the pedido form green-lights a line it cannot fulfil, and the print assembler
+ * reports it. Failing toward "less available" is the only safe direction here.
+ *
+ * The schema declares `quantidadeReservada` as `.min(0)`, but that guards the
+ * WRITE through a Zod converter — it is not a read guarantee. Three paths reach
+ * this function around it: the ML sweep consumes **raw** pipeline rows that are
+ * never Zod-parsed, the sweep's window-start reconstruction synthesizes
+ * `reservada − ΣmovimentoReservada` (arithmetic that can land below zero on its
+ * own), and the live Flutter app + Admin SDK write these docs without this
+ * schema (root `CLAUDE.md` rule 7 — there is always a second writer).
+ *
+ * A negative `disponivel` is still returned when the reservation legitimately
+ * exceeds the quantity (2 in stock, 5 reserved ⇒ −3); that is real information
+ * and callers that publish externally clamp it themselves.
+ */
 export function estoqueDisponivel(
   e: Pick<EstoqueProduto, 'quantidade' | 'quantidadeReservada'>,
 ): number {
-  return e.quantidade - e.quantidadeReservada;
+  return e.quantidade - Math.max(0, e.quantidadeReservada);
 }
 
 /** Deterministic estoque doc id (Flutter `Estoque.makeEstoqueUid`). */

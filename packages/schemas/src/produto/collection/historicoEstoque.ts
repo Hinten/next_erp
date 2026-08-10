@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { millisSinceEpoch } from '../../shared/datetime';
 import { outerRefSchema } from '../../shared/outerRef';
 
 // Stock history rides the same `PERM.estoque` domain (bits 64–66) as `estoque`
@@ -71,35 +72,65 @@ export const TIPO_MOVIMENTO_ESTOQUE_LABELS: Record<TipoMovimentoEstoque, string>
  * saída / balanço appends one record alongside the atomic `increment` (or the
  * balanço absolute set) on the parent estoque doc.
  *
- * Wire facts: `quantidade` / `quantidadeReservada` are the **signed delta** of
- * the movement (saída negates) — for a balanço they are the absolute counted
- * values; `ehBalanco` flags a balanço (`true`) vs a regular movement (null);
- * `motivo` is free text; `timestamp` is a ms-epoch int (`dateTimeToJson`).
+ * ## v2 — the ledger is SUMMABLE (ADR 0014)
  *
- * The structured audit block (all nullable — legacy docs parse unchanged) fixes
- * the legacy trail's unqueryability (movements were findable only by
- * string-matching `motivo`): `tipo` names the business event, `pedidoOuterRef` /
- * `pedidoNumero` link the pedido, `*Antes`/`*Depois` snapshot the counters
- * around the movement (exact — written inside the sync transaction; null on the
- * read-free manual path), `usuarioOuterRef` records who moved (manual only),
- * and `eventId` traces the triggering Firestore event for dedup forensics.
+ * `movimento` / `movimentoReservada` are the **signed delta** of the movement
+ * (saída negates) on **every** row, a balanço included. That is the whole point:
+ * the Mercado Livre sweep reconstructs "stock at time T" as
+ * `atual − sum(movimento since T)` in ONE grouped aggregate, and a row that
+ * stores an absolute value in the delta field poisons that sum silently. The
+ * balanço write path therefore takes a transaction to compute `contado − atual`
+ * rather than recording the counted value — see `aplicarMovimento`.
+ *
+ * ⚠️ **Never reintroduce a field whose meaning depends on a discriminator.**
+ * v1 had exactly that (`quantidade` was a delta, or an absolute when
+ * `ehBalanco`), which is why the sweep could not sum the trail and had to reach
+ * for a sales pre-pass over `pedidos` instead.
+ *
+ * `parentId` (produto id) and `depositoOuterRef` are the aggregate's **group
+ * keys** — the join keys this collection lacked, being three levels deep with no
+ * denorm of its own.
+ *
+ * `saldo` / `saldoReservada` are the resulting counters, **best effort**: filled
+ * by writers that already read inside a transaction (the pedido sync), `null` on
+ * the deliberately read-free manual entrada/saída path (#387). Nothing computes
+ * from them — they are for the audit UI. `*Antes` is `saldo − movimento`.
+ *
+ * ⚠️ **Dual run**: the Flutter app still writes rows in the v1 shape, so a
+ * Flutter-written row arrives with `movimento: null`. That is deliberate and
+ * safe — every consumer treats an absent `movimento` as *unknown* and **fails
+ * open** (the sweep sends rather than skips). Keeping v1's field name would
+ * instead have let a Flutter balanço's absolute value be summed as if it were a
+ * delta: silent corruption, which is strictly worse than a visible gap. The
+ * one-time `tools/migrations` pass normalizes rows at rest in the cutover
+ * window (ADR 0013), and Flutter stops writing at the same cutover (#431).
+ *
+ * `motivo` is free text; `timestamp` is ms since epoch. The rest of the audit
+ * block is unqueryable-trail repair (v1 movements were findable only by
+ * string-matching `motivo`): `tipo` **names** the business event and is a
+ * display label only — nothing computes from it — while `pedidoOuterRef` /
+ * `pedidoNumero` link the pedido, `usuarioOuterRef` records who moved (manual
+ * only), and `eventId` traces the triggering Firestore event for dedup
+ * forensics.
  */
 export const historicoEstoqueSchema = z
   .object({
-    ehBalanco: z.boolean().nullable().default(null),
-    quantidade: z.number().default(0),
-    quantidadeReservada: z.number().default(0),
+    // The summable core — signed deltas, always (ADR 0014) -------------------
+    movimento: z.number().nullable().default(null),
+    movimentoReservada: z.number().nullable().default(null),
+    // Aggregate group keys ---------------------------------------------------
+    parentId: z.string().nullable().default(null),
+    depositoOuterRef: outerRefSchema.nullable().default(null),
+
     motivo: z.string().nullable().default(null),
-    timestamp: z.number().int().nullable().default(null),
+    timestamp: millisSinceEpoch().nullable().default(null),
 
     // Structured audit (all nullable — absent on legacy/Flutter records) ------
     tipo: tipoMovimentoEstoqueSchema.nullable().default(null),
     pedidoOuterRef: outerRefSchema.nullable().default(null),
     pedidoNumero: z.string().nullable().default(null),
-    quantidadeAntes: z.number().nullable().default(null),
-    quantidadeDepois: z.number().nullable().default(null),
-    quantidadeReservadaAntes: z.number().nullable().default(null),
-    quantidadeReservadaDepois: z.number().nullable().default(null),
+    saldo: z.number().nullable().default(null),
+    saldoReservada: z.number().nullable().default(null),
     usuarioOuterRef: outerRefSchema.nullable().default(null),
     eventId: z.string().nullable().default(null),
   })
