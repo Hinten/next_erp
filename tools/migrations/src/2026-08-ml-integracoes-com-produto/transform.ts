@@ -16,11 +16,23 @@ import { parseRef, toOuterRefOrNull } from '@delfrance/schemas';
  * Amazon's entries and stop its stock sync with nothing in the logs.
  */
 
-/** Every id in a stored array field, strings only, first occurrence kept. */
+/**
+ * Every id in a stored array field, strings only, first occurrence kept.
+ *
+ * The `Set` is the membership test, not the output: insertion order has to
+ * survive so {@link planIntegracoesComProduto}'s diff reads as a minimal edit
+ * rather than a reshuffle. A scan-the-output-array check would be O(n²), and
+ * this runs once per scanned produto (~19k on production).
+ */
 export function asStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
+  const vistos = new Set<string>();
   const out: string[] = [];
-  for (const e of v) if (typeof e === 'string' && e.length > 0 && !out.includes(e)) out.push(e);
+  for (const e of v) {
+    if (typeof e !== 'string' || e.length === 0 || vistos.has(e)) continue;
+    vistos.add(e);
+    out.push(e);
+  }
   return out;
 }
 
