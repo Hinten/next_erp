@@ -68,7 +68,14 @@
  *    __name__ ASC)` prefix that used to sit alongside them was dropped by the
  *    #779 audit: every S1 call site also filters `integracoesComProduto`, so
  *    it was dead weight — the surviving composite's leading two fields
- *    already serve it as a prefix;
+ *    already serve it as a prefix.
+ *    ⚠️ That surviving composite is PERMANENT — do not let a future index
+ *    audit read it as legacy dual-run debt. The A/B spike (#890, staging
+ *    2026-08-07) measured the alternative: dropping the array and gating the
+ *    conta with a link post-filter reads ×7.5 the data (48.27 KiB vs 6.41), and
+ *    on Enterprise a post-filter cannot reduce data scanned at all. Shape A
+ *    stays, so `integracoesComProduto` is no longer a deprecated array — it is
+ *    an app-owned denorm whose sole writers are the #920 link triggers;
  *  - estoque joins: `estoques(parentId ASC, depositoOuterRef ASC,
  *    ultimaModificacao ASC)` COLLECTION_GROUP — `parentId` carries the
  *    `equalAny` seek, `ultimaModificacao` covers the MAX branch;
@@ -1276,7 +1283,11 @@ export function buildSendTasks(
   if (row.anchor.ehKitVirtual) return skipOnly(anchorId, 'kit-virtual');
   // DEFENSIVE-ONLY rung: S1 already filters `publicado` server-side (keep the S1 term).
   if (!row.anchor.publicado) return skipOnly(anchorId, 'nao-publicado');
-  // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1 term).
+  // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1
+  // term). Since #920 it earns its keep twice over — the array is maintained by
+  // an EVENTUALLY-consistent trigger, so this is the rung that catches a stale
+  // entry the trigger has not caught up with. Keep both it and the S6
+  // projection: dropping the projection alone silently disables this check.
   if (!row.integracoesComProduto.includes(opts.integracaoId)) {
     return skipOnly(anchorId, 'conta-fora-do-produto');
   }
