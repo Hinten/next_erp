@@ -21,7 +21,7 @@ import type {
   MappedMlVariation,
   MlItemAttribute,
 } from '@delfrance/integrations-mercado-livre';
-import { CONDICAO_PRODUTO, makeEstoqueUid, toOuterRef } from '@delfrance/schemas';
+import { CONDICAO_PRODUTO, makeEstoqueUid, reservaEfetiva, toOuterRef } from '@delfrance/schemas';
 import type { TaxonomiaResolution } from './taxonomiaCore';
 
 /** Import blocked by unusable item data — maps to HTTP 422. */
@@ -97,7 +97,13 @@ export interface ImportAssembleArgs {
   existingProduto: Record<string, unknown> | null;
   existingLinkRaw: Record<string, unknown> | null;
   existingExtra: Record<string, unknown> | null;
-  /** Existing stock (quantidade/reservada) for the depósito (null when absent). */
+  /**
+   * Existing stock (quantidade/reservada) for the depósito (null when absent).
+   *
+   * ⚠️ `existingEstoqueReservada` comes from a raw `.data()` read and **may be
+   * negative at rest** — nothing guarantees otherwise (#931). It is floored with
+   * `reservaEfetiva` before it reaches the quantity; do not use it raw.
+   */
   existingEstoqueQty: number | null;
   existingEstoqueReservada: number | null;
   now: number;
@@ -269,7 +275,15 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
       // `disponivel = quantidade - reservada`, an overwrite of a stock that already
       // has reservations must add them back into `quantidade`, or the ERP would show
       // fewer available than ML. On create reservada is 0.
-      const reservada = exists ? (args.existingEstoqueReservada ?? 0) : 0;
+      //
+      // ⚠️ `reservaEfetiva` is load-bearing, not defensive (#931). This is the
+      // MIRROR IMAGE of ADR 0014 §7: there a negative reservation INVENTS stock by
+      // being subtracted, here it DESTROYS stock by being added — a stored `-2`
+      // would write `quantidade = availableQuantity - 2`, shrinking the ERP count
+      // below ML's on every single re-import. The value arrives from `readEstoque`,
+      // a bare Admin-SDK `.data()` read with no Zod and no floor, so a negative at
+      // rest reaches this line verbatim.
+      const reservada = exists ? reservaEfetiva(args.existingEstoqueReservada) : 0;
       estoque = {
         docId: makeEstoqueUid(args.produtoId, depositoId!),
         data: {
@@ -385,6 +399,7 @@ export interface VariationChildAssembleArgs {
   depositoOuterRef: string | null;
   existingProduto: Record<string, unknown> | null;
   existingLinkRaw: Record<string, unknown> | null;
+  /** Same contract as the parent's: `existingEstoqueReservada` may be negative. */
   existingEstoqueQty: number | null;
   existingEstoqueReservada: number | null;
   now: number;
@@ -535,7 +550,8 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
   // Same rules as the parent's (non-variation) stock section — create when absent
   // + importarEstoque; overwrite only under sobrescreverEstoque, adding reservada
   // back so `disponivel` still matches ML — but keyed to the CHILD's own produtoId
-  // and quantity.
+  // and quantity. The `reservaEfetiva` floor is required here for the same reason
+  // it is required there (#931); this arm is not a lesser copy of it.
   let estoque: { docId: string; data: Record<string, unknown> } | null = null;
   const depositoId = args.depositoOuterRef ? lastSegment(args.depositoOuterRef) : null;
   const exists = args.existingEstoqueQty != null;
@@ -544,7 +560,7 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     depositoId != null &&
     (exists ? options.sobrescreverEstoque : options.importarEstoque);
   if (writeStock) {
-    const reservada = exists ? (args.existingEstoqueReservada ?? 0) : 0;
+    const reservada = exists ? reservaEfetiva(args.existingEstoqueReservada) : 0;
     estoque = {
       docId: makeEstoqueUid(args.produtoId, depositoId!),
       data: {
