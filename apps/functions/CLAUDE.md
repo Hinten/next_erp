@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Nineteen exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -118,7 +118,18 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   inline and import nothing, so it asserted nothing about shipped code).
   Covers a standalone estoque delete; the produto-wide cascade already deletes
   history directly, so its re-fires of this trigger are idempotent no-ops.
-- ⚠️ **None of the three cascades may use `db.recursiveDelete` (#728).** It
+- **`onOperacaoDeleted`** (`onDocumentDeleted('operacao/{operacaoId}')`) — sweeps
+  an operação's `regras` subcollection, core `cascadeOperacaoDeletion` (exported
+  for the emulator suite). Retires the client-side batched cascade
+  `deleteOperacaoCascade` used to run from `apps/web/lib/operacoes/clientPort.ts`
+  (#354); the two `/operacoes` pages now `deleteDoc` the parent only.
+- **`onCategoriaDeleted`** (`onDocumentDeleted('categorias/{categoriaId}')`) —
+  sweeps a categoria's `imposto` subcollection (the legacy Dart getter was named
+  `impostocategoria`; the Firestore collection id is `imposto`), core
+  `cascadeCategoriaDeletion` (exported for the emulator suite). Categoria had NO
+  client-side cascade at all before this (#354) — a plain `deleteDoc` left
+  `imposto` permanently orphaned.
+- ⚠️ **None of the five cascades may use `db.recursiveDelete` (#728).** It
   issues a kindless all-descendants query — `COLLECTION_GROUP * SELECT __name__
   LIMIT 5000` — which this Enterprise edition cannot index and cannot be *given*
   an index for: there is no wildcard index and no field predicate to seek on, so

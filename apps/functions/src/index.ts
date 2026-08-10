@@ -17,6 +17,8 @@ export { onProdutoExtraDataChanged } from './produtos/onProdutoExtraDataChanged'
 export { onProdutoImpostoChanged } from './produtos/onProdutoImpostoChanged';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { onBalancoDeleted } from './estoques/onBalancoDeleted';
+export { onOperacaoDeleted } from './operacoes/onOperacaoDeleted';
+export { onCategoriaDeleted } from './categorias/onCategoriaDeleted';
 export { onNfeDeleted } from './nfe/onNfeDeleted';
 export { onPedidoEstadoChanged } from './pedidos/registrarEstadoPedido';
 export { aplicarEstoque } from './estoques/aplicarEstoque';

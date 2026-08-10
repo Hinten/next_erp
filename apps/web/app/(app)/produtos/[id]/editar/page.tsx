@@ -41,7 +41,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
-import { MercadoLivreManager } from '../../_components/MercadoLivreManager';
+import { MercadoLivreTab } from '../../_components/mercado-livre/MercadoLivreTab';
 import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
@@ -404,9 +404,12 @@ export default function EditarProdutoPage() {
         // Self-contained tab (like Estoque): live link-doc status + the publish
         // action against the apps/mercado-livre backend, decoupled from this
         // form's save.
-        renderInput: (p) => (
-          <MercadoLivreManager produtoId={params.id} db={db} disabled={p.disabled} />
-        ),
+        //
+        // Behind `MercadoLivreTab`, which defers loading the editor chunk until
+        // the tab is actually opened — Mantine keeps inactive panels mounted
+        // under `<Activity mode="hidden">`, so without the gate this subtree
+        // would render (and start its import) on every produto edit.
+        renderInput: (p) => <MercadoLivreTab produtoId={params.id} db={db} disabled={p.disabled} />,
       },
       modificacoes: {
         label: 'Modificações',
