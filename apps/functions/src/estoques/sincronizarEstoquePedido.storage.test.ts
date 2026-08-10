@@ -287,8 +287,9 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect((await lerEstoque(db, compB, depositoId)).exists).toBe(false); // not limited
     // The kit's QUANTITIES still move nothing — that is what "expands into
     // components" means. Its estoque doc now exists all the same, because the
-    // sale is stamped there so the marketplace sweep can see it (ADR 0014); the
-    // counters staying at 0 is the assertion that matters here.
+    // sale is stamped there so the marketplace sweep can see it (ADR 0014). The
+    // stamp writes no counters at all, so these read 0 by absence (`lerEstoque`
+    // coalesces) rather than by being initialized — either way, nothing moved.
     expect(await lerEstoque(db, kitId, depositoId)).toMatchObject({
       exists: true,
       quantidade: 0,
@@ -570,12 +571,24 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     // The component carries the movement — that is what a kit sale actually does.
     expect((await lerEstoque(db, compId, depositoId)).reservada).toBe(2);
 
-    // The kit's own doc exists, is untouched quantity-wise, and IS stamped.
+    // The kit's own doc exists and IS stamped — with EXACTLY three fields.
     const kitDoc = (await estoqueRef(db, kitId, depositoId).get()).data()!;
-    expect(kitDoc).toMatchObject({ quantidade: 0, quantidadeReservada: 0, parentId: kitId });
+    expect(kitDoc.parentId).toBe(kitId);
     expect(kitDoc.depositoOuterRef).toBe(`documents/depositos/${depositoId}`);
     expect(typeof kitDoc.ultimaModificacao).toBe('number');
     expect(kitDoc.ultimaModificacao).toBeGreaterThan(0);
+
+    // ⚠️ The payload is minimal ON PURPOSE. `parentId` + `depositoOuterRef` are
+    // the only two the sweep needs to REACH this doc (its estoque probe filters
+    // on the depósito, and the ledger pre-pass keys on `parentId`); everything
+    // else would be a field nobody reads. `dataCriacao` in particular: a stamp
+    // is not a creation event. Pinned as an exact key set so a future "while
+    // we're here" addition has to justify itself.
+    expect(Object.keys(kitDoc).sort()).toEqual([
+      'depositoOuterRef',
+      'parentId',
+      'ultimaModificacao',
+    ]);
 
     // The stamp is NOT a movement: no history row on the kit (the ledger must
     // stay summable), while the component has its own.
@@ -586,8 +599,10 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
   it('never clobbers a kit estoque that already holds stock', async () => {
     const db = getDb();
     const { depositoId, pedidoId, kitId } = await seedKit(db);
-    // A kit may hold real stock of its own (pre-assembled units). `increment(0)`
-    // has to leave it exactly where it was.
+    // A kit may hold real stock of its own (pre-assembled units). The stamp is a
+    // merge that writes no counters, so it has to leave them exactly where they
+    // were — and leave `dataCriacao` alone for the same reason: it is not in the
+    // payload at all.
     await estoqueRef(db, kitId, depositoId).set({
       parentId: kitId,
       depositoOuterRef: `documents/depositos/${depositoId}`,
@@ -601,7 +616,8 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
 
     const kitDoc = (await estoqueRef(db, kitId, depositoId).get()).data()!;
     expect(kitDoc).toMatchObject({ quantidade: 7, quantidadeReservada: 3 });
-    // Stamped forward; `dataCriacao` is set-if-missing so the older value wins.
+    // Stamped forward; `dataCriacao` survives untouched because the stamp never
+    // writes it.
     expect(kitDoc.ultimaModificacao).toBeGreaterThan(1);
     expect(kitDoc.dataCriacao).toBe(1);
   });
