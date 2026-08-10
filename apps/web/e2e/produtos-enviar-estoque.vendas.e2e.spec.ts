@@ -85,9 +85,14 @@ test.describe.serial('Produtos — bulk stock push to the marketplaces', () => {
     await page.getByRole('button', { name: 'Enviar estoque' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Enviar estoque' }).click();
 
-    const row = page.getByTestId(`envio-estoque-row-${produtoId}`);
-    await expect(row).toBeVisible({ timeout: 20_000 });
-    await expect(row).toContainText('Não foi possível contatar o serviço do Mercado Livre.');
+    // Rows are LISTING-scoped and keyed `<produtoId>:<contaId>:<anuncioId>`, so
+    // match the prefix and assert on the one row this scenario produces rather
+    // than assuming a produto yields exactly one.
+    const rows = page.locator(`[data-testid^="envio-estoque-row-${produtoId}:"]`);
+    await expect(rows).toHaveCount(1, { timeout: 20_000 });
+    await expect(rows.first()).toContainText(
+      'Não foi possível contatar o serviço do Mercado Livre.',
+    );
     // Fechar only appears once the run is terminal — the operator can always
     // see what happened before the dialog goes away.
     await expect(page.getByRole('button', { name: 'Fechar' })).toBeEnabled({ timeout: 20_000 });

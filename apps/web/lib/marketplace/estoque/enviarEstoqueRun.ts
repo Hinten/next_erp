@@ -48,17 +48,26 @@ export interface EnviarEstoqueRunResult {
 const defaultLerIntegracoes = (db: Firestore, ids: readonly string[]) =>
   getDocsByIds(db, integracaoCollection, ids);
 
+/**
+ * A row no provider produced — the orchestrator's own arms.
+ *
+ * ⚠️ `contaId` is not decoration: a produto can name SEVERAL missing integrações,
+ * and keying every such row `<produtoId>:-:-` would hand React duplicate keys for
+ * the same produto. It also belongs in `integracaoId`, so the dialog can say
+ * which conta went missing instead of showing "Integração desconhecida".
+ */
 function linhaSimples(
   produtoId: string,
   produtoNome: string | null,
   motivo: string,
   mensagem: string,
+  contaId: string | null = null,
 ): StockPushRow {
   return {
-    key: `${produtoId}:-:-`,
+    key: `${produtoId}:${contaId ?? '-'}:-`,
     produtoId,
     produtoNome,
-    integracaoId: null,
+    integracaoId: contaId,
     integracaoNome: null,
     anuncioId: null,
     linkDocId: null,
@@ -92,6 +101,14 @@ export async function enviarEstoqueParaMarketplaces(
   const lerIntegracoes = runDeps.lerIntegracoes ?? defaultLerIntegracoes;
   const rows: StockPushRow[] = [];
   const emitir = () => onProgress([...rows]);
+  /**
+   * Read through a thunk, never inline. `signal.aborted` is mutable external
+   * state that flips when the operator hits Cancelar mid-run, but after one
+   * inline `=== true` check TypeScript narrows it to `false | undefined` and
+   * calls every later check dead code (TS2367). The call defeats that narrowing
+   * — and the compiler was wrong, not the code.
+   */
+  const cancelou = (): boolean => runDeps.signal?.aborted === true;
 
   const nomePorProdutoId = new Map(alvos.map((a) => [a.produtoId, a.produtoNome]));
   const semIntegracoes = alvos.filter((a) => a.integracoesComProduto.length === 0);
@@ -106,6 +123,10 @@ export async function enviarEstoqueParaMarketplaces(
   emitir();
 
   if (contaIds.length === 0) return { rows, cancelado: false };
+  // Check BEFORE the read, not only inside the dispatch loop: `getDocsByIds`
+  // takes no AbortSignal, so an already-cancelled run would otherwise still pay
+  // for the integração query before discovering it has nothing to do.
+  if (cancelou()) return { rows, cancelado: true };
 
   const integracoes = await lerIntegracoes(runDeps.db, contaIds);
 
@@ -122,7 +143,7 @@ export async function enviarEstoqueParaMarketplaces(
 
   let cancelado = false;
   for (const contaId of contaIds) {
-    if (runDeps.signal?.aborted === true) {
+    if (cancelou()) {
       cancelado = true;
       break;
     }
@@ -137,6 +158,7 @@ export async function enviarEstoqueParaMarketplaces(
             a.produtoNome,
             'integracao-nao-encontrada',
             `Integração não encontrada ${contaId}`,
+            contaId,
           ),
         );
       }

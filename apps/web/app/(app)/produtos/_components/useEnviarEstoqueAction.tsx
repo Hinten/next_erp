@@ -61,7 +61,8 @@ export function useEnviarEstoqueAction(): {
       // Re-read the selected produtos rather than trusting `row.data`:
       // TableView projects only the VISIBLE columns' fields, and
       // `integracoesComProduto` is not one of them, so it would arrive
-      // `undefined`. One chunked `in` query covers 50 ids.
+      // `undefined`. `getDocsByIds` chunks `in` at the SDK's 30-id cap and runs
+      // the chunks concurrently, so the 50-produto ceiling costs 2 queries.
       const frescos = await getDocsByIds(
         getFirebaseFirestore(),
         produtoCollection,

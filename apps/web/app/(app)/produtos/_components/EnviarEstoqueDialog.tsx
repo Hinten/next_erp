@@ -167,7 +167,11 @@ export function EnviarEstoqueDialog({ opened, alvos, onClose }: EnviarEstoqueDia
           <ScrollArea.Autosize mah={360}>
             <List spacing="xs" size="sm" listStyleType="none">
               {rows.map((row) => (
-                <List.Item key={row.key} data-testid={`envio-estoque-row-${row.produtoId}`}>
+                // The test id keys off `row.key`, not `produtoId`: rows are
+                // LISTING-scoped, so one produto can legitimately produce
+                // several, and a produto-scoped id would make every Playwright
+                // locator ambiguous exactly when the output matters most.
+                <List.Item key={row.key} data-testid={`envio-estoque-row-${row.key}`}>
                   <Group gap="xs" align="flex-start" wrap="nowrap">
                     <Badge color={COR[row.outcome]} variant="light" miw={96}>
                       {ROTULO[row.outcome]}

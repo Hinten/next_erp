@@ -120,6 +120,32 @@ describe('enviarEstoqueParaMarketplaces', () => {
     spy.mockRestore();
   });
 
+  it('keys a row per (produto × conta), so two missing contas do not collide', async () => {
+    // `key` is the React list key AND the Playwright test id. Keying these rows
+    // on the produto alone gave one produto two identical keys.
+    const lerIntegracoes = vi.fn().mockResolvedValue(new Map());
+    const res = await run(
+      [alvo({ integracoesComProduto: ['sumiu-1', 'sumiu-2'] })],
+      lerIntegracoes,
+    );
+    expect(res.rows).toHaveLength(2);
+    expect(new Set(res.rows.map((r) => r.key)).size).toBe(2);
+    // …and each names the conta that went missing, rather than rendering as
+    // "Integração desconhecida".
+    expect(res.rows.map((r) => r.integracaoId)).toEqual(['sumiu-1', 'sumiu-2']);
+  });
+
+  it('an already-cancelled run does not even read the integração docs', async () => {
+    // `getDocsByIds` takes no AbortSignal, so the only way not to pay for it is
+    // to check before the call.
+    const controller = new AbortController();
+    controller.abort();
+    const lerIntegracoes = vi.fn();
+    const res = await run([alvo()], lerIntegracoes, vi.fn(), controller.signal);
+    expect(lerIntegracoes).not.toHaveBeenCalled();
+    expect(res.cancelado).toBe(true);
+  });
+
   it('stops dispatching once aborted', async () => {
     const controller = new AbortController();
     controller.abort();
