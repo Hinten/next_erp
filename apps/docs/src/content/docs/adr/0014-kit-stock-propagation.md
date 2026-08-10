@@ -91,11 +91,26 @@ transaction has already loaded, so this costs **zero extra reads** and is
 `O(lines in the pedido)` — not `O(kits containing the component)`.
 
 The write is read-free and ADR 0011 **tier 0**: `FieldValue.maximum(now)` for the
-monotonic stamp, `FieldValue.minimum(now)` for `dataCriacao`, and
-`FieldValue.increment(0)` on the quantity fields as a get-or-create that
-initializes a missing field to `0` and cannot clobber an existing value. The doc
-is created when absent, because the sweep's window filter coalesces a missing
-estoque to `0` and would otherwise never see the family.
+monotonic stamp, so a stale `now` cannot move it backwards and a concurrent
+movement's own bump wins if it is later.
+
+**The payload is exactly three fields**, and the two besides the stamp are
+reachability keys rather than decoration — dropping either turns the stamp into a
+no-op for the case it exists to serve, a kit whose estoque doc does not exist yet
+(the norm, since a kit holds no stock):
+
+| field | why it cannot be dropped |
+|---|---|
+| `ultimaModificacao` | the signal itself |
+| `depositoOuterRef` | the sweep reaches an estoque via `subcollection('estoques').where(depositoOuterRef == …)`; without it the doc matches no depósito and the window filter never sees the stamp |
+| `parentId` | the ledger pre-pass keys `(produto, depósito)` off this denorm; without it `desfazerMovimento` cannot key the row and reads it as *unchanged* — the one verdict a just-sold kit must never get |
+
+Nothing else is written. **`dataCriacao` is deliberately absent**: a stamp is not
+a creation event and has no business authoring one. The quantity counters are
+absent too — the sweep coalesces a missing `quantidade`/`quantidadeReservada` to
+`0` and the Zod schema defaults them, so initializing them would write two fields
+nobody reads. The emulator suite pins the exact key set, so a later "while we're
+here" addition has to justify itself.
 
 **No `historicoEstoque` row is written** for that stamp: no quantity moved, and
 the ledger must stay summable (see 4).
