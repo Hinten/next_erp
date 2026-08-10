@@ -1233,6 +1233,23 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     expect(anteriores.get('PROD')).toBe(10);
   });
 
+  it('⚠️ a reconstruction landing the reservation BELOW ZERO cannot invent stock (#931)', () => {
+    // The window both added 3 units and added 3 to the reservation, so
+    // `desfazerMovimento` synthesizes quantidadeReservada = 2 − 3 = −1. That
+    // negative is legitimate — it is arithmetic, not a stored value — and this
+    // is the sweep's one unfloored subtraction. `estoqueDisponivel` flooring it
+    // downstream is the ONLY thing that keeps it harmless.
+    const janela = new Map([[chaveMovimento('PROD', DEP), { dq: 3, dr: 3, desconhecido: false }]]);
+    const anteriores = quantidadesAnteriores(simples(), DEP, janela);
+
+    // Floored: (10−3) − max(0, −1) = 7. UNFLOORED it would be 7 − (−1) = 8 —
+    // exactly `atual`, so the sweep would read "nothing changed" and SKIP a
+    // movement that certainly happened. A silent skip is the one failure mode
+    // ADR 0014 says this design cannot tolerate.
+    expect(anteriores.get('PROD')).toBe(7);
+    expect(deveEnviarFamilia(quantidadesDaFamilia(simples()), anteriores, true)).toBe(true);
+  });
+
   it('OMITS a member whose own movement is unknown, so the policy fails OPEN', () => {
     // A Flutter v1 row landed in this window: the sums cannot account for it,
     // so there is no honest `anterior`. Leaving the member out is what makes

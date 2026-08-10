@@ -236,10 +236,18 @@ across is wrong by 1000×.
 
 ### 7. A negative reservation can never increase availability
 
-`estoqueDisponivel` floors the reservation at zero **before** subtracting:
+The floor is the named helper `reservaEfetiva`, and every calculation goes through
+it:
 
 ```ts
-return e.quantidade - Math.max(0, e.quantidadeReservada);
+export function reservaEfetiva(quantidadeReservada: number | null | undefined): number {
+  return typeof quantidadeReservada === 'number' && Number.isFinite(quantidadeReservada)
+    ? Math.max(0, quantidadeReservada)
+    : 0;
+}
+
+// estoqueDisponivel
+return e.quantidade - reservaEfetiva(e.quantidadeReservada);
 ```
 
 Without that floor a negative reservation *adds* to availability — `8 − (−2) = 10`
@@ -249,32 +257,63 @@ number redundantly, while this one makes Mercado Livre **sell stock the store do
 not have**. The same helper feeds the pedido form's availability check and the
 print assembler, so the invention spreads well beyond the sweep.
 
-The floor belongs in `estoqueDisponivel` because that helper is the single
+`estoqueDisponivel` is where the floor lands for reads, because it is the single
 derivation of `disponivel` in the repo — kits included, since `kitEstoqueDisponivel`
-consumes its output rather than re-deriving. Fixing it anywhere else would leave a
-consumer behind.
+consumes its output rather than re-deriving. But it is **not the only arithmetic on
+the reservation**, which is why the floor is a helper rather than an inline
+`Math.max` (#931):
 
-⚠️ **`quantidadeReservada: z.number().min(0)` in the schema is not the guarantee.**
-It validates a write through a Zod converter, and three live paths reach the
-availability calculation around it:
+- **`importCore.ts`, both arms** (`assembleImportPlan` and
+  `assembleVariationChildPlan`) run the *inverse* operation. ML's
+  `available_quantity` is the buyable count, i.e. `disponivel`, so an overwrite of a
+  stock that already holds reservations adds them back:
+  `quantidade = availableQuantity + reservada`. A stored `−2` there **destroys**
+  stock instead of inventing it — `quantidade` lands two below ML's count, on every
+  single re-import. The value arrives from `readEstoque`, a bare Admin-SDK `.data()`
+  read with no Zod and no floor. Both arms call `reservaEfetiva`; the variation-child
+  one is not a lesser copy of the parent.
+- **the sweep's window-start reconstruction** (`desfazerMovimento`) synthesizes
+  `quantidadeReservada − ΣmovimentoReservada`, which lands below zero on its own
+  whenever the stored counter was floored but the ledger recorded the unclamped
+  delta. That negative is *legitimate* — it is arithmetic, not a stored value — and
+  is deliberately left unfloored, because its output always flows back through
+  `estoqueDisponivel`. A test pins the consequence: a reconstruction that goes
+  negative must not reconstruct `anterior` **equal to** `atual`, which would make
+  the sweep read "nothing changed" and silently skip a real movement.
 
-- the ML sweep consumes **raw** pipeline rows, never Zod-parsed;
-- the sweep's window-start reconstruction *synthesizes*
-  `quantidadeReservada − ΣmovimentoReservada`, arithmetic that can land below zero
-  on its own whenever the stored counter was floored but the ledger recorded the
-  unclamped delta;
-- the live Flutter app and every Admin SDK writer bypass this schema entirely
-  (root `CLAUDE.md` rule 7 — assume a second writer).
+⚠️ **The schema is not the guarantee, and must not be made into one.**
+`quantidadeReservada` carries no `.min(0)` — it carried one until #931, and that
+constraint was itself a bug: `parseSoftRead` `safeParse`s the whole object, so one
+out-of-range field failed the **document** and returned the raw data, discarding
+every `.default()`. A doc with no `quantidade` — exactly the shape §2 writes, which
+relies on the schema to default it — then read as `undefined`, and
+`estoqueDisponivel` returned `NaN`, which `publish.ts` would have published.
 
-The write paths do floor: `aplicarMovimento` clamps a balanço's counted reservation
+A `.transform()`/`preprocess`/`.catch(0)` is not the fix either: those apply on
+**write** (`parseForWrite`, and `parseMergePatch` through `.partial()`), so they
+would launder a bad value at rest and destroy the evidence — while still reaching
+none of the paths that matter, since the sweep reads raw pipeline rows, the import
+reads a bare `.data()`, and the Flutter app plus every Admin SDK writer bypass the
+schema entirely (root `CLAUDE.md` rule 7 — assume a second writer).
+
+The three concerns are separate:
+
+| Concern | Where |
+|---|---|
+| Reject a bad **write** | `movimentacaoInputSchema` — the untrusted callable input, `.min(0).finite()` |
+| Describe the wire shape + **default** | `estoqueProdutoSchema` — unconstrained, so a bad row still parses |
+| Floor for **one calculation** | `reservaEfetiva` |
+| Make a bad row **visible** | `produtoPageIssues` + the audit script |
+
+The write paths also floor: `aplicarMovimento` clamps a balanço's counted reservation
 in `planMovimentacao` and follows an entrada/saída `increment` with
 `FieldValue.maximum(0)` on the same doc. Those floors are necessary and not
 sufficient — they only bind writes that go through them.
 
-📌 **Open follow-up:** nothing yet *audits* production for a stored negative
-`quantidadeReservada`. The floor above makes such a row harmless to availability,
-but it would still be a real data defect worth finding and explaining. A tracking
-issue for that audit is to be opened after this stack merges.
+**Auditing what is already stored** is
+`tools/migrations/src/2026-08-estoque-reservada-negativa/` — read-only, no `--apply`,
+and it attributes each hit to a writer via its `historicoEstoque`. Per root rule 8 the
+production run is a human step, tracked in its own issue.
 
 ## Consequences
 
