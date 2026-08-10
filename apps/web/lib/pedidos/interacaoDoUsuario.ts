@@ -27,7 +27,9 @@
  * lives here and not inside `buildPedidoPatch`, which must stay a pure
  * projection of the dirty fields.
  */
-export function marcarInteracaoDoUsuario<T extends Record<string, unknown>>(patch: T): T {
+export function marcarInteracaoDoUsuario<T extends Record<string, unknown>>(
+  patch: T,
+): T | (T & { hasUserInteraction: true }) {
   if (Object.keys(patch).length === 0) return patch;
   return { ...patch, hasUserInteraction: true };
 }
