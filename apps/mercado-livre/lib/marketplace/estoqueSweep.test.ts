@@ -487,6 +487,7 @@ describe('runStockSweep — conta enumeration', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: false,
@@ -602,6 +603,7 @@ describe('runStockSweep — happy path', () => {
         integracaoId: 'INT-A',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
@@ -664,6 +666,7 @@ describe('runStockSweep — happy path', () => {
         integracaoId: 'INT-A',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
@@ -700,6 +703,7 @@ describe('runStockSweep — send policy', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 1,
+        inalterados: 1,
         pages: 1,
         truncated: false,
         paused: false,
@@ -715,7 +719,12 @@ describe('runStockSweep — send policy', () => {
     });
   });
 
-  it('buildSendTasks skips are counted (link without item id)', async () => {
+  it('buildSendTasks skips are counted in `skipped` but NOT in `inalterados`', async () => {
+    // The separation is the point of the second counter (#695). This family
+    // reached `buildSendTasks` — the change check let it through — and was
+    // dropped for a per-listing reason. Folding it into `inalterados` would
+    // inflate the very ratio that measures whether the ledger comparison is
+    // worth its cost.
     const db = new FakeDb();
     seedConta(db, 'INT-A');
     wireCtx();
@@ -726,7 +735,7 @@ describe('runStockSweep — send policy', () => {
     const result = await run(db, 'incremental', { scheduler, fetchFamilies });
 
     expect(enqueue).not.toHaveBeenCalled();
-    expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1 });
+    expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1, inalterados: 0 });
   });
 });
 
@@ -1374,6 +1383,7 @@ describe('runStockSweep — 429 pause gate', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: true,
@@ -1450,6 +1460,7 @@ describe('runStockSweep — per-conta failure isolation', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: false,
@@ -1459,6 +1470,7 @@ describe('runStockSweep — per-conta failure isolation', () => {
         integracaoId: 'INT-B',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
