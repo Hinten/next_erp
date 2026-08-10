@@ -5,7 +5,12 @@ import {
   type QueryDocumentSnapshot,
 } from 'firebase-admin/firestore';
 import { coerceToMicros, coerceToMillis, millisToMicros } from '@delfrance/core/datetime';
-import { type MigrationContext, type MigrationSummary, runMigration } from '../runner';
+import {
+  type MigrationContext,
+  type MigrationSummary,
+  isMainModule,
+  runMigration,
+} from '../runner';
 
 /**
  * Backfill `pedido.lastMarketplaceUpdate` with the TRUE Mercado Livre order
@@ -114,10 +119,7 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   return { docsScanned, docsChanged };
 }
 
-const isDirectInvocation =
-  process.argv[1] != null && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`;
-
-if (isDirectInvocation) {
+if (isMainModule(import.meta.url)) {
   await runMigration('ml-lastmarketplaceupdate', run);
 }
 
