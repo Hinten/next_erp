@@ -162,11 +162,10 @@ jobs:
       - name: Assert the test filter resolves to a real package
         run: |
           set -euo pipefail
-          resolved=$(pnpm ls --filter @delfrance/mercado-livre-app --depth -1 --json \
-            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let a=[];try{a=JSON.parse(s)}catch{}process.stdout.write(a.map(p=>p.name).join(","))}')
-          echo "filter resolved to: '$resolved'"
-          if [ "$resolved" != "@delfrance/mercado-livre-app" ]; then
-            echo "::error::pnpm --filter matched no package — the emulator step would exit 0 without running anything."
+          matched=$(pnpm ls --filter @delfrance/mercado-livre-app --depth -1 --parseable | grep -c . || true)
+          echo "packages matched by the filter: $matched"
+          if [ "$matched" != "1" ]; then
+            echo "::error::pnpm --filter matched $matched packages — the emulator step would exit 0 without running anything."
             exit 1
           fi
 
