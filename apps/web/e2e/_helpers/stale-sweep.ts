@@ -255,23 +255,13 @@ async function collectPage(
  * field, which is why `pedidos` declares both `numero` and `observacoesInternas`
  * rather than relying on either alone.
  *
- * Both queries are projected as narrowly as their CURSOR allows: the sweep reads
- * nothing off a candidate but its `ref` and its `createTime`, and `createTime`
- * rides the snapshot envelope rather than the field mask. Enterprise bills data
- * scanned, so pulling produto and pedido bodies here was pure waste.
+ * Both queries project as little as possible: the sweep reads nothing off a
+ * candidate but its `ref` and its `createTime`, and `createTime` rides the
+ * snapshot envelope rather than the field mask. Enterprise bills data scanned,
+ * so pulling produto and pedido bodies here was pure waste.
  *
- * ⚠️ That is why the two differ, and they must stay different (#960):
- *  - the **id range** is keys-only (`.select()`). Its only order key is
- *    `__name__`, which `Query._extractFieldValues` takes from `snapshot.ref` —
- *    that survives an empty projection. Same shape as `deleteDocumentSubtree`.
- *  - the **field range** MUST project `field`. An inequality forces an implicit
- *    `orderBy(field)` ahead of `__name__`, and `collectPage` pages with a
- *    SNAPSHOT cursor, so the SDK reads the snapshot's value for that order key.
- *    Under `.select()` the value is absent and `startAfter` throws
- *    `Field "<field>" is missing in the provided DocumentSnapshot` — killing the
- *    sweep, and with it globalSetup, on the SECOND page of any field range.
- *    The projected value is never read by this module; it exists only so the
- *    cursor can be built.
+ * The id range is keys-only (`.select()`); the field range projects exactly its
+ * ordered field, which the keyset cursor needs — see the note at that call.
  */
 async function collectCandidates(
   database: Firestore,
@@ -298,8 +288,16 @@ async function collectCandidates(
     for (const field of target.fields ?? []) {
       truncated =
         (await collectPage(
-          // `.select(field)`, not `.select()` — the cursor needs the order key.
-          // See the ⚠️ note above; this is #960.
+          // ⚠️ `select(field)`, NOT a bare keys-only `select()`. An inequality on
+          // `field` implies an `orderBy(field)`, and `collectPage` paginates with
+          // `startAfter(<last snapshot>)` — which Firestore rejects outright
+          // ("Field \"nome\" is missing in the provided DocumentSnapshot") when
+          // the cursor snapshot carries no value for the ordered field. A
+          // keys-only projection produces exactly such a snapshot, so this query
+          // used to blow up on its SECOND page and take the whole sweep with it.
+          // It stayed invisible while every prefix matched under PAGE_SIZE docs.
+          // The id-range query above needs no such field: a document key is
+          // always present on the snapshot.
           col.where(field, '>=', prefix).where(field, '<', end).select(field),
           found,
           deadline,

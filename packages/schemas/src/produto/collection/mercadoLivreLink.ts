@@ -174,7 +174,7 @@ export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSc
  * Does this PARENT link doc represent a listing the produto's conta still holds?
  *
  * This is the membership predicate behind `produtos.integracoesComProduto` — the
- * anchor pre-filter both ML sweeps start from (`estoquePlan.fetchStockFamilies`
+ * anchor pre-filter both ML sweeps start from (`bulkEstoquePlan.fetchStockFamilies`
  * S1, `precoPlan.fetchPrecoPage`). It reproduces the semantics the old
  * `marketplace` array carried, so moving maintenance into a trigger (#920) is not
  * also a behaviour change: an entry only ever appeared after a publish/import

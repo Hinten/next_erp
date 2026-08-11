@@ -16,7 +16,9 @@
  *     the balanço doc plus a failed response.
  *   - `BALANCO_TASKS_REGION` (default `FUNCTIONS_REGION`, which `build.mjs`
  *     inlines) — the queue name MUST be region-qualified or the Admin SDK
- *     resolves it against us-central1.
+ *     resolves it against us-central1. A blank value counts as UNSET (#887):
+ *     `??` would keep `''` and yield `locations//functions/…`, which drops the
+ *     task silently — and this queue has no sweep to fall back on.
  */
 import { getFunctions } from 'firebase-admin/functions';
 import type { BalancoTaskPayload } from '@delfrance/data/balanco';
@@ -39,7 +41,7 @@ export const BALANCO_QUEUE = 'processarBalanco';
 export const BALANCO_MAX_ATTEMPTS = 5;
 
 function balancoTasksRegion(): string {
-  return process.env.BALANCO_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east1';
+  return process.env.BALANCO_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east1';
 }
 
 /**

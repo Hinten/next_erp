@@ -1,7 +1,7 @@
 import { type ScheduleOptions, onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
 
-import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoquePlan';
+import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/bulkEstoquePlan';
 import {
   type StockSweepMode,
   isSlotDaReconciliacao,

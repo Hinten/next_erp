@@ -608,7 +608,7 @@ async function aplicarPlano(
  *
  * - **`depositoOuterRef`** — required *on create*. The sweep reaches an estoque
  *   through `subcollection('estoques').where(depositoOuterRef == …)` (`ownEstoque`
- *   / `ownEstoqueMax` in `estoquePlan.ts`), so a doc created without it matches no
+ *   / `ownEstoqueMax` in `bulkEstoquePlan.ts`), so a doc created without it matches no
  *   depósito and the window filter never sees the stamp at all — which is the norm
  *   for a kit, precisely because a kit holds no stock and has no other reason to
  *   own an estoque doc.
