@@ -17,14 +17,22 @@
  *               re-thrown so the queue retries with backoff, and only on the
  *               FINAL attempt is it persisted (a throw there would drop it).
  * 3. SWEEP      `reprocess` runs inside `onSchedule`. It re-drives every
- *               `failed` doc older than the window — an account may have
- *               connected, an outage cleared — deleting on resolution and
- *               parking at the retry cap.
+ *               `failed` doc older than the window — an outage may have cleared
+ *               — deleting on resolution and parking at the retry cap.
+ * 3b. SLOW LANE `reprocessDeferred`, from the SAME scheduled function, does the
+ *               same over `deferred` docs on a DAILY window and a far longer cap
+ *               (#808). A `defer` is not a failure: it says a precondition
+ *               outside this system is not met yet — Mercado Livre's seller has
+ *               not connected their account — and such a doc must not spend the
+ *               hourly retry budget waiting for a human. A channel that can
+ *               OBSERVE the precondition clearing also calls `redrive` to pull
+ *               the doc back into the hot lane immediately.
  * ```
  *
  * The contract `process` must honour: **deterministic outcomes RETURN, transient
- * failures THROW.** That single rule is what lets the same function serve both a
- * fresh queued task and a sweep re-drive without knowing which it is in.
+ * failures THROW.** That single rule is what lets the same function serve a fresh
+ * queued task, a hot re-drive and a deferred re-drive without knowing which it is
+ * in — all three call it identically and only the disposition differs.
  *
  * ## TRANSIENT-BOUNDARY note (why the catches narrow on bare `Error`)
  *
@@ -51,6 +59,8 @@ import type { AdminCollectionHandle } from '../defineAdminCollection';
 import { createNotificationStore } from './store';
 import {
   MAX_TENTATIVAS,
+  MAX_TENTATIVAS_DEFERRED,
+  ONE_DAY_MS,
   ONE_HOUR_MS,
   type NotificationDisposition,
   type NotificationPhase,
@@ -99,6 +109,12 @@ export interface NotificationPipelineConfig<TPayload, TOutcome> {
    * is KEPT as an audit trail rather than deleted). Collapsing the two would
    * silently start deleting rows that used to be parked.
    *
+   * ⚠️ Reach for `defer` rather than `fail` when the blocker is a PRECONDITION
+   * this system does not control and a human may clear later — an account that
+   * is not connected yet, a credential that has to be re-granted. `fail` gives
+   * such a doc an hours-long horizon and then parks it forever, which is #808.
+   * Genuine work that failed and should be retried shortly stays `fail`.
+   *
    * This is also the natural place for a channel's own drop/park logging — it
    * is called exactly once per outcome per phase.
    */
@@ -115,7 +131,7 @@ export interface NotificationPipelineConfig<TPayload, TOutcome> {
  * field, … its callers log), so the shared core never has to know those names.
  */
 export interface NotificationTaskResult<TPayload, TOutcome> {
-  outcome: 'done' | 'failed' | 'parked' | 'dropped';
+  outcome: 'done' | 'failed' | 'parked' | 'dropped' | 'deferred';
   /** The validated payload — absent only when the payload itself failed to parse. */
   payload?: TPayload;
   /** The channel's own outcome — absent when the task never reached `process`. */
@@ -137,8 +153,26 @@ export interface NotificationPipeline<TPayload, TOutcome> {
     data: unknown,
     retryCount: number,
   ): Promise<NotificationTaskResult<TPayload, TOutcome>>;
-  /** The `onSchedule` backstop. */
+  /** The `onSchedule` backstop over the HOT lane (`failed`, hourly). */
   reprocess(db: Firestore, opts?: ReprocessOptions): Promise<ReprocessResult>;
+  /**
+   * The `onSchedule` backstop over the DEFERRED lane (`deferred`, daily). Same
+   * loop, same `process`, different window and cap — see `NotificationStatus`.
+   * Call it from the same scheduled function as `reprocess`: the 24 h window is
+   * itself the cadence gate, so running it every 30 minutes costs one indexed
+   * query that returns nothing 47 times out of 48.
+   */
+  reprocessDeferred(db: Firestore, opts?: ReprocessOptions): Promise<ReprocessResult>;
+  /**
+   * Move one doc back into the hot lane, for a channel that can observe the
+   * deferred precondition clearing (Mercado Livre watches `integracao` for the
+   * seller id being stamped). Resolves `false` when the doc was already gone.
+   *
+   * This is a LATENCY optimisation layered on `reprocessDeferred`, never a
+   * replacement for it: a channel that cannot observe the event, or whose
+   * trigger is not deployed, still drains daily.
+   */
+  redrive(db: Firestore, docId: string, erro: string): Promise<boolean>;
 }
 
 /** The counter key a resolved/dropped disposition increments in `outcomes`. */
@@ -204,6 +238,12 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
         await persistFailure(db, payload, disposition.reason);
         return { outcome: 'failed', payload, result };
       }
+      if (disposition.kind === 'defer') {
+        // A precondition outside this system is not met yet. Persist into the
+        // SLOW lane so it burns none of the hourly budget while it waits.
+        await store.create(db, payload, 'deferred', 0, disposition.reason);
+        return { outcome: 'deferred', payload, result };
+      }
       if (disposition.kind === 'park') {
         await persistParked(db, payload, disposition.reason);
         return { outcome: 'parked', payload, result };
@@ -215,80 +255,127 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
       return { outcome: 'done', payload, result };
     },
 
-    async reprocess(db, opts = {}) {
-      const now = opts.now ?? Date.now();
-      const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
+    redrive: (db, docId, erro) => store.redrive(db, docId, erro),
 
-      const snap = await store.pending(db, cutoff, opts.limit).get();
+    reprocess: (db, opts = {}) => sweepLane(db, opts, 'hot'),
 
-      const seen = new Set<string>();
-      const outcomes: Record<string, number> = {};
-      const errors: Array<{ docId: string; message: string }> = [];
-      let processed = 0;
-
-      for (const d of snap.docs) {
-        const raw = d.data() as Record<string, unknown>;
-
-        // Seeded from the RAW doc so the catch below can still mark the
-        // document when REHYDRATION itself is what failed; recomputed from the
-        // parsed doc as soon as that succeeds (the parse applies the schema
-        // default). `parseRead` is soft — it logs and returns raw rather than
-        // throwing on a schema mismatch — but `fromDoc` is CHANNEL-supplied and
-        // this is generic infrastructure, so it is not ours to assume total.
-        let tentativas = (typeof raw.tentativas === 'number' ? raw.tentativas : 0) + 1;
-
-        try {
-          const parsedDoc = collection.parseRead(raw, collection.docPath({}, d.id));
-          const payload = config.fromDoc(parsedDoc, raw);
-          tentativas = ((parsedDoc as { tentativas?: number }).tentativas ?? 0) + 1;
-
-          const dedupKey = config.dedupKeyOf(payload);
-          if (dedupKey && seen.has(dedupKey)) continue; // dup within this run — leave it for a later one
-          if (dedupKey) seen.add(dedupKey);
-
-          const result = await config.process(db, payload);
-          const disposition = config.toDisposition(result, payload, 'sweep');
-
-          let label: string;
-          if (disposition.kind === 'resolve' || disposition.kind === 'drop') {
-            // Settled, or no longer ours to process — leave the failures store.
-            await store.remove(db, d.id);
-            label = labelOf(disposition);
-          } else if (disposition.kind === 'park') {
-            // Terminal — keep the row as an audit trail, never re-drive it.
-            await store.mark(db, d.id, 'parked', tentativas, disposition.reason, now);
-            label = 'parked';
-          } else {
-            // Still failing — re-drive until the cap, then park.
-            const status: NotificationStatus = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-            await store.mark(db, d.id, status, tentativas, disposition.reason, now);
-            label = status;
-          }
-          outcomes[label] = (outcomes[label] ?? 0) + 1;
-          processed += 1;
-          // See the TRANSIENT-BOUNDARY note in this module's header.
-          // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
-        } catch (err) {
-          // Batch-isolation boundary: a failure on ONE notification must never
-          // abort the sweep — that covers rehydrating it as well as processing
-          // it. Bump tentativas (parking at the cap); if even that mark write
-          // fails, collect and move on. Non-Error throws still propagate — they
-          // are coding bugs, not outages.
-          if (!(err instanceof Error)) throw err;
-          try {
-            const status: NotificationStatus = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-            await store.mark(db, d.id, status, tentativas, err.message, now);
-            // This doc is lost to the run either way; the only job here is to stop
-            // a second failure from masking the first one we are about to report.
-            // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
-          } catch (markErr) {
-            if (!(markErr instanceof Error)) throw markErr;
-          }
-          errors.push({ docId: d.id, message: err.message });
-        }
-      }
-
-      return { processed, outcomes, errors };
-    },
+    reprocessDeferred: (db, opts = {}) => sweepLane(db, opts, 'deferred'),
   };
+
+  /**
+   * The body both sweeps share. Everything except the QUERY and what a
+   * still-blocked doc becomes is identical — same rehydration, same in-run
+   * dedup, same `process`, same per-doc isolation — and keeping it in one place
+   * is what stops the two lanes from drifting apart in their error handling.
+   */
+  async function sweepLane(
+    db: Firestore,
+    opts: ReprocessOptions,
+    lane: 'hot' | 'deferred',
+  ): Promise<ReprocessResult> {
+    const now = opts.now ?? Date.now();
+    const cutoff = now - (opts.olderThanMs ?? (lane === 'hot' ? ONE_HOUR_MS : ONE_DAY_MS));
+
+    const snap = await (
+      lane === 'hot'
+        ? store.pending(db, cutoff, opts.limit)
+        : store.deferred(db, cutoff, opts.limit)
+    ).get();
+
+    /**
+     * What a doc that is STILL blocked becomes. In the hot lane it stays
+     * `failed` until `MAX_TENTATIVAS`; in the deferred one it stays `deferred`
+     * until the far longer `MAX_TENTATIVAS_DEFERRED`. Either cap ends in
+     * `parked`, and this is also the fallback for a doc whose processing threw:
+     * an unknown failure is charged to the lane the doc is already in.
+     */
+    const stillBlocked = (tentativas: number): NotificationStatus => {
+      if (lane === 'hot') return tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
+      return tentativas >= MAX_TENTATIVAS_DEFERRED ? 'parked' : 'deferred';
+    };
+
+    const seen = new Set<string>();
+    const outcomes: Record<string, number> = {};
+    const errors: Array<{ docId: string; message: string }> = [];
+    let processed = 0;
+
+    for (const d of snap.docs) {
+      const raw = d.data() as Record<string, unknown>;
+
+      // Seeded from the RAW doc so the catch below can still mark the
+      // document when REHYDRATION itself is what failed; recomputed from the
+      // parsed doc as soon as that succeeds (the parse applies the schema
+      // default). `parseRead` is soft — it logs and returns raw rather than
+      // throwing on a schema mismatch — but `fromDoc` is CHANNEL-supplied and
+      // this is generic infrastructure, so it is not ours to assume total.
+      let tentativas = (typeof raw.tentativas === 'number' ? raw.tentativas : 0) + 1;
+
+      try {
+        const parsedDoc = collection.parseRead(raw, collection.docPath({}, d.id));
+        const payload = config.fromDoc(parsedDoc, raw);
+        tentativas = ((parsedDoc as { tentativas?: number }).tentativas ?? 0) + 1;
+
+        const dedupKey = config.dedupKeyOf(payload);
+        if (dedupKey && seen.has(dedupKey)) continue; // dup within this run — leave it for a later one
+        if (dedupKey) seen.add(dedupKey);
+
+        const result = await config.process(db, payload);
+        const disposition = config.toDisposition(result, payload, 'sweep');
+
+        let label: string;
+        if (disposition.kind === 'resolve' || disposition.kind === 'drop') {
+          // Settled, or no longer ours to process — leave the failures store.
+          await store.remove(db, d.id);
+          label = labelOf(disposition);
+        } else if (disposition.kind === 'park') {
+          // Terminal — keep the row as an audit trail, never re-drive it.
+          await store.mark(db, d.id, 'parked', tentativas, disposition.reason, now);
+          label = 'parked';
+        } else if (lane === 'hot' && disposition.kind === 'defer') {
+          // MIGRATION into the slow lane. Reached by a doc the receiver
+          // persisted as `failed` without ever running `process` (its enqueue
+          // failed), so this sweep is the first time anything learned the real
+          // blocker. `tentativas: 0`, not the accumulated count: the deferred
+          // horizon is a fresh clock starting the moment we learn it is blocked,
+          // exactly as the task phase creates it.
+          await store.mark(db, d.id, 'deferred', 0, disposition.reason, now);
+          label = 'deferred';
+        } else if (lane === 'deferred' && disposition.kind === 'fail') {
+          // GRADUATION. The precondition cleared — the account connected — and
+          // the work itself is what failed now. That is ordinary retryable work,
+          // so the doc rejoins the hot lane with a full budget rather than
+          // spending the daily horizon it no longer needs.
+          await store.redrive(db, d.id, disposition.reason);
+          label = 'redriven';
+        } else {
+          // Still blocked — re-drive within this lane until its cap, then park.
+          const status = stillBlocked(tentativas);
+          await store.mark(db, d.id, status, tentativas, disposition.reason, now);
+          label = status;
+        }
+        outcomes[label] = (outcomes[label] ?? 0) + 1;
+        processed += 1;
+        // See the TRANSIENT-BOUNDARY note in this module's header.
+        // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
+      } catch (err) {
+        // Batch-isolation boundary: a failure on ONE notification must never
+        // abort the sweep — that covers rehydrating it as well as processing
+        // it. Bump tentativas (parking at the cap); if even that mark write
+        // fails, collect and move on. Non-Error throws still propagate — they
+        // are coding bugs, not outages.
+        if (!(err instanceof Error)) throw err;
+        try {
+          await store.mark(db, d.id, stillBlocked(tentativas), tentativas, err.message, now);
+          // This doc is lost to the run either way; the only job here is to stop
+          // a second failure from masking the first one we are about to report.
+          // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
+        } catch (markErr) {
+          if (!(markErr instanceof Error)) throw markErr;
+        }
+        errors.push({ docId: d.id, message: err.message });
+      }
+    }
+
+    return { processed, outcomes, errors };
+  }
 }

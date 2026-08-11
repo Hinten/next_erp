@@ -37,6 +37,15 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications` — see the
   `webhook-notifications` skill. This channel is the one that needs a PHASE-aware
   `toDisposition` (an unparseable `resource` drops in the task but parks in the sweep).
+  It is also the channel that motivated the **DEFERRED lane** (#808): a notification whose
+  seller has not connected their account is `defer`, not `fail`, so it leaves the hourly pool
+  entirely, is re-driven once a DAY for `MAX_TENTATIVAS_DEFERRED` days, and is pulled back into
+  the hot lane by `redriveDeferredForUserId` the moment `onIntegracaoMercadoLivreChanged` sees
+  that seller's `user_id` land on an active integração. As `fail` it parked terminally ~6h in,
+  so a seller connecting the next business day lost the whole backlog. ⚠️ The re-drive query
+  needs the `(status, user_id)` composite index — `notificationGuardrails.test.ts` guard C does
+  NOT cover it (it only checks `(status, processedAt)`); the assertion in
+  `notificacao.test.ts` is its only cover.
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only

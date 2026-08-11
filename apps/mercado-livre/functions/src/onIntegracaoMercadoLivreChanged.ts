@@ -9,14 +9,24 @@ import {
   mudouCampoSincronizado,
   sincronizarIntFreteDaConta,
 } from '../../lib/marketplace/intFreteSync';
+import { redriveDeferredForUserId, userIdResolvivel } from '../../lib/marketplace/notificacao';
 import { getDb } from './lib/admin';
 
 /**
- * Mercado Livre conta → Mercado Envios `int_frete` sync trigger (#782). Fires on
- * every `integracao/{integracaoId}` write and keeps the account's freight config doc
- * in step with it — created on connect, re-synced on edit, deactivated on delete.
- * All the logic is the pure, unit-tested core in `lib/marketplace/intFreteSync.ts`;
- * this file is the thin wrapper (same split as `onNfeAprovada` / `nfeUpload.ts`).
+ * Mercado Livre conta trigger — fires on every `integracao/{integracaoId}` write
+ * and carries TWO independent responsibilities:
+ *
+ *  1. **`int_frete` sync (#782)** — keeps the account's Mercado Envios freight
+ *     config doc in step with the conta: created on connect, re-synced on edit,
+ *     deactivated on delete.
+ *  2. **Deferred-notification re-drive (#808)** — when a write makes the conta
+ *     RESOLVABLE for an ML seller id, pulls every notification that has been
+ *     waiting on that seller back into the hot sweep lane, so a backlog imports
+ *     within ~30 minutes of connecting instead of within 24 hours.
+ *
+ * Both delegate to pure, unit-tested cores in `lib/marketplace/`
+ * (`intFreteSync.ts`, `notificacao.ts`); this file is the thin wrapper (same
+ * split as `onNfeAprovada` / `nfeUpload.ts`).
  *
  * The legacy Flutter conta screen did this inline on every save
  * (`cadastroConta.dart:91-101`); the new stack saves the conta through a plain
@@ -32,19 +42,25 @@ import { getDb } from './lib/admin';
  *
  * `retry: true` → Eventarc at-least-once, for TRANSIENT Firestore failures. A
  * redelivery replays the ORIGINAL CloudEvent (the same stale before/after snapshots,
- * not the current doc), which is safe on both arms: the create/update arm diffs the
- * desired fields against what is stored and writes nothing when they already match,
- * and the delete arm re-checks that the conta is really gone before touching anything.
+ * not the current doc), which is safe on all three arms: the create/update arm diffs
+ * the desired fields against what is stored and writes nothing when they already
+ * match, the delete arm re-checks that the conta is really gone before touching
+ * anything, and the re-drive arm writes fixed values to documents a replay no longer
+ * finds (they left the deferred lane the first time round).
  *
  * NO `secrets:` binding — deliberately. This trigger never touches the ML API; per
  * `src/options.ts`'s per-function-secrets rule, a function with no ML API call must
- * not get the app credentials bound.
+ * not get the app credentials bound. The #808 arm keeps that true by only MARKING
+ * notifications: the actual re-processing happens in the sweep, which does bind them.
  *
  * COST: every gate that can be decided from the event payload runs BEFORE `getDb()`,
- * so a write to a WhatsApp / Shopee / Magalu conta — or a Mercado Livre token refresh
- * or `user_id` stamp — costs zero reads and zero writes.
+ * so a write to a WhatsApp / Shopee / Magalu conta — or a Mercado Livre token
+ * refresh — costs zero reads and zero writes. A `user_id` stamp is the one exception
+ * and it is the point: that write is precisely what makes a seller resolvable, so it
+ * pays for one indexed notification query (#808).
  *
- * No loop risk: it reads `integracao` and writes `int_frete`, which has no trigger.
+ * No loop risk: it reads `integracao` and writes `int_frete` (no trigger) and
+ * `notificacoesMercadoLivre` (no trigger).
  */
 export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
   {
@@ -97,6 +113,31 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
         ...disposicao,
       });
       return;
+    }
+
+    // ---- conta became RESOLVABLE → re-drive its deferred notifications (#808) ----
+    // Runs BEFORE the skip-if-unchanged gate below, deliberately: that gate exists
+    // to make a `user_id` stamp free for int_frete, and a `user_id` stamp is
+    // exactly the write this arm has to see. It is the OAuth exchange
+    // (`exchangeAndPersist`) denormalizing the seller id onto the conta — and also
+    // the still-running Flutter app, which writes the field directly.
+    //
+    // Until this fires, every notification for that seller is parked in the
+    // DEFERRED lane; the daily sweep would drain them within 24h regardless, so
+    // this is purely a latency cut, and a failure here must not cost the
+    // int_frete sync below. Still payload-gated: an unresolvable conta costs zero
+    // reads, which is what keeps the WhatsApp/Shopee/Magalu writes free.
+    const userIdAntes = userIdResolvivel(before);
+    const userIdDepois = userIdResolvivel(after);
+    if (userIdDepois != null && userIdDepois !== userIdAntes) {
+      const redrive = await redriveDeferredForUserId(getDb(), userIdDepois);
+      if (redrive.encontradas > 0) {
+        logger.info('[mercado-livre] conta conectada — notificações adiadas reprocessadas', {
+          integracaoId,
+          userId: userIdDepois,
+          ...redrive,
+        });
+      }
     }
 
     // ---- create / update arm -----------------------------------------------
