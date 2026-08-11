@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { mlAttributeWireSchema } from './produto/collection/mercadoLivreLink';
+import { millisSinceEpoch } from './shared/datetime';
 
 /**
  * READ-side slice of the `tabMedi` doc's `tabelasDeMedidasMercadoLivre` map —
@@ -68,7 +69,7 @@ export const mlSizeChartSchema = z
      * field, which degrades to "no deletion requested" — the operator simply
      * asks again.
      */
-    exclusaoSolicitadaEm: z.number().int().nullable().optional(),
+    exclusaoSolicitadaEm: millisSinceEpoch().nullable().optional(),
   })
   .passthrough();
 export type MlSizeChart = z.infer<typeof mlSizeChartSchema>;
