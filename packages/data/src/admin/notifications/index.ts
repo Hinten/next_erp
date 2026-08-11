@@ -22,6 +22,8 @@ export {
 export {
   DEFAULT_REPROCESS_LIMIT,
   MAX_TENTATIVAS,
+  MAX_TENTATIVAS_DEFERRED,
+  ONE_DAY_MS,
   ONE_HOUR_MS,
   TASK_MAX_ATTEMPTS,
   type NotificationDisposition,

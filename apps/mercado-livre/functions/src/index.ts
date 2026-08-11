@@ -7,6 +7,7 @@ import { logger } from 'firebase-functions/v2';
 
 import {
   MERCADO_LIVRE_NOTIFICATION_QUEUE,
+  reprocessDeferredNotifications,
   reprocessNotifications,
 } from '../../lib/marketplace/notificacao';
 import { MERCADO_LIVRE_MASS_IMPORT_QUEUE } from '../../lib/marketplace/massImport';
@@ -229,11 +230,24 @@ export const importMercadoLivreOrders = onSchedule(
 );
 
 /**
- * Reprocess backstop: re-drives persisted `failed` notifications older than 1h
- * (the queued task exhausted its retries, or a `failed` account has since
- * connected). Runs each inline, per-doc isolated, deduped by `resource`,
- * bounded — success deletes the doc, a persistent failure parks it at the cap.
+ * Reprocess backstop, draining BOTH retry lanes on the same tick:
+ *
+ *  - the HOT lane — persisted `failed` notifications older than 1h (the queued
+ *    task exhausted its retries, or a transient outage has since cleared);
+ *  - the DEFERRED lane (#808) — notifications waiting on a seller to connect
+ *    their Mercado Livre account, on a 24h window and a horizon of
+ *    `MAX_TENTATIVAS_DEFERRED` days.
+ *
+ * Both run each doc inline, per-doc isolated, deduped by `resource`, bounded —
+ * success deletes the doc, a persistent blocker parks it at its lane's cap.
  * Mirrors the legacy `manageNotificationsMercadoLivre` sweep.
+ *
+ * The deferred lane rides this 30-minute schedule rather than an `onSchedule` of
+ * its own because its 24h WINDOW is already the per-doc cadence: 47 runs out of
+ * 48 it is one indexed query that returns nothing. It is also much cheaper per
+ * doc than the hot lane — a seller who still has not connected costs one
+ * `integracao` lookup and NO ML API call — so it cannot threaten the timeout
+ * below.
  *
  * Secrets: every topic runner routes through `loadMercadoLivreContext()`, which
  * calls `mercadoLivreOAuthConfig()` unconditionally, so — like
@@ -262,6 +276,22 @@ export const reprocessMercadoLivreNotifications = onSchedule(
     if (result.errors.length > 0) {
       logger.warn('[mercado-livre] reprocess sweep had per-doc failures', {
         errors: result.errors.slice(0, 10),
+      });
+    }
+
+    // The deferred lane is logged separately, never merged into the counts
+    // above: the two answer different operational questions ("is processing
+    // healthy" vs "how many sellers still owe us a connect"), and summing them
+    // would hide a growing deferred backlog inside a healthy `processed`.
+    const deferred = await reprocessDeferredNotifications(getDb());
+    logger.info('[mercado-livre] deferred lane sweep', {
+      processed: deferred.processed,
+      outcomes: deferred.outcomes,
+      errorCount: deferred.errors.length,
+    });
+    if (deferred.errors.length > 0) {
+      logger.warn('[mercado-livre] deferred lane sweep had per-doc failures', {
+        errors: deferred.errors.slice(0, 10),
       });
     }
   },
