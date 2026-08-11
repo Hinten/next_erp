@@ -77,8 +77,19 @@ export function buildAttributePrompt(input: AttributePromptInput): AiPromptReque
   }
   if (nonBlank(input.descricao)) facts.push(`Descrição: ${input.descricao!.trim()}`);
 
-  const wanted = input.attrs.map((a) => `- ${a.id}: ${a.name ?? a.id}`).join('\n');
-  facts.push(`Atributos a preencher quando possível:\n${wanted}`);
+  // ⚠️ Ask for exactly what the schema will accept, not for every attribute the
+  // category defines. `buildAttributeSchema` caps at `maxProperties` and sets
+  // `additionalProperties: false`, so naming an attribute the schema dropped
+  // invites an answer that constrained decoding then rejects — the prompt would
+  // be pulling against the schema. An empty list is left out entirely rather
+  // than sent as a dangling header.
+  const allowed = input.responseSchema.properties ?? {};
+  const wanted = input.attrs
+    .filter((a) => Object.hasOwn(allowed, a.id))
+    .map((a) => `- ${a.id}: ${a.name ?? a.id}`);
+  if (wanted.length > 0) {
+    facts.push(`Atributos a preencher quando possível:\n${wanted.join('\n')}`);
+  }
 
   return {
     systemInstruction: nonBlank(input.systemInstruction)

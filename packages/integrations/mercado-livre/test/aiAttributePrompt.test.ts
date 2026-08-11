@@ -86,6 +86,36 @@ describe('buildAttributePrompt', () => {
     expect(buildAttributePrompt(input()).text).toContain('BRAND');
   });
 
+  it('asks only for attributes the response schema actually accepts', () => {
+    // The schema caps at `maxProperties` and sets `additionalProperties: false`.
+    // Asking for a key the schema dropped can only produce an answer that
+    // constrained decoding rejects — prompt and schema must agree.
+    const many: AiAttributeSpec[] = [
+      ...ATTRS,
+      { ...ATTRS[0]!, id: 'MODEL', name: 'Modelo' },
+      { ...ATTRS[0]!, id: 'COLOR', name: 'Cor' },
+    ];
+    const prompt = buildAttributePrompt({
+      ...input(),
+      attrs: many,
+      responseSchema: buildAttributeSchema(many, { maxProperties: 2 }),
+    });
+    expect(prompt.text).toContain('BRAND');
+    expect(prompt.text).toContain('MODEL');
+    expect(prompt.text).not.toContain('COLOR');
+  });
+
+  it('leaves the list out entirely when the schema wants nothing', () => {
+    // A dangling "Atributos a preencher:" header with no items reads as a
+    // truncated prompt to the model.
+    const prompt = buildAttributePrompt({
+      ...input(),
+      attrs: [],
+      responseSchema: buildAttributeSchema([]),
+    });
+    expect(prompt.text).not.toContain('Atributos a preencher');
+  });
+
   it('carries an image as INLINE BYTES, never a URL', () => {
     // The legacy passed a tokened `firebasestorage.googleapis.com/…?alt=media`
     // HTTPS URL as Vertex `FileData.fileUri`, a field documented for `gs://`
