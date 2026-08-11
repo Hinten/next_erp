@@ -166,7 +166,7 @@ import {
   quantidadesAnteriores,
   chaveMovimento,
   windowOverlapSec,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 
 /* ------------------------------ fake Firestore ----------------------------- */
 // THE query never runs in unit tests: `db.pipeline()` answers from a queue of
@@ -1601,13 +1601,13 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
 
   it('link never published (id null) → sem-item-id', () => {
     expect(run(familyRow({ links: [{ id: null }] })).skips).toEqual([
-      { produtoId: 'PROD', reason: 'sem-item-id' },
+      { produtoId: 'PROD', reason: 'sem-item-id', linkDocId: 'link1' },
     ]);
   });
 
   it("estado 'am' (mid-UP-migration, Flutter-driven) → aguardando-migracao", () => {
     expect(run(familyRow({ links: [{ estado: 'am' }] })).skips).toEqual([
-      { produtoId: 'PROD', reason: 'aguardando-migracao' },
+      { produtoId: 'PROD', reason: 'aguardando-migracao', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
   });
 
@@ -1616,7 +1616,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
   // payload every tick just re-earns the rejection, 96×/day.
   it("estado 'E' (payload refused by a healthy anúncio) → anuncio-em-erro", () => {
     expect(run(familyRow({ links: [{ estado: 'E' }] })).skips).toEqual([
-      { produtoId: 'PROD', reason: 'anuncio-em-erro' },
+      { produtoId: 'PROD', reason: 'anuncio-em-erro', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
   });
 
@@ -1625,7 +1625,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     // whitelist happily sends to. Before the rung, this row rebuilt a task.
     const res = run(familyRow({ links: [{ estado: 'E', status: 'active', sub_status: [] }] }));
     expect(res.tasks).toEqual([]);
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'anuncio-em-erro' }]);
+    expect(res.skips).toEqual([
+      { produtoId: 'PROD', reason: 'anuncio-em-erro', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
   });
 
   it("a healthy estado 'p' on an active listing still sends (the rung is narrow)", () => {
@@ -1637,14 +1639,18 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
   it('non-enviável documented status → status-nao-enviavel, NO warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
     const res = run(familyRow({ links: [{ status: 'paused', sub_status: ['paused_by_seller'] }] }));
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    expect(res.skips).toEqual([
+      { produtoId: 'PROD', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('undocumented status → status-nao-enviavel + loud warn (status tracking)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
     const res = run(familyRow({ links: [{ status: 'brand_new_status', sub_status: null }] }));
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    expect(res.skips).toEqual([
+      { produtoId: 'PROD', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('status'),
       expect.objectContaining({ produtoId: 'PROD', itemId: 'MLB111', status: 'brand_new_status' }),
@@ -1675,7 +1681,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       familyRow({ links: [{ status: null, sub_status: null, estado: ESTADO_PUBLICACAO_ML.erro }] }),
     );
     expect(res.tasks).toEqual([]);
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'anuncio-em-erro' }]);
+    expect(res.skips).toEqual([
+      { produtoId: 'PROD', reason: 'anuncio-em-erro', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
   });
 
   // The other #781 outcome: the verification recorded the listing's real status,
@@ -1685,7 +1693,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       familyRow({ links: [{ status: 'closed', sub_status: ['deleted'], estado: 'c' }] }),
     );
     expect(res.tasks).toEqual([]);
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    expect(res.skips).toEqual([
+      { produtoId: 'PROD', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
   });
 
   it('legacy link on a closed listing (`estado: c`) → skipped, no doomed PUT', () => {
@@ -1695,7 +1705,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       }),
     );
     expect(res.tasks).toEqual([]);
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    expect(res.skips).toEqual([
+      { produtoId: 'PROD', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
   });
 
   // Log-noise guard: a missing status is the EXPECTED legacy shape, so it must
@@ -1717,7 +1729,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(
       run(familyRow({ links: [{ estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao, status: null }] }))
         .skips,
-    ).toEqual([{ produtoId: 'PROD', reason: 'aguardando-migracao' }]);
+    ).toEqual([
+      { produtoId: 'PROD', reason: 'aguardando-migracao', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
   });
 
   it('ehKitVirtual anchor → kit-virtual', () => {
@@ -1765,7 +1779,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     // Inside the loop the per-listing rungs keep their order: estado 'am'
     // wins over an unknown status.
     expect(run(familyRow({ links: [{ estado: 'am', status: 'weird' }] })).skips).toEqual([
-      { produtoId: 'PROD', reason: 'aguardando-migracao' },
+      { produtoId: 'PROD', reason: 'aguardando-migracao', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
   });
 
@@ -1831,10 +1845,13 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         variations: [{ id: 101, available_quantity: 3 }],
       },
     ]);
+    // Every child skip names the LISTING it was excluded from — a family can
+    // hold several anúncios on one conta, so the produto id alone is not
+    // actionable for the manual push's per-listing report (#819).
     expect(res.skips).toEqual([
-      { produtoId: 'CH2', reason: 'sem-link' },
-      { produtoId: 'CH3', reason: 'sem-item-id' },
-      { produtoId: 'CHV', reason: 'kit-virtual' },
+      { produtoId: 'CH2', reason: 'sem-link', itemId: 'MLB111', linkDocId: 'link1' },
+      { produtoId: 'CH3', reason: 'sem-item-id', itemId: 'MLB111', linkDocId: 'link1' },
+      { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
   });
 
@@ -1871,7 +1888,14 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     }
     const res = buildSendTasks(familyRow({ children }), qty, OPTS);
     expect(res.tasks).toEqual([]);
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'variations-excede-limite' }]);
+    expect(res.skips).toEqual([
+      {
+        produtoId: 'PROD',
+        reason: 'variations-excede-limite',
+        itemId: 'MLB111',
+        linkDocId: 'link1',
+      },
+    ]);
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining('variations'),
       expect.objectContaining({
@@ -1889,8 +1913,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(buildSendTasks(row, new Map([['PROD', 7]]), OPTS)).toEqual({
       tasks: [],
       skips: [
-        { produtoId: 'CH1', reason: 'sem-link' },
-        { produtoId: 'CH2', reason: 'sem-link' },
+        { produtoId: 'CH1', reason: 'sem-link', itemId: 'MLB111', linkDocId: 'link1' },
+        { produtoId: 'CH2', reason: 'sem-link', itemId: 'MLB111', linkDocId: 'link1' },
       ],
     });
   });
@@ -1960,10 +1984,13 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         variations: null,
       },
     ]);
+    // UP model: a child IS its own ML item, so `itemId` is the CHILD's — and it
+    // only exists once the varLink resolved one. The two rungs above that point
+    // can name the parent link doc but no item.
     expect(res.skips).toEqual([
-      { produtoId: 'CH2', reason: 'sem-link' },
-      { produtoId: 'CH3', reason: 'sem-item-id' },
-      { produtoId: 'CHV', reason: 'kit-virtual' },
+      { produtoId: 'CH2', reason: 'sem-link', linkDocId: 'link1' },
+      { produtoId: 'CH3', reason: 'sem-item-id', linkDocId: 'link1' },
+      { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB-CHV', linkDocId: 'link1' },
     ]);
   });
 
@@ -2056,7 +2083,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         variations: null,
       },
     ]);
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    expect(res.skips).toEqual([
+      { produtoId: 'PROD', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
   });
 
   it('UP dedup across listings: two links resolving the SAME variation itemId emit once', () => {

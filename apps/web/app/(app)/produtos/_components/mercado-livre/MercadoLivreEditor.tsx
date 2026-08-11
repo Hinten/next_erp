@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import Link from 'next/link';
 import { useFormContext, useFormState } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import {
   Alert,
   Anchor,
@@ -34,8 +35,15 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
-import { LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
-import { estadoLabel, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
+import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
+import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
+import {
+  estadoLabel,
+  isStockLatched,
+  refMatchesIntegracao,
+} from '@/lib/mercado-livre/listingLinks';
+import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
+import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
 import { ListingForm } from './ListingForm';
 import { ListingStatusStrip } from './ListingStatusStrip';
@@ -115,10 +123,25 @@ export function MercadoLivreEditor({
   // `null` while the snapshot is still loading — NOT 0. Collapsing the two made
   // the "produto sem fotos" alert flash on every open (see `ListingDetails`).
   const produtoFotoCount = produtoSnap.loading ? null : (produtoSnap.data?.data.fotos?.length ?? 0);
+  // Seeds a draft's title and the category suggestions. Empty until the
+  // snapshot lands, which is why "Preparar anúncio" waits for it: the link
+  // schema requires a non-empty `title`, so a draft built from '' would fail
+  // its write-side parse rather than save something blank.
+  const produtoNome = produtoSnap.data?.data.nome ?? '';
 
   const [publishing, setPublishing] = useState<string | null>(null);
+  /** The conta whose draft is being created, if any. */
+  const [preparing, setPreparing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
+  /** The conta whose stock push is in flight (#819), if any. */
+  const [sendingStock, setSendingStock] = useState<string | null>(null);
+  /**
+   * The last push outcome per LISTING, keyed by link doc id. Rendered inline in
+   * each anúncio block rather than as a toast, because a conta can hold several
+   * listings on one produto and one toast could only describe one of them.
+   */
+  const [stockResultByLink, setStockResultByLink] = useState<Record<string, StockPushRow>>({});
   // 422 ML_PUBLISH_BLOCKED issue lists, kept per account so they render inline
   // in the offending row instead of a transient toast.
   const [blockedIssues, setBlockedIssues] = useState<Record<string, string[]>>({});
@@ -167,6 +190,40 @@ export function MercadoLivreEditor({
     };
   }, [flushRef]);
 
+  /**
+   * Create the link doc a fresh produto has never had.
+   *
+   * This is a plain Firestore write, not a call to the ML backend — nothing
+   * reaches Mercado Livre until Publicar. The live `useSnapshot` above swaps the
+   * card over to the full editor as soon as the write lands.
+   */
+  async function handlePreparar(integracaoId: string) {
+    setPreparing(integracaoId);
+    try {
+      const { outcome } = await createListingDraft(db, produtoId, {
+        integracaoId,
+        produtoNome,
+        listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE,
+        nowMs: Date.now(),
+      });
+      notifications.show({
+        color: outcome === 'created' ? 'green' : 'yellow',
+        message:
+          outcome === 'created'
+            ? 'Rascunho criado. Escolha a categoria e revise os dados antes de publicar.'
+            : 'Este anúncio já estava preparado.',
+      });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      throw err;
+    } finally {
+      setPreparing(null);
+    }
+  }
+
   async function handlePublish(integracaoId: string, needsListingType: boolean) {
     if (!client) return;
     setPublishing(integracaoId);
@@ -176,7 +233,7 @@ export function MercadoLivreEditor({
         integracaoId,
         produtoId,
         ...(needsListingType
-          ? { listingTypeId: listingTypeByConta[integracaoId] ?? LISTING_TYPE_OPTIONS[0].value }
+          ? { listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE }
           : {}),
       });
       notifications.show({
@@ -229,7 +286,8 @@ export function MercadoLivreEditor({
         color: result.enviavel ? 'green' : 'yellow',
         title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
         message: result.enviavel
-          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos).'
+          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
+            'Enviar estoque para enviar agora.'
           : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
       });
     } catch (err) {
@@ -247,6 +305,57 @@ export function MercadoLivreEditor({
       throw err;
     } finally {
       setRechecking(null);
+    }
+  }
+
+  /**
+   * Push this produto's CURRENT stock to every listing this conta holds on it
+   * (#819) — the on-demand twin of the 15-minute sweep.
+   *
+   * Per CONTA, not per listing: the backend takes `{ integracaoId, produtoIds }`
+   * and the sender loops every anúncio the conta holds (the link join
+   * deliberately has no `limit(1)` — see the comment below and #781). A
+   * per-listing button would imply an endpoint that does not exist.
+   *
+   * `reenviarComErro` is passed for a LATCHED listing only. An explicit click on
+   * a listing the UI is already showing as "parado" is unambiguous consent, so
+   * the tab does not need the bulk dialog's checkbox.
+   */
+  async function handleEnviarEstoque(
+    // The registry's own type, not a hand-rolled shape with `tipo: number`.
+    // Widening it to `number` forced an `as never` at the call below, which
+    // silenced exactly the check that keeps an invalid tipo from reaching
+    // `resolveStockPushProvider`.
+    conta: StockPushIntegracao,
+    temLatched: boolean,
+  ) {
+    setSendingStock(conta.id);
+    try {
+      const result = await enviarEstoqueParaIntegracao({
+        integracao: conta,
+        produtoIds: [produtoId],
+        nomePorProdutoId: new Map(),
+        reenviarComErro: temLatched,
+        deps: { mercadoLivre: client },
+      });
+      setStockResultByLink((prev) => {
+        const next = { ...prev };
+        for (const row of result.rows) {
+          if (row.linkDocId != null) next[row.linkDocId] = row;
+        }
+        return next;
+      });
+      // A row that names no listing (conta-level failure, or a produto with no
+      // anúncio here) has nowhere inline to land — surface it as a toast.
+      const semAnuncio = result.rows.filter((r) => r.linkDocId == null);
+      for (const row of semAnuncio) {
+        notifications.show({
+          color: row.outcome === 'enviado' ? 'green' : row.outcome === 'falha' ? 'red' : 'yellow',
+          message: row.mensagem,
+        });
+      }
+    } finally {
+      setSendingStock(null);
     }
   }
 
@@ -289,8 +398,8 @@ export function MercadoLivreEditor({
           </Text>
           {contas.map((conta) => {
             // The stock sweep loops EVERY listing this conta holds on the produto
-            // (estoquePlan's link join deliberately has no `limit(1)`), so rendering
-            // only the first one hid a latched sibling completely (#781).
+            // (bulkEstoquePlan's link join deliberately has no `limit(1)`), so
+            // rendering only the first one hid a latched sibling completely (#781).
             const contaLinks = links.filter((l) =>
               refMatchesIntegracao(l.data.contaOuterRef, conta.id),
             );
@@ -307,6 +416,10 @@ export function MercadoLivreEditor({
             const issues = blockedIssues[conta.id] ?? [];
             const contaDirty = contaLinks.some((l) => dirtyIds.has(l.id));
             const publishBlocked = produtoDirty || contaDirty;
+            // Publish refuses a create with no category ("categoria do Mercado
+            // Livre não definida"). Saying so here beats a round trip that comes
+            // back as a 422 the operator has to read.
+            const missingCategoria = primary != null && (primary.category_id ?? '') === '';
 
             return (
               <Card key={conta.id} withBorder padding="md" data-testid={`ml-conta-${conta.id}`}>
@@ -330,9 +443,26 @@ export function MercadoLivreEditor({
                         rechecking={rechecking === l.id}
                         onReverificar={() => handleReverificar(conta.id, l.id)}
                       />
+                      {stockResultByLink[l.id] && (
+                        <Text
+                          size="xs"
+                          c={
+                            stockResultByLink[l.id]!.outcome === 'enviado'
+                              ? 'green'
+                              : stockResultByLink[l.id]!.outcome === 'falha'
+                                ? 'red'
+                                : 'dimmed'
+                          }
+                          data-testid={`ml-envio-estoque-${l.id}`}
+                        >
+                          {stockResultByLink[l.id]!.mensagem}
+                        </Text>
+                      )}
                       <ListingForm
                         produtoId={produtoId}
                         linkDocId={l.id}
+                        integracaoId={conta.id}
+                        produtoNome={produtoNome}
                         link={l.data}
                         db={db}
                         canWrite={canPublish}
@@ -355,43 +485,100 @@ export function MercadoLivreEditor({
                   )}
 
                   <Group align="flex-end" gap="sm">
-                    {needsListingType && (
-                      <Select
-                        label="Tipo de anúncio"
-                        data={[...LISTING_TYPE_OPTIONS]}
-                        value={listingTypeByConta[conta.id] ?? LISTING_TYPE_OPTIONS[0].value}
-                        onChange={(v) =>
-                          setListingTypeByConta((prev) => ({
-                            ...prev,
-                            [conta.id]: v ?? LISTING_TYPE_OPTIONS[0].value,
-                          }))
+                    {contaLinks.length > 0 && (
+                      // Deliberately NOT disabled while a listing is latched: the
+                      // push is precisely the operation whose skip row explains WHY
+                      // it is latched, and after a re-arm it is how the operator
+                      // verifies. The legacy action sent regardless and let the
+                      // per-listing gate answer.
+                      //
+                      // Nor is it blocked by `publishBlocked`: the push sends the
+                      // stock Firestore already holds, never the pending form
+                      // edits, so unsaved listing fields cannot make it ship a
+                      // stale value the way a publish would.
+                      <Button
+                        type="button"
+                        variant="default"
+                        onClick={() =>
+                          void handleEnviarEstoque(
+                            {
+                              id: conta.id,
+                              nome: conta.data.nome,
+                              tipo: conta.data.tipo,
+                              ativo: conta.data.ativo !== false,
+                            },
+                            contaLinks.some((l) => isStockLatched(l.data)),
+                          )
                         }
-                        allowDeselect={false}
-                        disabled={disabled || !canPublish}
-                        w={160}
-                      />
+                        loading={sendingStock === conta.id}
+                        disabled={disabled || !client || !canPublish || sendingStock !== null}
+                      >
+                        Enviar estoque
+                      </Button>
                     )}
-                    <Button
-                      type="button"
-                      variant={isFirstPublish ? 'filled' : 'light'}
-                      onClick={() => handlePublish(conta.id, needsListingType)}
-                      loading={publishing === conta.id}
-                      disabled={
-                        disabled ||
-                        !client ||
-                        !canPublish ||
-                        publishing !== null ||
-                        // The backend publishes the SAVED produto and the SAVED
-                        // link doc, so publishing over pending edits ships the
-                        // previous version and reports success.
-                        publishBlocked
-                      }
-                    >
-                      {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
-                    </Button>
+                    {needsListingType ? (
+                      <>
+                        <Select
+                          label="Tipo de anúncio"
+                          data={[...LISTING_TYPE_OPTIONS]}
+                          value={listingTypeByConta[conta.id] ?? DEFAULT_LISTING_TYPE}
+                          onChange={(v) =>
+                            setListingTypeByConta((prev) => ({
+                              ...prev,
+                              [conta.id]: v ?? DEFAULT_LISTING_TYPE,
+                            }))
+                          }
+                          allowDeselect={false}
+                          disabled={disabled || !canPublish}
+                          w={160}
+                        />
+                        {/* Publishing straight from here is impossible, not merely
+                            unlikely: with no link doc there is no `category_id`,
+                            and publish raises that as a 422 BEFORE it writes any
+                            doc — so the failure leaves nothing behind and the
+                            next attempt fails identically. The draft is what
+                            breaks that cycle. */}
+                        <Button
+                          type="button"
+                          variant="filled"
+                          onClick={() => handlePreparar(conta.id)}
+                          loading={preparing === conta.id}
+                          disabled={
+                            disabled || !canPublish || preparing !== null || produtoNome === ''
+                          }
+                        >
+                          Preparar anúncio
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant={isFirstPublish ? 'filled' : 'light'}
+                        onClick={() => handlePublish(conta.id, false)}
+                        loading={publishing === conta.id}
+                        disabled={
+                          disabled ||
+                          !client ||
+                          !canPublish ||
+                          publishing !== null ||
+                          // The backend publishes the SAVED produto and the SAVED
+                          // link doc, so publishing over pending edits ships the
+                          // previous version and reports success.
+                          publishBlocked ||
+                          missingCategoria
+                        }
+                      >
+                        {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
+                      </Button>
+                    )}
                     {publishBlocked && (
                       <Text size="xs" c="dimmed">
                         Salve as alterações pendentes antes de publicar.
+                      </Text>
+                    )}
+                    {missingCategoria && !publishBlocked && (
+                      <Text size="xs" c="dimmed">
+                        Escolha a categoria do Mercado Livre antes de publicar.
                       </Text>
                     )}
                     {!canPublish && (

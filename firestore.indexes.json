@@ -61,6 +61,20 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesMercadoLivre",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesWhatsapp",
       "queryScope": "COLLECTION",
       "fields": [

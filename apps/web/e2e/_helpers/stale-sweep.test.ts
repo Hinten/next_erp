@@ -158,6 +158,8 @@ function fakeDb(
   previousRunId: string,
   /** Subcollections a swept doc owns, keyed by doc path. Drives `listCollections()`. */
   subcollections: Record<string, Record<string, readonly string[]>> = {},
+  /** Every `select(...)` the sweep built, paired with its `where` fields. */
+  projections: Array<{ wheres: unknown[]; selected: unknown[] }> = [],
 ) {
   const oneDayAgo = () => Date.now() - 24 * 60 * 60 * 1000;
 
@@ -194,11 +196,26 @@ function fakeDb(
   };
 
   const query = (path: string) => {
+    // Per-query so `projections` can pair each `select(...)` with the `where`
+    // fields that preceded it — that pairing is the whole point of the
+    // keyset-cursor pin below.
+    const wheres: unknown[] = [];
     const q: Record<string, unknown> = {
-      where: () => q,
+      where: (field: unknown) => {
+        wheres.push(field);
+        return q;
+      },
       limit: () => q,
       startAfter: () => q,
-      select: () => q,
+      select: (...fields: unknown[]) => {
+        // Every built chain terminates at `select`, so recording and then
+        // clearing groups the `where`s with the query they belong to. Without
+        // the reset they accumulate across chains (the fake threads one object
+        // per collection) and an id range looks like a field range.
+        projections.push({ wheres: [...wheres], selected: fields });
+        wheres.length = 0;
+        return q;
+      },
       get: () => Promise.resolve(snapshotFor(path)),
     };
     return q;
@@ -281,6 +298,43 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     // only one of them is what made `sweep:e2e` delete while reporting
     // "would delete" (#715 review).
     expect(writes).toEqual(noWrites());
+  });
+
+  /**
+   * A field-range query implies `orderBy(<field>)`, and `collectPage` paginates
+   * with `startAfter(<last snapshot>)`. Firestore rejects that cursor outright —
+   * *"Field \"nome\" is missing in the provided DocumentSnapshot"* — unless the
+   * snapshot carries the ordered field, so a keys-only projection blew the whole
+   * sweep up on its SECOND page.
+   *
+   * It hid for as long as every prefix matched under `PAGE_SIZE` docs, which is
+   * why this pins the PROJECTION rather than trying to stage 300+ fake docs: the
+   * projection is the actual invariant, and it holds on page one too.
+   */
+  it('projects the ordered field on a field-range query, so the keyset cursor is valid', async () => {
+    stubCiEnv();
+    const projections: Array<{ wheres: unknown[]; selected: unknown[] }> = [];
+
+    await sweepOrphanedE2EFixtures(
+      true,
+      fakeDb(noWrites(), staleDocs, '111', staleSubcollections, projections) as never,
+    );
+
+    const fieldRanges = projections.filter((p) =>
+      p.wheres.some((w) => typeof w === 'string' && w.length > 0),
+    );
+    expect(fieldRanges.length).toBeGreaterThan(0);
+    for (const p of fieldRanges) {
+      const campo = p.wheres.find((w): w is string => typeof w === 'string');
+      expect(p.selected).toEqual([campo]);
+    }
+    // …and the id range stays keys-only: a document key is always on the
+    // snapshot, so projecting a field there would be pure scanned-data waste.
+    const idRanges = projections.filter(
+      (p) => !p.wheres.some((w) => typeof w === 'string' && w.length > 0),
+    );
+    expect(idRanges.length).toBeGreaterThan(0);
+    for (const p of idRanges) expect(p.selected).toEqual([]);
   });
 
   it('does delete once the flag is off, so the assertion above is not vacuous', async () => {

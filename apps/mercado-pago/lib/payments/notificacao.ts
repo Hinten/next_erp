@@ -517,9 +517,10 @@ export async function handleNotificationTask(
   // to report; `result` is absent on the transient-failure path.
   const reconciled = r.result?.kind === 'reconciled' ? r.result : null;
   return {
-    // MP never produces a `park` disposition, so `parked` is unreachable here —
-    // mapped defensively rather than widening this channel's public union.
-    outcome: r.outcome === 'parked' ? 'failed' : r.outcome,
+    // MP produces neither a `park` nor a `defer` disposition, so `parked` and
+    // `deferred` are both unreachable here — mapped defensively rather than
+    // widening this channel's public union with arms it cannot emit.
+    outcome: r.outcome === 'parked' || r.outcome === 'deferred' ? 'failed' : r.outcome,
     ...(reconciled ? { metodoId: reconciled.metodoId, pedidoId: reconciled.pedidoId } : {}),
     ...(r.payload ? { topic: r.payload.topic } : {}),
   };

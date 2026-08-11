@@ -21,7 +21,6 @@ import { AfterSaveBlockedError } from '@delfrance/ui';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import {
-  channelOptions,
   CONDITION_OPTIONS,
   LISTING_TYPE_OPTIONS,
   listingTypeLabel,
@@ -43,6 +42,7 @@ import {
   saveListing,
 } from '@/lib/mercado-livre/saveListing';
 import type { OperatorOwnedKey } from '@/lib/mercado-livre/listingPatch';
+import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
 import { ListingField, textOr } from './ListingField';
 
@@ -50,6 +50,10 @@ export interface ListingFormProps {
   produtoId: string;
   /** Firestore id of the `produtoMercadoLivre` doc being edited. */
   linkDocId: string;
+  /** The ML account this listing belongs to — needed for every metadata call. */
+  integracaoId: string;
+  /** Seeds the category suggestion request. */
+  produtoNome: string;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -86,6 +90,8 @@ export interface ListingFormProps {
 export function ListingForm({
   produtoId,
   linkDocId,
+  integracaoId,
+  produtoNome,
   link,
   db,
   canWrite,
@@ -113,7 +119,6 @@ export function ListingForm({
   const baselineRef = useRef<ProdutoMercadoLivreLink>(link);
 
   const titleRule = useMemo(() => titleEditability(link), [link]);
-  const channelSelectData = useMemo(() => channelOptions(link.channels), [link.channels]);
   const isPublished = link.id != null;
 
   // Re-seed from the live snapshot ONLY while the operator has nothing pending.
@@ -263,15 +268,13 @@ export function ListingForm({
           />
           <Controller
             control={form.control}
-            name="channels"
+            name="category_id"
             render={({ field, fieldState }) => (
-              <Select
-                label="Canais"
-                data={channelSelectData}
-                value={field.value}
-                onChange={(v) => field.onChange(v ?? 'marketplace')}
-                onBlur={field.onBlur}
-                allowDeselect={false}
+              <CategoriaField
+                integracaoId={integracaoId}
+                produtoNome={produtoNome}
+                value={field.value === '' ? null : field.value}
+                onChange={field.onChange}
                 disabled={readOnly}
                 error={fieldState.error?.message}
               />
@@ -326,54 +329,6 @@ export function ListingForm({
               )}
             />
           )}
-          <Controller
-            control={form.control}
-            name="tarifaFrete"
-            render={({ field, fieldState }) => (
-              <NumberInput
-                label="Tarifa de frete"
-                prefix="R$ "
-                decimalScale={2}
-                min={0}
-                value={field.value ?? ''}
-                onChange={(v) => field.onChange(v === '' ? null : Number(v))}
-                onBlur={field.onBlur}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="crossdocking"
-            render={({ field, fieldState }) => (
-              <NumberInput
-                label="Crossdocking"
-                description="Dias de preparação antes do envio."
-                allowDecimal={false}
-                min={0}
-                value={field.value ?? ''}
-                onChange={(v) => field.onChange(v === '' ? null : Number(v))}
-                onBlur={field.onBlur}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="video_id"
-            render={({ field, fieldState }) => (
-              <TextInput
-                {...field}
-                value={field.value ?? ''}
-                label="Vídeo (YouTube)"
-                description="Somente o id do vídeo."
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
         </SimpleGrid>
       </Fieldset>
 
