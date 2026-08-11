@@ -72,26 +72,59 @@ pipeline: **melhor-envio** (processes inline, no queue/sweep — #360 follow-up)
              per doc: dedup within the run → re-drive process()
                       → toDisposition(outcome, payload, 'sweep')
              every doc is isolated; one failure never aborts the batch
+
+3b. SLOW LANE  same onSchedule → reprocessDeferredNotifications
+             query status=='deferred' && processedAt < now-24h   ← SAME index
+             identical loop; the 24h window IS the per-doc cadence, so at a
+             30-min schedule it returns nothing 47 runs out of 48
+             + a channel that can OBSERVE the precondition clearing calls
+               pipeline.redrive(docId) to jump the doc back into the hot lane
 ```
+
+## The two retry lanes
+
+`failed` and `deferred` are **two lanes over one collection**, told apart by
+`status` alone and sharing one `(status, processedAt)` composite index:
+
+| lane | window | cap | for |
+| --- | --- | --- | --- |
+| **hot** `failed` | 1 h | `MAX_TENTATIVAS = 5` → `parked` | the work failed; retry shortly |
+| **slow** `deferred` | 24 h | `MAX_TENTATIVAS_DEFERRED = 7` → `parked` | a precondition outside this system is not met **yet** |
+
+**Pick the lane by WHO can clear the blockage, not by severity.** `fail` = we
+could not do it, try again shortly. `defer` = a human has to do something first
+(connect an account, re-grant a credential), and that may be tomorrow. Using
+`fail` for a precondition is issue **#808**: a Mercado Livre notification for an
+unconnected seller burned its 5 hourly retries and parked ~6h in, terminally, so
+a next-business-day connect silently lost every order, payment and shipment that
+had arrived. A deferred doc costs **zero** hot-lane retries while it waits.
 
 ## The disposition matrix
 
-`toDisposition` maps a channel's own outcome union onto four shared arms. **The
+`toDisposition` maps a channel's own outcome union onto five shared arms. **The
 same arm means different writes in each phase** — that asymmetry is the point:
 
-| arm | in the TASK | in the SWEEP | `outcomes` key |
-| --- | --- | --- | --- |
-| `resolve` | persist nothing (the cost win) | **DELETE** the doc | `label ?? 'done'` |
-| `drop` | persist nothing | **DELETE** the doc | `label ?? 'dropped'` |
-| `park` | create `status: 'parked'` | **mark** `parked` (terminal) | `'parked'` |
-| `fail` | create `status: 'failed'` | mark `failed`, **park at the cap** | `failed`/`parked` |
+| arm | in the TASK | in the HOT sweep | in the DEFERRED sweep | `outcomes` key |
+| --- | --- | --- | --- | --- |
+| `resolve` | persist nothing (the cost win) | **DELETE** the doc | **DELETE** the doc | `label ?? 'done'` |
+| `drop` | persist nothing | **DELETE** the doc | **DELETE** the doc | `label ?? 'dropped'` |
+| `park` | create `status: 'parked'` | **mark** `parked` (terminal) | **mark** `parked` | `'parked'` |
+| `fail` | create `status: 'failed'` | mark `failed`, **park at the cap** | **graduate** — `redrive` into the hot lane | `failed`/`parked`/`redriven` |
+| `defer` | create `status: 'deferred'` | **migrate** to `deferred`, `tentativas: 0` | mark `deferred`, **park at the deferred cap** | `deferred`/`parked` |
 
 - `resolve` vs `drop` write identically; they differ in the task's reported
   outcome (`done` vs `dropped`) and in the counter an operator reads. Use
   `resolve` for "we settled it", `drop` for "it was never ours" (a sandbox
   event, an unsupported topic).
 - `label` keeps a channel's operator vocabulary (`reconciled`, `processed`).
-- **Only `fail` is re-driven.** `park` is terminal — nothing sweeps it again.
+- `park` is terminal — **nothing** in the repo ever re-drives a parked doc.
+- A `fail` in the DEFERRED lane means the precondition finally cleared and the
+  work itself failed: the doc rejoins the hot lane with a **fresh** budget
+  (`tentativas: 0`, `processedAt: 0`) rather than spending a horizon it no longer
+  needs.
+- `NotificationPhase` stays `'task' | 'sweep'` — the deferred lane also asks as
+  `'sweep'`, because the question a channel answers there is "does a document
+  exist yet", and in both sweeps it does.
 
 ## ⚠️ Traps
 
@@ -223,6 +256,15 @@ disposition writes the right status; a transient throw re-throws below the cap
 and persists at it; the correlated-outage case re-throws the original; the sweep
 deletes/parks/bumps correctly and isolates per-doc failures.
 
+A channel with a `defer` arm additionally needs the **precondition-clears-later**
+path end to end, since that is the one #808 lost: task defers → the hot sweep
+never touches it however many times it runs → the precondition clears → the doc
+imports. Assert the deferred cap **by constant** (`MAX_TENTATIVAS_DEFERRED - 1`
+parks on its next re-drive) so retuning the horizon stays a one-constant edit.
+`store.redrive` is `mergeIfExists`, i.e. `update()`, so the FakeDb needs a `doc()
+.update` that raises gRPC **5** for an absent doc — a `set`-based stand-in would
+pass a test that upserts a ghost in production.
+
 The emulator cannot run this end-to-end (Cloud Tasks isn't emulated) — unit
 tests against the fake are the contract.
 
@@ -230,8 +272,9 @@ tests against the fake are the contract.
 
 **Constants** (`@delfrance/data/admin/notifications`): `TASK_MAX_ATTEMPTS = 3`
 (keep in sync with the function's `retryConfig.maxAttempts`), `MAX_TENTATIVAS = 5`
-(sweeps before parking), `ONE_HOUR_MS` (sweep window),
-`DEFAULT_REPROCESS_LIMIT = 50`.
+(hot sweeps before parking), `MAX_TENTATIVAS_DEFERRED = 7` (daily deferred
+re-drives before parking, i.e. a one-week horizon), `ONE_HOUR_MS` (hot window),
+`ONE_DAY_MS` (deferred window), `DEFAULT_REPROCESS_LIMIT = 50`.
 
 **Env per channel**: `<CANAL>_TASKS_DISABLED=1` → sweep-only mode (the receiver
 persists instead of enqueuing — never a silent drop); `<CANAL>_TASKS_REGION`
