@@ -6,7 +6,7 @@ import {
   STOCK_SEND_MAX_ATTEMPTS,
   concurrentDispatches,
   dispatchesPerSecond,
-} from '../../lib/marketplace/estoquePlan';
+} from '../../lib/marketplace/bulkEstoquePlan';
 import { processStockSendTask } from '../../lib/marketplace/estoqueSend';
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';

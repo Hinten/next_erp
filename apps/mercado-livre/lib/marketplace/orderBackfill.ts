@@ -341,11 +341,13 @@ export async function runOrderBackfillSweep(
     }
 
     try {
-      // The enumeration already fetched this document and filtered it on `tipo`
-      // + `ativo`, so `sweepConta` builds its context from the snapshot instead
-      // of point-reading the same doc again. Parsed here, past the `user_id`
-      // guard, for the same reason that guard reads raw: a soft parseRead of
-      // every enumerated conta would warn-spam each tick on legacy partial docs.
+      // The enumeration already fetched this document, and it satisfies both
+      // guards `loadMercadoLivreContext` performs — the doc EXISTS (the query
+      // returned it) and `tipo === mercadoLivre` (a query predicate) — so
+      // `sweepConta` builds its context from the snapshot instead of
+      // point-reading the same doc again. Parsed here, past the `user_id` guard,
+      // for the same reason that guard reads raw: a soft parseRead of every
+      // enumerated conta would warn-spam each tick on legacy partial docs.
       const conta = integracaoCollection.parseRead(
         doc.data(),
         integracaoCollection.docPath({}, integracaoId),

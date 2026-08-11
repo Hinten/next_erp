@@ -1,10 +1,24 @@
 import type { CollectionMetadata } from '@delfrance/schemas';
 
 /**
+ * ⚠️ SUPERSEDED. No RUNTIME caller is left — the only importer is this module's
+ * own unit test. Delete cascades now run server-side in `apps/functions`,
+ * bespoke per domain or via the shared `defineCascadeCaroGenerico` factory
+ * (`apps/functions/src/lib/`). Do not wire this module into a new one.
+ *
+ * Beyond being unused, its shape is the one the cascade triggers deliberately
+ * avoid: it sweeps exactly the paths a domain DECLARES in `meta.cascade`, and a
+ * registry-derived list silently orphans whatever it does not know about —
+ * Flutter writes subcollections this repo never registered, and
+ * `integracaoMeta.cascade` omits `brandshopee` today. The triggers ask
+ * Firestore what exists instead; see the ⚠️ in `admin/deleteSubtree.ts`.
+ *
+ * Kept only because it is a public export of `@delfrance/data/server` and it
+ * still carries the `restrict` semantics nothing else implements.
+ *
  * Server-side cascade runtime. Uses firebase-admin (not the client SDK)
  * because the Flutter rules do not allow clients to read/write across
- * documents in a single batch wide enough for a cascade. Imported only
- * by `apps/integrations` and tooling.
+ * documents in a single batch wide enough for a cascade.
  *
  * Strategy:
  * - For `onDelete: 'restrict'` declarations: query the child collection
