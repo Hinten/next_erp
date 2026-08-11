@@ -203,9 +203,13 @@ export function toChartRows(
  * (gender, domain, measure type, a row's size). The legacy screen's *Copiar*
  * button existed for exactly this reason and used the same `(Cópia)` prefix.
  *
- * Every ML identity is cleared: the chart id, each row id, `main_attribute_id`
- * (ML re-derives it), and both ERP-only caches. Keeping any of them would make
- * the sync try to PATCH the ORIGINAL chart.
+ * The chart id and every row id are nulled: the chart id alone decides
+ * create-vs-PATCH in `syncSizeCharts`, so keeping it would make the copy edit
+ * the ORIGINAL chart. Both ERP-only caches go too, since they describe the
+ * original's state on ML.
+ *
+ * `main_attribute_id` is deliberately KEPT — it is the operator's column choice,
+ * not an ML-assigned identity, and a copy should measure the same way.
  */
 export function duplicateChart(chart: MlSizeChart): MlSizeChart {
   const prefix = '(Cópia) ';
@@ -223,6 +227,29 @@ export function duplicateChart(chart: MlSizeChart): MlSizeChart {
       sizeCalculado: null,
     })),
   };
+}
+
+/**
+ * Is `candidate` still the guia the operator acted on?
+ *
+ * Guias live in a positional ARRAY that three writers touch (this editor, the
+ * sync backend, the Flutter app), so **an index is not an identity**: an insert
+ * or a reorder makes position N point at a different chart, and acting on it
+ * would edit or delete the wrong one. A sent guia is keyed by its ML id; a
+ * draft has none, so its name + domain is the best key available.
+ *
+ * ⚠️ Compare against the chart the editor OPENED with, never the edited value —
+ * a draft being renamed would otherwise look like a different guia.
+ */
+export function sameChart(candidate: MlSizeChart | undefined, original: MlSizeChart): boolean {
+  if (candidate == null) return false;
+  const candidateId = candidate.id ?? '';
+  const originalId = original.id ?? '';
+  if (candidateId !== '' || originalId !== '') return candidateId === originalId;
+  return (
+    (candidate.nome ?? '') === (original.nome ?? '') &&
+    (candidate.domain_id ?? '') === (original.domain_id ?? '')
+  );
 }
 
 /* -------------------------------- errors --------------------------------- */
