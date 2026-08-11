@@ -54,6 +54,19 @@ describe('CORS allow-list', () => {
     );
   });
 
+  it('allows localhost in production when it is EXPLICITLY listed', () => {
+    // The CI contract: the e2e lanes serve a production build (`next start`) to
+    // a browser on localhost:3000, so e2e-reusable.yml declares that origin the
+    // same way a real deploy declares its own. Dropping the implicit allowance
+    // must not turn into a hardcoded ban on the string.
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'http://localhost:3000');
+
+    expect(preflight('http://localhost:3000').headers.get('access-control-allow-origin')).toBe(
+      'http://localhost:3000',
+    );
+  });
+
   it('allows nothing in production when ALLOWED_ADMIN_ORIGINS is unset', () => {
     // The deploy-ordering hazard, pinned: dropping the dev origin makes the
     // variable load-bearing, so a backend deployed without it serves no origin.
