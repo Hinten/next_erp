@@ -289,8 +289,8 @@ export function MercadoLivreEditor({
           </Text>
           {contas.map((conta) => {
             // The stock sweep loops EVERY listing this conta holds on the produto
-            // (estoquePlan's link join deliberately has no `limit(1)`), so rendering
-            // only the first one hid a latched sibling completely (#781).
+            // (bulkEstoquePlan's link join deliberately has no `limit(1)`), so
+            // rendering only the first one hid a latched sibling completely (#781).
             const contaLinks = links.filter((l) =>
               refMatchesIntegracao(l.data.contaOuterRef, conta.id),
             );
