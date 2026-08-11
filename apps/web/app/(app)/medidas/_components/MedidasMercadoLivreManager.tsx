@@ -3,18 +3,7 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
-import {
-  Alert,
-  Anchor,
-  Badge,
-  Button,
-  Card,
-  Group,
-  List,
-  Loader,
-  Stack,
-  Text,
-} from '@mantine/core';
+import { Alert, Anchor, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
 import {
@@ -30,27 +19,37 @@ import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
-import { pendingAfterSync } from '@/lib/mercado-livre/chartForm';
+import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
 import {
-  MercadoLivreClientHttpError,
-  MercadoLivreClientNetworkError,
+  type MercadoLivreChartValidationError,
+  type MercadoLivreClient,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
-import { CreateSizeChartModal, type SizeGroupOption } from './CreateSizeChartModal';
+import { SizeChartEditorModal, type SizeGroupOption } from './SizeChartEditorModal';
 
 const MAX_CONTAS = 50;
 const MAX_GRUPOS = 200;
 
+/** Which guia the editor is open on. `chartIndex: null` ⇒ a brand-new one. */
+interface EditorTarget {
+  integracaoId: string;
+  chart: MlSizeChart | null;
+  chartIndex: number | null;
+}
+
 /**
- * The medidas editor's **Mercado Livre** tab (Step 5c): one card per connected
- * ML account, showing the guias de tamanho stored for this tabela and letting
- * the user add new ones and send them to ML (`POST size-charts/sync`). Charts
- * stay stored on the tabMedi doc's `tabelasDeMedidasMercadoLivre[<conta>]` map,
- * which the still-running Flutter app also authors — the server merge writes
+ * The medidas editor's **Mercado Livre** tab: one card per connected ML account
+ * listing the guias de tamanho stored for this tabela, each opening the
+ * full-screen editor.
+ *
+ * Guias live on the tabMedi doc's `tabelasDeMedidasMercadoLivre[<conta>]` map,
+ * which the still-running Flutter app also authors — every write here merges
  * only this conta's key, so the two coexist.
  *
- * Self-contained like the produto Mercado Livre tab: it reads its own live doc
- * state and POSTs to the backend, decoupled from the tabela's Salvar.
+ * ⚠️ Unsent guias are PERSISTED as drafts (`id: null`) rather than held in React
+ * state. A 75-row × 10-column grid is far too much work to lose to a reload,
+ * and a draft is inert everywhere else: `resolveSizeChart` only ever considers
+ * charts that carry an ML id.
  */
 export function MedidasMercadoLivreManager({
   tabMediId,
@@ -92,7 +91,7 @@ export function MedidasMercadoLivreManager({
   const docSnap = useDocSnapshot(docRef);
   const chartsMap = docSnap.data?.data.tabelasDeMedidasMercadoLivre ?? null;
 
-  // Size groups (tipo 1) — the create modal binds a chart's rows to one.
+  // Size groups (tipo 1) — a new chart's rows bind to one.
   const gruposQuery = useMemo(
     () =>
       buildQuery(grupoDeVariacoesCollection.ref(db, {}), [
@@ -113,66 +112,56 @@ export function MedidasMercadoLivreManager({
     [gruposSnap.data],
   );
 
-  // Charts created this session, not yet sent — kept per conta so "Enviar"
-  // submits stored + pending together.
-  const [pendingByConta, setPendingByConta] = useState<Record<string, MlSizeChart[]>>({});
-  const [syncing, setSyncing] = useState<string | null>(null);
-  const [validationByConta, setValidationByConta] = useState<
-    Record<string, Array<{ code: string | null; message: string | null }>>
-  >({});
-  const [modalConta, setModalConta] = useState<string | null>(null);
+  const [target, setTarget] = useState<EditorTarget | null>(null);
 
-  async function handleSync(integracaoId: string, tabelas: MlSizeChart[]) {
-    if (!client) return;
-    setSyncing(integracaoId);
-    setValidationByConta((prev) => ({ ...prev, [integracaoId]: [] }));
-    try {
-      const sentPendingCount = (pendingByConta[integracaoId] ?? []).length;
-      const result = await client.sizeChartSync({ integracaoId, tabMediId, tabelas });
-      if (result.validationErrors.length > 0) {
-        setValidationByConta((prev) => ({
-          ...prev,
-          [integracaoId]: result.validationErrors.map((e) => ({
-            code: e.code,
-            message: e.message,
-          })),
-        }));
-      }
-      // Keep only the pending charts ML REJECTED (still id-less) — the accepted
-      // ones were persisted server-side and reappear via the live doc snapshot.
-      // Clearing unconditionally would lose a just-built guia on a fully-
-      // rejected sync (the server writes nothing when nothing succeeds).
-      setPendingByConta((prev) => ({
-        ...prev,
-        [integracaoId]: pendingAfterSync(sentPendingCount, result.tabelas),
-      }));
-      notifications.show({
-        color: result.validationErrors.length > 0 ? 'yellow' : 'green',
-        message:
-          result.validationErrors.length > 0
-            ? 'Guias enviadas com pendências — verifique os avisos.'
-            : 'Guias de tamanho enviadas ao Mercado Livre.',
-      });
-    } catch (err) {
-      if (err instanceof MercadoLivreClientHttpError) {
-        if (err.status === 409) {
-          notifications.show({
-            color: 'red',
-            message: 'Conta Mercado Livre não conectada — reconecte em Canais de venda.',
-          });
-        } else {
-          notifications.show({ color: 'red', message: err.message });
-        }
-        return;
-      }
-      if (err instanceof MercadoLivreClientNetworkError) {
-        notifications.show({ color: 'red', message: 'Não foi possível contatar o Mercado Livre.' });
-        return;
-      }
-      throw err;
-    } finally {
-      setSyncing(null);
+  /**
+   * Persist one guia into this conta's list without contacting ML.
+   *
+   * ⚠️ The array is rebuilt from the LIVE snapshot, not from whatever the editor
+   * opened with: the Flutter app and the sync backend write the same key, and a
+   * `merge()` replaces the array wholesale. If the stored list changed shape
+   * under us we refuse rather than clobber — the client SDK has no
+   * `lastUpdateTime` precondition, so surfacing the conflict is the only tier
+   * available (root `CLAUDE.md` rule 7 / ADR 0011).
+   */
+  async function saveChart(
+    integracaoId: string,
+    chart: MlSizeChart,
+    chartIndex: number | null,
+  ): Promise<MlSizeChart[]> {
+    const stored = mlSizeChartsForConta(chartsMap, integracaoId);
+    if (chartIndex != null && stored[chartIndex] == null) {
+      throw new SizeChartConflictError();
     }
+    const tabelas =
+      chartIndex == null
+        ? [...stored, chart]
+        : stored.map((c, i) => (i === chartIndex ? chart : c));
+    await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
+      tabelasDeMedidasMercadoLivre: { [integracaoId]: { tabelas } },
+      ultimaModificacao: Date.now(),
+    });
+    return tabelas;
+  }
+
+  /**
+   * Persist, then send this conta's whole list to ML.
+   *
+   * The whole list, not just the edited guia: the backend diffs each chart
+   * against the stored doc and skips the untouched ones, so submitting only one
+   * would make the others look deleted. Saving first means a rejected send
+   * still leaves the operator's typing on the doc.
+   */
+  async function sendChart(
+    ready: MercadoLivreClient,
+    integracaoId: string,
+    chart: MlSizeChart,
+    chartIndex: number | null,
+  ): Promise<{ validationErrors: MercadoLivreChartValidationError[]; chartIndex: number }> {
+    const tabelas = await saveChart(integracaoId, chart, chartIndex);
+    const index = chartIndex ?? tabelas.length - 1;
+    const result = await ready.sizeChartSync({ integracaoId, tabMediId, tabelas });
+    return { validationErrors: result.validationErrors, chartIndex: index };
   }
 
   // No integração.read → the contas query is idle (never issued). Say so
@@ -218,14 +207,11 @@ export function MedidasMercadoLivreManager({
     <Stack gap="sm">
       <Text size="sm" c="dimmed">
         As guias de tamanho são vinculadas a um anúncio na publicação do produto (aba Mercado Livre
-        do produto). Aqui você cria e envia as guias por conta.
+        do produto). Aqui você cria, edita e envia as guias por conta.
       </Text>
 
       {contas.map((conta) => {
         const stored = mlSizeChartsForConta(chartsMap, conta.id);
-        const pending = pendingByConta[conta.id] ?? [];
-        const validation = validationByConta[conta.id] ?? [];
-        const all = [...stored, ...pending];
 
         return (
           <Card key={conta.id} withBorder padding="md" data-testid={`ml-medida-conta-${conta.id}`}>
@@ -233,71 +219,62 @@ export function MedidasMercadoLivreManager({
               <Group justify="space-between">
                 <Text fw={600}>{conta.data.nome}</Text>
                 <Badge color="gray" variant="light">
-                  {all.length} {all.length === 1 ? 'guia' : 'guias'}
+                  {stored.length} {stored.length === 1 ? 'guia' : 'guias'}
                 </Badge>
               </Group>
 
-              {all.length === 0 && (
+              {stored.length === 0 && (
                 <Text size="sm" c="dimmed">
                   Nenhuma guia de tamanho para esta conta.
                 </Text>
               )}
 
-              {all.map((chart, i) => (
-                <Group key={chart.id ?? `pending-${i}`} justify="space-between" wrap="nowrap">
+              {stored.map((chart, index) => (
+                <Group
+                  key={chart.id ?? `rascunho-${String(index)}`}
+                  justify="space-between"
+                  wrap="nowrap"
+                >
                   <div>
                     <Text size="sm">{chart.nome ?? '(sem nome)'}</Text>
                     <Text size="xs" c="dimmed">
                       {chart.domain_id ?? '—'} · {(chart.rows ?? []).length} tamanhos
                     </Text>
                   </div>
-                  {chart.id != null && chart.id !== '' ? (
-                    <Badge color="green" variant="light">
-                      Enviada
-                    </Badge>
-                  ) : (
-                    <Badge color="yellow" variant="light">
-                      Não enviada
-                    </Badge>
-                  )}
+                  <Group gap="xs" wrap="nowrap">
+                    {chart.id != null && chart.id !== '' ? (
+                      <Badge color="green" variant="light">
+                        Enviada
+                      </Badge>
+                    ) : (
+                      <Badge color="yellow" variant="light">
+                        Rascunho
+                      </Badge>
+                    )}
+                    <Button
+                      size="compact-xs"
+                      variant="light"
+                      disabled={disabled || !client}
+                      onClick={() => {
+                        setTarget({ integracaoId: conta.id, chart, chartIndex: index });
+                      }}
+                    >
+                      Editar
+                    </Button>
+                  </Group>
                 </Group>
               ))}
-
-              {validation.length > 0 && (
-                <Alert color="red" variant="light" title="Pendências do Mercado Livre">
-                  <List size="sm">
-                    {validation.map((v, i) => (
-                      <List.Item key={`${v.code ?? 'err'}-${i}`}>
-                        {v.message ?? v.code ?? 'Erro de validação'}
-                      </List.Item>
-                    ))}
-                  </List>
-                </Alert>
-              )}
 
               <Group>
                 <Button
                   size="xs"
                   variant="light"
-                  onClick={() => setModalConta(conta.id)}
-                  // Also blocked while a sync runs: the completion handler
-                  // rebuilds this conta's pending list from the pre-sync count,
-                  // so a chart added mid-sync would be dropped.
-                  disabled={
-                    disabled || !client || !canRead || grupos.length === 0 || syncing !== null
-                  }
+                  onClick={() => {
+                    setTarget({ integracaoId: conta.id, chart: null, chartIndex: null });
+                  }}
+                  disabled={disabled || !client || grupos.length === 0}
                 >
                   Nova guia
-                </Button>
-                <Button
-                  size="xs"
-                  onClick={() => handleSync(conta.id, all)}
-                  loading={syncing === conta.id}
-                  disabled={
-                    disabled || !client || !canWrite || syncing !== null || all.length === 0
-                  }
-                >
-                  Enviar ao Mercado Livre
                 </Button>
               </Group>
               {grupos.length === 0 && (
@@ -307,7 +284,7 @@ export function MedidasMercadoLivreManager({
               )}
               {!canWrite && (
                 <Text size="xs" c="dimmed">
-                  Requer permissão de escrita em integrações para enviar.
+                  Requer permissão de escrita em integrações para enviar ao Mercado Livre.
                 </Text>
               )}
             </Stack>
@@ -315,19 +292,30 @@ export function MedidasMercadoLivreManager({
         );
       })}
 
-      {client && modalConta && (
-        <CreateSizeChartModal
+      {client && target && (
+        <SizeChartEditorModal
+          key={`${target.integracaoId}-${String(target.chartIndex)}-${target.chart?.id ?? 'novo'}`}
           opened
-          onClose={() => setModalConta(null)}
+          onClose={() => {
+            setTarget(null);
+          }}
           client={client}
-          integracaoId={modalConta}
+          integracaoId={target.integracaoId}
+          chart={target.chart}
+          chartIndex={target.chartIndex}
           grupos={grupos}
-          onAdd={(chart) =>
-            setPendingByConta((prev) => ({
-              ...prev,
-              [modalConta]: [...(prev[modalConta] ?? []), chart],
-            }))
-          }
+          onSaveDraft={async (chart, chartIndex) => {
+            await saveChart(target.integracaoId, chart, chartIndex);
+          }}
+          onSend={(chart, chartIndex) => sendChart(client, target.integracaoId, chart, chartIndex)}
+          onDuplicate={(copy) => {
+            // The copy is a NEW guia: no index, so it appends on save.
+            setTarget({ integracaoId: target.integracaoId, chart: copy, chartIndex: null });
+            notifications.show({
+              color: 'blue',
+              message: 'Cópia criada. Ajuste o nome e envie como uma guia nova.',
+            });
+          }}
         />
       )}
     </Stack>

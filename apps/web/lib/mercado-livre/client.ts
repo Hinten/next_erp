@@ -232,7 +232,7 @@ export interface MercadoLivreChartDomain {
 /**
  * The domain technical-specs tree (`POST size-charts/specs`) — deeply nested,
  * ML-owned and consumed only by the chart editor's walk, so it stays opaque
- * here (`unknown`); `chartForm.ts` reads it defensively.
+ * here (`unknown`); `chartSpec.ts` reads it defensively.
  */
 export type MercadoLivreChartSpecs = Record<string, unknown>;
 

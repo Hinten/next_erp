@@ -1,0 +1,488 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  type ChartColumn,
+  columnAttributeIds,
+  detectMeasureTypes,
+  extractChartAttributes,
+  extractColumns,
+  extractGridTemplates,
+  mainAttributeCandidates,
+  maxRows,
+} from './chartSpec';
+
+/**
+ * Mirrors the real `?section=grids` response for `MLB-T_SHIRTS`, transcribed
+ * from the legacy embedded sample (`.old/…/mercado_livre/scripts/domain.dart`):
+ * a `GRIDS` group holds a `GRID` component whose CHILD components are the
+ * columns, GENDER/BRAND echo back as `TEXT_OUTPUT`, `FILTRABLE_SIZE` is a
+ * hidden read-only list ML computes, and every measurement is a
+ * `LINKED_BY_CONNECTOR_INPUT` FROM/TO pair tagged by measure type.
+ */
+const tshirtGrid = {
+  input: {
+    groups: [
+      {
+        id: 'SIZE_CHART',
+        section: 'GRIDS',
+        components: [
+          {
+            component: 'GRID',
+            label: 'Guia de tamanhos',
+            ui_config: { max_allowed: 75, allow_custom_value: true },
+            components: [
+              {
+                component: 'TEXT_OUTPUT',
+                label: 'Gênero',
+                attributes: [
+                  {
+                    id: 'GENDER',
+                    name: 'Gênero',
+                    value_type: 'string',
+                    tags: ['grid_template_required', 'grid_filter', 'required'],
+                    values: [
+                      { id: '339665', name: 'Feminino' },
+                      { id: '339666', name: 'Masculino' },
+                    ],
+                  },
+                ],
+              },
+              {
+                component: 'TEXT_OUTPUT',
+                label: 'Marca',
+                attributes: [
+                  {
+                    id: 'BRAND',
+                    name: 'Marca',
+                    value_type: 'string',
+                    tags: ['grid_filter', 'required'],
+                  },
+                ],
+              },
+              {
+                component: 'TEXT_INPUT',
+                label: 'Tamanho na etiqueta',
+                ui_config: { hint: 'Como o tamanho aparece na etiqueta.' },
+                attributes: [
+                  {
+                    id: 'SIZE',
+                    name: 'Tamanho na etiqueta',
+                    value_type: 'string',
+                    tags: ['unique', 'main_attribute_candidate', 'required'],
+                  },
+                ],
+              },
+              {
+                component: 'COMBO',
+                label: 'Equivalências',
+                attributes: [
+                  {
+                    id: 'FILTRABLE_SIZE',
+                    name: 'Tamanho padrão',
+                    value_type: 'list',
+                    tags: ['multivalued', 'read_only', 'hidden', 'required'],
+                    values: [{ id: '3189130', name: '34' }],
+                  },
+                ],
+              },
+              {
+                component: 'LINKED_BY_CONNECTOR_INPUT',
+                label: 'Contorno do peito',
+                ui_config: { connector: 'a', hint: 'De - Até' },
+                default_unified_unit_id: 'cm',
+                unified_units: [
+                  { id: 'cm', name: 'cm' },
+                  { id: '"', name: '"' },
+                ],
+                attributes: [
+                  {
+                    id: 'CHEST_CIRCUMFERENCE_FROM',
+                    name: 'Contorno do peito de',
+                    value_type: 'number_unit',
+                    tags: ['BODY_MEASURE'],
+                    default_unit_id: 'cm',
+                    units: [
+                      { id: 'cm', name: 'cm' },
+                      { id: '"', name: '"' },
+                    ],
+                  },
+                  {
+                    id: 'CHEST_CIRCUMFERENCE_TO',
+                    name: 'Contorno do peito até',
+                    value_type: 'number_unit',
+                    tags: ['BODY_MEASURE'],
+                    default_unit_id: 'cm',
+                  },
+                ],
+              },
+              {
+                component: 'LINKED_BY_CONNECTOR_INPUT',
+                label: 'Comprimento da roupa',
+                ui_config: { connector: 'a' },
+                attributes: [
+                  {
+                    id: 'GARMENT_LENGTH_FROM',
+                    name: 'Comprimento da roupa de',
+                    value_type: 'number_unit',
+                    tags: ['CLOTHING_MEASURE'],
+                    default_unit_id: 'cm',
+                  },
+                  {
+                    id: 'GARMENT_LENGTH_TO',
+                    name: 'Comprimento da roupa até',
+                    value_type: 'number_unit',
+                    tags: ['CLOTHING_MEASURE'],
+                    default_unit_id: 'cm',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+};
+
+/** A footwear grid: several main-attribute candidates and NO plain SIZE column. */
+const sneakerGrid = {
+  input: {
+    groups: [
+      {
+        section: 'GRIDS',
+        components: [
+          {
+            component: 'GRID',
+            ui_config: {},
+            components: [
+              {
+                component: 'TEXT_INPUT',
+                label: 'Tamanho da marca',
+                attributes: [
+                  {
+                    id: 'MANUFACTURER_SIZE',
+                    name: 'Tamanho da marca',
+                    value_type: 'string',
+                    tags: ['unique', 'main_attribute_candidate'],
+                  },
+                ],
+              },
+              {
+                component: 'NUMBER_UNIT_INPUT',
+                label: 'EU',
+                attributes: [
+                  {
+                    id: 'EU_SIZE',
+                    name: 'EU',
+                    value_type: 'number_unit',
+                    tags: ['main_attribute_candidate'],
+                    default_unit_id: 'EU',
+                    units: [{ id: 'EU', name: 'EU' }],
+                  },
+                ],
+              },
+              {
+                component: 'NUMBER_UNIT_INPUT',
+                label: 'Comprimento do pé',
+                attributes: [
+                  {
+                    id: 'FOOT_LENGTH',
+                    name: 'Comprimento do pé',
+                    value_type: 'number_unit',
+                    tags: ['required'],
+                    default_unit_id: 'cm',
+                    units: [{ id: 'cm', name: 'cm' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+};
+
+function byKey(columns: ChartColumn[], key: string): ChartColumn {
+  const found = columns.find((c) => c.key === key);
+  if (!found) throw new Error(`no column ${key}: ${columns.map((c) => c.key).join(', ')}`);
+  return found;
+}
+
+describe('extractGridTemplates', () => {
+  it('returns every grid_template_required attribute with its values', () => {
+    expect(extractGridTemplates(tshirtGrid)).toEqual([
+      {
+        id: 'GENDER',
+        name: 'Gênero',
+        required: true,
+        values: [
+          { id: '339665', name: 'Feminino' },
+          { id: '339666', name: 'Masculino' },
+        ],
+      },
+    ]);
+  });
+
+  it('handles MORE THAN ONE template — the MVP punted to the old app here', () => {
+    const twoTemplates = {
+      input: {
+        groups: [
+          {
+            components: [
+              {
+                component: 'GRID',
+                components: [
+                  {
+                    component: 'COMBO',
+                    attributes: [
+                      { id: 'GENDER', name: 'Gênero', tags: ['grid_template_required'] },
+                    ],
+                  },
+                  {
+                    component: 'COMBO',
+                    attributes: [
+                      { id: 'AGE_GROUP', name: 'Idade', tags: ['grid_template_required'] },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    expect(extractGridTemplates(twoTemplates).map((t) => t.id)).toEqual(['GENDER', 'AGE_GROUP']);
+  });
+
+  it('is empty for a domain with no chart template', () => {
+    expect(extractGridTemplates({ input: { groups: [] } })).toEqual([]);
+  });
+
+  it('never mistakes a VALUE that carries attributes for an attribute', () => {
+    const trap = {
+      input: {
+        groups: [
+          {
+            components: [
+              {
+                component: 'GRID',
+                components: [
+                  {
+                    attributes: [
+                      {
+                        id: 'GENDER',
+                        name: 'Gênero',
+                        tags: ['grid_template_required'],
+                        values: [
+                          {
+                            id: '1',
+                            name: 'Feminino',
+                            attributes: [{ id: 'FAKE', tags: ['grid_template_required'] }],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    expect(extractGridTemplates(trap).map((t) => t.id)).toEqual(['GENDER']);
+  });
+});
+
+describe('extractChartAttributes', () => {
+  it('returns the grid_filter attributes — ML forbids these inside rows', () => {
+    expect(extractChartAttributes(tshirtGrid).map((a) => a.id)).toEqual(['GENDER', 'BRAND']);
+  });
+
+  it('drops read-only / hidden filters, which ML derives itself', () => {
+    const spec = {
+      input: {
+        groups: [
+          {
+            components: [
+              {
+                component: 'GRID',
+                components: [
+                  {
+                    attributes: [
+                      { id: 'AGE_GROUP', name: 'Idade', tags: ['grid_filter', 'read_only'] },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    expect(extractChartAttributes(spec)).toEqual([]);
+  });
+});
+
+describe('detectMeasureTypes', () => {
+  it('offers both when the domain tags both families', () => {
+    expect(detectMeasureTypes(tshirtGrid)).toEqual(['BODY_MEASURE', 'CLOTHING_MEASURE']);
+  });
+
+  it('is empty for a domain with no measure columns (footwear)', () => {
+    expect(detectMeasureTypes(sneakerGrid)).toEqual([]);
+  });
+});
+
+describe('mainAttributeCandidates', () => {
+  it('apparel offers only SIZE', () => {
+    expect(mainAttributeCandidates(tshirtGrid)).toEqual([
+      { id: 'SIZE', name: 'Tamanho na etiqueta' },
+    ]);
+  });
+
+  it('footwear offers several — the case the MVP could not create at all', () => {
+    expect(mainAttributeCandidates(sneakerGrid).map((c) => c.id)).toEqual([
+      'MANUFACTURER_SIZE',
+      'EU_SIZE',
+    ]);
+  });
+});
+
+describe('maxRows', () => {
+  it("reads the GRID's ui_config.max_allowed", () => {
+    expect(maxRows(tshirtGrid)).toBe(75);
+  });
+
+  it('is null when ML sends no cap', () => {
+    expect(maxRows(sneakerGrid)).toBeNull();
+  });
+});
+
+describe('extractColumns', () => {
+  const body = extractColumns(tshirtGrid, 'BODY_MEASURE');
+
+  it('drops the TEXT_OUTPUT echoes and the hidden read-only list', () => {
+    expect(body.map((c) => c.key)).toEqual(['SIZE', 'CHEST_CIRCUMFERENCE_FROM']);
+  });
+
+  it('folds a FROM/TO pair into ONE column carrying the connector', () => {
+    const chest = byKey(body, 'CHEST_CIRCUMFERENCE_FROM');
+    expect(chest.label).toBe('Contorno do peito');
+    expect(chest.connector).toBe('a');
+    expect(chest.hint).toBe('De - Até');
+    expect(columnAttributeIds(chest)).toEqual([
+      'CHEST_CIRCUMFERENCE_FROM',
+      'CHEST_CIRCUMFERENCE_TO',
+    ]);
+    expect(chest.unit).toEqual({
+      default: 'cm',
+      options: [
+        { id: 'cm', name: 'cm' },
+        { id: '"', name: '"' },
+      ],
+    });
+  });
+
+  it('filters by measure type — a mismatched column is rejected by ML', () => {
+    expect(extractColumns(tshirtGrid, 'CLOTHING_MEASURE').map((c) => c.key)).toEqual([
+      'SIZE',
+      'GARMENT_LENGTH_FROM',
+    ]);
+  });
+
+  it('keeps both families when no measure type is chosen yet', () => {
+    expect(extractColumns(tshirtGrid, null).map((c) => c.key)).toEqual([
+      'SIZE',
+      'CHEST_CIRCUMFERENCE_FROM',
+      'GARMENT_LENGTH_FROM',
+    ]);
+  });
+
+  it('marks required and main-candidate columns', () => {
+    const size = byKey(body, 'SIZE');
+    expect(size).toMatchObject({ required: true, mainCandidate: true, connector: null });
+    expect(size.parts[0]!.kind).toBe('text');
+    expect(byKey(body, 'CHEST_CIRCUMFERENCE_FROM').mainCandidate).toBe(false);
+  });
+
+  it('maps value_type to a control, multivalued lists included', () => {
+    const spec = {
+      input: {
+        groups: [
+          {
+            components: [
+              {
+                component: 'GRID',
+                components: [
+                  {
+                    component: 'COMBO',
+                    label: 'Única',
+                    attributes: [
+                      { id: 'A', name: 'A', value_type: 'list', values: [{ id: '1', name: 'um' }] },
+                    ],
+                  },
+                  {
+                    component: 'COMBO',
+                    label: 'Múltipla',
+                    attributes: [{ id: 'B', name: 'B', value_type: 'list', tags: ['multivalued'] }],
+                  },
+                  {
+                    component: 'NUMBER_UNIT_INPUT',
+                    label: 'Número',
+                    attributes: [{ id: 'C', name: 'C', value_type: 'number_unit' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const cols = extractColumns(spec, null);
+    expect(cols.map((c) => c.parts[0]!.kind)).toEqual(['select', 'multiselect', 'number']);
+    expect(byKey(cols, 'A').parts[0]!.values).toEqual([{ id: '1', name: 'um' }]);
+  });
+
+  it('degrades an UNKNOWN component to a text column instead of throwing', () => {
+    // The legacy screen raised UnimplementedError here and blanked the grid —
+    // a hard dead end for something ML can change unilaterally.
+    const spec = {
+      input: {
+        groups: [
+          {
+            components: [
+              {
+                component: 'GRID',
+                components: [
+                  {
+                    component: 'SOMETHING_ML_ADDED_LATER',
+                    label: 'Novo',
+                    attributes: [{ id: 'NOVO', name: 'Novo', value_type: 'quantum' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const cols = extractColumns(spec, null);
+    expect(cols).toHaveLength(1);
+    expect(cols[0]).toMatchObject({ key: 'NOVO', label: 'Novo' });
+    expect(cols[0]!.parts[0]!.kind).toBe('text');
+  });
+
+  it('is empty for a spec with no GRID component at all', () => {
+    expect(extractColumns({ input: { groups: [{ components: [] }] } }, null)).toEqual([]);
+  });
+
+  it('footwear: every candidate is an editable column, none is filtered out', () => {
+    expect(extractColumns(sneakerGrid, null).map((c) => c.key)).toEqual([
+      'MANUFACTURER_SIZE',
+      'EU_SIZE',
+      'FOOT_LENGTH',
+    ]);
+  });
+});
