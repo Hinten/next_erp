@@ -99,6 +99,13 @@ export const mercadoLivreStockProvider: StockPushProvider = {
         // Pinned verbatim by the produto ML-tab e2e — do not reword casually.
         return falhaGeral('Não foi possível contatar o serviço do Mercado Livre.', 'rede');
       }
+      // The operator hit Cancelar: `fetch` rejects the aborted request with a
+      // DOMException named 'AbortError'. That is a clean cancel, not a failure —
+      // without this arm it fell to the rethrow below and surfaced as an
+      // unhandled exception. No rows: the run reports the cancellation itself.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return { rows: [], pausadoAte: null };
+      }
       throw err; // never a generic catch (repo rule 6)
     }
   },

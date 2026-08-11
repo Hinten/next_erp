@@ -38,7 +38,7 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
-import type { StockPushRow } from '@/lib/marketplace/estoque/types';
+import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 
 /**
  * The produto editor's **Mercado Livre** tab: one row per registered ML account
@@ -225,18 +225,17 @@ export function MercadoLivreManager({
    * the tab does not need the bulk dialog's checkbox.
    */
   async function handleEnviarEstoque(
-    conta: { id: string; nome: string; tipo: number; ativo: boolean },
+    // The registry's own type, not a hand-rolled shape with `tipo: number`.
+    // Widening it to `number` forced an `as never` at the call below, which
+    // silenced exactly the check that keeps an invalid tipo from reaching
+    // `resolveStockPushProvider`.
+    conta: StockPushIntegracao,
     temLatched: boolean,
   ) {
     setSendingStock(conta.id);
     try {
       const result = await enviarEstoqueParaIntegracao({
-        integracao: {
-          id: conta.id,
-          nome: conta.nome,
-          tipo: conta.tipo as never,
-          ativo: conta.ativo,
-        },
+        integracao: conta,
         produtoIds: [produtoId],
         nomePorProdutoId: new Map(),
         reenviarComErro: temLatched,
