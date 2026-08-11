@@ -107,6 +107,7 @@ export const E2E_FIXTURE_TARGETS: readonly E2EFixtureTarget[] = [
   // Prefix lives only in the doc id (`${prefix}-arq-001`); the fields carry it
   // as part of a filename, not as a value prefix.
   { collection: 'arquivos' },
+  { collection: 'balanco', fields: ['nome'] },
   { collection: 'bandeirasCartao', fields: ['nome'] },
   { collection: 'cargos', fields: ['nome'] },
   { collection: 'categorias', fields: ['nome'] },

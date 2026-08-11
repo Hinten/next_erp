@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { useFormContext, useFormState } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import {
   Alert,
@@ -9,6 +10,7 @@ import {
   Badge,
   Button,
   Card,
+  Divider,
   Group,
   List,
   Loader,
@@ -18,58 +20,37 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
-import {
-  ESTADO_PUBLICACAO_ML,
-  ESTADO_PUBLICACAO_ML_LABELS,
-  type EstadoPublicacaoMl,
-  INTEGRACAO_TIPO,
-  type ProdutoMercadoLivreLink,
-} from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
-import { useSnapshot } from '@delfrance/data/hooks';
+import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
+import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivreLinkCollection';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
-import { estadoLabel, parseEstado, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
+import { flushListings } from '@/lib/mercado-livre/flushListings';
+import { LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
+import { estadoLabel, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
+import { ListingDetails } from './ListingDetails';
+import { ListingForm } from './ListingForm';
+import { ListingStatusStrip } from './ListingStatusStrip';
 
 /**
- * The produto editor's **Mercado Livre** tab: one row per registered ML account
- * (integração tipo 1) showing the persisted publish status from the
- * `produtos/{id}/produtoMercadoLivre` link doc (live snapshot — the doc the
- * Flutter app reads too) and a Publicar/Republicar action that drives
- * `POST /publicar` on the apps/mercado-livre backend.
+ * The produto editor's **Mercado Livre** tab: one card per registered ML account
+ * (integração tipo 1) holding every listing that account has on this produto —
+ * its live status, its editable fields, and the Publicar/Republicar action that
+ * drives `POST /publicar` on the apps/mercado-livre backend.
  *
- * Self-contained like the Estoque tab: publishing is decoupled from the form's
- * save — the backend reads the SAVED produto, so unsaved edits don't ride along.
+ * The link docs are read live (the same documents the Flutter app reads) and
+ * edited through their own transaction, so listing edits are decoupled from the
+ * produto form's save — but they still ride along with it, through the flush ref
+ * the page wires into `ObjectView`'s `onAfterSave`.
  */
-
-/** Badge color per old-shape estado code. */
-const ESTADO_COLORS: Record<EstadoPublicacaoMl, string> = {
-  r: 'gray',
-  a: 'blue',
-  ep: 'blue',
-  v: 'yellow',
-  p: 'green',
-  pa: 'yellow',
-  c: 'gray',
-  E: 'red',
-  am: 'orange',
-};
-
-/**
- * MLB listing types offered on a FIRST publish (a re-publish reuses the link
- * doc's persisted `listing_type_id`).
- */
-const LISTING_TYPES = [
-  { value: 'gold_special', label: 'Clássico' },
-  { value: 'gold_pro', label: 'Premium' },
-];
 
 /**
  * Bound for BOTH queries (accounts and link docs) — they must match, or an
@@ -77,15 +58,27 @@ const LISTING_TYPES = [
  */
 const MAX_CONTAS = 50;
 
+export interface MercadoLivreEditorProps {
+  produtoId: string;
+  db: Firestore;
+  disabled?: boolean;
+  /** True while any listing holds unsaved edits — feeds ObjectView's `extraDirty`. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Receives a closure that commits every pending listing edit, so the produto's
+   * "Salvar alterações" saves the Mercado Livre tab too. Left null while the tab
+   * has never been opened, which the page's `?.` call handles.
+   */
+  flushRef?: React.MutableRefObject<(() => Promise<void>) | null>;
+}
+
 export function MercadoLivreEditor({
   produtoId,
   db,
   disabled,
-}: {
-  produtoId: string;
-  db: Firestore;
-  disabled?: boolean;
-}) {
+  onDirtyChange,
+  flushRef,
+}: MercadoLivreEditorProps) {
   const client = useMercadoLivreClient();
   // The backend publicar route is PERM.integracao.write-gated — gate the button
   // by the same bit so a viewer isn't offered an action that will 403.
@@ -109,6 +102,20 @@ export function MercadoLivreEditor({
   const linksSnap = useSnapshot(linksQuery);
   const links = useMemo(() => linksSnap.data ?? [], [linksSnap.data]);
 
+  // Listing pictures are DERIVED from the produto's fotos at publish time — the
+  // link doc has no picture field — so the count is what tells the operator, up
+  // front, whether the publish will be blocked for "produto sem fotos" or will
+  // silently drop everything past the 10th.
+  //
+  // The ref MUST be memoized: `useDocSnapshot`'s effect depends on `[ref]` and
+  // `docRef()` returns a fresh object every call, so an inline ref tears the
+  // `onSnapshot` listener down and re-subscribes on every render.
+  const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, produtoId), [db, produtoId]);
+  const produtoSnap = useDocSnapshot(produtoDocRef);
+  // `null` while the snapshot is still loading — NOT 0. Collapsing the two made
+  // the "produto sem fotos" alert flash on every open (see `ListingDetails`).
+  const produtoFotoCount = produtoSnap.loading ? null : (produtoSnap.data?.data.fotos?.length ?? 0);
+
   const [publishing, setPublishing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
@@ -116,6 +123,49 @@ export function MercadoLivreEditor({
   // in the offending row instead of a transient toast.
   const [blockedIssues, setBlockedIssues] = useState<Record<string, string[]>>({});
   const [listingTypeByConta, setListingTypeByConta] = useState<Record<string, string>>({});
+
+  // Which listings hold unsaved edits. A Set rather than a boolean because the
+  // publish gate is per-account: an unsaved edit on account A must not block a
+  // publish to account B.
+  const [dirtyIds, setDirtyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const handleDirtyChange = useCallback((linkDocId: string, dirty: boolean) => {
+    setDirtyIds((prev) => {
+      // Returning the SAME set when nothing changed keeps this out of the render
+      // loop — every ListingForm reports on mount and after every reset.
+      if (prev.has(linkDocId) === dirty) return prev;
+      const next = new Set(prev);
+      if (dirty) next.add(linkDocId);
+      else next.delete(linkDocId);
+      return next;
+    });
+  }, []);
+
+  const anyDirty = dirtyIds.size > 0;
+  useEffect(() => {
+    onDirtyChange?.(anyDirty);
+  }, [anyDirty, onDirtyChange]);
+  useEffect(
+    () => () => {
+      // Unmounting the tab must not leave the page's leave-guard armed forever.
+      onDirtyChange?.(false);
+    },
+    [onDirtyChange],
+  );
+
+  const flushesRef = useRef(new Map<string, () => Promise<void>>());
+  const registerFlush = useCallback((linkDocId: string, flush: (() => Promise<void>) | null) => {
+    if (flush) flushesRef.current.set(linkDocId, flush);
+    else flushesRef.current.delete(linkDocId);
+  }, []);
+
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = () => flushListings(flushesRef.current.values());
+    const ref = flushRef;
+    return () => {
+      ref.current = null;
+    };
+  }, [flushRef]);
 
   async function handlePublish(integracaoId: string, needsListingType: boolean) {
     if (!client) return;
@@ -126,7 +176,7 @@ export function MercadoLivreEditor({
         integracaoId,
         produtoId,
         ...(needsListingType
-          ? { listingTypeId: listingTypeByConta[integracaoId] ?? LISTING_TYPES[0]!.value }
+          ? { listingTypeId: listingTypeByConta[integracaoId] ?? LISTING_TYPE_OPTIONS[0].value }
           : {}),
       });
       notifications.show({
@@ -230,141 +280,161 @@ export function MercadoLivreEditor({
   }
 
   return (
-    <Stack gap="sm">
-      <Text size="sm" c="dimmed">
-        A publicação envia os dados <strong>salvos</strong> do produto — salve as alterações antes
-        de publicar.
-      </Text>
-      {contas.map((conta) => {
-        // The stock sweep loops EVERY listing this conta holds on the produto
-        // (estoquePlan's link join deliberately has no `limit(1)`), so rendering
-        // only the first one hid a latched sibling completely (#781).
-        const contaLinks = links.filter((l) =>
-          refMatchesIntegracao(l.data.contaOuterRef, conta.id),
-        );
-        // Publishing still targets the CONTA, not one listing — it reads the same
-        // primary link it always did.
-        const primary: ProdutoMercadoLivreLink | null = contaLinks[0]?.data ?? null;
-        const isFirstPublish = primary?.id == null;
-        const needsListingType = isFirstPublish && primary?.listing_type_id == null;
-        const issues = blockedIssues[conta.id] ?? [];
+    <OuterFormDirty>
+      {(produtoDirty) => (
+        <Stack gap="sm">
+          <Text size="sm" c="dimmed">
+            A publicação envia os dados <strong>salvos</strong> do produto — salve as alterações
+            antes de publicar.
+          </Text>
+          {contas.map((conta) => {
+            // The stock sweep loops EVERY listing this conta holds on the produto
+            // (estoquePlan's link join deliberately has no `limit(1)`), so rendering
+            // only the first one hid a latched sibling completely (#781).
+            const contaLinks = links.filter((l) =>
+              refMatchesIntegracao(l.data.contaOuterRef, conta.id),
+            );
+            // Publishing still targets the CONTA, not one listing — it reads the same
+            // primary link it always did.
+            const primary: ProdutoMercadoLivreLink | null = contaLinks[0]?.data ?? null;
+            const isFirstPublish = primary?.id == null;
+            // Only when there is no link doc AT ALL. Once one exists — even an
+            // unpublished draft — its `listing_type_id` is a field of the
+            // listing form, and offering a second "Tipo de anúncio" control in
+            // the same card would give the operator two inputs for one value
+            // (and hand the e2e locator two elements to choose between).
+            const needsListingType = contaLinks.length === 0;
+            const issues = blockedIssues[conta.id] ?? [];
+            const contaDirty = contaLinks.some((l) => dirtyIds.has(l.id));
+            const publishBlocked = produtoDirty || contaDirty;
 
-        return (
-          <Card key={conta.id} withBorder padding="md" data-testid={`ml-conta-${conta.id}`}>
-            <Stack gap="sm">
-              <Group justify="space-between">
-                <Text fw={600}>{conta.data.nome}</Text>
-                {contaLinks.length === 0 && (
-                  <Badge color="gray" variant="light">
-                    Não publicado
-                  </Badge>
-                )}
-              </Group>
-
-              {contaLinks.map((l) => {
-                const d: ProdutoMercadoLivreLink = l.data;
-                const estado = parseEstado(d.estado);
-                const persistedErrors = (d.errors ?? []).filter(
-                  (e): e is string => typeof e === 'string' && e.length > 0,
-                );
-                const latched = estado === ESTADO_PUBLICACAO_ML.erro && d.id != null;
-
-                return (
-                  <Stack key={l.id} gap="xs" data-testid={`ml-anuncio-${l.id}`}>
-                    <Group justify="space-between">
-                      <Text size="sm">
-                        {d.id != null ? `Anúncio ${d.id}` : 'Rascunho — ainda não publicado'}
-                      </Text>
-                      <Badge color={estado ? ESTADO_COLORS[estado] : 'gray'}>
-                        {estado ? ESTADO_PUBLICACAO_ML_LABELS[estado] : 'Desconhecido'}
+            return (
+              <Card key={conta.id} withBorder padding="md" data-testid={`ml-conta-${conta.id}`}>
+                <Stack gap="sm">
+                  <Group justify="space-between">
+                    <Text fw={600}>{conta.data.nome}</Text>
+                    {contaLinks.length === 0 && (
+                      <Badge color="gray" variant="light">
+                        Não publicado
                       </Badge>
-                    </Group>
-
-                    {persistedErrors.length > 0 && (
-                      // `errors` is written by the publish flow, the price sync AND
-                      // the stock sender, so the title must not blame any one of
-                      // them — it used to read "Última publicação falhou" and
-                      // reported stock failures as publish failures (#781).
-                      <Alert color="red" variant="light" title="Última falha do Mercado Livre">
-                        <List size="sm">
-                          {persistedErrors.map((e) => (
-                            <List.Item key={e}>{e}</List.Item>
-                          ))}
-                        </List>
-                      </Alert>
                     )}
+                  </Group>
 
-                    {latched && (
-                      <Group gap="sm" align="center">
-                        <Button
-                          type="button"
-                          variant="default"
-                          size="xs"
-                          onClick={() => handleReverificar(conta.id, l.id)}
-                          loading={rechecking === l.id}
-                          disabled={disabled || !client || !canPublish || rechecking !== null}
-                        >
-                          Reverificar anúncio
-                        </Button>
-                        <Text size="xs" c="dimmed">
-                          O envio de estoque está parado para este anúncio.
-                        </Text>
-                      </Group>
+                  {contaLinks.map((l, index) => (
+                    <Stack key={l.id} gap="sm" data-testid={`ml-anuncio-${l.id}`}>
+                      {index > 0 && <Divider />}
+                      <ListingStatusStrip
+                        link={l.data}
+                        canWrite={Boolean(client) && canPublish}
+                        disabled={Boolean(disabled) || rechecking !== null}
+                        rechecking={rechecking === l.id}
+                        onReverificar={() => handleReverificar(conta.id, l.id)}
+                      />
+                      <ListingForm
+                        produtoId={produtoId}
+                        linkDocId={l.id}
+                        link={l.data}
+                        db={db}
+                        canWrite={canPublish}
+                        disabled={disabled}
+                        onDirtyChange={handleDirtyChange}
+                        registerFlush={registerFlush}
+                      />
+                      <ListingDetails link={l.data} produtoFotoCount={produtoFotoCount} />
+                    </Stack>
+                  ))}
+
+                  {issues.length > 0 && (
+                    <Alert color="red" variant="light" title="Publicação bloqueada">
+                      <List size="sm">
+                        {issues.map((issue) => (
+                          <List.Item key={issue}>{issue}</List.Item>
+                        ))}
+                      </List>
+                    </Alert>
+                  )}
+
+                  <Group align="flex-end" gap="sm">
+                    {needsListingType && (
+                      <Select
+                        label="Tipo de anúncio"
+                        data={[...LISTING_TYPE_OPTIONS]}
+                        value={listingTypeByConta[conta.id] ?? LISTING_TYPE_OPTIONS[0].value}
+                        onChange={(v) =>
+                          setListingTypeByConta((prev) => ({
+                            ...prev,
+                            [conta.id]: v ?? LISTING_TYPE_OPTIONS[0].value,
+                          }))
+                        }
+                        allowDeselect={false}
+                        disabled={disabled || !canPublish}
+                        w={160}
+                      />
                     )}
-                  </Stack>
-                );
-              })}
-
-              {issues.length > 0 && (
-                <Alert color="red" variant="light" title="Publicação bloqueada">
-                  <List size="sm">
-                    {issues.map((issue) => (
-                      <List.Item key={issue}>{issue}</List.Item>
-                    ))}
-                  </List>
-                </Alert>
-              )}
-
-              <Group align="flex-end" gap="sm">
-                {needsListingType && (
-                  <Select
-                    label="Tipo de anúncio"
-                    data={LISTING_TYPES}
-                    value={listingTypeByConta[conta.id] ?? LISTING_TYPES[0]!.value}
-                    onChange={(v) =>
-                      setListingTypeByConta((prev) => ({
-                        ...prev,
-                        [conta.id]: v ?? LISTING_TYPES[0]!.value,
-                      }))
-                    }
-                    allowDeselect={false}
-                    disabled={disabled || !canPublish}
-                    w={160}
-                  />
-                )}
-                <Button
-                  type="button"
-                  variant={isFirstPublish ? 'filled' : 'light'}
-                  onClick={() => handlePublish(conta.id, needsListingType)}
-                  loading={publishing === conta.id}
-                  disabled={disabled || !client || !canPublish || publishing !== null}
-                >
-                  {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
-                </Button>
-                {!canPublish && (
-                  <Text size="xs" c="dimmed">
-                    Requer permissão de escrita em integrações.
-                  </Text>
-                )}
-              </Group>
-            </Stack>
-          </Card>
-        );
-      })}
-    </Stack>
+                    <Button
+                      type="button"
+                      variant={isFirstPublish ? 'filled' : 'light'}
+                      onClick={() => handlePublish(conta.id, needsListingType)}
+                      loading={publishing === conta.id}
+                      disabled={
+                        disabled ||
+                        !client ||
+                        !canPublish ||
+                        publishing !== null ||
+                        // The backend publishes the SAVED produto and the SAVED
+                        // link doc, so publishing over pending edits ships the
+                        // previous version and reports success.
+                        publishBlocked
+                      }
+                    >
+                      {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
+                    </Button>
+                    {publishBlocked && (
+                      <Text size="xs" c="dimmed">
+                        Salve as alterações pendentes antes de publicar.
+                      </Text>
+                    )}
+                    {!canPublish && (
+                      <Text size="xs" c="dimmed">
+                        Requer permissão de escrita em integrações.
+                      </Text>
+                    )}
+                  </Group>
+                </Stack>
+              </Card>
+            );
+          })}
+        </Stack>
+      )}
+    </OuterFormDirty>
   );
 }
 
-// `refMatchesIntegracao`, `parseEstado` and `estadoLabel` now live in
-// `@/lib/mercado-livre/listingLinks` — the listing editor, the status strip and
-// their unit tests all read the same implementation.
+/**
+ * `isDirty` of the SURROUNDING produto form, or `false` when this editor is
+ * rendered outside one (component tests).
+ *
+ * Two components because hooks cannot be called conditionally and
+ * `useFormState` needs a control: `useFormContext` is TYPED non-null but
+ * actually returns `null` outside a provider (its context default), the same
+ * caveat `VariationManager` documents. Subscribing through `useFormState` — not
+ * reading `form.formState` — is what makes this re-render when the produto form
+ * becomes dirty; the proxy only tracks reads in the component that created it.
+ */
+function OuterFormDirty({ children }: { children: (dirty: boolean) => ReactNode }) {
+  const form = useFormContext();
+  const control = form?.control;
+  if (!control) return <>{children(false)}</>;
+  return <SubscribedDirty control={control}>{children}</SubscribedDirty>;
+}
+
+function SubscribedDirty({
+  control,
+  children,
+}: {
+  control: NonNullable<ReturnType<typeof useFormContext>>['control'];
+  children: (dirty: boolean) => ReactNode;
+}) {
+  const { isDirty } = useFormState({ control });
+  return <>{children(isDirty)}</>;
+}
