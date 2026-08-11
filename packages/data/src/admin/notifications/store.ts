@@ -1,13 +1,15 @@
 /**
- * The failures-only notification store — the four Firestore writes every
- * channel's ingestion core performs, over an arbitrary `defineAdminCollection`
- * handle.
+ * The failures-only notification store — every Firestore operation a channel's
+ * ingestion core performs, over an arbitrary `defineAdminCollection` handle.
  *
  * "Failures-only" is the whole point: a notification that processed cleanly
  * leaves NO document behind. The collection therefore holds exactly the backlog
  * the sweep still has work to do on, which is what makes an unbounded
  * `orderBy(processedAt)` cursor cheap on Firestore Enterprise (where an
  * unindexed scan bills by data scanned).
+ *
+ * The backlog is split into two LANES by `status` — hourly `failed` and daily
+ * `deferred` (#808) — sharing one query shape and therefore one composite index.
  */
 import type { DocumentData, Firestore, Query } from 'firebase-admin/firestore';
 import type { z } from 'zod';
@@ -59,11 +61,26 @@ export interface NotificationStore<TPayload> {
     erro: string,
     now: number,
   ): Promise<void>;
+  /**
+   * Move a doc back into the HOT lane with a fresh retry budget, for the moment
+   * a deferred precondition finally clears (#808): the seller connected their
+   * account, so every notification that was waiting on it is processable now.
+   *
+   * `processedAt: 0` is what makes it immediate — it is unconditionally older
+   * than any `now - window` cutoff, so the very next hot tick picks the doc up
+   * rather than waiting out another hour.
+   *
+   * Resolves `false` when the doc was already gone. `mergeIfExists`, NOT
+   * `merge`: the ids come from a query, so a concurrent delete between the read
+   * and this write is possible, and an upsert would resurrect the doc as a ghost
+   * carrying only these four fields.
+   */
+  redrive(db: Firestore, docId: string, erro: string): Promise<boolean>;
   /** Remove a resolved doc from the failures-only store. */
   remove(db: Firestore, docId: string): Promise<void>;
   /**
-   * The sweep's durable-cursor query: every `failed` doc whose LAST ATTEMPT is
-   * older than the cutoff, oldest first. `processedAt` is the cursor — it is
+   * The HOT lane's durable-cursor query: every `failed` doc whose LAST ATTEMPT
+   * is older than the cutoff, oldest first. `processedAt` is the cursor — it is
    * re-stamped on every attempt, so a doc that keeps failing keeps sliding to
    * the back of the queue instead of starving the rest of the backlog.
    *
@@ -72,12 +89,34 @@ export interface NotificationStore<TPayload> {
    * silently full-scan (and bill for it) instead of failing loudly.
    */
   pending(db: Firestore, cutoff: number, limit?: number): Query;
+  /**
+   * The DEFERRED lane's query — identical in shape to {@link pending}, so it
+   * rides the SAME `(status ASC, processedAt ASC)` composite index and needs no
+   * new one. Only the status value and the caller's window differ (a day rather
+   * than an hour), which is the whole point: a precondition that is not met yet
+   * gets a slow, cheap cadence instead of crowding the hourly backlog.
+   */
+  deferred(db: Firestore, cutoff: number, limit?: number): Query;
 }
 
 export function createNotificationStore<TPayload>(
   config: NotificationStoreConfig<TPayload>,
 ): NotificationStore<TPayload> {
   const { collection } = config;
+
+  /** The one query shape both lanes share — see the index note on `pending`. */
+  const laneQuery = (
+    db: Firestore,
+    status: NotificationStatus,
+    cutoff: number,
+    limit: number,
+  ): Query =>
+    collection
+      .ref(db, {})
+      .where('status', '==', status)
+      .where('processedAt', '<', cutoff)
+      .orderBy('processedAt')
+      .limit(limit);
 
   return {
     async create(db, payload, status, tentativas, erro) {
@@ -101,17 +140,25 @@ export function createNotificationStore<TPayload>(
       await collection.merge(db, {}, docId, { status, tentativas, erro, processedAt: now });
     },
 
+    redrive(db, docId, erro) {
+      return collection.mergeIfExists(db, {}, docId, {
+        status: 'failed',
+        tentativas: 0,
+        erro,
+        processedAt: 0,
+      });
+    },
+
     async remove(db, docId) {
       await collection.docRef(db, {}, docId).delete();
     },
 
     pending(db, cutoff, limit = DEFAULT_REPROCESS_LIMIT) {
-      return collection
-        .ref(db, {})
-        .where('status', '==', 'failed')
-        .where('processedAt', '<', cutoff)
-        .orderBy('processedAt')
-        .limit(limit);
+      return laneQuery(db, 'failed', cutoff, limit);
+    },
+
+    deferred(db, cutoff, limit = DEFAULT_REPROCESS_LIMIT) {
+      return laneQuery(db, 'deferred', cutoff, limit);
     },
   };
 }
