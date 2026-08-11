@@ -182,8 +182,20 @@ function fakeDb(
     return subcollections[parent]?.[child] ?? [];
   };
 
-  const snapshotFor = (path: string) => {
-    const ids = idsAt(path);
+  /** Chain state. Each builder returns a NEW query so pages don't share a cursor. */
+  interface QueryState {
+    after?: string;
+    take?: number;
+    /** `where` fields, in order — paired with `select`'s args in `projections`. */
+    wheres: unknown[];
+    /** `select(...)`'s arguments — `[]` means keys-only. */
+    fields: unknown[];
+  }
+
+  const snapshotFor = (path: string, state: QueryState) => {
+    const all = idsAt(path);
+    const from = state.after === undefined ? 0 : all.indexOf(state.after) + 1;
+    const ids = all.slice(from, state.take === undefined ? undefined : from + state.take);
     return {
       empty: ids.length === 0,
       size: ids.length,
@@ -195,28 +207,42 @@ function fakeDb(
     };
   };
 
-  const query = (path: string) => {
-    // Per-query so `projections` can pair each `select(...)` with the `where`
-    // fields that preceded it — that pairing is the whole point of the
-    // keyset-cursor pin below.
-    const wheres: unknown[] = [];
+  // A broken cursor makes `collectPage` re-request page 1 forever. That loop is
+  // pure microtasks (`Promise.resolve`), so it starves the event loop and
+  // vitest's own `testTimeout` — a macrotask timer — never fires: the run HANGS
+  // instead of failing. This ceiling converts that into a legible failure.
+  // Generous on purpose: a full sweep is ~20 targets x 2 passes x <=3 queries.
+  const MAX_GETS = 400;
+  let gets = 0;
+
+  // ⚠️ `startAfter` HONOURS its argument, `limit` TRUNCATES, and `select`
+  // RECORDS. The original fake made all three no-ops, so `collectPage`'s paging
+  // loop was never exercised by any test — and a naive >PAGE_SIZE fixture would
+  // have spun forever (same page returned every time, `size < PAGE_SIZE` never
+  // true) instead of failing. That blind spot is why #960 shipped.
+  //
+  // Each builder returns a NEW query carrying its own state, which is also what
+  // makes `projections` trustworthy: a chain's `where`s cannot leak into the
+  // next chain's `select`, so an id range can never be mistaken for a field
+  // range (the two differ only by their `where`s).
+  const query = (path: string, state: QueryState = { wheres: [], fields: [] }) => {
     const q: Record<string, unknown> = {
-      where: (field: unknown) => {
-        wheres.push(field);
-        return q;
-      },
-      limit: () => q,
-      startAfter: () => q,
+      where: (field: unknown) => query(path, { ...state, wheres: [...state.wheres, field] }),
+      limit: (take: number) => query(path, { ...state, take }),
+      startAfter: (cursor: { id?: string }) => query(path, { ...state, after: cursor?.id }),
       select: (...fields: unknown[]) => {
-        // Every built chain terminates at `select`, so recording and then
-        // clearing groups the `where`s with the query they belong to. Without
-        // the reset they accumulate across chains (the fake threads one object
-        // per collection) and an id range looks like a field range.
-        projections.push({ wheres: [...wheres], selected: fields });
-        wheres.length = 0;
-        return q;
+        projections.push({ wheres: [...state.wheres], selected: fields });
+        return query(path, { ...state, fields });
       },
-      get: () => Promise.resolve(snapshotFor(path)),
+      get: () => {
+        if ((gets += 1) > MAX_GETS) {
+          throw new Error(
+            `fakeDb: ${MAX_GETS} queries exceeded on "${path}" — the paging loop is not ` +
+              'advancing. Almost always `startAfter` no longer honours its cursor.',
+          );
+        }
+        return Promise.resolve(snapshotFor(path, state));
+      },
     };
     return q;
   };
@@ -281,6 +307,20 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     vi.stubEnv('GITHUB_WORKFLOW', 'e2e-vendas');
     vi.stubEnv('GITHUB_REF', 'refs/pull/715/merge');
     vi.stubEnv('GITHUB_RUN_ID', '222');
+  }
+
+  /**
+   * Pin Pass A (predecessor reclaim) OFF. `concurrencyGroupId()` returns null
+   * when either var is falsy, and it is the only thing gating that pass.
+   *
+   * ⚠️ Needed because a test cannot rely on these being ABSENT: GitHub Actions
+   * sets all three for real, so "I did not call `stubCiEnv`" means one pass
+   * locally and two in CI. That is precisely how the paging test below first
+   * shipped green here and failed with `expected 602 to be 301` on the runner.
+   */
+  function stubNoCiEnv() {
+    vi.stubEnv('GITHUB_WORKFLOW', '');
+    vi.stubEnv('GITHUB_REF', '');
   }
 
   it('issues no writes at all — not even the concurrency-group marker', async () => {
@@ -401,6 +441,27 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     );
 
     expect(writes.recursiveDeletes).toEqual([]);
+  });
+
+  // The other half of #960. The projection test above pins the query SHAPE; this
+  // one pins the loop that shape exists to serve — the paging `collectPage` does
+  // once a page comes back full, which is the only path on which the missing
+  // projection ever threw.
+  it('pages past PAGE_SIZE instead of stopping at, or spinning on, the first page (#960)', async () => {
+    // 301 > PAGE_SIZE (300), so this needs exactly two pages. It is also the
+    // guard on the FAKE: if `startAfter` ever stops honouring its cursor, page 2
+    // repeats page 1 forever and this test hangs rather than quietly passing.
+    const ids = Array.from({ length: 301 }, (_, i) => `e2e-111-dep-${String(i).padStart(4, '0')}`);
+
+    // Pass A pinned OFF, so the count below is unambiguously ONE pass over one
+    // collection. Merely omitting `stubCiEnv()` is not enough — see the helper.
+    stubNoCiEnv();
+    const report = await sweepOrphanedE2EFixtures(
+      true,
+      fakeDb(noWrites(), { depositos: ids }, '111') as never,
+    );
+
+    expect(report.byCollection.depositos).toBe(301);
   });
 });
 
