@@ -376,9 +376,14 @@ export function SizeChartEditorModal({
           )}
         </Group>
       }
-      data-testid="ml-size-chart-editor"
     >
-      <Stack gap="md">
+      {/*
+        ⚠️ The test id lives HERE, not on `Modal`. Mantine forwards unknown props
+        to Modal.Root, a zero-box wrapper around the overlay and the content —
+        `getByTestId(...)` resolves it but `toBeVisible()` never passes, which is
+        exactly how this failed in CI.
+      */}
+      <Stack gap="md" data-testid="ml-size-chart-editor">
         <TextInput
           label="Nome da guia"
           description={`Como a guia aparece no Mercado Livre (até ${String(CHART_NAME_MAX)} caracteres, apenas letras, números e espaços).`}
