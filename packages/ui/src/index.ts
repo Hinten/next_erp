@@ -50,6 +50,7 @@ export { isEmpty, pickDirty, valuesEqual } from './object/diff';
 export { DELETE_MARK, stripMarkedForDeletion } from './object/markForDeletion';
 export {
   NothingChangedError,
+  RecordConflictError,
   saveRecord,
   type SaveRecordInput,
   type SaveRecordResult,

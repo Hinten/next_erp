@@ -30,7 +30,13 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-vi.mock('./saveRecord', () => ({
+// PARTIAL mock: `saveRecord` itself is stubbed, but every other export —
+// `RecordConflictError` and whatever comes next — stays real. A full replacement
+// silently drops new exports, and `ObjectView` then dies on an `instanceof`
+// against `undefined` inside a catch, which surfaces as an unrelated
+// "expected vi.fn() to be called" three tests away.
+vi.mock('./saveRecord', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./saveRecord')>()),
   saveRecord: (input: unknown) => saveRecordMock(input),
   NothingChangedError: NothingChanged,
 }));
