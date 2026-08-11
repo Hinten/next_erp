@@ -230,6 +230,10 @@ export default function EditarProdutoPage() {
     ehKitVirtual: false,
   });
   useEffect(() => {
+    // SERVER truth only: this is the "old" value `propagateKitStatusToChildren`
+    // diffs against at save time, so a stale cache emission makes the editor
+    // skip a propagation it owed — or run one it did not.
+    if (produtoSnap.fromCache !== false) return;
     if (!lastSavedKitStatus.current.ready && produtoSnap.data) {
       lastSavedKitStatus.current = {
         ready: true,
@@ -237,7 +241,7 @@ export default function EditarProdutoPage() {
         ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
       };
     }
-  }, [produtoSnap.data]);
+  }, [produtoSnap.data, produtoSnap.fromCache]);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
   // to this product and uploads are enabled.

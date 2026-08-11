@@ -105,9 +105,13 @@ export function ExtraDataManager({
     if (!produtoId) return;
     if (snap.loading) return;
     if (value != null) return;
+    // SERVER truth only. This value is written BACK with the produto save, so
+    // seeding it from a stale cache emission means the operator's save silently
+    // reverts whatever someone else last wrote here.
+    if (snap.fromCache !== false) return;
     if (snap.data) onChange(produtoExtraDataSchema.parse(snap.data.data));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [produtoId, snap.loading, snap.data?.id, value]);
+  }, [produtoId, snap.loading, snap.fromCache, snap.data?.id, value]);
 
   const v = value ?? EMPTY_EXTRA_DATA;
   const gmd = v.googleMerchantData ?? EMPTY_GOOGLE_MERCHANT;
