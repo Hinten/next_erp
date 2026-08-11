@@ -34,9 +34,25 @@ export interface MercadoLivreConfig {
   fetch?: typeof globalThis.fetch;
 }
 
+/**
+ * Thrown by the contract members this channel object deliberately does not
+ * implement — `syncProducts`, `pullOrders`, `pushTracking` and
+ * `oauthFlow.callback`. The Mercado Livre integration itself is complete; it
+ * simply does not run through those four, because each needs Firestore and so
+ * lives in the `apps/mercado-livre` backend instead. Reaching one means a
+ * caller routed through the plugin contract where it should have called the
+ * backend.
+ *
+ * ⚠️ Operator-visible: `apps/mercado-livre/lib/marketplace/respond.ts` maps this
+ * message into a 501 body (`code: 'ML_NOT_IMPLEMENTED'`). Keep it diagnostic.
+ * Folding these four into the contract is part of #815.
+ */
 export class MercadoLivreNotConfiguredError extends Error {
   constructor() {
-    super('Mercado Livre plugin not yet implemented (Phase 5).');
+    super(
+      'Mercado Livre: este membro do contrato de plugin não é implementado — ' +
+        'a integração roda no backend apps/mercado-livre.',
+    );
     this.name = 'MercadoLivreNotConfiguredError';
   }
 }

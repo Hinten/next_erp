@@ -329,8 +329,11 @@ export interface MercadoLivreClient {
   }): Promise<MercadoLivreReverificarResult>;
   /**
    * Import (or re-sync) an ML listing into an ERP produto (PERM.integracao.write).
-   * A listing with variations / User-Products returns a 422 `MercadoLivreClientHttpError`
-   * with `code: 'ML_IMPORT_BLOCKED'` + `issues` (tracked in #438).
+   * All three listing models import: simple, legacy `variations[]` (#520) and
+   * `family_name` / User-Products (#521). A listing the importer cannot take —
+   * closed, owned by another seller, untitled, or on an integração with no
+   * `user_id` — returns a 422 `MercadoLivreClientHttpError` with
+   * `code: 'ML_IMPORT_BLOCKED'` + `issues`.
    */
   importar(input: {
     integracaoId: string;

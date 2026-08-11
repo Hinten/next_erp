@@ -7,9 +7,10 @@
  * the code for tokens, persist (single-token), and redirect the browser back
  * into the web app. Mirrors apps/melhor-envio's OAuth callback.
  *
- * NOTE (Phase 5): `exchangeAndPersist` currently throws NotImplemented — the
- * ML token exchange lands with the per-channel port. The state verification,
- * account resolution, and redirect plumbing are wired.
+ * The whole path is live: `exchangeAndPersist` (`lib/marketplace/mercadoLivre.ts`)
+ * exchanges the code, saves the token to the account's `tokenDuravel`
+ * subcollection, and denormalizes the ML seller id onto the `integracao` doc so
+ * an inbound webhook resolves the account with one equality query.
  */
 import { NextResponse } from 'next/server';
 
