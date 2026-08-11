@@ -15,7 +15,7 @@ import {
   STOCK_SYNC_FLAG_ENV,
   type StockFamilyRow,
   buildSendTasks,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 import { MlTasksDisabledError } from './mlTasks';
 import {
   type MlStockSendTask,

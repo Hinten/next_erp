@@ -17,17 +17,24 @@ function renderDetails(over: Partial<ProdutoMercadoLivreLink> = {}, fotos: numbe
 describe('ListingDetails', () => {
   it('shows the server-owned fields the screen never surfaced', () => {
     renderDetails({ precoPublicado: 79.9, comissao: 12.34 });
-    expect(screen.getByText('MLB31447')).toBeDefined();
     expect(screen.getByText('R$ 79,90')).toBeDefined();
     expect(screen.getByText('R$ 12,34')).toBeDefined();
   });
 
-  it('renders nothing the operator owns as a labelled control', () => {
-    // Everything editable moved to ListingForm. A labelled control appearing
-    // here would both duplicate the input and resurrect the e2e locator that
-    // proves the first-publish "Tipo de anúncio" Select is gone once published.
+  it('leaves the category to the form, so there is only one of it on screen', () => {
+    // `category_id` is operator-owned and now editable through the cascade
+    // picker in ListingForm. Echoing it here would show the same value twice,
+    // one of them stale the moment the picker is used.
     renderDetails();
-    expect(screen.queryByLabelText('Categoria')).toBeNull();
+    expect(screen.queryByText('Categoria')).toBeNull();
+    expect(screen.queryByText('MLB31447')).toBeNull();
+  });
+
+  it('renders nothing the operator owns as a labelled control', () => {
+    // A labelled control appearing here would both duplicate the input and
+    // resurrect the e2e locator that proves the first-publish "Tipo de anúncio"
+    // Select is gone once published.
+    renderDetails();
     expect(screen.queryByLabelText('Tipo de anúncio')).toBeNull();
   });
 

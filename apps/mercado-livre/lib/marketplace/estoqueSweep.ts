@@ -2,7 +2,7 @@
  * Flag-gated Mercado Livre **stock sweeps** (Step 10 PR C) — the core behind
  * the 15-minute incremental and the 2AM daily `onSchedule` ticks. Per active
  * conta it runs THE produtos-first joined query
- * (`estoquePlan.fetchStockFamilies`) page by page, computes every family
+ * (`bulkEstoquePlan.fetchStockFamilies`) page by page, computes every family
  * member's quantity AT SWEEP TIME (`quantidadesDaFamilia`) and at the WINDOW
  * START (`quantidadesAnteriores`, from the LAZY, TICK-SHARED ledger sum),
  * applies the send policy (`deveEnviarFamilia`),
@@ -116,7 +116,7 @@ import {
   quantidadesAnteriores,
   quantidadesDaFamilia,
   windowOverlapSec,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 import type { MlStockTaskScheduler } from './mlStockTasks';
 import { MlTasksDisabledError } from './mlTasks';
 import { MercadoLivreContaNotConfiguredError, buildMercadoLivreContext } from './mercadoLivre';
@@ -811,9 +811,11 @@ export async function runStockSweep(
       // Multiorigin guard (module doc): probe `GET /users/me` BEFORE any
       // discovery — a `warehouse_management` conta gets a loud refusal, never
       // enqueued sends ML would silently drop.
-      // The enumeration above already fetched this document AND filtered it on
-      // `tipo` + `ativo` — the two guards `loadMercadoLivreContext` performs — so
-      // re-reading it here would be one redundant point read per conta per tick.
+      // The enumeration above already fetched this document, and it satisfies
+      // both guards `loadMercadoLivreContext` performs: the doc EXISTS (the query
+      // returned it) and `tipo === mercadoLivre` (a query predicate). The query's
+      // `ativo` filter is an extra restriction the loader does not apply. So
+      // re-reading here would be one redundant point read per conta per tick.
       // Parse at THIS point rather than in the loop header: we are already past
       // the depósito guard, so exactly the contas that used to be re-read are the
       // ones parsed, and the legacy partial docs the raw read above dodges never

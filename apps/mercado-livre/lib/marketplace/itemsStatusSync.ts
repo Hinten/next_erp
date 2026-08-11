@@ -55,7 +55,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import { loadMercadoLivreContext } from './mercadoLivre';
-import { podeEnviarEstoque } from './estoquePlan';
+import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { refMatchesIntegracao } from './linkRefs';
 import type { UptinSourceLink } from './importMigration';
 

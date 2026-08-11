@@ -10,7 +10,10 @@ import {
   isNumericAttr,
   naRow,
   resolveTypedValue,
+  rowFromSelect,
   seedRows,
+  selectOptions,
+  selectValueOf,
   validateAttr,
   variationColorSizeState,
   widgetKind,
@@ -242,5 +245,146 @@ describe('variationColorSizeState', () => {
 
   it('does not apply to any other attribute', () => {
     expect(variationColorSizeState('BRAND', [])).toBeNull();
+  });
+});
+
+describe('enumerated attribute options', () => {
+  const gender = attr({
+    id: 'GENDER',
+    valueType: 'list',
+    values: [
+      { id: 'G1', name: 'Masculino' },
+      { id: 'G2', name: 'Feminino' },
+    ],
+  });
+
+  it('keys options by ML’s value id', () => {
+    expect(selectOptions(gender)).toEqual([
+      { value: 'G1', label: 'Masculino' },
+      { value: 'G2', label: 'Feminino' },
+    ]);
+  });
+
+  it('falls back to the name for a value ML ships without an id', () => {
+    // An option the operator can see but not choose is worse than one stored
+    // by name.
+    const byName = attr({ id: 'X', valueType: 'list', values: [{ id: null, name: 'Único' }] });
+    expect(selectOptions(byName)).toEqual([{ value: 'Único', label: 'Único' }]);
+  });
+
+  it('drops a value with neither id nor name', () => {
+    const junk = attr({ id: 'X', valueType: 'list', values: [{ id: null, name: null }] });
+    expect(selectOptions(junk)).toEqual([]);
+  });
+
+  it('resolves a chosen option back to BOTH id and name', () => {
+    // A Select reports the option VALUE; an Autocomplete reports the LABEL.
+    // Swapping the two stores an id in `value_name`, which ML rejects.
+    expect(rowFromSelect(gender, 'G2')).toEqual({
+      id: 'GENDER',
+      value_id: 'G2',
+      value_name: 'Feminino',
+      unit_id: null,
+    });
+  });
+
+  it('clears the row when the Select is cleared', () => {
+    expect(rowFromSelect(gender, null)).toEqual({
+      id: 'GENDER',
+      value_id: null,
+      value_name: null,
+      unit_id: null,
+    });
+  });
+
+  it('keeps a stored value ML no longer lists', () => {
+    // A category can drop a value the listing already carries; blanking it
+    // silently would rewrite stored data on the next save.
+    expect(rowFromSelect(gender, 'G9')).toEqual({
+      id: 'GENDER',
+      value_id: null,
+      value_name: 'G9',
+      unit_id: null,
+    });
+  });
+
+  it('renders the stored row by id, and N/A as no selection', () => {
+    expect(selectValueOf({ id: 'GENDER', value_id: 'G1', value_name: 'M', unit_id: null })).toBe(
+      'G1',
+    );
+    expect(selectValueOf(naRow('GENDER'))).toBeNull();
+    expect(selectValueOf(undefined)).toBeNull();
+  });
+});
+
+describe('colliding option keys', () => {
+  // The only way two entries claim the same key: one value's NAME equals
+  // another value's real ML id. Unlikely with ML's numeric ids, and silent when
+  // it happens — which is exactly why it is worth pinning.
+  const colliding = attr({
+    id: 'X',
+    valueType: 'list',
+    values: [
+      { id: null, name: '2230284' }, // name-keyed, collides with the id below
+      { id: '2230284', name: 'Algodão' }, // the real ML value
+    ],
+  });
+
+  it('emits each Select key exactly once', () => {
+    // A Mantine Select with duplicate values is ambiguous.
+    const values = selectOptions(colliding).map((o) => o.value);
+    expect(values).toEqual([...new Set(values)]);
+  });
+
+  it('lets the entry with a real ML id win the key', () => {
+    expect(selectOptions(colliding)).toEqual([{ value: '2230284', label: 'Algodão' }]);
+  });
+
+  it('resolves the pick to the id-bearing value, not merely the first match', () => {
+    // The one-pass `v.id ?? v.name` comparison returns the name-keyed entry
+    // here, storing a value the operator never chose.
+    expect(rowFromSelect(colliding, '2230284')).toEqual({
+      id: 'X',
+      value_id: '2230284',
+      value_name: 'Algodão',
+      unit_id: null,
+    });
+  });
+
+  it('keeps ML’s own ordering when there is no collision', () => {
+    // ML orders a category's values deliberately; deduplication must not
+    // reshuffle every dropdown to fix a case that almost never happens.
+    const ordered = attr({
+      id: 'SIZE',
+      valueType: 'list',
+      values: [
+        { id: 'S3', name: 'G' },
+        { id: null, name: 'GG' },
+        { id: 'S1', name: 'P' },
+      ],
+    });
+    expect(selectOptions(ordered).map((o) => o.label)).toEqual(['G', 'GG', 'P']);
+  });
+
+  it('still resolves a name-keyed value when nothing collides', () => {
+    const byName = attr({ id: 'X', valueType: 'list', values: [{ id: null, name: 'Único' }] });
+    expect(rowFromSelect(byName, 'Único')).toEqual({
+      id: 'X',
+      value_id: null,
+      value_name: 'Único',
+      unit_id: null,
+    });
+  });
+
+  it('drops a duplicate ML id rather than rendering it twice', () => {
+    const dupe = attr({
+      id: 'X',
+      valueType: 'list',
+      values: [
+        { id: 'D1', name: 'Primeiro' },
+        { id: 'D1', name: 'Repetido' },
+      ],
+    });
+    expect(selectOptions(dupe)).toEqual([{ value: 'D1', label: 'Primeiro' }]);
   });
 });
