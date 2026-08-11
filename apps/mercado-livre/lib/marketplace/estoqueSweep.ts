@@ -811,9 +811,11 @@ export async function runStockSweep(
       // Multiorigin guard (module doc): probe `GET /users/me` BEFORE any
       // discovery — a `warehouse_management` conta gets a loud refusal, never
       // enqueued sends ML would silently drop.
-      // The enumeration above already fetched this document AND filtered it on
-      // `tipo` + `ativo` — the two guards `loadMercadoLivreContext` performs — so
-      // re-reading it here would be one redundant point read per conta per tick.
+      // The enumeration above already fetched this document, and it satisfies
+      // both guards `loadMercadoLivreContext` performs: the doc EXISTS (the query
+      // returned it) and `tipo === mercadoLivre` (a query predicate). The query's
+      // `ativo` filter is an extra restriction the loader does not apply. So
+      // re-reading here would be one redundant point read per conta per tick.
       // Parse at THIS point rather than in the loop header: we are already past
       // the depósito guard, so exactly the contas that used to be re-read are the
       // ones parsed, and the legacy partial docs the raw read above dodges never
