@@ -53,9 +53,12 @@
  * (legal null at rest per the schema) — all known writers set it (legacy Flutter
  * models.dart:4301 + aplicarEstoque / sincronizarEstoquePedido / usecases), but
  * a null-parentId estoque yields no join row and that component scores 0 (#238).
- * ⚠️ `parentId` is now load-bearing TWICE: the component join AND the movement
- * aggregate's group key, so a null there costs a wrong `anterior` as well — which
- * fails OPEN (reads as changed ⇒ send). Staging spot-check before the flag flips.
+ * ⚠️ That denorm is load-bearing for the **component join only**. The movement
+ * reconstruction keys a member's OWN row by `member.produtoId` instead (#932):
+ * the subcollection probe is already bound to that produto, so the projection
+ * carries no `parentId` and never needed to. Do not "restore" a `row.parentId`
+ * read there — it is absent by construction, and an unkeyable row reads as
+ * *unchanged*, which is a silent skip rather than a fail-open send.
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
@@ -68,7 +71,14 @@
  *    __name__ ASC)` prefix that used to sit alongside them was dropped by the
  *    #779 audit: every S1 call site also filters `integracoesComProduto`, so
  *    it was dead weight — the surviving composite's leading two fields
- *    already serve it as a prefix;
+ *    already serve it as a prefix.
+ *    ⚠️ That surviving composite is PERMANENT — do not let a future index
+ *    audit read it as legacy dual-run debt. The A/B spike (#890, staging
+ *    2026-08-07) measured the alternative: dropping the array and gating the
+ *    conta with a link post-filter reads ×7.5 the data (48.27 KiB vs 6.41), and
+ *    on Enterprise a post-filter cannot reduce data scanned at all. Shape A
+ *    stays, so `integracoesComProduto` is no longer a deprecated array — it is
+ *    an app-owned denorm whose sole writers are the #920 link triggers;
  *  - estoque joins: `estoques(parentId ASC, depositoOuterRef ASC,
  *    ultimaModificacao ASC)` COLLECTION_GROUP — `parentId` carries the
  *    `equalAny` seek, `ultimaModificacao` covers the MAX branch;
@@ -193,6 +203,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   type ComponentesKit,
+  componentesKitEntries,
   ESTADO_PUBLICACAO_ML,
   estoqueDisponivel,
   kitEstoqueDisponivel,
@@ -334,6 +345,15 @@ export function concurrentDispatches(): number {
  * a `doc.data()` record. Component rows (`componentEstoques`) carry the
  * `parentId` produto-id denorm the join keys on; the member's own estoque row
  * omits it (the owner is the member itself).
+ *
+ * ⚠️ "Omits it" is a fact about the PROJECTION, not a hint to compensate for.
+ * Any consumer that needs the owner of an own row must take it from
+ * `member.produtoId`; reading `row.parentId` there always yields `undefined`
+ * and silently degrades to "no data" (#932). The stored document does carry the
+ * field — a kit's own estoque doc is written with it for structural uniformity
+ * (ADR 0014 §2) — but nothing projects it, and nothing reads it: a kit can never
+ * be a component of another kit (#239), so the one query that matches on
+ * `parentId` can never reach a kit's own row.
  */
 export interface RawEstoqueRow {
   parentId?: unknown;
@@ -592,7 +612,7 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
 /**
  * The S6 projection — the ONE definition both fetchers select with (minimal
  * fields; the 128 MiB ceiling spans joins). Pinned equal across the two by
- * `estoquePlan.test.ts`, which is the whole anti-drift guarantee: the manual
+ * `bulkEstoquePlan.test.ts`, which is the whole anti-drift guarantee: the manual
  * push must consume byte-identical family rows to the sweep, or the quantity an
  * operator sends by hand could differ from the one the sweep sends minutes later.
  */
@@ -1116,6 +1136,63 @@ export function quantidadeDoMembro(member: FamilyMember): number | null {
 }
 
 /**
+ * The constraining components this kit declares that the join did **not** bring
+ * back — i.e. the ones whose stock we cannot see. Empty for a non-kit, for a kit
+ * with no constraining component, and for a kit whose components all resolved.
+ *
+ * "Constraining" has to mean exactly what {@link kitEstoqueDisponivel} means by
+ * it, or the guard and the arithmetic drift apart: `limitarEstoque !== false`
+ * and a finite `quantidade > 0`, over `componentesKitEntries`' shape filter.
+ *
+ * The usual cause is a stale `componentesKitKeys` denorm: the join is keyed on
+ * that array, so a component missing from it is never fetched and
+ * `kitEstoqueDisponivel` scores it 0 (#238) — the kit floors to 0 without
+ * anything having gone wrong with its actual stock. A component that genuinely
+ * has no estoque doc at this depósito lands here too, and is treated the same,
+ * because from here the two are indistinguishable.
+ */
+function componentesNaoResolvidos(member: FamilyMember): string[] {
+  if (!member.ehKit || member.ehKitVirtual) return [];
+  const disponiveis = disponivelByProdutoIdFrom(member.componentEstoques);
+  return componentesKitEntries(member.componentesKit)
+    .filter(([, kit]) => kit.limitarEstoque !== false)
+    .filter(([, kit]) => Number.isFinite(kit.quantidade) && kit.quantidade > 0)
+    .filter(([produtoId]) => typeof disponiveis[produtoId] !== 'number')
+    .map(([produtoId]) => produtoId);
+}
+
+/**
+ * True when a kit's published quantity **cannot be verified**: it declares
+ * constraining components and not one of them resolved.
+ *
+ * ⚠️ This does NOT suppress the send — it forces it. See
+ * {@link quantidadesAnteriores}, which omits such a member so
+ * {@link deveEnviarFamilia} fails open, and the `console.error` in
+ * {@link buildSendTasks}. The full reasoning lives in ADR 0014, but the short
+ * version belongs here because this is where it would be inverted:
+ *
+ * **An unverifiable kit publishes 0, and that is the safe direction.** ML
+ * auto-reactivates a listing paused as `out_of_stock` the moment a positive
+ * quantity arrives (see {@link podeEnviarEstoque}, which keeps sending to
+ * exactly that state), so a zeroed listing heals itself. Leaving ML holding
+ * whatever it already has does not: if that number is positive, the listing
+ * keeps selling stock the ERP cannot account for, and an oversell cannot be
+ * un-sold.
+ *
+ * ⚠️ #806 S12 proposed the opposite — skip rather than send 0 — and that was
+ * **deliberately inverted**, not left undone. Do not "restore" it from the issue
+ * text.
+ */
+function kitNaoVerificavel(member: FamilyMember): boolean {
+  const declarados = componentesKitEntries(member.componentesKit).filter(
+    ([, kit]) =>
+      kit.limitarEstoque !== false && Number.isFinite(kit.quantidade) && kit.quantidade > 0,
+  );
+  if (declarados.length === 0) return false;
+  return componentesNaoResolvidos(member).length === declarados.length;
+}
+
+/**
  * Every family member's send quantity (anchor + children), keyed by produto
  * id. Members whose quantity is `null` (`ehKitVirtual`) are OMITTED — the
  * task builder treats a missing entry as "never send".
@@ -1129,17 +1206,27 @@ export function quantidadesDaFamilia(row: StockFamilyRow): Map<string, number> {
   return out;
 }
 
-/** The window's net movement for the pair one estoque row belongs to. */
+/**
+ * The window's net movement for the pair one estoque row belongs to.
+ *
+ * ⚠️ The owning produto is passed **in**, never read off the row — that is #932.
+ * THE query does not project `parentId` on a member's OWN estoque row
+ * (`ownEstoque`'s `select`, and it has no reason to: a `subcollection('estoques')`
+ * probe is already bound to the produto being processed, so the owner IS
+ * `member.produtoId`). Reading the denorm here instead made every own row
+ * unkeyable, and an unkeyable row reads as "did not move" — a silent skip that
+ * dropped every ordinary produto's stock change on every tier. Component rows
+ * DO carry the denorm, because their join (`compEstoques`) matches on it.
+ */
 function movimentoDaLinha(
-  row: RawEstoqueRow,
+  produtoId: unknown,
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): MovimentoDaJanela | null {
-  const parentId = row.parentId;
   // No join key ⇒ nothing in the ledger can be attributed to this row. Reads as
   // "did not move", the same as a pair with no rows in the window.
-  if (typeof parentId !== 'string' || parentId === '') return null;
-  return movimentos.get(chaveMovimento(parentId, depositoId)) ?? null;
+  if (typeof produtoId !== 'string' || produtoId === '') return null;
+  return movimentos.get(chaveMovimento(produtoId, depositoId)) ?? null;
 }
 
 /**
@@ -1154,10 +1241,11 @@ function movimentoDaLinha(
  */
 function desfazerMovimento(
   row: RawEstoqueRow,
+  produtoId: unknown,
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): RawEstoqueRow | null {
-  const mov = movimentoDaLinha(row, depositoId, movimentos);
+  const mov = movimentoDaLinha(produtoId, depositoId, movimentos);
   if (mov == null) return null;
   return {
     ...row,
@@ -1168,11 +1256,11 @@ function desfazerMovimento(
 
 /** True when this row's pair moved by an amount the ledger cannot report. */
 function movimentoDesconhecido(
-  row: RawEstoqueRow,
+  produtoId: unknown,
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): boolean {
-  return movimentoDaLinha(row, depositoId, movimentos)?.desconhecido === true;
+  return movimentoDaLinha(produtoId, depositoId, movimentos)?.desconhecido === true;
 }
 
 /**
@@ -1189,6 +1277,11 @@ function movimentoDesconhecido(
  * {@link deveEnviarFamilia} reads a missing entry as *unknown* and sends. This
  * is the fail-open path, and it only works because the member is left out
  * entirely: a fallback to the current row would read as "unchanged" and skip.
+ *
+ * ⚠️ The two row classes are keyed DIFFERENTLY and must stay that way (#932): a
+ * member's OWN row by `member.produtoId` (the subcollection probe is bound to
+ * that produto, so the projection has no `parentId` to give), a component row by
+ * its `parentId` denorm (its collection-group join matches on exactly that).
  */
 export function quantidadesAnteriores(
   row: StockFamilyRow,
@@ -1197,18 +1290,33 @@ export function quantidadesAnteriores(
 ): Map<string, number> {
   const out = new Map<string, number>();
   for (const member of [row.anchor, ...row.children]) {
+    // ⚠️ THE OMISSION IS THE MECHANISM, for both arms below. A member left out
+    // of this map is read by `deveEnviarFamilia` as *unknown* and SENDS.
+    // Falling back to the current row instead would make `anterior === atual`
+    // and skip — which is a silent drop, not a safe default.
     const desconhecido =
-      (member.estoque != null && movimentoDesconhecido(member.estoque, depositoId, movimentos)) ||
-      member.componentEstoques.some((e) => movimentoDesconhecido(e, depositoId, movimentos));
-    if (desconhecido) continue;
+      (member.estoque != null && movimentoDesconhecido(member.produtoId, depositoId, movimentos)) ||
+      member.componentEstoques.some((e) =>
+        movimentoDesconhecido(e.parentId, depositoId, movimentos),
+      );
+    // A kit whose components did not resolve is unverifiable, and the ledger
+    // cannot tell us so: the reconstruction would rebuild `anterior` from the
+    // SAME broken component set, land on the same 0, and conclude "unchanged"
+    // about a listing whose published number may be badly wrong. Omitting it
+    // forces the send, and what gets sent is 0 — the safe direction, because ML
+    // auto-reactivates on qty > 0 while an oversell cannot be undone. This is
+    // #806 S12, resolved in the opposite direction to the one it proposed; see
+    // {@link kitNaoVerificavel} and ADR 0014 before changing it.
+    if (desconhecido || kitNaoVerificavel(member)) continue;
     const anterior: FamilyMember = {
       ...member,
       estoque:
         member.estoque == null
           ? null
-          : (desfazerMovimento(member.estoque, depositoId, movimentos) ?? member.estoque),
+          : (desfazerMovimento(member.estoque, member.produtoId, depositoId, movimentos) ??
+            member.estoque),
       componentEstoques: member.componentEstoques.map(
-        (e) => desfazerMovimento(e, depositoId, movimentos) ?? e,
+        (e) => desfazerMovimento(e, e.parentId, depositoId, movimentos) ?? e,
       ),
     };
     const quantidade = quantidadeDoMembro(anterior);
@@ -1234,8 +1342,15 @@ export function quantidadesAnteriores(
  * `110 → 95` must send; gating on the current value would skip it.
  *
  * Fails OPEN: a member with no reconstructed previous value is treated as
- * changed. That covers the first sweep after deploy, a Flutter-era row with no
- * `movimento`, and the ML import's unaudited write.
+ * changed. That single rule is the inventory of every "this sends even though
+ * nothing looks like it moved" case, so keep it complete:
+ *  - the first sweep after deploy (no baseline at all);
+ *  - a Flutter-era `historicoEstoque` row carrying no `movimento`, which `sum`
+ *    silently ignores;
+ *  - the ML import's unaudited `merge`, which moves a quantity while writing no
+ *    ledger row;
+ *  - a kit whose constraining components did not resolve, so its quantity
+ *    cannot be verified at all ({@link kitNaoVerificavel}) — it sends 0.
  */
 export function deveEnviarFamilia(
   quantidadesAtuais: ReadonlyMap<string, number>,
@@ -1415,9 +1530,40 @@ export function buildSendTasks(
   if (row.anchor.ehKitVirtual) return skipOnly(anchorId, 'kit-virtual');
   // DEFENSIVE-ONLY rung: S1 already filters `publicado` server-side (keep the S1 term).
   if (!row.anchor.publicado) return skipOnly(anchorId, 'nao-publicado');
-  // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1 term).
+  // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1
+  // term). Since #920 it earns its keep twice over — the array is maintained by
+  // an EVENTUALLY-consistent trigger, so this is the rung that catches a stale
+  // entry the trigger has not caught up with. Keep both it and the S6
+  // projection: dropping the projection alone silently disables this check.
   if (!row.integracoesComProduto.includes(opts.integracaoId)) {
     return skipOnly(anchorId, 'conta-fora-do-produto');
+  }
+
+  // ⚠️ The alarm for an unverifiable kit — and it is ONLY an alarm. The member
+  // still emits, carrying the 0 that `kitEstoqueDisponivel` computed, because
+  // publishing 0 is the recoverable direction: ML auto-reactivates the listing
+  // when a positive quantity next arrives, whereas leaving it advertising a
+  // stale positive number sells stock the ERP cannot account for.
+  //
+  // Do NOT turn this into a `skips.push(...)` next to the `'kit-virtual'` rung
+  // below. That is #806 S12's proposal and it was deliberately inverted (ADR
+  // 0014); a skip here re-opens the oversell it was filed against.
+  //
+  // What the log is FOR: the zero itself is legitimate, but a kit reaching this
+  // state usually means a stale `componentesKitKeys` denorm, which is a data
+  // defect nothing else surfaces. Naming the components makes it findable.
+  for (const member of [row.anchor, ...row.children]) {
+    if (!kitNaoVerificavel(member)) continue;
+    console.error(
+      '[mercado-livre] stock-sync: kit sem componentes resolvíveis — publicando 0 ' +
+        '(provável `componentesKitKeys` desatualizado)',
+      {
+        integracaoId: opts.integracaoId,
+        produtoId: member.produtoId,
+        anchorId,
+        componentes: componentesNaoResolvidos(member).slice(0, 10),
+      },
+    );
   }
 
   const tasks: StockSendTaskDraft[] = [];

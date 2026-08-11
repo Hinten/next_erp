@@ -10,7 +10,7 @@ import {
   resolverAnchors,
   toPushOutcome,
 } from './estoqueManual';
-import { STOCK_SEND_MAX_ATTEMPTS, type StockFamilyRow } from './estoquePlan';
+import { STOCK_SEND_MAX_ATTEMPTS, type StockFamilyRow } from './bulkEstoquePlan';
 import type { StockSendResult } from './estoqueSend';
 
 vi.mock('./itemsStatusSync', async (importOriginal) => {

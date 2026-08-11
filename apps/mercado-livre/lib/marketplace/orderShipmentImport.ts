@@ -111,6 +111,7 @@ import { pedidoCollection } from '@delfrance/data/admin/collections';
 
 import { loadContaBag, resolveMercadoEnviosIntFreteOuterRef } from './orderImport';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
+import { resolveShipmentOrderId } from './shipmentOrderId';
 import {
   POLITICA_FRESCOR_TOPICO_SHIPMENTS,
   mergeFreteInicialSeMaisNovo,
@@ -176,7 +177,9 @@ export async function importShipmentMercadoLivre(
   // (tasks.dart:1268-1270), BEFORE the order/orderML resolution below.
   const shippingPayments = await api.getShipmentPayments(shipmentId);
 
-  const orderId = shipment.order_id ?? null;
+  // `shipment.order_id` was discontinued by ML (#957); `resolveShipmentOrderId`
+  // falls back to `GET /shipments/{id}/orders`, the documented replacement.
+  const orderId = await resolveShipmentOrderId(api, shipment);
   if (orderId == null) {
     console.warn('[mercado-livre] shipment sem order_id — nada a vincular', { shipmentId });
     return { pedidoId: null, skipped: 'sem-order-id' };

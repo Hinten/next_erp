@@ -7,7 +7,7 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
-import { isActionDisabled } from './resolveActionRows';
+import { actionDisabledReason } from './resolveActionRows';
 import { useActionRunner } from './useActionRunner';
 
 export interface ActionSidePanelProps<T> {
@@ -29,6 +29,15 @@ export interface ActionSidePanelProps<T> {
   onActionComplete?: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** Expanded-rail width in px. Default 220. */
+  width?: number;
+  /**
+   * Caller-owned content rendered below the buttons — e.g. live progress for
+   * a job one of them started. Rendered in BOTH the expanded panel and the
+   * collapsed rail: the caller decides what (if anything) survives the
+   * collapse, so a running job is never silently hidden.
+   */
+  extra?: ReactNode;
 }
 
 /**
@@ -37,7 +46,10 @@ export interface ActionSidePanelProps<T> {
  * `actionsPanel` prop (which then replaces the top bar). Same contracts:
  * `ActionConfig` actions on the current selection, "Novo"/"Copiar" buttons,
  * confirm flow through `useActionRunner`. Collapses to a slim rail; the
- * TableView owns (and persists) the collapsed state.
+ * TableView owns (and persists) the collapsed state. Unlike the ActionBar it
+ * can also host caller-owned content (`extra`) below the buttons — that is
+ * what makes it, and not the toolbar, the home for a long-running job's
+ * progress.
  */
 export function ActionSidePanel<T>({
   actions,
@@ -49,6 +61,8 @@ export function ActionSidePanel<T>({
   onActionComplete,
   collapsed,
   onToggleCollapsed,
+  width = 220,
+  extra,
 }: ActionSidePanelProps<T>) {
   const { trigger, confirmModal } = useActionRunner({
     selectedRows,
@@ -67,16 +81,19 @@ export function ActionSidePanel<T>({
         p={4}
         style={{ flexShrink: 0, alignSelf: 'stretch' }}
       >
-        <Tooltip label="Expandir ações" withinPortal>
-          <ActionIcon
-            variant="subtle"
-            aria-label="Expandir ações"
-            aria-expanded={false}
-            onClick={onToggleCollapsed}
-          >
-            <IconLayoutSidebarRightExpand size={18} />
-          </ActionIcon>
-        </Tooltip>
+        <Stack gap={4} align="center">
+          <Tooltip label="Expandir ações" withinPortal>
+            <ActionIcon
+              variant="subtle"
+              aria-label="Expandir ações"
+              aria-expanded={false}
+              onClick={onToggleCollapsed}
+            >
+              <IconLayoutSidebarRightExpand size={18} />
+            </ActionIcon>
+          </Tooltip>
+          {extra}
+        </Stack>
       </Paper>
     );
   }
@@ -87,7 +104,7 @@ export function ActionSidePanel<T>({
       aria-label="Ações"
       withBorder
       p="sm"
-      w={220}
+      w={width}
       style={{ flexShrink: 0, alignSelf: 'stretch' }}
     >
       <Stack gap="xs">
@@ -131,7 +148,7 @@ export function ActionSidePanel<T>({
         {actions.length > 0 && (newHref || renderNewButton || copyHref) && <Divider />}
 
         {actions.map((a) => {
-          const disabled = isActionDisabled(a, selectedRows, visibleRows);
+          const reason = actionDisabledReason(a, selectedRows, visibleRows);
           return (
             <Button
               key={a.id}
@@ -141,7 +158,10 @@ export function ActionSidePanel<T>({
               // The vertical layout has room for icons (the inline ActionBar
               // renders label-only to keep the toolbar compact).
               leftSection={a.icon}
-              disabled={disabled}
+              disabled={reason !== null}
+              // Same affordance as the "Copiar" button above: a disabled
+              // action says on hover what would make it available.
+              title={reason ?? undefined}
               onClick={() => trigger(a)}
             >
               {a.label}
@@ -152,6 +172,13 @@ export function ActionSidePanel<T>({
         <Text size="xs" c="dimmed">
           {selectedRows.length} selecionado(s)
         </Text>
+
+        {extra && (
+          <>
+            <Divider />
+            {extra}
+          </>
+        )}
       </Stack>
 
       {confirmModal}

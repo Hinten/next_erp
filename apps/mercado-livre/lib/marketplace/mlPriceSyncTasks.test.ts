@@ -56,6 +56,18 @@ describe('createMlPriceSyncScheduler', () => {
     );
   });
 
+  it('treats blank MERCADO_LIVRE_TASKS_REGION as unset and falls through to default', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    // Empty string should be treated as unset
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', '');
+    vi.stubEnv('FUNCTIONS_REGION', undefined);
+    const scheduler = createMlPriceSyncScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east5/functions/processMercadoLivrePriceSync',
+    );
+  });
+
   it('passes scheduleDelaySeconds through to the underlying queue.enqueue (429 pause re-enqueue)', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     const scheduler = createMlPriceSyncScheduler();

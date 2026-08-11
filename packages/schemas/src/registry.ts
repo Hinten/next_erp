@@ -33,6 +33,7 @@ import { cargo } from './cargo';
 import { cmun } from './cmun';
 import { usuario } from './usuario';
 import { deposito } from './deposito';
+import { balanco, movimentoBalanco, relatorioBalanco } from './balanco';
 import { grupoDeVariacoes } from './grupoDeVariacoes';
 import { tabelaDeMedidas } from './tabelaDeMedidas';
 import { listaDePrecos } from './listaDePrecos';
@@ -97,6 +98,9 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   cmun,
   usuario,
   deposito,
+  balanco,
+  movimentoBalanco,
+  relatorioBalanco,
   grupoDeVariacoes,
   tabelaDeMedidas,
   listaDePrecos,
