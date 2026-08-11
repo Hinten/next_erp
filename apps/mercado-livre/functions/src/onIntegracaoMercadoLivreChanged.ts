@@ -48,6 +48,12 @@ import { getDb } from './lib/admin';
  * anything, and the re-drive arm writes fixed values to documents a replay no longer
  * finds (they left the deferred lane the first time round).
  *
+ * ⚠️ ORDER MATTERS between responsibilities 1 and 2, and it is load-bearing rather
+ * than cosmetic: the int_frete sync runs FIRST because it is the one with no
+ * backstop, and the #808 re-drive runs LAST because it is a latency cut the daily
+ * deferred sweep already covers. Ordering is what isolates them — a throw in the
+ * re-drive can no longer skip the sync, on this delivery or on any replay.
+ *
  * NO `secrets:` binding — deliberately. This trigger never touches the ML API; per
  * `src/options.ts`'s per-function-secrets rule, a function with no ML API call must
  * not get the app credentials bound. The #808 arm keeps that true by only MARKING
@@ -115,18 +121,44 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
       return;
     }
 
-    // ---- conta became RESOLVABLE → re-drive its deferred notifications (#808) ----
-    // Runs BEFORE the skip-if-unchanged gate below, deliberately: that gate exists
-    // to make a `user_id` stamp free for int_frete, and a `user_id` stamp is
-    // exactly the write this arm has to see. It is the OAuth exchange
-    // (`exchangeAndPersist`) denormalizing the seller id onto the conta — and also
-    // the still-running Flutter app, which writes the field directly.
+    // ---- create / update arm (#782, the PRIMARY responsibility) -------------
+    // Skip-if-unchanged: token refreshes and `user_id` stamps move none of the
+    // mirrored fields, so they cost nothing. A create (`before == null`) always syncs.
     //
-    // Until this fires, every notification for that seller is parked in the
-    // DEFERRED lane; the daily sweep would drain them within 24h regardless, so
-    // this is purely a latency cut, and a failure here must not cost the
-    // int_frete sync below. Still payload-gated: an unresolvable conta costs zero
-    // reads, which is what keeps the WhatsApp/Shopee/Magalu writes free.
+    // A positive gate rather than an early `return`, so the #808 arm below still
+    // runs for the writes this one skips — a `user_id` stamp being exactly such a
+    // write, and exactly the one that arm exists for.
+    if (before == null || mudouCampoSincronizado(before, after)) {
+      const disposicao = await sincronizarIntFreteDaConta(
+        getDb(),
+        integracaoId,
+        after,
+        eventTimeMs,
+      );
+      logger.info('[mercado-livre] onIntegracaoMercadoLivreChanged', {
+        integracaoId,
+        ...disposicao,
+      });
+    }
+
+    // ---- conta became RESOLVABLE → re-drive its deferred notifications (#808) ----
+    // The write that makes a seller resolvable is the OAuth exchange
+    // (`exchangeAndPersist`) denormalizing `user_id` onto the conta — and also the
+    // still-running Flutter app, which writes the field directly.
+    //
+    // ⚠️ LAST on purpose, and it is the ordering — not a catch — that isolates the
+    // two responsibilities. This arm is a pure LATENCY cut: the daily deferred
+    // sweep drains the same docs within 24h regardless, whereas the int_frete sync
+    // above has no comparable backstop (only the one-shot
+    // `scripts/backfill-int-frete.ts`). So the cheap, latency-only work must never
+    // be able to short-circuit the load-bearing work — which is precisely what
+    // running it first did: any throw here, transient or not, would have skipped
+    // the sync entirely for that invocation and, if deterministic, on every
+    // `retry: true` replay too. Running it last makes that impossible. Do not
+    // hoist it back above the sync.
+    //
+    // Still payload-gated, so an unresolvable conta costs zero reads — what keeps
+    // the WhatsApp / Shopee / Magalu writes free.
     const userIdAntes = userIdResolvivel(before);
     const userIdDepois = userIdResolvivel(after);
     if (userIdDepois != null && userIdDepois !== userIdAntes) {
@@ -139,16 +171,5 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
         });
       }
     }
-
-    // ---- create / update arm -----------------------------------------------
-    // Skip-if-unchanged: token refreshes and `user_id` stamps move none of the
-    // mirrored fields, so they cost nothing. A create (`before == null`) always syncs.
-    if (before != null && !mudouCampoSincronizado(before, after)) return;
-
-    const disposicao = await sincronizarIntFreteDaConta(getDb(), integracaoId, after, eventTimeMs);
-    logger.info('[mercado-livre] onIntegracaoMercadoLivreChanged', {
-      integracaoId,
-      ...disposicao,
-    });
   },
 );

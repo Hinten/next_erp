@@ -201,5 +201,35 @@ describe('onIntegracaoMercadoLivreChanged wiring', () => {
       await run({ ...conta(), tipo: 6 }, { ...conta(), tipo: 6, user_id: 999 });
       expect(notif.redriveDeferredForUserId).not.toHaveBeenCalled();
     });
+
+    it('a re-drive failure does NOT cost the int_frete sync — it runs LAST for this reason', async () => {
+      // The re-drive is a latency cut the daily deferred sweep already backstops;
+      // the int_frete sync has no comparable backstop. Ordering — not a catch —
+      // is what stops the cheap work short-circuiting the load-bearing work, so
+      // hoisting the arm back above the sync must fail here.
+      notif.redriveDeferredForUserId.mockRejectedValueOnce(new Error('firestore unavailable'));
+
+      // `ativo` false→true moves a MIRRORED field (so the sync runs) AND makes the
+      // seller resolvable (so the re-drive runs) — the one transition that puts
+      // both arms in play, which is what makes the ordering observable.
+      // ⚠️ The queued rejection MUST be consumed here: `vi.clearAllMocks()` in
+      // `beforeEach` does not drain a `mockRejectedValueOnce`, so a case that
+      // never invokes the mock leaks the rejection into the next test.
+      await expect(
+        run(conta({ ativo: false, user_id: 999 }), conta({ ativo: true, user_id: 999 })),
+      ).rejects.toThrow('firestore unavailable');
+
+      // ...and the sync still happened, before the throw.
+      expect(core.sincronizarIntFreteDaConta).toHaveBeenCalledOnce();
+    });
+
+    it('still re-drives for a write the int_frete gate skips (the whole point of the gate being positive)', async () => {
+      // A bare `user_id` stamp moves no mirrored field, so the sync is skipped —
+      // but this is exactly the write the #808 arm exists for. An early `return`
+      // in the sync gate would swallow it.
+      await run(conta(), conta({ user_id: 999 }));
+      expect(core.sincronizarIntFreteDaConta).not.toHaveBeenCalled();
+      expect(notif.redriveDeferredForUserId).toHaveBeenCalledWith(admin.db, 999);
+    });
   });
 });
