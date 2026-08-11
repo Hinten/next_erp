@@ -161,6 +161,49 @@ export async function resolveContaAtivaPorUserId(
 }
 
 /**
+ * The account's ACTIVE Mercado Envios `int_frete` outer-ref.
+ *
+ * ⚠️ This caches the WHOLE resolve, not just the indexed equality. When that
+ * equality misses, `buscarIntFreteDaConta` falls back to a `tipo`-only scan of
+ * the entire `int_frete` collection — Enterprise bills data scanned, so that
+ * fallback is the expensive read this cache exists for, and it fires on every
+ * miss including the ones that then find a doc by the non-canonical back-ref.
+ *
+ * ⚠️ It attaches at the `resolveMercadoEnviosIntFreteOuterRef` WRAPPER, never
+ * inside `buscarIntFreteDaConta`, which is also called with `{ tx }` by the
+ * `int_frete` sync. Caching a transactional read would drop the document from
+ * the transaction's read set and reopen the read-modify-write gap that
+ * transaction exists to close.
+ *
+ * ⚠️ Key is `[integracaoId]` alone: the other predicates are constants on this
+ * path (`tipo == mercadoLivre`, and `apenasAtivo` is always `true` here), and
+ * the conta ref the query filters on is a bijection of the id.
+ */
+const intFreteDaConta = createReadCache<readonly [string], string | null>({
+  name: 'ml:int-frete-da-conta',
+  ttlMs: READ_CACHE_TTL.config,
+  maxEntries: 64,
+  // A stale `null` is persisted, not just served: on a FIRST import
+  // `mergeFreteInicial` has no existing value to fall back on, so the pedido is
+  // created with `integracaoFreteOuterRef: null` and the etiqueta row action can
+  // no longer classify it. The genuine null window is only between a conta's
+  // first save and the `onIntegracaoMercadoLivreChanged` trigger creating its
+  // companion doc, so caching absence saves almost nothing and costs a wrong
+  // field on a real pedido.
+  negativeTtlMs: 0,
+  now: () => nowFn(),
+  sampleEvery: 0,
+});
+
+/** The cached Mercado Envios `int_frete` outer-ref for a conta. */
+export function readIntFreteOuterRefDaConta(
+  integracaoId: string,
+  load: () => Promise<string | null>,
+): Promise<string | null> {
+  return intFreteDaConta.get([integracaoId], load);
+}
+
+/**
  * Test-only. The caches are module-scope — they must be, since a per-request
  * cache never hits — so `now` cannot be passed per test the way the primitive's
  * own suites do. Mirrors `__resetFilialCertCacheForTests` in
