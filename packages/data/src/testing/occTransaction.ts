@@ -57,7 +57,7 @@
  * whichever `await` chain got there first, not of the test's intent.
  */
 
-export type OccWriteKind = 'set' | 'create' | 'update';
+export type OccWriteKind = 'set' | 'create' | 'update' | 'delete';
 export type OccOpKind = 'get' | OccWriteKind;
 
 /** Anything `tx.get` accepts: a fake doc ref, or a fake collection ref. */
@@ -72,17 +72,36 @@ export interface OccRef {
   readonly path: string;
 }
 
+/**
+ * An ADR 0011 **tier 1** precondition on a single write, as
+ * `Transaction.update(ref, data, { lastUpdateTime })` takes it.
+ *
+ * The engine only CARRIES this to {@link OccHost.applyWrite}; enforcing it is
+ * the host's job, because the host owns what a "version" is (the engine knows a
+ * document only by its path). A host that ignores the field silently makes
+ * every tier-1 test vacuous — so enforce it, the way
+ * `apps/mercado-livre`'s `publish.test.ts` / `import.test.ts` fakes do for the
+ * non-transactional spelling.
+ */
+export interface OccPrecondition {
+  /** Commit only while the target is still at this version; else gRPC 9. */
+  readonly lastUpdateTime?: unknown;
+}
+
 export interface OccTransaction {
   get: <T>(target: OccReadable<T>) => Promise<T>;
   set: (ref: OccRef, data: Record<string, unknown>) => void;
   create: (ref: OccRef, data: Record<string, unknown>) => void;
-  update: (ref: OccRef, patch: Record<string, unknown>) => void;
+  update: (ref: OccRef, patch: Record<string, unknown>, precondition?: OccPrecondition) => void;
+  delete: (ref: OccRef, precondition?: OccPrecondition) => void;
 }
 
 export interface OccBufferedWrite {
   kind: OccWriteKind;
   path: string;
   data: Record<string, unknown>;
+  /** Only ever set by `tx.update`; see {@link OccPrecondition}. */
+  precondition?: OccPrecondition;
 }
 
 /** What the owning FakeDb must supply. Deliberately tiny. */
@@ -90,10 +109,24 @@ export interface OccHost {
   /**
    * Apply ONE buffered write to the backing store, at commit, in call order.
    * Must throw the way the Admin SDK does: gRPC 6 on `create` over an existing
-   * document, gRPC 5 on `update` of an absent one. Must NOT touch `opLog` — the
-   * engine already logged this write at call time.
+   * document, gRPC 5 on `update` of an absent one, and gRPC 9 when
+   * `precondition.lastUpdateTime` no longer matches the stored version. Must
+   * NOT touch `opLog` — the engine already logged this write at call time.
    */
-  applyWrite: (kind: OccWriteKind, path: string, data: Record<string, unknown>) => void;
+  applyWrite: (
+    kind: OccWriteKind,
+    path: string,
+    data: Record<string, unknown>,
+    precondition?: OccPrecondition,
+  ) => void;
+  /**
+   * Apply ONE buffered `tx.delete`. Routed here rather than through
+   * {@link applyWrite} so a host whose code under test never deletes needs no
+   * `kind === 'delete'` branch — and so one that DOES delete cannot silently
+   * fall through a `set`/`update` chain and store an empty document instead.
+   * Staging a delete without supplying this throws.
+   */
+  applyDelete?: (path: string, precondition?: OccPrecondition) => void;
   /** Append a WRITE to the FakeDb's own `opLog`, at call time. */
   logWrite?: (op: OccWriteKind, path: string) => void;
   /** Record a raw patch for the FakeDb's `lastPatch()`, at commit time. */
@@ -186,10 +219,15 @@ export class OccEngine {
       const buffered: OccBufferedWrite[] = [];
       let wroteAlready = false;
 
-      const stage = (kind: OccWriteKind, ref: OccRef, data: Record<string, unknown>): void => {
+      const stage = (
+        kind: OccWriteKind,
+        ref: OccRef,
+        data: Record<string, unknown>,
+        precondition?: OccPrecondition,
+      ): void => {
         assertPath(ref, kind);
         this.host.logWrite?.(kind, ref.path);
-        buffered.push({ kind, path: ref.path, data });
+        buffered.push({ kind, path: ref.path, data, precondition });
         wroteAlready = true;
       };
 
@@ -206,7 +244,8 @@ export class OccEngine {
         },
         set: (ref, data) => stage('set', ref, data),
         create: (ref, data) => stage('create', ref, data),
-        update: (ref, patch) => stage('update', ref, patch),
+        update: (ref, patch, precondition) => stage('update', ref, patch, precondition),
+        delete: (ref, precondition) => stage('delete', ref, {}, precondition),
       };
 
       // A throw from the callback propagates: the real SDK only retries its own
@@ -223,7 +262,18 @@ export class OccEngine {
       }
 
       for (const w of buffered) {
-        this.host.applyWrite(w.kind, w.path, w.data);
+        if (w.kind === 'delete') {
+          if (!this.host.applyDelete) {
+            throw new Error(
+              `OccEngine: the code under test called tx.delete("${w.path}") but this host ` +
+                'supplies no `applyDelete`. Add one — silently ignoring the delete would ' +
+                'make the test assert against a document Firestore would have removed.',
+            );
+          }
+          this.host.applyDelete(w.path, w.precondition);
+        } else {
+          this.host.applyWrite(w.kind, w.path, w.data, w.precondition);
+        }
         this.host.recordPatch?.(w.path, w.data);
         this.docVersions.set(w.path, (this.docVersions.get(w.path) ?? 0) + 1);
         const col = parentCollection(w.path);
