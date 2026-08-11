@@ -3,43 +3,14 @@ import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { ESTADO_PUBLICACAO_ML, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
+import { linkFixture } from '@/lib/mercado-livre/linkFixture';
 import { ListingStatusStrip } from './ListingStatusStrip';
-
-function link(over: Partial<ProdutoMercadoLivreLink> = {}): ProdutoMercadoLivreLink {
-  return {
-    contaOuterRef: 'documents/integracao/conta-1',
-    channels: ['marketplace'],
-    estado: ESTADO_PUBLICACAO_ML.publicado,
-    status: null,
-    sub_status: null,
-    id: 'MLB777',
-    sku: null,
-    descricao: null,
-    site_id: 'MLB',
-    title: 'Camiseta',
-    category_id: 'MLB31447',
-    condition: 'new',
-    listing_type_id: 'gold_special',
-    crossdocking: null,
-    freteGratis: false,
-    precoPublicado: 79.9,
-    tarifaFrete: null,
-    comissao: null,
-    isUserProductModel: false,
-    video_id: null,
-    attributes: null,
-    errors: null,
-    ultimaModificacao: null,
-    dataCadastro: null,
-    ...over,
-  } as ProdutoMercadoLivreLink;
-}
 
 function renderStrip(over: Partial<ProdutoMercadoLivreLink> = {}, onReverificar = vi.fn()) {
   render(
     <MantineProvider env="test">
       <ListingStatusStrip
-        link={link(over)}
+        link={linkFixture({ status: null, ...over })}
         canWrite
         disabled={false}
         rechecking={false}
