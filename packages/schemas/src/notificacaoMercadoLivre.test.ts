@@ -64,9 +64,18 @@ describe('notificacaoMercadoLivreSchema', () => {
     expect(parsed.received).toBe(1_741_196_520_060);
   });
 
-  it('only accepts failed/parked as status', () => {
-    expect(notificacaoStatusSchema.safeParse('failed').success).toBe(true);
-    expect(notificacaoStatusSchema.safeParse('parked').success).toBe(true);
+  /**
+   * Pinned as a SET, not as a couple of spot checks. This schema is an alias of
+   * the shared `notificacaoResilienciaStatusSchema`, so a new retry lane lands
+   * here without touching this file — which is exactly what happened: #808
+   * added `deferred` and every channel's copy of this test kept asserting the
+   * old two-member vocabulary while still passing.
+   */
+  it('accepts exactly the shared resilience statuses', () => {
+    expect([...notificacaoStatusSchema.options].sort()).toEqual(['deferred', 'failed', 'parked']);
+    for (const status of notificacaoStatusSchema.options) {
+      expect(notificacaoStatusSchema.safeParse(status).success).toBe(true);
+    }
     expect(notificacaoStatusSchema.safeParse('done').success).toBe(false);
   });
 });
