@@ -32,4 +32,4 @@ export {
   type TaskResult,
 } from './types';
 
-export { asMillis } from './coerce';
+export { asInt, asMillis } from './coerce';
