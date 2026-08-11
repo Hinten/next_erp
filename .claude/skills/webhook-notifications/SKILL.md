@@ -265,8 +265,23 @@ parks on its next re-drive) so retuning the horizon stays a one-constant edit.
 .update` that raises gRPC **5** for an absent doc — a `set`-based stand-in would
 pass a test that upserts a ghost in production.
 
-The emulator cannot run this end-to-end (Cloud Tasks isn't emulated) — unit
-tests against the fake are the contract.
+The **Cloud Tasks hop** still cannot run anywhere — there is no Cloud Tasks
+emulator — so the enqueue→dispatch path is covered by nothing but review, and
+unit tests against the fake remain the contract for the disposition matrix.
+
+What the fake is no longer the only evidence for, **on Mercado Livre only**
+(`ci-mercado-livre.yml`, `*.firestore.test.ts`): the store's Firestore-level
+assumptions now run against a real Firestore — `create()` really raising
+ALREADY_EXISTS, `mergeIfExists` really getting NOT_FOUND rather than upserting a
+ghost, and the lane query's treatment of a missing vs a `null` `processedAt`
+(both excluded — range filters skip nulls, so the fake's `typeof v === 'number'`
+guard matches production). The receiver is exercised end to end through the
+`*_TASKS_DISABLED` valve into a real failure document.
+
+⚠️ **Mercado Pago and WhatsApp have no such lane** — their pipelines rest
+entirely on their fakes. If you are changing shared code in
+`@delfrance/data/admin/notifications`, the ML lane is the only place a real
+Firestore will contradict you.
 
 ## Reference
 

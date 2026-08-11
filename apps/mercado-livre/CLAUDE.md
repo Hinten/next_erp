@@ -43,9 +43,12 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   the hot lane by `redriveDeferredForUserId` the moment `onIntegracaoMercadoLivreChanged` sees
   that seller's `user_id` land on an active integração. As `fail` it parked terminally ~6h in,
   so a seller connecting the next business day lost the whole backlog. ⚠️ The re-drive query
-  needs the `(status, user_id)` composite index — `notificationGuardrails.test.ts` guard C does
-  NOT cover it (it only checks `(status, processedAt)`); the assertion in
-  `notificacao.test.ts` is its only cover.
+  needs the `(status, user_id)` composite index. Guard C in
+  `notificationGuardrails.test.ts` only checks `(status, processedAt)`; **guard D** in the same
+  file covers this one generically — it reads the re-drive query out of this file's source,
+  derives the required index from it, and compares with `indexSatisfies`, which honours `order`.
+  (The hand-rolled block that used to sit in `notificacao.test.ts` compared `fieldPath` only, so
+  flipping `user_id` to `DESCENDING` passed it while breaking the query — #823.)
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
@@ -53,6 +56,33 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   the still-running Flutter app during the dual-run migration; "one wins" refresh).
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
+
+## Testing
+
+Two suites, deliberately separated by filename:
+
+- **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Runs in
+  `ci.yml` on **every** PR; that workflow has no `paths:` filter, so this coverage can
+  never develop a hole.
+- **Firestore integration** — `test:firestore` (`*.firestore.test.ts`), run by
+  `ci-mercado-livre.yml` under
+  `firebase emulators:exec --config firebase.mercado-livre.json --only firestore`.
+  Not a turbo task, so `turbo run test` cannot reach it. It exists because the offline
+  suite mocks Firestore away entirely: it covers the real `createTokenDuravelStore`
+  (including the dual-lineage read across Flutter's auto-id docs and this app's
+  `current`, and the "one wins" refresh under real contention), the notification store's
+  ALREADY_EXISTS/NOT_FOUND semantics, the receiver writing a real failure doc via the
+  `MERCADO_LIVRE_TASKS_DISABLED` valve, and `exchangeAndPersist`.
+
+⚠️ **Not covered by either, so do not read a green lane as more than it is:** the Cloud
+Tasks enqueue→dispatch hop (no emulator exists anywhere — only the *outage* path is
+tested), the nested `functions/` triggers, composite **index declaration** (the emulator
+auto-creates them; that is guard C/D in `notificationGuardrails.test.ts`), Firestore
+rules (the Admin SDK bypasses them — `ci-rules.yml` owns those), the Enterprise Pipelines
+API (the emulator is Standard edition and still exposes `db.pipeline()`), and the ML API
+itself. ML has **no sandbox** and its `refresh_token` is single-use and rotating, so no
+lane may ever hold real ML credentials — a CI refresh would invalidate the token the
+deployed backend is holding.
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
 
