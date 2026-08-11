@@ -71,9 +71,17 @@ describe('notificacaoMercadoPagoSchema', () => {
     expect(parsed.application_id).toBe(555);
   });
 
-  it('only accepts failed/parked as status', () => {
-    expect(notificacaoMercadoPagoStatusSchema.safeParse('failed').success).toBe(true);
-    expect(notificacaoMercadoPagoStatusSchema.safeParse('parked').success).toBe(true);
+  // Pinned as a SET — an alias of the shared enum, so a new retry lane (#808's
+  // `deferred`) lands here without touching this file. See the ML sibling.
+  it('accepts exactly the shared resilience statuses', () => {
+    expect([...notificacaoMercadoPagoStatusSchema.options].sort()).toEqual([
+      'deferred',
+      'failed',
+      'parked',
+    ]);
+    for (const status of notificacaoMercadoPagoStatusSchema.options) {
+      expect(notificacaoMercadoPagoStatusSchema.safeParse(status).success).toBe(true);
+    }
     expect(notificacaoMercadoPagoStatusSchema.safeParse('done').success).toBe(false);
   });
 });
