@@ -30,7 +30,7 @@ export const estoqueProdutoSchema = z
     /**
      * The owning produto's id, denormalized so a **collection-group** query can
      * key on it — that is its only purpose, and its only consumer is the kit
-     * component join (`compEstoques` in the ML sweep's `estoquePlan.ts`, which
+     * component join (`compEstoques` in the ML sweep's `bulkEstoquePlan.ts`, which
      * matches `parentId equalAny <a kit's componentesKitKeys>`).
      *
      * ⚠️ Anything reading a doc it already located by path must take the owner

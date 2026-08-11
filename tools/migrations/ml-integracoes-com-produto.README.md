@@ -7,7 +7,7 @@ docs.
 ## Why it exists
 
 `produtos.integracoesComProduto` is the pre-filter both ML sweeps open with —
-`estoquePlan.fetchStockFamilies` S1 and `precoPlan.fetchPrecoPage` each start
+`bulkEstoquePlan.fetchStockFamilies` S1 and `precoPlan.fetchPrecoPage` each start
 with `paiId == null AND publicado == true AND integracoesComProduto
 array-contains <conta>`. A conta id in it means _"this account's sweep visits
 this produto every run"_, so the array's accuracy **is** stock and price
