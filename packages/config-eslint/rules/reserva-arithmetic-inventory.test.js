@@ -79,6 +79,8 @@ const INVENTARIO = {
     'Adds the reservation BACK into `quantidade` (ML `available_quantity` is `disponivel`). Both arms floor with `reservaEfetiva`; a raw negative would shrink stock on every re-import.',
   'apps/mercado-livre/lib/marketplace/estoquePlan.ts':
     'Sweep math over RAW pipeline rows. Every availability read goes through `estoqueDisponivel`. `desfazerMovimento` may synthesize a negative on purpose — floored downstream, pinned by a test.',
+  'apps/mercado-livre/scripts/check-deposito-source.ts':
+    '#802 pre-flip check. Compares `disponivel` at the conta’s depósito against the legacy hardcoded one, both through `estoqueDisponivel`, so the floor is the sweep’s own. A missing doc or a missing field reads as 0 — deliberately, since that is exactly what the sweep publishes for a family with no estoque at the depósito.',
   'apps/web/app/(app)/pedidos/_components/useEstoqueDisponivel.ts':
     'Pedido-form availability. Sums through `estoqueDisponivel` / `estoqueDisponivelComKit`.',
   'apps/web/app/(app)/produtos/_components/EstoqueManager.tsx':
