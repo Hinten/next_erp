@@ -41,8 +41,10 @@ export default function ContaMercadoLivrePage() {
         </Group>
       </Group>
 
-      {/* key: a param-only A->B navigation must remount the panel — its job-card
-          state (massImportJobId / priceSyncJobId) is per-conta. */}
+      {/* key: a param-only A->B navigation must remount the panel — its local
+          state is per-conta (an in-flight `connecting`, and the one-shot
+          ?ml=connected toast effect), and Next reuses the component across a
+          param change. */}
       <ContaMercadoLivrePanel key={params.id} integracaoId={params.id} />
 
       <ObjectView

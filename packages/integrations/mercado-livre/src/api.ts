@@ -7,6 +7,7 @@ import {
   MercadoLivreValidationError,
 } from './errors';
 import { DEFAULT_API_BASE_URL } from './oauth';
+import { registrarFormatoDoEnvio } from './shipmentFields';
 import {
   type MlActiveChartDomains,
   type MlBillingInfo,
@@ -177,7 +178,12 @@ export interface MercadoLivreApi {
    * callers must read as "ML told us nothing", NOT as "the shipment is empty".
    */
   getShipmentOrders(shipmentId: number | string): Promise<MlShipmentOrder[]>;
-  /** `GET /shipments/{shipmentId}/sla` — the dispatch deadline for a shipment (order import, Step 9). */
+  /**
+   * `GET /shipments/{shipmentId}/sla` — the dispatch deadline for a shipment
+   * (order import, Step 9). Deliberately does NOT send `x-format-new` (#957):
+   * ML's documented example for this resource omits it and the response is
+   * unchanged by it, so sending it would be speculative.
+   */
   getShipmentSla(shipmentId: number | string): Promise<MlShipmentSla>;
   /**
    * `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` — uploads the signed
@@ -580,9 +586,25 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
 
     getPayment: (paymentId) => request('GET', `/collections/${paymentId}`, mlPaymentSchema),
-    getShipment: (shipmentId) => request('GET', `/shipments/${shipmentId}`, mlShipmentSchema),
+    getShipment: async (shipmentId) => {
+      const shipment = await request('GET', `/shipments/${shipmentId}`, mlShipmentSchema, {
+        // Mandatory on shipments requests as of 2025-10-12, and it selects the
+        // body `mlShipmentSchema` types — see that schema for what moved (#957).
+        headers: { 'x-format-new': 'true' },
+      });
+      // The single choke point every shipment passes through, so this is where
+      // the "is ML still serving the legacy body?" observation belongs. It is
+      // what lets the compat fallbacks be deleted on evidence rather than on a
+      // guess — see `registrarFormatoDoEnvio`.
+      registrarFormatoDoEnvio(shipment);
+      return shipment;
+    },
     getShipmentPayments: (shipmentId) =>
-      request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema),
+      request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema, {
+        // Same mandate; this resource's body is unchanged by it (ML's own curl
+        // example for it carries the header).
+        headers: { 'x-format-new': 'true' },
+      }),
     getShipmentOrders: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/orders`, mlShipmentOrdersSchema, {
         // Mandatory on this resource per the ML docs — without it the call 404s.

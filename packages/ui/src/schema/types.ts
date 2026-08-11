@@ -158,6 +158,16 @@ export interface ActionConfig<T> {
    * == 1`). Other bulk actions leave this off.
    */
   fallbackToSingleVisibleRow?: boolean;
+  /**
+   * Cap on how many checked rows the action accepts. Above it the button
+   * disables and its `title` says why, so an over-wide selection is refused
+   * up front instead of being silently truncated at `run` time.
+   *
+   * Set `1` for an action that is only meaningful one record at a time — e.g.
+   * the Mercado Livre bulk jobs, which are minutes-long and quota-consuming
+   * per account (#816). Leave unset for a genuine bulk action.
+   */
+  maxSelection?: number;
   refreshOnComplete?: boolean;
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;
   confirm?: { title: string; message: string };

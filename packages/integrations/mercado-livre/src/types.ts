@@ -520,40 +520,94 @@ export const mlPaymentSchema = z
   .passthrough();
 export type MlPayment = z.infer<typeof mlPaymentSchema>;
 
-/** One `shipping_option.estimated_*` sub-object — every variant is `{ date: string|null, ... }`; only `date` is consumed. */
+/** One `lead_time.estimated_*` sub-object — every variant is `{ date: string|null, ... }`; only `date` is consumed. */
 const mlShipmentEstimatedDateSchema = z
   .object({ date: z.string().nullable().optional() })
   .passthrough();
 
-/** `shipment.shipping_option` (legacy `ShippingOption`, models.dart:6052-6127) — only the dispatch/delivery-window fields `_getPrazoDespacho`/`toFrete` read. */
-export const mlShipmentOptionSchema = z
+/**
+ * `shipment.lead_time` — the delivery-window/cost block of the `x-format-new`
+ * shipment body. Replaces the legacy top-level `shipping_option`
+ * (`ShippingOption`, models.dart:6052-6127), which carried the same children.
+ *
+ * ⚠️ `estimated_handling_limit` is deliberately NOT typed here. ML deprecated it
+ * on 2025-05-13 — "a informação só poderá ser consumida no recurso de SLA" — and
+ * `resolvePrazoDespacho` reads the SLA resource first anyway. Typing a field ML
+ * has stopped filling would only invite a reader that silently gets null.
+ *
+ * ⚠️ `cost` is deliberately NOT typed here, even though the payload carries it.
+ * It looks like a replacement for the legacy top-level `base_cost` and is not
+ * one: on the free-shipping shipment captured at `.old/…/models.dart:3150` it is
+ * `0` (a 100% discount) while `base_cost` is 38.90, and on the paid one at
+ * `:5142` it equals `list_cost` with no discount at all while `base_cost` is
+ * nearly double. Typing it invites exactly the substitution that would wipe
+ * `custoCalculado` — see `shipmentBaseCost` for the full autopsy (#957). It
+ * still rides through `.passthrough()` for anyone who needs it knowingly.
+ */
+export const mlShipmentLeadTimeSchema = z
   .object({
     list_cost: z.number().nullable().optional(),
-    estimated_handling_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
     estimated_delivery_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
     estimated_delivery_time: mlShipmentEstimatedDateSchema.nullable().optional(),
   })
   .passthrough();
-export type MlShipmentOption = z.infer<typeof mlShipmentOptionSchema>;
+export type MlShipmentLeadTime = z.infer<typeof mlShipmentLeadTimeSchema>;
+
+/** `shipment.destination.shipping_address` — the buyer's address in the `x-format-new` body (was the top-level `receiver_address`). */
+const mlShipmentAddressSchema = z
+  .object({
+    street_name: z.string().nullable().optional(),
+    street_number: z.union([z.number(), z.string()]).nullable().optional(),
+    zip_code: z.string().nullable().optional(),
+    comment: z.string().nullable().optional(),
+    neighborhood: z
+      .object({ name: z.string().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+    city: z.object({ name: z.string().nullable().optional() }).passthrough().nullable().optional(),
+    state: z.object({ name: z.string().nullable().optional() }).passthrough().nullable().optional(),
+  })
+  .passthrough();
 
 /**
- * `GET /shipments/{shipmentId}` (legacy `get_shipment`, api.dart:1635-1641) — a
- * shipment tied to an ML order. Tolerant: only the fields
- * `MercadoLivreShipping.toFrete`/`toEstadoFrete` (legacy models.dart:5340-5394)
- * consume are typed (address fields are resolved from billing_info instead, so
- * `receiver_address`/`sender_address` are left untyped on `.passthrough()`).
+ * `GET /shipments/{shipmentId}` in the **`x-format-new: true`** shape (ML docs,
+ * *Gerenciamento de Envios*). That header is mandatory on shipments requests as
+ * of 2025-10-12 and the plugin now sends it — see `getShipment` (#957).
+ *
+ * Three legacy fields are gone from the wire and therefore from this schema:
+ *  - `order_id` (+ `external_reference`) — **discontinued** on the same date.
+ *    Resolve the order through `GET /shipments/{id}/orders` instead
+ *    (`getShipmentOrders`); the passthrough keeps the raw value readable for as
+ *    long as ML still happens to send it.
+ *  - `base_cost` — no counterpart; `lead_time.cost` is the nearest analogue.
+ *  - `logistic_type` — moved under `logistic.type`.
+ *
+ * Still tolerant per house style: only what the readers consume is typed, and
+ * everything else rides through `.passthrough()`.
  */
 export const mlShipmentSchema = z
   .object({
     id: z.number().int(),
-    order_id: z.number().int().nullable().optional(),
     status: z.string().nullable().optional(),
     substatus: z.string().nullable().optional(),
     tracking_number: z.string().nullable().optional(),
     last_updated: z.string().nullable().optional(),
-    base_cost: z.number().nullable().optional(),
-    logistic_type: z.string().nullable().optional(),
-    shipping_option: mlShipmentOptionSchema.nullable().optional(),
+    logistic: z
+      .object({
+        mode: z.string().nullable().optional(),
+        type: z.string().nullable().optional(),
+        direction: z.string().nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    lead_time: mlShipmentLeadTimeSchema.nullable().optional(),
+    destination: z
+      .object({ shipping_address: mlShipmentAddressSchema.nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type MlShipment = z.infer<typeof mlShipmentSchema>;

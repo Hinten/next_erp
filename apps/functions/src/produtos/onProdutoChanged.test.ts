@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { PRODUTO_HISTORY_IGNORE_FIELDS, produtoExtraIgnores } from './onProdutoChanged';
 
 describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
-  it('is exactly the noisy/denorm-churn field set (owner list, 2026-07-21; +integracoesComProduto #920)', () => {
+  it('is exactly the noisy/denorm-churn field set (owner list, 2026-07-21; +integracoesComProduto #920, +marketplaceIds #961)', () => {
     expect([...PRODUTO_HISTORY_IGNORE_FIELDS].sort()).toEqual(
       [
         'componentesKitKeys',
@@ -14,6 +14,10 @@ describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
         // operator never edits it by hand.
         'integracoesComProduto',
         'marketplace',
+        // #961: written by the same five stamps as `marketplace`, but it was
+        // missing from this list — so one of the pair produced history rows and
+        // the other did not.
+        'marketplaceIds',
         'nome_embedding',
         'statusProdutosMarketplace',
         'timestamp',
