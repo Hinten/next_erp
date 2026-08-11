@@ -316,6 +316,15 @@ deploy config or `prepare-deploy.mjs`.
    @google-cloud/firestore / sharp) — no `devDependencies`, no `workspace:*`, no
    build script. esbuild already bundled data/schemas, so the cloud needs
    nothing else. This is why `source` is a generated folder, not `apps/functions`.
+   ⚠️ **That artifact carries no lockfile**, so the cloud install resolves each
+   spec fresh and a `^` range installs whatever is newest *at deploy time* — a
+   version no CI lane ever tested. `firebase-admin` + `firebase-functions` are
+   therefore pinned **exact** (`14.2.0` / `7.3.2`); `firebase-functions@7.3.2`
+   moved `express` 4→5 in a **patch** release, which under the old `^7.3.0` ran
+   Express 5 in production against CI on Express 4. Bump them together with
+   `pnpm-workspace.yaml`'s catalog and the four nested artifact manifests —
+   `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails on drift.
+   (`@google-cloud/firestore` and `sharp` still float; a known carve-out.)
 
 4. **`Failed to find location of Firebase Functions SDK`** — firebase-tools'
    *local* trigger analysis locates AND spawns the SDK from
