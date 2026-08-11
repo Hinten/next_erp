@@ -396,9 +396,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // doc can still hold the pre-save value while the server has the new one. We
   // paint the first emission for instant feedback, then RE-SEED once the
   // authoritative `fromCache: false` snapshot arrives — but only while the form
-  // is pristine, so an in-progress edit is never clobbered. `seededId` tracks
-  // the last id painted from any source; `serverSeededId` the last id corrected
-  // from server truth, so the correction happens at most once per record.
+  // is pristine, so an in-progress edit is never clobbered. The seeding logic
+  // (first paint vs. one-time server-truth correction, tracked per record id)
+  // now lives in `useServerTruthSeed`.
   useServerTruthSeed({
     id: docSnap.data?.id,
     fromCache: docSnap.fromCache,
