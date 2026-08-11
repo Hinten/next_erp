@@ -343,7 +343,7 @@ back-ref, writing the same values, and whichever runs second finds nothing to ch
 
 The stock sync has no Secret Manager needs of its own — every knob is a
 **non-secret** value read LAZILY from `process.env` by the getters in
-`lib/marketplace/estoquePlan.ts` (unset/blank/invalid → the code default), plus
+`lib/marketplace/bulkEstoquePlan.ts` (unset/blank/invalid → the code default), plus
 the master flag `MERCADO_LIVRE_STOCK_SYNC_ENABLED` (`'1'` and nothing else turns
 it on). Three separate places matter, and they are NOT interchangeable:
 

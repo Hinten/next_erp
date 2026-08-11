@@ -49,7 +49,7 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 
 ## Stock sweep tiers — read ADR 0014 first
 
-The stock sweep (`lib/marketplace/estoquePlan.ts` + `estoqueSweep.ts`) runs three
+The stock sweep (`lib/marketplace/bulkEstoquePlan.ts` + `estoqueSweep.ts`) runs three
 tiers — a 15-minute incremental, a 02:00 daily and a monthly force-all — and it
 **deliberately under-sends**. A kit whose component moved but which did not itself
 sell is not a candidate on the first two tiers; the monthly pass corrects it.

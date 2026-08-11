@@ -7,7 +7,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // (agents never run firebase; index deploy is a coordinated human step).
 //
 // Live proof that `fetchStockFamilies` AND the ledger pre-pass
-// (`fetchMovimentosDaJanela`) in lib/marketplace/estoquePlan.ts ride the declared
+// (`fetchMovimentosDaJanela`) in lib/marketplace/bulkEstoquePlan.ts ride the declared
 // indexes instead of silently full-scanning: this Firestore Enterprise
 // edition auto-creates NO indexes, an unindexed subquery scans its collection
 // ONCE PER OUTER ROW, and Enterprise bills data scanned. Pipelines have no
@@ -234,7 +234,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // overridable via FIREBASE_DATABASE_ID.
 //
 // ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchMovimentosDaJanela` in
-// apps/mercado-livre/lib/marketplace/estoquePlan.ts — this script mirrors
+// apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
 // shape change there must be reflected here or the proof goes stale.
 // ⚠️ The window filter deliberately has NO component arm (ADR 0014): a kit sale
@@ -251,7 +251,7 @@ const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimit
 const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '1') !== '0';
 
 // Mirrors the shipped daily window: `dailyWindowHours()` (24) minus
-// `windowOverlapSec()` (20) — estoquePlan.ts defaults, janelaDoSweep('daily').
+// `windowOverlapSec()` (20) — bulkEstoquePlan.ts defaults, janelaDoSweep('daily').
 const DAILY_WINDOW_MS = 24 * 3_600_000;
 const WINDOW_OVERLAP_MS = 20_000;
 
@@ -522,7 +522,7 @@ async function cleanupProbeData() {
   }
 }
 
-/* ---- THE query, mirrored from estoquePlan.ts (keep-in-sync note above) ----- */
+/* ---- THE query, mirrored from bulkEstoquePlan.ts (keep-in-sync note above) ----- */
 /* No childIds define, no vendaProbe, no temVenda30d — the change signal is the
    uncorrelated historicoEstoque ledger aggregate (mirrored after this
    section), and no component rollup: sibling kits are a monthly concern

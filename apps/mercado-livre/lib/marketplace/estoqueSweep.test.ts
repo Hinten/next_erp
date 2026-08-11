@@ -24,7 +24,7 @@ import {
   type RawStockLinkRow,
   type StockFamilyPage,
   type StockFamilyRow,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 
 const h = vi.hoisted(() => ({
   loadCtx: vi.fn(),

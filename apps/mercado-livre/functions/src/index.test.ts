@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 // #778: the reprocess sweep must bind the ML app credentials + a budget that
 // fits its worst-case sequential ML-API-bound drain — exactly like every
@@ -24,11 +24,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const originalFunctionsRegion = process.env.FUNCTIONS_REGION;
 process.env.FUNCTIONS_REGION = 'us-east5';
 
-let indexModule: typeof import('./index');
-
-beforeAll(async () => {
-  indexModule = await import('./index');
-});
+// ⚠️ Keep this import at the TOP LEVEL — do NOT move it into a `beforeAll`.
+// `./index` is the heaviest module in this codebase (firebase-functions v2 plus
+// every handler + queue module it registers), and Vitest's `hookTimeout`
+// defaults to 10 s: inside a hook it flakes under `turbo run test` fan-out,
+// while a top-level `await import` is module evaluation and carries no such
+// budget. This mirrors `apps/whatsapp/functions/src/sendOutbound.test.ts` and
+// the sibling `on*Changed` tests here, which all import at the top level.
+const { reprocessMercadoLivreNotifications } = await import('./index');
 
 afterAll(() => {
   process.env.FUNCTIONS_REGION = originalFunctionsRegion;
@@ -37,7 +40,7 @@ afterAll(() => {
 describe('reprocessMercadoLivreNotifications (#778)', () => {
   it('binds both ML app secrets and sets timeoutSeconds to 540 (matches the other ML-API-bound sweeps)', () => {
     const endpoint = (
-      indexModule.reprocessMercadoLivreNotifications as unknown as {
+      reprocessMercadoLivreNotifications as unknown as {
         __endpoint: Record<string, unknown>;
       }
     ).__endpoint;

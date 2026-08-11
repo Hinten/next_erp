@@ -61,7 +61,7 @@ that contains it. Both variants of that idea die on the same number.
 
 ### What the sweep did before this ADR
 
-The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/estoquePlan.ts`)
+The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts`)
 compensated for the missing signal in two places, and paid for it twice:
 
 1. **A correlated component aggregate in the window filter** (`maxComp`): for each
