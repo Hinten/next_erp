@@ -24,11 +24,13 @@ import { usePriceSyncAction } from './_components/usePriceSyncAction';
 
 export default function CanalMercadoLivrePage() {
   const db = getFirebaseFirestore();
-  // The bulk jobs are PERM.integracao.write-gated on the backend; ActionConfig
+  // The bulk jobs are PERM.integracao.write-gated on the backend and the
+  // delete is PERM.integracao.delete-gated by the Firestore rules; ActionConfig
   // has no `hidden` flag, so gating means filtering the array (same shape as
   // /canais/whatsapp). `usePermission` reports `false` while claims resolve,
-  // so the two buttons appear a beat after mount.
+  // so the buttons appear a beat after mount.
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
+  const { allowed: canDelete } = usePermission(PERM.integracao.delete);
   const massImport = useMassImportAction();
   const priceSync = usePriceSyncAction();
   const [selecionadas, setSelecionadas] = useState<readonly ContaRef[]>([]);
@@ -95,29 +97,32 @@ export default function CanalMercadoLivrePage() {
         )}
         actions={[
           ...(canWrite ? [massImport.action, priceSync.action] : []),
-          {
-            id: 'delete',
-            label: 'Excluir',
-            color: 'red',
-            requiresSelection: true,
-            // One conta at a time, like the two job actions above: deleting a
-            // conta drops its channel credential, and a multi-row confirm
-            // names none of the accounts it is about to take down.
-            maxSelection: 1,
-            refreshOnComplete: true,
-            confirm: {
-              title: 'Excluir conta Mercado Livre',
-              message:
-                'Excluir a conta remove a configuração e a credencial do canal. Confirmar exclusão?',
-            },
-            run: async (rows) => {
-              await Promise.all(
-                rows.map((r: { id: string; data: Integracao }) =>
-                  deleteDoc(integracaoCollection.docRef(db, {}, r.id)),
-                ),
-              );
-            },
-          },
+          ...(canDelete
+            ? [
+                {
+                  id: 'delete',
+                  label: 'Excluir',
+                  color: 'red' as const,
+                  requiresSelection: true,
+                  // One conta at a time, like the two job actions above:
+                  // deleting a conta drops its channel credential, and a
+                  // multi-row confirm names none of the accounts it is about
+                  // to take down.
+                  maxSelection: 1,
+                  refreshOnComplete: true,
+                  confirm: {
+                    title: 'Excluir conta Mercado Livre',
+                    message:
+                      'Excluir a conta remove a configuração e a credencial do canal. Confirmar exclusão?',
+                  },
+                  run: async (rows: Array<{ id: string; data: Integracao }>) => {
+                    await Promise.all(
+                      rows.map((r) => deleteDoc(integracaoCollection.docRef(db, {}, r.id))),
+                    );
+                  },
+                },
+              ]
+            : []),
         ]}
       />
 
