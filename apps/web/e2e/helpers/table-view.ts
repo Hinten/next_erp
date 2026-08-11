@@ -79,6 +79,12 @@ export async function selectRowByText(page: Page, text: string): Promise<void> {
   await row.getByRole('checkbox').check();
 }
 
+/** Uncheck the selection checkbox of the row containing `text`. */
+export async function deselectRowByText(page: Page, text: string): Promise<void> {
+  const row = page.getByRole('row', { name: new RegExp(text) });
+  await row.getByRole('checkbox').uncheck();
+}
+
 /**
  * Click an ActionBar button and confirm the resulting Mantine modal. The
  * modal confirm label is "Confirmar" (`packages/ui/src/table/ActionBar.tsx`).

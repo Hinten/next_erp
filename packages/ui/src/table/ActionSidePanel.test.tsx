@@ -52,6 +52,34 @@ describe('ActionSidePanel', () => {
     expect(button.hasAttribute('disabled')).toBe(true);
   });
 
+  it('disables a maxSelection action past its cap and says why on hover', () => {
+    const second: SnapshotRow<Row> = { id: '2', path: 'x/2', data: { name: 'b' } };
+    const { rerender } = wrap(
+      <ActionSidePanel
+        actions={[{ ...makeAction('1'), requiresSelection: true, maxSelection: 1 }]}
+        selectedRows={[ROW]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+      />,
+    );
+    const enabled = screen.getByRole('button', { name: 'Ação 1' }) as HTMLButtonElement;
+    expect(enabled.hasAttribute('disabled')).toBe(false);
+
+    rerender(
+      <MantineProvider env="test">
+        <ActionSidePanel
+          actions={[{ ...makeAction('1'), requiresSelection: true, maxSelection: 1 }]}
+          selectedRows={[ROW, second]}
+          collapsed={false}
+          onToggleCollapsed={() => {}}
+        />
+      </MantineProvider>,
+    );
+    const capped = screen.getByRole('button', { name: 'Ação 1' }) as HTMLButtonElement;
+    expect(capped.hasAttribute('disabled')).toBe(true);
+    expect(capped.getAttribute('title')).toBe('Selecione apenas 1 registro');
+  });
+
   it('routes a confirm action through the modal: Confirmar runs, Cancelar does not', () => {
     const run = vi.fn();
     wrap(
@@ -90,6 +118,50 @@ describe('ActionSidePanel', () => {
     const expand = screen.getByRole('button', { name: 'Expandir ações' });
     fireEvent.click(expand);
     expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders `extra` below the buttons when expanded and on the collapsed rail', () => {
+    const { rerender } = wrap(
+      <ActionSidePanel
+        actions={[makeAction('1')]}
+        selectedRows={[ROW]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+        extra={<span>progresso</span>}
+      />,
+    );
+    expect(screen.getByText('progresso')).toBeTruthy();
+
+    // Collapsing must not hide caller content — the caller decides what
+    // survives (a badge, typically), so `extra` renders on the rail too.
+    rerender(
+      <MantineProvider env="test">
+        <ActionSidePanel
+          actions={[makeAction('1')]}
+          selectedRows={[ROW]}
+          collapsed
+          onToggleCollapsed={() => {}}
+          extra={<span>progresso</span>}
+        />
+      </MantineProvider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Ação 1' })).toBeNull();
+    expect(screen.getByText('progresso')).toBeTruthy();
+  });
+
+  it('widens the expanded rail to `width`', () => {
+    wrap(
+      <ActionSidePanel
+        actions={[]}
+        selectedRows={[]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+        width={300}
+      />,
+    );
+    const aside = screen.getByRole('complementary', { name: 'Ações' });
+    // Mantine rewrites a numeric `w` to rem and scales it: 300 / 16 = 18.75rem.
+    expect(getComputedStyle(aside).width).toContain('18.75rem');
   });
 
   it('the collapse chevron reports back via onToggleCollapsed', () => {
