@@ -36,7 +36,7 @@ import {
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
 import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
-import { LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
+import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
 import { estadoLabel, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
 import { ListingDetails } from './ListingDetails';
 import { ListingForm } from './ListingForm';
@@ -189,7 +189,7 @@ export function MercadoLivreEditor({
       const { outcome } = await createListingDraft(db, produtoId, {
         integracaoId,
         produtoNome,
-        listingTypeId: listingTypeByConta[integracaoId] ?? LISTING_TYPE_OPTIONS[0].value,
+        listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE,
         nowMs: Date.now(),
       });
       notifications.show({
@@ -219,7 +219,7 @@ export function MercadoLivreEditor({
         integracaoId,
         produtoId,
         ...(needsListingType
-          ? { listingTypeId: listingTypeByConta[integracaoId] ?? LISTING_TYPE_OPTIONS[0].value }
+          ? { listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE }
           : {}),
       });
       notifications.show({
@@ -409,11 +409,11 @@ export function MercadoLivreEditor({
                         <Select
                           label="Tipo de anúncio"
                           data={[...LISTING_TYPE_OPTIONS]}
-                          value={listingTypeByConta[conta.id] ?? LISTING_TYPE_OPTIONS[0].value}
+                          value={listingTypeByConta[conta.id] ?? DEFAULT_LISTING_TYPE}
                           onChange={(v) =>
                             setListingTypeByConta((prev) => ({
                               ...prev,
-                              [conta.id]: v ?? LISTING_TYPE_OPTIONS[0].value,
+                              [conta.id]: v ?? DEFAULT_LISTING_TYPE,
                             }))
                           }
                           allowDeselect={false}
