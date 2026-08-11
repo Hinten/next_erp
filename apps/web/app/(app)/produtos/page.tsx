@@ -11,6 +11,8 @@ import { usePermission } from '@/lib/auth';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
+import { EnviarEstoqueDialog } from './_components/EnviarEstoqueDialog';
+import { useEnviarEstoqueAction } from './_components/useEnviarEstoqueAction';
 
 // U+F8FF: a very high private-use code point. Appended to the search term it
 // bounds a nome prefix range (nome >= term && nome <= term + sentinel).
@@ -58,6 +60,10 @@ const nomeColumn: VirtualColumn<Produto> = {
 
 export default function ProdutosPage() {
   const { allowed: canWritePrecos } = usePermission(PERM.produto.write);
+  // Gate the action by the SAME bit the backend route enforces, so a viewer is
+  // never offered something that will 403.
+  const { allowed: canWriteIntegracao } = usePermission(PERM.integracao.write);
+  const { action: enviarEstoqueAction, modal: enviarEstoqueModal } = useEnviarEstoqueAction();
   const [search, setSearch] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   const trimmed = search.trim();
@@ -133,6 +139,7 @@ export default function ProdutosPage() {
         }}
         rowHref={(id) => `/produtos/${id}/editar`}
         selectable
+        actions={canWriteIntegracao ? [enviarEstoqueAction] : []}
         // TableView owns the header, so the page's existing actions ride in
         // through the "Novo" slot rather than a separate PageHeader.
         renderNewButton={() => (
@@ -161,6 +168,18 @@ export default function ProdutosPage() {
           </Group>
         )}
       />
+
+      {/* Mounted fresh per run: the dialog's initial state IS its reset, which
+          is what keeps "Reenviar anúncios com erro" re-armed OFF every time
+          instead of remembering the last choice. */}
+      {enviarEstoqueModal.opened && (
+        <EnviarEstoqueDialog
+          key={enviarEstoqueModal.alvos.map((a) => a.produtoId).join(',')}
+          opened
+          alvos={enviarEstoqueModal.alvos}
+          onClose={enviarEstoqueModal.close}
+        />
+      )}
     </Stack>
   );
 }

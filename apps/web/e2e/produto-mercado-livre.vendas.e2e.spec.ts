@@ -23,6 +23,10 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   const prefix = e2ePrefix('mlpub');
   const contaLinked = `${prefix}-001`;
   const contaUnlinked = `${prefix}-002`;
+  // A third account exists purely so the draft-creation test has one it can
+  // write to. Sharing `contaUnlinked` would leave a link doc behind that the
+  // "offers to prepare" assertions above no longer hold for on a retry.
+  const contaDraft = `${prefix}-003`;
   // Deterministic (mirrors seedProdutoMlPublicado) so afterAll can always
   // sweep the link SUBCOLLECTION even when beforeAll dies mid-way — the
   // nome-prefix sweep only reaches the parent doc, and Firestore never
@@ -33,7 +37,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     await Promise.all([
-      seedMercadoLivreFixtures(prefix, 2).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
+      seedMercadoLivreFixtures(prefix, 3).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
       warmRoutes(browser, ['/produtos/__aquecimento__/editar']),
     ]);
   });
@@ -59,7 +63,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(card.getByLabel('Tipo de anúncio')).toHaveCount(0);
   });
 
-  test('offers a first publish (with listing type) for an unbound account', async ({ page }) => {
+  test('offers to prepare a draft listing for an unbound account', async ({ page }) => {
     await page.goto(`/produtos/${produtoId}/editar`);
     await page.getByRole('tab', { name: 'Mercado Livre' }).click();
 
@@ -67,7 +71,37 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(card).toBeVisible({ timeout: 30_000 });
     await expect(card.getByText('Não publicado')).toBeVisible();
     await expect(card.getByLabel('Tipo de anúncio')).toBeVisible();
-    await expect(card.getByRole('button', { name: 'Publicar no Mercado Livre' })).toBeEnabled();
+    await expect(card.getByRole('button', { name: 'Preparar anúncio' })).toBeEnabled();
+    // Publishing straight from here cannot succeed: with no link doc there is
+    // no category, and publish rejects that before it writes anything — so the
+    // failure would leave nothing behind and the next attempt would fail
+    // identically. Preparing the draft is what breaks that cycle.
+    await expect(card.getByRole('button', { name: 'Publicar no Mercado Livre' })).toHaveCount(0);
+  });
+
+  test('preparing a draft opens the editor and keeps publish gated on a category', async ({
+    page,
+  }) => {
+    await page.goto(`/produtos/${produtoId}/editar`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    const card = page.getByTestId(`ml-conta-${contaDraft}`);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+
+    // Tolerate a draft left by an earlier attempt of this same test: the draft
+    // doc id is the integração id, so preparing twice is a no-op, and on a
+    // retry the button is simply gone.
+    const preparar = card.getByRole('button', { name: 'Preparar anúncio' });
+    if ((await preparar.count()) > 0) await preparar.click();
+
+    await expect(card.getByText('Rascunho — ainda não publicado')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(card.getByRole('button', { name: 'Escolher categoria' })).toBeVisible();
+    await expect(card.getByRole('button', { name: 'Publicar no Mercado Livre' })).toBeDisabled();
+    await expect(
+      card.getByText('Escolha a categoria do Mercado Livre antes de publicar.'),
+    ).toBeVisible();
   });
 
   test('degrades gracefully when the mercado-livre backend is unreachable', async ({ page }) => {
@@ -79,9 +113,12 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await page.goto(`/produtos/${produtoId}/editar`);
     await page.getByRole('tab', { name: 'Mercado Livre' }).click();
 
-    const card = page.getByTestId(`ml-conta-${contaUnlinked}`);
+    // The PUBLISHED account, because it is the one whose publish button is
+    // reachable: an unbound account now prepares a draft first, which is a
+    // Firestore write and never touches the backend under test here.
+    const card = page.getByTestId(`ml-conta-${contaLinked}`);
     await expect(card).toBeVisible({ timeout: 30_000 });
-    await card.getByRole('button', { name: 'Publicar no Mercado Livre' }).click();
+    await card.getByRole('button', { name: 'Republicar' }).click();
 
     await expect(
       page.getByText('Não foi possível contatar o serviço do Mercado Livre.'),

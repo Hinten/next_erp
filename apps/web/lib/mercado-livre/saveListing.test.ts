@@ -27,13 +27,13 @@ function fakePort(current: ProdutoMercadoLivreLink | null) {
 
 describe('saveListing', () => {
   it('writes only the keys that actually changed', async () => {
-    const baseline = linkFixture({ title: 'Antigo', tarifaFrete: null });
+    const baseline = linkFixture({ title: 'Antigo', descricao: null });
     const { port, writes } = fakePort(baseline);
 
     await saveListing(port, {
-      values: { title: 'Novo', tarifaFrete: null, descricao: null },
+      values: { title: 'Novo', descricao: null, category_id: baseline.category_id },
       // The operator touched three inputs, but two ended where they started.
-      dirty: { title: true, tarifaFrete: true, descricao: true },
+      dirty: { title: true, descricao: true, category_id: true },
       baseline,
       baselineMs: baseline.ultimaModificacao ?? null,
     });
@@ -51,8 +51,8 @@ describe('saveListing', () => {
 
     await expect(
       saveListing(port, {
-        values: { title: baseline.title, video_id: null },
-        dirty: { title: true, video_id: true },
+        values: { title: baseline.title, descricao: null },
+        dirty: { title: true, descricao: true },
         baseline,
         baselineMs: baseline.ultimaModificacao ?? null,
       }),

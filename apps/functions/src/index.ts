@@ -19,6 +19,12 @@ export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { onBalancoDeleted } from './estoques/onBalancoDeleted';
 export { onOperacaoDeleted } from './operacoes/onOperacaoDeleted';
 export { onCategoriaDeleted } from './categorias/onCategoriaDeleted';
+// Same cascade, three collections, one factory — see cascadeCaroGenerico.ts.
+export {
+  onIntegracaoDeleted,
+  onIntFreteDeleted,
+  onMetodoPagamentoDeleted,
+} from './cascades/caroGenericoTriggers';
 export { onNfeDeleted } from './nfe/onNfeDeleted';
 export { onPedidoEstadoChanged } from './pedidos/registrarEstadoPedido';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
