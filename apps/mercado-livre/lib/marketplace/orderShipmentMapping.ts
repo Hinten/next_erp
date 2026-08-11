@@ -14,7 +14,12 @@
  */
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
-import type { MlShipment, MlShipmentPayment } from '@delfrance/integrations-mercado-livre';
+import {
+  shipmentBaseCost,
+  shipmentLeadTime,
+  type MlShipment,
+  type MlShipmentPayment,
+} from '@delfrance/integrations-mercado-livre';
 import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete, FreteDoPedido, IntegracaoFrete } from '@delfrance/schemas';
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';
@@ -33,8 +38,14 @@ export interface MappedFreteInicialFields {
   modalidade: string;
   codRastreio: string | null;
   valorCobrado: number;
-  custoCalculado: number;
-  custoFinal: number;
+  /**
+   * `null` = "ML did not tell us", distinct from a real zero. Load-bearing:
+   * `mergeFreteInicial` preserves the stored value on `null`, so a shipment
+   * payload that omits the cost can no longer overwrite a correct one with a
+   * fabricated `0` (#957).
+   */
+  custoCalculado: number | null;
+  custoFinal: number | null;
   dataPrevisaoEntrega: number | null;
   ultimaModificacao: number | null;
   prazoDespacho: number | null;
@@ -95,7 +106,7 @@ export function mlShipmentToFreteInicial(args: {
     modalidadeOverride,
   } = args;
 
-  const shippingOption = shipment.shipping_option ?? null;
+  const leadTime = shipmentLeadTime(shipment);
 
   return {
     externalId: String(shipment.id),
@@ -111,15 +122,16 @@ export function mlShipmentToFreteInicial(args: {
     modalidade: modalidadeOverride ?? MODALIDADE_CONTRATACAO_DESTINATARIO,
     codRastreio: shipment.tracking_number ?? null,
     valorCobrado: sumApprovedShippingPayments(shippingPayments),
-    // `base_cost ?? 0` — parity with the ORDER-IMPORT path
-    // (`OrderML.freteFromMercadoLivre`, models.dart:3172), this milestone's
-    // consumer. (The legacy shipments-TOPIC path `toFrete` yields null here;
-    // divergence only when `base_cost` is absent.)
-    custoCalculado: shipment.base_cost ?? 0,
-    // `shipping_option.list_cost ?? 0` (models.dart:3173/5391 — legacy defaults
-    // to 0 rather than null when the option carries no list cost).
-    custoFinal: shippingOption?.list_cost ?? 0,
-    dataPrevisaoEntrega: coerceToMicros(shippingOption?.estimated_delivery_time?.date ?? null),
+    // Legacy mapped both of these with `?? 0` (models.dart:3172/3173/5391), and
+    // `mergeFreteInicial` then wrote them unconditionally — so a payload that
+    // simply omitted a cost silently overwrote a correct stored value with zero.
+    // The `x-format-new` body drops `base_cost` entirely, which would have made
+    // that fire on every shipment. Absent now maps to `null` and the merge
+    // preserves; `derivePedidoFreteTotals` already reads
+    // `custoCalculado ?? custoFinal ?? 0`, so nothing downstream needs a fake 0.
+    custoCalculado: shipmentBaseCost(shipment),
+    custoFinal: leadTime?.list_cost ?? null,
+    dataPrevisaoEntrega: coerceToMicros(leadTime?.estimated_delivery_time?.date ?? null),
     ultimaModificacao: coerceToMicros(shipment.last_updated ?? null),
     prazoDespacho: prazoDespachoUs,
   };
@@ -302,8 +314,12 @@ export function mergeFreteInicial(
     modalidade: mapped.modalidade,
     codRastreio: mapped.codRastreio ?? existing.codRastreio ?? null,
     valorCobrado: mapped.valorCobrado,
-    custoCalculado: mapped.custoCalculado,
-    custoFinal: mapped.custoFinal,
+    // `?? existing`, like every other field here. These two used to be written
+    // unconditionally, which made an absent cost overwrite a correct stored
+    // value with `0` — silent financial corruption, and the one merge behaviour
+    // that differed from its neighbours for no stated reason (#957).
+    custoCalculado: mapped.custoCalculado ?? existing.custoCalculado ?? null,
+    custoFinal: mapped.custoFinal ?? existing.custoFinal ?? null,
     dataPrevisaoEntrega: mapped.dataPrevisaoEntrega ?? existing.dataPrevisaoEntrega ?? null,
     ultimaModificacao: mapped.ultimaModificacao ?? existing.ultimaModificacao ?? null,
     prazoDespacho: mapped.prazoDespacho ?? existing.prazoDespacho ?? null,
