@@ -48,6 +48,7 @@ import {
 } from '@delfrance/data/admin/collections';
 import { PedidoReconcileNotFoundError, reconcilePedidoFromPagamento } from '@delfrance/data/admin';
 import {
+  asInt,
   asMillis,
   defineNotificationPipeline,
   MAX_TENTATIVAS,
@@ -118,21 +119,16 @@ function asString(v: unknown): string | null {
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
   return null;
 }
-function asInt(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === 'string') {
-    const n = Number(v.trim());
-    return Number.isFinite(n) && v.trim() !== '' ? Math.trunc(n) : null;
-  }
-  return null;
-}
 function asBool(v: unknown): boolean | null {
   return typeof v === 'boolean' ? v : null;
 }
-// `asMillis` (MP's `date_created`, ISO-8601 or epoch millis) is the shared
-// receiver coercer from `@delfrance/data/admin/notifications` — normalized at the
-// source so a persisted failure doc can never be rejected by the strict write
-// validator. (Informational only; the sweep gates on the local `processedAt`.)
+// `asInt` (MP's `user_id`, and the refetched `collector_id` below) and
+// `asMillis` (MP's `date_created`, ISO-8601 or epoch millis) are the shared
+// receiver coercers from `@delfrance/data/admin/notifications` — normalized at
+// the source so a persisted failure doc can never be rejected by the strict
+// write validator. (Informational only; the sweep gates on the local
+// `processedAt`.) `asInt` used to be a private copy here; #810 collapsed it,
+// because the ML channel's separate copy had silently drifted strict.
 
 /**
  * Normalize a raw MP POST body (+ its query string) into the lean task payload.
@@ -517,9 +513,10 @@ export async function handleNotificationTask(
   // to report; `result` is absent on the transient-failure path.
   const reconciled = r.result?.kind === 'reconciled' ? r.result : null;
   return {
-    // MP never produces a `park` disposition, so `parked` is unreachable here —
-    // mapped defensively rather than widening this channel's public union.
-    outcome: r.outcome === 'parked' ? 'failed' : r.outcome,
+    // MP produces neither a `park` nor a `defer` disposition, so `parked` and
+    // `deferred` are both unreachable here — mapped defensively rather than
+    // widening this channel's public union with arms it cannot emit.
+    outcome: r.outcome === 'parked' || r.outcome === 'deferred' ? 'failed' : r.outcome,
     ...(reconciled ? { metodoId: reconciled.metodoId, pedidoId: reconciled.pedidoId } : {}),
     ...(r.payload ? { topic: r.payload.topic } : {}),
   };

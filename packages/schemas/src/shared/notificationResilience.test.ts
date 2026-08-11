@@ -7,6 +7,7 @@ import { notificacaoMercadoLivreSchema } from '../notificacaoMercadoLivre';
 import { notificacaoMercadoPagoSchema } from '../notificacaoMercadoPago';
 import { notificacoesWhatsappSchema } from '../notificacoesWhatsapp';
 import {
+  NOTIFICACAO_RESILIENCIA_STATUS,
   notificacaoResilienciaStatusSchema,
   notificationResilienceFields,
 } from './notificationResilience';
@@ -41,8 +42,19 @@ describe('notificationResilienceFields', () => {
     expect(a.status).not.toBe(b.status);
   });
 
-  it('only ever persists `failed` or `parked` — a success writes no doc at all', () => {
-    expect(notificacaoResilienciaStatusSchema.options).toEqual(['failed', 'parked']);
+  it('persists only the three lane states — a success writes no doc at all', () => {
+    // `failed` and `deferred` are the two RETRY LANES (hourly / daily, #808);
+    // `parked` is terminal in both. Adding a fourth means teaching the shared
+    // sweep a fourth query — this assertion is where that decision surfaces.
+    expect(notificacaoResilienciaStatusSchema.options).toEqual(['failed', 'parked', 'deferred']);
+  });
+
+  it('keeps the companion constant in lockstep with the enum', () => {
+    // `delfrance/prefer-schema-enum` resolves a literal against the DECLARATION,
+    // so a member without an entry here is a member nothing can reference.
+    expect(Object.values(NOTIFICACAO_RESILIENCIA_STATUS).sort()).toEqual(
+      [...notificacaoResilienciaStatusSchema.options].sort(),
+    );
   });
 });
 

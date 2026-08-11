@@ -2,7 +2,7 @@
  * Server-owned maintenance of `produtos.integracoesComProduto` (#920).
  *
  * That array is the ANCHOR PRE-FILTER both ML sweeps start from —
- * `estoquePlan.fetchStockFamilies` S1 and `precoPlan.fetchPrecoPage` each open
+ * `bulkEstoquePlan.fetchStockFamilies` S1 and `precoPlan.fetchPrecoPage` each open
  * with `paiId == null AND publicado == true AND integracoesComProduto
  * array-contains <conta>`, riding the declared
  * `produtos(paiId, publicado, integracoesComProduto, __name__)` composite. A

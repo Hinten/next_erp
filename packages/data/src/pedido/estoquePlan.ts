@@ -19,6 +19,31 @@ import { TIPO_MOVIMENTO_ESTOQUE } from '@delfrance/schemas';
  * recomputation from the current items.
  */
 
+/**
+ * The pedido fields the estoque sync owns end to end — it is their only writer,
+ * and no interactive editor in `apps/web` can author any of them.
+ *
+ * Deliberately shared, because it has exactly TWO consumers that must never
+ * disagree:
+ *
+ *  1. `sincronizarEstoquePedido`'s `CAMPOS_ESCRITOS` — what the trigger writes
+ *     back onto the pedido doc (and what its loop guard ignores).
+ *  2. `CONCURRENCY_IGNORE` in `./usecases` — what the editor's optimistic-
+ *     concurrency guard must NOT treat as a remote change. The write-back does
+ *     not stamp `ultimaModificacao`, so the snapshot compare is the only thing
+ *     that sees it; while these were compared, the trigger's own write-back
+ *     raised a "Pedido alterado" modal naming fields the operator can neither
+ *     see nor edit, and the save never went through (#972).
+ *
+ * One list means the writer and the guard cannot drift apart — adding a fourth
+ * field here extends both at once.
+ */
+export const CAMPOS_ESTOQUE_SYNC = [
+  'estoqueAplicado',
+  'dataIndisponivelEstoque',
+  'dataRemocaoEstoque',
+] as const;
+
 /* -------------------------------------------------------------------------- */
 /*                       Item → per-produto quantity map                      */
 /* -------------------------------------------------------------------------- */

@@ -84,17 +84,27 @@ collection.ref(db, { clienteId: 'abc' });   // → clientes/abc/enderecos
 
 ## Cascade
 
-`applyCascade(meta, opts)` (server-side, in `@delfrance/data/server`) reads `meta.cascade` and either page-deletes children or throws `CascadeBlockedError` for `restrict`-declared subcollections that are non-empty.
+Firestore never cascades subcollections: deleting a parent leaves every child orphaned. Cascades therefore run **server-side, in a Cloud Function**, never from the client.
+
+Most collections use the shared factory in `apps/functions/src/lib/cascadeCaroGenerico.ts`:
 
 ```ts
-import { applyCascade } from '@delfrance/data/server';
-import { clienteMeta } from '@delfrance/schemas';
-
-await applyCascade(clienteMeta, {
-  admin: getFirestore(),
-  resolvePath: (p) => p.replaceAll('{clienteId}', clienteId),
-});
+// apps/functions/src/cascades/caroGenericoTriggers.ts
+export const onIntegracaoDeleted = defineCascadeCaroGenerico(integracaoMeta);
 ```
+
+Two properties of that factory are load-bearing:
+
+- It discovers children with `listCollections()` rather than reading `meta.cascade`. A registry-derived list silently orphans whatever it does not know about — Flutter writes subcollections this repo never registered, and `integracaoMeta.cascade` omits `brandshopee` today.
+- It is called **caro** ("expensive") on purpose: the walk costs one `listCollections()` per document reached, leaves included, so it suits collections whose deletes are rare and whose subtrees are small. A hot delete path or a wide subtree wants a targeted, kinded sweep instead.
+
+Never use `db.recursiveDelete` — on Firestore Enterprise its kindless descendant query cannot be indexed and bills as a silent full scan (~6,184 documents per call). See `apps/functions/CLAUDE.md`.
+
+**A declared `cascade` does not mean an enforced one.** `pedidoMeta` and `clienteMeta` both declare one and deliberately have no trigger, because their children are fiscal records an emitted NF-e still depends on (`pedidos/{id}/nfev4`; and a cliente's endereço, which the NF-e orchestrator reads live by ref). The reasoning is recorded at each declaration.
+
+:::caution[Superseded]
+`applyCascade(meta, opts)` in `@delfrance/data/server` is the old meta-driven helper. It has no runtime callers — only its own unit test — and its registry-derived shape is the one described above. Do not wire it into anything new.
+:::
 
 ## Validation policy
 
