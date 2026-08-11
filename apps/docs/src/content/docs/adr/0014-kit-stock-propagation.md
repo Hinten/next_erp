@@ -61,7 +61,7 @@ that contains it. Both variants of that idea die on the same number.
 
 ### What the sweep did before this ADR
 
-The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/estoquePlan.ts`)
+The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts`)
 compensated for the missing signal in two places, and paid for it twice:
 
 1. **A correlated component aggregate in the window filter** (`maxComp`): for each
@@ -101,6 +101,15 @@ later.
 | `ultimaModificacao` | always | the signal itself, and the only tier-0 field |
 | `depositoOuterRef` | on create | the sweep reaches an estoque via `subcollection('estoques').where(depositoOuterRef == …)`; a doc created without it matches no depósito and the window filter never sees the stamp — the case this exists to serve, since a kit holds no stock and has no other reason to own an estoque doc |
 | `parentId` | on create | structural uniformity with every other estoque writer, **not** a reader's requirement — see below |
+
+⚠️ **Which depósito that is comes from the CONTA, not from a constant.** The
+sweep resolves `integracao.depositoOuterRef` per conta and skips a conta that has
+none; the legacy Flutter sender instead hardcoded one depósito for every conta and
+every channel, which is why the flag flip publishes corrected quantities (#802 —
+the decision and the pre-flip check live in `apps/mercado-livre/functions/DEPLOY.md`).
+Note the failure mode that follows from the join above: a `depositoOuterRef` that
+resolves to an id but not to an existing depósito matches nothing, so the conta
+publishes **0** rather than erroring.
 
 ⚠️ **`parentId` here has no reader, and that is fine as long as it is recorded.**
 A kit can never be a component of another kit (#239 — enforced by the KitManager

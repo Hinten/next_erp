@@ -8,6 +8,7 @@ import {
 import type { TokenDuravel } from '@delfrance/schemas';
 
 import {
+  LOSER_REREAD_DELAY_MS,
   type TokenDuravelStore,
   getOrRefreshAccessToken,
   tokenDuravelFromResponse,
@@ -165,7 +166,61 @@ describe('getOrRefreshAccessToken', () => {
     });
     const store = fakeStore({ validSeq: [null, null], latest: tok({ expires_in: NOW - 1000 }) });
     await expect(
-      getOrRefreshAccessToken(store, config, { now: NOW, refresh }),
+      // `sleep` stubbed out: the loser fallback backs off before its second
+      // re-read, and this path is the one that always reaches it.
+      getOrRefreshAccessToken(store, config, { now: NOW, refresh, sleep: async () => undefined }),
     ).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
+  });
+
+  /**
+   * The loser's re-read races the winner's `save()`, and loses it more often
+   * than not: ML rejects our used `refresh_token` faster than it mints and
+   * rotates a pair for the winner. One immediate read is therefore not enough.
+   */
+  describe('loser fallback backoff', () => {
+    it("re-reads again after the backoff when the winner's write lands late", async () => {
+      const sleep = vi.fn(async () => undefined);
+      const refresh = vi.fn(async () => {
+        throw new MercadoLivreReauthRequiredError('refresh_failed', 'refresh token already used');
+      });
+      const store = fakeStore({
+        // fast path null, immediate re-read still null (write in flight), then it lands
+        validSeq: [null, null, tok({ access_token: 'late-winner' })],
+        latest: tok({ refresh_token: 'RT-used', expires_in: NOW - 1000 }),
+      });
+      const at = await getOrRefreshAccessToken(store, config, { now: NOW, refresh, sleep });
+      expect(at).toBe('late-winner');
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(LOSER_REREAD_DELAY_MS);
+    });
+
+    it('does not wait when the immediate re-read already finds the winner', async () => {
+      const sleep = vi.fn(async () => undefined);
+      const refresh = vi.fn(async () => {
+        throw new MercadoLivreHttpError('rate limited', 429, {});
+      });
+      const store = fakeStore({
+        validSeq: [null, tok({ access_token: 'winner' })],
+        latest: tok({ expires_in: NOW - 1000 }),
+      });
+      const at = await getOrRefreshAccessToken(store, config, { now: NOW, refresh, sleep });
+      expect(at).toBe('winner');
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('re-raises the ORIGINAL error after one backoff when both re-reads are empty', async () => {
+      const sleep = vi.fn(async () => undefined);
+      const dead = new MercadoLivreReauthRequiredError('refresh_failed', 'dead');
+      const refresh = vi.fn(async () => {
+        throw dead;
+      });
+      const store = fakeStore({
+        validSeq: [null, null, null],
+        latest: tok({ expires_in: NOW - 1000 }),
+      });
+      await expect(
+        getOrRefreshAccessToken(store, config, { now: NOW, refresh, sleep }),
+      ).rejects.toBe(dead);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(LOSER_REREAD_DELAY_MS);
+    });
   });
 });

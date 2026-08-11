@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MercadoPagoReauthRequiredError } from '@delfrance/integrations-mercado-pago';
+import {
+  MercadoPagoHttpError,
+  MercadoPagoReauthRequiredError,
+  MercadoPagoValidationError,
+} from '@delfrance/integrations-mercado-pago';
 
 // Mock the three seams: the metodo_pgto handle (Firestore), the credential
 // store, and the MP OAuth token calls. `credentialFromResponse` + buildAuthorizeUrl
@@ -40,6 +44,7 @@ const {
   loadMercadoPagoContext,
   mercadoPagoOAuthConfig,
   mercadoPagoRedirectUri,
+  LOSER_REREAD_DELAY_MS,
   MercadoPagoConfigError,
   MercadoPagoContaNotConfiguredError,
   REFRESH_SKEW_MS,
@@ -168,6 +173,102 @@ describe('loadMercadoPagoContext', () => {
       MercadoPagoReauthRequiredError,
     );
     expect(h.refreshAccessToken).not.toHaveBeenCalled();
+  });
+
+  /**
+   * "One wins": MP rotates single-use refresh tokens, so of two callers crossing
+   * the skew boundary together only one gets a fresh pair — the notification
+   * queue alone dispatches 3 tasks at a time. The loser must pick up the
+   * winner's credential instead of raising a re-consent prompt (#820).
+   *
+   * Note what `storeLoad` returns while the winner's write is in flight: the
+   * SAME stale credential, not null — `load()` reads the fixed `current` doc.
+   * The skew check is what tells the two apart.
+   */
+  describe('resolveAccessToken() loser fallback', () => {
+    const stale = { access_token: 'old', refresh_token: 'RT-used', expirationDate: NOW - 1 };
+    const winner = {
+      access_token: 'winner',
+      refresh_token: 'RT-winner',
+      expirationDate: NOW + REFRESH_SKEW_MS + 10_000,
+    };
+    const lost = new MercadoPagoReauthRequiredError('refresh_failed', 'refresh token already used');
+
+    /**
+     * Feed `storeLoad` an exact sequence: the initial read, then the loser's
+     * re-reads. Past the end it repeats the last value — a Firestore doc keeps
+     * whatever state it was left in.
+     *
+     * ⚠️ `mockReset` is the point. The file's `beforeEach` runs
+     * `vi.clearAllMocks()`, which clears recorded CALLS but NOT queued
+     * `mockResolvedValueOnce` values or a persistent implementation — so a test
+     * that consumed fewer reads than it queued would leak the remainder into the
+     * next one, and the leak only shows up once a test starts failing.
+     */
+    function reads(...values: Array<Record<string, unknown> | null>): void {
+      h.storeLoad.mockReset();
+      let i = 0;
+      h.storeLoad.mockImplementation(async () => values[Math.min(i++, values.length - 1)] ?? null);
+    }
+
+    it("uses the winner's credential when the immediate re-read finds it", async () => {
+      contaDoc();
+      const sleep = vi.fn(async () => undefined);
+      reads(stale, winner);
+      h.refreshAccessToken.mockRejectedValue(lost);
+
+      const ctx = await loadMercadoPagoContext({} as never, 'm1');
+      await expect(ctx.resolveAccessToken(NOW, { sleep })).resolves.toBe('winner');
+      expect(sleep).not.toHaveBeenCalled();
+      expect(h.storeSave).not.toHaveBeenCalled();
+    });
+
+    it("re-reads again after the backoff when the winner's write lands late", async () => {
+      contaDoc();
+      const sleep = vi.fn(async () => undefined);
+      // stale (initial read) → stale (winner's write still in flight) → winner's
+      reads(stale, stale, winner);
+      h.refreshAccessToken.mockRejectedValue(lost);
+
+      const ctx = await loadMercadoPagoContext({} as never, 'm1');
+      await expect(ctx.resolveAccessToken(NOW, { sleep })).resolves.toBe('winner');
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(LOSER_REREAD_DELAY_MS);
+      expect(h.storeSave).not.toHaveBeenCalled();
+    });
+
+    it('falls back on an HTTP error too (a 429 can mean the winner got there first)', async () => {
+      contaDoc();
+      const sleep = vi.fn(async () => undefined);
+      reads(stale, winner);
+      h.refreshAccessToken.mockRejectedValue(new MercadoPagoHttpError('rate limited', 429, {}));
+
+      const ctx = await loadMercadoPagoContext({} as never, 'm1');
+      await expect(ctx.resolveAccessToken(NOW, { sleep })).resolves.toBe('winner');
+    });
+
+    it('re-raises the ORIGINAL error when the credential is genuinely dead', async () => {
+      contaDoc();
+      const sleep = vi.fn(async () => undefined);
+      reads(stale); // never becomes fresh — nobody won
+      h.refreshAccessToken.mockRejectedValue(lost);
+
+      const ctx = await loadMercadoPagoContext({} as never, 'm1');
+      await expect(ctx.resolveAccessToken(NOW, { sleep })).rejects.toBe(lost);
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(LOSER_REREAD_DELAY_MS);
+    });
+
+    it('does not swallow an error outside the race set', async () => {
+      contaDoc();
+      const sleep = vi.fn(async () => undefined);
+      const bogus = new MercadoPagoValidationError('resposta inesperada', []);
+      reads(stale);
+      h.refreshAccessToken.mockRejectedValue(bogus);
+
+      const ctx = await loadMercadoPagoContext({} as never, 'm1');
+      await expect(ctx.resolveAccessToken(NOW, { sleep })).rejects.toBe(bogus);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(h.storeLoad).toHaveBeenCalledTimes(1); // no re-read at all
+    });
   });
 
   it('exchangeAndPersist() exchanges the code, persists the credential and denormalizes user_id', async () => {

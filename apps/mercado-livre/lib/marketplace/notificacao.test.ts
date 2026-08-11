@@ -1,15 +1,20 @@
+import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import {
   MAX_TENTATIVAS,
+  MAX_TENTATIVAS_DEFERRED,
   TASK_MAX_ATTEMPTS,
   handleNotificationTask,
   isKnownTopic,
   parseNotificationBody,
+  redriveDeferredForUserId,
+  reprocessDeferredNotifications,
   reprocessNotifications,
   resolveIntegracaoByUserId,
+  userIdResolvivel,
 } from './notificacao';
 
 // #441 default migration-runner wiring (`notificacao.ts`'s `runUptinMigration`)
@@ -163,6 +168,14 @@ class FakeDb {
             if (col.has(docId)) throw Object.assign(new Error('already exists'), { code: 6 });
             col.set(docId, { ...data });
           },
+          // `mergeIfExists` — what the #808 re-drive uses — is `update()` plus a
+          // NOT_FOUND narrow, so an absent doc must raise gRPC 5 rather than be
+          // upserted into a ghost carrying only the patch keys.
+          update: async (data: DocData) => {
+            const current = col.get(docId);
+            if (!current) throw Object.assign(new Error('not found'), { code: 5 });
+            col.set(docId, { ...current, ...data });
+          },
           delete: async () => {
             col.delete(docId);
           },
@@ -295,20 +308,21 @@ describe('parseNotificationBody', () => {
       sent: '2025-03-05T20:27:20.218Z',
       received: 1_741_196_520_060,
     });
-    expect(a?.id).toBe('N1');
-    expect(a?.payload).toMatchObject({
+    expect(a).toMatchObject({
       id: 'N1',
       resource: '/orders/123',
       topic: 'orders_v2',
       user_id: 55,
     });
     // sent/received are normalized to epoch millis at the source
-    expect(a?.payload.sent).toBe(Date.parse('2025-03-05T20:27:20.218Z'));
-    expect(a?.payload.received).toBe(1_741_196_520_060);
+    expect(a?.sent).toBe(Date.parse('2025-03-05T20:27:20.218Z'));
+    expect(a?.received).toBe(1_741_196_520_060);
     // the lean payload carries NO local resilience fields (those belong only to
     // a persisted failure doc)
-    expect(a?.payload).not.toHaveProperty('status');
-    expect(a?.payload).not.toHaveProperty('tentativas');
+    expect(a).not.toHaveProperty('status');
+    expect(a).not.toHaveProperty('tentativas');
+    // `_id` is folded into `id`, not carried twice
+    expect(a).not.toHaveProperty('_id');
     expect(parseNotificationBody({ id: 'N2', resource: '/items/MLB1', topic: 'items' })?.id).toBe(
       'N2',
     );
@@ -321,10 +335,10 @@ describe('parseNotificationBody', () => {
       sent: '',
       received: 'not-a-date',
     });
-    expect(p?.payload.sent).toBeNull();
-    expect(p?.payload.received).toBeNull();
+    expect(p?.sent).toBeNull();
+    expect(p?.received).toBeNull();
     const n = parseNotificationBody({ resource: '/orders/1', topic: 'orders_v2', sent: 42 });
-    expect(n?.payload.sent).toBe(42);
+    expect(n?.sent).toBe(42);
   });
 
   it('rejects noise: non-object, arrays, missing topic/resource', () => {
@@ -333,6 +347,86 @@ describe('parseNotificationBody', () => {
     expect(parseNotificationBody([1, 2])).toBeNull();
     expect(parseNotificationBody({ topic: 'orders_v2' })).toBeNull();
     expect(parseNotificationBody({ resource: '/orders/1' })).toBeNull();
+  });
+
+  /* ------------------------------- #810 ---------------------------------- */
+
+  it('KEEPS a field ML adds without telling us (the payload is the schema output)', () => {
+    const p = parseNotificationBody({
+      _id: 'N1',
+      resource: '/orders/123',
+      topic: 'orders_v2',
+      user_id: 55,
+      // hypothetical future ML fields
+      site_id: 'MLB',
+      seller_nickname: 'LOJA',
+      priority: 3,
+    });
+    expect(p).toMatchObject({ site_id: 'MLB', seller_nickname: 'LOJA', priority: 3 });
+  });
+
+  it('accepts a numeric-STRING user_id — the old asInt nulled it and stopped ingestion', () => {
+    const p = parseNotificationBody({
+      resource: '/orders/123',
+      topic: 'orders_v2',
+      user_id: '55',
+      application_id: ' 7 ',
+      attempts: '2',
+    });
+    expect(p).toMatchObject({ user_id: 55, application_id: 7, attempts: 2 });
+  });
+
+  it('never lets a provider-supplied resilience field into the payload', () => {
+    const p = parseNotificationBody({
+      resource: '/orders/1',
+      topic: 'orders_v2',
+      status: 'parked',
+      tentativas: 999,
+      erro: 'injected',
+      processedAt: 1,
+    });
+    for (const key of ['status', 'tentativas', 'erro', 'processedAt']) {
+      expect(p).not.toHaveProperty(key);
+    }
+  });
+
+  it('refuses an `_id` that is a PATH rather than a name (auto-id instead)', () => {
+    // `docIdOf` feeds this straight into docRef(...).create(): "a/b/c" would
+    // land in a nested subcollection the sweep can never see, and "a/b" throws
+    // a non-ZodError the receiver rethrows as 5xx.
+    for (const _id of ['a/b/c', 'a/b', '.', '..', '__x__', 'z'.repeat(2000)]) {
+      const p = parseNotificationBody({ _id, resource: '/orders/1', topic: 'orders_v2' });
+      expect(p?.id).toBeNull();
+    }
+    expect(parseNotificationBody({ _id: 'N-1_ok', resource: '/o/1', topic: 'orders_v2' })?.id).toBe(
+      'N-1_ok',
+    );
+  });
+
+  it('bounds the remainder so it can never break the enqueue or the persist', () => {
+    const p = parseNotificationBody({
+      resource: '/orders/1',
+      topic: 'orders_v2',
+      nested: [[1, 2]], // Firestore refuses a nested array outright
+      obj: { a: 1 },
+      __reserved__: 'x', // Firestore refuses this field NAME
+      '': 'x', // ...and this one
+      long: 'x'.repeat(5_000),
+      huge: 'y'.repeat(200_000),
+    });
+    expect(p?.nested).toBe('[[1,2]]');
+    expect(p?.obj).toBe('{"a":1}');
+    expect(Object.keys(p!)).not.toContain('__reserved__');
+    expect(Object.keys(p!)).not.toContain('');
+    expect(String(p?.long).length).toBeLessThanOrEqual(513);
+    expect(JSON.stringify(p).length).toBeLessThan(20_000);
+  });
+
+  it('keeps a sent/received the persisted-doc validator would reject out of the payload', () => {
+    // 5e13 sits in coerceToMillis' undeterminable gap → NaN → a ZodError thrown
+    // from inside persistFailure, which is OUTSIDE handleTask's try/catch.
+    const p = parseNotificationBody({ resource: '/orders/1', topic: 'orders_v2', sent: 5e13 });
+    expect(p?.sent).toBeNull();
   });
 });
 
@@ -385,14 +479,54 @@ describe('handleNotificationTask', () => {
     expect(typeof doc.processedAt).toBe('number');
   });
 
-  it('no active account → failed, persisted immediately (the sweep re-drives)', async () => {
+  it('no active account → DEFERRED, not failed: the seller may connect tomorrow (#808)', async () => {
     const db = new FakeDb();
     const r = await handleNotificationTask(asDb(db), payloadOf({ user_id: 999 }), 0);
-    expect(r.outcome).toBe('failed');
+    expect(r.outcome).toBe('deferred');
     const doc = db.docs(NOTIF).get('N1')!;
-    expect(doc.status).toBe('failed');
+    // `failed` would put it in the HOURLY pool, which parks at MAX_TENTATIVAS —
+    // roughly 6h, so a next-business-day connect lost everything.
+    expect(doc.status).toBe('deferred');
     expect(doc.tentativas).toBe(0);
     expect(doc.resource).toBe('/questions/123'); // ML wire fields persisted
+  });
+
+  it('no user_id at all → parked: nothing can ever make it resolvable', async () => {
+    const db = new FakeDb();
+    const r = await handleNotificationTask(asDb(db), payloadOf({ user_id: null }), 0);
+    // Deferring would promise a connect that cannot help — the fast lane keys on
+    // `user_id`, and no seller owns a notification that names none.
+    expect(r.outcome).toBe('parked');
+    expect(db.docs(NOTIF).get('N1')!.status).toBe('parked');
+  });
+
+  /**
+   * #810 acceptance. This goes through the REAL `collection.parse` — the suite
+   * mocks the import runners, never `@delfrance/data` — so it exercises
+   * `parseForWrite` against the `.passthrough()` collection schema, which is
+   * what actually decides whether an unknown field survives the write.
+   */
+  it('carries an unknown ML field onto the persisted doc', async () => {
+    const db = new FakeDb();
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ user_id: 999, site_id: 'MLB', priority: 3 }),
+      0,
+    );
+    expect(r.outcome).toBe('deferred'); // no conta yet — the #808 slow lane
+    const doc = db.docs(NOTIF).get('N1')!;
+    expect(doc.site_id).toBe('MLB');
+    expect(doc.priority).toBe(3);
+    // ...without letting the wire payload dictate the local resilience state.
+    expect(doc.status).toBe('deferred');
+  });
+
+  it('resolves the conta when user_id arrives as a numeric string (nothing persisted)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const r = await handleNotificationTask(asDb(db), payloadOf({ user_id: '55' }), 0);
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A' });
+    expect(db.docs(NOTIF).size).toBe(0);
   });
 
   it('transient failure re-throws while under the attempt cap (queue retries)', async () => {
@@ -1294,9 +1428,10 @@ describe('reprocessNotifications', () => {
     expect(db.docs(NOTIF).has('N2')).toBe(true); // dup left for a later run
   });
 
-  it('keeps a still-unresolvable doc failed (tentativas++) under the cap; parks at the cap', async () => {
+  it('migrates a still-unresolvable doc OUT of the hourly pool instead of parking it (#808)', async () => {
     const db = new FakeDb();
-    // no conta → unresolvable
+    // No conta → unresolvable. Both docs used to bleed hourly retries here and
+    // the second one used to PARK, terminally, about six hours in.
     seedFailed(db, 'N1', { processedAt: 1_000, resource: '/orders/1', user_id: 77, tentativas: 0 });
     seedFailed(db, 'N2', {
       processedAt: 1_000,
@@ -1305,15 +1440,30 @@ describe('reprocessNotifications', () => {
       tentativas: MAX_TENTATIVAS - 1,
     });
     const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
-    expect(res.outcomes.failed).toBe(1);
-    expect(res.outcomes.parked).toBe(1);
-    const n1 = db.docs(NOTIF).get('N1')!;
-    expect(n1.status).toBe('failed');
-    expect(n1.tentativas).toBe(1);
-    expect(n1.processedAt).toBe(10_000); // window advanced
-    const n2 = db.docs(NOTIF).get('N2')!;
-    expect(n2.status).toBe('parked');
-    expect(n2.tentativas).toBe(MAX_TENTATIVAS);
+
+    expect(res.outcomes.deferred).toBe(2);
+    expect(res.outcomes.parked).toBeUndefined(); // nothing is lost at the hot cap any more
+    for (const id of ['N1', 'N2']) {
+      const doc = db.docs(NOTIF).get(id)!;
+      expect(doc.status).toBe('deferred');
+      expect(doc.tentativas).toBe(0); // a fresh 7-day clock, not the spent hourly one
+      expect(doc.processedAt).toBe(10_000);
+    }
+  });
+
+  it('the hot sweep no longer sees a deferred doc at all — zero hourly retries while waiting', async () => {
+    const db = new FakeDb();
+    seedFailed(db, 'N1', {
+      processedAt: 1_000,
+      resource: '/orders/1',
+      user_id: 77,
+      status: 'deferred',
+    });
+
+    const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(res.processed).toBe(0);
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ tentativas: 0, processedAt: 1_000 });
   });
 
   it('isolates a per-doc transient failure — one throw does not abort the batch', async () => {
@@ -1331,5 +1481,273 @@ describe('reprocessNotifications', () => {
     const n2 = db.docs(NOTIF).get('N2')!; // N2 bumped, not aborted
     expect(n2.status).toBe('failed');
     expect(n2.tentativas).toBe(1);
+  });
+
+  /**
+   * The GHOST document (N6). `store.mark`'s merge is an UPSERT, so a doc deleted
+   * concurrently with a sweep is recreated carrying ONLY
+   * `{status, tentativas, erro, processedAt}` — no `resource`, no `topic`. It
+   * still matches the sweep query, so it comes back around every run.
+   *
+   * The contract is that rehydration REFUSES it with a legible reason rather
+   * than letting `undefined` reach the dispatcher, where `lastSegment` would
+   * `ref.split('/')` into a `TypeError`. These tests are deliberately written
+   * against BEHAVIOUR (not the exact wording) so they hold across the #810
+   * rewrite of `fromDoc` from a hand-rolled guard to a schema parse.
+   */
+  it('refuses a ghost document (no resource/topic) with a legible error, never a TypeError', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    // Exactly what a merge-upsert over a deleted doc leaves behind.
+    db.seed(NOTIF, 'N9', {
+      status: 'failed',
+      tentativas: 0,
+      erro: 'falha anterior',
+      processedAt: 1_000,
+    });
+
+    const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(res.processed).toBe(0);
+    expect(res.errors).toHaveLength(1);
+    expect(res.errors[0]!.docId).toBe('N9');
+    // Names the field that is missing, and is a DELIBERATE refusal rather than
+    // a `ref.split is not a function` that escaped from the dispatcher.
+    expect(res.errors[0]!.message).toMatch(/resource/i);
+    expect(res.errors[0]!.message).not.toMatch(/TypeError|is not a function/i);
+
+    const n9 = db.docs(NOTIF).get('N9')!; // kept as an audit row, tentativas bumped
+    expect(n9.status).toBe('failed');
+    expect(n9.tentativas).toBe(1);
+    expect(n9.processedAt).toBe(10_000);
+  });
+
+  it('parks a ghost document once it reaches the retry cap', async () => {
+    const db = new FakeDb();
+    db.seed(NOTIF, 'N9', {
+      status: 'failed',
+      tentativas: MAX_TENTATIVAS - 1,
+      erro: 'falha anterior',
+      processedAt: 1_000,
+    });
+
+    const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(res.errors).toHaveLength(1);
+    const n9 = db.docs(NOTIF).get('N9')!;
+    expect(n9.status).toBe('parked');
+    expect(n9.tentativas).toBe(MAX_TENTATIVAS);
+  });
+});
+
+/* ------------------- the deferred lane + connect re-drive (#808) ------------ */
+
+/** A notification already parked in the deferred lane, waiting on its seller. */
+function seedDeferred(db: FakeDb, id: string, over: DocData = {}): void {
+  seedFailed(db, id, {
+    status: 'deferred',
+    erro: 'integração ativa do Mercado Livre não encontrada para user_id 77',
+    user_id: 77,
+    ...over,
+  });
+}
+
+describe('reprocessDeferredNotifications', () => {
+  it('re-drives a deferred doc once its seller connects, and deletes it on success', async () => {
+    const db = new FakeDb();
+    seedDeferred(db, 'N1', { processedAt: 1_000, resource: '/questions/1' });
+    seedConta(db, 'conta-A', 77); // the seller connected meanwhile
+
+    const res = await reprocessDeferredNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(res.outcomes.done).toBe(1);
+    expect(db.docs(NOTIF).has('N1')).toBe(false);
+  });
+
+  it('holds a still-unconnected seller for MAX_TENTATIVAS_DEFERRED days, then parks', async () => {
+    const db = new FakeDb();
+    seedDeferred(db, 'N1', { processedAt: 1_000, resource: '/questions/1', tentativas: 0 });
+    seedDeferred(db, 'N2', {
+      processedAt: 1_000,
+      resource: '/questions/2',
+      tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+    });
+
+    const res = await reprocessDeferredNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(res.outcomes.deferred).toBe(1);
+    expect(res.outcomes.parked).toBe(1);
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'deferred', tentativas: 1 });
+    expect(db.docs(NOTIF).get('N2')).toMatchObject({
+      status: 'parked',
+      tentativas: MAX_TENTATIVAS_DEFERRED,
+    });
+  });
+
+  it('is far more patient than the hot lane — MAX_TENTATIVAS does not park it', async () => {
+    const db = new FakeDb();
+    seedDeferred(db, 'N1', { processedAt: 1_000, tentativas: MAX_TENTATIVAS });
+
+    await reprocessDeferredNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'deferred' });
+  });
+});
+
+describe('redriveDeferredForUserId', () => {
+  it('moves only THAT seller’s deferred docs into the hot lane', async () => {
+    const db = new FakeDb();
+    seedDeferred(db, 'N1', { resource: '/questions/1', user_id: 77 });
+    seedDeferred(db, 'N2', { resource: '/questions/2', user_id: 77 });
+    seedDeferred(db, 'N3', { resource: '/questions/3', user_id: 88 }); // another seller
+    seedFailed(db, 'N4', { resource: '/questions/4', user_id: 77 }); // already hot
+
+    const res = await redriveDeferredForUserId(asDb(db), 77);
+
+    expect(res).toMatchObject({ encontradas: 2, redirecionadas: 2, truncado: false });
+    for (const id of ['N1', 'N2']) {
+      expect(db.docs(NOTIF).get(id)).toMatchObject({
+        status: 'failed',
+        tentativas: 0,
+        processedAt: 0, // the next hot tick picks it up whatever the window
+        resource: db.docs(NOTIF).get(id)!.resource, // wire fields survive the merge
+      });
+    }
+    expect(db.docs(NOTIF).get('N3')).toMatchObject({ status: 'deferred' });
+    expect(db.docs(NOTIF).get('N4')).toMatchObject({ tentativas: 0, processedAt: 1_000 });
+  });
+
+  it('is idempotent — a trigger redelivery finds nothing left to move', async () => {
+    const db = new FakeDb();
+    seedDeferred(db, 'N1', { user_id: 77 });
+
+    await redriveDeferredForUserId(asDb(db), 77);
+    const replay = await redriveDeferredForUserId(asDb(db), 77);
+
+    expect(replay).toMatchObject({ encontradas: 0, redirecionadas: 0 });
+  });
+
+  it('reports truncation rather than silently dropping the tail', async () => {
+    const db = new FakeDb();
+    seedDeferred(db, 'N1', { resource: '/questions/1', user_id: 77 });
+    seedDeferred(db, 'N2', { resource: '/questions/2', user_id: 77 });
+
+    const res = await redriveDeferredForUserId(asDb(db), 77, 1);
+
+    expect(res).toMatchObject({ encontradas: 1, redirecionadas: 1, truncado: true });
+    expect(console.warn).toHaveBeenCalled();
+  });
+});
+
+describe('userIdResolvivel', () => {
+  // It must agree exactly with what `resolveIntegracaoByUserId` queries, or the
+  // trigger re-drives accounts the sweep will refuse (or misses ones it accepts).
+  it('mirrors the three predicates the resolve query filters on', () => {
+    expect(userIdResolvivel({ tipo: 1, ativo: true, user_id: 77 })).toBe(77);
+    expect(userIdResolvivel({ tipo: 1, ativo: false, user_id: 77 })).toBeNull();
+    expect(userIdResolvivel({ tipo: 2, ativo: true, user_id: 77 })).toBeNull(); // another channel
+    expect(userIdResolvivel({ tipo: 1, ativo: true, user_id: null })).toBeNull();
+    expect(userIdResolvivel(null)).toBeNull();
+  });
+
+  it('agrees with resolveIntegracaoByUserId on the same document', async () => {
+    const db = new FakeDb();
+    db.seed('integracao', 'conta-A', { tipo: 1, user_id: 77, ativo: true, nome: 'A' });
+    db.seed('integracao', 'conta-B', { tipo: 1, user_id: 88, ativo: false, nome: 'B' });
+
+    expect(await resolveIntegracaoByUserId(asDb(db), 77)).toBe('conta-A');
+    expect(userIdResolvivel(db.docs('integracao').get('conta-A')!)).toBe(77);
+
+    expect(await resolveIntegracaoByUserId(asDb(db), 88)).toBeNull();
+    expect(userIdResolvivel(db.docs('integracao').get('conta-B')!)).toBeNull();
+  });
+});
+
+describe('#808 acceptance — a notification survives a connect-after-the-fact', () => {
+  const UMA_HORA = 60 * 60 * 1000;
+  const UM_DIA = 24 * UMA_HORA;
+
+  /**
+   * The moment the persisted doc was actually stamped. `store.create` reads the
+   * real clock and takes no injectable `now`, so the timeline MUST be anchored to
+   * what it wrote — anchoring to a `Date.now()` taken before the call leaves a
+   * sub-millisecond margin that a loaded machine eats, and the daily window then
+   * misses the doc.
+   */
+  function stampOf(db: FakeDb, id: string): number {
+    return db.docs(NOTIF).get(id)!.processedAt as number;
+  }
+
+  it('imports a day-old notification once the seller connects, instead of parking it', async () => {
+    const db = new FakeDb();
+
+    // 1. The webhook arrives for a seller nobody has connected yet.
+    const task = await handleNotificationTask(asDb(db), payloadOf({ user_id: 999 }), 0);
+    expect(task.outcome).toBe('deferred');
+    const T0 = stampOf(db, 'N1');
+
+    // 2. It sits out the whole business day. The HOURLY sweep — which used to
+    //    park it terminally after ~6h — never touches it, even from hour 2 on
+    //    where its window would have matched every single time.
+    for (let hora = 2; hora <= 9; hora += 1) {
+      await reprocessNotifications(asDb(db), { now: T0 + hora * UMA_HORA });
+    }
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'deferred', tentativas: 0 });
+
+    // 3. The daily lane re-drives it once and finds the seller still absent.
+    await reprocessDeferredNotifications(asDb(db), { now: T0 + UM_DIA + 1 });
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'deferred', tentativas: 1 });
+
+    // 4. Next business day the seller finishes the OAuth connect, which stamps
+    //    `user_id` onto their integração — what the trigger arm keys on.
+    seedConta(db, 'conta-nova', 999);
+    const redrive = await redriveDeferredForUserId(asDb(db), 999);
+    expect(redrive).toMatchObject({ encontradas: 1, redirecionadas: 1 });
+
+    // 5. The very next hot sweep imports it and clears the doc.
+    const res = await reprocessNotifications(asDb(db), { now: T0 + UM_DIA + 2 });
+    expect(res.outcomes.done).toBe(1);
+    expect(db.docs(NOTIF).has('N1')).toBe(false);
+  });
+
+  it('drains without the trigger too — the daily lane alone still imports it', async () => {
+    const db = new FakeDb();
+
+    await handleNotificationTask(asDb(db), payloadOf({ user_id: 999 }), 0);
+    const T0 = stampOf(db, 'N1');
+    seedConta(db, 'conta-nova', 999); // connected, but nothing observed it
+
+    const res = await reprocessDeferredNotifications(asDb(db), { now: T0 + UM_DIA + 1 });
+
+    expect(res.outcomes.done).toBe(1);
+    expect(db.docs(NOTIF).has('N1')).toBe(false);
+  });
+});
+
+describe('firestore.indexes.json', () => {
+  // Guard C in `notificationGuardrails.test.ts` only checks the sweep's
+  // (status, processedAt) composite, so the connect re-drive's own index has no
+  // cover but this. On Enterprise a missing index does not throw — it silently
+  // full-scans and bills the scan.
+  it('declares the (status, user_id) composite the connect re-drive queries on', async () => {
+    const raw = await readFile(
+      new URL('../../../../firestore.indexes.json', import.meta.url),
+      'utf8',
+    );
+    const { indexes } = JSON.parse(raw) as {
+      indexes: Array<{
+        collectionGroup: string;
+        fields: Array<{ fieldPath: string; order?: string }>;
+      }>;
+    };
+
+    const found = indexes.some(
+      (i) =>
+        i.collectionGroup === NOTIF &&
+        i.fields.length === 2 &&
+        i.fields[0]?.fieldPath === 'status' &&
+        i.fields[1]?.fieldPath === 'user_id',
+    );
+    expect(found).toBe(true);
   });
 });
