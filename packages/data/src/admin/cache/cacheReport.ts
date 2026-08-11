@@ -16,13 +16,17 @@
  */
 import { type ReadCacheStats, readCacheStatsSnapshot } from './readCache';
 
-/** `<hits>/<misses>` per cache, or `null` when no cache has been touched yet. */
-export type CacheReport = Record<string, string> | null;
+/** Per-cache counters, keyed by cache name. `null` when none is registered. */
+export type CacheReport = Record<string, { hits: number; misses: number }> | null;
 
-function format(hits: number, misses: number): string {
-  const total = hits + misses;
-  const pct = total === 0 ? 0 : Math.round((hits / total) * 100);
-  return `${hits}/${misses} (${pct}%)`;
+/**
+ * Numbers, not a preformatted string: Cloud Logging indexes structured fields,
+ * so `jsonPayload.readCache."ml:integracao".hits` is filterable and graphable
+ * where `"42/1 (98%)"` would only be greppable. The ratio is the reader's to
+ * compute.
+ */
+function counters(hits: number, misses: number): { hits: number; misses: number } {
+  return { hits, misses };
 }
 
 /**
@@ -41,7 +45,7 @@ function format(hits: number, misses: number): string {
 export function readCacheSummary(): CacheReport {
   const snapshot = readCacheStatsSnapshot();
   if (snapshot.length === 0) return null;
-  return Object.fromEntries(snapshot.map((s) => [s.name, format(s.hits, s.misses)]));
+  return Object.fromEntries(snapshot.map((s) => [s.name, counters(s.hits, s.misses)]));
 }
 
 /** Snapshot to bracket a tick with. Pass it to `readCacheDelta` when the tick ends. */
@@ -60,7 +64,7 @@ export function readCacheDelta(before: readonly ReadCacheStats[]): CacheReport {
   return Object.fromEntries(
     snapshot.map((s) => {
       const prev = baseline.get(s.name);
-      return [s.name, format(s.hits - (prev?.hits ?? 0), s.misses - (prev?.misses ?? 0))];
+      return [s.name, counters(s.hits - (prev?.hits ?? 0), s.misses - (prev?.misses ?? 0))];
     }),
   );
 }
