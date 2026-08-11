@@ -371,7 +371,16 @@ async function resolveLink(
 /**
  * Maintain the parent produto's dual-run marketplace arrays on an estado change:
  * ensure-present on a live transition (idempotent arrayUnion), key-based removal
- * on a cancel (a dead listing must stop being advertised). A missing parent doc
+ * on a cancel (a dead listing must stop being advertised).
+ *
+ * ⛔ Both arrays are DEAD WEIGHT — no query consumers, deleted at the
+ * decommission (#431 lock 3 / #961). Canonical note on `produtoSchema`.
+ * `removeMarketplaceEntry` below does read them, but only to compute their own
+ * next value — maintenance, not consumption. This cancel branch is the ONLY
+ * thing that ever shrinks them; a link doc deleted any other way leaves them
+ * stale forever, deliberately.
+ *
+ * A missing parent doc
  * is a no-op for BOTH branches (legacy `if (produtoPai == null) return`,
  * tasks.dart:1056-1059) — a link can outlive its produto during the delete
  * cascade window, and admin `update()` would otherwise throw NOT_FOUND (never
@@ -419,6 +428,12 @@ async function updateParentDenorm(
  * Do not reintroduce the field here. Two writers deciding "no listing survives"
  * from different sources is how a conta gets dropped while one is still live,
  * and that failure is silent: the sweeps simply stop selecting the produto.
+ *
+ * ⛔ Nor should the two arrays it DOES still touch grow any new maintenance:
+ * they are dead weight with no query consumers, deleted at the decommission
+ * (#961). The read-modify-write here is the field maintaining itself, not a
+ * consumer. Extending this to prune on link deletion would be machinery built
+ * to be thrown away.
  */
 function removeMarketplaceEntry(
   raw: Record<string, unknown>,

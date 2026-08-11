@@ -188,8 +188,10 @@ export async function importVariationChildren(
       .docRef(db, { produtoId }, linkDocId)
       .set(variacaoMercadoLivreLinkCollection.parse(plan.link));
 
-    // Dual-run denorm (DEPRECATED arrays; #431 — see the lock list at
-    // `publish.ts`'s parent stamp). Child entries carry `externalParentId` (the
+    // Dual-run denorm (DEAD WEIGHT; #431 lock 3 / #961 — no query consumers in
+    // this repo, deleted at the decommission. Canonical note on
+    // `produtoSchema`; the lock list is at `publish.ts`'s parent stamp).
+    // Child entries carry `externalParentId` (the
     // parent's ML item id), unlike the parent's own entry which omits it
     // (models.dart:2325). User-Products children also carry
     // `relevantData.isUserProductModel` (`plan.denorm.relevantData`, set by
