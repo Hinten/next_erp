@@ -31,8 +31,8 @@ export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   'marketplace',
   // Sibling of `marketplace` above and written by the same five stamps, but it
   // was missing here — so the one array generated history rows while the other
-  // did not (#961). Both are write-only legacy denorms; their churn is never an
-  // operator edit.
+  // did not (#961). Both are legacy denorms with no query consumers; their churn
+  // is never an operator edit.
   'marketplaceIds',
   'nome_embedding',
   'statusProdutosMarketplace',

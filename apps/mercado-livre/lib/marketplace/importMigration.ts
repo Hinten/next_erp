@@ -75,11 +75,12 @@
  * `.old/packages/produtos/lib/src/models.dart:1132-1178`, pinned by
  * `produto_marketplace_delete_test.dart`.
  *
- * ⛔ The two arrays it maintains are DEAD WEIGHT — write-only, zero readers in
- * this repo, deleted at the decommission (#431 lock 3 / #961; canonical note on
- * `produtoSchema`). The legacy-parity detail below is preserved because this
- * function still runs until then, NOT because the shape is worth defending: do
- * not extend it, and do not add a reader.
+ * ⛔ The two arrays it maintains are DEAD WEIGHT — no query consumers in this
+ * repo, deleted at the decommission (#431 lock 3 / #961; canonical note on
+ * `produtoSchema`). This function reads them, but only to compute their own next
+ * value: maintenance, not consumption. The legacy-parity detail below is
+ * preserved because it still runs until then, NOT because the shape is worth
+ * defending: do not extend it, and do not add a reader.
  *
  * Quotes (produto_marketplace_delete_test.dart):
  *  - test 1: a `marketplace` entry `{integracaoUid: 'integracoes/ml123',

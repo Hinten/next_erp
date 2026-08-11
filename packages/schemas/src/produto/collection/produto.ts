@@ -121,8 +121,15 @@ export const produtoSchema = z
     integracoesComProduto: z.array(z.string()).default([]),
 
     /**
-     * ⛔ DEAD WEIGHT — write-only, zero readers, deleted at the Flutter
-     * decommission (#431 lock 3). Do not build on these three.
+     * ⛔ DEAD WEIGHT — no query consumers, deleted at the Flutter decommission
+     * (#431 lock 3). Do not build on these three.
+     *
+     * "No query consumers" precisely: nothing in this repo filters, projects or
+     * orders by them, and no code reads one to make a decision about anything
+     * else. They ARE read in four places — `stampChildMarketplace`,
+     * `removeMarketplaceEntry`, `applyMarketplaceDeletion` and the publish
+     * read-clean-write — but only to compute the next value of the same field.
+     * That is maintenance, not consumption, and it all dies with the field.
      *
      * They are Firestore **Standard**-edition workarounds. `marketplace` was a
      * map so the old app could find a produto AND learn which channel an id
@@ -139,9 +146,9 @@ export const produtoSchema = z
      * and bill the data. Resolve produto-by-item-id through the link
      * subcollection instead.
      *
-     * The only consumer was ever the deployed Flutter backend, which does not
-     * survive the cutover — so as of the owner decision on 2026-08-10 these
-     * have no reader in any window. The writes are kept purely so the
+     * The only real consumer was ever the deployed Flutter backend, which does
+     * not survive the cutover — so as of the owner decision on 2026-08-10 these
+     * have no consumer in any window. The writes are kept purely so the
      * decommission can delete the whole cluster in one piece (#961).
      *
      * ⚠️ And they are already unreliable, which is why nobody should try to

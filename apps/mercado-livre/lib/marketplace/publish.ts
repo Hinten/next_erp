@@ -330,8 +330,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   });
 
   // ---- Dual-run denorm stamps (DEAD WEIGHT — see the schema note) ---------
-  // ⛔ `marketplace` / `marketplaceIds` are write-only with ZERO readers in this
-  // repo and are deleted at the decommission (#961 audited it; the canonical
+  // ⛔ `marketplace` / `marketplaceIds` have NO QUERY CONSUMERS in this repo —
+  // nothing filters, projects or orders by them, and the only reads are these
+  // fields' own read-modify-write maintenance (`stampChildMarketplace` below is
+  // one). They are deleted at the decommission (#961 audited it; the canonical
   // note is on `produtoSchema` in `packages/schemas`). Do not repair them, do
   // not add a reader, do not give them a trigger — an entry is never removed
   // when a link doc is deleted, and that is deliberate.
@@ -574,10 +576,12 @@ async function loadTabelaBinding(
  * listing still exists, and that failure is invisible (the sweeps just stop
  * selecting the produto).
  *
- * ⛔ What remains is DEAD WEIGHT: write-only, zero readers in this repo, deleted
- * at the decommission (#431 lock 3 / #961). The canonical note is on
+ * ⛔ What remains is DEAD WEIGHT: no query consumers, deleted at the
+ * decommission (#431 lock 3 / #961). The read-clean-write below is not a
+ * counter-example — it reads `marketplace` only to compute the next
+ * `marketplace`, which is maintenance, not consumption. The canonical note is on
  * `produtoSchema`. Do not extend this to remove entries when a link doc is
- * deleted — that gap is known and deliberate; the arrays die with the reader.
+ * deleted — that gap is known and deliberate; the arrays die with the consumer.
  */
 async function stampChildMarketplace(
   db: Firestore,

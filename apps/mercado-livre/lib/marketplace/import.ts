@@ -391,9 +391,9 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Dual-run denorm (DEAD WEIGHT; #431 lock 3 / #961 — write-only, zero readers
-  // in this repo, deleted at the decommission. Canonical note on
-  // `produtoSchema`; do not repair, do not add a reader).
+  // Dual-run denorm (DEAD WEIGHT; #431 lock 3 / #961 — no query consumers in
+  // this repo, deleted at the decommission. Canonical note on `produtoSchema`;
+  // do not repair, do not add a reader).
   //
   // Runs after the produto exists
   // (create sets it first). arrayUnion so a concurrent Flutter write to the

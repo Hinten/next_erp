@@ -373,10 +373,12 @@ async function resolveLink(
  * ensure-present on a live transition (idempotent arrayUnion), key-based removal
  * on a cancel (a dead listing must stop being advertised).
  *
- * ⛔ Both arrays are DEAD WEIGHT — write-only, zero readers in this repo,
- * deleted at the decommission (#431 lock 3 / #961). Canonical note on
- * `produtoSchema`. This cancel branch is the ONLY thing that ever shrinks them;
- * a link doc deleted any other way leaves them stale forever, deliberately.
+ * ⛔ Both arrays are DEAD WEIGHT — no query consumers, deleted at the
+ * decommission (#431 lock 3 / #961). Canonical note on `produtoSchema`.
+ * `removeMarketplaceEntry` below does read them, but only to compute their own
+ * next value — maintenance, not consumption. This cancel branch is the ONLY
+ * thing that ever shrinks them; a link doc deleted any other way leaves them
+ * stale forever, deliberately.
  *
  * A missing parent doc
  * is a no-op for BOTH branches (legacy `if (produtoPai == null) return`,
@@ -428,8 +430,10 @@ async function updateParentDenorm(
  * and that failure is silent: the sweeps simply stop selecting the produto.
  *
  * ⛔ Nor should the two arrays it DOES still touch grow any new maintenance:
- * they are write-only dead weight deleted at the decommission (#961). Extending
- * this to prune on link deletion would be machinery built to be thrown away.
+ * they are dead weight with no query consumers, deleted at the decommission
+ * (#961). The read-modify-write here is the field maintaining itself, not a
+ * consumer. Extending this to prune on link deletion would be machinery built
+ * to be thrown away.
  */
 function removeMarketplaceEntry(
   raw: Record<string, unknown>,
