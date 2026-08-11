@@ -20,6 +20,7 @@ import {
   TextInput,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { FirebaseError } from 'firebase/app';
 import type { MlSizeChart } from '@delfrance/schemas';
 
 import {
@@ -75,6 +76,11 @@ export interface SizeChartEditorModalProps {
   /** Its index in the conta's stored list, or null for a new one. */
   chartIndex: number | null;
   grupos: SizeGroupOption[];
+  /**
+   * `PERM.integracao.write` — the gate the sync route enforces server-side.
+   * Without it "Enviar" would only fail after the round trip.
+   */
+  canWrite: boolean;
   /** Persist the guia on the tabMedi doc without contacting ML. */
   onSaveDraft: (chart: MlSizeChart, chartIndex: number | null) => Promise<void>;
   /** Send this conta's guias to ML; resolves with the problems ML reported. */
@@ -110,6 +116,7 @@ export function SizeChartEditorModal({
   chart,
   chartIndex,
   grupos,
+  canWrite,
   onSaveDraft,
   onSend,
   onDuplicate,
@@ -336,6 +343,16 @@ export function SizeChartEditorModal({
       // from.
       if (err instanceof SizeChartConflictError) {
         notifications.show({ color: 'red', message: err.message, autoClose: false });
+      } else if (err instanceof FirebaseError) {
+        // "Salvar rascunho" writes the tabMedi doc straight from the browser, so
+        // a rules rejection lands here as a FirebaseError rather than an ML one.
+        notifications.show({
+          color: 'red',
+          message:
+            err.code === 'permission-denied'
+              ? 'Sem permissão para salvar nesta tabela de medidas.'
+              : `Falha ao salvar a guia: ${err.message}`,
+        });
       } else if (
         err instanceof MercadoLivreClientHttpError ||
         err instanceof MercadoLivreClientNetworkError
@@ -635,7 +652,9 @@ export function SizeChartEditorModal({
 
         <Group justify="space-between">
           <Text size="xs" c="dimmed">
-            {blockingError ?? 'Pronto para enviar.'}
+            {canWrite
+              ? (blockingError ?? 'Pronto para enviar.')
+              : 'Requer permissão de escrita em integrações para enviar ao Mercado Livre.'}
           </Text>
           <Group>
             <Button variant="default" onClick={onClose} disabled={busy !== null}>
@@ -651,7 +670,7 @@ export function SizeChartEditorModal({
             </Button>
             <Button
               loading={busy === 'send'}
-              disabled={busy !== null || blockingError != null || overCap != null}
+              disabled={busy !== null || !canWrite || blockingError != null || overCap != null}
               onClick={() => void run('send')}
             >
               Enviar ao Mercado Livre

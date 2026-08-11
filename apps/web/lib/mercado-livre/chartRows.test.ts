@@ -9,6 +9,7 @@ import {
   indexCellErrors,
   isFilled,
   rowsFromVariantes,
+  sameChart,
   seedRows,
   seedUnits,
   toChartRows,
@@ -251,10 +252,39 @@ describe('duplicateChart', () => {
     expect(copy.rows![0]!.attributes).toEqual(storedChart.rows![0]!.attributes);
   });
 
+  it('KEEPS main_attribute_id — the operator’s column choice, not an ML identity', () => {
+    expect(duplicateChart(storedChart).main_attribute_id).toBe('SIZE');
+  });
+
   it('prefixes the name and never exceeds ML’s 60-character limit', () => {
     expect(duplicateChart(storedChart).nome).toBe('(Cópia) Camisetas femininas');
     const longName = duplicateChart({ ...storedChart, nome: 'a'.repeat(60) }).nome!;
     expect(longName.length).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('sameChart', () => {
+  it('keys a sent guia by its ML id, ignoring an edited name', () => {
+    // The editor compares the STORED slot against the chart it opened with, so
+    // a rename must not read as "a different guia".
+    expect(sameChart({ ...storedChart, nome: 'Renomeada' }, storedChart)).toBe(true);
+  });
+
+  it('rejects a different guia sitting at the same index', () => {
+    // A concurrent insert/reorder is exactly this: position N, other chart.
+    expect(sameChart({ ...storedChart, id: '999' }, storedChart)).toBe(false);
+    expect(sameChart(undefined, storedChart)).toBe(false);
+  });
+
+  it('falls back to nome + domain for a draft, which has no id', () => {
+    const draft: MlSizeChart = { ...storedChart, id: null };
+    expect(sameChart({ ...draft }, draft)).toBe(true);
+    expect(sameChart({ ...draft, nome: 'Outra' }, draft)).toBe(false);
+    expect(sameChart({ ...draft, domain_id: 'MLB-PANTS' }, draft)).toBe(false);
+  });
+
+  it('never matches a draft against a sent guia', () => {
+    expect(sameChart({ ...storedChart, id: null }, storedChart)).toBe(false);
   });
 });
 

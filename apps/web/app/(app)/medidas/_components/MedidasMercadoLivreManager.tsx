@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
 import { Alert, Anchor, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
@@ -20,6 +20,7 @@ import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
+import { sameChart } from '@/lib/mercado-livre/chartRows';
 import {
   type MercadoLivreChartValidationError,
   type MercadoLivreClient,
@@ -32,6 +33,15 @@ const MAX_GRUPOS = 200;
 
 /** Which guia the editor is open on. `chartIndex: null` ⇒ a brand-new one. */
 interface EditorTarget {
+  /**
+   * Bumped once per open, and the modal's React `key`.
+   *
+   * ⚠️ The key deliberately does NOT include `chartIndex`: a brand-new guia
+   * gains an index the moment it is first persisted, and keying on that would
+   * remount the modal mid-session — throwing away the operator's typing and the
+   * very validation errors they reopened it to fix.
+   */
+  session: number;
   integracaoId: string;
   chart: MlSizeChart | null;
   chartIndex: number | null;
@@ -113,6 +123,12 @@ export function MedidasMercadoLivreManager({
   );
 
   const [target, setTarget] = useState<EditorTarget | null>(null);
+  const sessionRef = useRef(0);
+
+  function openEditor(next: Omit<EditorTarget, 'session'>): void {
+    sessionRef.current += 1;
+    setTarget({ ...next, session: sessionRef.current });
+  }
 
   /**
    * Persist one guia into this conta's list without contacting ML.
@@ -128,20 +144,31 @@ export function MedidasMercadoLivreManager({
     integracaoId: string,
     chart: MlSizeChart,
     chartIndex: number | null,
-  ): Promise<MlSizeChart[]> {
+    original: MlSizeChart | null,
+  ): Promise<{ tabelas: MlSizeChart[]; index: number }> {
     const stored = mlSizeChartsForConta(chartsMap, integracaoId);
-    if (chartIndex != null && stored[chartIndex] == null) {
+    // An index is not an identity — verify the slot still holds the guia this
+    // editor opened, or a concurrent insert/reorder would overwrite another one.
+    if (chartIndex != null && !(original != null && sameChart(stored[chartIndex], original))) {
       throw new SizeChartConflictError();
     }
     const tabelas =
       chartIndex == null
         ? [...stored, chart]
         : stored.map((c, i) => (i === chartIndex ? chart : c));
+    const index = chartIndex ?? tabelas.length - 1;
     await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
       tabelasDeMedidasMercadoLivre: { [integracaoId]: { tabelas } },
       ultimaModificacao: Date.now(),
     });
-    return tabelas;
+    // ⚠️ A brand-new guia now EXISTS at `index`. Binding the open editor to it
+    // is what stops a second "Enviar" (after ML rejected part of the chart, when
+    // the modal deliberately stays open) from appending a duplicate instead of
+    // replacing what was just written.
+    if (chartIndex == null) {
+      setTarget((prev) => (prev == null ? prev : { ...prev, chartIndex: index, chart }));
+    }
+    return { tabelas, index };
   }
 
   /**
@@ -157,9 +184,9 @@ export function MedidasMercadoLivreManager({
     integracaoId: string,
     chart: MlSizeChart,
     chartIndex: number | null,
+    original: MlSizeChart | null,
   ): Promise<{ validationErrors: MercadoLivreChartValidationError[]; chartIndex: number }> {
-    const tabelas = await saveChart(integracaoId, chart, chartIndex);
-    const index = chartIndex ?? tabelas.length - 1;
+    const { tabelas, index } = await saveChart(integracaoId, chart, chartIndex, original);
     const result = await ready.sizeChartSync({ integracaoId, tabMediId, tabelas });
     return { validationErrors: result.validationErrors, chartIndex: index };
   }
@@ -256,7 +283,7 @@ export function MedidasMercadoLivreManager({
                       variant="light"
                       disabled={disabled || !client}
                       onClick={() => {
-                        setTarget({ integracaoId: conta.id, chart, chartIndex: index });
+                        openEditor({ integracaoId: conta.id, chart, chartIndex: index });
                       }}
                     >
                       Editar
@@ -270,7 +297,7 @@ export function MedidasMercadoLivreManager({
                   size="xs"
                   variant="light"
                   onClick={() => {
-                    setTarget({ integracaoId: conta.id, chart: null, chartIndex: null });
+                    openEditor({ integracaoId: conta.id, chart: null, chartIndex: null });
                   }}
                   disabled={disabled || !client || grupos.length === 0}
                 >
@@ -294,7 +321,7 @@ export function MedidasMercadoLivreManager({
 
       {client && target && (
         <SizeChartEditorModal
-          key={`${target.integracaoId}-${String(target.chartIndex)}-${target.chart?.id ?? 'novo'}`}
+          key={target.session}
           opened
           onClose={() => {
             setTarget(null);
@@ -304,13 +331,16 @@ export function MedidasMercadoLivreManager({
           chart={target.chart}
           chartIndex={target.chartIndex}
           grupos={grupos}
+          canWrite={canWrite}
           onSaveDraft={async (chart, chartIndex) => {
-            await saveChart(target.integracaoId, chart, chartIndex);
+            await saveChart(target.integracaoId, chart, chartIndex, target.chart);
           }}
-          onSend={(chart, chartIndex) => sendChart(client, target.integracaoId, chart, chartIndex)}
+          onSend={(chart, chartIndex) =>
+            sendChart(client, target.integracaoId, chart, chartIndex, target.chart)
+          }
           onDuplicate={(copy) => {
             // The copy is a NEW guia: no index, so it appends on save.
-            setTarget({ integracaoId: target.integracaoId, chart: copy, chartIndex: null });
+            openEditor({ integracaoId: target.integracaoId, chart: copy, chartIndex: null });
             notifications.show({
               color: 'blue',
               message: 'Cópia criada. Ajuste o nome e envie como uma guia nova.',
