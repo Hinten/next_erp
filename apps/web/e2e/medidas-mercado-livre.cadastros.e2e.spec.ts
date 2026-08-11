@@ -80,9 +80,13 @@ test.describe.serial('Medidas Mercado Livre tab e2e — chart manager', () => {
     // once a guia exists, so the editor says so and offers the only way out.
     await expect(editor.getByText('O que ainda dá para mudar')).toBeVisible();
     await expect(editor.getByRole('button', { name: 'Duplicar em nova guia' })).toBeVisible();
-    await expect(editor.getByLabel('Domínio')).toBeDisabled();
     // The name stays editable — it is the one field ML lets you PUT.
     await expect(editor.getByLabel('Nome da guia')).toBeEnabled();
     await expect(editor.getByLabel('Nome da guia')).toHaveValue(chartNome);
+
+    // A sent guia opens with Definição collapsed (the frozen half); Mantine
+    // unmounts collapsed content, so expand it before asserting on the fields.
+    await editor.getByRole('button', { name: 'Mostrar' }).click();
+    await expect(editor.getByLabel('Domínio')).toBeDisabled();
   });
 });
