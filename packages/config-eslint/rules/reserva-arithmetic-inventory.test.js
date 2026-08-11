@@ -77,7 +77,7 @@ const INVENTARIO = {
   // ---- Reads it, floors via reservaEfetiva / estoqueDisponivel -----------
   'apps/mercado-livre/lib/marketplace/importCore.ts':
     'Adds the reservation BACK into `quantidade` (ML `available_quantity` is `disponivel`). Both arms floor with `reservaEfetiva`; a raw negative would shrink stock on every re-import.',
-  'apps/mercado-livre/lib/marketplace/estoquePlan.ts':
+  'apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts':
     'Sweep math over RAW pipeline rows. Every availability read goes through `estoqueDisponivel`. `desfazerMovimento` may synthesize a negative on purpose — floored downstream, pinned by a test.',
   'apps/web/app/(app)/pedidos/_components/useEstoqueDisponivel.ts':
     'Pedido-form availability. Sums through `estoqueDisponivel` / `estoqueDisponivelComKit`.',
