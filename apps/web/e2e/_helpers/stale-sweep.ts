@@ -137,6 +137,13 @@ export const E2E_FIXTURE_TARGETS: readonly E2EFixtureTarget[] = [
  * gRPC codes, Auth reports `auth/*` strings. Mirrors `isGrpcLikeError` in
  * `apps/functions/src/lib/grpcErrors.ts`, which is not importable from here.
  * Anything without a code (a TypeError, a programming bug) is rethrown.
+ *
+ * ⚠️ Note what this does NOT cover: the SDK's own **client-side validation**
+ * errors are bare `Error`s with no `code` — `startAfter` on a snapshot missing an
+ * order key throws one. So this predicate treats them as programming bugs and
+ * rethrows, which is right for `global-teardown.ts` (its lane is
+ * `continue-on-error`) but was fatal in `globalSetup`. That is why
+ * {@link sweepOrphanedE2EFixturesSafely} no longer uses it — see #960.
  */
 export function isAdminSdkError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -248,10 +255,23 @@ async function collectPage(
  * field, which is why `pedidos` declares both `numero` and `observacoesInternas`
  * rather than relying on either alone.
  *
- * Both queries are keys-only (`.select()`): the sweep reads nothing off a
- * candidate but its `ref` and its `createTime`, and `createTime` rides the
- * snapshot envelope rather than the field mask. Enterprise bills data scanned,
- * so pulling produto and pedido bodies here was pure waste.
+ * Both queries are projected as narrowly as their CURSOR allows: the sweep reads
+ * nothing off a candidate but its `ref` and its `createTime`, and `createTime`
+ * rides the snapshot envelope rather than the field mask. Enterprise bills data
+ * scanned, so pulling produto and pedido bodies here was pure waste.
+ *
+ * ⚠️ That is why the two differ, and they must stay different (#960):
+ *  - the **id range** is keys-only (`.select()`). Its only order key is
+ *    `__name__`, which `Query._extractFieldValues` takes from `snapshot.ref` —
+ *    that survives an empty projection. Same shape as `deleteDocumentSubtree`.
+ *  - the **field range** MUST project `field`. An inequality forces an implicit
+ *    `orderBy(field)` ahead of `__name__`, and `collectPage` pages with a
+ *    SNAPSHOT cursor, so the SDK reads the snapshot's value for that order key.
+ *    Under `.select()` the value is absent and `startAfter` throws
+ *    `Field "<field>" is missing in the provided DocumentSnapshot` — killing the
+ *    sweep, and with it globalSetup, on the SECOND page of any field range.
+ *    The projected value is never read by this module; it exists only so the
+ *    cursor can be built.
  */
 async function collectCandidates(
   database: Firestore,
@@ -278,7 +298,9 @@ async function collectCandidates(
     for (const field of target.fields ?? []) {
       truncated =
         (await collectPage(
-          col.where(field, '>=', prefix).where(field, '<', end).select(),
+          // `.select(field)`, not `.select()` — the cursor needs the order key.
+          // See the ⚠️ note above; this is #960.
+          col.where(field, '>=', prefix).where(field, '<', end).select(field),
           found,
           deadline,
         )) || truncated;
@@ -539,8 +561,23 @@ export async function sweepOrphanedE2EFixtures(
 /**
  * `globalSetup` entry point. Skips when the Admin SDK env is incomplete (same
  * rule as `globalTeardown`) and in emulator mode, where a fresh database
- * accumulates nothing. A janitor failure is logged and swallowed — it must never
- * be the reason a suite does not run.
+ * accumulates nothing.
+ *
+ * ⚠️ This boundary swallows **everything**, including a programming bug in the
+ * sweep itself. That is the whole contract: the sweep is a janitor, nothing about
+ * a suite's correctness depends on it, and `_setup/combined.ts` does not catch —
+ * so anything escaping here fails `globalSetup` and **no test runs at all**, on
+ * every PR, since the emulator lane has no `paths:` filter.
+ *
+ * It used to narrow on {@link isAdminSdkError}, and #960 is exactly the hole that
+ * left: the SDK's cursor validation error is a bare client-side `Error` with no
+ * gRPC `code`, so the guard rethrew the one failure it existed to contain. The
+ * narrow form is still right for `global-teardown.ts`'s call sites (that lane
+ * runs `continue-on-error`, so a rethrow there costs nothing) and for the CLI
+ * block below, which should exit non-zero for a human running `pnpm sweep:e2e`.
+ *
+ * Loud, not silent: `console.error` with the error object, so a broken janitor is
+ * obvious in the log even though it no longer blocks anyone.
  */
 export async function sweepOrphanedE2EFixturesSafely(): Promise<void> {
   if (process.env.FIRESTORE_EMULATOR_HOST) return;
@@ -550,9 +587,13 @@ export async function sweepOrphanedE2EFixturesSafely(): Promise<void> {
   }
   try {
     await sweepOrphanedE2EFixtures();
+    // DELIBERATE catch-all. The rule bans generic catches because silent
+    // fallbacks hide bugs; here the catch IS the feature (see the docblock) and
+    // it is anything but silent — narrowing is precisely what let #960 take down
+    // globalSetup for every PR.
+    // eslint-disable-next-line no-restricted-syntax -- justified above
   } catch (err) {
-    if (!isAdminSdkError(err)) throw err;
-    console.warn(`[sweep] failed (continuing): ${String(err)}`);
+    console.error('[sweep] FAILED — continuing so the suite still runs. Fix this:', err);
   }
 }
 

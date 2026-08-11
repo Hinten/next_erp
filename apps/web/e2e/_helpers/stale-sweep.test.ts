@@ -148,6 +148,20 @@ interface Writes {
 }
 
 /**
+ * Every query the sweep actually executed, with the projection it asked for.
+ *
+ * Exists for #960: the field-range query MUST project its order key or the
+ * snapshot cursor cannot be built, while the id-range query must stay keys-only.
+ * A fake cannot reproduce the SDK's `_extractFieldValues` throw — that is real
+ * SDK code this never runs — so the guard is "was the query built correctly",
+ * which is the regression a human would actually reintroduce.
+ */
+interface QueryLog {
+  /** `fields` is `.select(...)`'s arguments — `[]` means keys-only. */
+  gets: Array<{ path: string; fields: string[] }>;
+}
+
+/**
  * Minimal Firestore stand-in. Returns `docs` for any query against a named
  * collection and records every mutating call. `previousRunId` is what the
  * concurrency-group marker reports, which is what drives Pass A.
@@ -158,6 +172,8 @@ function fakeDb(
   previousRunId: string,
   /** Subcollections a swept doc owns, keyed by doc path. Drives `listCollections()`. */
   subcollections: Record<string, Record<string, readonly string[]>> = {},
+  /** Every `.get()`-ed query, in order — see {@link QueryLog}. Optional. */
+  queryLog?: QueryLog,
 ) {
   const oneDayAgo = () => Date.now() - 24 * 60 * 60 * 1000;
 
@@ -180,8 +196,17 @@ function fakeDb(
     return subcollections[parent]?.[child] ?? [];
   };
 
-  const snapshotFor = (path: string) => {
-    const ids = idsAt(path);
+  /** Chain state. Each builder returns a NEW query so pages don't share a cursor. */
+  interface QueryState {
+    after?: string;
+    take?: number;
+    fields: string[];
+  }
+
+  const snapshotFor = (path: string, state: QueryState) => {
+    const all = idsAt(path);
+    const from = state.after === undefined ? 0 : all.indexOf(state.after) + 1;
+    const ids = all.slice(from, state.take === undefined ? undefined : from + state.take);
     return {
       empty: ids.length === 0,
       size: ids.length,
@@ -193,13 +218,21 @@ function fakeDb(
     };
   };
 
-  const query = (path: string) => {
+  // ⚠️ `startAfter` HONOURS its argument and `select` RECORDS its arguments.
+  // The previous fake made both no-ops, which meant `collectPage`'s paging loop
+  // was never exercised by any test — and a naive >PAGE_SIZE fixture would have
+  // spun forever (same page returned every time, `size < PAGE_SIZE` never true)
+  // instead of failing. That blind spot is why #960 shipped.
+  const query = (path: string, state: QueryState = { fields: [] }) => {
     const q: Record<string, unknown> = {
-      where: () => q,
-      limit: () => q,
-      startAfter: () => q,
-      select: () => q,
-      get: () => Promise.resolve(snapshotFor(path)),
+      where: () => query(path, state),
+      limit: (take: number) => query(path, { ...state, take }),
+      startAfter: (cursor: { id?: string }) => query(path, { ...state, after: cursor?.id }),
+      select: (...fields: string[]) => query(path, { ...state, fields }),
+      get: () => {
+        queryLog?.gets.push({ path, fields: state.fields });
+        return Promise.resolve(snapshotFor(path, state));
+      },
     };
     return q;
   };
@@ -347,6 +380,47 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     );
 
     expect(writes.recursiveDeletes).toEqual([]);
+  });
+
+  // ---- #960 ---------------------------------------------------------------
+  // The field-range query was keys-only while its inequality forced an implicit
+  // `orderBy(nome)`, so `collectPage`'s SNAPSHOT cursor could not be built and
+  // `startAfter` threw on the SECOND page — killing globalSetup for every PR.
+
+  it('projects the order key on a field range, and keeps the id range keys-only (#960)', () => {
+    const log: QueryLog = { gets: [] };
+
+    return sweepOrphanedE2EFixtures(
+      true,
+      fakeDb(noWrites(), { depositos: ['e2e-111-dep-001'] }, '111', {}, log) as never,
+    ).then(() => {
+      const depositos = log.gets.filter((g) => g.path === 'depositos');
+
+      // The id range stays keys-only on purpose: its only order key is
+      // `__name__`, which the SDK reads off `snapshot.ref` — that survives an
+      // empty projection, so this is both correct and the cheapest possible.
+      expect(depositos).toContainEqual({ path: 'depositos', fields: [] });
+
+      // The field range must carry `nome`, or the cursor cannot be built.
+      // `depositos` declares `fields: ['nome']` in E2E_FIXTURE_TARGETS.
+      expect(depositos).toContainEqual({ path: 'depositos', fields: ['nome'] });
+    });
+  });
+
+  it('pages past PAGE_SIZE instead of stopping at, or spinning on, the first page (#960)', async () => {
+    // 301 > PAGE_SIZE (300), so this needs exactly two pages. It is also the
+    // guard on the FAKE: if `startAfter` ever stops honouring its cursor, page 2
+    // repeats page 1 forever and this test hangs rather than quietly passing.
+    const ids = Array.from({ length: 301 }, (_, i) => `e2e-111-dep-${String(i).padStart(4, '0')}`);
+
+    // No `stubCiEnv()` — that keeps Pass A (predecessor reclaim) out, so the
+    // count below is unambiguously one pass over one collection.
+    const report = await sweepOrphanedE2EFixtures(
+      true,
+      fakeDb(noWrites(), { depositos: ids }, '111') as never,
+    );
+
+    expect(report.byCollection.depositos).toBe(301);
   });
 });
 
