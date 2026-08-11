@@ -61,6 +61,18 @@ describe('createMpTaskScheduler', () => {
     );
   });
 
+  it('treats blank MERCADO_PAGO_TASKS_REGION as unset and falls through to default', async () => {
+    vi.stubEnv('MERCADO_PAGO_TASKS_DISABLED', '');
+    // Empty string should be treated as unset
+    vi.stubEnv('MERCADO_PAGO_TASKS_REGION', '');
+    vi.stubEnv('FUNCTIONS_REGION', undefined);
+    const scheduler = createMpTaskScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east5/functions/processMercadoPagoNotification',
+    );
+  });
+
   it('the disabled valve throws MpTasksDisabledError instead of enqueuing', async () => {
     vi.stubEnv('MERCADO_PAGO_TASKS_DISABLED', '1');
     const scheduler = createMpTaskScheduler();

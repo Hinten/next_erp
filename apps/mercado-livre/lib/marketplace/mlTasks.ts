@@ -42,7 +42,9 @@ import { MERCADO_LIVRE_NOTIFICATION_QUEUE, type MlNotificationPayload } from './
 
 /** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
 function mlTasksRegion(): string {
-  return process.env.MERCADO_LIVRE_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east5';
+  return (
+    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
+  );
 }
 
 /**
