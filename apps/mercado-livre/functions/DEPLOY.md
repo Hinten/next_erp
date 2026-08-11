@@ -518,11 +518,13 @@ push already used the conta's own depósito, so the two legacy paths disagreed
 with each other.)
 
 This port reads `integracao.depositoOuterRef` **per conta**, everywhere: the
-sweep enumeration, the send handler and the pedido stock write-back each resolve
-it independently, and each **skips** a conta that has none rather than falling
-back to anything. **Decision (2026-08-11): per-conta is correct and the hardcoded
-id was the bug.** There is deliberately no compatibility mode and no default
-depósito anywhere in the repo.
+sweep enumeration, the send handler, the manual `/enviar-estoque` push and the
+pedido stock write-back each resolve it independently, and each **refuses** a
+conta that has none rather than falling back to anything (the first three skip
+and record; the manual push returns `ML_CONTA_SEM_DEPOSITO`, since a human is
+waiting for the answer). **Decision (2026-08-11): per-conta is correct and the
+hardcoded id was the bug.** There is deliberately no compatibility mode and no
+default depósito anywhere in the repo.
 
 ⚠️ **The consequence is not rollback-recoverable.** Every conta whose depósito is
 not `ME7jOOTexx3OYLPgMtTR` publishes different quantities the moment the flag
