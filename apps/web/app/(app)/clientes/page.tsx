@@ -15,6 +15,7 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
+import { PERM } from '@delfrance/auth';
 import {
   type Cliente,
   type TipoCliente,
@@ -24,6 +25,7 @@ import {
 } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { formatCpfCnpj, formatTelefone, obscure } from '@/lib/pedido-print/format';
+import { usePermission } from '@/lib/auth';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { ENDERECO_SEARCH_LIMIT, searchClienteIdsByEndereco } from './_lib/buscaPorEndereco';
@@ -34,6 +36,7 @@ const NO_IDS: string[] = [];
 
 export default function ClientesPage() {
   const db = getFirebaseFirestore();
+  const { allowed: canDelete } = usePermission(PERM.cliente.delete);
   // `enderecoInput` is the live text field; `enderecoTerm` is the committed
   // term (set on submit) that actually drives the search query.
   const [enderecoInput, setEnderecoInput] = useState('');
@@ -165,26 +168,34 @@ export default function ClientesPage() {
             },
           }}
           selectable
-          actions={[
-            {
-              id: 'delete',
-              label: 'Excluir',
-              color: 'red',
-              requiresSelection: true,
-              refreshOnComplete: true,
-              confirm: {
-                title: 'Excluir clientes',
-                message: 'Clientes excluídos não podem ser restaurados. Confirmar exclusão?',
-              },
-              run: async (rows) => {
-                await Promise.all(
-                  rows.map((r: { id: string; data: Cliente }) =>
-                    deleteDoc(clienteCollection.docRef(db, {}, r.id)),
-                  ),
-                );
-              },
-            },
-          ]}
+          // Hiding, not disabling: `ActionConfig` has no `hidden` flag, so the
+          // gate filters the array (same shape as /canais/whatsapp). Firestore
+          // already refuses the write — this stops the button promising what
+          // the rules reject.
+          actions={
+            canDelete
+              ? [
+                  {
+                    id: 'delete',
+                    label: 'Excluir',
+                    color: 'red',
+                    requiresSelection: true,
+                    refreshOnComplete: true,
+                    confirm: {
+                      title: 'Excluir clientes',
+                      message: 'Clientes excluídos não podem ser restaurados. Confirmar exclusão?',
+                    },
+                    run: async (rows) => {
+                      await Promise.all(
+                        rows.map((r: { id: string; data: Cliente }) =>
+                          deleteDoc(clienteCollection.docRef(db, {}, r.id)),
+                        ),
+                      );
+                    },
+                  },
+                ]
+              : []
+          }
         />
       )}
     </Stack>

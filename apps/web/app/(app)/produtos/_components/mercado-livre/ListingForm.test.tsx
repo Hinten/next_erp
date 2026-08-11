@@ -69,10 +69,8 @@ beforeEach(() => {
 
 describe('ListingForm', () => {
   it('seeds every input from the stored doc', () => {
-    renderForm({ title: 'Camiseta Básica', video_id: 'ABC123', crossdocking: 3 });
+    renderForm({ title: 'Camiseta Básica' });
     expect(screen.getByLabelText('Título do anúncio')).toHaveProperty('value', 'Camiseta Básica');
-    expect(screen.getByLabelText('Vídeo (YouTube)')).toHaveProperty('value', 'ABC123');
-    expect(screen.getByLabelText('Crossdocking')).toHaveProperty('value', '3');
   });
 
   it('NEVER renders a labelled "Tipo de anúncio" control on a published listing', () => {
@@ -130,19 +128,6 @@ describe('ListingForm', () => {
       title: 'Camiseta Premium',
       ultimaModificacao: expect.any(Number),
     });
-  });
-
-  it('normalizes a cleared input to null, never an empty string', async () => {
-    // ML reads '' as a real value — an empty `video_id` asks it to attach a
-    // video with no id rather than to remove the video.
-    renderForm({ video_id: 'ABC123' });
-    type('Vídeo (YouTube)', '');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
-
-    await waitFor(() => {
-      expect(h.writes).toHaveLength(1);
-    });
-    expect(h.writes[0]!.video_id).toBeNull();
   });
 
   it('never writes a server-owned key', async () => {

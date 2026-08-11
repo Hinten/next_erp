@@ -23,6 +23,12 @@ export { arquivoOrphanSweepStateCollection } from './arquivoOrphanSweepStateColl
 export { categoriaCollection } from './categoriaCollection';
 export { produtoCollection } from './produtoCollection';
 export { estoqueCollection } from './estoqueCollection';
+export { depositoCollection } from './depositoCollection';
+export {
+  balancoCollection,
+  movimentoBalancoCollection,
+  relatorioBalancoCollection,
+} from './balancoCollection';
 export { historicoEstoqueCollection } from './historicoEstoqueCollection';
 export { historicoModificacaoCollection } from './historicoModificacaoCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';

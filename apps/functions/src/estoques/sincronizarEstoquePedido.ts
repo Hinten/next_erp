@@ -20,6 +20,7 @@ import {
   produtoCollection,
 } from '@delfrance/data/admin/collections';
 import {
+  CAMPOS_ESTOQUE_SYNC,
   calcularAlteracoesEstoque,
   planSincronizacaoEstoque,
   temEfeitoAplicado,
@@ -69,12 +70,15 @@ export const CAMPOS_OBSERVADOS = [
  * {@link CAMPOS_OBSERVADOS} (unit-tested): the function never writes a field it
  * watches, so its own pedido update can never re-activate it — the event chain
  * is acyclic by construction, independent of the convergence guarantee.
+ *
+ * ⚠️ Re-exported from `@delfrance/data/pedido` rather than declared here,
+ * because the pedido editor's concurrency guard must ignore exactly this set —
+ * these writes do not stamp `ultimaModificacao`, so while the two lists were
+ * separate the guard raised a false "Pedido alterado" conflict over fields the
+ * operator cannot see or edit (#972). One list, no drift: adding a field here
+ * extends the guard too.
  */
-export const CAMPOS_ESCRITOS = [
-  'estoqueAplicado',
-  'dataIndisponivelEstoque',
-  'dataRemocaoEstoque',
-] as const;
+export const CAMPOS_ESCRITOS = CAMPOS_ESTOQUE_SYNC;
 
 function valorNoCaminho(data: DocumentData | null, caminho: string): unknown {
   if (!data) return undefined;
@@ -593,24 +597,49 @@ async function aplicarPlano(
  * ADR 0014 before proposing it again. The kit id is already on the pedido line, so
  * this costs **zero extra reads**.
  *
- * Race discipline: ADR 0011 **tier 0** — nothing to compare, so nothing to lose.
- * `maximum` is monotonic: a stale `agoraMs` cannot move the stamp backwards, and
- * a concurrent movement's own bump always wins if it is later.
+ * Race discipline: ADR 0011 **tier 0 — but only for `ultimaModificacao`**, which
+ * is the one field written on every call. `maximum` is monotonic: a stale
+ * `agoraMs` cannot move the stamp backwards, and a concurrent movement's own bump
+ * always wins if it is later. The other two fields are plain scalars with no
+ * transform, so they are NOT tier 0 and are written **only when creating the doc**
+ * — see below.
  *
- * ---- The payload is exactly three fields, and the other two are NOT decoration.
+ * ---- The payload: one field always, two more only on create.
  *
- * `ultimaModificacao` is the signal. `parentId` and `depositoOuterRef` are what
- * make the signal *reachable*, and dropping either silently turns this whole
- * function into a no-op for the case it exists to serve — a kit whose estoque doc
- * does not exist yet, which is the norm precisely because a kit holds no stock:
+ * `ultimaModificacao` is the signal. `parentId` and `depositoOuterRef` are the
+ * doc's identity denorms, both derivable from its own path, and they are written
+ * **only when `existentes` says the doc is absent**:
  *
- * - **`depositoOuterRef`** — the sweep reaches an estoque through
- *   `subcollection('estoques').where(depositoOuterRef == …)` (`ownEstoque` /
- *   `ownEstoqueMax` in `estoquePlan.ts`). A doc created without it matches no
- *   depósito, so the window filter never sees the stamp at all.
- * - **`parentId`** — the ledger pre-pass keys `(produto, depósito)` off this
- *   denorm; without it `desfazerMovimento` cannot key the row and reads it as
- *   *unchanged*, which is the one verdict a just-sold kit must never get.
+ * - **`depositoOuterRef`** — required *on create*. The sweep reaches an estoque
+ *   through `subcollection('estoques').where(depositoOuterRef == …)` (`ownEstoque`
+ *   / `ownEstoqueMax` in `bulkEstoquePlan.ts`), so a doc created without it matches no
+ *   depósito and the window filter never sees the stamp at all — which is the norm
+ *   for a kit, precisely because a kit holds no stock and has no other reason to
+ *   own an estoque doc.
+ * - **`parentId`** — written for structural uniformity with every other estoque
+ *   writer (`aplicarEstoque`, the movement writes above), NOT because anything
+ *   reads it here. A kit can never be a component of another kit (#239, enforced
+ *   by the KitManager picker and the PageModel validation), so `compEstoques`'
+ *   `parentId equalAny <kit keys>` join — the only query that matches on it — can
+ *   never reach a kit's own row. ⚠️ It is also **not** what the ledger pre-pass
+ *   keys on: that is `historicoEstoque.parentId`, and the reconstruction keys a
+ *   member's own estoque row by `member.produtoId` (#932).
+ *
+ * ⚠️ **Re-asserting either on an existing doc would be a blind last-write-wins
+ * overwrite** of fields this function never read — ADR 0011's own hazard, and the
+ * reason the create-only split exists. It also stops the stamp from silently
+ * re-encoding a `depositoOuterRef` written in the bare `depositos/<id>` form the
+ * outerRef invariant tolerates, which the Flutter app may still be writing during
+ * the dual run.
+ *
+ * ⚠️ Two costs this buys, both named rather than hidden. Firestore has no
+ * set-if-missing for a string, so the caller must READ the sold kits' estoque docs
+ * (it does, before `aplicarPlano`, since a transaction rejects a read after a
+ * write): (1) the "zero extra reads" property this function shipped with is gone —
+ * it is now `O(kit lines on the pedido)`, still nothing like the ~2000-write
+ * component fan-out ADR 0014 rejects; (2) those docs enter the transaction's read
+ * set, so two pedidos selling the same kit now contend and retry. Harmless — the
+ * stamp is monotonic — but no longer contention-free.
  *
  * Nothing else is written. In particular **`dataCriacao` is deliberately absent**:
  * a stamp is not a creation event and has no business authoring one, and no
@@ -628,19 +657,25 @@ export function carimbarKitsVendidos(
   db: Firestore,
   tx: Transaction,
   kitIds: ReadonlySet<string>,
+  existentes: ReadonlySet<string>,
   depositoId: string,
   agoraMs: number,
 ): number {
   for (const produtoId of kitIds) {
+    // The signal — the only field written on every call, and the only tier-0 one.
+    const patch: Record<string, unknown> = {
+      ultimaModificacao: FieldValue.maximum(agoraMs),
+    };
+    if (!existentes.has(produtoId)) {
+      // Creating: author the identity denorms once. On an existing doc these are
+      // left alone — re-asserting them would overwrite values this function never
+      // read (see the docblock).
+      patch.parentId = produtoId;
+      patch.depositoOuterRef = `documents/depositos/${depositoId}`;
+    }
     tx.set(
       estoqueCollection.docRef(db, { produtoId }, makeEstoqueUid(produtoId, depositoId)),
-      {
-        // The two reachability keys — see the docblock; neither is optional.
-        parentId: produtoId,
-        depositoOuterRef: `documents/depositos/${depositoId}`,
-        // The signal itself.
-        ultimaModificacao: FieldValue.maximum(agoraMs),
-      },
+      patch,
       { merge: true },
     );
   }
@@ -843,6 +878,25 @@ export async function sincronizarEstoquePedido(
 
     if (plano.deltas.length === 0) return { status: 'nada-a-fazer' };
 
+    // Which sold kits ALREADY own an estoque doc at this depósito. Read HERE —
+    // past the zero-deltas return so a pedido that moved nothing pays nothing,
+    // and before `aplicarPlano` writes, since a transaction rejects a read that
+    // follows a write. The answer decides whether the stamp may author the doc's
+    // identity denorms; on an existing doc it must not (see
+    // {@link carimbarKitsVendidos}).
+    const kitsComEstoque = new Set<string>();
+    if (depositoId && kitsVendidos.size > 0) {
+      const ids = [...kitsVendidos];
+      const snaps = await tx.getAll(
+        ...ids.map((produtoId) =>
+          estoqueCollection.docRef(db, { produtoId }, makeEstoqueUid(produtoId, depositoId)),
+        ),
+      );
+      snaps.forEach((snap, i) => {
+        if (snap.exists) kitsComEstoque.add(ids[i]!);
+      });
+    }
+
     await aplicarPlano(db, tx, plano, {
       pedidoId,
       pedidoNumero: pedido.numero,
@@ -855,9 +909,11 @@ export async function sincronizarEstoquePedido(
     // The kit stamp (ADR 0014). Reached only past the zero-deltas return above,
     // so a pedido write that moved nothing stamps nothing. Reservations DO count:
     // a reserva lowers `disponivel`, which is what the marketplace publishes.
-    // Write-only (transforms, no reads), so its position after `aplicarPlano` is
-    // free — unlike the audit reads above it.
-    if (depositoId) carimbarKitsVendidos(db, tx, kitsVendidos, depositoId, agoraMs);
+    // Still write-only — its existence read was hoisted above `aplicarPlano`,
+    // which is what lets it keep this position.
+    if (depositoId) {
+      carimbarKitsVendidos(db, tx, kitsVendidos, kitsComEstoque, depositoId, agoraMs);
+    }
 
     // ⚠️ AFTER `aplicarPlano` — it still issues reads, and a transaction rejects
     // any read that follows a write ("all reads before all writes").

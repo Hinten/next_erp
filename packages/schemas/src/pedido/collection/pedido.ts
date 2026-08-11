@@ -279,6 +279,14 @@ export const pedidoMeta: CollectionMetadata = {
     write: PERM_PEDIDO_WRITE,
     delete: PERM_PEDIDO_DELETE,
   },
+  // ⚠️ DECLARED BUT DELIBERATELY NOT ENFORCED — there is no `onPedidoDeleted`
+  // cascade trigger, and adding one is a decision that has already been made and
+  // rejected (owner call, 2026-08). `nfev4` holds emitted fiscal documents:
+  // sweeping them on a pedido delete destroys records the business is required
+  // to retain, and no convenience is worth that. Deleting a pedido therefore
+  // ORPHANS these subcollections on purpose. If you are here to "finish" the
+  // cascade with `defineCascadeCaroGenerico`, don't — read
+  // `apps/functions/src/cascades/caroGenericoTriggers.ts` first.
   cascade: [
     { path: 'pedidos/{pedidoId}/itens', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/pagamentos', onDelete: 'cascade' },

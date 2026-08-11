@@ -74,8 +74,12 @@ export async function aplicarLocalizacao(
  * ≥ 0, and re-clamping here would be a second, silently divergent floor.
  * `floorReservada` tells the caller to append the follow-up `maximum(0)` write
  * that floors the incremented reservada.
+ *
+ * Exported for `aplicarBalanco`, which applies the same balanço write per
+ * produto: one writer, so the two paths cannot drift on the clamp policy or on
+ * the `ultimaModificacao` bump the ML stock sweep keys on.
  */
-function movimentoEstoqueWrite(
+export function movimentoEstoqueWrite(
   produtoId: string,
   depositoId: string,
   plan: MovimentacaoPlan,

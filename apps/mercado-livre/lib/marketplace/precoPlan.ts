@@ -47,7 +47,7 @@
  * link fields (the row still carries them for observability) — hence a
  * dedicated gate here instead of reusing the stock one.
  *
- * ---- Config: business tunables read `process.env` LAZILY via `estoquePlan`'s
+ * ---- Config: business tunables read `process.env` LAZILY via `bulkEstoquePlan`'s
  * `envInt` (call time, never module load); pure mechanics stay code constants.
  */
 import { FieldPath, type Firestore } from 'firebase-admin/firestore';
@@ -59,7 +59,7 @@ import {
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
-import { envInt } from './estoquePlan';
+import { envInt } from './bulkEstoquePlan';
 
 /* ------------------------------ configuration ----------------------------- */
 
@@ -441,7 +441,7 @@ export function buildPrecoDrafts(
 
 /**
  * The documented ML listing statuses (developers.mercadolivre.com.br,
- * 2026-07-24 — `estoquePlan`'s set, kept private there).
+ * 2026-07-24 — `bulkEstoquePlan`'s set, kept private there).
  */
 const DOCUMENTED_ML_STATUSES = new Set([
   'active',
