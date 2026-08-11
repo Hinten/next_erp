@@ -229,18 +229,25 @@ export default function EditarProdutoPage() {
     ehKit: false,
     ehKitVirtual: false,
   });
+  // Paint-then-correct, NOT gate-until-server: this ref is the "old" value
+  // `propagateKitStatusToChildren` diffs against at save time, so it must be
+  // populated the moment anything is loaded (a save that finds it unready would
+  // diff against `false` and propagate a change that never happened). The cache
+  // emission seeds it; the authoritative one corrects it, once, while it still
+  // describes the LAST SAVED state — i.e. before the operator saves.
+  const serverPinnedKitStatus = useRef(false);
   useEffect(() => {
-    // SERVER truth only: this is the "old" value `propagateKitStatusToChildren`
-    // diffs against at save time, so a stale cache emission makes the editor
-    // skip a propagation it owed — or run one it did not.
-    if (produtoSnap.fromCache !== false) return;
-    if (!lastSavedKitStatus.current.ready && produtoSnap.data) {
-      lastSavedKitStatus.current = {
-        ready: true,
-        ehKit: produtoSnap.data.data.ehKit ?? false,
-        ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
-      };
+    if (!produtoSnap.data) return;
+    const serverTruth = produtoSnap.fromCache === false;
+    if (lastSavedKitStatus.current.ready && !(serverTruth && !serverPinnedKitStatus.current)) {
+      return;
     }
+    lastSavedKitStatus.current = {
+      ready: true,
+      ehKit: produtoSnap.data.data.ehKit ?? false,
+      ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
+    };
+    if (serverTruth) serverPinnedKitStatus.current = true;
   }, [produtoSnap.data, produtoSnap.fromCache]);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
