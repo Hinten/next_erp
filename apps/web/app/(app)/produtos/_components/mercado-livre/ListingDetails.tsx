@@ -29,8 +29,7 @@ export interface ListingDetailsProps {
  * `precoPublicado`, `comissao` and `freteGratis` are written by publish and the
  * price sync; rendering them as inputs would invite a patch that races those
  * writers, which is precisely what the operator-owned allow-list exists to
- * prevent. `category_id` is operator-owned but stays here until the category
- * cascade lands — a bare text box for an `MLB…` id is not an editor.
+ * prevent.
  *
  * ⚠️ Values are plain text on purpose — see the note in `ListingField`. A
  * labelled control here would break the e2e assertion that proves the
@@ -43,7 +42,6 @@ export function ListingDetails({ link, produtoFotoCount }: ListingDetailsProps) 
     <>
       <Fieldset legend="Publicação" variant="unstyled">
         <SimpleGrid cols={cols} spacing="sm" verticalSpacing="xs">
-          <ListingField label="Categoria">{textOr(link.category_id)}</ListingField>
           <ListingField label="Preço publicado">
             {link.precoPublicado == null ? EMPTY_VALUE : formatReais(link.precoPublicado)}
           </ListingField>

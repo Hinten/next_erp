@@ -43,6 +43,7 @@ import {
   saveListing,
 } from '@/lib/mercado-livre/saveListing';
 import type { OperatorOwnedKey } from '@/lib/mercado-livre/listingPatch';
+import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
 import { ListingField, textOr } from './ListingField';
 
@@ -50,6 +51,10 @@ export interface ListingFormProps {
   produtoId: string;
   /** Firestore id of the `produtoMercadoLivre` doc being edited. */
   linkDocId: string;
+  /** The ML account this listing belongs to — needed for every metadata call. */
+  integracaoId: string;
+  /** Seeds the category suggestion request. */
+  produtoNome: string;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -86,6 +91,8 @@ export interface ListingFormProps {
 export function ListingForm({
   produtoId,
   linkDocId,
+  integracaoId,
+  produtoNome,
   link,
   db,
   canWrite,
@@ -272,6 +279,23 @@ export function ListingForm({
                 onChange={(v) => field.onChange(v ?? 'marketplace')}
                 onBlur={field.onBlur}
                 allowDeselect={false}
+                disabled={readOnly}
+                error={fieldState.error?.message}
+              />
+            )}
+          />
+          {/* The one field a fresh produto cannot be published without, and the
+              reason "Preparar anúncio" exists at all — publish refuses a
+              listing with no `category_id` and no longer guesses one. */}
+          <Controller
+            control={form.control}
+            name="category_id"
+            render={({ field, fieldState }) => (
+              <CategoriaField
+                integracaoId={integracaoId}
+                produtoNome={produtoNome}
+                value={field.value === '' ? null : field.value}
+                onChange={field.onChange}
                 disabled={readOnly}
                 error={fieldState.error?.message}
               />

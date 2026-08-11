@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import type { Firestore } from 'firebase/firestore';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
@@ -32,19 +34,26 @@ function renderForm(
   const onDirtyChange = vi.fn();
   const registerFlush = vi.fn();
   const link = linkFixture(over);
-  render(
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
     <MantineProvider env="test">
-      <ListingForm
-        produtoId="prod-1"
-        linkDocId="ML-DOC-1"
-        link={link}
-        db={{} as Firestore}
-        canWrite
-        onDirtyChange={onDirtyChange}
-        registerFlush={registerFlush}
-        {...props}
-      />
-    </MantineProvider>,
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    </MantineProvider>
+  );
+  render(
+    <ListingForm
+      produtoId="prod-1"
+      linkDocId="ML-DOC-1"
+      integracaoId="conta-1"
+      produtoNome="Camiseta Básica"
+      link={link}
+      db={{} as Firestore}
+      canWrite
+      onDirtyChange={onDirtyChange}
+      registerFlush={registerFlush}
+      {...props}
+    />,
+    { wrapper },
   );
   return { onDirtyChange, registerFlush, link };
 }

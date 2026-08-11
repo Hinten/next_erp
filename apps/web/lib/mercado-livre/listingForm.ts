@@ -30,6 +30,10 @@ export const listingFormSchema = z.object({
   descricao: z.string().max(DESCRICAO_MAX, 'A descrição excede o limite do Mercado Livre.'),
   condition: z.enum(['new', 'used']),
   channels: z.string().min(1, 'Escolha onde o anúncio aparece.'),
+  // Not `.min(1)`: a draft may legitimately be saved before its category is
+  // chosen (an operator fixing the título first), and publish already refuses a
+  // listing without one. Blocking the save would trap the other edits.
+  category_id: z.string(),
   listing_type_id: z.string(),
   tarifaFrete: z.number().min(0, 'A tarifa de frete não pode ser negativa.').nullable(),
   crossdocking: z
@@ -55,6 +59,7 @@ export function toFormValues(link: ProdutoMercadoLivreLink): ListingFormInput {
     channels:
       preset ??
       ((link.channels?.length ?? 0) > 0 ? rawChannelValue(link.channels!) : 'marketplace'),
+    category_id: link.category_id ?? '',
     listing_type_id: link.listing_type_id ?? '',
     tarifaFrete: link.tarifaFrete ?? null,
     crossdocking: link.crossdocking ?? null,
@@ -80,6 +85,7 @@ export function toPatchValues(
     condition: values.condition,
     channels: parseRawChannelValue(values.channels) ??
       presetToChannels(values.channels) ?? ['marketplace'],
+    category_id: blankToNull(values.category_id),
     listing_type_id: blankToNull(values.listing_type_id),
     tarifaFrete: values.tarifaFrete,
     crossdocking: values.crossdocking,

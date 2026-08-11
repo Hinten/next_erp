@@ -10,6 +10,7 @@ function values(over: Record<string, unknown> = {}) {
     descricao: '',
     condition: 'new',
     channels: 'marketplace',
+    category_id: 'MLB31447',
     listing_type_id: 'gold_special',
     tarifaFrete: null,
     crossdocking: null,
@@ -65,6 +66,14 @@ describe('toPatchValues', () => {
 
   it('trims the title', () => {
     expect(toPatchValues(values({ title: '  Camiseta  ' })).title).toBe('Camiseta');
+  });
+
+  it('maps an unset category to null, not an empty string', () => {
+    // A draft may be saved before its category is chosen; `''` would be a real
+    // value ML then rejects, and would defeat the "categoria não definida"
+    // check that keeps Publicar disabled.
+    expect(toPatchValues(values({ category_id: '' })).category_id).toBeNull();
+    expect(toPatchValues(values({ category_id: 'MLB31447' })).category_id).toBe('MLB31447');
   });
 
   it('keeps numeric nulls as null rather than zero', () => {
