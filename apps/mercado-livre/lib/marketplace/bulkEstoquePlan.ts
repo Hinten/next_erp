@@ -592,7 +592,7 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
 /**
  * The S6 projection — the ONE definition both fetchers select with (minimal
  * fields; the 128 MiB ceiling spans joins). Pinned equal across the two by
- * `estoquePlan.test.ts`, which is the whole anti-drift guarantee: the manual
+ * `bulkEstoquePlan.test.ts`, which is the whole anti-drift guarantee: the manual
  * push must consume byte-identical family rows to the sweep, or the quantity an
  * operator sends by hand could differ from the one the sweep sends minutes later.
  */

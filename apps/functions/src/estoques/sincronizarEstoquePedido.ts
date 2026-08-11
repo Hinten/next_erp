@@ -606,7 +606,7 @@ async function aplicarPlano(
  *
  * - **`depositoOuterRef`** — the sweep reaches an estoque through
  *   `subcollection('estoques').where(depositoOuterRef == …)` (`ownEstoque` /
- *   `ownEstoqueMax` in `estoquePlan.ts`). A doc created without it matches no
+ *   `ownEstoqueMax` in `bulkEstoquePlan.ts`). A doc created without it matches no
  *   depósito, so the window filter never sees the stamp at all.
  * - **`parentId`** — the ledger pre-pass keys `(produto, depósito)` off this
  *   denorm; without it `desfazerMovimento` cannot key the row and reads it as

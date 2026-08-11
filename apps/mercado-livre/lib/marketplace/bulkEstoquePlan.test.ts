@@ -166,7 +166,7 @@ import {
   quantidadesAnteriores,
   chaveMovimento,
   windowOverlapSec,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 
 /* ------------------------------ fake Firestore ----------------------------- */
 // THE query never runs in unit tests: `db.pipeline()` answers from a queue of
