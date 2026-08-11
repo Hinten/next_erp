@@ -12,10 +12,18 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `app/api/health` — uptime check (no auth).
 - `app/api/marketplace/mercado-livre/oauth/start` — **#291**: `PERM.integracao.write`-gated;
   mints a signed `state` and returns the ML consent URL (`channel.oauthFlow.start`).
+  **#821**: it also RECORDS the attempt (`putOauthState`) before handing out the URL —
+  the state's `nonce` plus, when `MERCADO_LIVRE_PKCE_ENABLED=1`, a fresh PKCE
+  `code_verifier` whose S256 challenge rides the consent URL.
 - `app/api/marketplace/mercado-livre/conta` — `PERM.integracao.read`-gated connection
   status (`/users/me` identity, or `connected: false` when the credential is dead).
 - `app/api/oauth/mercado-livre/callback` — **#291**: public browser redirect target;
-  the signed `state` is the only trust anchor → verify → exchange code → persist.
+  the signed `state` is the only trust anchor → verify → **redeem the attempt** →
+  exchange code → persist. ⚠️ **#821/T3**: verifying the HMAC is not enough — it proves
+  integrity, not freshness-of-use, so a captured `state` used to be replayable for the
+  whole 10-minute window and a replay OVERWROTE the account's credential with whoever
+  drove the second callback. `consumeOauthState` is the anchor that makes it single-use;
+  it runs BEFORE the exchange and its failure is `reason=bad_state`, never `exchange`.
 - `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (`topic`+`resource`
   callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues onto the
   `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
@@ -51,6 +59,19 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
   `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
   the still-running Flutter app during the dual-run migration; "one wins" refresh).
+- `lib/marketplace/{state,oauthStateStore,pkce}.ts` — **#821**, the connect flow's two
+  trust anchors. `state.ts` signs/verifies the HMAC state (and now RETURNS its `nonce`);
+  `oauthStateStore.ts` is the per-attempt record over the admin-only
+  `integracao/{id}/oauthState` subcollection — a FIXED `current` doc id, so a new attempt
+  overwrites the previous one and the collection stays at one doc per integração (no TTL
+  policy, no sweep). `consumeOauthState` redeems it inside a transaction, re-deriving
+  every branch from the `tx.get` snapshot (root `CLAUDE.md` rule 7): two callbacks racing
+  one nonce contend on OCC and the loser is REJECTED, which is the intended outcome for a
+  single-use value. `pkce.ts` mints the verifier/challenge behind `MERCADO_LIVRE_PKCE_ENABLED`.
+  ⚠️ PKCE is a per-application toggle in ML's DevCenter and its docs are explicit that
+  once it is on the parameters become MANDATORY — so the flag and the toggle are flipped
+  together for a given `client_id`. The prod application is shared with the legacy Flutter
+  connect screen, which sends no `code_challenge`; staging has its own application.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -93,8 +114,11 @@ repo convention, #730) + `apphosting.yaml`. App-wide ML app credentials
 Manager — one registered ML app serves every connected account (so
 `MERCADO_LIVRE_CLIENT_ID` is also the `application_id` every notification carries,
 which is what the webhook origin check compares against). The optional
-`MERCADO_LIVRE_WEBHOOK_LOG_HEADERS` is a plain env var, not a secret. The per-account
-OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
+`MERCADO_LIVRE_WEBHOOK_LOG_HEADERS` and `MERCADO_LIVRE_PKCE_ENABLED` are plain env
+vars, not secrets — see the PKCE ⚠️ above before flipping the latter. `ALLOWED_ADMIN_ORIGINS`
+became REQUIRED in production with #821/T5: localhost is no longer implicitly allowed,
+so an unset value leaves the CORS allow-list empty and every browser call fails.
+The per-account OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
 (shared with the Flutter app during the dual-run migration; the move to the
 encrypted `credenciais` store is a tracked post-migration follow-up).
 

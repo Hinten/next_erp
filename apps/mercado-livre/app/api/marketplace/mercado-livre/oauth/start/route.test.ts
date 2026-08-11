@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 
@@ -9,6 +10,7 @@ import { verifyState } from '@/lib/marketplace/state';
 const h = vi.hoisted(() => ({
   verifyIdToken: vi.fn(),
   loadCtx: vi.fn(),
+  putOauthState: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -19,6 +21,12 @@ vi.mock('@/lib/firebase/admin', () => ({
 vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
+});
+
+// The attempt record is Firestore-backed; only its inputs matter here.
+vi.mock('@/lib/marketplace/oauthStateStore', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/oauthStateStore')>();
+  return { ...actual, putOauthState: h.putOauthState };
 });
 
 const { GET } = await import('./route');
@@ -40,15 +48,31 @@ const WRITER = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('MERCADO_LIVRE_STATE_SECRET', STATE_SECRET);
-  // The mocked context's channel echoes the state into the authorize URL so the
-  // test can verify the signed state round-trips.
+  vi.stubEnv('MERCADO_LIVRE_PKCE_ENABLED', '');
+  h.putOauthState.mockResolvedValue(undefined);
+  // The mocked context's channel echoes the state (and any PKCE parameters)
+  // into the authorize URL, the same way `buildAuthorizeUrl` does, so the test
+  // can verify what the route actually handed to the plugin.
   h.loadCtx.mockResolvedValue({
     integracaoId: 'int-1',
     channel: {
       id: 'mercado-livre',
       oauthFlow: {
-        start: (state: string) =>
-          `https://auth.mercadolivre.com.br/authorization?response_type=code&client_id=CID&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}`,
+        start: (
+          state: string,
+          pkce?: { codeChallenge: string; codeChallengeMethod?: 'S256' | 'plain' },
+        ) => {
+          const url = new URL('https://auth.mercadolivre.com.br/authorization');
+          url.searchParams.set('response_type', 'code');
+          url.searchParams.set('client_id', 'CID');
+          url.searchParams.set('redirect_uri', REDIRECT_URI);
+          url.searchParams.set('state', state);
+          if (pkce) {
+            url.searchParams.set('code_challenge', pkce.codeChallenge);
+            url.searchParams.set('code_challenge_method', pkce.codeChallengeMethod ?? 'S256');
+          }
+          return url.toString();
+        },
       },
     },
   });
@@ -99,5 +123,56 @@ describe('GET /api/marketplace/mercado-livre/oauth/start', () => {
     // The signed state must round-trip back to the same integracao id.
     expect(verifyState(state!, STATE_SECRET).integracaoId).toBe('int-1');
     expect(h.loadCtx).toHaveBeenCalledWith(expect.anything(), 'int-1');
+  });
+
+  it('records the attempt under the SAME nonce the state carries', async () => {
+    // The binding that makes the state single-use: if the persisted nonce and
+    // the one inside the state ever diverge, the callback can never redeem a
+    // legitimate attempt.
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+
+    const { authorizeUrl } = (await res.json()) as { authorizeUrl: string };
+    const state = new URL(authorizeUrl).searchParams.get('state')!;
+
+    expect(h.putOauthState).toHaveBeenCalledTimes(1);
+    expect(h.putOauthState).toHaveBeenCalledWith(expect.anything(), 'int-1', {
+      nonce: verifyState(state, STATE_SECRET).nonce,
+      codeVerifier: null,
+    });
+  });
+
+  it('omits the PKCE parameters while the flag is off', async () => {
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+
+    const { authorizeUrl } = (await res.json()) as { authorizeUrl: string };
+    const url = new URL(authorizeUrl);
+    expect(url.searchParams.get('code_challenge')).toBeNull();
+    expect(url.searchParams.get('code_challenge_method')).toBeNull();
+    // …and nothing secret is parked for a flow that will not present one.
+    expect(h.putOauthState.mock.calls[0]?.[2]).toMatchObject({ codeVerifier: null });
+  });
+
+  it('sends an S256 challenge derived from the stored verifier when PKCE is on', async () => {
+    vi.stubEnv('MERCADO_LIVRE_PKCE_ENABLED', '1');
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+
+    const { authorizeUrl } = (await res.json()) as { authorizeUrl: string };
+    const url = new URL(authorizeUrl);
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+
+    const { codeVerifier } = h.putOauthState.mock.calls[0]![2] as { codeVerifier: string };
+    expect(codeVerifier).toEqual(expect.any(String));
+    // RFC 7636 §4.1: 43..128 chars from the unreserved set.
+    expect(codeVerifier).toMatch(/^[A-Za-z0-9\-._~]{43,128}$/);
+    // The challenge on the wire MUST be the SHA-256 of the verifier we kept —
+    // a mismatch fails the exchange with `invalid_grant` at the worst moment.
+    expect(url.searchParams.get('code_challenge')).toBe(
+      createHash('sha256').update(codeVerifier).digest('base64url'),
+    );
+    // The verifier itself never leaves the backend.
+    expect(authorizeUrl).not.toContain(codeVerifier);
   });
 });

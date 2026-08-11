@@ -107,8 +107,13 @@ export interface MercadoLivreContext {
    * account must reconnect via OAuth.
    */
   resolveChannelContext(now?: number): Promise<ChannelContext>;
-  /** Exchange an authorization code and persist the resulting credential. */
-  exchangeAndPersist(code: string): Promise<void>;
+  /**
+   * Exchange an authorization code and persist the resulting credential.
+   * `codeVerifier` is the PKCE proof (RFC 7636) minted by the connect route and
+   * redeemed from the OAuth state record; omit it when PKCE is off for this ML
+   * application. The refresh grant never carries one.
+   */
+  exchangeAndPersist(code: string, codeVerifier?: string): Promise<void>;
 }
 
 export async function loadMercadoLivreContext(
@@ -147,8 +152,8 @@ export async function loadMercadoLivreContext(
       const accessToken = await getOrRefreshAccessToken(store, oauthConfig, { now });
       return { integracaoId, accessToken, account };
     },
-    async exchangeAndPersist(code: string): Promise<void> {
-      const resp = await exchangeCode(oauthConfig, code);
+    async exchangeAndPersist(code: string, codeVerifier?: string): Promise<void> {
+      const resp = await exchangeCode(oauthConfig, code, codeVerifier);
       await store.save(tokenDuravelFromResponse(resp, Date.now()));
       // Denormalize the ML seller id onto the integração doc so an inbound
       // webhook resolves this account with a single equality query (the old
