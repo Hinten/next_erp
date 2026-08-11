@@ -6,9 +6,9 @@
   "engines": {
     "node": ">=22"
   },
-  "//": "NOT a pnpm workspace package — apps/whatsapp/functions is a deploy-artifact-only sub-build of @delfrance/whatsapp-app (typecheck/lint/test run via apps/whatsapp's tasks; tsconfig `**/*.ts` + `eslint .` + vitest `functions/**` cover it). This file is the TEMPLATE that scripts/prepare-deploy.mjs reads to emit the MINIMAL .deploy/whatsapp-functions/package.json — only the 2 runtime deps below (no workspace:* — esbuild bundles @delfrance/*). Its deps must also be present in apps/whatsapp's package.json so the bundle's externals resolve locally. Specs here must stay LITERAL semver — never catalog: — this file is copied verbatim into the deploy artifact and resolved by plain npm, and this package is not a pnpm workspace member.",
+  "//": "NOT a pnpm workspace package — apps/whatsapp/functions is a deploy-artifact-only sub-build of @delfrance/whatsapp-app (typecheck/lint/test run via apps/whatsapp's tasks; tsconfig `**/*.ts` + `eslint .` + vitest `functions/**` cover it). This file is the TEMPLATE that scripts/prepare-deploy.mjs reads to emit the MINIMAL .deploy/whatsapp-functions/package.json — only the 2 runtime deps below (no workspace:* — esbuild bundles @delfrance/*). Its deps must also be present in apps/whatsapp's package.json so the bundle's externals resolve locally. Specs here must stay LITERAL semver — never catalog: — this file is copied verbatim into the deploy artifact and resolved by plain npm, and this package is not a pnpm workspace member. firebase-admin + firebase-functions are pinned EXACT (no `^`) because the artifact ships NO lockfile: a range lets the cloud install a version CI never tested, which is how firebase-functions@7.3.2 silently moved express 4→5 in a PATCH release. Bump them here and in pnpm-workspace.yaml's catalog in the same commit — packages/config-eslint/rules/runtime-deps-pinned.test.js fails if they drift apart.",
   "dependencies": {
-    "firebase-admin": "^14.0.0",
-    "firebase-functions": "^7.3.0"
+    "firebase-admin": "14.2.0",
+    "firebase-functions": "7.3.2"
   }
 }

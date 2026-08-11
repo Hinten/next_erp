@@ -15,11 +15,11 @@
     "test:storage": "vitest run --config vitest.storage.config.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo coverage"
   },
-  "//runtime-deps": "@delfrance/auth + @delfrance/core + @delfrance/data + @delfrance/schemas are BUILD-time only: esbuild bundles them into the deploy artifact (only firebase-admin/firebase-functions/@google-cloud/firestore/sharp stay `external`), so they live in devDependencies. The deploy does NOT upload this file — scripts/prepare-deploy.mjs emits a MINIMAL package.json (just the 4 `dependencies` below, no devDeps) into the generated .deploy/ folder, because the cloud `npm install` cannot resolve pnpm `workspace:*` (and the buildpack installs devDeps too). See apps/functions/DEPLOY.md. These 4 dependency specs must stay LITERAL semver — never catalog: — this dependencies block is copied verbatim into the artifact and resolved by plain npm.",
+  "//runtime-deps": "@delfrance/auth + @delfrance/core + @delfrance/data + @delfrance/schemas are BUILD-time only: esbuild bundles them into the deploy artifact (only firebase-admin/firebase-functions/@google-cloud/firestore/sharp stay `external`), so they live in devDependencies. The deploy does NOT upload this file — scripts/prepare-deploy.mjs emits a MINIMAL package.json (just the 4 `dependencies` below, no devDeps) into the generated .deploy/ folder, because the cloud `npm install` cannot resolve pnpm `workspace:*` (and the buildpack installs devDeps too). See apps/functions/DEPLOY.md. These 4 dependency specs must stay LITERAL semver — never catalog: — this dependencies block is copied verbatim into the artifact and resolved by plain npm. firebase-admin + firebase-functions are pinned EXACT (no `^`) because the artifact ships NO lockfile: a range lets the cloud install a version CI never tested, which is how firebase-functions@7.3.2 silently moved express 4→5 in a PATCH release. Bump them here and in pnpm-workspace.yaml's catalog in the same commit — packages/config-eslint/rules/runtime-deps-pinned.test.js fails if they drift apart.",
   "dependencies": {
     "@google-cloud/firestore": "^8.6.0",
-    "firebase-admin": "^14.0.0",
-    "firebase-functions": "^7.3.0",
+    "firebase-admin": "14.2.0",
+    "firebase-functions": "7.3.2",
     "sharp": "^0.34.0"
   },
   "devDependencies": {
