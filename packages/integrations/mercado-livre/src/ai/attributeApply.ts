@@ -52,6 +52,12 @@ export function applyAiAttributes(
       (v) => typeof v.name === 'string' && normalize(v.name) === normalize(text),
     );
     if (match) {
+      // ⚠️ The text guard above cannot be the only one. `NA_TEXTS` is a fixed
+      // list, and ML localises the sentinel's NAME freely ("Não aplicável",
+      // "Sem especificar", …), so an unlisted spelling matches a real option
+      // and pushes `match.id` — the sentinel — straight through. The id is the
+      // identity; drop it whatever ML calls it.
+      if (match.id === NA_VALUE_ID) continue;
       out.push({
         id,
         value_id: match.id ?? null,

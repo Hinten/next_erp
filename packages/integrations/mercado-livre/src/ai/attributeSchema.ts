@@ -133,11 +133,19 @@ function buildProperty(attr: AiAttributeSpec, maxEnumValues: number): JsonSchema
 function enumMembers(attr: AiAttributeSpec, maxEnumValues: number): string[] | null {
   if (attr.valueType !== 'list' && attr.valueType !== 'boolean') return null;
   const names = attr.values
+    // ⚠️ The N/A sentinel is identified by its value **id**. Its NAME is
+    // whatever ML localised it to — "N/A", "Não se aplica" — so comparing a
+    // name against '-1' matches nothing and duly offers the sentinel to the
+    // model, which is the one choice it must never make.
+    .filter((v) => v.id !== NA_VALUE_ID)
     .map((v) => v.name)
     .filter((n): n is string => typeof n === 'string' && n.trim() !== '');
+  // Counted AFTER the sentinel is removed, so a list holding nothing else
+  // falls back to free text rather than emitting `enum: []` — a schema no
+  // answer can satisfy, which turns "I cannot determine this" into a hard
+  // validation failure.
   if (names.length === 0 || names.length > maxEnumValues) return null;
-  // The N/A sentinel is a human-only choice and must never be offered.
-  return names.filter((n) => n !== NA_VALUE_ID);
+  return names;
 }
 
 function describe(attr: AiAttributeSpec): string {

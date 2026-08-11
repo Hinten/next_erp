@@ -93,17 +93,48 @@ describe('buildAttributeSchema', () => {
   it('never offers the N/A sentinel as a choice', () => {
     // Deciding a required attribute genuinely has no value is a judgement about
     // the product, not something to infer from a title and a photo.
+    //
+    // ⚠️ The name here is deliberately NOT '-1'. ML identifies the sentinel by
+    // its value **id** and localises the name freely, so a fixture spelling the
+    // name '-1' passes against a builder that (wrongly) filters by name — which
+    // is exactly the bug this fixture used to hide.
     const withNa = [
       spec({
         id: 'X',
         valueType: 'list',
         values: [
-          { id: '-1', name: '-1' },
+          { id: '-1', name: 'Não se aplica' },
           { id: 'V', name: 'Valor' },
         ],
       }),
     ];
     expect(buildAttributeSchema(withNa).properties!.X!.enum).toEqual(['Valor']);
+  });
+
+  it('falls back to free text rather than emitting an impossible empty enum', () => {
+    // A list whose only option is the sentinel leaves nothing to offer. An
+    // `enum: []` is a schema no answer can satisfy, so constrained decoding
+    // would turn "I cannot determine this" into a hard failure.
+    const onlyNa = [
+      spec({ id: 'X', valueType: 'list', values: [{ id: '-1', name: 'Não se aplica' }] }),
+    ];
+    const prop = buildAttributeSchema(onlyNa).properties!.X!;
+    expect(prop.enum).toBeUndefined();
+    expect(prop.type).toBe('string');
+  });
+
+  it('counts the enum cap AFTER dropping the sentinel', () => {
+    // Otherwise a list sitting exactly one over the cap is discarded even
+    // though what would actually be offered fits.
+    const values = [
+      { id: '-1', name: 'Não se aplica' },
+      { id: 'A', name: 'Um' },
+      { id: 'B', name: 'Dois' },
+    ];
+    const prop = buildAttributeSchema([spec({ id: 'X', valueType: 'list', values })], {
+      maxEnumValues: 2,
+    }).properties!.X!;
+    expect(prop.enum).toEqual(['Um', 'Dois']);
   });
 
   it('falls back to free text when the list is too long to inline', () => {

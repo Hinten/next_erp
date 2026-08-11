@@ -58,6 +58,27 @@ describe('applyAiAttributes', () => {
     }
   });
 
+  it('drops a sentinel it matched by NAME, whatever ML localised it to', () => {
+    // The text guard is a fixed list and ML names the sentinel freely, so an
+    // unlisted spelling matches a real option and would push its id — '-1' —
+    // through as if it were a genuine choice. The id is the identity.
+    const attrs = [
+      spec({
+        id: 'FIT',
+        valueType: 'list',
+        values: [
+          { id: '-1', name: 'Não aplicável' },
+          { id: 'F1', name: 'Slim' },
+        ],
+      }),
+    ];
+    expect(applyAiAttributes(attrs, { FIT: 'Não aplicável' })).toEqual([]);
+    // The real option beside it still resolves normally.
+    expect(applyAiAttributes(attrs, { FIT: 'slim' })).toEqual([
+      { id: 'FIT', value_id: 'F1', value_name: 'Slim', unit_id: null },
+    ]);
+  });
+
   it('drops blank and whitespace-only answers', () => {
     expect(applyAiAttributes(ATTRS, { BRAND: '', MATERIAL: '   ' })).toEqual([]);
   });
