@@ -230,6 +230,15 @@ export const clienteMeta: CollectionMetadata = {
     write: PERM_CLIENTE_WRITE,
     delete: PERM_CLIENTE_DELETE,
   },
+  // ⚠️ DECLARED BUT DELIBERATELY NOT ENFORCED — no `onClienteDeleted` cascade
+  // trigger, same call as `pedidoMeta` (owner, 2026-08). An endereço is NOT a
+  // disposable child row: a pedido keeps `enderecoFiscalOuterRef` and the
+  // address is read LIVE by ref, never snapshotted — by the NF-e orchestrator
+  // (`apps/nfe/lib/nfe/orchestrator/bundle.ts`, which throws
+  // `enderecoFiscalOuterRef missing` without it) and by the pedido printer
+  // (`apps/web/lib/pedido-print/assemble.ts`). Cascading here would break NF-e
+  // emission and reprinting for every historical pedido of that customer, so
+  // enderecos are orphaned on purpose.
   cascade: [{ path: 'clientes/{clienteId}/enderecos', onDelete: 'cascade' }],
   // Surface the most-recently-modified clients first. The matching
   // `clientes → ultimaModificacao DESCENDING` index already exists in
