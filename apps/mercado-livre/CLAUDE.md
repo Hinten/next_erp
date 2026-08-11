@@ -46,6 +46,20 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   needs the `(status, user_id)` composite index — `notificationGuardrails.test.ts` guard C does
   NOT cover it (it only checks `(status, processedAt)`); the assertion in
   `notificacao.test.ts` is its only cover.
+- `lib/marketplace/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
+  backstop. Everything else in this channel can only re-drive a notification that was
+  RECEIVED; this asks ML what it failed to deliver (`GET /missed_feeds` — filed only
+  after its ~8 retries over ~1h, retained 2 days) and replays each entry onto the same
+  queue a webhook feeds. It is the mitigation that makes `minInstances: 0` defensible
+  (a blown ack is recovered next morning, at up to ~24h latency — the decision and its
+  cost are recorded in `apphosting.yaml`). ⚠️ It keeps **NO cursor**, deliberately: the
+  feed has no time filter, and an entry is filed ~1h AFTER ML gives up, so a `sent`-based
+  cursor advanced at 05:00 would permanently skip one sent at 04:55. Coverage rests on
+  `period × 2 ≤ 48h retention` instead — stretching the cron silently deletes the
+  backstop (`functions/src/index.test.ts` asserts the literal). Unknown topics are
+  skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning
+  (#813); `request`/`response` are stripped from every entry (the callback URL is a leak
+  surface, #811). Flag-gated OFF behind `MERCADO_LIVRE_MISSED_FEEDS_ENABLED`.
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only

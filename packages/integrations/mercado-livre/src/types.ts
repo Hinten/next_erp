@@ -1085,3 +1085,78 @@ export const mlClaimSearchSchema = z
   })
   .passthrough();
 export type MlClaimSearch = z.infer<typeof mlClaimSearchSchema>;
+
+/* ----------------------------- missed feeds (#812) ------------------------ */
+
+/**
+ * One entry of `GET /missed_feeds` — a notification Mercado Livre gave up
+ * delivering (filed only after its 8th retry, ~1h; retained 2 days).
+ *
+ * ⚠️ **The wire shape here differs from the webhook body in two ways that have
+ * already cost this repo an incident class each**, so both fields stay RAW and
+ * are coerced exactly once, downstream:
+ *
+ *  - `sent`/`received` are **ISO-8601 strings** here, where a webhook delivery
+ *    sends epoch millis. `asMillis` in `@delfrance/data/admin/notifications`
+ *    accepts both; coercing here as well would put a second, divergent coercer
+ *    in the repo, which is precisely how #810 happened.
+ *  - `user_id` (and `application_id`) can arrive as a **string**. Narrowing it
+ *    to `z.number()` here would fail the parse for the whole page; the single
+ *    coercion site is `normalizeMlWire`'s `asInt`.
+ *
+ * ⚠️ **Every field carries a PER-FIELD `.catch(null)` on purpose**, which makes
+ * the entry parse total: any JSON object survives, with an unusable field nulled
+ * rather than rejecting its neighbours. One odd entry must never reject the page
+ * it rides in — this feed IS the recovery path, so a strict field would block
+ * every OTHER notification's recovery because of one bad neighbour, permanently,
+ * since the entries expire in 2 days regardless. The nulled field then routes
+ * through the sweep's normal "unusable entry" counters, visibly.
+ *
+ * Note the catches are per FIELD, never one outer `.catch({})` on the object —
+ * an outer catch would swallow a whole-entry failure and hand the sweep an empty
+ * object it could not tell from a genuinely empty feed.
+ *
+ * `request`/`response` are declared to document that they exist and that the
+ * sweep DELIBERATELY drops them: `request` may carry the callback URL and its
+ * headers (a leak surface — #811's named follow-up is a secret path segment on
+ * that URL), and `response` is per-entry forensics that belongs in the tick log,
+ * not on every enqueued payload and every persisted failure doc.
+ */
+export const mlMissedFeedSchema = z
+  .object({
+    /** ML's own notification id. `normalizeMlWire` aliases it onto `id`. */
+    _id: z.string().nullable().optional().catch(null),
+    resource: z.string().nullable().optional().catch(null),
+    topic: z.string().nullable().optional().catch(null),
+    user_id: z.union([z.string(), z.number()]).nullable().optional().catch(null),
+    application_id: z.union([z.string(), z.number()]).nullable().optional().catch(null),
+    /** ML's OWN delivery-attempt counter (not our retry budget). */
+    attempts: z.union([z.string(), z.number()]).nullable().optional().catch(null),
+    sent: z.string().nullable().optional().catch(null),
+    received: z.string().nullable().optional().catch(null),
+    /** Dropped by the sweep — see the docstring. */
+    request: z.record(z.string(), z.unknown()).nullable().optional().catch(null),
+    /** `http_code` is logged as a histogram; the rest is dropped. */
+    response: z
+      .object({
+        http_code: z.number().nullable().optional().catch(null),
+        req_time: z.number().nullable().optional().catch(null),
+      })
+      .passthrough()
+      .nullable()
+      .optional()
+      .catch(null),
+  })
+  .passthrough();
+export type MlMissedFeed = z.infer<typeof mlMissedFeedSchema>;
+
+/**
+ * `GET /missed_feeds?app_id=…` — one page, keyed by `messages` (NOT the
+ * `results` envelope most ML searches use, nor the `data` one claims use).
+ * There is **no documented `paging` envelope**, which is why the sweep pages
+ * until an EMPTY page rather than treating a short page as drained.
+ */
+export const mlMissedFeedsSchema = z
+  .object({ messages: z.array(mlMissedFeedSchema).default([]) })
+  .passthrough();
+export type MlMissedFeeds = z.infer<typeof mlMissedFeedsSchema>;

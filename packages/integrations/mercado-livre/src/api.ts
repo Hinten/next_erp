@@ -25,6 +25,7 @@ import {
   type MlItemPrices,
   type MlListingPrices,
   type MlMigrationLiveListing,
+  type MlMissedFeeds,
   type MlOrder,
   type MlOrderSearch,
   type MlPack,
@@ -59,6 +60,7 @@ import {
   mlClaimReasonSchema,
   mlClaimSchema,
   mlClaimSearchSchema,
+  mlMissedFeedsSchema,
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentInvoiceSchema,
@@ -337,6 +339,28 @@ export interface MercadoLivreApi {
    * api.dart:1533-1539). The `filename` ML issues is the download key.
    */
   downloadClaimAttachment(claimId: number, filename: string): Promise<MlClaimAttachmentDownload>;
+
+  /**
+   * `GET /missed_feeds?app_id=&limit=&offset=[&topic=]` (#812) — the
+   * notifications Mercado Livre gave up delivering to our callback. An entry is
+   * filed only after ML's **8th retry (~1h)** failed to get a 200, and is
+   * retained **2 days**.
+   *
+   * ⚠️ There is **no time filter** and **no consume/ack**: reading does not
+   * remove an entry, so the same one reappears until it expires. The caller
+   * must therefore be idempotent, and must NOT keep a `sent`-based cursor —
+   * an entry filed after a run would sit permanently below such a cursor.
+   *
+   * `topic` is ML's documented filter. It is exposed for diagnostics but the
+   * sweep deliberately does not use it: it cannot reduce the number of entries
+   * that must be read, only split them across one request per topic.
+   */
+  getMissedFeeds(params: {
+    appId: string;
+    topic?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MlMissedFeeds>;
 }
 
 export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLivreApi {
@@ -704,6 +728,14 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     searchClaims: (params) =>
       request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
     downloadClaimAttachment,
+
+    // `buildUrl` drops every `undefined` query value, so an omitted `topic` /
+    // `limit` / `offset` simply does not reach the URL — do NOT add `?? 0`
+    // defaults here, that would pin ML's own defaults to ours.
+    getMissedFeeds: ({ appId, topic, limit, offset }) =>
+      request('GET', '/missed_feeds', mlMissedFeedsSchema, {
+        query: { app_id: appId, topic, limit, offset },
+      }),
   };
 }
 
