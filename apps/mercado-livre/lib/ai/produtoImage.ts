@@ -76,16 +76,36 @@ async function tryLoad(
     arquivoCollection.docPath({}, arquivoId),
   ) as Arquivo;
 
-  // `filepath` is the Storage object path. Downloading through the Admin SDK
-  // keeps this inside the project — no public URL, no token, no outbound fetch
-  // to a value read out of a document.
-  if (!arquivo.filepath) return null;
+  // ⚠️ `filepath` is the Storage **directory**, never the object name —
+  // `arquivo.ts:131` says so and both writers agree (`processOriginal.ts` splits
+  // an upload into `filepath: path.slice(0, slash)` + `filename`). Downloading
+  // `filepath` alone asks the bucket for `produtos/<id>/derivatives`, which is a
+  // 404 for every produto whose derivative has actually landed — the main case.
+  // The join, including the null-directory branch for a root-level object, is
+  // the same one `onArquivoDeleted.ts:49` and the orphan sweep already use.
+  const objectName = storageObjectName(arquivo);
+  if (!objectName) return null;
 
-  const bytes = await deps.download(arquivo.filepath);
+  // Downloading through the Admin SDK keeps this inside the project — no public
+  // URL, no token, no outbound fetch to a value read out of a document.
+  const bytes = await deps.download(objectName);
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) return null;
 
   return {
     base64: Buffer.from(bytes).toString('base64'),
     mimeType: arquivo.contentType ?? 'image/jpeg',
   };
+}
+
+/**
+ * `filepath` (directory) + `filename` (object name), the repo's standard join.
+ *
+ * A null/blank `filepath` means the object sits at the bucket root, so the
+ * filename alone is the object name — not a reason to skip the image.
+ */
+function storageObjectName(arquivo: Arquivo): string | null {
+  const filename = arquivo.filename?.trim();
+  if (!filename) return null;
+  const dir = arquivo.filepath?.trim();
+  return dir ? `${dir}/${filename}` : filename;
 }

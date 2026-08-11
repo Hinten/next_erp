@@ -65,8 +65,19 @@ export class AiNotConfiguredError extends Error {
   }
 }
 
-/** Vertex's default region; overridable per deployment. */
-const DEFAULT_LOCATION = 'us-central1';
+/**
+ * ⚠️ **`global`, not a region.** Verified against Vertex on 2026-08-11: the
+ * models this feature is built around — `gemini-3.5-flash-lite` (the shipped
+ * default), `gemini-3.1-flash-lite`, `gemini-3.6-flash` — are served at
+ * `global` and **404 at `us-central1`**, which is what this constant said
+ * first. Vertex's per-region availability is not uniform and the newest
+ * lightweight models land on `global` before anywhere else, so a regional
+ * default is a deploy-time 404 for the exact models we chose.
+ *
+ * Overridable per deployment via `GOOGLE_CLOUD_LOCATION` for the case where a
+ * future model is region-pinned, or where data residency demands one.
+ */
+export const DEFAULT_AI_LOCATION = 'global';
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -76,7 +87,9 @@ function getClient(): GoogleGenAI {
   // covers a local `pnpm dev`, where it comes from .env.local.
   const project = process.env.GOOGLE_CLOUD_PROJECT ?? process.env.FIREBASE_PROJECT_ID;
   if (!project) throw new AiNotConfiguredError('GOOGLE_CLOUD_PROJECT');
-  const location = process.env.GOOGLE_CLOUD_LOCATION ?? DEFAULT_LOCATION;
+  // `??`, not `||`: an env var explicitly set to '' is a misconfiguration worth
+  // failing on downstream, not something to silently paper over.
+  const location = process.env.GOOGLE_CLOUD_LOCATION ?? DEFAULT_AI_LOCATION;
   cachedClient = new GoogleGenAI({ vertexai: true, project, location });
   return cachedClient;
 }

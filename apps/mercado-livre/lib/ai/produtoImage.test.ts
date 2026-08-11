@@ -39,8 +39,8 @@ beforeEach(() => {
 
 describe('loadProdutoImage', () => {
   it('prefers the 400 px derivative', () => {
-    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives/hash_400.jpeg' });
-    h.docs.set('prod_hash_200', { filepath: 'produtos/p/derivatives/hash_200.jpeg' });
+    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
+    h.docs.set('prod_hash_200', { filepath: 'produtos/p/derivatives', filename: 'hash_200.jpeg' });
     const d = deps();
     return loadProdutoImage(d, [foto()]).then((image) => {
       expect(d.download).toHaveBeenCalledWith('produtos/p/derivatives/hash_400.jpeg');
@@ -51,7 +51,7 @@ describe('loadProdutoImage', () => {
   it('falls back to 200 px when only it has landed', async () => {
     // The resize function is asynchronous — a freshly uploaded photo can have
     // one derivative and not the other.
-    h.docs.set('prod_hash_200', { filepath: 'produtos/p/derivatives/hash_200.jpeg' });
+    h.docs.set('prod_hash_200', { filepath: 'produtos/p/derivatives', filename: 'hash_200.jpeg' });
     const d = deps();
     await loadProdutoImage(d, [foto()]);
     expect(d.download).toHaveBeenCalledWith('produtos/p/derivatives/hash_200.jpeg');
@@ -60,7 +60,7 @@ describe('loadProdutoImage', () => {
   it('NEVER falls back to the original', async () => {
     // An original can be many megabytes and there is no server-side resize
     // here; a text-only suggestion beats shipping one.
-    h.docs.set('prod_hash', { filepath: 'produtos/p/originals/hash.jpg' });
+    h.docs.set('prod_hash', { filepath: 'produtos/p/originals', filename: 'hash.jpg' });
     const d = deps();
     await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
     expect(d.download).not.toHaveBeenCalled();
@@ -71,29 +71,56 @@ describe('loadProdutoImage', () => {
     await expect(loadProdutoImage(deps(), null)).resolves.toBeNull();
   });
 
-  it('skips a derivative whose arquivo doc has no storage path', async () => {
-    h.docs.set('prod_hash_400', { filepath: null });
-    h.docs.set('prod_hash_200', { filepath: null });
-    await expect(loadProdutoImage(deps(), [foto()])).resolves.toBeNull();
+  it('joins the DIRECTORY and the FILENAME to reach the object', async () => {
+    // ⚠️ `Arquivo.filepath` is the Storage directory only — `arquivo.ts:131`
+    // says so, and `processOriginal.ts` writes it that way. Downloading
+    // `filepath` alone asks the bucket for `produtos/p/derivatives`, a 404 for
+    // every produto whose derivative actually landed. This test exists because
+    // the original fixtures put the whole object path in `filepath` and so went
+    // green against the broken join.
+    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
+    const d = deps();
+    await loadProdutoImage(d, [foto()]);
+    expect(d.download).toHaveBeenCalledWith('produtos/p/derivatives/hash_400.jpeg');
+  });
+
+  it('handles an object at the bucket root, where there is no directory', async () => {
+    // The same null-filepath branch `onArquivoDeleted` carries. A missing
+    // directory is not a missing object.
+    h.docs.set('prod_hash_400', { filepath: null, filename: 'solto.jpeg' });
+    const d = deps();
+    await loadProdutoImage(d, [foto()]);
+    expect(d.download).toHaveBeenCalledWith('solto.jpeg');
+  });
+
+  it('skips a derivative whose arquivo doc has no filename', async () => {
+    // `filename` is the object; without it there is nothing to fetch, whatever
+    // the directory says.
+    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: null });
+    h.docs.set('prod_hash_200', { filepath: null, filename: null });
+    const d = deps();
+    await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
+    expect(d.download).not.toHaveBeenCalled();
   });
 
   it('skips an image larger than the ceiling', async () => {
     // A 400 px JPEG is tens of KB; anything near the cap means the ref points
     // somewhere unexpected.
-    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives/hash_400.jpeg' });
+    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
     const d = deps(vi.fn(async () => new Uint8Array(3 * 1024 * 1024)));
     await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
   });
 
   it('skips an empty download rather than sending zero bytes', async () => {
-    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives/hash_400.jpeg' });
+    h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
     const d = deps(vi.fn(async () => new Uint8Array()));
     await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
   });
 
   it('honours the arquivo content type', async () => {
     h.docs.set('prod_hash_400', {
-      filepath: 'produtos/p/derivatives/hash_400.jpeg',
+      filepath: 'produtos/p/derivatives',
+      filename: 'hash_400.jpeg',
       contentType: 'image/png',
     });
     const image = await loadProdutoImage(deps(), [foto()]);
