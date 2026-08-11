@@ -26,6 +26,18 @@ export const mlSizeChartRowSchema = z
     /** FULL ML row id (`'<chartId>:<n>'`) — null until sent to ML. */
     id: z.string().nullable().optional(),
     attributes: z.array(mlAttributeWireSchema).nullable().optional(),
+    /**
+     * ML's COMPUTED `SIZE` for this row, cached off the create/row responses.
+     *
+     * ERP-only and deliberately NOT inside `attributes`: every valued entry
+     * there is re-sent on the next row PUT, and ML rejects a computed attribute
+     * in a row body. For an apparel chart (main attribute = `SIZE`) this merely
+     * mirrors the row's own SIZE; for a footwear chart, whose main attribute is
+     * `EU_SIZE`/`M_US_SIZE`/…, it is the ONLY place the listing's size value
+     * exists. A Flutter save strips it — the publish binding then falls back to
+     * the row's own SIZE exactly as before.
+     */
+    sizeCalculado: mlAttributeWireSchema.nullable().optional(),
   })
   .passthrough();
 export type MlSizeChartRow = z.infer<typeof mlSizeChartRowSchema>;
@@ -46,6 +58,17 @@ export const mlSizeChartSchema = z
     attributes: z.array(mlAttributeWireSchema).nullable().optional(),
     main_attribute: z.array(mlAttributeWireSchema).nullable().optional(),
     rows: z.array(mlSizeChartRowSchema).nullable().optional(),
+    /**
+     * When the operator asked ML to delete this chart (ms epoch), or null.
+     *
+     * ERP-only. `DELETE /catalog/charts/{id}` is a REQUEST: ML checks
+     * asynchronously (up to 24h) that no listing still links the chart and
+     * silently keeps it if one does, so the entry stays on the doc until a
+     * `chart_status` re-read confirms the removal. A Flutter save strips this
+     * field, which degrades to "no deletion requested" — the operator simply
+     * asks again.
+     */
+    exclusaoSolicitadaEm: z.number().int().nullable().optional(),
   })
   .passthrough();
 export type MlSizeChart = z.infer<typeof mlSizeChartSchema>;
