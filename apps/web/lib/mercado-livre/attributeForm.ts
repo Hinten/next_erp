@@ -72,6 +72,52 @@ export function widgetKind(attr: MercadoLivreCategoriaAtributo): AttrWidgetKind 
   }
 }
 
+/**
+ * Options for an enumerated attribute, keyed by ML's value id.
+ *
+ * A value ML ships without an id falls back to its own name as the key — the
+ * alternative is dropping the option entirely, and an option the operator can
+ * see but not choose is worse than one stored by name.
+ */
+export function selectOptions(
+  attr: MercadoLivreCategoriaAtributo,
+): Array<{ value: string; label: string }> {
+  return attr.values
+    .map((v) => ({ value: v.id ?? v.name ?? '', label: v.name ?? v.id ?? '' }))
+    .filter((o) => o.value !== '' && o.label !== '');
+}
+
+/**
+ * The row a Select's chosen option produces.
+ *
+ * A Mantine `Select` reports the option **value**, so the id round-trips and
+ * the name is looked back up — the reverse of the `Autocomplete` case, where
+ * the reported string is the label and {@link resolveTypedValue} has to resolve
+ * it. Getting these two backwards stores an id in `value_name`, which ML
+ * rejects as an unknown value.
+ */
+export function rowFromSelect(
+  attr: MercadoLivreCategoriaAtributo,
+  selected: string | null,
+): AttrRow {
+  if (selected == null || selected === '') {
+    return { id: attr.id, value_id: null, value_name: null, unit_id: null };
+  }
+  const match = attr.values.find((v) => (v.id ?? v.name) === selected);
+  return {
+    id: attr.id,
+    value_id: match?.id ?? null,
+    value_name: match?.name ?? selected,
+    unit_id: null,
+  };
+}
+
+/** The Select value that renders a stored row, or null when it holds none. */
+export function selectValueOf(row: AttrRow | undefined): string | null {
+  if (!row || isNaRow(row)) return null;
+  return row.value_id ?? row.value_name ?? null;
+}
+
 /** `number` and `number_unit` accept digits only (`:1283-1286`). */
 export function isNumericAttr(attr: MercadoLivreCategoriaAtributo): boolean {
   return attr.valueType === 'number' || attr.valueType === 'number_unit';

@@ -10,7 +10,10 @@ import {
   isNumericAttr,
   naRow,
   resolveTypedValue,
+  rowFromSelect,
   seedRows,
+  selectOptions,
+  selectValueOf,
   validateAttr,
   variationColorSizeState,
   widgetKind,
@@ -242,5 +245,74 @@ describe('variationColorSizeState', () => {
 
   it('does not apply to any other attribute', () => {
     expect(variationColorSizeState('BRAND', [])).toBeNull();
+  });
+});
+
+describe('enumerated attribute options', () => {
+  const gender = attr({
+    id: 'GENDER',
+    valueType: 'list',
+    values: [
+      { id: 'G1', name: 'Masculino' },
+      { id: 'G2', name: 'Feminino' },
+    ],
+  });
+
+  it('keys options by ML’s value id', () => {
+    expect(selectOptions(gender)).toEqual([
+      { value: 'G1', label: 'Masculino' },
+      { value: 'G2', label: 'Feminino' },
+    ]);
+  });
+
+  it('falls back to the name for a value ML ships without an id', () => {
+    // An option the operator can see but not choose is worse than one stored
+    // by name.
+    const byName = attr({ id: 'X', valueType: 'list', values: [{ id: null, name: 'Único' }] });
+    expect(selectOptions(byName)).toEqual([{ value: 'Único', label: 'Único' }]);
+  });
+
+  it('drops a value with neither id nor name', () => {
+    const junk = attr({ id: 'X', valueType: 'list', values: [{ id: null, name: null }] });
+    expect(selectOptions(junk)).toEqual([]);
+  });
+
+  it('resolves a chosen option back to BOTH id and name', () => {
+    // A Select reports the option VALUE; an Autocomplete reports the LABEL.
+    // Swapping the two stores an id in `value_name`, which ML rejects.
+    expect(rowFromSelect(gender, 'G2')).toEqual({
+      id: 'GENDER',
+      value_id: 'G2',
+      value_name: 'Feminino',
+      unit_id: null,
+    });
+  });
+
+  it('clears the row when the Select is cleared', () => {
+    expect(rowFromSelect(gender, null)).toEqual({
+      id: 'GENDER',
+      value_id: null,
+      value_name: null,
+      unit_id: null,
+    });
+  });
+
+  it('keeps a stored value ML no longer lists', () => {
+    // A category can drop a value the listing already carries; blanking it
+    // silently would rewrite stored data on the next save.
+    expect(rowFromSelect(gender, 'G9')).toEqual({
+      id: 'GENDER',
+      value_id: null,
+      value_name: 'G9',
+      unit_id: null,
+    });
+  });
+
+  it('renders the stored row by id, and N/A as no selection', () => {
+    expect(selectValueOf({ id: 'GENDER', value_id: 'G1', value_name: 'M', unit_id: null })).toBe(
+      'G1',
+    );
+    expect(selectValueOf(naRow('GENDER'))).toBeNull();
+    expect(selectValueOf(undefined)).toBeNull();
   });
 });
