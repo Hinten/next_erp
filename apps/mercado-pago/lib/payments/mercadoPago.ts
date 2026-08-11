@@ -24,6 +24,7 @@ import {
   createCredentialStore,
   credentialFromResponse,
 } from './credentialStore';
+import { invalidateMercadoPagoMetodo, readMercadoPagoMetodo } from './metodoCache';
 
 /** The account doc is missing, not a Mercado Pago tipo, or has no credentials. */
 export class MercadoPagoContaNotConfiguredError extends Error {
@@ -94,14 +95,13 @@ export async function loadMercadoPagoContext(
   db: Firestore,
   metodoId: string,
 ): Promise<MercadoPagoContext> {
-  const snap = await metodoPagamentoCollection.docRef(db, {}, metodoId).get();
-  if (!snap.exists) {
+  // The cached reader replaces the READ, not the contract — both throws below
+  // are unchanged, and a `null` stands in for `!snap.exists`. See
+  // `metodoCache.ts` for why the cache is a separate module.
+  const conta = await readMercadoPagoMetodo(db, metodoId);
+  if (conta == null) {
     throw new MercadoPagoContaNotConfiguredError(`Método de pagamento ${metodoId} não encontrado.`);
   }
-  const conta = metodoPagamentoCollection.parseRead(
-    snap.data(),
-    metodoPagamentoCollection.docPath({}, metodoId),
-  );
   if (conta.tipo !== TIPO_INTEGRACAO_PGTO.mercadoPago) {
     throw new MercadoPagoContaNotConfiguredError(
       `Método de pagamento ${metodoId} não é do tipo Mercado Pago.`,
@@ -150,6 +150,10 @@ export async function loadMercadoPagoContext(
       // touches other fields.
       if (resp.user_id != null) {
         await metodoPagamentoCollection.merge(db, {}, metodoId, { user_id: resp.user_id });
+        // This process just wrote the document it caches. The merge also changes
+        // the collector query's own predicate and flips the v1 scan's answer, so
+        // those entries go too.
+        invalidateMercadoPagoMetodo(metodoId, resp.user_id);
       }
     },
   };
