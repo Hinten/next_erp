@@ -134,6 +134,14 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     the cluster is retired instead by moving its MAINTENANCE into a trigger
 //     (#920) so `marketplace` + `marketplaceIds` + the stamping can still die
 //     at the Flutter decommission. See #431 for the three locks.
+//
+//     ✅ DONE. #920 shipped: `onProdutoMercadoLivreLinkChanged` and
+//     `onVariacaoMercadoLivreLinkChanged` are the array's sole writers, deriving
+//     it from the link subcollections, so lock 2 (the `marketplace` coupling) is
+//     broken and only the decommission date remains. The A/B section below is
+//     kept as the RECORD of why shape A is permanent — re-run it if the
+//     published-parents : conta-linked ratio ever shifts by an order of
+//     magnitude, but do not treat the array as removable debt.
 //  4. A daily-mode PAGE-2 call with the SHIPPED daily predicate
 //     (`changedSinceMs = now − dailyWindowHours − overlap`, `afterAnchorId`
 //     keyset) and prints its plan — the keyset-over-computed-filter cost

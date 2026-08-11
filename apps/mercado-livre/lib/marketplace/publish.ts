@@ -329,35 +329,41 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     ultimaModificacao: now,
   });
 
-  // ---- Dual-run denorm stamps (DEPRECATED arrays) -------------------------
+  // ---- Dual-run denorm stamps (DEAD WEIGHT — see the schema note) ---------
+  // ⛔ `marketplace` / `marketplaceIds` have NO QUERY CONSUMERS in this repo —
+  // nothing filters, projects or orders by them, and the only reads are these
+  // fields' own read-modify-write maintenance (`stampChildMarketplace` below is
+  // one). They are deleted at the decommission (#961 audited it; the canonical
+  // note is on `produtoSchema` in `packages/schemas`). Do not repair them, do
+  // not add a reader, do not give them a trigger — an entry is never removed
+  // when a link doc is deleted, and that is deliberate.
+  //
   // The deployed Flutter backend resolves an incoming ML order item via
   // `marketplace array-contains {integracaoUid, externalId}` (EXACT map match
-  // — hence no `relevantData`, the shape its own webhook repair writes) and
-  // gates its stock sender on `integracoesComProduto`. It is a LIVE concurrent
-  // reader AND writer of these same fields, so the stamps must keep running
-  // for as long as it is deployed.
+  // — hence no `relevantData`, the shape its own webhook repair writes), so
+  // these two stamps keep running until it is gone.
   //
-  // ⚠️ The claim that used to sit here — "the new app never READS these
-  // fields" — was FALSE and would have made #431 a silent stock + price
-  // outage: the sweeps would select zero produtos and log `SEM_LINK` skips
-  // rather than erroring. `integracoesComProduto` is read by
-  // `bulkEstoquePlan.fetchStockFamilies` (the stock sweep's anchor predicate) and
-  // by `precoPlan.fetchPrecoPage` (the price job's anchor query), and a
-  // `produtos` composite index exists to serve both.
+  // ⚠️ `integracoesComProduto` is NOT stamped here any more (#920). It is not
+  // legacy-only — the new app's own sweeps anchor on it
+  // (`bulkEstoquePlan.fetchStockFamilies` S1, `precoPlan.fetchPrecoPage`), served
+  // by a declared `produtos` composite — and a comment here once claimed the
+  // opposite, which would have made #431 a SILENT stock + price outage: the
+  // sweeps select zero produtos and log `SEM_LINK` skips rather than erroring.
+  // Its sole writers are now `onProdutoMercadoLivreLinkChanged` and
+  // `onVariacaoMercadoLivreLinkChanged`, which derive it from the link
+  // subcollections — see `lib/marketplace/integracoesComProduto.ts`.
   //
-  // THREE independent locks keep these arrays alive; #431 tracks all of them:
+  // That leaves TWO locks on the arrays below, not the three #431 opened with:
   //  1. ARCHITECTURE — the stock sweep needs an index-SEEKABLE per-conta term
-  //     on `produtos`. A correlated subquery over the link subcollection can
-  //     only ever be a post-filter, and on Enterprise a post-filter does not
-  //     reduce data scanned. Whether the post-filter is nonetheless cheap
-  //     enough is measurable (`apps/mercado-livre/scripts/check-stock-indexes.mjs`),
-  //     not obvious.
-  //  2. COUPLING — `integracoesComProduto` is never removed on its own: both
-  //     removal paths DERIVE it from `marketplace`
-  //     (`importMigration.applyMarketplaceDeletion`,
-  //     `itemsStatusSync.removeMarketplaceEntry`). Dropping `marketplace`
-  //     alone would make the array append-only.
-  //  3. DUAL-RUN — the Flutter backend above. Lifts at the decommission.
+  //     on `produtos`. MEASURED and settled (spike #890, staging 2026-08-07):
+  //     the link post-filter reads ×7.5 the data, so `integracoesComProduto`
+  //     stays as the pre-filter permanently. It is no longer a "deprecated
+  //     array" at all — it is an app-owned denorm with a server owner.
+  //  2. ~~COUPLING~~ — BROKEN by #920. The array used to be removable only by
+  //     deriving it from `marketplace`, which is why the three were an
+  //     all-or-nothing cluster; the triggers derive it from the links instead.
+  //  3. DUAL-RUN — the Flutter backend above. Lifts at the decommission, and
+  //     takes `marketplace` + `marketplaceIds` + these stamps with it.
   //
   // The stamps run once the ML item write has SUCCEEDED (the error path above
   // never stamps) — a later failure (e.g. the description step) leaves them in
@@ -366,7 +372,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   await produtoCollection.docRef(db, {}, produtoId).update({
     marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: item.id }),
     marketplaceIds: FieldValue.arrayUnion(item.id),
-    integracoesComProduto: FieldValue.arrayUnion(integracaoId),
   });
 
   // Variation links live under each CHILD produto, keyed back to the parent
@@ -392,6 +397,13 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         produtoMercadoLivreOuterRef:
           (existing?.raw.produtoMercadoLivreOuterRef as string | undefined) ??
           toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`),
+        // #920: the conta, denormalized onto the child link the same way the
+        // parent link has always carried it. Unconditional (not
+        // preserved-or-null like the two refs above) so a re-publish self-heals
+        // a row that predates the field — `onVariacaoMercadoLivreLinkChanged`
+        // otherwise has to dereference the parent link, which yields nothing
+        // once that link is gone.
+        contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
         sku: child.produto.sku ?? null,
       }),
     );
@@ -557,10 +569,19 @@ async function loadTabelaBinding(
  * carries none). arrayUnion can't express the cleanup, so this mirrors the old
  * `transform(newValues:)` full-field write.
  *
- * Removal is gated on the Flutter decommission (#431), NOT on the new app's own
- * readers: the new app both READS these arrays (stock + price discovery) and
- * MAINTAINS them (`itemsStatusSync` / `importMigration`) today — see the three
- * locks spelled out at the parent stamp site in `publishProduto`.
+ * ⚠️ `integracoesComProduto` is deliberately absent from the patch (#920) —
+ * `onVariacaoMercadoLivreLinkChanged` owns it now, deriving it from the child's
+ * `variacaoMercadoLivre` link. Do not add it back: two writers, one of them a
+ * read-clean-write, is exactly how a conta gets silently dropped while a live
+ * listing still exists, and that failure is invisible (the sweeps just stop
+ * selecting the produto).
+ *
+ * ⛔ What remains is DEAD WEIGHT: no query consumers, deleted at the
+ * decommission (#431 lock 3 / #961). The read-clean-write below is not a
+ * counter-example — it reads `marketplace` only to compute the next
+ * `marketplace`, which is maintenance, not consumption. The canonical note is on
+ * `produtoSchema`. Do not extend this to remove entries when a link doc is
+ * deleted — that gap is known and deliberate; the arrays die with the consumer.
  */
 async function stampChildMarketplace(
   db: Firestore,
@@ -601,15 +622,10 @@ async function stampChildMarketplace(
 
     const ids = new Set(Array.isArray(raw.marketplaceIds) ? (raw.marketplaceIds as string[]) : []);
     ids.add(variationId);
-    const contas = new Set(
-      Array.isArray(raw.integracoesComProduto) ? (raw.integracoesComProduto as string[]) : [],
-    );
-    contas.add(integracaoId);
 
     const patch = produtoCollection.parseMerge({
       marketplace: cleaned,
       marketplaceIds: [...ids],
-      integracoesComProduto: [...contas],
     });
     try {
       await ref.update(patch, { lastUpdateTime: snap.updateTime! });

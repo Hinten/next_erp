@@ -40,6 +40,14 @@ export function componentesKitEntries(
  * that depósito. Treating it as 0 matches the pedido→estoque sync, which
  * decrements every `limitarEstoque` component on sale.
  *
+ * ⚠️ That divergence is **load-bearing downstream, not just a local nicety**:
+ * the Mercado Livre stock sweep publishes the number this returns, and relies on
+ * an unresolvable component producing 0 so an unverifiable kit is advertised as
+ * out of stock rather than left at a stale positive quantity (ADR 0014; the
+ * sweep additionally forces that 0 to actually be sent, and logs it). Reverting
+ * to Flutter's skip-the-component behaviour here would silently overstate
+ * availability on the marketplace — do not revisit it as an isolated change.
+ *
  * Defensive (also divergent): a non-object entry, or one whose `quantidade` is
  * not a finite number > 0, is ignored — the schema enforces the shape, but
  * soft-parsed raw docs can carry junk that would otherwise throw or yield

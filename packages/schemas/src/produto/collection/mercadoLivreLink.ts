@@ -143,6 +143,23 @@ export const variacaoMercadoLivreLinkSchema = z
     id: z.number().int().nullable().default(null),
     /** ML item id (User-Products model) — each variation is its own item. */
     itemId: z.string().nullable().default(null),
+    /**
+     * Canonical `documents/integracao/<id>` path to the owning integracao —
+     * the same denorm the PARENT link has carried all along (#920).
+     *
+     * NOT in the Flutter wire shape: `VariacoesML` never had it, so the conta
+     * was only reachable by dereferencing `produtoMercadoLivreOuterRef` and
+     * reading the parent link's own `contaOuterRef`. That hop is a second read
+     * on every event and it fails outright once the parent link is gone —
+     * `pruneMigratedSource` deletes parent and child links in ONE batch — which
+     * makes it unusable as the sole conta source for a link-driven trigger.
+     *
+     * `.nullable()` because rows imported from the legacy project arrive
+     * without it; `tools/migrations/src/2026-08-ml-integracoes-com-produto`
+     * backfills them from the parent link, and only then may
+     * `onVariacaoMercadoLivreLinkChanged`'s fallback hop be deleted.
+     */
+    contaOuterRef: outerRefSchema.nullable().default(null),
     /** Canonical `documents/produtos/<childId>` path to the variation child. */
     produtoVariacaoOuterRef: outerRefSchema,
     /** Canonical `documents/produtos/<id>/produtoMercadoLivre/<docId>` path. */
@@ -152,3 +169,51 @@ export const variacaoMercadoLivreLinkSchema = z
   })
   .passthrough();
 export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSchema>;
+
+/**
+ * Does this PARENT link doc represent a listing the produto's conta still holds?
+ *
+ * This is the membership predicate behind `produtos.integracoesComProduto` — the
+ * anchor pre-filter both ML sweeps start from (`estoquePlan.fetchStockFamilies`
+ * S1, `precoPlan.fetchPrecoPage`). It reproduces the semantics the old
+ * `marketplace` array carried, so moving maintenance into a trigger (#920) is not
+ * also a behaviour change: an entry only ever appeared after a publish/import
+ * returned an ML item id, and `removeMarketplaceEntry` dropped it on cancel.
+ *
+ * ⚠️ Cancelling does NOT delete the link doc — `itemsStatusSync` merges
+ * `estado: 'c'` and the doc survives with its `id` intact. A trigger keyed on
+ * document deletion would therefore never remove anything and the array would go
+ * append-only, which is exactly the failure #431's lock 2 describes. Hence the
+ * `estado` term.
+ *
+ * Deliberately loose input: callers hold raw `event.data.*.data()` payloads and
+ * migration snapshots, never parsed schemas.
+ */
+export function linkHasLiveListing(link: Record<string, unknown> | null | undefined): boolean {
+  if (link == null) return false;
+  if (typeof link.id !== 'string' || link.id.length === 0) return false;
+  return link.estado !== ESTADO_PUBLICACAO_ML.cancelado;
+}
+
+/**
+ * Does this VARIATION link doc represent a listing? Existence plus an ML
+ * identifier — `id` in the legacy `variations[]` model, `itemId` in the
+ * User-Products one, where each member child is its own item.
+ *
+ * ⚠️ `estado` is deliberately NOT consulted, and the asymmetry with
+ * {@link linkHasLiveListing} is the point: `estado` lives only on the parent
+ * link, so honouring it here would force the parent trigger to fan out to every
+ * child on every estado transition — for a field NO new-app reader consumes on
+ * children (both sweeps filter `paiId == null`). It also matches the behaviour
+ * being replaced: `updateParentDenorm` only ever touched the link's own produto,
+ * so a cancel dropped the conta from the parent and left the children alone.
+ *
+ * The legacy `id` is an int, but tolerate a stringified one — Flutter-written
+ * rows predate the typed schema.
+ */
+export function variacaoLinkHasListing(link: Record<string, unknown> | null | undefined): boolean {
+  if (link == null) return false;
+  if (typeof link.id === 'number' && Number.isFinite(link.id)) return true;
+  if (typeof link.id === 'string' && link.id.length > 0) return true;
+  return typeof link.itemId === 'string' && link.itemId.length > 0;
+}

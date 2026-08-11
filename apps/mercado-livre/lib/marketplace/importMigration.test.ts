@@ -388,6 +388,11 @@ describe('handleUptinMigration — fresh migration', () => {
       relevantData: { isUserProductModel: true },
     });
     expect(tp1.marketplaceIds).toEqual([FAMILY_ID]);
+    // Unchanged, and since #920 for a different reason: the prune no longer
+    // recomputes this array from `marketplace` (that derivation was #431 lock 2,
+    // and it wrote path-form ids no reader could match). The value here is the
+    // seeded one, passed through untouched — `onProdutoMercadoLivreLinkChanged`
+    // reacts to the source link this prune deletes in the same batch.
     expect(tp1.integracoesComProduto).toEqual([CONTA]);
     expect(
       (tp1.statusProdutosMarketplace as Record<string, unknown>)[`${CONTA}_${SOURCE_ITEM_ID}`],

@@ -257,9 +257,10 @@ function member(produtoId: string, over: Partial<FamilyMember> = {}): FamilyMemb
     publicado: true,
     componentesKit: null,
     timestampMs: null,
-    // disponivel = 10 − 2 = 8. `parentId` is what the ledger pre-pass keys on,
-    // and the real projection always selects it.
-    estoque: { parentId: produtoId, quantidade: 10, quantidadeReservada: 2 },
+    // disponivel = 10 − 2 = 8. NO `parentId`: `ownEstoque()` does not project one
+    // and the reconstruction keys the own row by `produtoId` instead (#932).
+    // Hand-writing the field here would re-hide exactly the bug that shipped.
+    estoque: { quantidade: 10, quantidadeReservada: 2 },
     componentEstoques: [],
     ...over,
   };
@@ -486,6 +487,7 @@ describe('runStockSweep — conta enumeration', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: false,
@@ -601,6 +603,7 @@ describe('runStockSweep — happy path', () => {
         integracaoId: 'INT-A',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
@@ -663,6 +666,7 @@ describe('runStockSweep — happy path', () => {
         integracaoId: 'INT-A',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,
@@ -699,6 +703,7 @@ describe('runStockSweep — send policy', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 1,
+        inalterados: 1,
         pages: 1,
         truncated: false,
         paused: false,
@@ -714,7 +719,12 @@ describe('runStockSweep — send policy', () => {
     });
   });
 
-  it('buildSendTasks skips are counted (link without item id)', async () => {
+  it('buildSendTasks skips are counted in `skipped` but NOT in `inalterados`', async () => {
+    // The separation is the point of the second counter (#695). This family
+    // reached `buildSendTasks` — the change check let it through — and was
+    // dropped for a per-listing reason. Folding it into `inalterados` would
+    // inflate the very ratio that measures whether the ledger comparison is
+    // worth its cost.
     const db = new FakeDb();
     seedConta(db, 'INT-A');
     wireCtx();
@@ -725,7 +735,7 @@ describe('runStockSweep — send policy', () => {
     const result = await run(db, 'incremental', { scheduler, fetchFamilies });
 
     expect(enqueue).not.toHaveBeenCalled();
-    expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1 });
+    expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1, inalterados: 0 });
   });
 });
 
@@ -946,7 +956,7 @@ describe('runStockSweep — monthly reconciliation', () => {
     // Comfortably high on both sides — the incremental tier would skip it.
     const alto = familyRow({
       anchor: member('PROD-1', {
-        estoque: { parentId: 'PROD-1', quantidade: 500, quantidadeReservada: 0 },
+        estoque: { quantidade: 500, quantidadeReservada: 0 },
       }),
     });
     const { fetchFamilies } = makeFetch([{ rows: [alto], nextAfterAnchorId: null }]);
@@ -1294,7 +1304,7 @@ describe('runStockSweep — persistent continuation', () => {
     // would skip it, so it only survives if the frozen daily policy is honoured.
     const alto = familyRow({
       anchor: member('PROD-1', {
-        estoque: { parentId: 'PROD-1', quantidade: 500, quantidadeReservada: 0 },
+        estoque: { quantidade: 500, quantidadeReservada: 0 },
       }),
     });
     const { fetchFamilies } = makeFetch([{ rows: [alto], nextAfterAnchorId: null }]);
@@ -1373,6 +1383,7 @@ describe('runStockSweep — 429 pause gate', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: true,
@@ -1449,6 +1460,7 @@ describe('runStockSweep — per-conta failure isolation', () => {
         integracaoId: 'INT-A',
         enqueued: 0,
         skipped: 0,
+        inalterados: 0,
         pages: 0,
         truncated: false,
         paused: false,
@@ -1458,6 +1470,7 @@ describe('runStockSweep — per-conta failure isolation', () => {
         integracaoId: 'INT-B',
         enqueued: 1,
         skipped: 0,
+        inalterados: 0,
         pages: 1,
         truncated: false,
         paused: false,

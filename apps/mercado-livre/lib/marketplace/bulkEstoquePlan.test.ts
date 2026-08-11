@@ -1205,10 +1205,17 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
       entries.map(([id, dq]) => [chaveMovimento(id, DEP), { dq, dr: 0, desconhecido: false }]),
     );
 
-  /** A plain produto holding 10 − 2 = 8 available, with the `parentId` the join projects. */
+  /**
+   * A plain produto holding 10 − 2 = 8 available.
+   *
+   * ⚠️ The own estoque row carries **no `parentId`**, because `ownEstoque()`'s
+   * `select` does not project one — this fixture mirrors the real projection.
+   * It used to hand-write the field, which is precisely what hid #932: the
+   * reconstruction was keying off a value production never returns.
+   */
   const simples = () =>
     familyRow({
-      anchor: { estoque: { parentId: 'PROD', quantidade: 10, quantidadeReservada: 2 } },
+      anchor: { estoque: { quantidade: 10, quantidadeReservada: 2 } },
     });
 
   it('reconstructs a simple produto: anterior = atual − Σmovimento', () => {
@@ -1233,6 +1240,23 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     expect(anteriores.get('PROD')).toBe(10);
   });
 
+  it('⚠️ a reconstruction landing the reservation BELOW ZERO cannot invent stock (#931)', () => {
+    // The window both added 3 units and added 3 to the reservation, so
+    // `desfazerMovimento` synthesizes quantidadeReservada = 2 − 3 = −1. That
+    // negative is legitimate — it is arithmetic, not a stored value — and this
+    // is the sweep's one unfloored subtraction. `estoqueDisponivel` flooring it
+    // downstream is the ONLY thing that keeps it harmless.
+    const janela = new Map([[chaveMovimento('PROD', DEP), { dq: 3, dr: 3, desconhecido: false }]]);
+    const anteriores = quantidadesAnteriores(simples(), DEP, janela);
+
+    // Floored: (10−3) − max(0, −1) = 7. UNFLOORED it would be 7 − (−1) = 8 —
+    // exactly `atual`, so the sweep would read "nothing changed" and SKIP a
+    // movement that certainly happened. A silent skip is the one failure mode
+    // ADR 0014 says this design cannot tolerate.
+    expect(anteriores.get('PROD')).toBe(7);
+    expect(deveEnviarFamilia(quantidadesDaFamilia(simples()), anteriores, true)).toBe(true);
+  });
+
   it('OMITS a member whose own movement is unknown, so the policy fails OPEN', () => {
     // A Flutter v1 row landed in this window: the sums cannot account for it,
     // so there is no honest `anterior`. Leaving the member out is what makes
@@ -1253,7 +1277,8 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
       anchor: {
         ehKit: true,
         componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
-        estoque: { parentId: 'PROD', quantidade: 0, quantidadeReservada: 0 },
+        // No `parentId` on the own row — the real projection has none (#932).
+        estoque: { quantidade: 0, quantidadeReservada: 0 },
         componentEstoques: [{ parentId: 'COMP', quantidade: 10, quantidadeReservada: 0 }],
       },
     });
@@ -1264,13 +1289,38 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     expect(quantidadesAnteriores(kitRow, DEP, mov([['COMP', -1]])).has('PROD')).toBe(true);
   });
 
-  it('an estoque row with NO parentId cannot be keyed → reads as unchanged', () => {
-    // The denorm is legal-null at rest (#238). Undoing nothing is the safe
-    // direction here: the family is then judged on its other members.
-    const semDenorm = familyRow({
-      anchor: { estoque: { quantidade: 10, quantidadeReservada: 2 } },
+  it('⚠️ #932: an own-stock movement is reconstructed and SENT', () => {
+    // The regression test for the silent skip. The fixture carries no
+    // `parentId` on the own row (production projects none), so this passes ONLY
+    // because the reconstruction keys by `member.produtoId`. Reading the row's
+    // denorm instead makes `anterior === atual`, and every ordinary produto's
+    // stock change is dropped on every tier.
+    const atuais = quantidadesDaFamilia(simples());
+    const anteriores = quantidadesAnteriores(simples(), DEP, mov([['PROD', -3]]));
+    expect(atuais.get('PROD')).toBe(8);
+    expect(anteriores.get('PROD')).toBe(11);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true);
+  });
+
+  it('a COMPONENT row with no parentId is unresolvable → the kit SENDS its 0', () => {
+    // The denorm is legal-null at rest (#238) and the component join is the one
+    // consumer that keys on it. Such a row is invisible twice over: it resolves
+    // to no `disponivel` (so the kit floors to 0) AND it cannot be attributed a
+    // movement. Reconstructing would rebuild `anterior` from the same broken set
+    // and read "unchanged" — so the member is OMITTED and the 0 goes out.
+    const kitSemDenorm = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+        estoque: null,
+        componentEstoques: [{ quantidade: 10, quantidadeReservada: 0 }],
+      },
     });
-    expect(quantidadesAnteriores(semDenorm, DEP, mov([['PROD', -3]])).get('PROD')).toBe(8);
+    const atuais = quantidadesDaFamilia(kitSemDenorm);
+    const anteriores = quantidadesAnteriores(kitSemDenorm, DEP, mov([['COMP', -3]]));
+    expect(atuais.get('PROD')).toBe(0);
+    expect(anteriores.has('PROD')).toBe(false);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true);
   });
 
   it('THE #695 case: a component movement that does not change the kit floor', () => {
@@ -1297,6 +1347,92 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     expect(anteriores.get('PROD')).toBe(15); // min(15, 10 000) either way
     expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(false);
     expect(deveEnviarFamilia(atuais, anteriores, false)).toBe(false); // daily too
+  });
+
+  /* ------------- #806 S12: an unverifiable kit publishes 0 ------------------ */
+
+  it('⚠️ an UNVERIFIABLE kit sends 0 even though the ledger says nothing moved', () => {
+    // The regression test for the masking, and the one most likely to be
+    // "optimized" back into a skip. The kit declares a constraining component
+    // that the join never returned (stale `componentesKitKeys`), so it floors to
+    // 0 — and the reconstruction, run over the SAME broken component set, would
+    // land on 0 too and call it unchanged. Skipping would leave whatever
+    // quantity ML already holds; if that is positive, it oversells.
+    const kit = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+        estoque: null,
+        componentEstoques: [], // the denorm never named COMP, so nothing was fetched
+      },
+    });
+    const atuais = quantidadesDaFamilia(kit);
+    const anteriores = quantidadesAnteriores(kit, DEP, new Map()); // ledger: nothing moved
+
+    expect(atuais.get('PROD')).toBe(0);
+    expect(anteriores.has('PROD')).toBe(false); // omitted ⇒ unknown ⇒ sends
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true);
+    expect(deveEnviarFamilia(atuais, anteriores, false)).toBe(true);
+  });
+
+  it('a kit whose component resolved to a real 0 still sends through the normal path', () => {
+    // The legitimate out-of-stock case must survive the guard: the component IS
+    // resolvable, it just holds nothing. Here the ledger explains the movement,
+    // so `anterior` is real (1 before the −1) and the change is what triggers
+    // the send — not the unverifiable arm.
+    const kit = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+        estoque: null,
+        componentEstoques: [{ parentId: 'COMP', quantidade: 0, quantidadeReservada: 0 }],
+      },
+    });
+    const atuais = quantidadesDaFamilia(kit);
+    const anteriores = quantidadesAnteriores(kit, DEP, mov([['COMP', -1]]));
+
+    expect(atuais.get('PROD')).toBe(0);
+    expect(anteriores.get('PROD')).toBe(1);
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(true);
+  });
+
+  it('a kit constrained by NOTHING is not "unverifiable" — it falls back to own stock', () => {
+    // Every entry is `limitarEstoque: false`, so `kitEstoqueDisponivel` returns
+    // null and the kit publishes its OWN stock. There is no floor to verify, so
+    // the guard must not fire and steal the family's normal change detection.
+    const kit = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { COMP: { quantidade: 1, limitarEstoque: false, timestamp: null } },
+        estoque: { quantidade: 4, quantidadeReservada: 0 },
+        componentEstoques: [],
+      },
+    });
+    const atuais = quantidadesDaFamilia(kit);
+    const anteriores = quantidadesAnteriores(kit, DEP, new Map());
+
+    expect(atuais.get('PROD')).toBe(4);
+    expect(anteriores.get('PROD')).toBe(4); // reconstructed, not omitted
+    expect(deveEnviarFamilia(atuais, anteriores, true)).toBe(false);
+  });
+
+  it('a PARTIALLY resolved kit is still verifiable — the min is knowable', () => {
+    // One of two constraining components came back. The floor is min(0, 5) = 0
+    // either way, so the quantity is derivable and the guard must not fire:
+    // "unverifiable" means NOT ONE component resolved.
+    const kit = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: {
+          C1: { quantidade: 1, limitarEstoque: true, timestamp: null },
+          C2: { quantidade: 1, limitarEstoque: true, timestamp: null },
+        },
+        estoque: null,
+        componentEstoques: [{ parentId: 'C1', quantidade: 5, quantidadeReservada: 0 }],
+      },
+    });
+    const anteriores = quantidadesAnteriores(kit, DEP, new Map());
+    expect(anteriores.get('PROD')).toBe(0); // present ⇒ reconstructed, not omitted
   });
 
   it('a component movement that DOES change the floor still sends', () => {
@@ -1411,6 +1547,43 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     const res = run(familyRow({ links: [{ status: 'paused', sub_status: ['out_of_stock'] }] }));
     expect(res.tasks).toHaveLength(1);
     expect(res.skips).toEqual([]);
+  });
+
+  it('⚠️ an unverifiable kit EMITS its 0 and is logged — it is never skipped', () => {
+    // #806 S12 asked for a skip here; that is inverted on purpose (ADR 0014).
+    // Publishing 0 pauses the listing, which ML undoes by itself on the next
+    // positive quantity; skipping leaves a stale positive number selling stock
+    // the ERP cannot account for, which nothing undoes.
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
+    const kit = familyRow({
+      anchor: {
+        ehKit: true,
+        componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+        estoque: null,
+        componentEstoques: [],
+      },
+    });
+
+    const res = run(kit, new Map([['PROD', 0]]));
+
+    expect(res.skips).toEqual([]);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        kind: 'item',
+        itemId: 'MLB111',
+        variacaoProdutoId: null,
+        quantidade: 0,
+        variations: null,
+      },
+    ]);
+    // …and the stale denorm is named, since the 0 is legitimate but its cause
+    // is a data defect nothing else surfaces.
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({
+      produtoId: 'PROD',
+      componentes: ['COMP'],
+    });
   });
 
   it('conta with no listings (links: []) → single sem-link skip', () => {

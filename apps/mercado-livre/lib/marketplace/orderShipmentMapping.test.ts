@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { MlShipment, MlShipmentPayment } from '@delfrance/integrations-mercado-livre';
 import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete } from '@delfrance/schemas';
-import { mergeEstadoFretePreservando, mlShipmentToFreteInicial } from './orderShipmentMapping';
+import {
+  mergeEstadoFretePreservando,
+  mergeFreteInicial,
+  mlShipmentToFreteInicial,
+} from './orderShipmentMapping';
 
 function shipment(over: Partial<MlShipment> = {}): MlShipment {
   return {
@@ -11,8 +15,12 @@ function shipment(over: Partial<MlShipment> = {}): MlShipment {
     substatus: null,
     tracking_number: 'MEL00002438290969',
     last_updated: '2026-07-20T14:38:37.322-03:00',
+    // The `x-format-new` body (#957): delivery windows and `list_cost` live
+    // under `lead_time`. `base_cost` has NO counterpart there, so it stays on
+    // the legacy side — two different quantities, not one renamed. The captured
+    // real payloads at the bottom of this file are why.
     base_cost: 16.2,
-    shipping_option: {
+    lead_time: {
       list_cost: 8.91,
       estimated_delivery_time: { date: '2026-07-24T00:00:00.000-03:00' },
     },
@@ -81,16 +89,20 @@ describe('mlShipmentToFreteInicial', () => {
     expect(mapped.valorCobrado).toBe(0);
   });
 
-  it('defaults custoFinal to 0 when shipping_option has no list_cost', () => {
+  it('reports a MISSING list_cost as null, never as a fabricated 0', () => {
+    // The distinction is load-bearing: `mergeFreteInicial` preserves the stored
+    // value on `null`, so an omitted cost can no longer overwrite a correct one
+    // with zero (#957). Legacy mapped `?? 0` and merged unconditionally.
     const mapped = mlShipmentToFreteInicial({
-      shipment: shipment({ shipping_option: { list_cost: null } }),
+      shipment: shipment({ lead_time: { list_cost: null } }),
       shippingPayments: [],
       integracaoFreteOuterRef: null,
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
     });
-    expect(mapped.custoFinal).toBe(0);
+    expect(mapped.custoFinal).toBeNull();
+    expect(mapped.custoCalculado).toBe(16.2); // present → still mapped
     expect(mapped.dataPrevisaoEntrega).toBeNull();
   });
 
@@ -142,16 +154,17 @@ describe('mlShipmentToFreteInicial', () => {
     }
   });
 
-  it('handles a null shipping_option (base_cost/tracking still map)', () => {
+  it('handles a null lead_time — every cost becomes null, nothing is invented', () => {
     const mapped = mlShipmentToFreteInicial({
-      shipment: shipment({ shipping_option: null, tracking_number: null }),
+      shipment: shipment({ lead_time: null, base_cost: null, tracking_number: null }),
       shippingPayments: [],
       integracaoFreteOuterRef: null,
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
     });
-    expect(mapped.custoFinal).toBe(0);
+    expect(mapped.custoFinal).toBeNull();
+    expect(mapped.custoCalculado).toBeNull();
     expect(mapped.dataPrevisaoEntrega).toBeNull();
     expect(mapped.codRastreio).toBeNull();
   });
@@ -220,5 +233,75 @@ describe('mergeEstadoFretePreservando', () => {
     expect(mergeEstadoFretePreservando(ESTADO_FRETE.entregue, ESTADO_FRETE.cancelado)).toBe(
       'cancelado',
     );
+  });
+});
+
+/* ---------------- captured real ML payloads: base_cost is its own quantity --------------- */
+// These two shipments were captured from the live API and sit verbatim in
+// `.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart`. They are the
+// evidence that `lead_time.cost` must NEVER stand in for the legacy `base_cost`
+// (#957) — a substitution that looks harmless and silently wipes the freight
+// cost from a pedido. Keep them: a synthetic fixture cannot make this argument.
+
+describe('mlShipmentToFreteInicial — real captured payloads', () => {
+  it('free shipping: cost is 0 while base_cost is 38.90 — the 0 must never reach custoCalculado', () => {
+    // `.old/…/models.dart:3128,3150,3154` — base_cost: 38.9, cost: 0, list_cost: 19.45.
+    // Free shipping is a 100% discount, so ML's `cost` is a GENUINE zero. Were it
+    // mapped to `custoCalculado`, `??` would not treat it as missing: it would
+    // overwrite a correct stored value and then beat `custoFinal` in
+    // `derivePedidoFreteTotals`' `custoCalculado ?? custoFinal` precedence,
+    // zeroing the freight cost on the orders where it is largest.
+    const mapped = mlShipmentToFreteInicial({
+      shipment: shipment({
+        base_cost: 38.9,
+        lead_time: { cost: 0, list_cost: 19.45 } as never,
+      }),
+      shippingPayments: [],
+      integracaoFreteOuterRef: null,
+      enderecoOuterRef: null,
+      prazoDespachoUs: null,
+      modalidadeOverride: null,
+    });
+    expect(mapped.custoCalculado).toBe(38.9);
+    expect(mapped.custoCalculado).not.toBe(0);
+    expect(mapped.custoFinal).toBe(19.45);
+  });
+
+  it('paid with NO discount: cost === list_cost, yet base_cost is nearly double', () => {
+    // `.old/…/models.dart:5122,5142,5147` — base_cost: 16.2, cost: 8.91, list_cost: 8.91.
+    // The decisive sample: nothing is discounted here, so "they agree when there
+    // is no discount" is simply false. `base_cost` is a different quantity, and
+    // reading `cost` would understate this shipment's cost by 45%.
+    const mapped = mlShipmentToFreteInicial({
+      shipment: shipment({
+        base_cost: 16.2,
+        lead_time: { cost: 8.91, list_cost: 8.91 } as never,
+      }),
+      shippingPayments: [],
+      integracaoFreteOuterRef: null,
+      enderecoOuterRef: null,
+      prazoDespachoUs: null,
+      modalidadeOverride: null,
+    });
+    expect(mapped.custoCalculado).toBe(16.2);
+    expect(mapped.custoFinal).toBe(8.91);
+  });
+
+  it('a migrated body without base_cost yields null, so the merge PRESERVES the stored cost', () => {
+    // The whole point of returning null rather than substituting: losing the
+    // field is acceptable, overwriting a correct value with a different quantity
+    // is not.
+    const mapped = mlShipmentToFreteInicial({
+      shipment: shipment({ base_cost: null, lead_time: { cost: 0, list_cost: 19.45 } as never }),
+      shippingPayments: [],
+      integracaoFreteOuterRef: null,
+      enderecoOuterRef: null,
+      prazoDespachoUs: null,
+      modalidadeOverride: null,
+    });
+    expect(mapped.custoCalculado).toBeNull();
+
+    const merged = mergeFreteInicial({ custoCalculado: 38.9, custoFinal: 19.45 } as never, mapped);
+    expect(merged.custoCalculado).toBe(38.9);
   });
 });

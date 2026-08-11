@@ -286,6 +286,68 @@ describe('TableView', () => {
     expect(screen.getByRole('button', { name: 'Expandir ações' })).toBeTruthy();
   });
 
+  it('renderActionsPanelExtra renders inside the panel and follows the collapse state', () => {
+    const extra = vi.fn(({ collapsed }: { collapsed: boolean }) => (
+      <span>{collapsed ? 'compacto' : 'expandido'}</span>
+    ));
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        actionsPanel={{ width: 300 }}
+        renderActionsPanelExtra={extra}
+        actions={[{ id: 'del', label: 'Excluir', run: vi.fn() }]}
+      />,
+    );
+    const panel = screen.getByRole('complementary', { name: 'Ações' });
+    expect(within(panel).getByText('expandido')).toBeTruthy();
+    // Mantine rewrites a numeric `w` to rem and scales it: 300 / 16 = 18.75rem.
+    expect(getComputedStyle(panel).width).toContain('18.75rem');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recolher ações' }));
+    expect(screen.getByText('compacto')).toBeTruthy();
+  });
+
+  it('onSelectionChange reports the checked rows, and fires only when the id set changes', () => {
+    const onSelectionChange = vi.fn();
+    const { rerender } = wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        selectable
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    // One mount call with the empty selection.
+    expect(onSelectionChange).toHaveBeenCalledTimes(1);
+    expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar 1' }));
+    expect(onSelectionChange).toHaveBeenCalledTimes(2);
+    expect(onSelectionChange.mock.lastCall?.[0]).toMatchObject([{ id: '1' }]);
+
+    // A re-render with an unchanged selection must NOT re-fire: consumers set
+    // state from this callback, and `selectedRows` is re-derived every tick.
+    rerender(
+      <MantineProvider env="test">
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          selectable
+          onSelectionChange={onSelectionChange}
+        />
+      </MantineProvider>,
+    );
+    expect(onSelectionChange).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar 1' }));
+    expect(onSelectionChange).toHaveBeenCalledTimes(3);
+    expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+  });
+
   it('drops selected ids that leave the row set (ghost selection)', () => {
     const { rerender } = wrap(
       <TableView

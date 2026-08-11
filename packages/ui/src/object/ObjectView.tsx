@@ -29,6 +29,7 @@ import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';
+import { AfterSaveBlockedError } from './afterSaveBlocked';
 import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
 import { RecordPager } from './RecordPager';
@@ -134,6 +135,23 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    */
   transactionWrites?: (id: string, values: Record<string, unknown>) => TransactionWrite[];
 
+  /**
+   * Extra unsaved state OUTSIDE this form that the leave-guard must also
+   * protect.
+   *
+   * A self-contained tab (one rendered through a `renderInput` that owns its
+   * own editor and its own document) is invisible to `form.formState.isDirty`,
+   * so without this the operator can navigate away from real pending edits and
+   * lose them silently — the guard would report the page as clean because the
+   * produto form is.
+   *
+   * ⚠️ The tab must NOT call `useUnsavedChangesGuard` itself. Two live guards
+   * means two `confirm()` prompts and two sentinel history entries, because the
+   * hook's document-level listener uses `stopPropagation`, which does not stop
+   * other listeners on the same node.
+   */
+  extraDirty?: boolean;
+
   /** Auth uid for the audit entry. */
   currentUserUid: string;
 
@@ -233,6 +251,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   validate,
   transientFields = [],
   transactionWrites,
+  extraDirty = false,
   currentUserUid,
   pager,
   onSaved,
@@ -423,7 +442,10 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteText, setDeleteText] = useState('');
   const deleteConfirmed = deleteText.trim().toLowerCase() === 'excluir';
-  useUnsavedChangesGuard(form.formState.isDirty);
+  // `extraDirty` folds in pending edits held by a self-contained tab, which
+  // this form's own dirty state cannot see. That tab must not arm its own
+  // guard — see the prop's doc comment.
+  useUnsavedChangesGuard(form.formState.isDirty || extraDirty);
 
   async function doSave(continueEditing: boolean) {
     setSubmitError(null);
@@ -508,6 +530,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         onSaved?.(result.id);
       }
     } catch (err) {
+      // Same contract on the normal save path: the record IS persisted, the
+      // sibling step paused on purpose. `onSaved` is unreachable from here
+      // (it sits after the throw), which is exactly what we want.
+      if (err instanceof AfterSaveBlockedError) {
+        setSubmitError(err.message);
+        return;
+      }
       if (err instanceof NothingChangedError) {
         // The record itself is pristine — but sibling writes may still be
         // pending (e.g. staged child documents). When an `onAfterSave` is
@@ -517,6 +546,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
           try {
             await onAfterSave(internalId, values);
           } catch (afterErr) {
+            // The sibling step deliberately stopped and put something in front
+            // of the operator — show it, but do NOT run `onSaved`, which
+            // navigates away from the screen holding it.
+            if (afterErr instanceof AfterSaveBlockedError) {
+              setSubmitError(afterErr.message);
+              return;
+            }
             if (afterErr instanceof ZodError) {
               // `ZodError.message` is the serialized issues array — join the
               // human messages instead (sibling flushes throw contextualized

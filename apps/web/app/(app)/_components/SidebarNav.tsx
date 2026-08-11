@@ -73,7 +73,10 @@ const NAV: NavEntry[] = [
       },
       { href: '/depositos', label: 'Depositos de Estoque', perm: PERM.estoque.read },
       { href: '/etiquetas', label: 'Etiquetas', perm: PERM.produto.read },
-      { href: '/balanco', label: 'Balanço', perm: PERM.produto.read },
+      // Balanço reads and writes estoque, not produtos — same bit as
+      // /depositos above. It was on `produto.read`, which let a produto-only
+      // user open a screen every query inside it would then be denied.
+      { href: '/balanco', label: 'Balanço', perm: PERM.estoque.read },
     ],
   },
   {

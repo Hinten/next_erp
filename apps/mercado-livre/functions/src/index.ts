@@ -137,6 +137,23 @@ export { onNfeAprovada } from './onNfeAprovada';
 export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChanged';
 
 /**
+ * The two link triggers that own `produtos.integracoesComProduto` (#920) — the
+ * anchor pre-filter both ML sweeps open with. They replace six hand-written
+ * stamp sites and, crucially, they derive the array from the LINK
+ * subcollections rather than from the sibling `marketplace` array, which is
+ * what lets `marketplace` + `marketplaceIds` be retired on their own at the
+ * Flutter decommission (#431 lock 2).
+ *
+ * Same "no rename-safety assertion" reasoning as the triggers above: Eventarc
+ * binds a document path and neither feeds a queue. Both bind no secrets (see
+ * `src/options.ts`) and both decide from the event payload before touching
+ * Firestore, because their documents are rewritten far more often than
+ * membership actually moves.
+ */
+export { onProdutoMercadoLivreLinkChanged } from './onProdutoMercadoLivreLinkChanged';
+export { onVariacaoMercadoLivreLinkChanged } from './onVariacaoMercadoLivreLinkChanged';
+
+/**
  * The flag-gated stock sweeps: the 15-minute incremental tier, the 02:00 daily
  * tier and the MONTHLY full reconciliation (03:00 on the 1st), all feeding the
  * `sendMercadoLivreStock` queue. The three differ in window AND in send policy —

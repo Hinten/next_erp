@@ -520,40 +520,94 @@ export const mlPaymentSchema = z
   .passthrough();
 export type MlPayment = z.infer<typeof mlPaymentSchema>;
 
-/** One `shipping_option.estimated_*` sub-object — every variant is `{ date: string|null, ... }`; only `date` is consumed. */
+/** One `lead_time.estimated_*` sub-object — every variant is `{ date: string|null, ... }`; only `date` is consumed. */
 const mlShipmentEstimatedDateSchema = z
   .object({ date: z.string().nullable().optional() })
   .passthrough();
 
-/** `shipment.shipping_option` (legacy `ShippingOption`, models.dart:6052-6127) — only the dispatch/delivery-window fields `_getPrazoDespacho`/`toFrete` read. */
-export const mlShipmentOptionSchema = z
+/**
+ * `shipment.lead_time` — the delivery-window/cost block of the `x-format-new`
+ * shipment body. Replaces the legacy top-level `shipping_option`
+ * (`ShippingOption`, models.dart:6052-6127), which carried the same children.
+ *
+ * ⚠️ `estimated_handling_limit` is deliberately NOT typed here. ML deprecated it
+ * on 2025-05-13 — "a informação só poderá ser consumida no recurso de SLA" — and
+ * `resolvePrazoDespacho` reads the SLA resource first anyway. Typing a field ML
+ * has stopped filling would only invite a reader that silently gets null.
+ *
+ * ⚠️ `cost` is deliberately NOT typed here, even though the payload carries it.
+ * It looks like a replacement for the legacy top-level `base_cost` and is not
+ * one: on the free-shipping shipment captured at `.old/…/models.dart:3150` it is
+ * `0` (a 100% discount) while `base_cost` is 38.90, and on the paid one at
+ * `:5142` it equals `list_cost` with no discount at all while `base_cost` is
+ * nearly double. Typing it invites exactly the substitution that would wipe
+ * `custoCalculado` — see `shipmentBaseCost` for the full autopsy (#957). It
+ * still rides through `.passthrough()` for anyone who needs it knowingly.
+ */
+export const mlShipmentLeadTimeSchema = z
   .object({
     list_cost: z.number().nullable().optional(),
-    estimated_handling_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
     estimated_delivery_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
     estimated_delivery_time: mlShipmentEstimatedDateSchema.nullable().optional(),
   })
   .passthrough();
-export type MlShipmentOption = z.infer<typeof mlShipmentOptionSchema>;
+export type MlShipmentLeadTime = z.infer<typeof mlShipmentLeadTimeSchema>;
+
+/** `shipment.destination.shipping_address` — the buyer's address in the `x-format-new` body (was the top-level `receiver_address`). */
+const mlShipmentAddressSchema = z
+  .object({
+    street_name: z.string().nullable().optional(),
+    street_number: z.union([z.number(), z.string()]).nullable().optional(),
+    zip_code: z.string().nullable().optional(),
+    comment: z.string().nullable().optional(),
+    neighborhood: z
+      .object({ name: z.string().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+    city: z.object({ name: z.string().nullable().optional() }).passthrough().nullable().optional(),
+    state: z.object({ name: z.string().nullable().optional() }).passthrough().nullable().optional(),
+  })
+  .passthrough();
 
 /**
- * `GET /shipments/{shipmentId}` (legacy `get_shipment`, api.dart:1635-1641) — a
- * shipment tied to an ML order. Tolerant: only the fields
- * `MercadoLivreShipping.toFrete`/`toEstadoFrete` (legacy models.dart:5340-5394)
- * consume are typed (address fields are resolved from billing_info instead, so
- * `receiver_address`/`sender_address` are left untyped on `.passthrough()`).
+ * `GET /shipments/{shipmentId}` in the **`x-format-new: true`** shape (ML docs,
+ * *Gerenciamento de Envios*). That header is mandatory on shipments requests as
+ * of 2025-10-12 and the plugin now sends it — see `getShipment` (#957).
+ *
+ * Three legacy fields are gone from the wire and therefore from this schema:
+ *  - `order_id` (+ `external_reference`) — **discontinued** on the same date.
+ *    Resolve the order through `GET /shipments/{id}/orders` instead
+ *    (`getShipmentOrders`); the passthrough keeps the raw value readable for as
+ *    long as ML still happens to send it.
+ *  - `base_cost` — no counterpart; `lead_time.cost` is the nearest analogue.
+ *  - `logistic_type` — moved under `logistic.type`.
+ *
+ * Still tolerant per house style: only what the readers consume is typed, and
+ * everything else rides through `.passthrough()`.
  */
 export const mlShipmentSchema = z
   .object({
     id: z.number().int(),
-    order_id: z.number().int().nullable().optional(),
     status: z.string().nullable().optional(),
     substatus: z.string().nullable().optional(),
     tracking_number: z.string().nullable().optional(),
     last_updated: z.string().nullable().optional(),
-    base_cost: z.number().nullable().optional(),
-    logistic_type: z.string().nullable().optional(),
-    shipping_option: mlShipmentOptionSchema.nullable().optional(),
+    logistic: z
+      .object({
+        mode: z.string().nullable().optional(),
+        type: z.string().nullable().optional(),
+        direction: z.string().nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    lead_time: mlShipmentLeadTimeSchema.nullable().optional(),
+    destination: z
+      .object({ shipping_address: mlShipmentAddressSchema.nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type MlShipment = z.infer<typeof mlShipmentSchema>;
@@ -575,6 +629,61 @@ export const mlShipmentPaymentSchema = z
 export type MlShipmentPayment = z.infer<typeof mlShipmentPaymentSchema>;
 /** The array wrapper for `getShipmentPayments` — see `mlShipmentPaymentSchema`. */
 export const mlShipmentPaymentsSchema = z.array(mlShipmentPaymentSchema);
+
+/**
+ * One entry of `GET /shipments/{shipmentId}/orders` — "Vendas associadas a um
+ * envio" (ML docs, *Gerenciamento de Envios*). **The endpoint returns a bare
+ * JSON ARRAY** and requires the `X-New-Domain: true` header. One row per
+ * (order, listing, variation) covered by the shipment, carrying the units the
+ * buyer asked for.
+ *
+ * This is the modern replacement for legacy's `get_shipment_items`
+ * (`GET /shipments/{id}/items`, api.dart:1679-1685), used by the
+ * shipment↔pedido item cross-check (`applyFreteStep`, #669). Chosen over
+ * `/items` on three counts:
+ *  - `requested_quantity` is the quantity the buyer ORDERED, which is what
+ *    `ItemDoPedido.quantidade` holds (it comes from `order_items[].quantity`);
+ *    `/items`' `quantity` is the quantity in THIS shipment, which legitimately
+ *    differs on a partial shipment and would flag correct orders.
+ *  - `variation_id` here is a documented nullable Long. `/items` uses `0` as
+ *    its "no variation" sentinel, which does not exist on the order side — an
+ *    asymmetry that silently mismatches variation sales.
+ *  - ML declared `order_id`/`external_reference` discontinued in the shipments
+ *    resources as of 2025-10-12; `/items` carries them, this resource is the
+ *    one ML is steering toward.
+ *
+ * Tolerant per house style: the docs type `order_id`/`pack_id` as String and
+ * `variation_id`/`seller_id` as Long, but ML has sent ids both ways across this
+ * API, so every id takes the number|string union. Everything not consumed by
+ * the cross-check rides through `.passthrough()`.
+ */
+export const mlShipmentOrderSchema = z
+  .object({
+    order_id: z.union([z.number(), z.string()]).nullable().optional(),
+    pack_id: z.union([z.number(), z.string()]).nullable().optional(),
+    item_id: z.string().nullable().optional(),
+    variation_id: z.union([z.number(), z.string()]).nullable().optional(),
+    user_product_id: z.string().nullable().optional(),
+    seller_id: z.union([z.number(), z.string()]).nullable().optional(),
+    requested_quantity: z.union([z.number(), z.string()]).nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentOrder = z.infer<typeof mlShipmentOrderSchema>;
+
+/**
+ * The array wrapper for `getShipmentOrders` — see `mlShipmentOrderSchema`.
+ *
+ * ⚠️ The `.nullish().transform()` is load-bearing, not cosmetic. The docs list
+ * `204 No Content` ("Shipment não possui pedidos") as a normal response, and
+ * `parseOk` leaves the parsed body `null` when it is empty — which a bare
+ * `z.array(...)` rejects, turning a documented 204 into a
+ * `MercadoLivreValidationError` and a parked import. Callers must therefore
+ * treat `[]` as "ML told us nothing", never as "the shipment covers no items".
+ */
+export const mlShipmentOrdersSchema = z
+  .array(mlShipmentOrderSchema)
+  .nullish()
+  .transform((v) => v ?? []);
 
 /** `GET /shipments/{shipmentId}/sla` (legacy `get_shipment_sla`, api.dart:1671-1677) — only `expected_date` is consumed (legacy `_getPrazoDespacho`, tasks.dart:38-43). */
 export const mlShipmentSlaSchema = z

@@ -32,6 +32,19 @@ const config = {
 // Ports mirror `firebase.functions.json`; unset → the normal production path, so the
 // staging e2e and the real app are unaffected.
 const USE_FIREBASE_EMULATOR = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === 'true';
+
+/**
+ * True when this build talks to the emulator suite.
+ *
+ * ⚠️ Needed as a CAPABILITY gate, not just for wiring: the emulator is a
+ * Standard-edition Firestore and rejects the Pipelines API, while the SDK still
+ * exposes `db.pipeline()` — so `isPipelineSupported(db)` answers *yes* and the
+ * call fails at execution time. Any code with a pipeline path plus a classic
+ * fallback must branch on THIS, not on the SDK probe.
+ */
+export function isUsingFirebaseEmulator(): boolean {
+  return USE_FIREBASE_EMULATOR;
+}
 const EMULATOR_HOST = process.env.NEXT_PUBLIC_FIREBASE_EMULATOR_HOST ?? '127.0.0.1';
 
 let app: FirebaseApp | undefined;
