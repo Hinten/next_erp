@@ -64,6 +64,14 @@ generated `package.json` (`scripts/prepare-deploy.mjs`) carries **only the three
 `dependencies` — no devDependencies, no `workspace:*`, no build script** — so the
 cloud install resolves cleanly and runs no build.
 
+⚠️ **No lockfile reaches the cloud**, so that install resolves each spec fresh.
+`firebase-admin` and `firebase-functions` are therefore pinned **exact** in
+`apps/functions/package.json` (not `^` ranges): a range installs whatever is newest
+at deploy time, which is a version no CI lane ever tested — `firebase-functions@7.3.2`
+moved `express` 4→5 in a _patch_ release exactly that way. Bump them together with
+`pnpm-workspace.yaml`'s catalog and the other four artifact manifests;
+`packages/config-eslint/rules/runtime-deps-pinned.test.js` fails on any drift.
+
 `prepare-deploy.mjs` also junctions the workspace's `node_modules` into
 `.deploy/functions/`, because firebase-tools' **local** trigger analysis locates and
 spawns the Functions SDK by looking for `<source>/node_modules/.bin/firebase-functions`

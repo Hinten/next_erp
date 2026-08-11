@@ -33,6 +33,7 @@ export {
   type TransactionWrite,
   type ValidationIssue,
 } from './object/ObjectView';
+export { AfterSaveBlockedError } from './object/afterSaveBlocked';
 export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';

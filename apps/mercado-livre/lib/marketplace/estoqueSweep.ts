@@ -2,7 +2,7 @@
  * Flag-gated Mercado Livre **stock sweeps** (Step 10 PR C) — the core behind
  * the 15-minute incremental and the 2AM daily `onSchedule` ticks. Per active
  * conta it runs THE produtos-first joined query
- * (`estoquePlan.fetchStockFamilies`) page by page, computes every family
+ * (`bulkEstoquePlan.fetchStockFamilies`) page by page, computes every family
  * member's quantity AT SWEEP TIME (`quantidadesDaFamilia`) and at the WINDOW
  * START (`quantidadesAnteriores`, from the LAZY, TICK-SHARED ledger sum),
  * applies the send policy (`deveEnviarFamilia`),
@@ -116,7 +116,7 @@ import {
   quantidadesAnteriores,
   quantidadesDaFamilia,
   windowOverlapSec,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 import type { MlStockTaskScheduler } from './mlStockTasks';
 import { MlTasksDisabledError } from './mlTasks';
 import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';
@@ -199,8 +199,22 @@ export interface StockSweepContaResult {
   integracaoId: string;
   /** Send-task drafts enqueued onto the stock queue. */
   enqueued: number;
-  /** Families dropped by the incremental filter + per-listing/member skips. */
+  /** Families dropped by the send policy + per-listing/member skips. */
   skipped: number;
+  /**
+   * Families the send policy dropped because their PUBLISHED number did not
+   * change — a **subset of {@link skipped}**, broken out because it is the one
+   * number that measures whether the change check is earning its keep (#695).
+   * Read it against {@link enqueued}: a high ratio is the win, a ratio near zero
+   * means the sweep is paying for a comparison that never rejects anything.
+   *
+   * On the incremental tier it also counts a family that DID change but stayed
+   * comfortably above `limiarEstoqueAlto()` on both sides — the freshness tier,
+   * not a no-op — so the two are not perfectly separable from this counter
+   * alone. The daily and monthly passes carry no such arm, so their
+   * `inalterados` is exactly "nothing moved".
+   */
+  inalterados: number;
   /** THE-query pages executed for this conta. */
   pages: number;
   /** `true` when the page cap or the task cap cut the sweep short. */
@@ -460,6 +474,7 @@ async function recordContaError(
     integracaoId,
     enqueued: 0,
     skipped: 0,
+    inalterados: 0,
     pages: 0,
     truncated: false,
     paused: false,
@@ -539,6 +554,7 @@ async function sweepConta(
   let pages = 0;
   let enqueued = 0;
   let skipped = 0;
+  let inalterados = 0;
   let truncated = false;
   let afterAnchorId: string | null = continuacao?.afterAnchorId ?? null;
   // The last anchor whose drafts were ALL enqueued — the only safe resume
@@ -582,6 +598,12 @@ async function sweepConta(
         // only) it moved while staying comfortably high on both sides — the
         // daily and monthly passes cover that.
         skipped += 1;
+        // Counted a SECOND time, on its own axis: this is the send the change
+        // check avoided, and the only number that says whether the check pays
+        // for itself (#695). `skipped` alone cannot answer that — it also
+        // carries the per-listing drops from `buildSendTasks`, which have
+        // nothing to do with the comparison.
+        inalterados += 1;
         ultimoAnchorCompleto = row.anchorId;
         continue;
       }
@@ -681,7 +703,7 @@ async function sweepConta(
   }
   await estoqueMercadoLivreSyncCollection.merge(db, {}, integracaoId, patch);
 
-  return { integracaoId, enqueued, skipped, pages, truncated, paused: false };
+  return { integracaoId, enqueued, skipped, inalterados, pages, truncated, paused: false };
 }
 
 /* -------------------------------- whole tick -------------------------------- */
@@ -777,6 +799,7 @@ export async function runStockSweep(
           integracaoId,
           enqueued: 0,
           skipped: 0,
+          inalterados: 0,
           pages: 0,
           truncated: false,
           paused: true,

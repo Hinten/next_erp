@@ -4,7 +4,9 @@ import { millisSinceEpoch } from './shared/datetime';
 /**
  * `enviosPrecoMercadoLivre` (TOP-LEVEL) — the checkpoint/progress doc for the
  * MANUAL "Atualizar preços" bulk price-push job (Step 11 PR-C). There is NO
- * automation: a user clicks the per-conta action in the web UI (PR-D),
+ * automation: a user selects one or more contas on the channel list in the web
+ * UI and clicks the action (PR-D; #816 moved it off the per-conta screen —
+ * still ONE job doc per conta, several contas just start several jobs),
  * optionally opting in to price decreases (`baixarPreco`), and one job doc
  * here is the single source of truth for a Cloud Tasks-driven, server-side
  * loop — a clone of the mass-import pattern (`importacoesMercadoLivre`, #621),

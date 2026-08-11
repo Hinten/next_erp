@@ -2825,6 +2825,71 @@ export async function cleanupProdutoEstoque(produtoId: string): Promise<void> {
 }
 
 /**
+ * Seed an OPEN balanço over `depositoId`. Open is `estado: null` — the workflow
+ * lock is server-owned and has no stored "aberto" value.
+ */
+export async function seedBalancoAberto(
+  prefix: string,
+  depositoId: string,
+): Promise<{ id: string; nome: string }> {
+  const nome = `${prefix}-contagem`;
+  const ref = await db()
+    .collection('balanco')
+    .add({
+      nome,
+      depositoOuterRef: `documents/depositos/${depositoId}`,
+      estado: null,
+      dataFinalizado: null,
+      finalizacao: null,
+      timestamp: Date.now(),
+      ultimaModificacao: Date.now(),
+    });
+  return { id: ref.id, nome };
+}
+
+/** The raw balanço doc, or null. */
+export async function getBalanco(balancoId: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('balanco').doc(balancoId).get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/** Every `movimentos` doc of a balanço, raw wire data. */
+export async function listMovimentosBalanco(
+  balancoId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const snap = await db().collection('balanco').doc(balancoId).collection('movimentos').get();
+  return snap.docs.map((d) => d.data() as Record<string, unknown>);
+}
+
+/** The finalize snapshot, flattened across shards: produtoId → report item. */
+export async function getRelatorioBalanco(
+  balancoId: string,
+): Promise<Record<string, Record<string, unknown>>> {
+  const snap = await db().collection('balanco').doc(balancoId).collection('relatorios').get();
+  const itens: Record<string, Record<string, unknown>> = {};
+  for (const doc of snap.docs) {
+    Object.assign(itens, (doc.data() as { itens?: Record<string, never> }).itens ?? {});
+  }
+  return itens;
+}
+
+/**
+ * Delete a balanço and its two subcollections. `onBalancoDeleted` would sweep
+ * them, but teardown must not depend on a trigger being deployed.
+ */
+export async function cleanupBalanco(balancoId: string): Promise<void> {
+  const ref = db().collection('balanco').doc(balancoId);
+  for (const sub of ['movimentos', 'relatorios']) {
+    const docs = await ref.collection(sub).get();
+    if (docs.empty) continue;
+    const batch = db().batch();
+    docs.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  await ref.delete();
+}
+
+/**
  * Seed two prefix-scoped `listaDePrecos` docs for the Preço/Custo suite:
  * "varejo" carries one deterministic formula (`C*L+T`, L=2 T=5, no weight
  * bands — custo 10 → 25) and "atacado" has none (Recalcular stays disabled).

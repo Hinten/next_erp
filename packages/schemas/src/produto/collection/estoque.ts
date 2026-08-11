@@ -27,17 +27,46 @@ const PERM_ESTOQUE_DELETE = 1n << 66n;
  */
 export const estoqueProdutoSchema = z
   .object({
+    /**
+     * The owning produto's id, denormalized so a **collection-group** query can
+     * key on it — that is its only purpose, and its only consumer is the kit
+     * component join (`compEstoques` in the ML sweep's `estoquePlan.ts`, which
+     * matches `parentId equalAny <a kit's componentesKitKeys>`).
+     *
+     * ⚠️ Anything reading a doc it already located by path must take the owner
+     * from the path, never from here: a subcollection probe's projection carries
+     * no `parentId`, and treating its absence as data is #932. On a KIT's own
+     * estoque doc the field has no reader at all — a kit can never be a
+     * component of another kit (#239) — and is written purely for uniformity
+     * (ADR 0014 §2).
+     */
     parentId: z.string().nullable().default(null),
     depositoOuterRef: outerRefSchema,
     quantidade: z.number().default(0),
     /**
-     * ⚠️ `.min(0)` validates a WRITE through a Zod converter — it is NOT a read
-     * guarantee, and nothing may assume the stored value is non-negative. The ML
-     * sweep reads raw pipeline rows, the Flutter app and the Admin SDK write
-     * these docs without this schema, and a negative here would *increase*
-     * computed availability. `estoqueDisponivel` floors it; see ADR 0014 §7.
+     * ⚠️ NOT guaranteed non-negative at rest, and deliberately NOT constrained
+     * here. Nothing may assume the stored value is ≥ 0: the ML sweep reads raw
+     * pipeline rows, the ML import reads the doc with a bare `.data()`, and the
+     * Flutter app + every Admin SDK writer bypass this schema entirely (root
+     * `CLAUDE.md` rule 7).
+     *
+     * This carried a `.min(0)` until #931. It looked like a cheap write guard and
+     * was in fact a **read** defect: `parseSoftRead` `safeParse`s the WHOLE object,
+     * so one out-of-range field failed the document and returned the raw data —
+     * silently discarding every `.default()` below. A stored doc with no
+     * `quantidade` (ADR 0014 §2 writes exactly that shape and relies on this
+     * schema to default it) then read as `undefined`, and `estoqueDisponivel`
+     * returned **NaN** — which `publish.ts` would have sent to Mercado Livre.
+     *
+     * The three concerns are separated instead:
+     *  - reject a bad WRITE → `movimentacaoInputSchema` (`@delfrance/data`), the
+     *    untrusted callable input, which keeps `.min(0).finite()`;
+     *  - floor for ONE CALCULATION → {@link reservaEfetiva};
+     *  - make a bad row VISIBLE → `produtoPageIssues` + the #931 audit.
+     *
+     * See ADR 0014 §7.
      */
-    quantidadeReservada: z.number().min(0).default(0),
+    quantidadeReservada: z.number().default(0),
     localizacao: z.string().max(50).nullable().default(null),
     variacoes: z.record(z.string(), z.unknown()).nullable().default(null),
     ultimaModificacao: z.number().int().nullable().default(null),
@@ -48,23 +77,39 @@ export const estoqueProdutoSchema = z
 export type EstoqueProduto = z.infer<typeof estoqueProdutoSchema>;
 
 /**
+ * The reservation as every calculation must treat it: **never negative**.
+ *
+ * This is the single floor. A negative reservation that reaches arithmetic
+ * *invents* stock — `8 − (−2) = 10` — which is the one failure direction that
+ * makes Mercado Livre sell units the store does not have. Failing toward "less
+ * available" is the only safe direction here.
+ *
+ * Non-finite reads as `0` too. Every caller that already pre-coerced with
+ * `finiteNumber(x) ?? 0` keeps its exact behaviour; the callers that did not
+ * (`publish.ts`, the web estoque tab) stop propagating a `NaN` into a published
+ * send quantity.
+ *
+ * ⚠️ This floors the value **for one calculation** and must never be written
+ * back over the stored one. A stored negative is a real data defect, and the
+ * evidence of it is what the #931 audit reads — laundering it at rest would
+ * destroy the only trace of the writer that produced it.
+ *
+ * See ADR 0014 §7.
+ */
+export function reservaEfetiva(quantidadeReservada: number | null | undefined): number {
+  return typeof quantidadeReservada === 'number' && Number.isFinite(quantidadeReservada)
+    ? Math.max(0, quantidadeReservada)
+    : 0;
+}
+
+/**
  * Available quantity = total − reserved (Flutter `Estoque.disponivel`).
  *
- * ⚠️ The reservation is **floored at 0 before subtracting**, and that floor is
- * load-bearing rather than defensive. A negative reservation would otherwise
- * *increase* availability — `8 − (−2) = 10` — so a single bad value invents
- * stock that does not exist, and every consumer of this helper inherits the
- * invention: the ML sweep publishes a quantity Mercado Livre will happily sell,
- * the pedido form green-lights a line it cannot fulfil, and the print assembler
- * reports it. Failing toward "less available" is the only safe direction here.
- *
- * The schema declares `quantidadeReservada` as `.min(0)`, but that guards the
- * WRITE through a Zod converter — it is not a read guarantee. Three paths reach
- * this function around it: the ML sweep consumes **raw** pipeline rows that are
- * never Zod-parsed, the sweep's window-start reconstruction synthesizes
- * `reservada − ΣmovimentoReservada` (arithmetic that can land below zero on its
- * own), and the live Flutter app + Admin SDK write these docs without this
- * schema (root `CLAUDE.md` rule 7 — there is always a second writer).
+ * The reservation goes through {@link reservaEfetiva}, so a negative one can
+ * never increase availability. This helper is the single derivation of
+ * `disponivel` in the repo — kits included, since `kitEstoqueDisponivel`
+ * consumes its output rather than re-deriving — which is why the floor belongs
+ * here and not at the consumers.
  *
  * A negative `disponivel` is still returned when the reservation legitimately
  * exceeds the quantity (2 in stock, 5 reserved ⇒ −3); that is real information
@@ -73,7 +118,7 @@ export type EstoqueProduto = z.infer<typeof estoqueProdutoSchema>;
 export function estoqueDisponivel(
   e: Pick<EstoqueProduto, 'quantidade' | 'quantidadeReservada'>,
 ): number {
-  return e.quantidade - Math.max(0, e.quantidadeReservada);
+  return e.quantidade - reservaEfetiva(e.quantidadeReservada);
 }
 
 /** Deterministic estoque doc id (Flutter `Estoque.makeEstoqueUid`). */

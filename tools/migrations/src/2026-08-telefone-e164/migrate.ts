@@ -4,7 +4,12 @@ import {
   type Query,
   type QueryDocumentSnapshot,
 } from 'firebase-admin/firestore';
-import { type MigrationContext, type MigrationSummary, runMigration } from '../runner';
+import {
+  isMainModule,
+  type MigrationContext,
+  type MigrationSummary,
+  runMigration,
+} from '../runner';
 import { buildUpdate, planTelefone, readNested } from './transform';
 
 /**
@@ -155,11 +160,7 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   return { docsScanned, docsChanged };
 }
 
-const isDirectInvocation =
-  process.argv[1]?.endsWith('migrate.ts') === true ||
-  process.argv[1]?.endsWith('migrate.js') === true;
-
-if (isDirectInvocation) {
+if (isMainModule(import.meta.url)) {
   runMigration('telefone-e164', run).catch((err: unknown) => {
     console.error(err);
     process.exitCode = 1;

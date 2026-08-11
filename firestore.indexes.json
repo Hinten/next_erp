@@ -1405,6 +1405,86 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "balanco",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "balanco",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "movimentos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "usuarioOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "movimentos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "error",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "movimentos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "error",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "removido",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "produtoId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "estoques",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "depositoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

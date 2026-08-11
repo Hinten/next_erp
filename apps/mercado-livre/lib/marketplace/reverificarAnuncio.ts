@@ -19,7 +19,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { podeEnviarEstoque } from './estoquePlan';
+import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { type LinkStatusTarget, applyItemStatusToLink } from './itemsStatusSync';
 
 /** The minimal ML surface a re-verification needs (injectable for tests). */

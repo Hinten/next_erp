@@ -186,6 +186,18 @@ export interface MercadoLivreEnvioEstoqueResult {
   pausadoAte: string | null;
 }
 
+/**
+ * The RUNNING jobs of both bulk flows for a set of contas
+ * (`GET jobs-em-andamento`). Each entry carries the `jobId` the caller then
+ * polls through the per-flow `…Status` methods, plus the `integracaoId` that
+ * places it against a row. Running-only by design: a job that finished while
+ * the page was closed is not listed (#816).
+ */
+export interface MercadoLivreJobsEmAndamento {
+  importacoes: Array<MercadoLivreMassImportStatus & { jobId: string; integracaoId: string }>;
+  enviosPreco: Array<MercadoLivrePriceSyncStatus & { jobId: string; integracaoId: string }>;
+}
+
 /** A node of the ML category tree (`GET categorias`). */
 export interface MercadoLivreCategoriaNo {
   id: string;
@@ -388,6 +400,13 @@ export interface MercadoLivreClient {
     reenviarComErro?: boolean;
     signal?: AbortSignal;
   }): Promise<MercadoLivreEnvioEstoqueResult>;
+  /**
+   * The RUNNING mass-import and price-sync jobs across a set of contas, in one
+   * round trip (PERM.integracao.read) — how the channel list re-attaches its
+   * pollers after a reload, since a `jobId` only ever lived in React state.
+   * The caller must name the contas (400 otherwise); at most 300 per call.
+   */
+  jobsEmAndamento(input: { integracaoIds: string[] }): Promise<MercadoLivreJobsEmAndamento>;
   /**
    * One level of the ML category tree for the listing editor's cascade picker
    * (PERM.integracao.read). Omit `categoryId` for the roots.
@@ -623,6 +642,10 @@ export function createMercadoLivreClient(config: {
     priceSyncStatus: (input) =>
       call<MercadoLivrePriceSyncStatus>(
         `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
+      ),
+    jobsEmAndamento: (input) =>
+      call<MercadoLivreJobsEmAndamento>(
+        `/api/marketplace/mercado-livre/jobs-em-andamento?integracaoIds=${encodeURIComponent(input.integracaoIds.join(','))}`,
       ),
     categorias: (input) =>
       call<MercadoLivreCategorias>(

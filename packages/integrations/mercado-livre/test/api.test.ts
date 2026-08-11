@@ -7,6 +7,13 @@ import {
   MercadoLivreValidationError,
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
+import {
+  __resetAvisoFormatoLegado,
+  ehFormatoLegado,
+  shipmentBaseCost,
+  shipmentLeadTime,
+  shipmentLogisticType,
+} from '../src/shipmentFields';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -301,22 +308,37 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     });
   });
 
-  it('getShipment hits /shipments/{id} and parses the dispatch/delivery windows', async () => {
+  it('getShipment sends x-format-new and parses the NEW-format body', async () => {
+    // The `x-format-new` shape, trimmed to the branches we consume (ML docs,
+    // *Gerenciamento de Envios*). Deliberately carries NO `order_id`,
+    // `base_cost`, `logistic_type` or `shipping_option`: those are exactly what
+    // the migration removed, so a fixture that still had them would keep
+    // asserting the old world (#957).
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({
         id: 555,
-        order_id: 2000003508897196,
         status: 'ready_to_ship',
         substatus: 'ready_to_print',
         tracking_number: 'BR123456789',
         last_updated: '2022-08-22T00:00:00.000-03:00',
-        base_cost: 8.91,
-        logistic_type: 'cross_docking',
-        shipping_option: {
-          list_cost: 8.91,
-          estimated_handling_limit: { date: '2022-08-22T00:00:00.000-03:00' },
+        logistic: { mode: 'me2', type: 'cross_docking', direction: 'forward' },
+        lead_time: {
+          cost: 8.91,
+          list_cost: 12.5,
           estimated_delivery_limit: { date: '2022-08-24T00:00:00.000-03:00' },
           estimated_delivery_time: { date: '2022-08-24T00:00:00.000-03:00' },
+        },
+        destination: {
+          receiver_name: 'Fulana de Tal',
+          shipping_address: {
+            street_name: 'Rua das Flores',
+            street_number: '123',
+            zip_code: '01310100',
+            comment: 'Apto 42',
+            neighborhood: { name: 'Centro' },
+            city: { name: 'São Paulo' },
+            state: { name: 'São Paulo' },
+          },
         },
       }),
     );
@@ -324,11 +346,76 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     const shipment = await api.getShipment(555);
     expect(shipment.status).toBe('ready_to_ship');
     expect(shipment.substatus).toBe('ready_to_print');
-    expect(shipment.shipping_option?.estimated_handling_limit?.date).toBe(
-      '2022-08-22T00:00:00.000-03:00',
+    expect(shipment.logistic?.type).toBe('cross_docking');
+    expect(shipment.lead_time?.list_cost).toBe(12.5);
+    // `cost` rides the passthrough but is deliberately UNtyped: it is not the
+    // legacy `base_cost` and must never be read as one (#957).
+    expect((shipment.lead_time as Record<string, unknown>).cost).toBe(8.91);
+    expect(shipment.lead_time?.estimated_delivery_time?.date).toBe('2022-08-24T00:00:00.000-03:00');
+    expect(shipment.destination?.shipping_address?.zip_code).toBe('01310100');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe('https://api.mercadolibre.com/shipments/555');
+    expect((init!.headers as Record<string, string>)['x-format-new']).toBe('true');
+  });
+
+  it('getShipment still parses a LEGACY body, so the accessors can bridge it', async () => {
+    // ML rolled these deprecations out per-resource over more than a year, and
+    // the new shape here comes from documentation rather than a live call — so
+    // the schema must not reject an account still being served the old body.
+    // The legacy fields survive on `.passthrough()`; `shipmentFields.ts` reads
+    // them. Delete this test with the fallbacks (#957).
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 555,
+        order_id: 2000003508897196,
+        status: 'ready_to_ship',
+        base_cost: 8.91,
+        logistic_type: 'cross_docking',
+        shipping_option: { list_cost: 12.5 },
+      }),
     );
-    const url = String(fetchMock.mock.calls[0]![0]);
-    expect(url).toBe('https://api.mercadolibre.com/shipments/555');
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const shipment = await api.getShipment(555);
+    expect(shipment.status).toBe('ready_to_ship');
+    expect(shipment.lead_time).toBeUndefined();
+    expect(shipmentLogisticType(shipment)).toBe('cross_docking');
+    expect(shipmentBaseCost(shipment)).toBe(8.91);
+    expect(shipmentLeadTime(shipment)?.list_cost).toBe(12.5);
+    expect(ehFormatoLegado(shipment)).toBe(true);
+  });
+
+  it('WARNS once when ML is still serving the legacy body, and not at all when it is not', async () => {
+    // The deletion trigger has to be an OBSERVATION. Without this warn, "no
+    // legacy warnings in the logs" would be equally consistent with "ML migrated
+    // us" and with "nothing was ever looking" — and acting on the second reading
+    // would delete a fallback that is still load-bearing (#957).
+    __resetAvisoFormatoLegado();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const legado = createMercadoLivreApi(
+        cfg(vi.fn(async () => jsonResponse({ id: 555, logistic_type: 'drop_off' }))),
+      );
+      await legado.getShipment(555);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('formato LEGADO');
+
+      // One-shot: a second legacy shipment must not re-warn — this is a one-bit
+      // fact about the account, not a per-shipment event.
+      await legado.getShipment(556);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // …and a migrated body never warns at all.
+      __resetAvisoFormatoLegado();
+      warn.mockClear();
+      const novo = createMercadoLivreApi(
+        cfg(vi.fn(async () => jsonResponse({ id: 557, logistic: { type: 'drop_off' } }))),
+      );
+      await novo.getShipment(557);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      __resetAvisoFormatoLegado();
+    }
   });
 
   it('getShipment maps a 500 to an HTTP error', async () => {
@@ -365,6 +452,83 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     );
     const api = createMercadoLivreApi(cfg(fetchMock));
     await expect(api.getShipmentPayments(555)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+
+  it('getShipmentOrders hits /shipments/{id}/orders with X-New-Domain and parses the BARE ARRAY', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        {
+          order_id: '2000014428837134',
+          pack_id: '2000015428123455',
+          item_id: 'MLB2041819084',
+          variation_id: null,
+          user_product_id: 'MLBU147563159',
+          seller_id: 12345,
+          requested_quantity: 1,
+        },
+        {
+          order_id: 2000014428837136,
+          pack_id: null,
+          item_id: 'MLB2041819099',
+          variation_id: 9876543210,
+          user_product_id: null,
+          seller_id: 12345,
+          // ML has sent numerics as strings across this API — the union covers it.
+          requested_quantity: '2',
+        },
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const rows = await api.getShipmentOrders(555);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ item_id: 'MLB2041819084', requested_quantity: 1 });
+    expect(rows[1]).toMatchObject({ variation_id: 9876543210, requested_quantity: '2' });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe('https://api.mercadolibre.com/shipments/555/orders');
+    expect((init!.headers as Record<string, string>)['X-New-Domain']).toBe('true');
+  });
+
+  it('getShipmentOrders keeps unknown fields via passthrough', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ item_id: 'MLB1', requested_quantity: 1, campo_novo_do_ml: 'x' }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).resolves.toEqual([
+      { item_id: 'MLB1', requested_quantity: 1, campo_novo_do_ml: 'x' },
+    ]);
+  });
+
+  it('getShipmentOrders parses a 204 No Content as an empty array', async () => {
+    // Documented response ("Shipment não possui pedidos"). `parseOk` leaves the
+    // body null on an empty response, which a bare `z.array()` would reject —
+    // the schema's `.nullish().transform()` is what keeps a 204 from parking an
+    // import on a MercadoLivreValidationError.
+    const fetchMock = vi.fn(
+      async (_u: string | URL | Request, _i?: RequestInit) => new Response(null, { status: 204 }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).resolves.toEqual([]);
+  });
+
+  it('getShipmentOrders REJECTS a results-envelope response', async () => {
+    // Locks the bare-array contract: if ML ever wraps this resource, the call
+    // must fail loudly rather than silently reconcile against zero rows.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: [{ item_id: 'MLB1', requested_quantity: 1 }] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).rejects.toBeInstanceOf(MercadoLivreValidationError);
+  });
+
+  it('getShipmentOrders maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentOrders(555)).rejects.toMatchObject({
       constructor: MercadoLivreHttpError,
       status: 500,
     });

@@ -1,6 +1,6 @@
 'use client';
 
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useLocalStorage } from '@mantine/hooks';
 import {
@@ -206,9 +206,27 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * `actions` move into the panel, still acting on the current selection
    * (the same actions in two places would mean two confirm modals). The
    * panel collapses to a slim rail; the collapsed state persists per
-   * collection in localStorage.
+   * collection in localStorage. `width` widens the expanded rail past its
+   * 220px default, for panels that host more than buttons (see
+   * `renderActionsPanelExtra`).
    */
-  actionsPanel?: boolean | { defaultCollapsed?: boolean };
+  actionsPanel?: boolean | { defaultCollapsed?: boolean; width?: number };
+  /**
+   * Extra content rendered inside the `actionsPanel`, below the buttons —
+   * e.g. the live progress of a job the buttons started. Ignored when
+   * `actionsPanel` is off. A render prop (same idiom as `renderNewButton`),
+   * so the content is a component element and may own hooks. `collapsed`
+   * lets the caller shrink to a badge on the slim rail instead of vanishing.
+   */
+  renderActionsPanelExtra?: (ctx: { collapsed: boolean }) => ReactNode;
+
+  /**
+   * Called whenever the checked row set changes (and once with `[]` on
+   * mount). Lets a page react to the selection outside an action — e.g. to
+   * look up per-row state the panel then renders. Purely observational:
+   * TableView owns the selection either way.
+   */
+  onSelectionChange?: (rows: SnapshotRow<z.infer<S>>[]) => void;
 }
 
 /**
@@ -244,6 +262,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   extraFilters,
   queryOverride,
   actionsPanel,
+  renderActionsPanelExtra,
+  onSelectionChange,
 }: TableViewProps<S>) {
   // Derive once per schema identity.
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
@@ -294,6 +314,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     defaultValue:
       typeof actionsPanel === 'object' ? (actionsPanel.defaultCollapsed ?? false) : false,
   });
+  const panelWidth = typeof actionsPanel === 'object' ? actionsPanel.width : undefined;
 
   const visibleKeys = useMemo(() => new Set(visibleKeysArr), [visibleKeysArr]);
 
@@ -767,6 +788,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [rows, selected],
   );
 
+  // Notify on the selected ID SET, never on `selectedRows`: that memo is
+  // re-derived on every snapshot tick, so depending on it would re-fire the
+  // callback for unrelated row updates. Both the rows and the callback are
+  // read through a latest-ref so a consumer passing an inline arrow (the
+  // normal case) doesn't turn "set state from the callback" into a loop.
+  const selectionNotifyRef = useRef<{
+    rows: SnapshotRow<z.infer<S>>[];
+    cb: TableViewProps<S>['onSelectionChange'];
+  }>({ rows: selectedRows, cb: onSelectionChange });
+  useEffect(() => {
+    selectionNotifyRef.current = { rows: selectedRows, cb: onSelectionChange };
+  });
+  useEffect(() => {
+    selectionNotifyRef.current.cb?.(selectionNotifyRef.current.rows);
+  }, [selected]);
+
   // Update-monitor field: explicit prop wins; otherwise prefer a
   // last-modified field, then the creation timestamp.
   const resolvedMonitorField = useMemo<string | null>(() => {
@@ -1067,6 +1104,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             }}
             collapsed={panelCollapsed}
             onToggleCollapsed={() => setPanelCollapsed((c) => !c)}
+            width={panelWidth}
+            extra={renderActionsPanelExtra?.({ collapsed: panelCollapsed })}
           />
         )}
       </Group>
