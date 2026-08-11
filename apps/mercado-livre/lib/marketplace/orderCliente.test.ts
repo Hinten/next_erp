@@ -205,12 +205,27 @@ function cnpjBillingInfo(
   } as unknown as MlBillingInfo;
 }
 
+/** The LEGACY placement: a top-level `receiver_address` with legacy leaf names. */
 function shipmentWithReceiverAddress(receiver_address: unknown): MlShipment {
   return {
     id: 555,
     order_id: 987654321,
     status: 'delivered',
     receiver_address,
+  } as unknown as MlShipment;
+}
+
+/**
+ * The `x-format-new` placement: `destination.shipping_address`, with every leaf
+ * renamed (#957). Nothing in this file used to exercise it — the fixture above
+ * is an `as unknown as` cast, so the whole suite would have stayed green while
+ * every ML pedido silently lost its address and stranded short of `pago`.
+ */
+function shipmentComDestination(shipping_address: unknown): MlShipment {
+  return {
+    id: 555,
+    status: 'delivered',
+    destination: { receiver_name: 'Fulana', shipping_address },
   } as unknown as MlShipment;
 }
 
@@ -373,7 +388,39 @@ describe('billingInfoToEnderecoFields', () => {
 });
 
 describe('shipmentToEnderecoFields', () => {
-  it('builds the endereço from the shipment receiver_address, truncating complement to 30 chars', () => {
+  it('builds the endereço from destination.shipping_address (x-format-new)', () => {
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(
+        shipmentComDestination({
+          street_name: 'Rua Visconde de Ouro Preto',
+          street_number: '51',
+          comment: 'Apto 42',
+          neighborhood: { name: 'Consolação' },
+          city: { name: 'São Paulo' },
+          state: { name: 'São Paulo' },
+          zip_code: '01303060',
+        }),
+      ),
+    );
+    expect(fields.cep).toBe('01303060');
+    expect(fields.logradouro).toBe('Rua Visconde de Ouro Preto');
+    expect(fields.numero).toBe('51');
+    expect(fields.complemento).toBe('Apto 42');
+    expect(fields.bairro).toBe('Consolação');
+    expect(fields.cidade).toBe('São Paulo');
+    expect(fields.estado).toBe(UF_SIGLA.SP);
+  });
+
+  it('truncates the new-format `comment` to 30 chars, like the legacy `complement`', () => {
+    const longo = 'Referência: Edifício Queen Mary, portaria 2, sala dos fundos';
+    const fields = fieldsOf(
+      shipmentToEnderecoFields(shipmentComDestination({ zip_code: '01303060', comment: longo })),
+    );
+    expect(fields.complemento).toBe(longo.slice(0, 30));
+    expect(fields.complemento).toHaveLength(30);
+  });
+
+  it('builds the endereço from the LEGACY receiver_address, truncating complement to 30 chars', () => {
     const longComplement = 'Referência: Edifício Queen Mary, portaria 2, sala dos fundos';
     const fields = fieldsOf(
       shipmentToEnderecoFields(

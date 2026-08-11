@@ -18,7 +18,7 @@ if (!region) {
 // NFE_TASKS_REGION to the inlined region so a non-us-east1 deployment doesn't
 // enqueue follow-up consults into the wrong region's queue (which would silently
 // drop the reconcile loop). An explicit NFE_TASKS_REGION still overrides.
-process.env.NFE_TASKS_REGION ??= region;
+process.env.NFE_TASKS_REGION = (process.env.NFE_TASKS_REGION?.trim() || undefined) ?? region;
 
 // Point the bundled @delfrance/integrations-nfe data-file readers at the copies
 // shipped NEXT TO this bundle (prepare-deploy.mjs copies ca/ + schemas/ into the

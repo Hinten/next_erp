@@ -4,7 +4,9 @@
  * upstream mutation stream worth chasing — they change in deliberate batches
  * (price-table edits), and an automated sweep could silently fight a seller
  * running ML promotions. So there is NO schedule and NO trigger: a user clicks
- * "Atualizar preços" on the conta screen (PR D), optionally allowing decreases
+ * "Atualizar preços" on the channel list screen (`/canais/mercado-livre`, PR D;
+ * moved off the per-conta screen by #816, so one click can cover several
+ * selected contas — still ONE job per conta), optionally allowing decreases
  * (`baixarPreco`, default OFF — gate 4 below), and this module pushes each
  * linked produto's price (the conta's tabela normal —
  * `produto.precos[<tabelaNormalId>].valor`) to its ML listings exactly once.

@@ -166,6 +166,25 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_arquivo', 4);
     }
 
+    match /balanco/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      allow create: if (isSuperUser() || p('d_estoque', 2)) && (!request.resource.data.keys().hasAny(['dataFinalizado']) || request.resource.data.get('dataFinalizado', null) == null) && (!request.resource.data.keys().hasAny(['estado']) || request.resource.data.get('estado', null) == null) && (!request.resource.data.keys().hasAny(['finalizacao']) || request.resource.data.get('finalizacao', null) == null);
+      allow update: if (isSuperUser() || p('d_estoque', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['dataFinalizado', 'estado', 'finalizacao']);
+      allow delete: if isSuperUser() || p('d_estoque', 4);
+    }
+
+    match /balanco/{balancoId}/movimentos/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      allow create, update: if isSuperUser() || p('d_estoque', 2);
+      allow delete: if isSuperUser() || p('d_estoque', 4);
+    }
+
+    match /balanco/{balancoId}/relatorios/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /bandeirasCartao/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
       allow create, update: if isSuperUser() || p('d_pagamento', 2);

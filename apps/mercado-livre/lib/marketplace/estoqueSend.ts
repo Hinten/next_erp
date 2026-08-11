@@ -16,7 +16,7 @@
  * 2026-07-27 — the INVERSE of the first cut's "targets, never quantities"
  * contract; legacy BigQuery parity: the Flutter sender likewise transmitted
  * sweep-computed numbers and never re-read produtos/estoques). The sweep runs
- * THE joined query once (`estoquePlan.fetchStockFamilies`), computes every
+ * THE joined query once (`bulkEstoquePlan.fetchStockFamilies`), computes every
  * family member's quantity (`quantidadesDaFamilia`) and bakes the result into
  * the task — `quantidade` XOR `variations` — together with `linkDocId`, the
  * status-writeback target, so the handler re-resolves NOTHING: no fresh gate,
@@ -77,7 +77,7 @@ import {
   maxPauseReenqueues,
   podeEnviarEstoque,
   ratePauseMin,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 import { applyItemStatusToLink } from './itemsStatusSync';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { MlTasksDisabledError } from './mlTasks';
@@ -95,7 +95,7 @@ import type { MlStockTaskScheduler } from './mlStockTasks';
  * by the handler instead (both null → dropped `'payload-sem-quantidade'`;
  * both non-null → `variations` wins, loudly).
  *
- * `estoquePlan.buildSendTasks`'s `StockSendTaskDraft` mirrors this shape
+ * `bulkEstoquePlan.buildSendTasks`'s `StockSendTaskDraft` mirrors this shape
  * field-for-field, so the sweep's drafts parse verbatim — pinned (compile-time
  * and runtime) in estoqueSend.test.ts.
  */
@@ -173,6 +173,23 @@ export interface StockSendDeps {
    * `Math.random`-based, capped at `PAUSE_REENQUEUE_JITTER_MAX_S`.
    */
   jitterSec?: (maxS: number) => number;
+  /**
+   * Skip the `MERCADO_LIVRE_STOCK_SYNC_ENABLED` gate below. Set ONLY by the
+   * manual push (#819), never by the queue handler.
+   *
+   * The flag governs the UNATTENDED blast radius — three sweeps enqueuing for
+   * the whole catalogue, 96× a day — and it stays off until the window in which
+   * the legacy Flutter stock sender is decommissioned. An operator pushing a
+   * hand-picked selection is a different risk class: it is permission-gated,
+   * bounded, reported per listing, and the legacy app exposes its own manual
+   * "Enviar Estoque" button doing the same thing today. Gating the manual route
+   * on this flag would ship it INERT until the cutover, leaving the new send
+   * path unexercised exactly when we most want it proven.
+   *
+   * ⚠️ `functions/src/sendStock.ts` must never set this — pinned by
+   * `stockSendMaxAttempts.test.ts`, which reads that file's source.
+   */
+  ignoreSyncFlag?: boolean;
 }
 
 function defaultJitterSec(maxS: number): number {
@@ -236,7 +253,7 @@ export async function processStockSendTask(
   // steady state (the flag ships OFF and it ticks every 15min). A task reaching
   // THIS handler while off is abnormal — it means a backlog is draining behind
   // an emergency stop.
-  if (!isStockSyncEnabled()) {
+  if (deps.ignoreSyncFlag !== true && !isStockSyncEnabled()) {
     console.warn(
       `[mercado-livre] stock-send: sync desabilitado (${STOCK_SYNC_FLAG_ENV} != '1') — task descartada`,
       { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },

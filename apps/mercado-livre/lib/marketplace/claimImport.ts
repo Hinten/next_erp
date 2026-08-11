@@ -85,6 +85,7 @@ import {
   buildReasonMensagem,
 } from './claimMapping';
 import { resolveClaimUsuario } from './claimUsuario';
+import { resolveShipmentOrderId } from './shipmentOrderId';
 import { importPedidoMercadoLivre } from './orderImport';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 
@@ -204,7 +205,9 @@ export async function importClaimMercadoLivre(
   if (isShipment) {
     try {
       const shipment = await api.getShipment(claim.resource_id);
-      orderKey = shipment.order_id ?? null;
+      // `shipment.order_id` was discontinued by ML (#957) — fall back to
+      // `GET /shipments/{id}/orders`.
+      orderKey = await resolveShipmentOrderId(api, shipment);
     } catch (err) {
       if (err instanceof MercadoLivreHttpError && err.status === 404) {
         // A purged shipment is permanent — fall through to the
