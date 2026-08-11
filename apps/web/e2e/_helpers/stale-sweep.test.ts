@@ -313,6 +313,20 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     vi.stubEnv('GITHUB_RUN_ID', '222');
   }
 
+  /**
+   * Pin Pass A (predecessor reclaim) OFF. `concurrencyGroupId()` returns null
+   * when either var is falsy, and it is the only thing gating that pass.
+   *
+   * ⚠️ Needed because a test cannot rely on these being ABSENT: GitHub Actions
+   * sets all three for real, so "I did not call `stubCiEnv`" means one pass
+   * locally and two in CI. That is precisely how the paging test below first
+   * shipped green here and failed with `expected 602 to be 301` on the runner.
+   */
+  function stubNoCiEnv() {
+    vi.stubEnv('GITHUB_WORKFLOW', '');
+    vi.stubEnv('GITHUB_REF', '');
+  }
+
   it('issues no writes at all — not even the concurrency-group marker', async () => {
     stubCiEnv();
     const writes = noWrites();
@@ -402,6 +416,7 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
   // `startAfter` threw on the SECOND page — killing globalSetup for every PR.
 
   it('projects the order key on a field range, and keeps the id range keys-only (#960)', () => {
+    stubNoCiEnv();
     const log: QueryLog = { gets: [] };
 
     return sweepOrphanedE2EFixtures(
@@ -427,8 +442,9 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     // repeats page 1 forever and this test hangs rather than quietly passing.
     const ids = Array.from({ length: 301 }, (_, i) => `e2e-111-dep-${String(i).padStart(4, '0')}`);
 
-    // No `stubCiEnv()` — that keeps Pass A (predecessor reclaim) out, so the
-    // count below is unambiguously one pass over one collection.
+    // Pass A pinned OFF, so the count below is unambiguously ONE pass over one
+    // collection. Merely omitting `stubCiEnv()` is not enough — see the helper.
+    stubNoCiEnv();
     const report = await sweepOrphanedE2EFixtures(
       true,
       fakeDb(noWrites(), { depositos: ids }, '111') as never,
