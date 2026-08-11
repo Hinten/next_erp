@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * The "Atualizar preços" dialog. One job per selected conta; the single toggle
- * is the price-DECREASE opt-in, which `usePriceSyncAction` re-arms to `false`
- * on every open.
+ * The "Atualizar preços" dialog. One job for the selected conta; the single
+ * toggle is the price-DECREASE opt-in, which `usePriceSyncAction` re-arms to
+ * `false` on every open.
  */
 import { Button, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
 
@@ -15,9 +15,9 @@ export function PriceSyncDialog({ state }: { state: PriceSyncActionState }) {
     <Modal opened={state.opened} onClose={state.close} title="Atualizar preços" centered>
       <Stack>
         <Text size="sm" c="dimmed">
-          Envia o preço da tabela de preços normal de cada produto vinculado ao Mercado Livre das
-          contas selecionadas. Preços iguais são pulados; preços menores que o atual no Mercado
-          Livre só são enviados com a opção abaixo.
+          Envia o preço da tabela de preços normal de cada produto vinculado ao Mercado Livre da
+          conta selecionada. Preços iguais são pulados; preços menores que o atual no Mercado Livre
+          só são enviados com a opção abaixo.
         </Text>
         <ContasSelecionadas contas={state.contas} />
         <Checkbox

@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * "Atualizar preços" (Step 11 PR-D) as a TableView bulk action (#816) — one
- * independent price-push job per selected conta.
+ * "Atualizar preços" (Step 11 PR-D) as a TableView action (#816) — a price-push
+ * job for the selected conta, one at a time (`maxSelection: 1`).
  *
  * `baixarPreco` is re-armed STRUCTURALLY: `run` replaces the whole dialog
  * state object, so every open starts from the safe default. It used to be an
@@ -55,6 +55,9 @@ export function usePriceSyncAction(): {
       id: 'ml-atualizar-precos',
       label: 'Atualizar preços',
       requiresSelection: true,
+      // One conta at a time — same reasoning as the mass import: a price push
+      // walks every linked produto of an account against the ML rate limit.
+      maxSelection: 1,
       run: (rows) => {
         if (!client) {
           notifications.show({

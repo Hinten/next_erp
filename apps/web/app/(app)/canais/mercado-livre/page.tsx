@@ -100,9 +100,13 @@ export default function CanalMercadoLivrePage() {
             label: 'Excluir',
             color: 'red',
             requiresSelection: true,
+            // One conta at a time, like the two job actions above: deleting a
+            // conta drops its channel credential, and a multi-row confirm
+            // names none of the accounts it is about to take down.
+            maxSelection: 1,
             refreshOnComplete: true,
             confirm: {
-              title: 'Excluir contas Mercado Livre',
+              title: 'Excluir conta Mercado Livre',
               message:
                 'Excluir a conta remove a configuração e a credencial do canal. Confirmar exclusão?',
             },

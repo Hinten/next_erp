@@ -22,6 +22,15 @@ function row(id: string, nome: string): SnapshotRow<Integracao> {
 }
 
 describe('usePriceSyncAction', () => {
+  it('caps the button at a single conta', () => {
+    h.clientRef.current = { startPriceSync: vi.fn() };
+    const { result } = renderHook(() => usePriceSyncAction());
+
+    expect(result.current.action.maxSelection).toBe(1);
+  });
+
+  // Same as the mass import: the cap gates the click, not the ledger, which
+  // stays total so every conta gets its own outcome.
   it('sends baixarPreco with every conta and records one entry each', async () => {
     const startPriceSync = vi.fn(async ({ integracaoId }: { integracaoId: string }) => ({
       jobId: `job-${integracaoId}`,

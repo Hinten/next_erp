@@ -1,9 +1,14 @@
 'use client';
 
 /**
- * "Importar todos os anúncios" (#621) as a TableView bulk action (#816). The
- * button used to sit on one conta's detail page; it now acts on the channel
- * list's selection, starting one independent job per selected conta.
+ * "Importar todos os anúncios" (#621) as a TableView action (#816). The button
+ * used to sit on one conta's detail page; it now acts on the channel list's
+ * selection, which the action caps at a single conta (`maxSelection: 1`).
+ *
+ * The fan-out underneath stays total (`startJobsForContas` takes N contas and
+ * settles each independently): the cap is a UI policy on one click, not an
+ * invariant of the ledger, and the rail still accumulates a card per job when
+ * the operator runs several accounts one after another.
  *
  * Shape follows `useEmitirNFeAction` (`lib/nfe/bulkEmit.ts`): the hook returns
  * the `ActionConfig` plus the state its dialog renders, and the page mounts
@@ -49,6 +54,12 @@ export function useMassImportAction(): {
       id: 'ml-importar-todos',
       label: 'Importar todos os anúncios',
       requiresSelection: true,
+      // ONE conta at a time: the job scans an entire account's catalogue for
+      // minutes against the Mercado Livre API quota, so firing several at once
+      // off a wide selection is a mistake the button should refuse, not
+      // perform. Starting them one after another still works — the rail
+      // accumulates a card per job.
+      maxSelection: 1,
       // No `confirm`: the options dialog IS the confirmation. No
       // `refreshOnComplete`: starting a job mutates no integração doc, and the
       // refresh would clear the selection the operator still wants for the

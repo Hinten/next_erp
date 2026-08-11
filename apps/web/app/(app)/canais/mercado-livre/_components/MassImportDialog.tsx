@@ -2,7 +2,7 @@
 
 /**
  * The "Importar todos os anúncios" options dialog — the same eight toggles the
- * conta panel carried, now naming every conta the run will cover (#816).
+ * conta panel carried, now naming the conta the run will cover (#816).
  *
  * The checkboxes are plain component state and persist across opens: they are
  * preferences, not a safety opt-in (contrast `baixarPreco` on the price-sync
@@ -27,8 +27,8 @@ export function MassImportDialog({ state }: { state: MassImportActionState }) {
     <Modal opened={state.opened} onClose={state.close} title="Importar todos os anúncios" centered>
       <Stack>
         <Text size="sm" c="dimmed">
-          Varre todos os anúncios de cada conta selecionada e importa (ou atualiza) cada um. Pode
-          levar alguns minutos — acompanhe o progresso no painel de ações da lista.
+          Varre todos os anúncios da conta selecionada e importa (ou atualiza) cada um. Pode levar
+          alguns minutos — acompanhe o progresso no painel de ações da lista.
         </Text>
         <ContasSelecionadas contas={state.contas} />
         <Checkbox
@@ -96,9 +96,10 @@ export function MassImportDialog({ state }: { state: MassImportActionState }) {
 }
 
 /**
- * Naming the accounts is what makes a multi-row run reviewable before it
- * starts — the operator sees exactly which contas a minutes-long job will
- * touch, not just a count.
+ * Naming the account is what makes the run reviewable before it starts — the
+ * operator sees exactly which conta a minutes-long job will touch, not just a
+ * count. Both actions cap the selection at one, so this normally renders a
+ * single name; it stays list-shaped because the ledger below it is.
  */
 export function ContasSelecionadas({
   contas,

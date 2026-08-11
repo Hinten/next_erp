@@ -52,6 +52,34 @@ describe('ActionSidePanel', () => {
     expect(button.hasAttribute('disabled')).toBe(true);
   });
 
+  it('disables a maxSelection action past its cap and says why on hover', () => {
+    const second: SnapshotRow<Row> = { id: '2', path: 'x/2', data: { name: 'b' } };
+    const { rerender } = wrap(
+      <ActionSidePanel
+        actions={[{ ...makeAction('1'), requiresSelection: true, maxSelection: 1 }]}
+        selectedRows={[ROW]}
+        collapsed={false}
+        onToggleCollapsed={() => {}}
+      />,
+    );
+    const enabled = screen.getByRole('button', { name: 'Ação 1' }) as HTMLButtonElement;
+    expect(enabled.hasAttribute('disabled')).toBe(false);
+
+    rerender(
+      <MantineProvider env="test">
+        <ActionSidePanel
+          actions={[{ ...makeAction('1'), requiresSelection: true, maxSelection: 1 }]}
+          selectedRows={[ROW, second]}
+          collapsed={false}
+          onToggleCollapsed={() => {}}
+        />
+      </MantineProvider>,
+    );
+    const capped = screen.getByRole('button', { name: 'Ação 1' }) as HTMLButtonElement;
+    expect(capped.hasAttribute('disabled')).toBe(true);
+    expect(capped.getAttribute('title')).toBe('Selecione apenas 1 registro');
+  });
+
   it('routes a confirm action through the modal: Confirmar runs, Cancelar does not', () => {
     const run = vi.fn();
     wrap(

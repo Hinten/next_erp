@@ -70,6 +70,16 @@ describe('useMassImportAction', () => {
     expect(result.current.state.contas).toEqual([{ id: 'sem-nome', nome: 'sem-nome' }]);
   });
 
+  it('caps the button at a single conta', () => {
+    setClient(async ({ integracaoId }) => ({ jobId: `job-${integracaoId}` }));
+    const { result } = renderHook(() => useMassImportAction());
+
+    expect(result.current.action.maxSelection).toBe(1);
+  });
+
+  // The cap above is a UI policy on one click; the ledger below stays total so
+  // the rail can hold several jobs started one after another — and so a
+  // partial failure is still reported per conta rather than as one toast.
   it('records one entry per conta — a 409 on one does not cost the other its job', async () => {
     setClient(async ({ integracaoId }) => {
       if (integracaoId === 'b') {

@@ -7,7 +7,7 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
-import { isActionDisabled } from './resolveActionRows';
+import { actionDisabledReason } from './resolveActionRows';
 import { useActionRunner } from './useActionRunner';
 
 export interface ActionSidePanelProps<T> {
@@ -148,7 +148,7 @@ export function ActionSidePanel<T>({
         {actions.length > 0 && (newHref || renderNewButton || copyHref) && <Divider />}
 
         {actions.map((a) => {
-          const disabled = isActionDisabled(a, selectedRows, visibleRows);
+          const reason = actionDisabledReason(a, selectedRows, visibleRows);
           return (
             <Button
               key={a.id}
@@ -158,7 +158,10 @@ export function ActionSidePanel<T>({
               // The vertical layout has room for icons (the inline ActionBar
               // renders label-only to keep the toolbar compact).
               leftSection={a.icon}
-              disabled={disabled}
+              disabled={reason !== null}
+              // Same affordance as the "Copiar" button above: a disabled
+              // action says on hover what would make it available.
+              title={reason ?? undefined}
               onClick={() => trigger(a)}
             >
               {a.label}
