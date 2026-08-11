@@ -506,8 +506,9 @@ describe('shipmentToEnderecoFields', () => {
   });
 
   it('parses receiver_address instead of trusting it — a malformed shape does not throw', () => {
-    // `receiver_address` is untyped on MlShipment and the webhook body is not
-    // Zod-validated (#810), so anything can land here.
+    // `receiver_address` is untyped on MlShipment, and the schemas either side
+    // of it are `.passthrough()` (#810 validated the webhook body's NAMED
+    // fields, not its unknown ones), so anything can land here.
     for (const lixo of [42, 'Rua X, 1', [], { city: 'São Paulo' }, { state: 'SP' }]) {
       expect(() => shipmentToEnderecoFields(shipmentWithReceiverAddress(lixo))).not.toThrow();
     }

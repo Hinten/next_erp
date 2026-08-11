@@ -20,6 +20,7 @@ import {
   produtoCollection,
 } from '@delfrance/data/admin/collections';
 import {
+  CAMPOS_ESTOQUE_SYNC,
   calcularAlteracoesEstoque,
   planSincronizacaoEstoque,
   temEfeitoAplicado,
@@ -69,12 +70,15 @@ export const CAMPOS_OBSERVADOS = [
  * {@link CAMPOS_OBSERVADOS} (unit-tested): the function never writes a field it
  * watches, so its own pedido update can never re-activate it — the event chain
  * is acyclic by construction, independent of the convergence guarantee.
+ *
+ * ⚠️ Re-exported from `@delfrance/data/pedido` rather than declared here,
+ * because the pedido editor's concurrency guard must ignore exactly this set —
+ * these writes do not stamp `ultimaModificacao`, so while the two lists were
+ * separate the guard raised a false "Pedido alterado" conflict over fields the
+ * operator cannot see or edit (#972). One list, no drift: adding a field here
+ * extends the guard too.
  */
-export const CAMPOS_ESCRITOS = [
-  'estoqueAplicado',
-  'dataIndisponivelEstoque',
-  'dataRemocaoEstoque',
-] as const;
+export const CAMPOS_ESCRITOS = CAMPOS_ESTOQUE_SYNC;
 
 function valorNoCaminho(data: DocumentData | null, caminho: string): unknown {
   if (!data) return undefined;
@@ -608,7 +612,7 @@ async function aplicarPlano(
  *
  * - **`depositoOuterRef`** — required *on create*. The sweep reaches an estoque
  *   through `subcollection('estoques').where(depositoOuterRef == …)` (`ownEstoque`
- *   / `ownEstoqueMax` in `estoquePlan.ts`), so a doc created without it matches no
+ *   / `ownEstoqueMax` in `bulkEstoquePlan.ts`), so a doc created without it matches no
  *   depósito and the window filter never sees the stamp at all — which is the norm
  *   for a kit, precisely because a kit holds no stock and has no other reason to
  *   own an estoque doc.

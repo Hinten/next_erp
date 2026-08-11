@@ -242,7 +242,10 @@ export async function handleNotificationTask(
   // to report; `result` is absent on the transient-failure path.
   const contaId = r.result?.kind === 'processed' ? r.result.contaId : undefined;
   return {
-    outcome: r.outcome === 'parked' ? 'failed' : r.outcome,
+    // WhatsApp produces neither a `park` nor a `defer` disposition, so both
+    // arms are unreachable here — mapped defensively rather than widening this
+    // channel's public union with arms it cannot emit (mirrors Mercado Pago).
+    outcome: r.outcome === 'parked' || r.outcome === 'deferred' ? 'failed' : r.outcome,
     ...(contaId !== undefined ? { contaId } : {}),
     ...(r.payload ? { field: r.payload.field } : {}),
   };

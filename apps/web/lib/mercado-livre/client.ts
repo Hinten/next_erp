@@ -142,6 +142,51 @@ export interface MercadoLivrePriceSyncStatus {
 }
 
 /**
+ * One listing's outcome from an on-demand stock push (#819).
+ *
+ * Channel-NEUTRAL on purpose (`anuncioId`, not `itemId`): the second
+ * marketplace's `/api/marketplace/<canal>/enviar-estoque` answers with the same
+ * envelope, and `lib/marketplace/estoque` dispatches without knowing which one
+ * replied.
+ */
+export interface MercadoLivreEnvioEstoqueListing {
+  produtoId: string;
+  produtoNome: string | null;
+  variacaoProdutoId: string | null;
+  anuncioId: string | null;
+  linkDocId: string | null;
+  outcome: 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
+  /** Machine code; null only on `'enviado'`. */
+  motivo: string | null;
+  /** Operator-facing pt-BR text — the BACKEND owns this wording. */
+  mensagem: string;
+  quantidade: number | null;
+  variacoes: number | null;
+  rearme: { executado: boolean; estado: string | null; enviavel: boolean } | null;
+}
+
+/** A requested produto that produced no listing at all, and why. */
+export interface MercadoLivreEnvioEstoqueSemEnvio {
+  produtoId: string;
+  produtoNome: string | null;
+  motivo: string;
+  mensagem: string;
+}
+
+export interface MercadoLivreEnvioEstoqueResult {
+  canal: 'mercado-livre';
+  integracaoId: string;
+  contaNome: string | null;
+  solicitados: number;
+  familias: number;
+  resumo: { enviados: number; pulados: number; falhas: number; naoTentados: number };
+  listings: MercadoLivreEnvioEstoqueListing[];
+  produtosSemEnvio: MercadoLivreEnvioEstoqueSemEnvio[];
+  /** ISO-8601 — set when the conta is rate-limit paused. */
+  pausadoAte: string | null;
+}
+
+/**
  * The RUNNING jobs of both bulk flows for a set of contas
  * (`GET jobs-em-andamento`). Each entry carries the `jobId` the caller then
  * polls through the per-flow `…Status` methods, plus the `integracaoId` that
@@ -335,6 +380,27 @@ export interface MercadoLivreClient {
     jobId: string;
   }): Promise<MercadoLivrePriceSyncStatus>;
   /**
+   * Push the CURRENT stock of up to 50 produtos to their ML listings, right now
+   * (PERM.integracao.write) — the on-demand twin of the 15-minute sweep (#819).
+   *
+   * SYNCHRONOUS: it returns one outcome per LISTING, not a job id. Per-listing
+   * failure is DATA — a valid request answers 200 even when every listing
+   * failed — so only conta-level refusals throw: 400 `ML_SELECAO_EXCEDE_LIMITE`
+   * (an oversize selection is rejected, never truncated), 400
+   * `ML_CONTA_SEM_DEPOSITO`, 409 `ML_CONTA_PAUSADA`, 409 `ML_CONTA_MULTIORIGEM`.
+   *
+   * `reenviarComErro` re-verifies a listing latched by #781 against ML and
+   * clears its errors before sending. Default false, because `estado 'E'` means
+   * ML already confirmed the anúncio is healthy and it was our payload it
+   * refused — re-sending unchanged just re-earns the rejection.
+   */
+  enviarEstoque(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    reenviarComErro?: boolean;
+    signal?: AbortSignal;
+  }): Promise<MercadoLivreEnvioEstoqueResult>;
+  /**
    * The RUNNING mass-import and price-sync jobs across a set of contas, in one
    * round trip (PERM.integracao.read) — how the channel list re-attaches its
    * pollers after a reload, since a `jobId` only ever lived in React state.
@@ -437,7 +503,7 @@ export function createMercadoLivreClient(config: {
   const baseUrl = config.baseUrl.replace(/\/$/, '');
   const doFetch = config.fetch ?? globalThis.fetch;
 
-  async function call<T>(path: string, body?: unknown): Promise<T> {
+  async function call<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const token = await config.getAuthToken();
     let res: Response;
     try {
@@ -448,6 +514,9 @@ export function createMercadoLivreClient(config: {
           Accept: 'application/json',
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
+        // Long-running calls (the manual stock push) let the operator cancel;
+        // every existing caller passes nothing and is unaffected.
+        ...(signal === undefined ? {} : { signal }),
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (err) {
@@ -560,6 +629,16 @@ export function createMercadoLivreClient(config: {
         integracaoId: input.integracaoId,
         baixarPreco: input.baixarPreco,
       }),
+    enviarEstoque: (input) =>
+      call<MercadoLivreEnvioEstoqueResult>(
+        '/api/marketplace/mercado-livre/enviar-estoque',
+        {
+          integracaoId: input.integracaoId,
+          produtoIds: input.produtoIds,
+          reenviarComErro: input.reenviarComErro ?? false,
+        },
+        input.signal,
+      ),
     priceSyncStatus: (input) =>
       call<MercadoLivrePriceSyncStatus>(
         `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,

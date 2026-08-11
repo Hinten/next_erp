@@ -25,17 +25,20 @@ import { valuesEqual } from '@delfrance/core/equality';
  *  - **`isUserProductModel`** — the stock sweep branches on it and it only ever
  *    flips via the server's UPtin migration. An editable toggle here would
  *    silently re-route publishing.
+ *
+ * ⚠️ `channels`, `crossdocking`, `tarifaFrete` and `video_id` were here and are
+ * not any more. The first three never reach the ML payload at all
+ * (`buildItemPayload` does not read them), and `crossdocking`/`video_id`
+ * duplicate produto fields — a second editable copy could only diverge from the
+ * produto that publish actually reads. Their stored values are left untouched;
+ * they are simply no longer written from this screen.
  */
 export const OPERATOR_OWNED_KEYS = [
   'title',
   'descricao',
   'condition',
-  'channels',
   'category_id',
   'listing_type_id',
-  'tarifaFrete',
-  'crossdocking',
-  'video_id',
   'attributes',
 ] as const;
 

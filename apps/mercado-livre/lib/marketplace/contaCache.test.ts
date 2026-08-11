@@ -185,8 +185,9 @@ describe('resolveContaAtivaPorUserId', () => {
   });
 
   it('never caches "no account" — a cached absence manufactures failure rows', async () => {
-    // `null` → { kind: 'no-account' } → { kind: 'fail' } → a PERSISTED
-    // notificacoesMercadoLivre doc that only the 30-minute sweep re-drives.
+    // `null` → { kind: 'no-account' } → { kind: 'defer' } (#808) → the DEFERRED
+    // lane, re-driven once a DAY. A cached absence would also break the
+    // connect-time `redriveDeferredForUserId` re-drive.
     const db = new FakeDb();
     const miss = countingResolve(null);
 

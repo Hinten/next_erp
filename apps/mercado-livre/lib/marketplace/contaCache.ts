@@ -91,10 +91,17 @@ const contaReader = createCachedDocReader(integracaoCollection, {
  * get a wrong hit.
  *
  * `negativeTtlMs: 0` — a `null` here produces `{ kind: 'no-account' }`, which
- * `toDisposition` turns into `{ kind: 'fail' }`. The pipeline then PERSISTS a
- * `notificacoesMercadoLivre` failure document and only the 30-minute sweep
- * re-drives it. Caching that for a seller who connected 30 seconds ago
- * manufactures failure rows for notifications that would have succeeded.
+ * `toDisposition` turns into `{ kind: 'defer' }` (#808): the notification leaves
+ * the hourly pool entirely for the DEFERRED lane, re-driven once a DAY for
+ * `MAX_TENTATIVAS_DEFERRED` days. Caching that for a seller who connected
+ * moments ago would park their backlog for a day, not for a sweep interval.
+ *
+ * ⚠️ It also protects the connect-time re-drive. `onIntegracaoMercadoLivreChanged`
+ * calls `redriveDeferredForUserId` the instant a seller's `user_id` lands, and
+ * `userIdResolvivel` is documented as having to agree EXACTLY with what
+ * `resolveIntegracaoByUserId` finds a moment later. A cached absence is precisely
+ * the way to break that agreement — the trigger would pull the backlog back into
+ * the hot lane and the pipeline would immediately defer it again.
  */
 const integracaoByUserId = createReadCache<readonly [number], string | null>({
   name: 'ml:integracao-by-user-id',
