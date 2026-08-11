@@ -33,7 +33,9 @@ import { MlTasksDisabledError, type MlEnqueueOptions } from './mlTasks';
 
 /** Region the stock send function/queue live in (shared knob with mlTasks.ts). */
 function mlTasksRegion(): string {
-  return process.env.MERCADO_LIVRE_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east5';
+  return (
+    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
+  );
 }
 
 /**

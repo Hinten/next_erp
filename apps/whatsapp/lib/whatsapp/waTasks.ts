@@ -30,7 +30,7 @@ import { WHATSAPP_NOTIFICATION_QUEUE, type WhatsappNotificationPayload } from '.
 
 /** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
 function whatsappTasksRegion(): string {
-  return process.env.WHATSAPP_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east5';
+  return process.env.WHATSAPP_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5';
 }
 
 /**
