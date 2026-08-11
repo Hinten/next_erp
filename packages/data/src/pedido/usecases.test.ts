@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_PEDIDO } from '@delfrance/schemas';
+import { ESTADO_PEDIDO, pedidoMeta } from '@delfrance/schemas';
 import type { Pedido } from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
@@ -145,6 +145,43 @@ describe('remotelyChangedFields', () => {
 
   it('reports a key present on only one side', () => {
     expect(remotelyChangedFields({ a: 1 }, { a: 1, b: 2 })).toEqual(['b']);
+  });
+
+  it('ignores every field the server owns — the operator cannot have caused it', () => {
+    // The #409 repeat of #791. `onPedidoEstoqueSync` writes `estoqueAplicado` +
+    // the two markers onto the pedido the operator is editing; comparing them
+    // raised "O pedido foi alterado por outra pessoa" over fields the client is
+    // FORBIDDEN to write (they are in `pedidoMeta.serverOwnedFields`) and cannot
+    // even see. Derived from the meta so a fourth such field cannot reopen this.
+    const baseline = {
+      numero: 'A',
+      estoqueAplicado: null,
+      dataIndisponivelEstoque: null,
+      dataRemocaoEstoque: null,
+    };
+    const current = {
+      numero: 'A',
+      estoqueAplicado: { reservado: { p1: 2 } },
+      dataIndisponivelEstoque: 1_700_000_000_000_000,
+      dataRemocaoEstoque: 1_700_000_000_000_001,
+    };
+    expect(remotelyChangedFields(baseline, current)).toEqual([]);
+  });
+
+  it('still reports a real edit that lands alongside a server-owned change', () => {
+    // The guard must not go blind: a human edit next to the sync's write-back is
+    // still a conflict worth raising.
+    const baseline = { numero: 'A', estoqueAplicado: null };
+    const current = { numero: 'B', estoqueAplicado: { reservado: { p1: 2 } } };
+    expect(remotelyChangedFields(baseline, current)).toEqual(['numero']);
+  });
+
+  it('ignores exactly the fields pedidoMeta declares as server-owned', () => {
+    // Pins the derivation itself: adding a field to `serverOwnedFields` must be
+    // all it takes, and removing one must put it back under the guard.
+    for (const field of pedidoMeta.serverOwnedFields ?? []) {
+      expect(remotelyChangedFields({ [field]: null }, { [field]: 'changed' })).toEqual([]);
+    }
   });
 });
 

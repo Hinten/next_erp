@@ -321,7 +321,17 @@ export const pedidoMeta: CollectionMetadata = {
   // (`dataIndisponivelEstoque`/`dataRemocaoEstoque`) stay client-writable on
   // purpose — the Flutter app writes them back on every full-doc save, and
   // forging them only makes the sync SKIP a pedido, never move stock.
-  serverOwnedFields: ['estoqueAplicado'],
+  // Written ONLY by the `onPedidoEstoqueSync` trigger — its `CAMPOS_ESCRITOS`
+  // (`apps/functions/src/estoques/sincronizarEstoquePedido.ts`) is the exact
+  // counterpart, and a unit test there pins the two lists together.
+  //
+  // This list does double duty: the rules generator denies clients these
+  // writes, AND `remotelyChangedFields` (`@delfrance/data/pedido`) skips them
+  // when diffing the editor's baseline. Both follow from one fact — the client
+  // cannot write these — so a field the operator is forbidden to touch can
+  // never raise "o pedido foi alterado por outra pessoa" at them (#791 was the
+  // same bug with `lastMarketplaceUpdate`; the estoque sync re-created it).
+  serverOwnedFields: ['estoqueAplicado', 'dataIndisponivelEstoque', 'dataRemocaoEstoque'],
 };
 
 export const pedido = { schema: pedidoSchema, meta: pedidoMeta };

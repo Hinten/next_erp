@@ -55,6 +55,20 @@ async function mudarEstadoViaUI(page: Page, estadoLabel: string) {
   await page.getByRole('combobox', { name: 'Estado', exact: true }).click();
   await page.getByRole('option', { name: estadoLabel, exact: true }).click();
   await page.getByRole('button', { name: 'Salvar alterações' }).click();
+
+  // Name the failure instead of timing out on it. `handleSubmit` swallows a
+  // save that did not go through — a concurrency conflict opens the "Pedido
+  // alterado" modal and simply returns, so the page stays put and the
+  // `waitForURL` below would report a bare 30s navigation timeout that says
+  // nothing about why. That opacity cost a full investigation once: the trigger
+  // writes `estoqueAplicado` + the two markers onto this very pedido, and while
+  // the concurrency guard still compared those server-owned fields, this save
+  // intermittently lost the race and hit the modal. Fail loudly if it returns.
+  await expect(
+    page.getByRole('dialog').filter({ hasText: 'Pedido alterado' }),
+    'save blocked by the concurrency conflict modal — a remote writer touched the pedido',
+  ).toHaveCount(0);
+
   await page.waitForURL((url) => /\/pedidos$/.test(url.pathname), { timeout: 30_000 });
 }
 

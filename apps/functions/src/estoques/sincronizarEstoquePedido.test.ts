@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { pedidoMeta } from '@delfrance/schemas';
 import {
   CAMPOS_ESCRITOS,
   CAMPOS_OBSERVADOS,
@@ -23,6 +24,19 @@ describe('loop guard 1 — observed/written field sets', () => {
             observado.startsWith(`${escrito}.`),
         ).toBe(false);
       }
+    }
+  });
+
+  it('every written field is declared server-owned on pedidoMeta', () => {
+    // Two consequences hang off `serverOwnedFields`, and both are wrong if this
+    // drifts: the generated rules stop denying clients the write, AND
+    // `remotelyChangedFields` (@delfrance/data/pedido) starts counting the
+    // sync's own write-back as "someone else changed your pedido" — a conflict
+    // modal over a field the operator cannot see, edit or write. That is #791,
+    // which this sync re-created once already.
+    const serverOwned = new Set(pedidoMeta.serverOwnedFields ?? []);
+    for (const escrito of CAMPOS_ESCRITOS as readonly string[]) {
+      expect(serverOwned.has(escrito)).toBe(true);
     }
   });
 });

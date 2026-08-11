@@ -1,4 +1,10 @@
-import { ESTADO_PEDIDO, valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import {
+  ESTADO_PEDIDO,
+  pedidoMeta,
+  valuesEqual,
+  type EstadoPedido,
+  type Pedido,
+} from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -109,7 +115,26 @@ export class PedidoConflictError extends Error {
  * merely had the pedido editor open, with a conflict modal naming a field they
  * cannot see or edit.
  */
-const CONCURRENCY_IGNORE = new Set(['ultimaModificacao', 'timestamp', 'lastMarketplaceUpdate']);
+const CONCURRENCY_IGNORE_STAMPS = ['ultimaModificacao', 'timestamp', 'lastMarketplaceUpdate'];
+
+/**
+ * The stamps above PLUS every field `pedidoMeta` declares server-owned.
+ *
+ * Derived rather than hand-listed because #791 happened twice: the estoque sync
+ * (#409) then wrote `estoqueAplicado` + `dataIndisponivelEstoque` +
+ * `dataRemocaoEstoque` onto the pedido an operator was editing, and the guard
+ * dutifully reported a conflict over fields the Firestore rules FORBID that
+ * operator from writing. A field the client cannot write is, by construction,
+ * never a change the client needs to review before overwriting — it is not
+ * "someone else edited your record", it is the server doing its job.
+ *
+ * So the ignore set follows `serverOwnedFields` automatically: declaring a new
+ * server-owned field is now the only step, and `usecases.test.ts` pins that.
+ */
+const CONCURRENCY_IGNORE = new Set([
+  ...CONCURRENCY_IGNORE_STAMPS,
+  ...(pedidoMeta.serverOwnedFields ?? []),
+]);
 
 /**
  * Field keys whose value changed between the doc as loaded into the editor
