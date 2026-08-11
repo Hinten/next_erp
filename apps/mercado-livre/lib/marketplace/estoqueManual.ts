@@ -54,7 +54,7 @@ import {
   envInt,
   fetchStockFamiliesByIds,
   quantidadesDaFamilia,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 import { type StockContextLoader, type StockSendResult, processStockSendTask } from './estoqueSend';
 import type { LinkStatusTarget } from './itemsStatusSync';
 import { MlTasksDisabledError } from './mlTasks';

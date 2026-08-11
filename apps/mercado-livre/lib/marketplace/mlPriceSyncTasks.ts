@@ -33,7 +33,9 @@ import { MERCADO_LIVRE_PRICE_SYNC_QUEUE, type PriceSyncTaskPayload } from './pre
 
 /** Region the price-sync function/queue live in (shared knob with mlTasks.ts). */
 function mlTasksRegion(): string {
-  return process.env.MERCADO_LIVRE_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east5';
+  return (
+    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
+  );
 }
 
 /**

@@ -16,7 +16,7 @@
  * 2026-07-27 — the INVERSE of the first cut's "targets, never quantities"
  * contract; legacy BigQuery parity: the Flutter sender likewise transmitted
  * sweep-computed numbers and never re-read produtos/estoques). The sweep runs
- * THE joined query once (`estoquePlan.fetchStockFamilies`), computes every
+ * THE joined query once (`bulkEstoquePlan.fetchStockFamilies`), computes every
  * family member's quantity (`quantidadesDaFamilia`) and bakes the result into
  * the task — `quantidade` XOR `variations` — together with `linkDocId`, the
  * status-writeback target, so the handler re-resolves NOTHING: no fresh gate,
@@ -77,7 +77,7 @@ import {
   maxPauseReenqueues,
   podeEnviarEstoque,
   ratePauseMin,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 import { applyItemStatusToLink } from './itemsStatusSync';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { MlTasksDisabledError } from './mlTasks';
@@ -95,7 +95,7 @@ import type { MlStockTaskScheduler } from './mlStockTasks';
  * by the handler instead (both null → dropped `'payload-sem-quantidade'`;
  * both non-null → `variations` wins, loudly).
  *
- * `estoquePlan.buildSendTasks`'s `StockSendTaskDraft` mirrors this shape
+ * `bulkEstoquePlan.buildSendTasks`'s `StockSendTaskDraft` mirrors this shape
  * field-for-field, so the sweep's drafts parse verbatim — pinned (compile-time
  * and runtime) in estoqueSend.test.ts.
  */

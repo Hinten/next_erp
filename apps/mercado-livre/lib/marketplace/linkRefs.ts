@@ -15,6 +15,24 @@ export function refMatchesIntegracao(ref: unknown, integracaoId: string): boolea
   return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
 }
 
+/**
+ * Split a `produtoMercadoLivreOuterRef` into the parent produto + link doc ids.
+ * Tolerates both the canonical `documents/produtos/<id>/produtoMercadoLivre/<docId>`
+ * and a bare `produtos/...`; returns null for anything else, including a ref
+ * whose third segment is not the literal `produtoMercadoLivre` leaf.
+ *
+ * ⚠️ `import.ts`, `importMigration.ts` and `orderProdutoResolve.ts` each carry a
+ * private copy that predates this one. They are byte-identical; collapsing them
+ * onto this export is mechanical follow-up, deliberately not bundled with #920.
+ */
+export function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | null {
+  const segs = ref.split('/').filter(Boolean);
+  const i = segs.indexOf('produtos');
+  if (i === -1 || i + 3 >= segs.length) return null;
+  if (segs[i + 2] !== 'produtoMercadoLivre') return null;
+  return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
+}
+
 /** Last non-empty path segment of a `documents/<col>/<id>` (or bare) ref. */
 export function lastSegment(ref: string): string {
   const parts = ref.split('/').filter(Boolean);

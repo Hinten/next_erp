@@ -79,6 +79,18 @@ describe('createTaskScheduler', () => {
     expect(taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/reconciliarNfe');
   });
 
+  it('treats blank NFE_TASKS_REGION as unset and falls through to default', async () => {
+    process.env.NFE_TASKS_REGION = '';
+    await createTaskScheduler().enqueueConsulta({
+      filialId: 'F',
+      nRec: 'R',
+      tpEmis: 6,
+      attempt: 0,
+      scheduleAtMs: Date.now(),
+    });
+    expect(taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/reconciliarNfe');
+  });
+
   it('noopTaskScheduler.enqueueConsulta resolves without side effects', async () => {
     await expect(
       noopTaskScheduler.enqueueConsulta({

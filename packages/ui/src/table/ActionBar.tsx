@@ -6,7 +6,7 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
-import { isActionDisabled } from './resolveActionRows';
+import { actionDisabledReason } from './resolveActionRows';
 import { useActionRunner } from './useActionRunner';
 
 /**
@@ -118,13 +118,14 @@ export function ActionBar<T>({
             </Menu.Target>
             <Menu.Dropdown>
               {actions.map((a) => {
-                const disabled = isActionDisabled(a, selectedRows, visibleRows);
+                const reason = actionDisabledReason(a, selectedRows, visibleRows);
                 return (
                   <Menu.Item
                     key={a.id}
                     leftSection={a.icon}
                     color={a.color}
-                    disabled={disabled}
+                    disabled={reason !== null}
+                    title={reason ?? undefined}
                     onClick={() => trigger(a)}
                   >
                     {a.label}
@@ -135,13 +136,14 @@ export function ActionBar<T>({
           </Menu>
         ) : (
           actions.map((a) => {
-            const disabled = isActionDisabled(a, selectedRows, visibleRows);
+            const reason = actionDisabledReason(a, selectedRows, visibleRows);
             return (
               <Button
                 key={a.id}
                 variant="default"
                 color={a.color}
-                disabled={disabled}
+                disabled={reason !== null}
+                title={reason ?? undefined}
                 onClick={() => trigger(a)}
               >
                 {a.label}

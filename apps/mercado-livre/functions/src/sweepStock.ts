@@ -1,7 +1,7 @@
 import { type ScheduleOptions, onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
 
-import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoquePlan';
+import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/bulkEstoquePlan';
 import {
   type StockSweepMode,
   isSlotDaReconciliacao,
@@ -18,20 +18,25 @@ import { getDb } from './lib/admin';
  *
  *  - `sweepMercadoLivreStock` — every 15 minutes, `'incremental'` mode: per
  *    conta, discovers the produto families whose estoques changed since the
- *    durable cursor (state doc `estoqueMercadoLivreSync/{integracaoId}`),
- *    applies the 30-day activity filter and enqueues one send task per ML API
- *    call onto the `sendMercadoLivreStock` queue. The ONE tick at the 02:00
- *    slot is skipped in code (`isSlotDoDaily` — a single cron line cannot
- *    exclude just one slot): that slot belongs to the daily pass below, while
- *    02:15/02:30/02:45 still run (owner call — stock changed at 02:05 must
- *    sync at 02:15, not 03:00; the cursor makes the one skipped slot
+ *    durable cursor (state doc `estoqueMercadoLivreSync/{integracaoId}`), keeps
+ *    the ones whose PUBLISHED number actually changed (`anterior = atual −
+ *    Σmovimento` over the window, run back through the same kit math) and
+ *    enqueues one send task per ML API call onto the `sendMercadoLivreStock`
+ *    queue. A change is skipped anyway while the quantity stays above
+ *    `limiarEstoqueAlto()` on BOTH sides — that arm is incremental-only. The ONE
+ *    tick at the 02:00 slot is skipped in code (`isSlotDoDaily` — a single cron
+ *    line cannot exclude just one slot): that slot belongs to the daily pass
+ *    below, while 02:15/02:30/02:45 still run (owner call — stock changed at
+ *    02:05 must sync at 02:15, not 03:00; the cursor makes the one skipped slot
  *    self-healing regardless).
  *  - `sweepMercadoLivreStockDaily` — 02:00 America/Sao_Paulo, `'daily'` mode:
  *    the same discovery over a FLAT `dailyWindowHours()` (24h) lookback — NOT
- *    a force-all `changedSinceMs: -1` scan — with no activity filter and no
- *    pedidos probe: the full-reconciliation pass over everything that moved in
- *    the last day. It owns its slot alone (the incremental skips 02:00), so
- *    the two never contend for one conta's caps and state doc.
+ *    a force-all `changedSinceMs: -1` scan, so it is **not** a reconciliation:
+ *    a listing whose ERP stock did not move inside the window is not a
+ *    candidate. It re-sends everything that DID change, without the high-stock
+ *    arm. The monthly `'reconciliacao'` pass below is the real corrector. It
+ *    owns its slot alone (the incremental skips 02:00), so the two never
+ *    contend for one conta's caps and state doc.
  *
  * **Flag-gated OFF**: until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` is set (the
  * coordinated cutover — same window the legacy Flutter sender dies) both
@@ -74,6 +79,15 @@ async function runAndLog(mode: StockSweepMode): Promise<void> {
     contas: result.contas.length,
     enqueued: result.contas.reduce((sum, c) => sum + c.enqueued, 0),
     skipped: result.contas.reduce((sum, c) => sum + c.skipped, 0),
+    // A SUBSET of `skipped`: the families the SEND POLICY rejected. Read against
+    // `enqueued` — that ratio is the whole point of the ledger comparison, and
+    // without this line it is not observable (#695).
+    // ⚠️ On the INCREMENTAL tier it is not purely "nothing changed": the policy
+    // also rejects a family that DID change while staying above
+    // `limiarEstoqueAlto()` on both sides (the freshness arm), and that lands
+    // here too. The daily and monthly passes carry no such arm, so only THEIR
+    // `inalterados` reads as "nothing moved".
+    inalterados: result.contas.reduce((sum, c) => sum + c.inalterados, 0),
     pages: result.contas.reduce((sum, c) => sum + c.pages, 0),
     truncated: result.contas.filter((c) => c.truncated).length,
     // Contas skipped by the 429 pause gate — a standing count here means the

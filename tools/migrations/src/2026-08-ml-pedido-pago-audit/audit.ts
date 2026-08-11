@@ -8,6 +8,7 @@ import {
   MigrationArgError,
   type MigrationContext,
   type MigrationSummary,
+  isMainModule,
   runMigration,
 } from '../runner';
 import { auditPedidoPago, type PagamentoResumo, type PagoAuditRow } from './predicate';
@@ -181,10 +182,7 @@ function registrar(ctx: MigrationContext, row: PagoAuditRow, orderIds: readonly 
   });
 }
 
-const isDirectInvocation =
-  process.argv[1] != null && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`;
-
-if (isDirectInvocation) {
+if (isMainModule(import.meta.url)) {
   await runMigration('ml-pedido-pago-audit', run);
 }
 

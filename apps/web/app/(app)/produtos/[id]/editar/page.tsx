@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
@@ -41,7 +41,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
-import { MercadoLivreManager } from '../../_components/MercadoLivreManager';
+import { MercadoLivreTab } from '../../_components/mercado-livre/MercadoLivreTab';
 import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
@@ -122,6 +122,16 @@ export default function EditarProdutoPage() {
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
+  // The Mercado Livre tab edits its OWN documents (the link subcollection), so
+  // it is invisible to this form's `isDirty` — without both of these an operator
+  // could edit an anúncio, hit "Salvar alterações", and lose the work with no
+  // prompt at all. `mlDirty` arms the leave-guard through `extraDirty`; the
+  // flush commits the edits as part of the produto save. Stays null while the
+  // tab has never been opened (its editor chunk is not even loaded), which is
+  // why the call below is optional.
+  const flushMercadoLivreRef = useRef<(() => Promise<void>) | null>(null);
+  const [mlDirty, setMlDirty] = useState(false);
+  const handleMlDirtyChange = useCallback((dirty: boolean) => setMlDirty(dirty), []);
   // The variation set the Kit tab consumes (the per-variation grid + the
   // component-picker exclusion: a kit can't contain itself or its variations).
   // VariationManager publishes the LIVE set (saved + staged) once its tab has
@@ -404,8 +414,19 @@ export default function EditarProdutoPage() {
         // Self-contained tab (like Estoque): live link-doc status + the publish
         // action against the apps/mercado-livre backend, decoupled from this
         // form's save.
+        //
+        // Behind `MercadoLivreTab`, which defers loading the editor chunk until
+        // the tab is actually opened — Mantine keeps inactive panels mounted
+        // under `<Activity mode="hidden">`, so without the gate this subtree
+        // would render (and start its import) on every produto edit.
         renderInput: (p) => (
-          <MercadoLivreManager produtoId={params.id} db={db} disabled={p.disabled} />
+          <MercadoLivreTab
+            produtoId={params.id}
+            db={db}
+            disabled={p.disabled}
+            onDirtyChange={handleMlDirtyChange}
+            flushRef={flushMercadoLivreRef}
+          />
         ),
       },
       modificacoes: {
@@ -455,6 +476,7 @@ export default function EditarProdutoPage() {
       referencedByKits,
       referencedByMore,
       referencedBySnap.loading,
+      handleMlDirtyChange,
     ],
   );
 
@@ -503,6 +525,9 @@ export default function EditarProdutoPage() {
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
+        // Pending Mercado Livre edits live in their own documents and their own
+        // form, so the leave-guard needs to be told about them explicitly.
+        extraDirty={mlDirty}
         transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
         deriveOnSave={(values) => {
           // Keep the Flutter wire shapes on every save: bare group ids sorted
@@ -620,6 +645,12 @@ export default function EditarProdutoPage() {
           // Then persist each kit-variation child's generated `componentesKit`
           // (from "Gerar Variações") — the child docs exist by now.
           await flushKitVariacoesRef.current?.(id);
+
+          // Mercado Livre last: its link docs have six writers, so a save here
+          // can lose a race and raise `AfterSaveBlockedError` (tier 3). Running
+          // it after the child flushes means that pause never costs the produto
+          // its own sibling writes — they are already committed.
+          await flushMercadoLivreRef.current?.();
         }}
         saveLabel="Salvar alterações"
         canEdit={canWrite}

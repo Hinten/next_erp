@@ -43,7 +43,7 @@ import { safeLog } from './log';
  */
 export const RECONCILE_FUNCTION = 'reconciliarNfe';
 /** Region the reconcile function/queue live in (must match the functions' FUNCTIONS_REGION). */
-const reconcileRegion = (): string => process.env.NFE_TASKS_REGION ?? 'us-east1';
+const reconcileRegion = (): string => process.env.NFE_TASKS_REGION?.trim() || 'us-east1';
 
 /**
  * JSON body the queue delivers to the reconcile function. Shared between the

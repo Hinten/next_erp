@@ -207,9 +207,10 @@ describe('syncItemStatus — link sync', () => {
     expect((denorm!.patch.marketplaceIds as FieldValue).isEqual(FieldValue.arrayUnion(ITEM))).toBe(
       true,
     );
-    expect(
-      (denorm!.patch.integracoesComProduto as FieldValue).isEqual(FieldValue.arrayUnion(CONTA)),
-    ).toBe(true);
+    // #920: not in the patch any more — the same estado change that gets here
+    // also merges onto the link doc, and `onProdutoMercadoLivreLinkChanged`
+    // derives the array from that.
+    expect(denorm!.patch).not.toHaveProperty('integracoesComProduto');
   });
 
   it('sub_status-only change (estado unchanged): syncs raw fields, NO parent denorm write', async () => {
@@ -337,13 +338,20 @@ describe('syncItemStatus — cancel (closed)', () => {
     expect(out).toBe('synced');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
     // Parent denorm entry for this listing removed (plain arrays, not arrayRemove).
+    // `integracoesComProduto` is deliberately UNTOUCHED (#920): dropping the
+    // conta is the link trigger's call, made from the surviving links inside a
+    // transaction, not this function's from the `marketplace` array.
     expect(db.docData('produtos', PRODUTO)).toMatchObject({
       marketplace: [],
       marketplaceIds: [],
-      integracoesComProduto: [],
+      integracoesComProduto: [CONTA],
     });
   });
 
+  // Since #920 this only pins the `marketplace`/`marketplaceIds` filtering —
+  // `integracoesComProduto` is untouched here either way. The equivalent
+  // "keep the conta while another listing survives" rule now lives in
+  // `sobrevivemLinksDoProduto` (integracoesComProduto.test.ts).
   it('cancel keeps the integração when another listing of it remains', async () => {
     const db = new FakeDb();
     seedLink(
@@ -390,7 +398,7 @@ describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', 
     expect(db.docData('produtos', PRODUTO)).toMatchObject({
       marketplace: [],
       marketplaceIds: [],
-      integracoesComProduto: [],
+      integracoesComProduto: [CONTA], // link-trigger-owned since #920
     });
   });
 

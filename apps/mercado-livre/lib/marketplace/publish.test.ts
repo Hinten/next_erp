@@ -436,11 +436,15 @@ describe('publishProduto — dual-run wire shape', () => {
     });
     // Another writer lands on the child produto inside the stamp's
     // read-modify-write window, exactly once.
+    // The concurrent write lands on `marketplaceIds` — a field the stamp still
+    // owns since #920 moved `integracoesComProduto` to the link trigger. Any
+    // write fails the `lastUpdateTime` precondition, but only a field the stamp
+    // re-derives can show whether the retry RE-DERIVED or blindly re-applied.
     db.afterGet = {
       path: 'produtos/child-1',
       fn: () => {
         const cur = db.docs('produtos').get('child-1')!;
-        db.seed('produtos', 'child-1', { ...cur, integracoesComProduto: ['outra-conta'] });
+        db.seed('produtos', 'child-1', { ...cur, marketplaceIds: ['concorrente'] });
       },
     };
 
@@ -449,9 +453,7 @@ describe('publishProduto — dual-run wire shape', () => {
     const child = db.docs('produtos').get('child-1')!;
     // The first update failed the precondition; the retry re-READ and
     // re-DERIVED, so the concurrent value is folded in rather than erased.
-    expect(child.integracoesComProduto).toEqual(
-      expect.arrayContaining(['outra-conta', CONTA]) as unknown,
-    );
+    expect(child.marketplaceIds).toEqual(expect.arrayContaining(['concorrente', '555']) as unknown);
     expect(child.marketplace).toEqual([
       { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
     ]);
@@ -621,9 +623,11 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(
       (update!.patch.marketplaceIds as FieldValue).isEqual(FieldValue.arrayUnion('MLB777')),
     ).toBe(true);
-    expect(
-      (update!.patch.integracoesComProduto as FieldValue).isEqual(FieldValue.arrayUnion(CONTA)),
-    ).toBe(true);
+    // #920: `integracoesComProduto` is NOT in this patch any more —
+    // `onProdutoMercadoLivreLinkChanged` derives it from the link doc written
+    // above. Two writers is how a conta gets silently dropped while a live
+    // listing exists, so this assertion guards the removal.
+    expect(update!.patch).not.toHaveProperty('integracoesComProduto');
   });
 
   it('stamps each variation child with the legacy cleanup semantics (#431)', async () => {
@@ -674,7 +678,11 @@ describe('publishProduto — dual-run wire shape', () => {
       { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
     ]);
     expect(child.marketplaceIds).toEqual(['111', '555']);
-    expect(child.integracoesComProduto).toEqual(['outra-conta', CONTA]);
+    // #920: the stamp no longer touches this array — the child's
+    // `variacaoMercadoLivre` link carries `contaOuterRef` and
+    // `onVariacaoMercadoLivreLinkChanged` derives it. The seeded value must
+    // come through untouched, CONTA included only by the trigger.
+    expect(child.integracoesComProduto).toEqual(['outra-conta']);
   });
 
   it('re-publish with an already-correct child entry does not duplicate it (#432 review)', async () => {
