@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_PEDIDO } from '@delfrance/schemas';
+import { ESTADO_PEDIDO, pedidoMeta } from '@delfrance/schemas';
 import type { Pedido } from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
@@ -11,6 +11,7 @@ import {
   cancelarPedido,
   deleteIncidente,
   deletePagamento,
+  isIgnoredForConcurrency,
   nextPedidoEstado,
   remotelyChangedFields,
   savePedido,
@@ -146,6 +147,46 @@ describe('remotelyChangedFields', () => {
   it('reports a key present on only one side', () => {
     expect(remotelyChangedFields({ a: 1 }, { a: 1, b: 2 })).toEqual(['b']);
   });
+
+  it('ignores the estoque sync trigger write-back (#972)', () => {
+    // The sync writes these back seconds after the save that triggered it, and
+    // does NOT stamp ultimaModificacao — so this compare was the only thing that
+    // saw it, and it hard-failed the operator's next save with a modal naming
+    // fields they can neither see nor edit.
+    const baseline = {
+      numero: 'A',
+      estoqueAplicado: null,
+      dataIndisponivelEstoque: null,
+      dataRemocaoEstoque: null,
+    };
+    const current = {
+      numero: 'A',
+      estoqueAplicado: { depositoId: 'd1', ehSaida: true, reservado: { p1: 2 }, removido: null },
+      dataIndisponivelEstoque: 1_700_000_000_000_000,
+      dataRemocaoEstoque: null,
+    };
+    expect(remotelyChangedFields(baseline, current)).toEqual([]);
+  });
+
+  it('still reports a real change alongside the trigger write-back', () => {
+    // The load-bearing one: the exclusion is PER FIELD, not a bail-out. A
+    // concurrent edit to something the operator owns must survive it.
+    const baseline = { itens: { p1: [{ quantidade: 1 }] }, estoqueAplicado: null };
+    const current = {
+      itens: { p1: [{ quantidade: 5 }] },
+      estoqueAplicado: { reservado: { p1: 5 } },
+    };
+    expect(remotelyChangedFields(baseline, current)).toEqual(['itens']);
+  });
+
+  it('ignores every field the client is forbidden from writing', () => {
+    // Drift guard: a field declared serverOwned is, a fortiori, one the operator
+    // cannot have authored — so it must never raise a conflict. Auto-extends the
+    // day another pedido field becomes server-owned.
+    for (const field of pedidoMeta.serverOwnedFields ?? []) {
+      expect(isIgnoredForConcurrency(field)).toBe(true);
+    }
+  });
 });
 
 describe('savePedido', () => {
@@ -182,6 +223,47 @@ describe('savePedido', () => {
     expect(err).toBeInstanceOf(PedidoConflictError);
     expect((err as PedidoConflictError).current).toBeNull();
     expect((err as Error).message).toMatch(/excluíd/i);
+  });
+
+  it('commits when only the estoque sync write-back landed since load (#972)', async () => {
+    // The regression test for the reported flake AND the production symptom: the
+    // operator flipped the estado, the sync applied the stock and wrote its
+    // snapshot back, and now the operator flips the estado again. Nothing THEY
+    // authored changed, so the save must go through — before this, it raised a
+    // conflict modal and the editor never navigated away.
+    const carregado = {
+      ...baseline,
+      estado: 'pago',
+      estoqueAplicado: null,
+      dataRemocaoEstoque: null,
+    };
+    const comWriteBack = {
+      ...carregado,
+      estoqueAplicado: { reservado: null, removido: { p1: 1 } },
+      dataRemocaoEstoque: 1_700_000_000_000_000,
+    };
+    const { port, written } = fakePort(comWriteBack, 777);
+    await savePedido(port, {
+      pedidoId: 'x',
+      patch: { estado: 'cancelado' },
+      baseline: carregado,
+    });
+    expect(written()).toEqual({ estado: 'cancelado', ultimaModificacao: 777 });
+  });
+
+  it('still conflicts when the estado itself moved remotely', async () => {
+    // The other half: the exclusion must not blunt the guard on a field the
+    // operator owns, even when the write-back rode along with it.
+    const carregado = { ...baseline, estado: 'pago', estoqueAplicado: null };
+    const current = {
+      ...carregado,
+      estado: 'finalizado',
+      estoqueAplicado: { removido: { p1: 1 } },
+    };
+    const { port } = fakePort(current);
+    await expect(
+      savePedido(port, { pedidoId: 'x', patch: { estado: 'cancelado' }, baseline: carregado }),
+    ).rejects.toMatchObject({ name: 'PedidoConflictError', current });
   });
 
   it('overrides a conflict by re-basing on the reviewed snapshot (F3 "salvar mesmo assim")', async () => {

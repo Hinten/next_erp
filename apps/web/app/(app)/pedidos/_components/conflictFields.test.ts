@@ -53,6 +53,25 @@ describe('conflictFields', () => {
     expect(conflictFields({ ultimaModificacao: 1 }, { ultimaModificacao: 2 }, {})).toEqual([]);
   });
 
+  it('never offers the estoque sync write-back as a row to decide on (#972)', () => {
+    // The modal asks the operator to choose between two versions of a field.
+    // These three are written only by `sincronizarEstoquePedido`, and
+    // `estoqueAplicado` is serverOwned — the rules DENY the client writing it —
+    // so there is no choice to offer. Pinned here as well as in the use-case so
+    // the modal and the guard cannot drift apart on what "changed" means.
+    expect(
+      conflictFields(
+        { estoqueAplicado: null, dataIndisponivelEstoque: null, dataRemocaoEstoque: null },
+        {
+          estoqueAplicado: { reservado: { p1: 2 } },
+          dataIndisponivelEstoque: 1_700_000_000_000_000,
+          dataRemocaoEstoque: 1_700_000_000_000_001,
+        },
+        {},
+      ),
+    ).toEqual([]);
+  });
+
   it('falls back to the field name when there is no schema label', () => {
     const result = conflictFields({ algumCampoNovo: 1 }, { algumCampoNovo: 2 }, {});
     expect(result[0]).toMatchObject({ label: 'algumCampoNovo' });
