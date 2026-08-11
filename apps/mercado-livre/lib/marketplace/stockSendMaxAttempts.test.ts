@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { STOCK_SEND_MAX_ATTEMPTS } from './estoquePlan';
+import { STOCK_SEND_MAX_ATTEMPTS } from './bulkEstoquePlan';
 
 /**
  * `STOCK_SEND_MAX_ATTEMPTS` is load-bearing in TWO places that are deployed
@@ -35,7 +35,7 @@ describe('STOCK_SEND_MAX_ATTEMPTS', () => {
 
   it('is what the deployed queue retryConfig uses — by name, not a literal', () => {
     expect(source).toMatch(/maxAttempts:\s*STOCK_SEND_MAX_ATTEMPTS\b/);
-    expect(source).toMatch(/STOCK_SEND_MAX_ATTEMPTS,/); // imported from estoquePlan
+    expect(source).toMatch(/STOCK_SEND_MAX_ATTEMPTS,/); // imported from bulkEstoquePlan
   });
 
   it('reaches the handler — the ladder is dead without req.retryCount', () => {

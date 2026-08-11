@@ -28,7 +28,7 @@
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
-import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from './estoquePlan';
+import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from './bulkEstoquePlan';
 import { MlTasksDisabledError, type MlEnqueueOptions } from './mlTasks';
 
 /** Region the stock send function/queue live in (shared knob with mlTasks.ts). */

@@ -14,7 +14,7 @@ import {
   ORDER_BACKFILL_FLAG_ENV,
   runOrderBackfillSweep,
 } from '../../lib/marketplace/orderBackfill';
-import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoquePlan';
+import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/bulkEstoquePlan';
 import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/precoSync';
 import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfeUpload';
 import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';

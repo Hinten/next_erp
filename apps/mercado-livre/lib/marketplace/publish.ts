@@ -312,7 +312,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     estado,
     // #799 bug 6: publish never wrote these, so a freshly published listing
     // looked like a #780 legacy-authored doc to the stock planner
-    // (estoquePlan.ts:1206) and bypassed the podeEnviarEstoque whitelist for
+    // (bulkEstoquePlan.ts:1206) and bypassed the podeEnviarEstoque whitelist for
     // a cycle. They are the same two fields applyItemStatusToLink maintains.
     status: item.status ?? null,
     sub_status: item.sub_status ?? null,
@@ -341,7 +341,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // fields" — was FALSE and would have made #431 a silent stock + price
   // outage: the sweeps would select zero produtos and log `SEM_LINK` skips
   // rather than erroring. `integracoesComProduto` is read by
-  // `estoquePlan.fetchStockFamilies` (the stock sweep's anchor predicate) and
+  // `bulkEstoquePlan.fetchStockFamilies` (the stock sweep's anchor predicate) and
   // by `precoPlan.fetchPrecoPage` (the price job's anchor query), and a
   // `produtos` composite index exists to serve both.
   //
