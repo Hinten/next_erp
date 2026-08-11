@@ -246,18 +246,24 @@ export async function getTabMediByName(nome: string): Promise<Record<string, unk
 }
 
 /**
- * Seed one tabMedi carrying a SENT Mercado Livre chart keyed by the given
- * integração id, so the medidas editor's Mercado Livre tab renders a conta
- * card with an existing "Enviada" guia (no live ML backend needed). The chart
- * has two size rows so the "2 tamanhos" summary is assertable.
+ * Seed one tabMedi carrying two Mercado Livre charts keyed by the given
+ * integração id, so the medidas editor's Mercado Livre tab renders a conta card
+ * without a live ML backend:
+ *
+ *  - a SENT guia ("Enviada") with two size rows carrying real BODY_MEASURE
+ *    values, so both the "2 tamanhos" summary and the measurement grid are
+ *    assertable;
+ *  - a second guia stamped `exclusaoSolicitadaEm`, the state a chart sits in
+ *    while ML decides (up to 24h) whether it is still linked to a listing.
  */
 export async function seedMedidaMlChart(
   prefix: string,
   integracaoId: string,
-): Promise<{ id: string; nome: string; chartNome: string }> {
+): Promise<{ id: string; nome: string; chartNome: string; excluindoNome: string }> {
   const id = `${prefix}-mlchart`;
   const nome = `${prefix}-mlchart`;
   const chartNome = `${prefix}-guia`;
+  const excluindoNome = `${prefix}-excluindo`;
   await db()
     .collection('tabMedi')
     .doc(id)
@@ -274,7 +280,7 @@ export async function seedMedidaMlChart(
               id: '1594439',
               nome: chartNome,
               domain_id: 'MLB-T_SHIRTS',
-              tipo: 'CLOTHING_MEASURE',
+              tipo: 'BODY_MEASURE',
               main_attribute_id: 'SIZE',
               attributes: [{ id: 'GENDER', value_id: '339665', value_name: 'Feminino' }],
               main_attribute: [],
@@ -282,12 +288,39 @@ export async function seedMedidaMlChart(
                 {
                   varianteUid: 'documents/grupoDeVariacoes/g/variacoes/v-m',
                   id: '1594439:1',
-                  attributes: [{ id: 'SIZE', value_name: 'M' }],
+                  attributes: [
+                    { id: 'SIZE', value_name: 'M' },
+                    { id: 'CHEST_CIRCUMFERENCE_FROM', value_name: '90', unit_id: 'cm' },
+                    { id: 'CHEST_CIRCUMFERENCE_TO', value_name: '94', unit_id: 'cm' },
+                  ],
                 },
                 {
                   varianteUid: 'documents/grupoDeVariacoes/g/variacoes/v-g',
                   id: '1594439:2',
-                  attributes: [{ id: 'SIZE', value_name: 'G' }],
+                  attributes: [
+                    { id: 'SIZE', value_name: 'G' },
+                    { id: 'CHEST_CIRCUMFERENCE_FROM', value_name: '95', unit_id: 'cm' },
+                    { id: 'CHEST_CIRCUMFERENCE_TO', value_name: '99', unit_id: 'cm' },
+                  ],
+                },
+              ],
+            },
+            {
+              id: '1594440',
+              nome: excluindoNome,
+              domain_id: 'MLB-T_SHIRTS',
+              tipo: 'BODY_MEASURE',
+              main_attribute_id: 'SIZE',
+              attributes: [{ id: 'GENDER', value_id: '339665', value_name: 'Feminino' }],
+              main_attribute: [],
+              // Stamped by `requestSizeChartDeletion` once ML accepted the
+              // removal REQUEST; the guia stays until a re-read confirms.
+              exclusaoSolicitadaEm: Date.now(),
+              rows: [
+                {
+                  varianteUid: 'documents/grupoDeVariacoes/g/variacoes/v-p',
+                  id: '1594440:1',
+                  attributes: [{ id: 'SIZE', value_name: 'P' }],
                 },
               ],
             },
@@ -298,7 +331,7 @@ export async function seedMedidaMlChart(
       dataCadastro: Date.now(),
       ultimaModificacao: null,
     });
-  return { id, nome, chartNome };
+  return { id, nome, chartNome, excluindoNome };
 }
 
 /**
