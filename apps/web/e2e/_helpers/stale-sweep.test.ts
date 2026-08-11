@@ -218,6 +218,14 @@ function fakeDb(
     };
   };
 
+  // A broken cursor makes `collectPage` re-request page 1 forever. That loop is
+  // pure microtasks (`Promise.resolve`), so it starves the event loop and
+  // vitest's own `testTimeout` — a macrotask timer — never fires: the run HANGS
+  // instead of failing. This ceiling converts that into a legible failure.
+  // Generous on purpose: a full sweep is ~20 targets x 2 passes x <=3 queries.
+  const MAX_GETS = 400;
+  let gets = 0;
+
   // ⚠️ `startAfter` HONOURS its argument and `select` RECORDS its arguments.
   // The previous fake made both no-ops, which meant `collectPage`'s paging loop
   // was never exercised by any test — and a naive >PAGE_SIZE fixture would have
@@ -230,6 +238,12 @@ function fakeDb(
       startAfter: (cursor: { id?: string }) => query(path, { ...state, after: cursor?.id }),
       select: (...fields: string[]) => query(path, { ...state, fields }),
       get: () => {
+        if ((gets += 1) > MAX_GETS) {
+          throw new Error(
+            `fakeDb: ${MAX_GETS} queries exceeded on "${path}" — the paging loop is not ` +
+              'advancing. Almost always `startAfter` no longer honours its cursor.',
+          );
+        }
         queryLog?.gets.push({ path, fields: state.fields });
         return Promise.resolve(snapshotFor(path, state));
       },
