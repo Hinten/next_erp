@@ -107,6 +107,7 @@ export const E2E_FIXTURE_TARGETS: readonly E2EFixtureTarget[] = [
   // Prefix lives only in the doc id (`${prefix}-arq-001`); the fields carry it
   // as part of a filename, not as a value prefix.
   { collection: 'arquivos' },
+  { collection: 'balanco', fields: ['nome'] },
   { collection: 'bandeirasCartao', fields: ['nome'] },
   { collection: 'cargos', fields: ['nome'] },
   { collection: 'categorias', fields: ['nome'] },
@@ -247,10 +248,13 @@ async function collectPage(
  * field, which is why `pedidos` declares both `numero` and `observacoesInternas`
  * rather than relying on either alone.
  *
- * Both queries are keys-only (`.select()`): the sweep reads nothing off a
+ * Both queries project as little as possible: the sweep reads nothing off a
  * candidate but its `ref` and its `createTime`, and `createTime` rides the
  * snapshot envelope rather than the field mask. Enterprise bills data scanned,
  * so pulling produto and pedido bodies here was pure waste.
+ *
+ * The id range is keys-only (`.select()`); the field range projects exactly its
+ * ordered field, which the keyset cursor needs — see the note at that call.
  */
 async function collectCandidates(
   database: Firestore,
@@ -277,7 +281,17 @@ async function collectCandidates(
     for (const field of target.fields ?? []) {
       truncated =
         (await collectPage(
-          col.where(field, '>=', prefix).where(field, '<', end).select(),
+          // ⚠️ `select(field)`, NOT a bare keys-only `select()`. An inequality on
+          // `field` implies an `orderBy(field)`, and `collectPage` paginates with
+          // `startAfter(<last snapshot>)` — which Firestore rejects outright
+          // ("Field \"nome\" is missing in the provided DocumentSnapshot") when
+          // the cursor snapshot carries no value for the ordered field. A
+          // keys-only projection produces exactly such a snapshot, so this query
+          // used to blow up on its SECOND page and take the whole sweep with it.
+          // It stayed invisible while every prefix matched under PAGE_SIZE docs.
+          // The id-range query above needs no such field: a document key is
+          // always present on the snapshot.
+          col.where(field, '>=', prefix).where(field, '<', end).select(field),
           found,
           deadline,
         )) || truncated;

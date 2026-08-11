@@ -20,96 +20,19 @@ export const LISTING_FIELD_LABELS: Record<OperatorOwnedKey, string> = {
   title: 'Título do anúncio',
   descricao: 'Descrição',
   condition: 'Condição',
-  channels: 'Canais',
   category_id: 'Categoria',
   listing_type_id: 'Tipo de anúncio',
-  tarifaFrete: 'Tarifa de frete',
-  crossdocking: 'Crossdocking',
-  video_id: 'Vídeo (YouTube)',
   attributes: 'Atributos',
 };
 
 /**
  * ML's `title` limit on MLB. Enforced as an input `maxLength` rather than a
  * validation rule: a title stored longer than this (Flutter wrote it, or ML
- * itself did) must not block an unrelated edit to `tarifaFrete` on the same
+ * itself did) must not block an unrelated edit to the descrição on the same
  * form — that listing already fails to publish, and blocking the form would
  * remove the only screen where it can be fixed.
  */
 export const TITLE_MAX_LENGTH = 60;
-
-/**
- * The three `channels` combinations the legacy screen offered.
- *
- * `channels` is stored as a plain string array, and ML accepts values we do not
- * model, so {@link channelsToPreset} returns null rather than guessing — see
- * {@link channelOptions}.
- */
-export const CHANNEL_PRESETS = [
-  { value: 'marketplace', label: 'Mercado Livre', channels: ['marketplace'] },
-  { value: 'mshops', label: 'Mercado Shops', channels: ['mshops'] },
-  { value: 'todos', label: 'Todos', channels: ['marketplace', 'mshops'] },
-] as const;
-
-export type ChannelPreset = (typeof CHANNEL_PRESETS)[number]['value'];
-
-/** Which preset a stored `channels` array is, or null when it is none of them. */
-export function channelsToPreset(channels: readonly string[] | null | undefined): string | null {
-  const set = new Set(channels ?? []);
-  if (set.size === 0) return null;
-  for (const preset of CHANNEL_PRESETS) {
-    if (preset.channels.length === set.size && preset.channels.every((c) => set.has(c))) {
-      return preset.value;
-    }
-  }
-  return null;
-}
-
-/** The array to store for a preset; unknown preset ⇒ null (caller keeps the stored value). */
-export function presetToChannels(preset: string | null | undefined): string[] | null {
-  const found = CHANNEL_PRESETS.find((p) => p.value === preset);
-  return found ? [...found.channels] : null;
-}
-
-/** Human label for a stored `channels` array — the preset name, or the raw list. */
-export function channelsLabel(channels: readonly string[] | null | undefined): string | null {
-  const preset = channelsToPreset(channels);
-  if (preset) return CHANNEL_PRESETS.find((p) => p.value === preset)!.label;
-  const values = [...new Set(channels ?? [])];
-  return values.length > 0 ? values.join(', ') : null;
-}
-
-/**
- * Select options for `channels`, including the CURRENT value when it matches no
- * preset.
- *
- * Without that extra entry a Select bound to an unmodelled array renders blank
- * and the first interaction silently rewrites a combination ML accepted and we
- * simply do not know about.
- */
-export function channelOptions(
-  current: readonly string[] | null | undefined,
-): Array<{ value: string; label: string }> {
-  const options: Array<{ value: string; label: string }> = CHANNEL_PRESETS.map((p) => ({
-    value: p.value,
-    label: p.label,
-  }));
-  if (channelsToPreset(current) === null && (current?.length ?? 0) > 0) {
-    options.push({ value: rawChannelValue(current!), label: `${current!.join(', ')} (atual)` });
-  }
-  return options;
-}
-
-/** Sentinel Select value standing for "the stored array, unmodelled". */
-export function rawChannelValue(channels: readonly string[]): string {
-  return `__raw__:${[...channels].join(',')}`;
-}
-
-/** Reverses {@link rawChannelValue}; null when the value is a real preset. */
-export function parseRawChannelValue(value: string | null | undefined): string[] | null {
-  if (!value?.startsWith('__raw__:')) return null;
-  return value.slice('__raw__:'.length).split(',').filter(Boolean);
-}
 
 export const CONDITION_OPTIONS = [
   { value: 'new', label: 'Novo' },
@@ -123,9 +46,16 @@ export const CONDITION_OPTIONS = [
  * has no labelled "Tipo de anúncio" control true.
  */
 export const LISTING_TYPE_OPTIONS = [
-  { value: 'gold_special', label: 'Clássico' },
   { value: 'gold_pro', label: 'Premium' },
+  { value: 'gold_special', label: 'Clássico' },
 ] as const;
+
+/**
+ * What a new listing gets unless the operator says otherwise. Premium, and
+ * first in the list above so the two cannot drift apart — every call site reads
+ * one or the other.
+ */
+export const DEFAULT_LISTING_TYPE: string = LISTING_TYPE_OPTIONS[0].value;
 
 /** Label for a stored listing type id, falling back to the raw id. */
 export function listingTypeLabel(id: string | null | undefined): string | null {

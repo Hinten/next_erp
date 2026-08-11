@@ -123,9 +123,32 @@ export function produtoPageIssues(data: ProdutoPageValidationInput): ProdutoPage
     });
   }
 
-  // Reserved stock can never exceed the quantity on hand.
+  // Reserved stock can never be negative, and can never exceed the quantity on
+  // hand. Two independent statements, so both can fire on the same row.
   (data.estoques ?? []).forEach((estoque, i) => {
     const { quantidade, quantidadeReservada } = estoque ?? {};
+
+    // ⚠️ The negative case is the DANGEROUS one, and it had no surface at all
+    // until #931. `disponivel = quantidade − quantidadeReservada`, so a negative
+    // reservation *increases* availability (`8 − (−2) = 10`) — the one failure
+    // direction that makes Mercado Livre sell stock the store does not have.
+    // `reservaEfetiva` floors it wherever it is calculated, so such a row is
+    // harmless to availability; it is still a real data defect, and until this
+    // rule the ONLY trace was a `console.warn`. This is the point where a human
+    // finally sees it.
+    //
+    // The schema deliberately does NOT constrain the field (a `.min(0)` there
+    // failed the whole document in `parseSoftRead` and discarded every default —
+    // see the field's own comment). Surfacing it here instead keeps the stored
+    // value visible rather than laundering it.
+    if (typeof quantidadeReservada === 'number' && quantidadeReservada < 0) {
+      issues.push({
+        path: `estoques.${i}.quantidadeReservada`,
+        message:
+          'A quantidade reservada não pode ser negativa. Corrija com um balanço na aba Estoque.',
+      });
+    }
+
     if (
       typeof quantidade === 'number' &&
       typeof quantidadeReservada === 'number' &&

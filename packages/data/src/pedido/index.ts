@@ -52,6 +52,7 @@ export {
   type DevolucaoSavePrepared,
 } from './devolucao';
 export {
+  CAMPOS_ESTOQUE_SYNC,
   calcularAlteracoesEstoque,
   planSincronizacaoEstoque,
   temEfeitoAplicado,

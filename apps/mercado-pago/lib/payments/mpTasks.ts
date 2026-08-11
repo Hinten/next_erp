@@ -35,7 +35,9 @@ import { MERCADO_PAGO_NOTIFICATION_QUEUE, type MpNotificationPayload } from './n
 
 /** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
 function mpTasksRegion(): string {
-  return process.env.MERCADO_PAGO_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east5';
+  return (
+    process.env.MERCADO_PAGO_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
+  );
 }
 
 /**

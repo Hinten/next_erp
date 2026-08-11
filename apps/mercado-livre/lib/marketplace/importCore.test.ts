@@ -340,6 +340,21 @@ describe('assembleImportPlan — stock options', () => {
     expect(plan.estoque?.data.quantidade).toBe(16);
   });
 
+  it('⚠️ FLOORS a NEGATIVE stored reservation instead of shrinking the stock (#931)', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingEstoqueQty: 3,
+        existingEstoqueReservada: -2,
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverEstoque: true },
+      }),
+    );
+    // The mirror image of ADR 0014 §7: adding a raw −2 back would write
+    // quantidade=10 for an ML available of 12, silently destroying two units on
+    // EVERY re-import. `reservaEfetiva` floors it, so quantidade === available.
+    expect(plan.estoque?.data.quantidade).toBe(12);
+  });
+
   it('importarEstoque=false → no stock write on create', () => {
     const plan = assembleImportPlan(
       args({ options: { ...DEFAULT_IMPORT_OPTIONS, importarEstoque: false } }),
@@ -756,6 +771,20 @@ describe('assembleVariationChildPlan — estoque', () => {
     );
     // availableQuantity=5, 3 reserved → quantidade=8 so disponivel(8-3)=5
     expect(plan.estoque?.data.quantidade).toBe(8);
+  });
+
+  it('⚠️ FLOORS a NEGATIVE stored reservation — the child arm is not a lesser copy (#931)', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingEstoqueQty: 2,
+        existingEstoqueReservada: -2,
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverEstoque: true },
+      }),
+    );
+    // Same defect as the parent arm, and the one #931 did not name: a raw −2
+    // would write quantidade=3 for an ML available of 5.
+    expect(plan.estoque?.data.quantidade).toBe(5);
   });
 
   it('importarEstoque=false → no stock write on create', () => {

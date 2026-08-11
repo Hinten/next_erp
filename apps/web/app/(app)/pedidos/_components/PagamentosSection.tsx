@@ -52,6 +52,7 @@ import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { callReconciliarPagamentoPedido, createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
+import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
 import { gatewayIdFromTipo, getGateway } from '@/lib/plugins/paymentRegistry';
 import {
@@ -526,12 +527,10 @@ export function PagamentosSection({
                     }}
                     disabled={disabled}
                   />
-                  <TextInput
+                  <TelefoneTextInput
                     label="Telefone"
-                    maxLength={16}
                     value={form.telefone}
-                    onChange={(e) => {
-                      const value = e.currentTarget.value;
+                    onChange={(value) => {
                       setForm((f) => ({ ...f, telefone: value }));
                     }}
                     disabled={disabled}

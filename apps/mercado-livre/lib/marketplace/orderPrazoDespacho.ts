@@ -99,6 +99,8 @@
  */
 import {
   MercadoLivreError,
+  shipmentLeadTime,
+  shipmentLogisticType,
   type MercadoLivreApi,
   type MlSellerShippingSchedule,
   type MlShipment,
@@ -307,7 +309,17 @@ export async function resolvePrazoDespacho(args: ResolvePrazoDespachoArgs): Prom
 
   if (fallbackUs != null) return fallbackUs;
 
-  const prazoDespachoStr = shipment.shipping_option?.estimated_handling_limit?.date ?? null;
+  // `estimated_handling_limit` was DEPRECATED by ML on 2025-05-13 — "a informação
+  // só poderá ser consumida no recurso de SLA" — and the `x-format-new` body does
+  // not document it at all (#957). The SLA read above is now the real source;
+  // everything below is the legacy path, kept only for as long as ML still fills
+  // the field, and reached only when SLA gave nothing AND there is no stored
+  // fallback. Read off the lead-time block via passthrough since the schema no
+  // longer types a field ML says it has stopped sending.
+  const leadTime = shipmentLeadTime(shipment) as {
+    estimated_handling_limit?: { date?: string | null } | null;
+  } | null;
+  const prazoDespachoStr = leadTime?.estimated_handling_limit?.date ?? null;
   if (prazoDespachoStr == null) return null;
 
   const prazoDespachoMs = Date.parse(prazoDespachoStr);
@@ -317,7 +329,7 @@ export async function resolvePrazoDespacho(args: ResolvePrazoDespachoArgs): Prom
   // malformed string is handled as "cannot compute" rather than crashing.
   if (Number.isNaN(prazoDespachoMs)) return null;
 
-  const logisticType = shipment.logistic_type ?? null;
+  const logisticType = shipmentLogisticType(shipment);
   if (logisticType == null || !KNOWN_LOGISTIC_TYPES.has(logisticType)) {
     throw new MlLogisticTypeInvalidoError(logisticType);
   }
@@ -329,7 +341,7 @@ export async function resolvePrazoDespacho(args: ResolvePrazoDespachoArgs): Prom
   const ctx: ScheduleContext = {
     shipmentId: shipment.id,
     prazoDespachoMs,
-    estimatedDeliveryLimitDate: shipment.shipping_option?.estimated_delivery_limit?.date ?? null,
+    estimatedDeliveryLimitDate: shipmentLeadTime(shipment)?.estimated_delivery_limit?.date ?? null,
   };
   const deadlineMs = computeDeadlineFromSchedule(ctx, schedule);
   return deadlineMs * 1000; // ms -> µs

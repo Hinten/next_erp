@@ -103,6 +103,54 @@ describe('produtoPageIssues (cross-document rules)', () => {
       },
     ]);
   });
+
+  it('⚠️ flags a NEGATIVE reserved stock — the direction that invents stock (#931)', () => {
+    // `disponivel = quantidade − quantidadeReservada`, so a negative reservation
+    // *increases* availability: 8 − (−2) = 10. `reservaEfetiva` floors it at
+    // every calculation, so it cannot oversell — but until this rule the only
+    // trace of the defect was a console.warn nobody reads.
+    const issues = produtoPageIssues({
+      estoques: [
+        { quantidade: 8, quantidadeReservada: 0 },
+        { quantidade: 8, quantidadeReservada: -2 },
+      ],
+    });
+    expect(issues).toEqual([
+      {
+        path: 'estoques.1.quantidadeReservada',
+        message:
+          'A quantidade reservada não pode ser negativa. Corrija com um balanço na aba Estoque.',
+      },
+    ]);
+  });
+
+  it('reports BOTH reservation problems when a row manages to have each', () => {
+    // quantidade −5, reservada −2: negative, and still greater than the
+    // quantity. Two independent statements, so neither shadows the other.
+    const issues = produtoPageIssues({
+      estoques: [{ quantidade: -5, quantidadeReservada: -2 }],
+    });
+    expect(issues.map((i) => i.path)).toEqual([
+      'estoques.0.quantidadeReservada',
+      'estoques.0.quantidadeReservada',
+    ]);
+    // The contract is that BOTH fire, not the order they fire in — swapping the
+    // two `if`s upstream is a refactor, not a regression. `arrayContaining`
+    // still catches the real failure (one message emitted twice), because each
+    // pattern must match some element.
+    expect(issues.map((i) => i.message)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/não pode ser negativa/),
+        expect.stringMatching(/maior que a quantidade/),
+      ]),
+    );
+  });
+
+  it('does not flag a zero reservation', () => {
+    expect(produtoPageIssues({ estoques: [{ quantidade: 0, quantidadeReservada: 0 }] })).toEqual(
+      [],
+    );
+  });
 });
 
 describe('produtoPageSchema (refined aggregate)', () => {

@@ -14,7 +14,8 @@
  *      notification can't be processed (retries exhausted / no account yet /
  *      unknown topic);
  *   4. `reprocessNotifications` (the sweep) re-drives persisted `failed` docs and
- *      deletes them on success.
+ *      deletes them on success, and `reprocessDeferredNotifications` does the
+ *      same daily over the ones waiting on a seller to connect.
  *
  * Disposition (`handleNotificationTask`):
  *  - `done`     — a known topic was processed: NOTHING is persisted. The `items`
@@ -31,18 +32,31 @@
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
- *  - `failed`   — no active integração for the seller yet: persisted immediately
- *                 (retrying in-task can't help within the backoff window; the
- *                 sweep re-drives it when the account connects, up to the cap);
- *  - `parked`   — an unsupported topic (terminal, never re-driven);
+ *  - `failed`   — the work itself failed and is worth retrying shortly (a known
+ *                 routine ML 500, a final-attempt transient): the hourly sweep
+ *                 re-drives it up to `MAX_TENTATIVAS`, then parks it;
+ *  - `deferred` — no active integração for the seller YET (#808). This is not a
+ *                 failure but a precondition, and the only actor who can clear it
+ *                 is a human connecting the account — which may be tomorrow. So
+ *                 the doc leaves the hourly pool entirely: it is re-driven once a
+ *                 DAY for `MAX_TENTATIVAS_DEFERRED` days, and `redriveDeferredForUserId`
+ *                 pulls it back into the hot lane the moment the seller's
+ *                 `user_id` lands on an active integração. It used to be `failed`,
+ *                 which parked it ~6h in and lost every notification a
+ *                 next-business-day connect would have imported;
+ *  - `parked`   — an unsupported topic, or a notification with no `user_id` at all
+ *                 (nothing can ever make it resolvable) — terminal, never re-driven;
  *  - `dropped`  — a malformed task payload (a coding/enqueue bug — logged, no
  *                 persist, no retry).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, NOTIFICACAO_RESILIENCIA_STATUS } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
-import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import {
+  createMercadoLivreApi,
+  MercadoLivreHttpError,
+} from '@delfrance/integrations-mercado-livre';
 import {
   integracaoCollection,
   notificacaoMercadoLivreCollection,
@@ -51,6 +65,7 @@ import {
   asMillis,
   defineNotificationPipeline,
   MAX_TENTATIVAS,
+  MAX_TENTATIVAS_DEFERRED,
   type NotificationDisposition,
   type ReprocessOptions,
   type ReprocessResult,
@@ -85,8 +100,16 @@ export const MERCADO_LIVRE_NOTIFICATION_QUEUE = 'processMercadoLivreNotification
 
 // The retry caps and the reprocess window are the SHARED pipeline's — re-exported
 // here so this module stays the one import site for the channel's callers.
-export { MAX_TENTATIVAS, TASK_MAX_ATTEMPTS };
+export { MAX_TENTATIVAS, MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS };
 export type { ReprocessOptions, ReprocessResult };
+
+/**
+ * How many deferred docs one `redriveDeferredForUserId` call moves. A cap rather
+ * than a full drain because it runs inside a Firestore TRIGGER, whose job is to
+ * cut latency, not to be the only mechanism: whatever it leaves behind the daily
+ * deferred sweep picks up. Hitting it is logged, never silent.
+ */
+export const REDRIVE_PAGE_LIMIT = 500;
 
 /**
  * The ML notification topics the pipeline recognizes. A known topic is processed
@@ -194,7 +217,7 @@ export function parseNotificationBody(raw: unknown): ParsedNotification | null {
  * Resolve the owning integração id from the ML seller `user_id` — a single
  * equality query over the denormalized `user_id` field (the old
  * `getContaMercadoLivreByUser_id`: tipo == mercadoLivre, ativo). Returns null
- * when no active account maps to the seller (a `failed`/`parked` outcome, not
+ * when no active account maps to the seller (a `deferred`/`parked` outcome, not
  * a throw). A transient Firestore failure here propagates (throws) so the caller
  * treats it as retryable.
  */
@@ -211,6 +234,28 @@ export async function resolveIntegracaoByUserId(
     .limit(1)
     .get();
   return snap.docs[0]?.id ?? null;
+}
+
+/**
+ * The seller id an `integracao` document makes RESOLVABLE, or null when it makes
+ * none — the same three predicates {@link resolveIntegracaoByUserId} queries on,
+ * evaluated against a document in hand instead of against Firestore.
+ *
+ * That mirroring is the point: `onIntegracaoMercadoLivreChanged` compares this
+ * over the event's before/after snapshots to decide whether a write just made a
+ * seller resolvable, and it must agree exactly with what the notification pipeline
+ * would find a moment later. Keep the two in step — a drift here is a re-drive
+ * that fires for an account the sweep will still refuse (or, worse, one that never
+ * fires for an account that just connected).
+ *
+ * Pure and read-free by design, so the trigger can gate on it before touching
+ * Firestore at all.
+ */
+export function userIdResolvivel(doc: Record<string, unknown> | null): number | null {
+  if (doc == null) return null;
+  if (doc.tipo !== INTEGRACAO_TIPO.mercadoLivre) return null;
+  if (doc.ativo !== true) return null;
+  return typeof doc.user_id === 'number' ? doc.user_id : null;
 }
 
 function asStringOrNull(v: unknown): string | null {
@@ -402,12 +447,39 @@ function parseOrderResourceId(resource: string): number | null {
   return Number(last);
 }
 
+/**
+ * Wrapper for topic-specific runners (order/payment/shipment/claim import) that
+ * catches ML 500 errors (N7) and converts them to a non-retryable outcome
+ * instead of throwing. A known routine ML-side transient (HTTP 500) should not
+ * consume the full retry envelope — persist immediately as `failed` with a note
+ * that it's an ML-side issue, and the sweep re-drives it up to the cap.
+ */
+async function wrapImportRunner<T extends { skipped?: unknown }>(
+  integracaoId: string,
+  runner: () => Promise<T>,
+): Promise<T | { skipped: 'ML_500'; message: string }> {
+  try {
+    return await runner();
+  } catch (err) {
+    if (err instanceof MercadoLivreHttpError && err.status === 500) {
+      const message = err.message ?? 'ML HTTP 500';
+      console.warn('[mercado-livre] import runner hit ML 500 — not retrying', {
+        integracaoId,
+        message,
+      });
+      return { skipped: 'ML_500', message };
+    }
+    throw err;
+  }
+}
+
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
-  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders/payments/shipments/claims resource had no parseable id
+  | { kind: 'malformed-resource'; integracaoId: string } // items/orders_v2/orders/payments/shipments/claims resource had no parseable id
+  | { kind: 'ml-500'; integracaoId: string; message: string }; // known routine ML 500 (N7) — non-retryable
 
 /**
  * The per-topic runner seams the dispatch pipeline threads — ONE options bag
@@ -452,12 +524,14 @@ export async function processNotificationPayload(
   // #441 UP-migration takeover for a closed `variations_migration_source`
   // listing. THROWS on a transient failure (so the queue/sweep retry) and is
   // idempotent, keyed by the item id. A malformed resource (no id segment) is
-  // deterministic → ack it.
+  // deterministic → drop it, logged explicitly (matches the behavior of other
+  // topics below).
   if (payload.topic === 'items') {
     const itemId = parseItemIdFromResource(payload.resource);
+    if (!itemId) return { kind: 'malformed-resource', integracaoId };
     // The resolver is threaded (not a pre-built API) so syncItemStatus can go
     // link-first and skip the ML call entirely for an unlinked item.
-    if (itemId) await syncItemStatus(db, integracaoId, itemId, resolveItemsApi, migrationRunner);
+    await syncItemStatus(db, integracaoId, itemId, resolveItemsApi, migrationRunner);
     return { kind: 'done', integracaoId };
   }
 
@@ -469,10 +543,16 @@ export async function processNotificationPayload(
   // tasks.dart:363-787) — logged, still acked `done`. A resource with no
   // parseable numeric id is malformed: dropped WITHOUT dispatching a bogus
   // import (mirrors the top-level schema-parse drop — no persist, no retry).
+  // ML 500 errors (N7) are caught and converted to non-retryable outcomes.
   if (payload.topic === 'orders_v2' || payload.topic === 'orders') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await orderImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      orderImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] order import skipped', {
         integracaoId,
@@ -491,11 +571,17 @@ export async function processNotificationPayload(
   // pedido, or a stale update are deterministic skips (logged), still acked
   // `done`. A resource with no parseable numeric id is malformed: dropped
   // WITHOUT dispatching a bogus import (mirrors the orders_v2 malformed-
-  // resource drop above).
+  // resource drop above). ML 500 errors (N7) are caught and converted to
+  // non-retryable outcomes.
   if (payload.topic === 'payments') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await paymentImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      paymentImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] payment import skipped', {
         integracaoId,
@@ -514,11 +600,17 @@ export async function processNotificationPayload(
   // no `freteInicial` yet (only the order-import path creates it), or a stale
   // update are deterministic skips (logged), still acked `done`. A resource
   // with no parseable numeric id is malformed: dropped WITHOUT dispatching a
-  // bogus import.
+  // bogus import. ML 500 errors (N7) are caught and converted to
+  // non-retryable outcomes.
   if (payload.topic === 'shipments') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await shipmentImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      shipmentImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] shipment import skipped', {
         integracaoId,
@@ -537,11 +629,17 @@ export async function processNotificationPayload(
   // are deterministic skips (logged inside the handler and here), still
   // acked `done` — a retry cannot fix any of them. A resource with no
   // parseable numeric id is malformed: dropped WITHOUT dispatching a bogus
-  // import (mirrors the orders_v2 malformed-resource drop above).
+  // import (mirrors the orders_v2 malformed-resource drop above). ML 500
+  // errors (N7) are caught and converted to non-retryable outcomes.
   if (payload.topic === 'claims') {
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
-    const result = await claimImportRunner(db, integracaoId, resourceId);
+    const result = await wrapImportRunner(integracaoId, () =>
+      claimImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
     if (result.skipped) {
       console.warn('[mercado-livre] claim import skipped', {
         integracaoId,
@@ -568,7 +666,7 @@ export async function processNotificationPayload(
 }
 
 export interface TaskResult {
-  outcome: 'done' | 'failed' | 'parked' | 'dropped';
+  outcome: 'done' | 'failed' | 'parked' | 'dropped' | 'deferred';
   integracaoId?: string;
   topic?: string;
 }
@@ -606,6 +704,17 @@ function pipelineFor(runners: NotificationRunners = {}) {
     toDocFields: (p) => ({ ...p }),
     fromDoc: (parsed) => {
       const doc = parsed as MlNotificationPayload;
+      // N6 validation: prevent downstream processing of ghost documents. When a
+      // notification doc is concurrently deleted, the sweep's `store.mark()`
+      // merge can recreate it with only {status, tentativas, erro, processedAt}.
+      // This validation throws on rehydration of such corrupted docs, causing
+      // the sweep to park them (with error message as audit trail) rather than
+      // processing them as ghosts with undefined resource/topic fields.
+      if (!doc.resource || !doc.topic) {
+        throw new Error(
+          `Notificação mercado-livre corrompida: campos obrigatórios ausentes (resource: ${doc.resource}, topic: ${doc.topic})`,
+        );
+      }
       return {
         id: doc.id,
         resource: doc.resource,
@@ -619,7 +728,21 @@ function pipelineFor(runners: NotificationRunners = {}) {
     },
     process: (db, payload) => processNotificationPayload(db, payload, runners),
     toDisposition: (outcome, payload, phase): NotificationDisposition => {
-      if (outcome.kind === 'no-account') return { kind: 'fail', reason: noAccountReason(payload) };
+      if (outcome.kind === 'no-account') {
+        // No `user_id` on the wire ⇒ no seller to ever resolve, and nothing the
+        // connect re-drive could key on (it queries `user_id ==`). Terminal, and
+        // deferring it would only pretend otherwise for a week.
+        if (payload.user_id == null) {
+          return {
+            kind: 'park',
+            reason: 'notificação sem user_id — nenhuma conta pode resolvê-la',
+          };
+        }
+        // The seller just has not connected yet (#808). A PRECONDITION, not a
+        // failure: the slow lane holds it for days and the `integracao` trigger
+        // re-drives it the moment the account lands.
+        return { kind: 'defer', reason: noAccountReason(payload) };
+      }
       if (outcome.kind === 'unknown-topic') {
         return { kind: 'park', reason: `tópico não suportado: ${payload.topic}` };
       }
@@ -633,6 +756,14 @@ function pipelineFor(runners: NotificationRunners = {}) {
           topic: payload.topic,
         });
         return { kind: 'drop' };
+      }
+      if (outcome.kind === 'ml-500') {
+        // ML 500 errors (N7) are known routine transients — don't retry immediately,
+        // persist as failed and let the sweep re-drive it up to the cap with backoff.
+        return {
+          kind: 'fail',
+          reason: `ML API retornou 500 (não é erro do cliente): ${outcome.message}`,
+        };
       }
       return { kind: 'resolve' }; // done
     },
@@ -699,4 +830,84 @@ export function reprocessNotifications(
   runners: NotificationRunners = {},
 ): Promise<ReprocessResult> {
   return pipelineFor(runners).reprocess(db, opts);
+}
+
+/**
+ * The DEFERRED lane's backstop (#808) — the same re-drive over the notifications
+ * waiting on a seller to connect, on a 24h window instead of 1h and a cap of
+ * `MAX_TENTATIVAS_DEFERRED` days instead of `MAX_TENTATIVAS` hours.
+ *
+ * Call it from the SAME `onSchedule` as `reprocessNotifications`: the window is
+ * the cadence, so at a 30-minute schedule this is one indexed query returning
+ * nothing 47 runs out of 48. It is also far cheaper per doc than the hot lane —
+ * a still-unconnected seller costs one `resolveIntegracaoByUserId` lookup and no
+ * ML API call at all — so it cannot threaten the sweep's timeout.
+ */
+export function reprocessDeferredNotifications(
+  db: Firestore,
+  opts: ReprocessOptions = {},
+  runners: NotificationRunners = {},
+): Promise<ReprocessResult> {
+  return pipelineFor(runners).reprocessDeferred(db, opts);
+}
+
+/** What one connect-time re-drive did, for the caller's log line. */
+export interface RedriveResult {
+  /** Deferred docs found for this seller. */
+  encontradas: number;
+  /** Of those, the ones actually moved back into the hot lane. */
+  redirecionadas: number;
+  /** True when the page cap was hit — the daily sweep drains the remainder. */
+  truncado: boolean;
+}
+
+/**
+ * Pull every notification deferred on THIS seller back into the hot lane, so the
+ * next 30-minute sweep imports it (#808). Called from
+ * `onIntegracaoMercadoLivreChanged` the moment an `integracao` becomes resolvable
+ * for a `user_id` — the OAuth exchange stamping it, an `ativo` flip, or the
+ * still-running Flutter app writing it directly.
+ *
+ * A LATENCY optimisation over `reprocessDeferredNotifications`, never a
+ * replacement: everything it misses (a doc past the page cap, a seller whose
+ * trigger never fired) still drains daily. That is why hitting the cap only logs.
+ *
+ * Idempotent, which the trigger's `retry: true` at-least-once delivery requires:
+ * it writes fixed values, and a replay finds no deferred docs left to move. A doc
+ * deleted between the query and the write resolves `false` from `mergeIfExists`
+ * and is simply not counted — never resurrected as a ghost.
+ *
+ * ⚠️ Its query needs the `(status ASC, user_id ASC)` composite index on
+ * `notificacoesMercadoLivre`. Firestore Enterprise auto-creates none and silently
+ * full-scans (billing the scan) rather than failing.
+ */
+export async function redriveDeferredForUserId(
+  db: Firestore,
+  userId: number,
+  limit: number = REDRIVE_PAGE_LIMIT,
+): Promise<RedriveResult> {
+  const snap = await notificacaoMercadoLivreCollection
+    .ref(db, {})
+    .where('status', '==', NOTIFICACAO_RESILIENCIA_STATUS.deferred)
+    .where('user_id', '==', userId)
+    .limit(limit)
+    .get();
+
+  const erro = `conta Mercado Livre user_id ${userId} conectada — reprocessando`;
+  let redirecionadas = 0;
+  for (const d of snap.docs) {
+    if (await basePipeline.redrive(db, d.id, erro)) redirecionadas += 1;
+  }
+
+  const truncado = snap.docs.length >= limit;
+  if (truncado) {
+    console.warn(
+      '[mercado-livre] redrive atingiu o limite da página — o restante sai na varredura diária',
+      {
+        userId,
+        limit,
+      },
+    );
+  }
+  return { encontradas: snap.docs.length, redirecionadas, truncado };
 }
