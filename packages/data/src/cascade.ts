@@ -1,10 +1,10 @@
 import type { CollectionMetadata } from '@delfrance/schemas';
 
 /**
- * ⚠️ SUPERSEDED, and currently has ZERO callers. Delete cascades now run
- * server-side in `apps/functions` — bespoke per domain, or via the shared
- * `defineCascadeCaroGenerico` factory (`apps/functions/src/lib/`). Do not wire
- * this module into a new one.
+ * ⚠️ SUPERSEDED. No RUNTIME caller is left — the only importer is this module's
+ * own unit test. Delete cascades now run server-side in `apps/functions`,
+ * bespoke per domain or via the shared `defineCascadeCaroGenerico` factory
+ * (`apps/functions/src/lib/`). Do not wire this module into a new one.
  *
  * Beyond being unused, its shape is the one the cascade triggers deliberately
  * avoid: it sweeps exactly the paths a domain DECLARES in `meta.cascade`, and a
