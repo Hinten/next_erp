@@ -68,13 +68,28 @@ const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
  * `.claude/worktrees` checkouts) are exactly the ones that produce false positives.
  * The `--others` pass catches a new manifest before it is committed.
  *
- * `*functions/package.json` matches `apps/functions/package.json` and every nested
- * `apps/<channel>/functions/package.json` (git's default pathspec globbing lets `*`
- * cross `/`), and matches nothing else in the repo.
+ * ⚠️ The `:(glob)` prefix is load-bearing, and so is `**` rather than `*`. Git has
+ * TWO pathspec dialects and they disagree about `/`:
+ *   - **default** (no magic) matches with wildmatch WITHOUT `WM_PATHNAME`, so a bare
+ *     `*` DOES cross `/` — `*functions/package.json` finds all five.
+ *   - **`:(glob)`** sets `WM_PATHNAME`, so `*` stops at `/` and only `**` crosses it.
+ * Both dialects can express this correctly, but each is a trap in the other's terms:
+ * `:(glob)*functions/package.json` matches NOTHING, and the plausible-looking
+ * `apps/` + `**` + `/functions/package.json` WITHOUT `:(glob)` silently returns only
+ * FOUR — it drops `apps/functions/package.json`, the storage codebase, because there
+ * `**` has no directory to match. A reviewer misread the default form as the glob
+ * form, which is reason enough to spell the dialect out rather than lean on the
+ * default. (The glob is split across backticks above for a dull reason: the literal
+ * two-star-slash sequence would CLOSE this block comment.)
+ *
+ * `:(glob)apps/**` + `/functions/package.json` therefore matches
+ * `apps/functions/package.json` AND every `apps/<channel>/functions/package.json`,
+ * and nothing else in the repo. If you change this, re-check it against BOTH the
+ * five-manifest anchor test below and a deliberately renamed codebase.
  */
 function findArtifactManifests() {
   const ls = (...args) =>
-    execFileSync('git', [...args, '--', '*functions/package.json'], {
+    execFileSync('git', [...args, '--', ':(glob)apps/**/functions/package.json'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
     })
@@ -123,7 +138,7 @@ describe('deploy-artifact runtime deps are pinned exactly', () => {
       [
         'These deploy-artifact manifests were not found by the git pathspec.',
         'Either they moved (update KNOWN_ARTIFACT_MANIFESTS) or the pathspec',
-        '`*functions/package.json` no longer matches them — in which case this',
+        '`:(glob)apps/**/functions/package.json` no longer matches them — in which case this',
         'whole guard silently stopped checking anything:',
         ...missing.map((p) => `  - ${p}`),
       ].join('\n'),
