@@ -35,7 +35,11 @@ import {
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
 import { LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
-import { estadoLabel, isStockLatched, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
+import {
+  estadoLabel,
+  isStockLatched,
+  refMatchesIntegracao,
+} from '@/lib/mercado-livre/listingLinks';
 import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
 import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
