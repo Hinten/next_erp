@@ -503,6 +503,61 @@ describe('runStockSweep — conta enumeration', () => {
       lastErrorAtUs: NOW_US,
     });
   });
+
+  /**
+   * #802 — the property that separates this port from the legacy sender.
+   *
+   * The Flutter periodic sender read stock from ONE hardcoded depósito for every
+   * conta (and, via `changed-estoque-bigquery`, for every channel). This sweep
+   * resolves `integracao.depositoOuterRef` per conta, so nothing here may be
+   * global: not THE query's filter, and not the tick-wide ledger memo.
+   *
+   * The memo is the subtle half. It keys on `<desdeMs>|<depositoId>`; a memo
+   * keyed on the window alone still passes every single-conta test in this file
+   * (they all use `dep-1`) while silently handing conta B conta A's movements.
+   */
+  it('two contas on DIFFERENT depósitos: each sweeps — and reconstructs — its OWN', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', 'documents/depositos/dep-1');
+    // Bare form on purpose: the outerRef invariant says readers tolerate it, and
+    // it is the form the Flutter app still writes during the dual run.
+    seedConta(db, 'INT-B', 'depositos/dep-2');
+    wireCtx();
+    const { fetchFamilies, calls } = makeFetch(() => ({
+      rows: [activeRow()],
+      nextAfterAnchorId: null,
+    }));
+    // Movement reported AT THE DEPÓSITO ASKED FOR — so a conta that received the
+    // wrong one reconstructs `anterior === atual` and silently sends nothing.
+    const movCalls: FetchMovimentosArgs[] = [];
+    const fetchMovimentos: FetchMovimentosDaJanela = async (_db, args) => {
+      movCalls.push(args);
+      return movimentou('PROD-1', 1, args.depositoId);
+    };
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies, fetchMovimentos });
+
+    expect(calls.map((c) => [c.integracaoId, c.depositoId])).toEqual([
+      ['INT-A', 'dep-1'],
+      ['INT-B', 'dep-2'],
+    ]);
+    // Two depósitos ⇒ two memo keys ⇒ two passes, in conta order.
+    const desdeMs = NOW_MS - 15 * 60_000 - 20_000;
+    expect(movCalls).toEqual([
+      { desdeMs, depositoId: 'dep-1' },
+      { desdeMs, depositoId: 'dep-2' },
+    ]);
+    // Both contas actually sent: the full chain (own depósito → own ledger →
+    // own send) held for each.
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(enqueue).toHaveBeenNthCalledWith(1, expectedDraft('incremental', 'INT-A'));
+    expect(enqueue).toHaveBeenNthCalledWith(2, expectedDraft('incremental', 'INT-B'));
+    expect(result.contas.map((c) => [c.integracaoId, c.enqueued, c.error])).toEqual([
+      ['INT-A', 1, null],
+      ['INT-B', 1, null],
+    ]);
+  });
 });
 
 /* ---------------------------- multiorigin guard ---------------------------- */

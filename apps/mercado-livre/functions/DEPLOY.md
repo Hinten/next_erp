@@ -509,12 +509,69 @@ intended steady state until the cutover. Flip it to `1` **only in the same
 window the legacy Flutter stock sender — the `estoque-ml-periodic` Cloud Run
 service, see the cutover table below — is disabled** — the two writing
 `available_quantity` for the same listings at once is the exact double-send
-hazard the callback-URL cutover below describes for notifications. Order of
-operations: the new Firestore indexes deployed and verified (`scripts/check-stock-indexes.mjs`)
-→ functions deployed with the flag OFF → legacy Flutter stock sender disabled →
-flag flipped to `1` → watch the first incremental tick (expect a one-time
-correction burst: the anchor's own estoque is now a first-class change trigger,
-which the legacy query excluded).
+hazard the callback-URL cutover below describes for notifications.
+
+**Order of operations:**
+
+1. The new Firestore indexes deployed and verified (`scripts/check-stock-indexes.mjs`).
+2. **#933 — the `historicoEstoque` v1 → v2 reshape — has run in THIS project.**
+   Its issue states the gate outright: the flag "should not be turned on until
+   this has run in production", because the send policy reconstructs `anterior`
+   from `sum(movimento)` and un-migrated rows read as _unknown_, so the sweep
+   fails open and re-sends the **whole catalogue** instead of only what changed.
+3. **The depósito source verified — `pnpm --filter @delfrance/mercado-livre-app
+check:deposito-source -- --project <id> --delta` — with zero defects.** See
+   the next subsection; it exits non-zero on the two states that must not reach
+   the flip.
+4. Functions deployed with the flag OFF.
+5. Legacy Flutter stock sender disabled.
+6. Flag flipped to `1`.
+7. Watch the first incremental tick. Expect a one-time correction burst, for
+   **two** independent reasons: the anchor's own estoque is now a first-class
+   change trigger (the legacy query excluded it), and the depósito source
+   changed (below).
+
+⚠️ Steps 2 and 3 compound. Until #933 has run, the first flipped tick force-sends
+the entire catalogue — which is the worst possible moment to discover a conta
+pointing at the wrong depósito, because the blast radius is every listing rather
+than only what moved.
+
+#### The stock source is now PER CONTA, not one hardcoded depósito (#802)
+
+The legacy periodic sender read stock from a **single hardcoded depósito**
+(`ME7jOOTexx3OYLPgMtTR`) for every conta — and, since `changed-estoque-bigquery`
+fanned one result set out to five channel queues, for every _channel_ too: Mercado
+Livre, Loja Integrada, Magalu, Shopee and Amazon all published quantities from
+that one warehouse regardless of their own configuration. (The legacy **manual**
+push already used the conta's own depósito, so the two legacy paths disagreed
+with each other.)
+
+This port reads `integracao.depositoOuterRef` **per conta**, everywhere: the
+sweep enumeration, the send handler, the manual `/enviar-estoque` push and the
+pedido stock write-back each resolve it independently, and each **refuses** a
+conta that has none rather than falling back to anything (the first three skip
+and record; the manual push returns `ML_CONTA_SEM_DEPOSITO`, since a human is
+waiting for the answer). **Decision (2026-08-11): per-conta is correct and the
+hardcoded id was the bug.** There is deliberately no compatibility mode and no
+default depósito anywhere in the repo.
+
+⚠️ **The consequence is not rollback-recoverable.** Every conta whose depósito is
+not `ME7jOOTexx3OYLPgMtTR` publishes different quantities the moment the flag
+flips, and ML keeps them — turning the flag back off does not restore the old
+numbers. Run step 3 above and settle each finding _before_ the flip:
+
+- **`SEM DEPÓSITO`** — the sweep skips the conta entirely, so its listings are
+  never updated at all. Configure the depósito in Canais de venda.
+- **`DEPÓSITO INEXISTENTE`** — the ref resolves to an id but no such document
+  exists (a typo, a deleted depósito, a ref naming another collection). This is
+  the dangerous one: the estoque filter matches nothing, so the sweep publishes
+  **quantity 0 across the whole conta**, taking its listings out of sale.
+- **`DIFERE DO LEGADO`** — the expected state for any conta the decision applies
+  to. Not a defect; use `--delta` to size the change and tell whoever watches
+  the ML account what to expect.
+
+The same correction is waiting for every other channel when it is ported, since
+the legacy sender was cross-channel.
 
 ## ⚠️ Callback-URL cutover — coordinate with the legacy Flutter functions
 
