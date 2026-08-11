@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-two exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-five exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -136,7 +136,28 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-two exports:
   `serverOwned`, so the client is *denied* the writes its own delete cascade
   would need — deleting a balanço from the UI can only remove the parent doc, and
   without this trigger every finalize report would be orphaned permanently.
-- ⚠️ **None of the six cascades may use `db.recursiveDelete` (#728).** It
+- **`onIntegracaoDeleted`** / **`onIntFreteDeleted`** / **`onMetodoPagamentoDeleted`**
+  (`onDocumentDeleted`) — three credential-store cascades built from ONE factory,
+  `defineCascadeCaroGenerico` (`src/lib/cascadeCaroGenerico.ts`), registered in
+  `src/cascades/caroGenericoTriggers.ts`. Core `cascadeCaroGenerico(db, path, id)`
+  (exported for the emulator suite) is a single `deleteDocumentSubtree` call.
+  Before these, deleting a channel account / freight integration / payment method
+  left a live OAuth `refresh_token` readable behind it — `metodo_pgto/{id}/credenciais`
+  is default-deny for clients, so nothing but a trigger could ever reclaim it.
+  **"Caro" is the warning label, not a joke**: the walk calls `listCollections()`
+  on every document it reaches, leaves included, so the toll scales with subtree
+  SIZE. It is noise on a two-document credential subtree deleted a few times a
+  month, and the wrong tool on a hot delete path or a wide subtree — write a
+  targeted kinded sweep there instead. The walk is discovery-driven on purpose:
+  it reclaims `integracao/{id}/brandshopee`, which `integracaoMeta.cascade`
+  never declared.
+- ⚠️ **`pedidos` and `clientes` declare a cascade and deliberately have NO
+  trigger** (owner call, 2026-08) — both carry fiscal data an emitted NF-e still
+  depends on (`pedidos/{id}/nfev4`; and a cliente's endereço, which the NF-e
+  orchestrator reads LIVE by ref rather than from a snapshot). They orphan on
+  purpose; the reasoning is recorded at each `cascade:` declaration in
+  `packages/schemas`. `chat/{conversaId}/mensagem` is deferred to its own issue.
+- ⚠️ **None of the nine cascades may use `db.recursiveDelete` (#728).** It
   issues a kindless all-descendants query — `COLLECTION_GROUP * SELECT __name__
   LIMIT 5000` — which this Enterprise edition cannot index and cannot be *given*
   an index for: there is no wildcard index and no field predicate to seek on, so
