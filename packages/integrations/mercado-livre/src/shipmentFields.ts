@@ -114,12 +114,44 @@ export function shipmentOrderIdLegado(shipment: MlShipment): number | string | n
 
 /**
  * Whether this payload still looks like the pre-`x-format-new` body — i.e. it
- * carries a legacy-only field and none of the new ones. Callers log it once so
- * the deletion trigger above is an observation rather than a guess.
+ * carries a legacy-only field and none of the new ones.
  */
 export function ehFormatoLegado(shipment: MlShipment): boolean {
   const antigo = legacy(shipment);
   const temNovo = shipment.lead_time != null || shipment.logistic != null;
   const temAntigo = antigo.shipping_option != null || antigo.logistic_type != null;
   return !temNovo && temAntigo;
+}
+
+/** Module-scoped so the warning below is emitted at most once per process. */
+let avisouFormatoLegado = false;
+
+/**
+ * Emit the deletion trigger, once per process.
+ *
+ * This is what makes the file header's claim true: the fallbacks above come out
+ * when ML stops sending the legacy body, and that has to be an OBSERVATION. A
+ * silent absence is ambiguous — "no legacy warnings" would otherwise be equally
+ * consistent with "ML migrated us" and with "nothing was ever looking", and
+ * acting on the second reading would delete a fallback that is still load-bearing.
+ *
+ * Called from `getShipment`, which is the single choke point every shipment
+ * passes through. Once per process rather than once per shipment: this is a
+ * one-bit fact about the account, and a per-shipment warn on a busy backend
+ * would be noise nobody reads.
+ */
+export function registrarFormatoDoEnvio(shipment: MlShipment): void {
+  if (avisouFormatoLegado || !ehFormatoLegado(shipment)) return;
+  avisouFormatoLegado = true;
+  console.warn(
+    '[mercado-livre] shipment ainda no formato LEGADO apesar do header `x-format-new` — ' +
+      'os fallbacks de `shipmentFields.ts` continuam necessários; não os remova enquanto ' +
+      'este aviso aparecer (#957)',
+    { shipmentId: shipment.id },
+  );
+}
+
+/** Test seam — resets the one-shot latch above (mirrors `__resetAllReadCaches`). */
+export function __resetAvisoFormatoLegado(): void {
+  avisouFormatoLegado = false;
 }

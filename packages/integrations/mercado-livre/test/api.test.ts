@@ -8,6 +8,7 @@ import {
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
 import {
+  __resetAvisoFormatoLegado,
   ehFormatoLegado,
   shipmentBaseCost,
   shipmentLeadTime,
@@ -381,6 +382,40 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     expect(shipmentBaseCost(shipment)).toBe(8.91);
     expect(shipmentLeadTime(shipment)?.list_cost).toBe(12.5);
     expect(ehFormatoLegado(shipment)).toBe(true);
+  });
+
+  it('WARNS once when ML is still serving the legacy body, and not at all when it is not', async () => {
+    // The deletion trigger has to be an OBSERVATION. Without this warn, "no
+    // legacy warnings in the logs" would be equally consistent with "ML migrated
+    // us" and with "nothing was ever looking" — and acting on the second reading
+    // would delete a fallback that is still load-bearing (#957).
+    __resetAvisoFormatoLegado();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const legado = createMercadoLivreApi(
+        cfg(vi.fn(async () => jsonResponse({ id: 555, logistic_type: 'drop_off' }))),
+      );
+      await legado.getShipment(555);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('formato LEGADO');
+
+      // One-shot: a second legacy shipment must not re-warn — this is a one-bit
+      // fact about the account, not a per-shipment event.
+      await legado.getShipment(556);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // …and a migrated body never warns at all.
+      __resetAvisoFormatoLegado();
+      warn.mockClear();
+      const novo = createMercadoLivreApi(
+        cfg(vi.fn(async () => jsonResponse({ id: 557, logistic: { type: 'drop_off' } }))),
+      );
+      await novo.getShipment(557);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      __resetAvisoFormatoLegado();
+    }
   });
 
   it('getShipment maps a 500 to an HTTP error', async () => {

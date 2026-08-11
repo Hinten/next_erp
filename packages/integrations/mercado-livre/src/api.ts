@@ -7,6 +7,7 @@ import {
   MercadoLivreValidationError,
 } from './errors';
 import { DEFAULT_API_BASE_URL } from './oauth';
+import { registrarFormatoDoEnvio } from './shipmentFields';
 import {
   type MlActiveChartDomains,
   type MlBillingInfo,
@@ -562,12 +563,19 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
 
     getPayment: (paymentId) => request('GET', `/collections/${paymentId}`, mlPaymentSchema),
-    getShipment: (shipmentId) =>
-      request('GET', `/shipments/${shipmentId}`, mlShipmentSchema, {
+    getShipment: async (shipmentId) => {
+      const shipment = await request('GET', `/shipments/${shipmentId}`, mlShipmentSchema, {
         // Mandatory on shipments requests as of 2025-10-12, and it selects the
         // body `mlShipmentSchema` types — see that schema for what moved (#957).
         headers: { 'x-format-new': 'true' },
-      }),
+      });
+      // The single choke point every shipment passes through, so this is where
+      // the "is ML still serving the legacy body?" observation belongs. It is
+      // what lets the compat fallbacks be deleted on evidence rather than on a
+      // guess — see `registrarFormatoDoEnvio`.
+      registrarFormatoDoEnvio(shipment);
+      return shipment;
+    },
     getShipmentPayments: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema, {
         // Same mandate; this resource's body is unchanged by it (ML's own curl
