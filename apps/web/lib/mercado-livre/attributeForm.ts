@@ -78,13 +78,39 @@ export function widgetKind(attr: MercadoLivreCategoriaAtributo): AttrWidgetKind 
  * A value ML ships without an id falls back to its own name as the key — the
  * alternative is dropping the option entirely, and an option the operator can
  * see but not choose is worse than one stored by name.
+ *
+ * ⚠️ That fallback makes two entries able to claim the same key: a value whose
+ * NAME happens to equal another value's real ML **id**. Unlikely with ML's
+ * numeric ids, but the consequence is silent — a Mantine Select with duplicate
+ * values is ambiguous, and `rowFromSelect` would resolve the pick to whichever
+ * came first. So keys are deduplicated here and an entry carrying a real id
+ * always wins, which is the same precedence `rowFromSelect` applies.
+ *
+ * Source order is preserved: ML orders a category's values deliberately, and
+ * sorting id-bearing entries first would reshuffle every dropdown to fix a
+ * collision that almost never happens.
  */
 export function selectOptions(
   attr: MercadoLivreCategoriaAtributo,
 ): Array<{ value: string; label: string }> {
-  return attr.values
-    .map((v) => ({ value: v.id ?? v.name ?? '', label: v.name ?? v.id ?? '' }))
-    .filter((o) => o.value !== '' && o.label !== '');
+  const byValue = new Map<string, { value: string; label: string; hasId: boolean; at: number }>();
+
+  attr.values.forEach((v, at) => {
+    const hasId = v.id != null && v.id !== '';
+    const value = (v.id ?? v.name ?? '').trim();
+    const label = (v.name ?? v.id ?? '').trim();
+    if (value === '' || label === '') return;
+
+    const existing = byValue.get(value);
+    // Keep what is there unless this entry is strictly better: a real id
+    // outranks a name-derived key. Equal rank ⇒ first one wins.
+    if (existing && (existing.hasId || !hasId)) return;
+    byValue.set(value, { value, label, hasId, at });
+  });
+
+  return [...byValue.values()]
+    .sort((a, b) => a.at - b.at)
+    .map(({ value, label }) => ({ value, label }));
 }
 
 /**
@@ -95,6 +121,12 @@ export function selectOptions(
  * the reported string is the label and {@link resolveTypedValue} has to resolve
  * it. Getting these two backwards stores an id in `value_name`, which ML
  * rejects as an unknown value.
+ *
+ * ⚠️ Resolution is **id first, name second** — not a single `v.id ?? v.name`
+ * comparison. Those differ only when one value's name equals another's real id,
+ * and there the one-pass version returns whichever appears first in ML's list,
+ * storing a value the operator did not pick with nothing on screen to show for
+ * it. This mirrors the precedence `selectOptions` uses to key the same options.
  */
 export function rowFromSelect(
   attr: MercadoLivreCategoriaAtributo,
@@ -103,7 +135,9 @@ export function rowFromSelect(
   if (selected == null || selected === '') {
     return { id: attr.id, value_id: null, value_name: null, unit_id: null };
   }
-  const match = attr.values.find((v) => (v.id ?? v.name) === selected);
+  const match =
+    attr.values.find((v) => v.id != null && v.id !== '' && v.id === selected) ??
+    attr.values.find((v) => (v.id == null || v.id === '') && v.name === selected);
   return {
     id: attr.id,
     value_id: match?.id ?? null,

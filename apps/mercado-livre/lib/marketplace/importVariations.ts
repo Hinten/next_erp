@@ -188,14 +188,20 @@ export async function importVariationChildren(
       .docRef(db, { produtoId }, linkDocId)
       .set(variacaoMercadoLivreLinkCollection.parse(plan.link));
 
-    // Dual-run denorm (DEPRECATED arrays; #431 — read by the new app's sweeps
-    // too, not legacy-only: see the three locks at `publish.ts`'s parent stamp).
-    // Child entries carry `externalParentId` (the parent's ML item id), unlike
-    // the parent's own entry which omits it (models.dart:2325).
-    // User-Products children also carry `relevantData.isUserProductModel`
-    // (`plan.denorm.relevantData`, set by `assembleVariationChildPlan` only when
-    // `up` was passed) — omitted entirely for a legacy variations[] child, so
-    // that path's denorm shape stays byte-identical.
+    // Dual-run denorm (DEAD WEIGHT; #431 lock 3 / #961 — no query consumers in
+    // this repo, deleted at the decommission. Canonical note on
+    // `produtoSchema`; the lock list is at `publish.ts`'s parent stamp).
+    // Child entries carry `externalParentId` (the
+    // parent's ML item id), unlike the parent's own entry which omits it
+    // (models.dart:2325). User-Products children also carry
+    // `relevantData.isUserProductModel` (`plan.denorm.relevantData`, set by
+    // `assembleVariationChildPlan` only when `up` was passed) — omitted entirely
+    // for a legacy variations[] child, so that path's denorm shape stays
+    // byte-identical.
+    //
+    // ⚠️ `integracoesComProduto` is NOT stamped here (#920) — the
+    // `variacaoMercadoLivre` link written just above carries `contaOuterRef`,
+    // and `onVariacaoMercadoLivreLinkChanged` derives the array from it.
     await produtoCollection.docRef(db, {}, produtoId).update({
       marketplace: FieldValue.arrayUnion({
         integracaoUid: integracaoId,
@@ -204,7 +210,6 @@ export async function importVariationChildren(
         ...(plan.denorm.relevantData ? { relevantData: plan.denorm.relevantData } : {}),
       }),
       marketplaceIds: FieldValue.arrayUnion(plan.denorm.externalId),
-      integracoesComProduto: FieldValue.arrayUnion(integracaoId),
     });
 
     if (isCreate) created += 1;

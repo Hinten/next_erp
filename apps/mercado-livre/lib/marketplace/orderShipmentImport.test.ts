@@ -244,15 +244,17 @@ function makeShipment(opts: {
 }): DocData {
   return {
     id: opts.id,
+    // `order_id` is DISCONTINUED in the `x-format-new` body (#957) — kept here
+    // only so the "still sent" branch of `resolveShipmentOrderId` is exercised;
+    // pass `orderId: null` to force the `getShipmentOrders` fallback.
     order_id: opts.orderId === undefined ? 1 : opts.orderId,
     status: opts.status ?? 'shipped',
     substatus: null,
     tracking_number: opts.trackingNumber ?? null,
     last_updated:
       opts.lastUpdated === undefined ? '2026-01-15T00:00:00.000-03:00' : opts.lastUpdated,
-    base_cost: 10,
-    logistic_type: 'drop_off',
-    shipping_option: { list_cost: 20 },
+    logistic: { mode: 'me2', type: 'drop_off', direction: 'forward' },
+    lead_time: { cost: 10, list_cost: 20 },
   };
 }
 
@@ -260,6 +262,10 @@ function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): Me
   return {
     getShipment: vi.fn(async (id: number | string) => makeShipment({ id: Number(id) })),
     getShipmentPayments: vi.fn(async () => []),
+    // The documented replacement for the discontinued `shipment.order_id`.
+    // Empty by default: the fixture still carries the legacy field, so the
+    // fallback only fires for the tests that null it out.
+    getShipmentOrders: vi.fn(async () => []),
     ...over,
   } as unknown as MercadoLivreApi;
 }
@@ -276,7 +282,7 @@ beforeEach(() => {
 /* ----------------------------------- tests --------------------------------- */
 
 describe('importShipmentMercadoLivre — order/orderML resolution', () => {
-  it('skips when the shipment carries no order_id', async () => {
+  it('skips when neither the legacy field nor /shipments/{id}/orders yields an order', async () => {
     const db = new FakeDb();
     seedConta(db);
     const api = makeApi({
@@ -286,6 +292,32 @@ describe('importShipmentMercadoLivre — order/orderML resolution', () => {
     const result = await importShipmentMercadoLivre(deps(db, api), 777);
 
     expect(result).toEqual({ pedidoId: null, skipped: 'sem-order-id' });
+    expect(api.getShipmentOrders).toHaveBeenCalledWith(777);
+  });
+
+  it('resolves the order via /shipments/{id}/orders once ML drops shipment.order_id', async () => {
+    // The migrated body carries no `order_id` at all (#957). Without the
+    // fallback this path would skip with `sem-order-id` on EVERY shipments
+    // notification — warn-logged, non-fatal, and easy to miss.
+    const db = new FakeDb();
+    seedConta(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      enderecoFiscalOuterRef: null,
+      freteInicial: null,
+    });
+    const api = makeApi({
+      getShipment: vi.fn(async () => makeShipment({ id: 777, orderId: null })),
+      getShipmentOrders: vi.fn(async () => [{ order_id: '1', item_id: 'MLB1' }]),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    // Resolution SUCCEEDED — it stops later, at the frete guard, which is a
+    // different skip entirely. `sem-order-id` would mean the fallback failed.
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: 'sem-frete-inicial' });
+    expect(api.getShipmentOrders).toHaveBeenCalledWith(777);
   });
 
   it('skips (and logs) when no orderML doc matches the order id by pack_id nor id', async () => {

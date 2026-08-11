@@ -5,6 +5,7 @@ import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { counterCollection } from '@/lib/data/counterCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { newDocId } from '@/lib/data/newDocId';
+import { marcarInteracaoDoUsuario } from './interacaoDoUsuario';
 
 // The numero constants/format helpers moved to `@delfrance/data/pedido`
 // (SDK-agnostic, shared with the devolução transactional flows); re-exported
@@ -59,7 +60,13 @@ export async function createPedidoWithNumero(
     // only narrows the `PedidoWriteOp` union (a `delete` carries no data).
     if (counterOp.type !== 'set') throw new Error('mintNumeros: counterOp must be a set op');
     tx.set(counterRef, counterOp.data as never);
-    tx.set(pedidoCollection.docRef(db, {}, pedidoId), { ...values, numero });
+    // This function is only ever reached from `NovoPedidoView` — an operator
+    // pressing "Salvar" — so the pedido is human-authored by construction. See
+    // `marcarInteracaoDoUsuario` for why the flag has to be written.
+    tx.set(
+      pedidoCollection.docRef(db, {}, pedidoId),
+      marcarInteracaoDoUsuario({ ...values, numero }),
+    );
   });
   return { id: pedidoId, numero };
 }

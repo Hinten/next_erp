@@ -55,7 +55,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import { loadMercadoLivreContext } from './mercadoLivre';
-import { podeEnviarEstoque } from './estoquePlan';
+import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { refMatchesIntegracao } from './linkRefs';
 import type { UptinSourceLink } from './importMigration';
 
@@ -371,7 +371,16 @@ async function resolveLink(
 /**
  * Maintain the parent produto's dual-run marketplace arrays on an estado change:
  * ensure-present on a live transition (idempotent arrayUnion), key-based removal
- * on a cancel (a dead listing must stop being advertised). A missing parent doc
+ * on a cancel (a dead listing must stop being advertised).
+ *
+ * ⛔ Both arrays are DEAD WEIGHT — no query consumers, deleted at the
+ * decommission (#431 lock 3 / #961). Canonical note on `produtoSchema`.
+ * `removeMarketplaceEntry` below does read them, but only to compute their own
+ * next value — maintenance, not consumption. This cancel branch is the ONLY
+ * thing that ever shrinks them; a link doc deleted any other way leaves them
+ * stale forever, deliberately.
+ *
+ * A missing parent doc
  * is a no-op for BOTH branches (legacy `if (produtoPai == null) return`,
  * tasks.dart:1056-1059) — a link can outlive its produto during the delete
  * cascade window, and admin `update()` would otherwise throw NOT_FOUND (never
@@ -399,16 +408,32 @@ async function updateParentDenorm(
   await ref.update({
     marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: itemId }),
     marketplaceIds: FieldValue.arrayUnion(itemId),
-    integracoesComProduto: FieldValue.arrayUnion(integracaoId),
   });
 }
 
 /**
  * Remove this listing's denorm entry keyed by `(integracaoUid, externalId)` —
  * a read-modify-write (NOT `arrayRemove`, which needs an exact object match and
- * would miss a Flutter-written entry carrying extra fields). Drops the integração
- * from `integracoesComProduto` only when it has no OTHER listing on this produto.
+ * would miss a Flutter-written entry carrying extra fields).
  * Returns null when nothing matched (no write needed).
+ *
+ * ⚠️ This used to also drop the conta from `integracoesComProduto` when no other
+ * listing survived, and THAT is what coupled the three arrays: the conta was
+ * only ever removable by re-deriving it from `marketplace`, so `marketplace`
+ * could not be retired without leaving the array append-only (#431 lock 2).
+ * `onProdutoMercadoLivreLinkChanged` owns the conta now — the same cancel that
+ * gets here also merges `estado: 'c'` onto the link doc, and the trigger
+ * re-derives membership from the surviving links inside a transaction.
+ *
+ * Do not reintroduce the field here. Two writers deciding "no listing survives"
+ * from different sources is how a conta gets dropped while one is still live,
+ * and that failure is silent: the sweeps simply stop selecting the produto.
+ *
+ * ⛔ Nor should the two arrays it DOES still touch grow any new maintenance:
+ * they are dead weight with no query consumers, deleted at the decommission
+ * (#961). The read-modify-write here is the field maintaining itself, not a
+ * consumer. Extending this to prune on link deletion would be machinery built
+ * to be thrown away.
  */
 function removeMarketplaceEntry(
   raw: Record<string, unknown>,
@@ -417,27 +442,19 @@ function removeMarketplaceEntry(
 ): Record<string, unknown> | null {
   const marketplace = asObjectArray(raw.marketplace);
   const marketplaceIds = asStringArray(raw.marketplaceIds);
-  const integracoes = asStringArray(raw.integracoesComProduto);
 
   const nextMarketplace = marketplace.filter(
     (e) => !(e.integracaoUid === integracaoId && e.externalId === itemId),
   );
   const nextIds = marketplaceIds.filter((id) => id !== itemId);
-  const stillHasIntegracao = nextMarketplace.some((e) => e.integracaoUid === integracaoId);
-  const nextIntegracoes = stillHasIntegracao
-    ? integracoes
-    : integracoes.filter((i) => i !== integracaoId);
 
   const changed =
-    nextMarketplace.length !== marketplace.length ||
-    nextIds.length !== marketplaceIds.length ||
-    nextIntegracoes.length !== integracoes.length;
+    nextMarketplace.length !== marketplace.length || nextIds.length !== marketplaceIds.length;
   if (!changed) return null;
 
   return {
     marketplace: nextMarketplace,
     marketplaceIds: nextIds,
-    integracoesComProduto: nextIntegracoes,
   };
 }
 

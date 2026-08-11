@@ -311,6 +311,121 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('balanço (#454)', () => {
+    // The counting screen writes movimentos freely; everything that decides
+    // whether a count has been APPLIED to stock is server-owned, so a client
+    // with estoque-write can open a balanço and never move it forward.
+    const escritor = () => db({ d_estoque: 2 });
+
+    it('opens a balanço only with the workflow fields null or absent', async () => {
+      await assertSucceeds(
+        setDoc(doc(escritor(), 'balanco/b-null'), {
+          nome: 'Contagem',
+          depositoOuterRef: 'documents/depositos/dep1',
+          estado: null,
+          dataFinalizado: null,
+          finalizacao: null,
+        }),
+      );
+      await assertSucceeds(
+        setDoc(doc(escritor(), 'balanco/b-absent'), {
+          nome: 'Contagem',
+          depositoOuterRef: 'documents/depositos/dep1',
+        }),
+      );
+    });
+
+    it('denies a create that opens straight into a finalized state', async () => {
+      await assertFails(
+        setDoc(doc(escritor(), 'balanco/b-forjado'), {
+          nome: 'Já contado',
+          depositoOuterRef: 'documents/depositos/dep1',
+          estado: 'finalizado',
+          dataFinalizado: 1_700_000_000_000,
+        }),
+      );
+    });
+
+    it('denies any update touching estado, dataFinalizado or finalizacao', async () => {
+      await seed('balanco/b-upd', {
+        nome: 'Contagem',
+        depositoOuterRef: 'documents/depositos/dep1',
+        estado: 'finalizado',
+        dataFinalizado: 1_700_000_000_000,
+      });
+      // Re-opening a finalized balanço is the attack this blocks: it would let
+      // the same movimentos be applied a second time over whatever stock moved
+      // since.
+      await assertFails(updateDoc(doc(escritor(), 'balanco/b-upd'), { estado: null }));
+      await assertFails(updateDoc(doc(escritor(), 'balanco/b-upd'), { estado: 'finalizando' }));
+      await assertFails(
+        updateDoc(doc(escritor(), 'balanco/b-upd'), { dataFinalizado: deleteField() }),
+      );
+      await assertFails(
+        updateDoc(doc(escritor(), 'balanco/b-upd'), { finalizacao: { shardCursor: 99 } }),
+      );
+      // Renaming is still an ordinary write.
+      await assertSucceeds(updateDoc(doc(escritor(), 'balanco/b-upd'), { nome: 'Contagem 2' }));
+    });
+
+    it('does not yield the workflow lock to the super-user claim', async () => {
+      await seed('balanco/b-su', {
+        nome: 'Contagem',
+        depositoOuterRef: 'documents/depositos/dep1',
+        estado: 'finalizado',
+        dataFinalizado: 1,
+      });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(updateDoc(doc(su, 'balanco/b-su'), { estado: null }));
+    });
+
+    it('lets the estoque write bit lançar and soft-cancel a movimento', async () => {
+      await assertSucceeds(
+        setDoc(doc(escritor(), 'balanco/b-null/movimentos/m1'), {
+          produtoOuterRef: 'documents/produtos/p1',
+          produtoId: 'p1',
+          quantidade: 3,
+          usuarioOuterRef: 'documents/usuarios/u1',
+          error: false,
+          removido: false,
+        }),
+      );
+      await assertSucceeds(
+        updateDoc(doc(escritor(), 'balanco/b-null/movimentos/m1'), { removido: true }),
+      );
+    });
+
+    it('denies every client write to the stored relatório (serverOwned, no su)', async () => {
+      const shard = { itens: { p1: { sku: 'A', nome: 'N', estoque: 8, contado: 5 } } };
+      await seed('balanco/b-null/relatorios/0000', shard);
+      await assertSucceeds(getDoc(doc(db({ d_estoque: 1 }), 'balanco/b-null/relatorios/0000')));
+      await assertFails(setDoc(doc(escritor(), 'balanco/b-null/relatorios/0001'), shard));
+      await assertFails(
+        updateDoc(doc(escritor(), 'balanco/b-null/relatorios/0000'), { itens: {} }),
+      );
+      await assertFails(deleteDoc(doc(escritor(), 'balanco/b-null/relatorios/0000')));
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(deleteDoc(doc(su, 'balanco/b-null/relatorios/0000')));
+    });
+
+    it('denies collection-group reads of movimentos and relatorios', async () => {
+      // `meta.noCollectionGroupRead` — every read of these is scoped to one
+      // balanço, so the recursive `{path=**}` block the generator emits by
+      // default is a query surface with no caller. The legacy ruleset shipped
+      // exactly that block for both (#454).
+      const leitor = db({ d_estoque: 1 });
+      await assertFails(getDocs(collectionGroup(leitor, 'movimentos')));
+      await assertFails(getDocs(collectionGroup(leitor, 'relatorios')));
+      // The parent-scoped list still works — this is about the query SHAPE.
+      await assertSucceeds(getDocs(collection(leitor, 'balanco/b-null/movimentos')));
+    });
+
+    it('keeps balanço on the estoque bits — produto claims do not reach it', async () => {
+      await assertFails(getDoc(doc(db({ d_produto: 7 }), 'balanco/b-upd')));
+      await assertSucceeds(getDoc(doc(db({ d_estoque: 1 }), 'balanco/b-upd')));
+    });
+  });
+
   // ⚠️ DUAL-RUN ONLY — delete this whole block with the Flutter decommission
   // (#829). These four Mercado Livre collections are reached by the NEW app only
   // through the Admin SDK (or not at all); they carry client match blocks purely

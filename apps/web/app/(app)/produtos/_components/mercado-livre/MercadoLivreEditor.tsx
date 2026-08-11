@@ -36,8 +36,14 @@ import {
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
 import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
-import { LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
-import { estadoLabel, refMatchesIntegracao } from '@/lib/mercado-livre/listingLinks';
+import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
+import {
+  estadoLabel,
+  isStockLatched,
+  refMatchesIntegracao,
+} from '@/lib/mercado-livre/listingLinks';
+import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
+import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
 import { ListingForm } from './ListingForm';
 import { ListingStatusStrip } from './ListingStatusStrip';
@@ -128,6 +134,14 @@ export function MercadoLivreEditor({
   const [preparing, setPreparing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
+  /** The conta whose stock push is in flight (#819), if any. */
+  const [sendingStock, setSendingStock] = useState<string | null>(null);
+  /**
+   * The last push outcome per LISTING, keyed by link doc id. Rendered inline in
+   * each anúncio block rather than as a toast, because a conta can hold several
+   * listings on one produto and one toast could only describe one of them.
+   */
+  const [stockResultByLink, setStockResultByLink] = useState<Record<string, StockPushRow>>({});
   // 422 ML_PUBLISH_BLOCKED issue lists, kept per account so they render inline
   // in the offending row instead of a transient toast.
   const [blockedIssues, setBlockedIssues] = useState<Record<string, string[]>>({});
@@ -189,7 +203,7 @@ export function MercadoLivreEditor({
       const { outcome } = await createListingDraft(db, produtoId, {
         integracaoId,
         produtoNome,
-        listingTypeId: listingTypeByConta[integracaoId] ?? LISTING_TYPE_OPTIONS[0].value,
+        listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE,
         nowMs: Date.now(),
       });
       notifications.show({
@@ -219,7 +233,7 @@ export function MercadoLivreEditor({
         integracaoId,
         produtoId,
         ...(needsListingType
-          ? { listingTypeId: listingTypeByConta[integracaoId] ?? LISTING_TYPE_OPTIONS[0].value }
+          ? { listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE }
           : {}),
       });
       notifications.show({
@@ -272,7 +286,8 @@ export function MercadoLivreEditor({
         color: result.enviavel ? 'green' : 'yellow',
         title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
         message: result.enviavel
-          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos).'
+          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
+            'Enviar estoque para enviar agora.'
           : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
       });
     } catch (err) {
@@ -290,6 +305,57 @@ export function MercadoLivreEditor({
       throw err;
     } finally {
       setRechecking(null);
+    }
+  }
+
+  /**
+   * Push this produto's CURRENT stock to every listing this conta holds on it
+   * (#819) — the on-demand twin of the 15-minute sweep.
+   *
+   * Per CONTA, not per listing: the backend takes `{ integracaoId, produtoIds }`
+   * and the sender loops every anúncio the conta holds (the link join
+   * deliberately has no `limit(1)` — see the comment below and #781). A
+   * per-listing button would imply an endpoint that does not exist.
+   *
+   * `reenviarComErro` is passed for a LATCHED listing only. An explicit click on
+   * a listing the UI is already showing as "parado" is unambiguous consent, so
+   * the tab does not need the bulk dialog's checkbox.
+   */
+  async function handleEnviarEstoque(
+    // The registry's own type, not a hand-rolled shape with `tipo: number`.
+    // Widening it to `number` forced an `as never` at the call below, which
+    // silenced exactly the check that keeps an invalid tipo from reaching
+    // `resolveStockPushProvider`.
+    conta: StockPushIntegracao,
+    temLatched: boolean,
+  ) {
+    setSendingStock(conta.id);
+    try {
+      const result = await enviarEstoqueParaIntegracao({
+        integracao: conta,
+        produtoIds: [produtoId],
+        nomePorProdutoId: new Map(),
+        reenviarComErro: temLatched,
+        deps: { mercadoLivre: client },
+      });
+      setStockResultByLink((prev) => {
+        const next = { ...prev };
+        for (const row of result.rows) {
+          if (row.linkDocId != null) next[row.linkDocId] = row;
+        }
+        return next;
+      });
+      // A row that names no listing (conta-level failure, or a produto with no
+      // anúncio here) has nowhere inline to land — surface it as a toast.
+      const semAnuncio = result.rows.filter((r) => r.linkDocId == null);
+      for (const row of semAnuncio) {
+        notifications.show({
+          color: row.outcome === 'enviado' ? 'green' : row.outcome === 'falha' ? 'red' : 'yellow',
+          message: row.mensagem,
+        });
+      }
+    } finally {
+      setSendingStock(null);
     }
   }
 
@@ -332,8 +398,8 @@ export function MercadoLivreEditor({
           </Text>
           {contas.map((conta) => {
             // The stock sweep loops EVERY listing this conta holds on the produto
-            // (estoquePlan's link join deliberately has no `limit(1)`), so rendering
-            // only the first one hid a latched sibling completely (#781).
+            // (bulkEstoquePlan's link join deliberately has no `limit(1)`), so
+            // rendering only the first one hid a latched sibling completely (#781).
             const contaLinks = links.filter((l) =>
               refMatchesIntegracao(l.data.contaOuterRef, conta.id),
             );
@@ -377,6 +443,21 @@ export function MercadoLivreEditor({
                         rechecking={rechecking === l.id}
                         onReverificar={() => handleReverificar(conta.id, l.id)}
                       />
+                      {stockResultByLink[l.id] && (
+                        <Text
+                          size="xs"
+                          c={
+                            stockResultByLink[l.id]!.outcome === 'enviado'
+                              ? 'green'
+                              : stockResultByLink[l.id]!.outcome === 'falha'
+                                ? 'red'
+                                : 'dimmed'
+                          }
+                          data-testid={`ml-envio-estoque-${l.id}`}
+                        >
+                          {stockResultByLink[l.id]!.mensagem}
+                        </Text>
+                      )}
                       <ListingForm
                         produtoId={produtoId}
                         linkDocId={l.id}
@@ -404,16 +485,47 @@ export function MercadoLivreEditor({
                   )}
 
                   <Group align="flex-end" gap="sm">
+                    {contaLinks.length > 0 && (
+                      // Deliberately NOT disabled while a listing is latched: the
+                      // push is precisely the operation whose skip row explains WHY
+                      // it is latched, and after a re-arm it is how the operator
+                      // verifies. The legacy action sent regardless and let the
+                      // per-listing gate answer.
+                      //
+                      // Nor is it blocked by `publishBlocked`: the push sends the
+                      // stock Firestore already holds, never the pending form
+                      // edits, so unsaved listing fields cannot make it ship a
+                      // stale value the way a publish would.
+                      <Button
+                        type="button"
+                        variant="default"
+                        onClick={() =>
+                          void handleEnviarEstoque(
+                            {
+                              id: conta.id,
+                              nome: conta.data.nome,
+                              tipo: conta.data.tipo,
+                              ativo: conta.data.ativo !== false,
+                            },
+                            contaLinks.some((l) => isStockLatched(l.data)),
+                          )
+                        }
+                        loading={sendingStock === conta.id}
+                        disabled={disabled || !client || !canPublish || sendingStock !== null}
+                      >
+                        Enviar estoque
+                      </Button>
+                    )}
                     {needsListingType ? (
                       <>
                         <Select
                           label="Tipo de anúncio"
                           data={[...LISTING_TYPE_OPTIONS]}
-                          value={listingTypeByConta[conta.id] ?? LISTING_TYPE_OPTIONS[0].value}
+                          value={listingTypeByConta[conta.id] ?? DEFAULT_LISTING_TYPE}
                           onChange={(v) =>
                             setListingTypeByConta((prev) => ({
                               ...prev,
-                              [conta.id]: v ?? LISTING_TYPE_OPTIONS[0].value,
+                              [conta.id]: v ?? DEFAULT_LISTING_TYPE,
                             }))
                           }
                           allowDeselect={false}

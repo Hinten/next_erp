@@ -15,7 +15,8 @@ if (!region) {
 // Any enqueue from INSIDE a function (e.g. a future self-re-enqueue) targets the
 // notification queue in THIS function's region — default the enqueuer's region
 // to the inlined one so the region-qualified queue name resolves correctly.
-process.env.MERCADO_PAGO_TASKS_REGION ??= region;
+process.env.MERCADO_PAGO_TASKS_REGION =
+  (process.env.MERCADO_PAGO_TASKS_REGION?.trim() || undefined) ?? region;
 
 setGlobalOptions({
   region,

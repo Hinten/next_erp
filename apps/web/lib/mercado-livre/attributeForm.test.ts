@@ -316,3 +316,75 @@ describe('enumerated attribute options', () => {
     expect(selectValueOf(undefined)).toBeNull();
   });
 });
+
+describe('colliding option keys', () => {
+  // The only way two entries claim the same key: one value's NAME equals
+  // another value's real ML id. Unlikely with ML's numeric ids, and silent when
+  // it happens — which is exactly why it is worth pinning.
+  const colliding = attr({
+    id: 'X',
+    valueType: 'list',
+    values: [
+      { id: null, name: '2230284' }, // name-keyed, collides with the id below
+      { id: '2230284', name: 'Algodão' }, // the real ML value
+    ],
+  });
+
+  it('emits each Select key exactly once', () => {
+    // A Mantine Select with duplicate values is ambiguous.
+    const values = selectOptions(colliding).map((o) => o.value);
+    expect(values).toEqual([...new Set(values)]);
+  });
+
+  it('lets the entry with a real ML id win the key', () => {
+    expect(selectOptions(colliding)).toEqual([{ value: '2230284', label: 'Algodão' }]);
+  });
+
+  it('resolves the pick to the id-bearing value, not merely the first match', () => {
+    // The one-pass `v.id ?? v.name` comparison returns the name-keyed entry
+    // here, storing a value the operator never chose.
+    expect(rowFromSelect(colliding, '2230284')).toEqual({
+      id: 'X',
+      value_id: '2230284',
+      value_name: 'Algodão',
+      unit_id: null,
+    });
+  });
+
+  it('keeps ML’s own ordering when there is no collision', () => {
+    // ML orders a category's values deliberately; deduplication must not
+    // reshuffle every dropdown to fix a case that almost never happens.
+    const ordered = attr({
+      id: 'SIZE',
+      valueType: 'list',
+      values: [
+        { id: 'S3', name: 'G' },
+        { id: null, name: 'GG' },
+        { id: 'S1', name: 'P' },
+      ],
+    });
+    expect(selectOptions(ordered).map((o) => o.label)).toEqual(['G', 'GG', 'P']);
+  });
+
+  it('still resolves a name-keyed value when nothing collides', () => {
+    const byName = attr({ id: 'X', valueType: 'list', values: [{ id: null, name: 'Único' }] });
+    expect(rowFromSelect(byName, 'Único')).toEqual({
+      id: 'X',
+      value_id: null,
+      value_name: 'Único',
+      unit_id: null,
+    });
+  });
+
+  it('drops a duplicate ML id rather than rendering it twice', () => {
+    const dupe = attr({
+      id: 'X',
+      valueType: 'list',
+      values: [
+        { id: 'D1', name: 'Primeiro' },
+        { id: 'D1', name: 'Repetido' },
+      ],
+    });
+    expect(selectOptions(dupe)).toEqual([{ value: 'D1', label: 'Primeiro' }]);
+  });
+});

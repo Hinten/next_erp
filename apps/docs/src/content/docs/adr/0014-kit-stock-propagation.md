@@ -61,7 +61,7 @@ that contains it. Both variants of that idea die on the same number.
 
 ### What the sweep did before this ADR
 
-The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/estoquePlan.ts`)
+The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts`)
 compensated for the missing signal in two places, and paid for it twice:
 
 1. **A correlated component aggregate in the window filter** (`maxComp`): for each
@@ -87,30 +87,63 @@ to compute the number it sends.
 `sincronizarEstoquePedido` stamps `ultimaModificacao` on the estoque doc of every
 produto that appears as a **pedido line** but received no stock delta — i.e. the
 kits. The kit ids come from `pedido.itens[*].produtoUid`, which the sync
-transaction has already loaded, so this costs **zero extra reads** and is
-`O(lines in the pedido)` — not `O(kits containing the component)`.
+transaction has already loaded, so this is `O(lines in the pedido)` — not
+`O(kits containing the component)`, which is the whole point.
 
-The write is read-free and ADR 0011 **tier 0**: `FieldValue.maximum(now)` for the
-monotonic stamp, so a stale `now` cannot move it backwards and a concurrent
-movement's own bump wins if it is later.
+`FieldValue.maximum(now)` makes the stamp itself ADR 0011 **tier 0**: a stale
+`now` cannot move it backwards and a concurrent movement's own bump wins if it is
+later.
 
-**The payload is exactly three fields**, and the two besides the stamp are
-reachability keys rather than decoration — dropping either turns the stamp into a
-no-op for the case it exists to serve, a kit whose estoque doc does not exist yet
-(the norm, since a kit holds no stock):
+**One field is written on every stamp; two more only when the doc is created.**
 
-| field | why it cannot be dropped |
-|---|---|
-| `ultimaModificacao` | the signal itself |
-| `depositoOuterRef` | the sweep reaches an estoque via `subcollection('estoques').where(depositoOuterRef == …)`; without it the doc matches no depósito and the window filter never sees the stamp |
-| `parentId` | the ledger pre-pass keys `(produto, depósito)` off this denorm; without it `desfazerMovimento` cannot key the row and reads it as *unchanged* — the one verdict a just-sold kit must never get |
+| field | when | why |
+|---|---|---|
+| `ultimaModificacao` | always | the signal itself, and the only tier-0 field |
+| `depositoOuterRef` | on create | the sweep reaches an estoque via `subcollection('estoques').where(depositoOuterRef == …)`; a doc created without it matches no depósito and the window filter never sees the stamp — the case this exists to serve, since a kit holds no stock and has no other reason to own an estoque doc |
+| `parentId` | on create | structural uniformity with every other estoque writer, **not** a reader's requirement — see below |
+
+⚠️ **Which depósito that is comes from the CONTA, not from a constant.** The
+sweep resolves `integracao.depositoOuterRef` per conta and skips a conta that has
+none; the legacy Flutter sender instead hardcoded one depósito for every conta and
+every channel, which is why the flag flip publishes corrected quantities (#802 —
+the decision and the pre-flip check live in `apps/mercado-livre/functions/DEPLOY.md`).
+Note the failure mode that follows from the join above: a `depositoOuterRef` that
+resolves to an id but not to an existing depósito matches nothing, so the conta
+publishes **0** rather than erroring.
+
+⚠️ **`parentId` here has no reader, and that is fine as long as it is recorded.**
+A kit can never be a component of another kit (#239 — enforced by the KitManager
+picker and the PageModel validation; the picker-less agent/MCP path is #347), so
+`compEstoques`' `parentId equalAny <kit keys>` join — the only query that matches
+on the field — can never reach a kit's own estoque row. It is **not** what the
+ledger pre-pass keys on either: that is `historicoEstoque.parentId`, and the
+window-start reconstruction keys a member's own estoque row by
+`member.produtoId`, because `ownEstoque()` projects no `parentId` and a
+subcollection probe never needed one (#932).
+
+⚠️ **Neither denorm may be re-asserted on an existing doc.** They are plain
+scalars with no transform, so writing them on every stamp is a blind
+last-write-wins overwrite of fields this code never read — ADR 0011's own hazard —
+and it would silently re-encode a `depositoOuterRef` stored in the bare
+`depositos/<id>` form the outerRef invariant tolerates, which the Flutter app may
+still be writing during the dual run.
+
+**The cost of that split, stated rather than buried.** Firestore has no
+set-if-missing for a string, so the sync must READ the sold kits' estoque docs —
+hoisted above `aplicarPlano`, since a transaction rejects a read after a write.
+Two consequences: the stamp's original "zero extra reads" property is gone (it is
+now `O(kit lines on the pedido)`, still nothing like the ~2 000-write fan-out
+rejected above), and those docs join the transaction's read set, so two pedidos
+selling the same kit now contend and retry. Harmless — the stamp is monotonic —
+but no longer contention-free.
 
 Nothing else is written. **`dataCriacao` is deliberately absent**: a stamp is not
 a creation event and has no business authoring one. The quantity counters are
 absent too — the sweep coalesces a missing `quantidade`/`quantidadeReservada` to
 `0` and the Zod schema defaults them, so initializing them would write two fields
-nobody reads. The emulator suite pins the exact key set, so a later "while we're
-here" addition has to justify itself.
+nobody reads. The emulator suite pins the exact key set on create **and** pins
+that an existing doc's denorms survive untouched, so a later "while we're here"
+addition has to justify itself.
 
 **No `historicoEstoque` row is written** for that stamp: no quantity moved, and
 the ledger must stay summable (see 4).
@@ -223,6 +256,45 @@ in the whole design for someone to "simplify" into a real bug.
 This subsumes the old `limiarEstoqueBaixo` (default 5) heuristic: low stock now
 always sends, because `min(...) ≤ LIMIAR_ALTO` holds.
 
+### 5b. A kit whose stock cannot be verified publishes 0
+
+A kit declares its components in `componentesKit`, but the sweep fetches their
+stock through the `componentesKitKeys` denorm. When that array is stale, the
+component is never fetched, `kitEstoqueDisponivel` scores it 0 (#238), and the
+kit floors to 0 with nothing actually wrong with its stock.
+
+**That 0 is sent, deliberately.** The asymmetry decides it:
+
+- publishing 0 pauses the listing on Mercado Livre as `out_of_stock`, and ML
+  **auto-reactivates it** the moment a positive quantity arrives — which
+  `podeEnviarEstoque` is written to keep doing. A zeroed listing heals itself.
+- leaving ML with whatever it already holds does not heal. If that number is
+  positive, the listing keeps selling stock the ERP cannot account for, and an
+  oversell cannot be un-sold.
+
+⚠️ **#806 S12 proposed the opposite** — skip the listing rather than publish 0 —
+and it is **inverted here on purpose**, not left unimplemented.
+
+⚠️ **The change check would otherwise suppress that 0.** `quantidadesAnteriores`
+reconstructs `anterior` from the *same* broken component set, lands on the same
+`0`, and concludes "unchanged" — so the send never happens and a stale positive
+number on ML is never corrected. The fix is to **omit** the member from the
+reconstruction (`kitNaoVerificavel`), which is the existing fail-open path: a
+missing entry reads as unknown and sends. The omission *is* the mechanism;
+deleting it restores the silent skip.
+
+This exposes a limit worth stating plainly: **the ledger can only witness stock
+movements.** A quantity that changes for any other reason leaves nothing to sum,
+so the reconstruction reports "unchanged" about a number that did change. Two
+other instances are known and unfixed — the ML import's unaudited `merge`
+(`import.ts`, `importVariations.ts`), and a kit **composition** edit, which also
+fails to make the kit a candidate at all, since the denorm lives on `produtos`
+while the window filter keys on `estoques`.
+
+Because the 0 is legitimate but its *cause* usually is not, `buildSendTasks`
+logs `console.error` naming the unresolved components. The listing is protected
+either way; the log is what makes the stale denorm findable.
+
 ### 6. `estoque.ultimaModificacao` means "stock changed **or** sold"
 
 On a kit's estoque doc the field no longer means only "the quantities changed" —
@@ -236,10 +308,18 @@ across is wrong by 1000×.
 
 ### 7. A negative reservation can never increase availability
 
-`estoqueDisponivel` floors the reservation at zero **before** subtracting:
+The floor is the named helper `reservaEfetiva`, and every calculation goes through
+it:
 
 ```ts
-return e.quantidade - Math.max(0, e.quantidadeReservada);
+export function reservaEfetiva(quantidadeReservada: number | null | undefined): number {
+  return typeof quantidadeReservada === 'number' && Number.isFinite(quantidadeReservada)
+    ? Math.max(0, quantidadeReservada)
+    : 0;
+}
+
+// estoqueDisponivel
+return e.quantidade - reservaEfetiva(e.quantidadeReservada);
 ```
 
 Without that floor a negative reservation *adds* to availability — `8 − (−2) = 10`
@@ -249,32 +329,63 @@ number redundantly, while this one makes Mercado Livre **sell stock the store do
 not have**. The same helper feeds the pedido form's availability check and the
 print assembler, so the invention spreads well beyond the sweep.
 
-The floor belongs in `estoqueDisponivel` because that helper is the single
+`estoqueDisponivel` is where the floor lands for reads, because it is the single
 derivation of `disponivel` in the repo — kits included, since `kitEstoqueDisponivel`
-consumes its output rather than re-deriving. Fixing it anywhere else would leave a
-consumer behind.
+consumes its output rather than re-deriving. But it is **not the only arithmetic on
+the reservation**, which is why the floor is a helper rather than an inline
+`Math.max` (#931):
 
-⚠️ **`quantidadeReservada: z.number().min(0)` in the schema is not the guarantee.**
-It validates a write through a Zod converter, and three live paths reach the
-availability calculation around it:
+- **`importCore.ts`, both arms** (`assembleImportPlan` and
+  `assembleVariationChildPlan`) run the *inverse* operation. ML's
+  `available_quantity` is the buyable count, i.e. `disponivel`, so an overwrite of a
+  stock that already holds reservations adds them back:
+  `quantidade = availableQuantity + reservada`. A stored `−2` there **destroys**
+  stock instead of inventing it — `quantidade` lands two below ML's count, on every
+  single re-import. The value arrives from `readEstoque`, a bare Admin-SDK `.data()`
+  read with no Zod and no floor. Both arms call `reservaEfetiva`; the variation-child
+  one is not a lesser copy of the parent.
+- **the sweep's window-start reconstruction** (`desfazerMovimento`) synthesizes
+  `quantidadeReservada − ΣmovimentoReservada`, which lands below zero on its own
+  whenever the stored counter was floored but the ledger recorded the unclamped
+  delta. That negative is *legitimate* — it is arithmetic, not a stored value — and
+  is deliberately left unfloored, because its output always flows back through
+  `estoqueDisponivel`. A test pins the consequence: a reconstruction that goes
+  negative must not reconstruct `anterior` **equal to** `atual`, which would make
+  the sweep read "nothing changed" and silently skip a real movement.
 
-- the ML sweep consumes **raw** pipeline rows, never Zod-parsed;
-- the sweep's window-start reconstruction *synthesizes*
-  `quantidadeReservada − ΣmovimentoReservada`, arithmetic that can land below zero
-  on its own whenever the stored counter was floored but the ledger recorded the
-  unclamped delta;
-- the live Flutter app and every Admin SDK writer bypass this schema entirely
-  (root `CLAUDE.md` rule 7 — assume a second writer).
+⚠️ **The schema is not the guarantee, and must not be made into one.**
+`quantidadeReservada` carries no `.min(0)` — it carried one until #931, and that
+constraint was itself a bug: `parseSoftRead` `safeParse`s the whole object, so one
+out-of-range field failed the **document** and returned the raw data, discarding
+every `.default()`. A doc with no `quantidade` — exactly the shape §2 writes, which
+relies on the schema to default it — then read as `undefined`, and
+`estoqueDisponivel` returned `NaN`, which `publish.ts` would have published.
 
-The write paths do floor: `aplicarMovimento` clamps a balanço's counted reservation
+A `.transform()`/`preprocess`/`.catch(0)` is not the fix either: those apply on
+**write** (`parseForWrite`, and `parseMergePatch` through `.partial()`), so they
+would launder a bad value at rest and destroy the evidence — while still reaching
+none of the paths that matter, since the sweep reads raw pipeline rows, the import
+reads a bare `.data()`, and the Flutter app plus every Admin SDK writer bypass the
+schema entirely (root `CLAUDE.md` rule 7 — assume a second writer).
+
+The three concerns are separate:
+
+| Concern | Where |
+|---|---|
+| Reject a bad **write** | `movimentacaoInputSchema` — the untrusted callable input, `.min(0).finite()` |
+| Describe the wire shape + **default** | `estoqueProdutoSchema` — unconstrained, so a bad row still parses |
+| Floor for **one calculation** | `reservaEfetiva` |
+| Make a bad row **visible** | `produtoPageIssues` + the audit script |
+
+The write paths also floor: `aplicarMovimento` clamps a balanço's counted reservation
 in `planMovimentacao` and follows an entrada/saída `increment` with
 `FieldValue.maximum(0)` on the same doc. Those floors are necessary and not
 sufficient — they only bind writes that go through them.
 
-📌 **Open follow-up:** nothing yet *audits* production for a stored negative
-`quantidadeReservada`. The floor above makes such a row harmless to availability,
-but it would still be a real data defect worth finding and explaining. A tracking
-issue for that audit is to be opened after this stack merges.
+**Auditing what is already stored** is a separate read-only pass — no `--apply` — that
+attributes each hit to a writer via its `historicoEstoque`. It lands as
+`tools/migrations/src/2026-08-estoque-reservada-negativa/` (#936), and per root rule 8
+the production run itself is a human step tracked in its own issue.
 
 ## Consequences
 

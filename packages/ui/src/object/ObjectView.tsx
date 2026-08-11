@@ -36,6 +36,7 @@ import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
 import { resolveStampFields, type StampFieldOverride } from './resolveStampFields';
 import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
+import { useServerTruthSeed } from './useServerTruthSeed';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 
 export type { TransactionWrite };
@@ -395,27 +396,20 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // doc can still hold the pre-save value while the server has the new one. We
   // paint the first emission for instant feedback, then RE-SEED once the
   // authoritative `fromCache: false` snapshot arrives — but only while the form
-  // is pristine, so an in-progress edit is never clobbered. `seededId` tracks
-  // the last id painted from any source; `serverSeededId` the last id corrected
-  // from server truth, so the correction happens at most once per record.
-  const seededId = useRef<string | undefined>(undefined);
-  const serverSeededId = useRef<string | undefined>(undefined);
+  // is pristine, so an in-progress edit is never clobbered. The seeding logic
+  // (first paint vs. one-time server-truth correction, tracked per record id)
+  // now lives in `useServerTruthSeed`.
+  useServerTruthSeed({
+    id: docSnap.data?.id,
+    fromCache: docSnap.fromCache,
+    isDirty: form.formState.isDirty,
+    onSeed: () => {
+      form.reset({ ...emptyDefaults, ...(docSnap.data?.data as FieldValues) });
+    },
+  });
+  // Create mode has no snapshot to seed from — reset to the page's defaults.
   useEffect(() => {
-    if (docSnap.data) {
-      const { id, data } = docSnap.data;
-      const serverTruth = docSnap.fromCache === false;
-      const firstPaint = seededId.current !== id;
-      // A pristine cache paint gets corrected to server truth once; a dirty
-      // form keeps the user's edits (the server snapshot is ignored until the
-      // next fresh mount / id change).
-      const correctCachePaint =
-        serverTruth && serverSeededId.current !== id && !form.formState.isDirty;
-      if (firstPaint || correctCachePaint) {
-        form.reset({ ...emptyDefaults, ...(data as FieldValues) });
-        seededId.current = id;
-        if (serverTruth) serverSeededId.current = id;
-      }
-    } else if (!internalId) {
+    if (!docSnap.data && !internalId) {
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
     }
   }, [docSnap.data?.id, docSnap.fromCache]);

@@ -9,7 +9,6 @@ import {
   Button,
   Fieldset,
   Group,
-  NumberInput,
   Select,
   SimpleGrid,
   Textarea,
@@ -30,7 +29,6 @@ import {
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 
 import {
-  channelOptions,
   CONDITION_OPTIONS,
   LISTING_TYPE_OPTIONS,
   listingTypeLabel,
@@ -134,7 +132,6 @@ export function ListingForm({
   const baselineRef = useRef<ProdutoMercadoLivreLink>(link);
 
   const titleRule = useMemo(() => titleEditability(link), [link]);
-  const channelSelectData = useMemo(() => channelOptions(link.channels), [link.channels]);
   const isPublished = link.id != null;
 
   // ---- Attributes ---------------------------------------------------------
@@ -354,25 +351,6 @@ export function ListingForm({
           />
           <Controller
             control={form.control}
-            name="channels"
-            render={({ field, fieldState }) => (
-              <Select
-                label="Canais"
-                data={channelSelectData}
-                value={field.value}
-                onChange={(v) => field.onChange(v ?? 'marketplace')}
-                onBlur={field.onBlur}
-                allowDeselect={false}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          {/* The one field a fresh produto cannot be published without, and the
-              reason "Preparar anúncio" exists at all — publish refuses a
-              listing with no `category_id` and no longer guesses one. */}
-          <Controller
-            control={form.control}
             name="category_id"
             render={({ field, fieldState }) => (
               <CategoriaField
@@ -434,54 +412,6 @@ export function ListingForm({
               )}
             />
           )}
-          <Controller
-            control={form.control}
-            name="tarifaFrete"
-            render={({ field, fieldState }) => (
-              <NumberInput
-                label="Tarifa de frete"
-                prefix="R$ "
-                decimalScale={2}
-                min={0}
-                value={field.value ?? ''}
-                onChange={(v) => field.onChange(v === '' ? null : Number(v))}
-                onBlur={field.onBlur}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="crossdocking"
-            render={({ field, fieldState }) => (
-              <NumberInput
-                label="Crossdocking"
-                description="Dias de preparação antes do envio."
-                allowDecimal={false}
-                min={0}
-                value={field.value ?? ''}
-                onChange={(v) => field.onChange(v === '' ? null : Number(v))}
-                onBlur={field.onBlur}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="video_id"
-            render={({ field, fieldState }) => (
-              <TextInput
-                {...field}
-                value={field.value ?? ''}
-                label="Vídeo (YouTube)"
-                description="Somente o id do vídeo."
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
         </SimpleGrid>
       </Fieldset>
 

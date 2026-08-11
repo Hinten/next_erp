@@ -261,12 +261,26 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 ## Key fixed decisions
 
 - Firebase backend stays. Node >= 22. Zod is the schema source of truth.
-- **firebase-admin floor = v14, firebase-functions floor = `^7.3.0` — do not
-  lower either.** `apps/functions` needs the v8 Pipelines API +
-  `FieldValue.maximum/minimum` (a downgrade fails typecheck), and 7.3.0 is the
-  first firebase-functions whose peer range admits `firebase-admin@^14` —
-  lowering it breaks every deploy artifact's plain cloud `npm install`
-  (`ERESOLVE`), which no CI lane exercises.
+- **firebase-admin and firebase-functions are pinned EXACT — `14.2.0` and
+  `7.3.2` — in the catalog AND in all five deploy-artifact manifests, and do not
+  lower either below admin v14 / functions 7.3.0.** `apps/functions` needs the v8
+  Pipelines API + `FieldValue.maximum/minimum` (a downgrade fails typecheck), and
+  7.3.0 is the first firebase-functions whose peer range admits
+  `firebase-admin@^14` — lowering it breaks every deploy artifact's plain cloud
+  `npm install` (`ERESOLVE`), which no CI lane exercises. ⚠️ The pins are **exact
+  rather than `^` ranges** because a deploy artifact ships **no lockfile**: every
+  `prepare-deploy.mjs` emits `dependencies` verbatim and every
+  `firebase.*.deploy.json` sets `ignore: ["node_modules"]`, so the gen2 buildpack
+  resolves each spec fresh and a range installs whatever is newest **at deploy
+  time** — a version no CI lane ever tested. That is not theoretical:
+  `firebase-functions@7.3.2` moved `express` from `^4.21.0` to `^5.2.1` (an
+  Express **major**, for CVE remediation) in a **patch** release, so under the old
+  `^7.3.0` every function deployed after 2026-07-28 ran Express 5 in production
+  while CI still tested Express 4, with no signal anywhere. A bump is now six
+  deliberate edits — the catalog plus the five manifests — and
+  `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails if they drift
+  apart or if either spec regains a range. ⚠️ The `^14` **peerDependencies** in
+  `packages/data` and `packages/storage` stay broad; libraries do not pin.
 - `next lint` is gone in Next 16 — every lint script is `eslint .`. `@delfrance/config-eslint`
   is split into composable entries: the default export is the framework-agnostic
   core, `./react` adds the `react-hooks` warns (plugin supplied by
@@ -307,9 +321,14 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   workspace members), `apps/functions`' runtime `dependencies` (every
   `prepare-deploy.mjs` copies `dependencies` verbatim into an artifact that
   plain cloud `npm install` must resolve), all `peerDependencies` (libraries
-  keep broad ranges), and `workspace:*` specs. `next` stays pinned **exact**
-  (`16.2.6`) in the catalog — a Next bump is still one deliberate edit, now a
-  single line. **`packageManager` is the sole authority for pnpm** — corepack
+  keep broad ranges), and `workspace:*` specs. ⚠️ Those five artifact
+  `dependencies` blocks are literal **and**, for `firebase-admin` +
+  `firebase-functions`, **exact** — no lockfile reaches the cloud, so a range
+  there ships an untested version (see the firebase pins above);
+  `packages/config-eslint/rules/runtime-deps-pinned.test.js` enforces it.
+  Three high-blast-radius deps stay pinned **exact** in the catalog for the same
+  "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
+  and `firebase-functions` (`7.3.2`). **`packageManager` is the sole authority for pnpm** — corepack
   honours it over any activated default, so CI runs only `corepack enable`
   and never pins a version. Do not re-add a `corepack prepare pnpm@x.y.z`:
   it is silently overridden, which is exactly how the workflows drifted to
