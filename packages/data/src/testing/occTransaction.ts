@@ -1,14 +1,19 @@
 /**
- * Optimistic-concurrency transaction engine for the Mercado Livre order-import
- * FakeDbs (`orderImport` / `orderPedidoTx` / `orderPaymentImport` /
- * `orderShipmentImport`).
+ * Optimistic-concurrency transaction engine for FakeDbs — the ONE piece every
+ * transaction test double in this monorepo shares, because it is the piece that
+ * must not drift: several subtly different OCC models would be worse than none
+ * (ADR 0011 — "hand-writing that ~25 times produced five distinct failure
+ * modes"). Each FakeDb still owns its own collections, queries, `opLog` and
+ * `lastPatch` surface, which is what those files' "own copy" comments are
+ * actually about.
  *
- * It is the ONE piece those four deliberately-duplicated fakes share, because
- * it is the piece that must not drift: four subtly different OCC models would
- * be worse than none (ADR 0011 — "hand-writing that ~25 times produced five
- * distinct failure modes"). Each FakeDb still owns its own collections,
- * queries, `opLog` and `lastPatch` surface, which is what those files'
- * "own copy" comments are actually about.
+ * ⚠️ **SDK-agnostic on purpose.** It imports nothing — not `firebase`, not
+ * `firebase-admin` — and knows a ref only by its `path`. That is what lets the
+ * Admin-SDK shape (`db.runTransaction(cb)`) and the browser shape
+ * (`runTransaction(db, cb)`) share it: the caller writes a five-line adapter,
+ * never a second engine. It lives in `packages/data` rather than in an app so
+ * `packages/ui`, `apps/web`, `apps/whatsapp` and `apps/mercado-livre` can all
+ * reach it; it was lifted out of `apps/mercado-livre` for #824.
  *
  * Models the three Admin SDK properties the previous non-isolated fakes did
  * not, and that issue #791 is entirely about:
@@ -29,8 +34,8 @@
  * ## Two timing choices, both deliberate
  *
  * - **Writes are logged to `opLog` at CALL time**, not at commit. `opLog` is a
- *   log of what the transaction body *did*; logging at commit would make this
- *   folder's existing `expect(ops.map(o => o.op)).toEqual(['get','update'])`
+ *   log of what the transaction body *did*; logging at commit would make the ML
+ *   import tests' `expect(ops.map(o => o.op)).toEqual(['get','update'])`
  *   assertions vacuous, and would hide the staged-then-aborted write that the
  *   race tests assert on. Reads are NOT logged here — each FakeDb's own
  *   `ref.get()` already logs them, and double-logging would break the same

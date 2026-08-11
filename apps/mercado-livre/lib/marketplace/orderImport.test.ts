@@ -61,7 +61,7 @@ import {
   type OccOpKind,
   type OccTransaction,
   type OccWriteKind,
-} from './testing/occTransaction';
+} from '@delfrance/data/testing';
 import { makeItemEnsureUniqueId } from './orderIds';
 import type { MappedFreteInicialFields } from './orderShipmentMapping';
 import {
@@ -109,7 +109,7 @@ const ENDERECO_SP: EnderecoForcado = {
 // and a chained where/limit/get query).
 //
 // `runTransaction` delegates to the SHARED `OccEngine`
-// (`./testing/occTransaction`), which replaces the non-isolated stand-in this
+// (`@delfrance/data/testing`), which replaces the non-isolated stand-in this
 // file used to carry. That brings three things this file never had: a
 // reads-before-writes guard (the other three FakeDbs in this folder already had
 // one), an `opLog`, and `lastPatch` — plus the snapshot-read/retry semantics the
