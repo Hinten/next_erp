@@ -1,0 +1,207 @@
+name: CI — Mercado Livre (Firestore emulator)
+
+# Integration lane for the Mercado Livre backend (#823). Runs every
+# `apps/mercado-livre/**/*.firestore.test.ts` against a REAL Firestore (the
+# emulator), because all ~93 offline ML tests mock Firestore away — the shared
+# notification pipeline drives a hand-rolled `FakeDb`, and the token store an
+# in-memory `fakeStore` with a scripted `validSeq`. Those cover the LOGIC; this
+# lane covers the Firestore SEMANTICS the logic is built on (real query
+# ordering, ALREADY_EXISTS on create, NOT_FOUND on update, read-your-own-write).
+#
+# OFFLINE BY CONSTRUCTION — no Mercado Livre credentials, ever. ML has no
+# sandbox (their docs are explicit), its refresh_token is single-use and
+# rotating, and OAuth needs a human consent screen with a static redirect URI.
+# A credentialed lane would rotate — and therefore INVALIDATE — the token the
+# deployed staging backend holds. The ML HTTP surface is injected/stubbed, and
+# vitest.firestore.setup.ts installs a fetch kill-switch that throws on any
+# non-localhost host so "offline" is a property of the lane, not of the author.
+#
+# Unlike ci-storage.yml this has NO offline sibling job: `ci.yml` does not
+# exclude the ML workspaces from `turbo run test`, so the unit suite already
+# runs there on every PR (ci.yml has no `paths:` filter at all). Keeping it that
+# way is deliberate — it means a stale `paths:` list below can only cost this
+# lane, never total coverage. See ci-storage.yml's header for the inverse case,
+# which this repo has shipped as a bug twice.
+#
+# ⚠️ What this lane does NOT prove, so nobody reads its green as more than it is:
+#   - Composite INDEX DECLARATION. The emulator auto-creates every composite, and
+#     on Enterprise a missing index does not throw — it silently full-scans and
+#     bills the scan. That is guard C/D in
+#     packages/data/src/admin/notifications/notificationGuardrails.test.ts.
+#   - Cloud Tasks. There is no emulator for it anywhere. The receiver test drives
+#     the MERCADO_LIVRE_TASKS_DISABLED outage path only; the region-qualified
+#     queue path and its us-central1 silent-drop hazard stay uncovered.
+#   - The nested apps/mercado-livre/functions triggers (a deploy-artifact sub-build).
+#   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
+#   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
+#     exposes db.pipeline(), so feature-probing answers yes then fails at execution.
+#   - The Mercado Livre API itself. By design; there is no sandbox to point at.
+
+on:
+  push:
+    branches: [master, main]
+    # ⚠️ Duplicated verbatim under `pull_request` below. GitHub Actions does not
+    # support YAML anchors, which is why every other workflow here repeats its
+    # list too — keep the two copies in sync.
+    paths:
+      # Globs, never named files: ci-storage.yml:27-35 records that a
+      # named-file list silently rots into zero coverage.
+      - 'apps/mercado-livre/**'
+      # Acceptance criterion of #823: a PR touching ONLY the library must run an
+      # integration-level check. The OAuth callback test drives this package's
+      # real exchangeCode → requestToken → tokenResponseSchema path.
+      - 'packages/integrations/mercado-livre/**'
+      - 'packages/data/src/admin/notifications/**'
+      - 'packages/data/src/admin/collections/**'
+      - 'packages/data/src/admin/defineAdminCollection.ts'
+      - 'packages/data/src/admin/grpcErrors.ts'
+      - 'packages/schemas/src/integracao.ts'
+      - 'packages/schemas/src/notificacaoMercadoLivre.ts'
+      - 'packages/schemas/src/shared/notificationResilience.ts'
+      - 'firestore.indexes.json'
+      - 'firebase.mercado-livre.json'
+      - 'pnpm-lock.yaml'
+      # Self-reference: without it, a PR that only edits this workflow never
+      # exercises it.
+      - '.github/workflows/ci-mercado-livre.yml'
+  pull_request:
+    # The prefix entries cover stacked PRs — this key matches the PR's BASE, so
+    # a child based on any other prefix reports zero checks, not failures.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
+    # Kept identical to the `push` list above.
+    paths:
+      - 'apps/mercado-livre/**'
+      - 'packages/integrations/mercado-livre/**'
+      - 'packages/data/src/admin/notifications/**'
+      - 'packages/data/src/admin/collections/**'
+      - 'packages/data/src/admin/defineAdminCollection.ts'
+      - 'packages/data/src/admin/grpcErrors.ts'
+      - 'packages/schemas/src/integracao.ts'
+      - 'packages/schemas/src/notificacaoMercadoLivre.ts'
+      - 'packages/schemas/src/shared/notificationResilience.ts'
+      - 'firestore.indexes.json'
+      - 'firebase.mercado-livre.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci-mercado-livre.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ml-firestore-emulator:
+    name: ML backend on the Firestore emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # `resolveProjectId` (apps/mercado-livre/lib/firebase/admin.ts) reads
+      # FIREBASE_PROJECT_ID → GOOGLE_CLOUD_PROJECT → FIREBASE_CONFIG — never
+      # GCLOUD_PROJECT, which is what emulators:exec exports. It WOULD resolve
+      # demo-erp via FIREBASE_CONFIG, but pinning it here keeps the lane off an
+      # undocumented CLI detail.
+      FIREBASE_PROJECT_ID: demo-erp
+      # The database is literally named `default`, not `(default)` (Enterprise).
+      # In the emulator `(default)` silently exists, so a wrong id is invisible
+      # here and fatal in production — hence pinned, and hence every suite
+      # carries a positive existence assertion.
+      FIREBASE_DATABASE_ID: default
+      # Arms the fail-loud gate in vitest.firestore.setup.ts. Without it, an
+      # absent FIRESTORE_EMULATOR_HOST would skip every suite and still exit 0,
+      # because vitest's success check counts COLLECTED files, not run tests.
+      REQUIRE_EMULATOR: '1'
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # The Firestore emulator runs on the JVM; firebase-tools >= 15 needs JDK 21+.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from `packageManager`
+          # in package.json — the single source of truth — and overrides any
+          # `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      # ⚠️ `pnpm --filter <name-that-matches-nothing>` prints "No projects
+      # matched the filters" and exits ZERO — verified. A typo in the run step
+      # below would therefore produce a fully green job that executed no tests,
+      # and three near-misses exist (@delfrance/integrations-mercado-livre, the
+      # `mercado-livre` functions codebase name, the apps/ directory name).
+      # A missing *script* is safe (pnpm exits 1); only a bad package name is not.
+      - name: Assert the test filter resolves to a real package
+        run: |
+          set -euo pipefail
+          resolved=$(pnpm ls --filter @delfrance/mercado-livre-app --depth -1 --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let a=[];try{a=JSON.parse(s)}catch{}process.stdout.write(a.map(p=>p.name).join(","))}')
+          echo "filter resolved to: '$resolved'"
+          if [ "$resolved" != "@delfrance/mercado-livre-app" ]; then
+            echo "::error::pnpm --filter matched no package — the emulator step would exit 0 without running anything."
+            exit 1
+          fi
+
+      - name: Run the ML backend suite on the Firestore emulator
+        # emulators:exec boots Firestore and exports FIRESTORE_EMULATOR_HOST into
+        # the child, which is what the Admin SDK auto-detects (no service account
+        # needed) AND what arms the setup gate. Keep this a SINGLE command: piping
+        # it (`| tee`) or appending `|| true` would swap the child's exit code for
+        # the pipeline's and lose the failure.
+        run: |
+          firebase emulators:exec \
+            --config firebase.mercado-livre.json \
+            --project demo-erp \
+            --only firestore \
+            "pnpm --filter @delfrance/mercado-livre-app test:firestore"
+
+  report-failure:
+    name: Post failure note on PR
+    needs: [ml-firestore-emulator]
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment failure summary
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body =
+              `❌ \`ci-mercado-livre.yml\` failed on this PR.\n\n` +
+              `See the Actions tab for full logs: ` +
+              `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });

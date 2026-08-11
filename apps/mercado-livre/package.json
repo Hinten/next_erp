@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:firestore": "vitest run --config vitest.firestore.config.ts",
     "backfill:int-frete": "dotenv -e ../../.env.local -- tsx scripts/backfill-int-frete.ts",
     "check:deposito-source": "dotenv -e ../../.env.local -- tsx scripts/check-deposito-source.ts",
     "clean": "rm -rf .next .turbo dist coverage"
