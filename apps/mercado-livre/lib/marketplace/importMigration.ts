@@ -75,8 +75,9 @@
  * `.old/packages/produtos/lib/src/models.dart:1132-1178`, pinned by
  * `produto_marketplace_delete_test.dart`.
  *
- * ⛔ The two arrays it maintains are DEAD WEIGHT — no query consumers in this
- * repo, deleted at the decommission (#431 lock 3 / #961; canonical note on
+ * ⛔ All THREE fields it maintains — `marketplace`, `marketplaceIds` and
+ * `statusProdutosMarketplace` — are DEAD WEIGHT: no query consumers in this
+ * repo, deleted in one piece at the decommission (#992; canonical note on
  * `produtoSchema`). This function reads them, but only to compute their own next
  * value: maintenance, not consumption. The legacy-parity detail below is
  * preserved because it still runs until then, NOT because the shape is worth
@@ -475,10 +476,23 @@ interface MarketplaceDeletionPatch {
   statusProdutosMarketplace: Record<string, unknown>;
 }
 
-/** `StatusProdMarketplace.deleted()`'s exact wire JSON — the generated Dart
+/**
+ * `StatusProdMarketplace.deleted()`'s exact wire JSON — the generated Dart
  * `toJson` (models.g.dart `_$StatusProdMarketplaceToJson`) writes `error`,
  * `enviarEstoque`, `retries` and `autoImport` UNCONDITIONALLY (explicit nulls;
- * only `deleted` sits behind `writeNotNull`), so byte-parity keeps the nulls. */
+ * only `deleted` sits behind `writeNotNull`), so byte-parity keeps the nulls.
+ *
+ * ⚠️ DECIDED, do not "clean this up" (#825, owner decision 2026-08-11). This is
+ * the ONLY place in the repo that writes `statusProdutosMarketplace`, and the
+ * field has ZERO readers in the new stack — legacy used it as a per-listing
+ * stock-send circuit breaker (`StatusProdMarketplace.podeEnviarEstoque`), a gate
+ * the new sender replaced with ML's own listing status (`bulkEstoquePlan.ts`).
+ * The write is kept anyway, deliberately: it is one of the three fields
+ * `applyMarketplaceDeletion` returns in a single patch, faithful to the Dart
+ * original, and dropping just this member would make the port diverge for no
+ * gain while leaving the decommission (#992) to remember that one of three was
+ * already gone. It dies with the other two, in one commit, after the cutover.
+ */
 const DELETED_STATUS_PRODUTO_MARKETPLACE = {
   error: false,
   enviarEstoque: false,

@@ -188,7 +188,7 @@ export async function importVariationChildren(
       .docRef(db, { produtoId }, linkDocId)
       .set(variacaoMercadoLivreLinkCollection.parse(plan.link));
 
-    // Dual-run denorm (DEAD WEIGHT; #431 lock 3 / #961 — no query consumers in
+    // Dual-run denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
     // this repo, deleted at the decommission. Canonical note on
     // `produtoSchema`; the lock list is at `publish.ts`'s parent stamp).
     // Child entries carry `externalParentId` (the
