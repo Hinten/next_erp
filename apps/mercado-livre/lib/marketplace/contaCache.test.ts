@@ -232,13 +232,41 @@ describe('resolveContaAtivaPorUserId', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('tolerates a conta deleted between the query and the get', async () => {
-    // The id resolves but the document is gone — return the id and let the
-    // caller's own guard (a throw in the loader, an all-null bag in the conta
-    // bag) decide, exactly as the uncached code did.
+  it('re-resolves rather than returning an id whose conta is gone', async () => {
+    // A cached mapping can outlive its document — the conta entry can be dropped
+    // by the LRU or by a delete landing between the query and the get, while the
+    // id entry survives. Returning that id would be WORSE than not caching:
+    // `loadMercadoLivreContext` throws `MercadoLivreContaNotConfiguredError`,
+    // which the pipeline reads as retryable and eventually persists as a
+    // failure, where the uncached query resolves `null` → `{ kind: 'no-account' }`
+    // → the deferred lane. `resolveIntegracaoByUserId` queries the collection, so
+    // it can never name a deleted doc — hence the re-run returns null here.
     const db = new FakeDb();
-    const { load } = countingResolve('conta-A');
+    const calls: number[] = [];
+    const load = async (): Promise<string | null> => {
+      calls.push(1);
+      // The stale mapping first, then what a fresh query against the real
+      // collection would find once the conta is gone.
+      return calls.length === 1 ? 'conta-A' : null;
+    };
 
-    expect(await resolveContaAtivaPorUserId(asDb(db), 55, load)).toBe('conta-A');
+    expect(await resolveContaAtivaPorUserId(asDb(db), 55, load)).toBeNull();
+    // Bounded: one eviction, one retry of the query, no loop.
+    expect(calls).toHaveLength(2);
+  });
+
+  it('does not cache the re-resolved absence — the seller may connect next second', async () => {
+    const db = new FakeDb();
+    const calls: number[] = [];
+    const load = async (): Promise<string | null> => {
+      calls.push(1);
+      return calls.length === 1 ? 'conta-A' : null;
+    };
+    expect(await resolveContaAtivaPorUserId(asDb(db), 55, load)).toBeNull();
+
+    // The seller reconnects; the very next notification must find them.
+    db.seed(CONTA_PATH, contaDoc({ user_id: 55 }));
+    const { load: reconnected } = countingResolve('conta-A');
+    expect(await resolveContaAtivaPorUserId(asDb(db), 55, reconnected)).toBe('conta-A');
   });
 });
