@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Alert,
+  Autocomplete,
   Badge,
   Button,
   Checkbox,
@@ -38,12 +39,13 @@ import {
 import {
   type ChartMeasureType,
   type ChartSpecValue,
+  chartLevelAttributes,
   detectMeasureTypes,
-  extractChartAttributes,
   extractColumns,
   extractGridTemplates,
   mainAttributeCandidates,
   maxRows as gridMaxRows,
+  resolveChartAttributeValue,
 } from '@/lib/mercado-livre/chartSpec';
 import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
 import {
@@ -167,8 +169,17 @@ export function SizeChartEditorModal({
     () => (domainSpecsQuery.data ? extractGridTemplates(domainSpecsQuery.data) : []),
     [domainSpecsQuery.data],
   );
-  const chartAttributes = useMemo(
-    () => (domainSpecsQuery.data ? extractChartAttributes(domainSpecsQuery.data) : []),
+  /**
+   * The chart-level questions to RENDER and to send in the chart body — the
+   * union of templates and grid filters, deduplicated.
+   *
+   * ⚠️ Never concatenate the two lists here: they overlap (GENDER is commonly
+   * both), which is what produced duplicate React keys and a doubled attribute
+   * in the payload. `specAttributes` below stays templates-only on purpose —
+   * that is the body ML wants for the `?section=grids` lookup.
+   */
+  const chartLevel = useMemo(
+    () => (domainSpecsQuery.data ? chartLevelAttributes(domainSpecsQuery.data) : []),
     [domainSpecsQuery.data],
   );
 
@@ -282,13 +293,20 @@ export function SizeChartEditorModal({
   /* ------------------------------- assembly ------------------------------ */
 
   function buildChart(): MlSizeChart {
-    const templateWire = templates.concat(chartAttributes).flatMap((t) => {
+    // `chartLevel` is already deduplicated by id, so no second pass is needed.
+    const attributes = chartLevel.flatMap((t) => {
       const picked = templateValues[t.id];
       if (!picked) return [];
-      return [{ id: t.id, value_id: picked.id, value_name: picked.name }];
+      // A free-text value carries no id — sending an invented `value_id` is
+      // rejected, so it goes up as a name only.
+      return [
+        {
+          id: t.id,
+          ...(picked.id === '' ? {} : { value_id: picked.id }),
+          value_name: picked.name,
+        },
+      ];
     });
-    // Dedupe: a grid_filter attribute can also be grid_template_required.
-    const byId = new Map(templateWire.map((a) => [a.id, a]));
     return {
       ...(chart ?? {}),
       id: chart?.id ?? null,
@@ -297,16 +315,22 @@ export function SizeChartEditorModal({
       tipo: effectiveMeasureType,
       main_attribute_id: effectiveMainId,
       grupoDeVariacoesUid: grupoId == null ? null : `documents/grupoDeVariacoes/${grupoId}`,
-      attributes: [...byId.values()],
+      attributes,
       main_attribute: chart?.main_attribute ?? [],
       rows: toChartRows(rows, allColumns, units, chart),
     };
   }
 
+  // ML requires BRAND alongside GENDER in the chart body, so a required
+  // chart-level attribute left blank is a rejection waiting to happen — block
+  // it here rather than after the round trip.
+  const missingRequired = chartLevel.find((t) => t.required && templateValues[t.id] == null);
+
   const blockingError =
     validateChartName(nome) ??
     (domainId == null ? 'Selecione o domínio.' : null) ??
     (answered ? null : 'Responda os atributos da guia.') ??
+    (missingRequired ? `Informe ${missingRequired.name}.` : null) ??
     (rows.filter((r) => !r.deleted).length === 0 ? 'A guia precisa de ao menos um tamanho.' : null);
 
   const overCap =
@@ -465,27 +489,53 @@ export function SizeChartEditorModal({
               required
             />
 
-            {templates.concat(chartAttributes).map((template) => (
-              <Select
-                key={template.id}
-                label={template.name}
-                placeholder={`Selecione: ${template.name}`}
-                data={template.values.map((v) => ({ value: v.id, label: v.name }))}
-                value={templateValues[template.id]?.id ?? null}
-                onChange={(id) => {
-                  const picked = template.values.find((v) => v.id === id);
-                  setTemplateValues((prev) => {
-                    const next = { ...prev };
-                    if (picked) next[template.id] = picked;
-                    else delete next[template.id];
-                    return next;
-                  });
-                }}
-                disabled={sent}
-                required={template.required}
-                searchable
-              />
-            ))}
+            {chartLevel.map((template) => {
+              const setValue = (picked: ChartSpecValue | null) => {
+                setTemplateValues((prev) => {
+                  const next = { ...prev };
+                  if (picked) next[template.id] = picked;
+                  else delete next[template.id];
+                  return next;
+                });
+              };
+
+              // A CLOSED list (GENDER) gets a Select; everything else is free
+              // text with ML's known values as suggestions — BRAND accepts any
+              // brand, and a Select there blocks every one ML has not seen.
+              return template.kind === 'select' ? (
+                <Select
+                  key={template.id}
+                  label={template.name}
+                  placeholder={`Selecione: ${template.name}`}
+                  data={template.values.map((v) => ({ value: v.id, label: v.name }))}
+                  value={templateValues[template.id]?.id ?? null}
+                  onChange={(id) => {
+                    setValue(template.values.find((v) => v.id === id) ?? null);
+                  }}
+                  disabled={sent}
+                  required={template.required}
+                  searchable
+                />
+              ) : (
+                <Autocomplete
+                  key={template.id}
+                  label={template.name}
+                  placeholder={`Informe ${template.name}`}
+                  description={
+                    template.values.length > 0
+                      ? 'Escolha uma das sugestões ou digite outro valor.'
+                      : undefined
+                  }
+                  data={template.values.map((v) => v.name)}
+                  value={templateValues[template.id]?.name ?? ''}
+                  onChange={(typed) => {
+                    setValue(resolveChartAttributeValue(template, typed));
+                  }}
+                  disabled={sent}
+                  required={template.required}
+                />
+              );
+            })}
 
             {measureOptions.length > 1 && (
               <div>
@@ -692,10 +742,12 @@ export function SizeChartEditorModal({
 function seedTemplateValues(chart: MlSizeChart | null): Record<string, ChartSpecValue> {
   const out: Record<string, ChartSpecValue> = {};
   for (const attr of chart?.attributes ?? []) {
-    const id = attr.value_id ?? attr.value_name;
     const name = attr.value_name ?? attr.value_id;
-    if (id == null || name == null) continue;
-    out[attr.id] = { id, name };
+    if (name == null) continue;
+    // ⚠️ An ABSENT `value_id` stays absent (''), never backfilled from the name.
+    // A free-text value (BRAND) has no id, and inventing one would send it back
+    // to ML as a `value_id` it has never heard of.
+    out[attr.id] = { id: attr.value_id ?? '', name };
   }
   return out;
 }

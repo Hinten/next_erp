@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   type ChartColumn,
+  type GridTemplateAttribute,
+  chartLevelAttributes,
   columnAttributeIds,
   detectMeasureTypes,
   extractChartAttributes,
@@ -9,6 +11,7 @@ import {
   extractGridTemplates,
   mainAttributeCandidates,
   maxRows,
+  resolveChartAttributeValue,
 } from './chartSpec';
 
 /**
@@ -38,7 +41,10 @@ const tshirtGrid = {
                   {
                     id: 'GENDER',
                     name: 'Gênero',
-                    value_type: 'string',
+                    // The DOMAIN ficha técnica types GENDER as a closed list;
+                    // chart-level attributes are read from that response, not
+                    // from the grid one (where it echoes back as a string).
+                    value_type: 'list',
                     tags: ['grid_template_required', 'grid_filter', 'required'],
                     values: [
                       { id: '339665', name: 'Feminino' },
@@ -216,6 +222,7 @@ describe('extractGridTemplates', () => {
         id: 'GENDER',
         name: 'Gênero',
         required: true,
+        kind: 'select',
         values: [
           { id: '339665', name: 'Feminino' },
           { id: '339666', name: 'Masculino' },
@@ -322,6 +329,87 @@ describe('extractChartAttributes', () => {
       },
     };
     expect(extractChartAttributes(spec)).toEqual([]);
+  });
+});
+
+describe('chartLevelAttributes', () => {
+  it('never repeats an attribute that is BOTH a template and a filter', () => {
+    // GENDER on MLB-T_SHIRTS carries `grid_template_required` AND `grid_filter`.
+    // Concatenating the two lists rendered two form fields with key="GENDER"
+    // and sent the attribute twice in the chart body.
+    expect(extractGridTemplates(tshirtGrid).map((a) => a.id)).toContain('GENDER');
+    expect(extractChartAttributes(tshirtGrid).map((a) => a.id)).toContain('GENDER');
+
+    expect(chartLevelAttributes(tshirtGrid).map((a) => a.id)).toEqual(['GENDER', 'BRAND']);
+  });
+
+  it('yields unique ids — the invariant the React keys depend on', () => {
+    const ids = chartLevelAttributes(tshirtGrid).map((a) => a.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('keeps the template values when the attribute appears in both lists', () => {
+    const gender = chartLevelAttributes(tshirtGrid).find((a) => a.id === 'GENDER');
+    expect(gender).toMatchObject({ required: true, name: 'Gênero' });
+    expect(gender?.values.map((v) => v.name)).toEqual(['Feminino', 'Masculino']);
+  });
+
+  it('keeps a filter-only attribute', () => {
+    expect(chartLevelAttributes(tshirtGrid).find((a) => a.id === 'BRAND')).toMatchObject({
+      id: 'BRAND',
+      required: true,
+    });
+  });
+
+  it('is empty for a domain with neither', () => {
+    expect(chartLevelAttributes(sneakerGrid)).toEqual([]);
+  });
+
+  it('marks a CLOSED list as select and an open one as free text', () => {
+    // GENDER is `value_type: list` — a real closed list. BRAND is
+    // `value_type: string` with a pile of known brands, and ML accepts any
+    // value; a Select there blocks every brand ML has not seen.
+    const byId = new Map(chartLevelAttributes(tshirtGrid).map((a) => [a.id, a]));
+    expect(byId.get('GENDER')?.kind).toBe('select');
+    expect(byId.get('BRAND')?.kind).toBe('text');
+  });
+});
+
+describe('resolveChartAttributeValue', () => {
+  const brand: GridTemplateAttribute = {
+    id: 'BRAND',
+    name: 'Marca',
+    required: true,
+    kind: 'text',
+    values: [
+      { id: '14671', name: 'Nike' },
+      { id: '9999', name: 'Genérica' },
+    ],
+  };
+
+  it('keeps a custom brand ML has never seen, with NO invented id', () => {
+    expect(resolveChartAttributeValue(brand, 'Delfrance')).toEqual({
+      id: '',
+      name: 'Delfrance',
+    });
+  });
+
+  it('snaps to a known option so the id goes up too', () => {
+    expect(resolveChartAttributeValue(brand, 'Nike')).toEqual({ id: '14671', name: 'Nike' });
+  });
+
+  it('matches a known option through accents and case', () => {
+    // 'Generica' typed for 'Genérica' would otherwise be sent as a custom value.
+    expect(resolveChartAttributeValue(brand, 'generica')).toEqual({
+      id: '9999',
+      name: 'Genérica',
+    });
+  });
+
+  it('trims, and treats blank as no answer at all', () => {
+    expect(resolveChartAttributeValue(brand, '  Nike  ')).toEqual({ id: '14671', name: 'Nike' });
+    expect(resolveChartAttributeValue(brand, '   ')).toBeNull();
+    expect(resolveChartAttributeValue(brand, '')).toBeNull();
   });
 });
 

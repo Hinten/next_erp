@@ -33,6 +33,17 @@ export interface GridTemplateAttribute {
   values: ChartSpecValue[];
   /** ML refuses the chart without it (`required`). */
   required: boolean;
+  /**
+   * How it is edited. `select` is ML's CLOSED list (`value_type: 'list'`, e.g.
+   * GENDER); `text` is free text WITH suggestions.
+   *
+   * ⚠️ `values` being non-empty does NOT mean the list is closed. BRAND arrives
+   * as `value_type: 'string'` with `allow_custom_value: true` and a pile of
+   * known brands — ML accepts anything there, and its own hint tells the seller
+   * to type the real brand. Rendering it as a Select silently blocks every
+   * brand ML has not seen. Same rule as `attributeForm.ts`'s `widgetKind`.
+   */
+  kind: 'select' | 'text';
 }
 
 /** How one attribute of a column is edited. */
@@ -207,8 +218,41 @@ export function extractGridTemplates(specs: unknown): GridTemplateAttribute[] {
       name: str(a.name) ?? str(a.id) ?? '',
       values: toSpecValues(a.values),
       required: true,
+      kind: attributeKind(a),
     }))
     .filter((t) => t.id !== '');
+}
+
+/** Closed list only when ML says `list`; everything else accepts custom text. */
+function attributeKind(attr: RawAttribute): 'select' | 'text' {
+  return attr.value_type === 'list' ? 'select' : 'text';
+}
+
+function normalizeValue(value: string): string {
+  return value
+    .trim()
+    .toLocaleLowerCase('pt-BR')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '');
+}
+
+/**
+ * What the operator typed into a free-text chart attribute, as an ML value.
+ *
+ * A known option wins when the text matches one — accent- and case-insensitively,
+ * because `Generica` typed for `Genérica` would otherwise go up as a custom
+ * value ML does not recognise (the same trap `attributeForm.ts` documents).
+ * Otherwise the raw text goes as `name` with **no id**: an invented `value_id`
+ * is rejected outright.
+ */
+export function resolveChartAttributeValue(
+  attribute: GridTemplateAttribute,
+  typed: string,
+): ChartSpecValue | null {
+  const trimmed = typed.trim();
+  if (trimmed === '') return null;
+  const match = attribute.values.find((v) => normalizeValue(v.name) === normalizeValue(trimmed));
+  return match ?? { id: '', name: trimmed };
 }
 
 /**
@@ -225,8 +269,43 @@ export function extractChartAttributes(specs: unknown): GridTemplateAttribute[] 
       name: str(a.name) ?? str(a.id) ?? '',
       values: toSpecValues(a.values),
       required: hasTag(a, 'required'),
+      kind: attributeKind(a),
     }))
     .filter((t) => t.id !== '');
+}
+
+/**
+ * Every chart-level question the operator answers, deduplicated by attribute id.
+ *
+ * ⚠️ `extractGridTemplates` and `extractChartAttributes` OVERLAP. ML routinely
+ * tags one attribute both ways — GENDER on `MLB-T_SHIRTS` carries
+ * `grid_template_required` AND `grid_filter` — so concatenating the two lists
+ * yields the same attribute twice. Rendering that produced two form fields with
+ * the same React key ("Encountered two children with the same key, `GENDER`"),
+ * and building the chart body from it sent the attribute twice.
+ *
+ * Merging here, once, is what keeps the render and the payload from drifting
+ * apart: callers get the union and never concatenate for themselves. The
+ * template wins on conflict, since its `required` is what gates the grid fetch;
+ * whichever entry actually carried `values`/`name` supplies them.
+ */
+export function chartLevelAttributes(specs: unknown): GridTemplateAttribute[] {
+  const byId = new Map<string, GridTemplateAttribute>();
+  // Templates first, so the questions ML *demands* lead the form.
+  for (const attr of extractGridTemplates(specs)) byId.set(attr.id, attr);
+  for (const attr of extractChartAttributes(specs)) {
+    const template = byId.get(attr.id);
+    if (template == null) {
+      byId.set(attr.id, attr);
+      continue;
+    }
+    byId.set(attr.id, {
+      ...template,
+      name: template.name !== '' ? template.name : attr.name,
+      values: template.values.length > 0 ? template.values : attr.values,
+    });
+  }
+  return [...byId.values()];
 }
 
 /**
