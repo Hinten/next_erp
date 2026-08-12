@@ -9,6 +9,7 @@
  * `delfrance/no-inline-admin-collection` ESLint rule (warn).
  */
 export { cmunCollection } from './cmunCollection';
+export { configIaCollection } from './configIaCollection';
 export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';

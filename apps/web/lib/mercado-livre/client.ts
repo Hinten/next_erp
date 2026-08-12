@@ -268,6 +268,38 @@ export interface MercadoLivreTiposAnuncio {
   tipos: MercadoLivreCategoriaNo[];
 }
 
+/** One model the AI settings page may offer. */
+export interface MercadoLivreIaModelo {
+  id: string;
+  label: string;
+}
+
+/** `GET /ia/modelos` — the catalogue plus the currently effective resolution. */
+export interface MercadoLivreIaModelos {
+  modelos: MercadoLivreIaModelo[];
+  /**
+   * `'live'` = straight from the provider. `'fallback'` = the shipped list,
+   * because the provider could not be reached or answered nothing usable. The
+   * page must say which, rather than implying the catalogue is current.
+   */
+  fonte: 'live' | 'fallback';
+  /** Why the list is a fallback. Present only when `fonte === 'fallback'`. */
+  erro?: string;
+  efetivo: {
+    /** What a suggestion would use right now. */
+    modelo: string;
+    /** True ⇒ the stored model is not served and this is a substitute. */
+    substituido: boolean;
+    /**
+     * Which link of the chain won. `'env'` is the one worth surfacing: a
+     * backend env var silently overrides the shipped default and the operator
+     * has no other way to discover it.
+     */
+    origem: 'config' | 'env' | 'padrao';
+    padrao: string;
+  };
+}
+
 /** One chart-enabled ML domain (`GET size-charts/domains`). */
 export interface MercadoLivreChartDomain {
   domain_id: string;
@@ -463,6 +495,16 @@ export interface MercadoLivreClient {
     integracaoId: string;
     categoryId: string;
   }): Promise<MercadoLivreTiposAnuncio>;
+  /**
+   * Models the AI settings page may offer, plus what a suggestion would actually
+   * use right now (PERM.integracao.read).
+   *
+   * ⚠️ Takes no `integracaoId`: the agent config is per-installation, not per ML
+   * account — one model serves every connected seller. It lives on this client
+   * anyway because the route is hosted by the ML backend, which is where the
+   * Vertex credential and the IAM grant are.
+   */
+  iaModelos(): Promise<MercadoLivreIaModelos>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
   sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
   /**
@@ -715,6 +757,7 @@ export function createMercadoLivreClient(config: {
         `/api/marketplace/mercado-livre/tipos-anuncio?integracaoId=${encodeURIComponent(input.integracaoId)}` +
           `&categoryId=${encodeURIComponent(input.categoryId)}`,
       ),
+    iaModelos: () => call<MercadoLivreIaModelos>('/api/marketplace/mercado-livre/ia/modelos'),
     sizeChartDomains: (integracaoId) =>
       call<{ domains: MercadoLivreChartDomain[] }>(
         `/api/marketplace/mercado-livre/size-charts/domains?integracaoId=${encodeURIComponent(integracaoId)}`,

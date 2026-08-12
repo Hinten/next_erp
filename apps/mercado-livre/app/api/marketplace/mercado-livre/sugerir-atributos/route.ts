@@ -16,11 +16,16 @@
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
 
+import { loadConfigIa } from '@/lib/ai/configIa';
+import { resolveModelo } from '@/lib/ai/models';
+import { getAiModelosCached } from '@/lib/ai/modelosCache';
 import {
   AiNotConfiguredError,
   AiUnparseableAnswerError,
   createVertexGenerateFn,
+  createVertexListModelsFn,
 } from '@/lib/ai/provider';
 import { loadProdutoImage } from '@/lib/ai/produtoImage';
 import { AlreadyRunningError, runSingleFlight } from '@/lib/ai/singleFlight';
@@ -44,11 +49,13 @@ export const runtime = 'nodejs';
 const AI_TIMEOUT_MS = 45_000;
 
 /**
- * The shipped default. Overridable per deployment today, and from the settings
- * page once `configIa` exists (A3), whose resolution order is
- * config doc → this env var → this constant.
+ * ⚠️ The shipped default now lives in `packages/schemas` as
+ * {@link CONFIG_IA_MODELO_PADRAO}, because the settings page and this route must
+ * agree on the last link of the chain. Resolution order:
+ * **`configIa` doc → `MERCADO_LIVRE_AI_MODEL` → that constant**, then
+ * re-validated against the live model list so a stored model the provider has
+ * retired cannot 500 this route.
  */
-const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
 export async function POST(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.integracao.write);
@@ -79,6 +86,20 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const db = getAdminFirestore();
 
+  // Read the agent's settings BEFORE claiming the single-flight slot: the kill
+  // switch must be able to decline without occupying it, or one disabled-agent
+  // click would block the operator's next attempt for no reason.
+  const config = await loadConfigIa(db);
+  if (!config.ativo) {
+    return NextResponse.json(
+      {
+        error: 'A sugestão por IA está desativada nas configurações.',
+        code: 'AI_DESATIVADA',
+      },
+      { status: 409 },
+    );
+  }
+
   try {
     return await runSingleFlight(auth.caller.uid, async () => {
       const ctx = await loadMercadoLivreContext(db, integracaoId);
@@ -108,7 +129,17 @@ export async function POST(req: Request): Promise<NextResponse> {
             const attrs = await getCategoriaAtributosCached(api, id);
             return { leaf: true, atributos: projectCategoriaAtributos(attrs, 'item').atributos };
           },
-          model: process.env.MERCADO_LIVRE_AI_MODEL ?? DEFAULT_MODEL,
+          model: resolveModelo({
+            stored: config.modelo,
+            env: process.env.MERCADO_LIVRE_AI_MODEL ?? null,
+            padrao: CONFIG_IA_MODELO_PADRAO,
+            // Cached and fallback-backed, so this never fails the suggestion —
+            // an unknown list skips validation rather than rejecting the model.
+            disponiveis: (await getAiModelosCached(createVertexListModelsFn())).modelos,
+          }).modelo,
+          systemInstruction: config.promptSistema,
+          temperature: config.temperatura,
+          maxOutputTokens: config.maxOutputTokens,
           signal: AbortSignal.timeout(AI_TIMEOUT_MS),
         },
         { produtoId, categoryId },
