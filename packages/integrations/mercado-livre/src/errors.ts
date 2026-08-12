@@ -48,11 +48,25 @@ export class MercadoLivreValidationError extends MercadoLivreError {
  * authorization code is expired or already used) or a refresh (the refresh
  * token is expired, revoked, or already used), or no credential at all. The
  * account must complete the OAuth consent flow again; a plain retry won't fix it.
+ *
+ * ⚠️ `reason` is about the CREDENTIAL, not the grant type: `requestToken` raises
+ * `'refresh_failed'` for an `invalid_grant` on a **code exchange** too, so it does
+ * not tell you whether an authorization code or a refresh token died. The caller
+ * knows which flow it started — infer it there, not from this field.
+ *
+ * `status`/`body` carry the ML response when there was one. They exist because
+ * `invalid_grant` is the most common OAuth failure and dropping them left the
+ * caller unable to tell an expired code from a `redirect_uri` mismatch (ML puts
+ * that distinction in the body's `cause[]`). Both are null when the error is
+ * raised without a response — e.g. `'no_token'`, where no request was made.
  */
 export class MercadoLivreReauthRequiredError extends MercadoLivreError {
   constructor(
     readonly reason: 'no_token' | 'refresh_failed',
     message: string,
+    readonly status: number | null = null,
+    /** The parsed error body, when JSON; the raw text otherwise. */
+    readonly body: unknown = null,
   ) {
     super(message);
     this.name = 'MercadoLivreReauthRequiredError';

@@ -57,9 +57,22 @@ export class MercadoLivreNotImplementedError extends Error {
 
 const CLIENT_SECRET_ENV_VAR = 'MERCADO_LIVRE_CLIENT_SECRET';
 
-/** The OAuth redirect URI — must match what's registered in the ML app. */
+/**
+ * The OAuth redirect URI — must match what's registered in the ML app.
+ *
+ * ⚠️ A BLANK `MERCADO_LIVRE_PUBLIC_URL=` must fall back like an unset one. The old
+ * `??` guarded only `undefined`/`null`, so a blank value produced `base === ''` and
+ * sent the relative `"/api/oauth/mercado-livre/callback"` to ML as the `redirect_uri`
+ * — which ML rejects at the token step with a 400 that this app could not report.
+ * Same `??`-versus-empty-string hole #887 fixed for `*_TASKS_REGION`.
+ *
+ * The localhost default is deliberate and stays: local dev has no public origin.
+ * It is also why a misconfigured deployed backend fails at ML rather than at boot —
+ * the value is echoed in the callback's failure log so it can be seen.
+ */
 export function mercadoLivreRedirectUri(): string {
-  const base = (process.env.MERCADO_LIVRE_PUBLIC_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+  const raw = process.env.MERCADO_LIVRE_PUBLIC_URL?.trim();
+  const base = (raw && raw.length > 0 ? raw : 'http://localhost:3006').replace(/\/$/, '');
   return `${base}/api/oauth/mercado-livre/callback`;
 }
 
