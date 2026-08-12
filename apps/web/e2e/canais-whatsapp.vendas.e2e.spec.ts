@@ -6,7 +6,14 @@ import {
   seedWhatsappFixtures,
 } from './_helpers/seed-data';
 import { applyTextFilter, expectRowHidden, expectRowVisible } from './helpers/table-view';
-import { clickSave, confirmDelete, fillField, selectFieldWithSearch } from './helpers/object-view';
+import {
+  clickSave,
+  confirmDelete,
+  expectFieldAfterReload,
+  expectSwitchAfterReload,
+  fillField,
+  selectFieldWithSearch,
+} from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -111,7 +118,7 @@ test.describe.serial('Canais WhatsApp e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/canais\/whatsapp$/, { timeout: 15_000 });
 
     await page.goto(`/canais/whatsapp/${row(4)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-004-editada`);
+    await expectFieldAfterReload(page, 'Nome', `${prefix}-004-editada`);
   });
 
   test('sets a weekday of horario_funcionamento and saves', async ({ page }) => {
@@ -132,11 +139,9 @@ test.describe.serial('Canais WhatsApp e2e — TableView / ObjectView', () => {
 
     await page.goto(`/canais/whatsapp/${row(3)}`);
     await page.getByRole('tab', { name: 'Atendimento' }).click();
-    await expect(page.getByLabel('Segunda-feira', { exact: true })).toBeChecked();
-    await expect(page.getByLabel('Segunda-feira — Abertura', { exact: true })).toHaveValue('09:00');
-    await expect(page.getByLabel('Segunda-feira — Fechamento', { exact: true })).toHaveValue(
-      '18:30',
-    );
+    await expectSwitchAfterReload(page, 'Segunda-feira');
+    await expectFieldAfterReload(page, 'Segunda-feira — Abertura', '09:00');
+    await expectFieldAfterReload(page, 'Segunda-feira — Fechamento', '18:30');
   });
 
   test('deletes a conta through the typed-confirm modal', async ({ page }) => {
