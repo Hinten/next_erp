@@ -19,6 +19,7 @@
  * substantive rather than a paths-filter entry.
  */
 import { randomUUID } from 'node:crypto';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -79,7 +80,7 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
     const contaRef = db().collection('integracao').doc(integracaoId);
     await contaRef.set({
       nome: 'conta ML de teste',
-      tipo: 1, // INTEGRACAO_TIPO.mercadoLivre
+      tipo: INTEGRACAO_TIPO.mercadoLivre,
       ativo: true,
     });
 
@@ -122,7 +123,7 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
       user_id: ML_TOKEN_RESPONSE.user_id,
       nome: 'conta ML de teste',
       ativo: true,
-      tipo: 1,
+      tipo: INTEGRACAO_TIPO.mercadoLivre,
     });
 
     // 4. The outbound request really was the documented token exchange.
@@ -138,7 +139,11 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
   it('a state signed with a DIFFERENT secret is rejected and writes nothing', async () => {
     const integracaoId = `int${randomUUID().replace(/-/g, '')}`;
     const contaRef = db().collection('integracao').doc(integracaoId);
-    await contaRef.set({ nome: 'conta ML', tipo: 1, ativo: true });
+    await contaRef.set({
+      nome: 'conta ML',
+      tipo: INTEGRACAO_TIPO.mercadoLivre,
+      ativo: true,
+    });
 
     const forged = signState(integracaoId, 'outro-segredo-qualquer');
     const res = await GET(
