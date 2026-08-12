@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -59,22 +59,28 @@ export function EditarPedidoView() {
     [params.id],
   );
 
-  const { data, loading, error } = useDocSnapshot(docRef);
+  const { data, loading, error, fromCache } = useDocSnapshot(docRef);
 
   // Direction of the loaded doc (defaults to saída while loading — handlers
   // only run after the snapshot lands, so `cfg` is correct at call time).
   const direcao = direcaoOf(data?.data?.ehSaida);
   const cfg = DIRECAO[direcao];
 
-  // The pedido as first loaded — the concurrency baseline savePedido compares the
-  // live Firestore doc against. Captured ONCE in an effect (useDocSnapshot is
-  // real-time; reading it live at save time would defeat the guard). Refs are
-  // touched in effects/handlers, never during render.
+  // The pedido as loaded into the editor — the concurrency baseline savePedido
+  // compares the live Firestore doc against. NOT re-read at save time: reading
+  // it live would defeat the guard entirely.
+  //
+  // ⚠️ Seeded from `PedidoForm`'s `onSeeded`, never from its own effect. The
+  // baseline must describe THE VERSION THE OPERATOR IS LOOKING AT, so it has to
+  // move in lockstep with the form: correcting one to server truth while the
+  // other still held the cached copy would turn a stale cache into a phantom
+  // conflict — or, worse, let a save built from stale values pass the guard.
+  // The form owns that decision (it knows whether it is dirty); this just
+  // records the same snapshot. Refs are touched in effects/handlers, never
+  // during render.
   const baselineRef = useRef<Record<string, unknown> | null>(null);
-  useEffect(() => {
-    if (baselineRef.current === null && data?.data) {
-      baselineRef.current = data.data as Record<string, unknown>;
-    }
+  const seedBaseline = useCallback(() => {
+    baselineRef.current = (data?.data ?? null) as Record<string, unknown> | null;
   }, [data]);
 
   const [emitConfirmOpen, setEmitConfirmOpen] = useState(false);
@@ -140,7 +146,22 @@ export function EditarPedidoView() {
   ): Promise<boolean> {
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
-    const loaded = baselineRef.current ?? (values as unknown as Record<string, unknown>);
+    //
+    // ⚠️ No fallback to `values`. It used to read
+    // `baselineRef.current ?? (values as …)`, but the resolver's output carries
+    // the transient `id` / `ehSaidaOriginal` / `_itensFlat` that the Firestore
+    // doc does not (which is exactly why `buildPedidoPatch` has `NON_DOC_KEYS`),
+    // and `remotelyChangedFields` unions both sides' keys — so that branch could
+    // only ever report a phantom conflict. Without a real baseline there is
+    // nothing to compare, and a save that cannot be guarded must not happen.
+    if (baselineRef.current === null) {
+      notifications.show({
+        color: 'yellow',
+        message: 'Ainda carregando a versão mais recente do pedido — tente novamente.',
+      });
+      return false;
+    }
+    const loaded = baselineRef.current;
     // The pagamento auto-reconcile advances `estado` / `freteInicial` in Firestore
     // while the editor is open. For a field the user is NOT saving, refresh the
     // concurrency baseline to the live snapshot so that auto-change doesn't read
@@ -168,7 +189,14 @@ export function EditarPedidoView() {
         // unsaved-changes guard never prompts). Re-baseline the concurrency guard
         // to the just-saved state; the live `useDocSnapshot` keeps the page data
         // fresh and PedidoForm re-baselines the form to pristine.
-        baselineRef.current = { ...baseline, ...patch };
+        //
+        // Start from the LIVE snapshot, not the version loaded into the editor:
+        // `patch` only ever carries what the operator touched, so anything a
+        // server writer changed since load — and never will the patch mention —
+        // would otherwise stay frozen at its pre-change value and conflict on
+        // every later save in this session (#972).
+        const live = (data?.data as Record<string, unknown> | undefined) ?? baseline;
+        baselineRef.current = { ...live, ...patch };
         notifications.show({ color: 'green', message: cfg.savedToast });
         return true;
       }
@@ -335,6 +363,8 @@ export function EditarPedidoView() {
           pedidoId={data.id}
           submitLabel="Salvar alterações"
           liveEstado={p.estado}
+          fromCache={fromCache}
+          onSeeded={seedBaseline}
           onSubmit={handleSubmit}
         />
       </Stack>

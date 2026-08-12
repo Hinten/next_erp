@@ -24,7 +24,7 @@ import {
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { useUnsavedChangesGuard } from '@delfrance/ui';
+import { useServerTruthSeed, useUnsavedChangesGuard } from '@delfrance/ui';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
@@ -69,6 +69,24 @@ export interface PedidoFormProps {
    * spread always wins and this prop is ignored. Defaults to true (saída).
    */
   ehSaida?: boolean;
+  /**
+   * `fromCache` of the page snapshot these `defaultValues` came from. Supply it
+   * in edit mode so the form repaints once the AUTHORITATIVE copy arrives: with
+   * the IndexedDB cache the first emission can be stale, and `useForm` reads
+   * `defaultValues` only at mount, so without this the operator edits — and
+   * saves — a document version that is no longer current.
+   */
+  fromCache?: boolean;
+  /**
+   * Called whenever the form (re)seeds from `defaultValues`, with `true` when
+   * the values are server truth.
+   *
+   * ⚠️ This is how anything DERIVED from the same snapshot stays in step — the
+   * edit page re-seeds its concurrency baseline here. Deriving it in a separate
+   * effect would let the form correct to server truth while the baseline still
+   * held the cached copy, and that mismatch reads as a phantom conflict (#972).
+   */
+  onSeeded?: (serverTruth: boolean) => void;
   /**
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
@@ -280,6 +298,8 @@ export function PedidoForm({
   submitLabel = 'Salvar',
   liveEstado,
   ehSaida = true,
+  fromCache,
+  onSeeded,
   onSubmit,
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -308,6 +328,19 @@ export function PedidoForm({
   // screens get this from ObjectView; PedidoForm is a custom form, so wire the
   // shared guard directly.
   useUnsavedChangesGuard(form.formState.isDirty);
+
+  // Paint the first emission, then correct to server truth once — the same
+  // contract ObjectView follows, wired here because this form takes
+  // `defaultValues` at mount only. A dirty form is never repainted.
+  useServerTruthSeed({
+    id: pedidoId,
+    fromCache,
+    isDirty: form.formState.isDirty,
+    onSeed: (serverTruth) => {
+      form.reset(buildDefaults(defaultValues, pedidoId, ehSaida));
+      onSeeded?.(serverTruth);
+    },
+  });
 
   // Keep the form's estado in step with an external change (the pagamento
   // auto-reconcile flips it to pago/aguardando in Firestore). Skip when the user
