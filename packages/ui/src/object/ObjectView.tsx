@@ -43,6 +43,7 @@ import {
   saveRecord,
   type TransactionWrite,
 } from './saveRecord';
+import { useServerTruthSeed } from './useServerTruthSeed';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 
 export type { TransactionWrite };
@@ -430,48 +431,48 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // doc can still hold the pre-save value while the server has the new one. We
   // paint the first emission for instant feedback, then RE-SEED once the
   // authoritative `fromCache: false` snapshot arrives — but only while the form
-  // is pristine, so an in-progress edit is never clobbered. `seededId` tracks
-  // the last id painted from any source; `serverSeededId` the last id corrected
-  // from server truth, so the correction happens at most once per record.
-  const seededId = useRef<string | undefined>(undefined);
-  const serverSeededId = useRef<string | undefined>(undefined);
-  // The ADR 0011 tier-3 baseline handed to `saveRecord`: the record as the
-  // operator last saw it from SERVER TRUTH.
+  // is pristine, so an in-progress edit is never clobbered. The seeding logic
+  // (first paint vs. one-time server-truth correction, tracked per record id)
+  // now lives in `useServerTruthSeed`.
+  //
+  // `baseline` is the ADR 0011 tier-3 version handed to `saveRecord`: the record
+  // as the operator last saw it from SERVER TRUTH.
   //
   // ⚠️ It is deliberately NOT seeded from a cache paint. The IndexedDB snapshot
-  // right after an edit still holds the pre-save value, so a baseline taken
-  // from it differs from the server on exactly the fields just saved — the
-  // guard would then fire on every save and operators would learn to click
-  // through it. That is not hypothetical: it is the bug #791 fixed for
-  // `lastMarketplaceUpdate`. `fromCache === false` is the whole safeguard.
+  // right after an edit still holds the pre-save value, so a baseline taken from
+  // it differs from the server on exactly the fields just saved — the guard
+  // would fire on every save and operators would learn to click through it. That
+  // is not hypothetical: it is the bug #791 fixed for `lastMarketplaceUpdate`.
   const baseline = useRef<Record<string, unknown> | null>(null);
+  useServerTruthSeed({
+    id: docSnap.data?.id,
+    fromCache: docSnap.fromCache,
+    isDirty: form.formState.isDirty,
+    onSeed: (serverTruth) => {
+      form.reset({ ...emptyDefaults, ...(docSnap.data?.data as FieldValues) });
+      // Seeded HERE, in the same callback as the form — which is exactly what
+      // `useServerTruthSeed`'s contract requires, and for this reason: a form
+      // corrected to server truth while the baseline still held the cached copy
+      // would compare the operator's patch against a version nobody ever
+      // displayed. That mismatch is how the pedido editor turned its own
+      // trigger's write-back into a false conflict (#972).
+      //
+      // Only from server truth, and only alongside a re-seed — the hook already
+      // refuses to fire while the form is dirty, so a remote change arriving
+      // mid-edit can never quietly become the new baseline and swallow the
+      // conflict it should raise.
+      if (serverTruth) baseline.current = docSnap.data?.data as Record<string, unknown>;
+    },
+  });
+  // Create mode has no snapshot to seed from — reset to the page's defaults.
+  //
+  // Note the deliberate hole left by the above: a cache-first paint whose server
+  // correction arrives only after the operator has started typing leaves the
+  // baseline null, so that one save is unguarded. Fail-open matches the previous
+  // behaviour; guarding against a version we never showed them would raise a
+  // conflict they cannot act on.
   useEffect(() => {
-    if (docSnap.data) {
-      const { id, data } = docSnap.data;
-      const serverTruth = docSnap.fromCache === false;
-      const firstPaint = seededId.current !== id;
-      // A pristine cache paint gets corrected to server truth once; a dirty
-      // form keeps the user's edits (the server snapshot is ignored until the
-      // next fresh mount / id change).
-      const correctCachePaint =
-        serverTruth && serverSeededId.current !== id && !form.formState.isDirty;
-      if (firstPaint || correctCachePaint) {
-        form.reset({ ...emptyDefaults, ...(data as FieldValues) });
-        seededId.current = id;
-        if (serverTruth) serverSeededId.current = id;
-        // The baseline advances ONLY alongside a re-seed, and only from server
-        // truth. Advancing it on every server snapshot would be worse than
-        // useless: a remote change arriving while the operator types would
-        // quietly become the new baseline and the conflict it should raise
-        // would never be detected.
-        if (serverTruth) baseline.current = data as Record<string, unknown>;
-      }
-      // Note the deliberate hole: a cache-first paint whose server correction
-      // arrives after the operator has started typing leaves the baseline null,
-      // so that save is unguarded. Fail-open matches the previous behaviour;
-      // guarding against a version we never showed them would be a conflict
-      // they cannot act on.
-    } else if (!internalId) {
+    if (!docSnap.data && !internalId) {
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
       baseline.current = null;
     }

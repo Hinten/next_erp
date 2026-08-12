@@ -36,7 +36,7 @@ notification that processes cleanly writes **nothing** to Firestore. Do not
 
 | Layer | Path | Holds |
 | --- | --- | --- |
-| **Shared core** | `packages/data/src/admin/notifications/` (`@delfrance/data/admin/notifications`) | `defineNotificationPipeline` (the whole disposition matrix + sweep), `createNotificationStore` (the 4 writes), `asMillis`, the constants. Firestore imports are **type-only** — see the ⭐ trap. |
+| **Shared core** | `packages/data/src/admin/notifications/` (`@delfrance/data/admin/notifications`) | `defineNotificationPipeline` (the whole disposition matrix + sweep), `createNotificationStore` (the 4 writes), the receiver coercers `asInt`/`asMillis`, the constants. Firestore imports are **type-only** — see the ⭐ trap. |
 | **Resilience fields** | `packages/schemas/src/shared/notificationResilience.ts` | `notificationResilienceFields()` — the 4 local fields (`status`/`tentativas`/`erro`/`processedAt`) every channel schema spreads. |
 | **Channel schema** | `packages/schemas/src/notificac*.ts` | Wire fields + the spread block. Admin-only, **never** in `ALL_DOMAINS`. |
 | **Collection handle** | `packages/data/src/admin/collections/notificac*.ts` | A 4-line `defineAdminCollection`. |
@@ -217,6 +217,23 @@ unifying them needs a runtime `firebase-admin/functions` import.
    `parseNotificationBody`, a `process*` returning the channel's outcome union,
    then `defineNotificationPipeline({...})` and thin public wrappers. Build the
    pipeline **per call** so injectable deps stay per-call.
+
+   ⭐ **`parseNotificationBody` NORMALIZES, then `safeParse`s — it never
+   hand-builds the payload literal.** Coerce the named wire fields with the
+   shared `asInt`/`asMillis` and spread the rest, so the parse is *total* for
+   any body that clears the routing-field gate and the schema acts as the type
+   gate rather than the trust boundary (that is re-fetching the resource from
+   the provider). A hand-built literal enumerates keys, which silently strips
+   everything the provider added and makes the `.passthrough()` on both the
+   task and collection schemas dead for anything the receiver produced — the
+   dead-letter row goes lossy exactly when it is the only surviving evidence.
+   That was **#810** in Mercado Livre. Two traps it also covers: the payload
+   feeds `docIdOf`, so an id taken from the body is a Firestore **path** unless
+   you reject `/`, `.`, `..` and `__x__`; and the remainder is unauthenticated
+   JSON heading for a Cloud Tasks enqueue and a Firestore document, so bound it
+   (non-scalar → JSON text, reserved/empty field names dropped, byte budget) —
+   an `INVALID_ARGUMENT` there is not a `ZodError`, so the receiver rethrows it
+   as a 5xx and the provider disables the topic.
 5. **Receiver** — `apps/<canal>/app/api/webhooks/<canal>/route.ts`: verify the
    signature (read the raw body ONCE — a re-serialized JSON won't match the
    HMAC), parse, enqueue, ack 200. Catch enqueue failure → `persistNotificationFailure`

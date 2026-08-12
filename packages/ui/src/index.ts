@@ -62,4 +62,5 @@ export {
   type ResolvedStampFields,
   type StampFieldOverride,
 } from './object/resolveStampFields';
+export { useServerTruthSeed, type ServerTruthSeedArgs } from './object/useServerTruthSeed';
 export { useUnsavedChangesGuard } from './object/useUnsavedChangesGuard';
