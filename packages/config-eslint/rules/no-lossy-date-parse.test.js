@@ -56,6 +56,11 @@ ruleTester.run('no-lossy-date-parse', rule, {
       code: 'const d = new Date(flag ? a * 1000 : Date.now());',
       filename: SRC,
     },
+    {
+      name: 'a mixed ternary is NOT provably a string (only one branch is)',
+      code: "const d = new Date(flag ? 1700000000000 : '2026-01-01');",
+      filename: SRC,
+    },
     // Regression cases: both of these were flagged by the rule's FIRST draft,
     // which reported anything not provably numeric. They are lossless epoch→Date
     // conversions, and there are ~146 like them in the repo — the noise is why
@@ -158,6 +163,12 @@ ruleTester.run('no-lossy-date-parse', rule, {
     {
       name: 'Date(<string>) without new still parses a string',
       code: "const s = Date('2026-06-16T12:00:00Z');",
+      filename: SRC,
+      errors: [{ messageId: 'newDateString' }],
+    },
+    {
+      name: 'a ternary of two strings IS provably a string',
+      code: "const d = new Date(flag ? '2026-01-01' : '2026-02-01');",
       filename: SRC,
       errors: [{ messageId: 'newDateString' }],
     },

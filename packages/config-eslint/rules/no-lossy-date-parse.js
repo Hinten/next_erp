@@ -137,7 +137,12 @@ function isProvablyString(node) {
       return false;
     }
     case 'ConditionalExpression':
-      return isProvablyString(node.consequent) || isProvablyString(node.alternate);
+      // BOTH branches, not either: `flag ? 1700000000000 : '2026-01-01'` can be a
+      // number at runtime, so it is not PROVABLY a string and reporting it would
+      // be the false positive this rule was redesigned to avoid. Note the
+      // `+` case above is different and correctly uses `||` — `x + 'Z'` is a
+      // string whatever `x` is, because JS coerces the other operand.
+      return isProvablyString(node.consequent) && isProvablyString(node.alternate);
     default:
       return false;
   }
@@ -160,11 +165,11 @@ const rule = {
         'coerceToMicros() / coerceToMillis()) from @delfrance/core/datetime, which ' +
         "keep the provider's sub-millisecond digits and resolve offset-less input as UTC.",
       newDateString:
-        '`new Date(<string>)` truncates to milliseconds and resolves an offset-less ' +
-        'string in the ambient process timezone. Use parseIsoToMicros() / ' +
-        'parseIsoToMillis() from @delfrance/core/datetime. If the argument is already ' +
-        'a numeric epoch, use millisToDate() / microsToDate() (or make the numeric ' +
-        'intent explicit) so this is provably lossless.',
+        '`new Date(<string>)` / `Date(<string>)` truncates to milliseconds and ' +
+        'resolves an offset-less string in the ambient process timezone. Use ' +
+        'parseIsoToMicros() / parseIsoToMillis() from @delfrance/core/datetime. If ' +
+        'the argument is already a numeric epoch, use millisToDate() / microsToDate() ' +
+        '(or make the numeric intent explicit) so this is provably lossless.',
     },
   },
   create(context) {
