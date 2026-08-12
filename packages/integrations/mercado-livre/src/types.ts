@@ -908,19 +908,42 @@ export const sizeChartApiRowSchema = z
   .passthrough();
 
 /**
- * `POST /catalog/charts` / `PUT /catalog/charts/{id}` / row endpoints — the
+ * `POST /catalog/charts` / `GET|PUT /catalog/charts/{id}` / row endpoints — the
  * full chart the API echoes back (create AND row calls return the whole
  * chart; the legacy write-back reads `id`, `main_attribute_id` and the
  * per-index `rows[].id`).
+ *
+ * `chart_status` only appears while ML is processing a deletion request:
+ * `ACTIVE` = still linked to at least one listing (nothing was removed),
+ * `INACTIVE` = the chart is gone. Absent on a chart nobody asked to delete.
  */
 export const sizeChartApiSchema = z
   .object({
     id: z.union([z.string(), z.number()]),
     main_attribute_id: z.string().nullable().optional(),
+    names: z.record(z.string(), z.string()).nullable().optional(),
+    domain_id: z.string().nullable().optional(),
+    site_id: z.string().nullable().optional(),
+    measure_type: z.string().nullable().optional(),
+    chart_status: z.string().nullable().optional(),
+    attributes: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
     rows: z.array(sizeChartApiRowSchema).nullable().optional(),
   })
   .passthrough();
 export type MlSizeChartApi = z.infer<typeof sizeChartApiSchema>;
+
+/**
+ * `DELETE /catalog/charts/{id}` — the deletion REQUEST ack. ML answers 200 with
+ * an explanatory message and only then checks, asynchronously (up to 24h),
+ * whether the chart is still linked to a listing; the outcome is read back off
+ * `chart_status` via `getSizeChart`.
+ */
+export const sizeChartDeleteResponseSchema = z
+  .object({
+    message: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlSizeChartDeleteResponse = z.infer<typeof sizeChartDeleteResponseSchema>;
 
 /** `GET /catalog/charts/{site}/configurations/active_domains`. */
 export const activeChartDomainsSchema = z
