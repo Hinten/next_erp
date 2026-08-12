@@ -37,7 +37,6 @@ export default function NovoGrupoVariacaoPage() {
           ordem: 1,
           permiteFotos: false,
           variacoes: [],
-          timestamp: new Date().toISOString(),
         }}
         sections={GRUPO_SECTIONS}
         fields={grupoFields}

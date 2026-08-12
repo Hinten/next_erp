@@ -57,7 +57,13 @@ export {
 export { NFeXmlError, parse, serialize, serializeFragment, type XmlValue } from './xml';
 
 // Sanitization
-export { removerAcentos, removerCharRestrito, sanitizeNFeEmail, sanitizeNFeText } from './sanitize';
+export {
+  removerAcentos,
+  removerCharRestrito,
+  sanitizeNFeEmail,
+  sanitizeNFeText,
+  temTextoCorrompido,
+} from './sanitize';
 
 // State machine
 export {
@@ -69,6 +75,8 @@ export {
   RECONCILE_SWEEP_GRACE_MS,
   NFeConsumoIndevidoError,
   STATUS_BLOQUEADORES,
+  ESTADOS_FINAIS_NFE,
+  isEstadoFinalNFe,
   applyOutcome,
   assertNotConsumoIndevido,
   classifyCStat,
@@ -136,7 +144,14 @@ export {
 } from './generator';
 
 // `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
-export { buildNFeProc } from './nfeproc';
+export {
+  buildNFeProc,
+  buildNFeProcSafe,
+  compareDigest,
+  extractDigestValue,
+  normalizeDigVal,
+  type DigestComparison,
+} from './nfeproc';
 
 // Eventos (cancelamento + CC-e + EPEC) — builders for the RecepcaoEvento lote.
 export {

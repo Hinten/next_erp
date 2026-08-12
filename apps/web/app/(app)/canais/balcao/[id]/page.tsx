@@ -10,6 +10,7 @@ import { ObjectView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
 import { balcaoExcludedFields, balcaoFields } from '../_components/balcaoFieldOverrides';
 
 export default function BalcaoPage() {
@@ -28,9 +29,12 @@ export default function BalcaoPage() {
     <Stack>
       <Group justify="space-between" align="center">
         <Title order={2}>Balcão</Title>
-        <Anchor component={Link} href="/canais/balcao" size="sm">
-          ← Voltar à lista
-        </Anchor>
+        <Group gap="sm">
+          <RecalcularPrecosCanalAction integracaoId={params.id} />
+          <Anchor component={Link} href="/canais/balcao" size="sm">
+            ← Voltar à lista
+          </Anchor>
+        </Group>
       </Group>
 
       <ObjectView

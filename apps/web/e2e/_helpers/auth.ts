@@ -20,3 +20,20 @@ export async function loginAsSuperUser(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Entrar' }).click();
   await page.waitForURL('/inicio', { timeout: 15_000 });
 }
+
+/**
+ * Throws when the SU test credentials aren't configured. `_setup/global.ts`
+ * (Playwright's `globalSetup`) skips the SU login silently when they're
+ * missing, since it's shared infra for every project and most don't need the
+ * SU session at all. `configuracoes.spec.ts` is the one suite that does —
+ * calling this at the top of that suite turns a missing secret into a loud
+ * failure there instead of the suite silently skipping itself.
+ */
+export function requireSuAuthEnv(): void {
+  if (!E2E_SU_EMAIL || !E2E_SU_PASSWORD) {
+    throw new Error(
+      'E2E_SU_EMAIL/E2E_SU_PASSWORD are not configured — required for the ' +
+        'Configuracoes (User+Cargo CRUD) e2e suite. Configure these as repo secrets.',
+    );
+  }
+}

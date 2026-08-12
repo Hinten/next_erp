@@ -11,25 +11,35 @@ import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 // navigation; `searchParamsRef` lets a test seed the URL. The URL-sync effect
 // writes via `window.history.replaceState`, so cases that assert on it spy on
 // that directly rather than on the router.
-const { snapState, pushSpy, searchParamsRef, buildPipelineSpy, pipelineSupportedRef } = vi.hoisted(
-  () => ({
-    snapState: {
-      current: {
-        data: [
-          { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
-          { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
-        ],
-        loading: false,
-        error: undefined,
-      } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
-    },
-    pushSpy: vi.fn(),
-    searchParamsRef: { current: new URLSearchParams() },
-    buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
-    // Flip to false in a test to exercise the classic-query fallback path.
-    pipelineSupportedRef: { current: true },
-  }),
-);
+const {
+  snapState,
+  pushSpy,
+  searchParamsRef,
+  buildPipelineSpy,
+  pipelineSupportedRef,
+  whereOpSpy,
+  whereArrayContainsSpy,
+} = vi.hoisted(() => ({
+  snapState: {
+    current: {
+      data: [
+        { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+        { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+      ],
+      loading: false,
+      error: undefined,
+    } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
+  },
+  pushSpy: vi.fn(),
+  searchParamsRef: { current: new URLSearchParams() },
+  buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
+  // Flip to false in a test to exercise the classic-query fallback path.
+  pipelineSupportedRef: { current: true },
+  // Spied so the fallback tests can assert which constraint each
+  // extraFilters op maps to. Return values only matter as identities.
+  whereOpSpy: vi.fn(() => ({ __c: 'where' })),
+  whereArrayContainsSpy: vi.fn(() => ({ __c: 'whereArrayContains' })),
+}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -68,7 +78,8 @@ vi.mock('@delfrance/data', async () => {
     buildQuery: () => ({ __fakeQuery: true }),
     orderByField: () => ({ __c: 'orderBy' }),
     limit: () => ({ __c: 'limit' }),
-    whereOp: () => ({ __c: 'where' }),
+    whereOp: whereOpSpy,
+    whereArrayContains: whereArrayContainsSpy,
   };
 });
 
@@ -86,6 +97,7 @@ function fakeCollection(): CollectionHandle<typeof testSchema> {
     ref: () => ({}) as never,
     docRef: () => ({}) as never,
     converter: {} as never,
+    merge: () => Promise.resolve(),
   };
 }
 
@@ -274,6 +286,68 @@ describe('TableView', () => {
     expect(screen.getByRole('button', { name: 'Expandir ações' })).toBeTruthy();
   });
 
+  it('renderActionsPanelExtra renders inside the panel and follows the collapse state', () => {
+    const extra = vi.fn(({ collapsed }: { collapsed: boolean }) => (
+      <span>{collapsed ? 'compacto' : 'expandido'}</span>
+    ));
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        actionsPanel={{ width: 300 }}
+        renderActionsPanelExtra={extra}
+        actions={[{ id: 'del', label: 'Excluir', run: vi.fn() }]}
+      />,
+    );
+    const panel = screen.getByRole('complementary', { name: 'Ações' });
+    expect(within(panel).getByText('expandido')).toBeTruthy();
+    // Mantine rewrites a numeric `w` to rem and scales it: 300 / 16 = 18.75rem.
+    expect(getComputedStyle(panel).width).toContain('18.75rem');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recolher ações' }));
+    expect(screen.getByText('compacto')).toBeTruthy();
+  });
+
+  it('onSelectionChange reports the checked rows, and fires only when the id set changes', () => {
+    const onSelectionChange = vi.fn();
+    const { rerender } = wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        selectable
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    // One mount call with the empty selection.
+    expect(onSelectionChange).toHaveBeenCalledTimes(1);
+    expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar 1' }));
+    expect(onSelectionChange).toHaveBeenCalledTimes(2);
+    expect(onSelectionChange.mock.lastCall?.[0]).toMatchObject([{ id: '1' }]);
+
+    // A re-render with an unchanged selection must NOT re-fire: consumers set
+    // state from this callback, and `selectedRows` is re-derived every tick.
+    rerender(
+      <MantineProvider env="test">
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          selectable
+          onSelectionChange={onSelectionChange}
+        />
+      </MantineProvider>,
+    );
+    expect(onSelectionChange).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar 1' }));
+    expect(onSelectionChange).toHaveBeenCalledTimes(3);
+    expect(onSelectionChange).toHaveBeenLastCalledWith([]);
+  });
+
   it('drops selected ids that leave the row set (ghost selection)', () => {
     const { rerender } = wrap(
       <TableView
@@ -342,6 +416,128 @@ describe('TableView', () => {
     expect(button.hasAttribute('disabled')).toBe(false);
     fireEvent.click(button);
     expect(run).toHaveBeenCalled();
+  });
+
+  describe('extraFilters', () => {
+    it('appends extraFilters into the pipeline filter spec', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          extraFilters={[{ field: 'targetsChnfe', op: 'array-contains', value: 'k'.repeat(44) }]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: [{ field: 'targetsChnfe', op: 'array-contains', value: 'k'.repeat(44) }],
+        }),
+      );
+    });
+
+    it('AND-combines extraFilters with the user column filters (extra first)', () => {
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          extraFilters={[{ field: 'targetsChnfe', op: 'array-contains-any', value: ['a', 'b'] }]}
+        />,
+      );
+      // One filters array → buildPipeline AND-combines them in one where(and()).
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: [
+            { field: 'targetsChnfe', op: 'array-contains-any', value: ['a', 'b'] },
+            { field: 'nome', op: 'contains', value: 'ana' },
+          ],
+        }),
+      );
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('an empty-array value short-circuits: no query, empty state rendered', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          extraFilters={[{ field: 'targetsChnfe', op: 'array-contains-any', value: [] }]}
+        />,
+      );
+      expect(buildPipelineSpy).not.toHaveBeenCalled();
+      // The snapshot stub still carries 2 rows — they must not leak through.
+      expect(screen.getByText('Nenhum resultado.')).toBeTruthy();
+      expect(screen.queryByText('Alice')).toBeNull();
+    });
+
+    it('classic fallback maps array ops to whereArrayContains / whereOp', () => {
+      pipelineSupportedRef.current = false;
+      whereArrayContainsSpy.mockClear();
+      whereOpSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          extraFilters={[
+            { field: 'targetsChnfe', op: 'array-contains', value: 'X' },
+            { field: 'targetsChnfe', op: 'array-contains-any', value: ['a', 'b'] },
+          ]}
+        />,
+      );
+      expect(whereArrayContainsSpy).toHaveBeenCalledWith('targetsChnfe', 'X');
+      expect(whereOpSpy).toHaveBeenCalledWith('targetsChnfe', 'array-contains-any', ['a', 'b']);
+    });
+
+    it('an empty array on a non-array-contains-any op does NOT short-circuit', () => {
+      // The "no rows" shortcut is scoped to array-contains-any candidate
+      // lists; an empty array on eq must reach buildPipeline so its runtime
+      // guard surfaces the programmer error instead of an empty table.
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          extraFilters={[{ field: 'nome', op: 'eq', value: [] }]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: expect.arrayContaining([{ field: 'nome', op: 'eq', value: [] }]),
+        }),
+      );
+      expect(screen.queryByText('Nenhum resultado.')).toBeNull();
+    });
+
+    it('classic fallback throws on an array value for a scalar op', () => {
+      pipelineSupportedRef.current = false;
+      // React re-logs render-phase throws via console.error — silence it so
+      // the expected failure doesn't pollute the test output.
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(() =>
+          wrap(
+            <TableView
+              schema={testSchema}
+              collection={fakeCollection()}
+              db={{} as never}
+              extraFilters={[{ field: 'nome', op: 'eq', value: ['a'] }]}
+            />,
+          ),
+        ).toThrow(/received an array value/);
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
   });
 
   describe('meta.defaultQuery', () => {

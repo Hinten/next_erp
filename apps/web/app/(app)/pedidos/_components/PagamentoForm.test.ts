@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { FORMA_PAGAMENTO, STATUS_PAGAMENTO, type Pagamento } from '@delfrance/schemas';
 import {
   EMPTY_PAGAMENTO_FORM,
+  buildChequeSplitPagamentos,
   formFromPagamento,
+  isChequeSplit,
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
   remainingToPay,
@@ -50,6 +52,31 @@ describe('validatePagamentoForm', () => {
     ).toBeNull();
     // Other formas don't need a descrição.
     expect(validatePagamentoForm(form({ valor: 10, descricao: '' }))).toBeNull();
+  });
+
+  it('requires a valid intervalo count for a split cheque (parcelas > 1)', () => {
+    const cheque = String(FORMA_PAGAMENTO.cheque);
+    expect(
+      validatePagamentoForm(
+        form({ valor: 10, forma: cheque, parcelas: 3, quantidadeIntervalo: 0 }),
+      ),
+    ).toMatch(/intervalo/i);
+    expect(
+      validatePagamentoForm(
+        form({ valor: 10, forma: cheque, parcelas: 3, quantidadeIntervalo: 1.5 }),
+      ),
+    ).toMatch(/intervalo/i);
+    expect(
+      validatePagamentoForm(
+        form({ valor: 10, forma: cheque, parcelas: 3, quantidadeIntervalo: 15 }),
+      ),
+    ).toBeNull();
+    // A single (non-split) cheque doesn't need a valid intervalo.
+    expect(
+      validatePagamentoForm(
+        form({ valor: 10, forma: cheque, parcelas: 1, quantidadeIntervalo: 0 }),
+      ),
+    ).toBeNull();
   });
 });
 
@@ -143,13 +170,20 @@ describe('pagamentoDataFromForm', () => {
 });
 
 describe('pagamentoDataFromForm — card / cheque detail', () => {
-  it('builds the embedded cartao map for a card forma and preserves catalog fields', () => {
-    const base = { cartao: { tarifa: 2.5, cnpj_instituicao: '123' } } as unknown as Pagamento;
+  it('builds the embedded cartao map from the form, including the catalog fields', () => {
+    // Catalog fields (tarifa/cnpj_instituicao/tarifaFixa/prazoRecebimento) come
+    // from the form — either preserved by formFromPagamento from the existing
+    // doc, or freshly resolved by a bandeirasCartao pick (PagamentosSection).
+    const base = { cartao: { numeroCartao: 'stale' } } as unknown as Pagamento;
     const data = pagamentoDataFromForm(
       form({
         forma: String(FORMA_PAGAMENTO.cartao_credito),
         valor: 10,
         bandeira: '01',
+        cnpjInstituicao: '123',
+        tarifa: 2.5,
+        tarifaFixa: 1.1,
+        prazoRecebimento: 30,
         numeroCartao: ' 4111 ',
         cAut: 'AUT9',
       }),
@@ -157,8 +191,10 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
     );
     expect(data.cartao).toEqual({
       tpIntegra: '2',
-      tarifa: 2.5, // preserved from the bandeira catalog
+      tarifa: 2.5,
       cnpj_instituicao: '123',
+      tarifaFixa: 1.1,
+      prazoRecebimento: 30,
       bandeira: '01',
       numeroCartao: '4111',
       cAut: 'AUT9',
@@ -189,7 +225,7 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
       numero: 789,
       titular: 'Fulano',
       cpf_cnpj: '12345678900',
-      telefone: '11999999999',
+      telefone: '5511999999999',
       bomPara: 1234,
     });
     expect(data.cartao).toBeNull();
@@ -216,6 +252,8 @@ describe('pagamentoFieldVisibility — card / cheque groups', () => {
     const cheque = pagamentoFieldVisibility(String(FORMA_PAGAMENTO.cheque));
     expect(cheque.cheque).toBe(true);
     expect(cheque.vencimento).toBe(false);
+    // Cheque also shows parcelas — it drives the parcela-split add flow.
+    expect(cheque.parcelas).toBe(true);
     expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.dinheiro)).cheque).toBe(false);
   });
 });
@@ -244,7 +282,12 @@ describe('formFromPagamento', () => {
       duplicata: true,
       nFat: 'NF-1',
       // no embedded cartao/cheque on the doc → empty detail fields
+      bandeiraCartaoRef: null,
       bandeira: '',
+      cnpjInstituicao: null,
+      tarifa: null,
+      tarifaFixa: null,
+      prazoRecebimento: null,
       numeroCartao: '',
       cAut: '',
       banco: '',
@@ -255,22 +298,38 @@ describe('formFromPagamento', () => {
       cpfCnpj: '',
       telefone: '',
       bomPara: null,
+      intervalo: 'dias',
+      quantidadeIntervalo: 1,
     });
   });
 
-  it('parses the embedded cartao + cheque maps into form fields', () => {
+  it('parses the embedded cartao + cheque maps into form fields, never a bandeiraCartaoRef', () => {
     const card = {
       forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
       valor: 10,
       parcelas: 1,
       aVista: true,
       duplicata: false,
-      cartao: { tpIntegra: '2', bandeira: '06', numeroCartao: '4111', cAut: 'AUT1', tarifa: 1.5 },
+      cartao: {
+        tpIntegra: '2',
+        bandeira: '06',
+        numeroCartao: '4111',
+        cAut: 'AUT1',
+        tarifa: 1.5,
+        tarifaFixa: 0.4,
+        cnpj_instituicao: '12345678000199',
+        prazoRecebimento: 15,
+      },
     } as unknown as Pagamento;
     expect(formFromPagamento(card)).toMatchObject({
+      bandeiraCartaoRef: null,
       bandeira: '06',
       numeroCartao: '4111',
       cAut: 'AUT1',
+      tarifa: 1.5,
+      tarifaFixa: 0.4,
+      cnpjInstituicao: '12345678000199',
+      prazoRecebimento: 15,
     });
 
     const cheque = {
@@ -333,6 +392,96 @@ describe('pagamentoFieldVisibility', () => {
   });
 });
 
+describe('isChequeSplit', () => {
+  const cheque = String(FORMA_PAGAMENTO.cheque);
+
+  it('is true only when ADDING a cheque with more than one parcela', () => {
+    expect(isChequeSplit(form({ forma: cheque, parcelas: 3 }), null)).toBe(true);
+  });
+
+  it('is false when editing an existing pagamento, even with parcelas > 1', () => {
+    expect(isChequeSplit(form({ forma: cheque, parcelas: 3 }), 'pg1')).toBe(false);
+  });
+
+  it('is false for a single (non-split) cheque', () => {
+    expect(isChequeSplit(form({ forma: cheque, parcelas: 1 }), null)).toBe(false);
+  });
+
+  it('is false for a non-cheque forma, even with parcelas > 1', () => {
+    expect(
+      isChequeSplit(form({ forma: String(FORMA_PAGAMENTO.cartao_credito), parcelas: 3 }), null),
+    ).toBe(false);
+  });
+});
+
+describe('buildChequeSplitPagamentos', () => {
+  it('generates one pagamento per parcela, splitting the valor and spacing bomPara by dias', () => {
+    const DAY_US = 24 * 60 * 60 * 1_000_000;
+    const rows = buildChequeSplitPagamentos(
+      form({
+        forma: String(FORMA_PAGAMENTO.cheque),
+        valor: 300,
+        parcelas: 3,
+        status: String(STATUS_PAGAMENTO.pendente),
+        aVista: true,
+        intervalo: 'dias',
+        quantidadeIntervalo: 10,
+        bomPara: 1000,
+        banco: 'BB',
+        numeroCheque: '42',
+      }),
+      null,
+    );
+    expect(rows).toHaveLength(3);
+    for (const [i, row] of rows.entries()) {
+      expect(row).toMatchObject({
+        parcelas: 1,
+        valor: 100,
+        aVista: false,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+      });
+      expect((row.cheque as { bomPara: number }).bomPara).toBe(1000 + DAY_US * 10 * i);
+      expect((row.cheque as { banco: string }).banco).toBe('BB');
+      expect((row.cheque as { numero: number }).numero).toBe(42);
+    }
+  });
+
+  it('spaces installments by 30-day months when intervalo is "meses" (no calendar-month math)', () => {
+    const DAY_US = 24 * 60 * 60 * 1_000_000;
+    const rows = buildChequeSplitPagamentos(
+      form({
+        forma: String(FORMA_PAGAMENTO.cheque),
+        valor: 100,
+        parcelas: 2,
+        intervalo: 'meses',
+        quantidadeIntervalo: 1,
+        bomPara: 0,
+      }),
+      null,
+    );
+    expect((rows[0]!.cheque as { bomPara: number }).bomPara).toBe(0);
+    expect((rows[1]!.cheque as { bomPara: number }).bomPara).toBe(DAY_US * 30);
+  });
+
+  it('leaves bomPara null on every row when no "bom para" was typed, instead of anchoring to the epoch', () => {
+    const rows = buildChequeSplitPagamentos(
+      form({
+        forma: String(FORMA_PAGAMENTO.cheque),
+        valor: 100,
+        parcelas: 3,
+        intervalo: 'dias',
+        quantidadeIntervalo: 10,
+        bomPara: null,
+      }),
+      null,
+    );
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect((row.cheque as { bomPara: number | null }).bomPara).toBeNull();
+    }
+  });
+});
+
 describe('remainingToPay', () => {
   it('subtracts the other non-cancelled payments from the total', () => {
     const pagamentos = [
@@ -378,8 +527,8 @@ describe('sumPagamentosPagos (footer Vlr. Pago / Troco)', () => {
     expect(sumPagamentosPagos([])).toBe(0);
     expect(
       sumPagamentosPagos([
-        { id: 'a', valor: 10.005, status_pagamento: STATUS_PAGAMENTO.aprovado },
-        { id: 'b', valor: 0.005, status_pagamento: null },
+        { valor: 10.005, status_pagamento: STATUS_PAGAMENTO.aprovado },
+        { valor: 0.005, status_pagamento: null },
       ]),
     ).toBe(10.01);
   });

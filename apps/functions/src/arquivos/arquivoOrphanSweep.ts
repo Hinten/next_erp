@@ -1,17 +1,17 @@
-import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
+import { FieldPath, type DocumentReference, type Firestore } from 'firebase-admin/firestore';
 import type { Storage } from 'firebase-admin/storage';
 import { getStorage } from 'firebase-admin/storage';
-// Pipeline expression builders live in the `/pipelines` subpath (admin
-// `@google-cloud/firestore` v8). Namespace import — the module is `export =`d.
-import * as pipelines from '@google-cloud/firestore/pipelines';
 import { logger } from 'firebase-functions';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import {
   arquivoCollection,
+  arquivoOrphanSweepStateCollection,
   produtoCollection,
   tabelaDeMedidasCollection,
 } from '@delfrance/data/admin/collections';
+import { coerceToMicros } from '@delfrance/core/datetime';
 import {
+  ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
   ARQUIVOS_COLLECTION,
   type MediaOwnerCollection,
   nowMicros,
@@ -19,18 +19,13 @@ import {
 } from '@delfrance/schemas';
 
 import { getAdminApp, getDb } from '../lib/admin';
+import { isGrpcLikeError } from '../lib/grpcErrors';
 
 type Bucket = ReturnType<Storage['bucket']>;
 
 // Bound each pass so neither can blow the function budget; the every-48h schedule
 // drains a backlog over several runs.
 const BATCH_LIMIT = 100;
-
-// Matches an `Arquivo.filepath` (a DIRECTORY, no filename) for OWNER media —
-// `produtos/<id>/originals|videos|anexos` AND `tabMedi/<id>/originals|…`.
-// Excludes derivatives (cascade-managed) and generic `media/`. Anchored → full
-// match.
-const OWNED_MEDIA_DIR_REGEX = '^(produtos|tabMedi)/[^/]+/(originals|videos|anexos)$';
 
 // Admin handles keyed by media-owner collection — the sweep/reaper read a
 // candidate's owner doc to see which arquivos it still references.
@@ -114,6 +109,7 @@ export async function sweepPhantomDocs(db: Firestore, bucket: Bucket): Promise<n
       await doc.ref.delete();
       deleted += 1;
     } catch (err) {
+      if (!isGrpcLikeError(err)) throw err;
       failed += 1;
       logger.error(`sweepPhantomDocs: ${doc.id} failed`, err);
     }
@@ -176,15 +172,19 @@ export function resolveReferencedArquivoRefs(
   return resolveReferencedRefs(db, 'produtos', produtoIds);
 }
 
-/** A product photo/video arquivo old enough to sweep, with its deletable ref. */
-interface UnreferencedCandidate {
+/** One raw `arquivos` doc read during a round-robin page scan (pre age/scope filter). */
+interface ArquivoPageRow {
   ref: DocumentReference;
   id: string;
   filepath: string | null;
+  criadoEm: number | null;
 }
 
-/** Fetches the candidate batch (oldest product photos/videos past the grace window). */
-type FetchCandidates = (db: Firestore, cutoffMicros: number) => Promise<UnreferencedCandidate[]>;
+/**
+ * Fetches the next `BATCH_LIMIT`-sized page of `arquivos`, ordered by document
+ * key, starting right after `lastKey` (`null` → from the beginning).
+ */
+type FetchArquivoPage = (db: Firestore, lastKey: string | null) => Promise<ArquivoPageRow[]>;
 
 /** Resolves the `arquivos/<id>` refs a set of owner docs currently uses. */
 type ResolveReferenced = (
@@ -193,41 +193,35 @@ type ResolveReferenced = (
 ) => Promise<ReadonlySet<string>>;
 
 /**
- * Default candidate fetch: an admin **pipeline** that scopes server-side to
- * product photos + videos + anexos (regex on `filepath`) past the grace window,
- * oldest first. The regex filter (and `regexContains`) is a pipeline-only primitive, so
- * this is **not** emulator-runnable — it is validated live and {@link
- * sweepUnreferencedArquivos} takes it as a seam the emulator test overrides. The
- * `criadoEm` range + sort needs the `arquivos(criadoEm ASC)` index.
+ * Default page fetch: a plain **classic** query ordered by
+ * `FieldPath.documentId()` — Firestore's always-available native ordering, no
+ * declared index needed — paginated with `startAfter(lastKey)`. Unlike the old
+ * `criadoEm`-oldest-first scan, this is **not** scoped server-side to owner
+ * media or the grace window: {@link sweepUnreferencedArquivos} applies both
+ * filters to the fetched page, in code, the same way it already re-verifies
+ * owner references. No pipeline involved, so this runs in the emulator too.
+ *
+ * `criadoEm` is read raw (no `arquivoCollection.parseRead`, which would
+ * validate the WHOLE doc for a field the sweep only needs to compare) but
+ * still runs through the schema's own tolerant `coerceToMicros` — the same
+ * coercion `microsSinceEpoch()` applies on a normal read — so a legacy ms
+ * number / ISO string / `Date` still resolves to a real µs value instead of
+ * being permanently treated as "unknown age, never sweep".
  */
-async function fetchUnreferencedCandidates(
-  db: Firestore,
-  cutoffMicros: number,
-): Promise<UnreferencedCandidate[]> {
-  const snap = await db
-    .pipeline()
-    .collection(ARQUIVOS_COLLECTION)
-    .where(
-      pipelines.and(
-        pipelines.lessThan(pipelines.field('criadoEm'), cutoffMicros),
-        pipelines.regexContains('filepath', OWNED_MEDIA_DIR_REGEX),
-      ),
-    )
-    .sort(pipelines.ascending(pipelines.field('criadoEm')))
-    .limit(BATCH_LIMIT)
-    .execute();
-
-  const out: UnreferencedCandidate[] = [];
-  for (const row of snap.results) {
-    if (!row.ref) continue; // no `select` → ref is present; guard the optional type
-    const filepath = (row.data() as { filepath?: unknown } | undefined)?.filepath;
-    out.push({
-      ref: row.ref,
-      id: row.ref.id,
+async function fetchArquivoPage(db: Firestore, lastKey: string | null): Promise<ArquivoPageRow[]> {
+  let query = arquivoCollection.ref(db, {}).orderBy(FieldPath.documentId()).limit(BATCH_LIMIT);
+  if (lastKey !== null) query = query.startAfter(lastKey);
+  const snap = await query.get();
+  return snap.docs.map((doc) => {
+    const data = doc.data();
+    const filepath = data.filepath as string | null | undefined;
+    return {
+      ref: doc.ref,
+      id: doc.id,
       filepath: typeof filepath === 'string' ? filepath : null,
-    });
-  }
-  return out;
+      criadoEm: coerceToMicros(data.criadoEm),
+    };
+  });
 }
 
 /**
@@ -237,34 +231,53 @@ async function fetchUnreferencedCandidates(
  * deletes the arquivo doc), or a produto deleted entirely. Deleting the doc lets
  * `onArquivoDeleted` free the object + cascade any derivatives.
  *
- * Candidates come from {@link fetchUnreferencedCandidates} (a regex pipeline,
- * server-side scoped to `produtos/<id>/originals|videos|anexos`); each owning produto is
- * read directly (see {@link resolveReferencedArquivoRefs}) — no full-collection
- * scan. Both seams (`fetchCandidates`, `resolveReferenced`) default to the real
- * implementations and are overridden by the emulator suite, which can't run the
- * pipeline. The grace window protects an arquivo uploaded mid-produto-creation
- * (referenced only once the produto is saved).
+ * **Round-robin paging (#234).** The old oldest-`criadoEm`-first scan always
+ * re-read the same head of the collection, so once the catalog accumulated more
+ * than `BATCH_LIMIT` long-lived REFERENCED photos older than a given orphan,
+ * that orphan never entered the scan window again — a liveness gap. This now
+ * pages `arquivos` by **document key** via {@link fetchArquivoPage} (no
+ * server-side age/ownership filter) and persists how far it got in
+ * `arquivoOrphanSweepStateCollection` (doc {@link ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID}):
+ * the next tick's page starts right after it. A page shorter than
+ * `BATCH_LIMIT` means the scan reached the end of the collection in key order,
+ * so the cursor wraps back to `null` — guaranteeing every arquivo is examined
+ * within `ceil(total / BATCH_LIMIT)` ticks regardless of orphan density. Age
+ * (grace window) and ownership (`parseOwnedMediaDir`) scoping now happen on
+ * the fetched page, in code — same treatment the owner-reference re-check
+ * already got. Each owning produto/tabMedi is then read directly (see {@link
+ * resolveReferencedArquivoRefs}) — no full-collection scan there either. Both
+ * seams (`fetchPage`, `resolveReferenced`) default to the real
+ * implementations; the emulator suite can override either, though neither
+ * needs a pipeline anymore.
  */
 export async function sweepUnreferencedArquivos(
   db: Firestore,
   bucket: Bucket,
   // `bucket` is unused (object cleanup is onArquivoDeleted's job) but kept for
   // signature parity with sweepPhantomDocs and the reconcile call site.
-  fetchCandidates: FetchCandidates = fetchUnreferencedCandidates,
+  fetchPage: FetchArquivoPage = fetchArquivoPage,
   resolveReferenced: ResolveReferenced = (coll, ids) => resolveReferencedRefs(db, coll, ids),
 ): Promise<number> {
   const cutoff = nowMicros() - orphanGraceMicros();
-  const candidates = await fetchCandidates(db, cutoff);
+  const cursorSnap = await arquivoOrphanSweepStateCollection
+    .docRef(db, {}, ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID)
+    .get();
+  const lastKey = cursorSnap.exists
+    ? ((cursorSnap.data()?.lastKey as string | null | undefined) ?? null)
+    : null;
 
-  // Derive each candidate's owner from its filepath (already scoped to
-  // originals|videos|anexos by the fetch); group distinct ids per owner
-  // collection for one batched lookup each.
+  const page = await fetchPage(db, lastKey);
+  const reachedEnd = page.length < BATCH_LIMIT;
+
+  // Derive each candidate's owner from its filepath; group distinct ids per
+  // owner collection for one batched lookup each.
   const items: { ref: DocumentReference; refPath: string }[] = [];
   const idsByOwner = new Map<MediaOwnerCollection, Set<string>>();
-  for (const c of candidates) {
-    const parsed = parseOwnedMediaDir(c.filepath);
-    if (!parsed) continue; // defensive — the fetch already scopes to owner media
-    items.push({ ref: c.ref, refPath: `${ARQUIVOS_COLLECTION}/${c.id}` });
+  for (const row of page) {
+    if (row.criadoEm === null || row.criadoEm >= cutoff) continue; // too young (or unknown age) — never sweep
+    const parsed = parseOwnedMediaDir(row.filepath);
+    if (!parsed) continue; // not owner media (derivative, generic media/, unknown root)
+    items.push({ ref: row.ref, refPath: `${ARQUIVOS_COLLECTION}/${row.id}` });
     let set = idsByOwner.get(parsed.ownerCollection);
     if (!set) {
       set = new Set();
@@ -282,7 +295,6 @@ export async function sweepUnreferencedArquivos(
   let kept = 0;
   let failed = 0;
   for (const { ref, refPath } of items) {
-    if (deleted >= BATCH_LIMIT) break;
     try {
       if (referencedRefs.has(refPath)) {
         kept += 1;
@@ -293,12 +305,20 @@ export async function sweepUnreferencedArquivos(
       await ref.delete();
       deleted += 1;
     } catch (err) {
+      if (!isGrpcLikeError(err)) throw err;
       failed += 1;
       logger.error(`sweepUnreferencedArquivos: ${ref.id} failed`, err);
     }
   }
+
+  const nextKey = reachedEnd ? null : (page[page.length - 1]?.id ?? null);
+  await arquivoOrphanSweepStateCollection.merge(db, {}, ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID, {
+    lastKey: nextKey,
+    updatedAt: nowMicros(),
+  });
+
   logger.info(
-    `sweepUnreferencedArquivos: ${candidates.length} candidates, ${deleted} deleted, ${kept} kept, ${failed} failed`,
+    `sweepUnreferencedArquivos: ${page.length} scanned, ${items.length} candidates, ${deleted} deleted, ${kept} kept, ${failed} failed, cursor ${lastKey ?? '(start)'} -> ${nextKey ?? '(wrapped)'}`,
   );
   return deleted;
 }
@@ -388,6 +408,7 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
       await ref.delete();
       deleted += 1;
     } catch (err) {
+      if (!isGrpcLikeError(err)) throw err;
       failed += 1;
       logger.error(`sweepMarkedForDeletion: ${ref.id} failed`, err);
     }

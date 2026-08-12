@@ -46,7 +46,10 @@ const CLIENTE: Cliente = {
   idEstrangeiro: null,
   ie: '222222222',
   imun: null,
-  isUF: null,
+  // Present so the signed-XSD round-trips below prove <ISUF> is accepted in
+  // its XSD slot (indIEDest → IE → ISUF → IM), not just that it carries the
+  // right value — see fidelity.test.ts for the ordering assertion.
+  isUF: '123456789',
   email: null,
   telefone: null,
   observacoesInternas: null,
@@ -335,6 +338,28 @@ describe('generateNFe', () => {
         /44 dígitos/,
       );
     });
+  });
+
+  describe('cliente.ie sentinels reach neither the XML nor SEFAZ', () => {
+    // `cliente.ie` is free text carrying the IE_SENTINELA tokens. The generator
+    // used to emit it verbatim, so `<IE>Não contribuinte</IE>` reached the
+    // SIGNED XML — the XSD's TIeDestNaoIsento is `[0-9]{2,14}`, so the note was
+    // malformed before SEFAZ ever saw it. Signed end-to-end because the XSD
+    // rejects an unsigned <NFe> outright.
+    it.each(['Não contribuinte', 'NAO CONTRIBUINTE', 'ISENTO', '110.042.490.114', null])(
+      'a signed NF-e for a cliente with ie=%j passes the NFe XSD',
+      async (ie) => {
+        const out = generateNFe({
+          ...BASE_INPUT,
+          // `cnae: null` avoids the unrelated FILIAL-fixture emit-sequence
+          // quirk (see the contingência block).
+          filial: { ...FILIAL, cnae: null },
+          cliente: { ...CLIENTE, ie },
+        });
+        const signed = signNFe(out.nfeXml, fixtureCertificate());
+        await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+      },
+    );
   });
 });
 

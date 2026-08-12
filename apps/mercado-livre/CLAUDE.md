@@ -16,8 +16,36 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   status (`/users/me` identity, or `connected: false` when the credential is dead).
 - `app/api/oauth/mercado-livre/callback` — **#291**: public browser redirect target;
   the signed `state` is the only trust anchor → verify → exchange code → persist.
-- `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (unauthenticated
-  `topic`+`resource` callbacks — ML does NOT HMAC-sign; contrast Shopee); acks 200 fast.
+- `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (`topic`+`resource`
+  callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues onto the
+  `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
+  write on the happy path — see `lib/marketplace/mlTasks.ts` + `functions/DEPLOY.md`).
+- `lib/marketplace/webhookOrigin.ts` — **#811**: the receiver's only inbound origin check.
+  There is no signature to verify (confirmed against the 03/08/2026 Notificações reference:
+  no `x-signature`, no manifest, no shared secret — the `ts=…,v1=…` scheme people find is
+  **Mercado Pago**), so this is an `application_id` comparison against `MERCADO_LIVRE_CLIENT_ID`
+  (foreign ⇒ 403 before any enqueue or write) plus `logWebhookHeaders`, a self-silencing
+  header-name inventory that settles the signature question empirically during the migration
+  window. It fails OPEN when unconfigured or when `application_id` is absent — a misconfigured
+  backend must not be able to stall the stream, since ML disables a topic after ~1h of non-200.
+  ML's published notification source IPs were considered and **declined** (an undocumented
+  rotation would reject every genuine notification). Follow-up if the logs show no signature
+  header: a secret path segment on the registered callback URL.
+- `lib/marketplace/notificacao.ts` — this channel's webhook adapter: `parseNotificationBody`,
+  the dispatch-by-topic `processNotificationPayload`, and a `defineNotificationPipeline({...})`
+  binding. The resilience behaviour (retry disposition, failures-only persistence, the
+  durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications` — see the
+  `webhook-notifications` skill. This channel is the one that needs a PHASE-aware
+  `toDisposition` (an unparseable `resource` drops in the task but parks in the sweep).
+  It is also the channel that motivated the **DEFERRED lane** (#808): a notification whose
+  seller has not connected their account is `defer`, not `fail`, so it leaves the hourly pool
+  entirely, is re-driven once a DAY for `MAX_TENTATIVAS_DEFERRED` days, and is pulled back into
+  the hot lane by `redriveDeferredForUserId` the moment `onIntegracaoMercadoLivreChanged` sees
+  that seller's `user_id` land on an active integração. As `fail` it parked terminally ~6h in,
+  so a seller connecting the next business day lost the whole backlog. ⚠️ The re-drive query
+  needs the `(status, user_id)` composite index — `notificationGuardrails.test.ts` guard C does
+  NOT cover it (it only checks `(status, processedAt)`); the assertion in
+  `notificacao.test.ts` is its only cover.
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
@@ -28,22 +56,47 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
 
+## Stock sweep tiers — read ADR 0014 first
+
+The stock sweep (`lib/marketplace/bulkEstoquePlan.ts` + `estoqueSweep.ts`) runs three
+tiers — a 15-minute incremental, a 02:00 daily and a monthly force-all — and it
+**deliberately under-sends**. A kit whose component moved but which did not itself
+sell is not a candidate on the first two tiers; the monthly pass corrects it.
+
+That is not an oversight. The catalogue is mostly printed t-shirts modelled as a
+kit of `{blank shirt, print}`, and **thousands of kits share the same two
+components**, so propagating a component movement to the kits containing it costs
+~2000 writes per sale — built, measured, rejected. Only per-order-line work is
+affordable, which is why `sincronizarEstoquePedido` stamps `ultimaModificacao`
+solely on kits named directly on a pedido line.
+
+`apps/docs` → **ADR 0014, "Kit stock propagation and the tiered stock sweep"**,
+carries the full arithmetic, the tier table, the `min(anterior, atual)` guard and
+the rejected alternatives. Check any change in this area against it.
+
 ## Status
 
 OAuth connect is **live**: code exchange + persistence (tokenDuravel) + the
 concurrency-safe refresh + the conta status route all work; apps/web's
-`/canais/mercado-livre` UI drives them. The webhook receiver acks but does not
-process yet, and the nested functions are skeletons — those land with the
-import/order milestones of the ML port plan.
+`/canais/mercado-livre` UI drives them. The webhook receiver enqueues onto the
+`processMercadoLivreNotification` Cloud Tasks queue (Step 6 resilience
+foundation) + an `onSchedule` reprocess sweep; the per-topic handlers (order /
+payment / shipment / stock / price / claim) are no-ops until their import/order
+milestones of the ML port plan.
 
 ## Env
 
-See `.env.example` + `apphosting.yaml`. App-wide ML app credentials
+See the repo-root `.env.example` (Mercado Livre section; the OAuth client SECRET and
+the state HMAC key are in `.env.secrets.example` — one root template set is the
+repo convention, #730) + `apphosting.yaml`. App-wide ML app credentials
 (`MERCADO_LIVRE_CLIENT_ID/SECRET`, `..._STATE_SECRET`) live in env / Secret
-Manager — one registered ML app serves every connected account; the per-account
+Manager — one registered ML app serves every connected account (so
+`MERCADO_LIVRE_CLIENT_ID` is also the `application_id` every notification carries,
+which is what the webhook origin check compares against). The optional
+`MERCADO_LIVRE_WEBHOOK_LOG_HEADERS` is a plain env var, not a secret. The per-account
 OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
 (shared with the Flutter app during the dual-run migration; the move to the
 encrypted `credenciais` store is a tracked post-migration follow-up).
 
 Deploy of the App Hosting backend + the functions codebase is **manual and
-coordinated** (CLAUDE.md critical rule #1). Functions deploy: `functions/DEPLOY.md`.
+coordinated** — see root `CLAUDE.md`, Critical rules. Functions deploy: `functions/DEPLOY.md`.

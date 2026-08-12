@@ -91,6 +91,11 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
     hint: 'Alimenta o recálculo de preço pelas fórmulas da lista. Para kits, é calculado automaticamente a partir dos componentes na aba Kit.',
     section: 'Preço e custo',
   },
+  propagatePriceToChildren: {
+    label: 'Propagar preço para as variações',
+    hint: 'quando desligado, cada variação mantém o seu próprio preço',
+    section: 'Preço e custo',
+  },
   // `precos` gets its renderInput (PrecoCustoManager) on each page — it
   // needs the page's listas snapshot and produtoId.
 
@@ -145,6 +150,9 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'fotosArquivosIds',
   'paiId',
   'ordem',
+  // System stamps — written by `saveRecord` / ObjectView, never form inputs.
+  'timestamp',
+  'ultimaModificacao',
   // `id` is only a cross-document validation context (the produto doc id), never
   // rendered. (`extraData` → Descrição tab, `estoques` → Estoque tab, `impostos`
   // → Impostos tab.)
@@ -157,6 +165,8 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
  * freight quoting works out of the box on a fresh produto. The boolean flags —
  * including `publicado` — fall to `false` via ObjectView's `buildEmptyDefaults`,
  * so a new produto starts as a DRAFT, matching Flutter (`this.publicado=false`).
+ * `propagatePriceToChildren` defaults to `true` to match the schema default and
+ * legacy Flutter behavior where parent price changes cascade to variations.
  */
 export const PRODUTO_CREATE_DEFAULTS: Partial<Produto> = {
   pesoLiquidoKg: 0.9,
@@ -165,4 +175,5 @@ export const PRODUTO_CREATE_DEFAULTS: Partial<Produto> = {
   larguraCm: 10,
   profundidadeCm: 10,
   crossdocking: 0,
+  propagatePriceToChildren: true,
 };

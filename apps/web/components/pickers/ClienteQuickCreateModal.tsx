@@ -27,6 +27,7 @@ import { FirebaseError } from 'firebase/app';
 import { z, ZodError } from 'zod';
 import { PERM } from '@delfrance/auth';
 import {
+  TIPO_CLIENTE,
   type Endereco,
   TIPO_CLIENTE_LABELS,
   clienteSchema,
@@ -35,8 +36,7 @@ import {
 } from '@delfrance/schemas';
 import { saveRecord } from '@delfrance/ui';
 import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
-import { nowMillis } from '@delfrance/core/datetime';
-import { normalizeTelefone } from '@delfrance/core/phone';
+import { formatTelefone, normalizeTelefone } from '@delfrance/core/phone';
 import { CpfCnpjTextInput } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
 import { EnderecoFormModal } from '@/components/pickers/EnderecoFormModal';
@@ -96,8 +96,8 @@ const TIPO_OPTIONS = tipoClienteSchema.options.map((value) => ({
 function toDedupInput(v: QuickCreateOutput): ClienteDedupInput {
   return {
     nome: v.nome ?? '',
-    cpf_cnpj: (v.tipo === '2' ? null : v.cpf_cnpj) ?? '',
-    idEstrangeiro: (v.tipo === '2' ? v.idEstrangeiro : null) ?? '',
+    cpf_cnpj: (v.tipo === TIPO_CLIENTE.estrangeiro ? null : v.cpf_cnpj) ?? '',
+    idEstrangeiro: (v.tipo === TIPO_CLIENTE.estrangeiro ? v.idEstrangeiro : null) ?? '',
     email: v.email ?? '',
     telefone: v.telefone ?? '',
   };
@@ -108,8 +108,22 @@ function candidateDoc(c: DedupCandidate): string | null {
   return c.idEstrangeiro;
 }
 
+/**
+ * Name for the telefone/e-mail warning line, flagging a candidate whose
+ * document contradicts what was typed — same number, almost certainly a
+ * different person. Still only a warning: the operator decides.
+ */
+function candidateLabel(c: DedupCandidate): string {
+  const name = c.nome ?? c.id;
+  return c.identityConflict ? `${name} (documento diferente)` : name;
+}
+
 function CandidateRow({ candidate, onUse }: { candidate: DedupCandidate; onUse: () => void }) {
-  const detail = [candidateDoc(candidate), candidate.telefone, candidate.email]
+  const detail = [
+    candidateDoc(candidate),
+    candidate.telefone && formatTelefone(candidate.telefone),
+    candidate.email,
+  ]
     .filter(Boolean)
     .join(' · ');
   return (
@@ -284,14 +298,14 @@ function QuickCreateForm({
     const doc = clienteSchema.parse({
       tipo: values.tipo,
       nome: values.nome.trim(),
-      cpf_cnpj: values.tipo === '2' ? null : values.cpf_cnpj || null,
-      idEstrangeiro: values.tipo === '2' ? values.idEstrangeiro || null : null,
+      cpf_cnpj: values.tipo === TIPO_CLIENTE.estrangeiro ? null : values.cpf_cnpj || null,
+      idEstrangeiro: values.tipo === TIPO_CLIENTE.estrangeiro ? values.idEstrangeiro || null : null,
       // IE is a PJ concept — only persist it for Pessoa Jurídica (tipo '1').
-      ie: values.tipo === '1' ? values.ie || null : null,
+      ie: values.tipo === TIPO_CLIENTE.pessoaJuridica ? values.ie || null : null,
       email: values.email || null,
       telefone: values.telefone ? normalizeTelefone(values.telefone) : null,
-      timestamp: nowMillis(),
-      // Key presence makes saveRecord stamp the actual value.
+      // Nullish stamps — saveRecord fills create + last-modified at write time.
+      timestamp: null,
       ultimaModificacao: null,
     });
     const { id } = await saveRecord<typeof clienteSchema, Record<string, unknown>>({
@@ -301,6 +315,7 @@ function QuickCreateForm({
       values: doc as Record<string, unknown>,
       dirtyFields: {},
       currentUserUid: user?.uid ?? '',
+      stampUnit: 'ms',
     });
     // Hand the created cliente + its resolved address up; the modal opens the
     // endereço review in place (no more new-tab relay).
@@ -345,12 +360,10 @@ function QuickCreateForm({
   const similar = dedup?.similarNome ?? [];
   const warnings = [
     ...(dedup?.telefoneMatches.length
-      ? [
-          `telefone já cadastrado em: ${dedup.telefoneMatches.map((c) => c.nome ?? c.id).join(', ')}`,
-        ]
+      ? [`telefone já cadastrado em: ${dedup.telefoneMatches.map(candidateLabel).join(', ')}`]
       : []),
     ...(dedup?.emailMatches.length
-      ? [`e-mail já cadastrado em: ${dedup.emailMatches.map((c) => c.nome ?? c.id).join(', ')}`]
+      ? [`e-mail já cadastrado em: ${dedup.emailMatches.map(candidateLabel).join(', ')}`]
       : []),
   ];
 

@@ -95,6 +95,8 @@ export const balcaoFields: Record<string, FieldConfig> = {
  *  - `cpf_cnpj`, `idCadIntTran`, `modalidadeFreteImportacao` are marketplace-
  *    oriented and irrelevant for a counter register.
  *  - `dataCadastro` is stamped automatically on create.
+ *  - the per-channel account fields below (#289) are irrelevant to a counter
+ *    register — see each field's own comment.
  */
 export const balcaoExcludedFields = [
   'tipo',
@@ -102,4 +104,19 @@ export const balcaoExcludedFields = [
   'idCadIntTran',
   'modalidadeFreteImportacao',
   'dataCadastro',
+  'ultimaModificacao',
+  'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows
+  'shop_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'main_account_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tabelasAtacado', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'selling_partner_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tenant_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'wa_id', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'waba_id', // WhatsApp field — hidden here, surfaced by its own channel screen
+  'phoneNumberId', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'numero', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'verificado', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'mensagem_automatica', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'mensagem_inatividade', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'horario_funcionamento', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
 ];

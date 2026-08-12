@@ -7,6 +7,8 @@ import {
   type BooleanExpression,
   type Pipeline,
   and,
+  arrayContains,
+  arrayContainsAny,
   ascending,
   descending,
   documentId,
@@ -59,13 +61,38 @@ export interface PipelineOrderSpec {
   direction?: 'asc' | 'desc';
 }
 
-export type PipelineFilterOp = 'contains' | 'startsWith' | 'eq' | 'lt' | 'lte' | 'gt' | 'gte';
+export type PipelineFilterOp =
+  | 'contains'
+  | 'startsWith'
+  | 'eq'
+  | 'lt'
+  | 'lte'
+  | 'gt'
+  | 'gte'
+  | 'array-contains'
+  | 'array-contains-any';
 
 export interface PipelineFieldFilter {
   field: string;
   op: PipelineFilterOp;
-  value: string | number | boolean | null;
+  /**
+   * The array form is ONLY for `array-contains-any` (membership against a
+   * list of candidates) — `buildPipeline` throws if any other op receives an
+   * array. `array-contains-any` with an EMPTY list also throws — an empty
+   * candidate set means "no rows", and callers must short-circuit to an
+   * empty result set instead of querying.
+   */
+  value: string | number | boolean | null | ReadonlyArray<string | number | boolean | null>;
 }
+
+/**
+ * One `select` projection entry: a bare field path passed through as-is, or
+ * `{ field, as }` to project `field` under an alias (Pipeline
+ * `field(entry.field).as(entry.as)`). Aliasing lets a caller pull a single
+ * nested value (e.g. `changes.precos`) out under a short, stable row key
+ * instead of the caller having to know the source field's dotted path.
+ */
+export type PipelineSelectEntry = string | { field: string; as: string };
 
 export interface PipelineSpec {
   collection: string;
@@ -89,17 +116,21 @@ export interface PipelineSpec {
    * transfer. `.select()` strips `PipelineResult.ref`, so `buildPipeline`
    * automatically appends the document id as a field aliased to
    * `PIPELINE_ID_FIELD` — `usePipelineSnapshot` reads it back. Row identity
-   * is preserved; callers just pass the fields they want.
+   * is preserved; callers just pass the fields they want. Entries may be a
+   * bare field path or `{ field, as }` to project under an alias.
    */
-  select?: string[];
+  select?: PipelineSelectEntry[];
   /**
    * Restrict the source to a specific set of document ids (within
    * `collection`). When present and non-empty the pipeline sources from
    * `documents([...])` instead of the whole `collection(...)`, then applies the
    * same filters/sort/select/limit. Used by subcollection-lookup filters (e.g.
    * the pedido NF column) that resolve a sibling collection-group query to a
-   * handful of parent ids. An empty array yields no rows — callers should skip
-   * building the pipeline entirely in that case (the source would be empty).
+   * handful of parent ids. An empty array means "no rows" — callers must skip
+   * building the pipeline entirely (`buildPipeline` THROWS on `[]`; falling
+   * through to the collection source would silently full-scan it, the exact
+   * Enterprise data-scanned billing trap, mirroring the `array-contains-any`
+   * empty-list rule).
    */
   idIn?: string[];
   limit?: number;
@@ -166,6 +197,17 @@ export function buildSimilarityRegExp(term: string): RegExp | null {
 }
 
 function filterExpr(f: PipelineFieldFilter): BooleanExpression {
+  // Only `array-contains-any` takes a candidate LIST; every other op compares
+  // against a single scalar. The type on `PipelineFieldFilter.value` admits
+  // the array form for all ops, so guard at runtime — otherwise an array
+  // would be passed silently into equal()/lessThan()/arrayContains()/… and
+  // produce a nonsense server-side comparison instead of a clear failure.
+  if (f.op !== 'array-contains-any' && Array.isArray(f.value)) {
+    throw new Error(
+      `buildPipeline: op "${f.op}" on "${f.field}" received an array value. ` +
+        `Only "array-contains-any" accepts a list; pass a scalar instead.`,
+    );
+  }
   const fld = field(f.field);
   switch (f.op) {
     case 'contains': {
@@ -187,6 +229,20 @@ function filterExpr(f: PipelineFieldFilter): BooleanExpression {
       return greaterThan(fld, f.value);
     case 'gte':
       return greaterThanOrEqual(fld, f.value);
+    case 'array-contains':
+      return arrayContains(f.field, f.value);
+    case 'array-contains-any': {
+      const values = Array.isArray(f.value) ? f.value : [f.value];
+      // Empty candidate list means "no rows" — callers must short-circuit to
+      // an empty result set instead of querying (mirrors the `idIn: []` rule).
+      if (values.length === 0) {
+        throw new Error(
+          `buildPipeline: array-contains-any on "${f.field}" received an empty ` +
+            `value list. Skip the query and render an empty result set instead.`,
+        );
+      }
+      return arrayContainsAny(f.field, [...values]);
+    }
   }
 }
 
@@ -202,14 +258,23 @@ function filterExpr(f: PipelineFieldFilter): BooleanExpression {
 export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
   if (!isPipelineSupported(db)) throw new PipelineUnsupportedError();
 
-  // `idIn` (when non-empty) sources from the specific parent documents a
-  // subcollection lookup resolved to; otherwise scan the whole collection.
-  // `eqAny`/`in` over `__name__` isn't in the Pipelines API of this SDK, so the
+  // An empty id set means "no rows" — falling through to the collection
+  // source would silently FULL-SCAN it (Enterprise bills data scanned), so
+  // fail loudly instead, mirroring the `array-contains-any` empty-list rule.
+  if (spec.idIn && spec.idIn.length === 0) {
+    throw new Error(
+      `buildPipeline: idIn on "${spec.collection}" received an empty id list. ` +
+        `Skip the query and render an empty result set instead.`,
+    );
+  }
+
+  // `idIn` sources from the specific parent documents a subcollection lookup
+  // resolved to; otherwise scan the whole collection. `eqAny`/`in` over
+  // `__name__` isn't in the Pipelines API of this SDK, so the
   // `documents([...])` source stage is how we constrain to an id set.
-  let pipe: Pipeline =
-    spec.idIn && spec.idIn.length > 0
-      ? db.pipeline().documents(spec.idIn.map((id) => `${spec.collection}/${id}`))
-      : db.pipeline().collection(spec.collection);
+  let pipe: Pipeline = spec.idIn
+    ? db.pipeline().documents(spec.idIn.map((id) => `${spec.collection}/${id}`))
+    : db.pipeline().collection(spec.collection);
 
   if (spec.search && spec.search.fields.length > 0) {
     const pattern = buildSimilarityPattern(spec.search.term);
@@ -242,9 +307,26 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
     // `PipelineResult.ref` (the server omits the document key for projected
     // results), so without this the row identity is lost. `field('__name__')`
     // is the SDK-special-cased reference to the document path; `documentId()`
-    // extracts the short id from it.
+    // extracts the short id from it. The alias is RESERVED: a caller selection
+    // that would emit its own output field under the same name would collide
+    // with the appended id projection and break row-id reading downstream.
+    for (const entry of spec.select) {
+      const outputName = typeof entry === 'string' ? entry : entry.as;
+      if (outputName === PIPELINE_ID_FIELD) {
+        throw new Error(
+          `buildPipeline: select output "${PIPELINE_ID_FIELD}" is reserved for the ` +
+            `document-id projection. Pick a different alias/field name.`,
+        );
+      }
+    }
     const idSelection = documentId(field('__name__')).as(PIPELINE_ID_FIELD);
-    const selections = [...spec.select, idSelection];
+    // Bare-string entries pass through unchanged; `{ field, as }` entries
+    // become `field(entry.field).as(entry.as)` so the caller can pull a
+    // nested value out under a short, stable alias.
+    const requested = spec.select.map((entry) =>
+      typeof entry === 'string' ? entry : field(entry.field).as(entry.as),
+    );
+    const selections = [...requested, idSelection];
     pipe = pipe.select(selections[0]!, ...selections.slice(1));
   }
 

@@ -4,11 +4,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Alert, Tabs } from '@mantine/core';
+import { Alert, Tabs, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
 import {
+  ESTADO_PEDIDO,
   derivePedidoTotals,
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
@@ -23,7 +24,7 @@ import {
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { useUnsavedChangesGuard } from '@delfrance/ui';
+import { useServerTruthSeed, useUnsavedChangesGuard } from '@delfrance/ui';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
@@ -43,7 +44,7 @@ import { PedidoFooter } from './PedidoFooter';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
-import { summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
+import { pedidoTabs, summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
 import type { FlatItem, PedidoFormState } from './types';
 
 export interface PedidoFormProps {
@@ -62,6 +63,30 @@ export interface PedidoFormProps {
    * unless the user is editing estado manually.
    */
   liveEstado?: EstadoPedido;
+  /**
+   * Direction seed, consumed ONLY in create mode (`buildDefaults` starts the
+   * form at `{ ...EMPTY_DEFAULTS, ehSaida }`). In edit mode the loaded doc's
+   * spread always wins and this prop is ignored. Defaults to true (saída).
+   */
+  ehSaida?: boolean;
+  /**
+   * `fromCache` of the page snapshot these `defaultValues` came from. Supply it
+   * in edit mode so the form repaints once the AUTHORITATIVE copy arrives: with
+   * the IndexedDB cache the first emission can be stale, and `useForm` reads
+   * `defaultValues` only at mount, so without this the operator edits — and
+   * saves — a document version that is no longer current.
+   */
+  fromCache?: boolean;
+  /**
+   * Called whenever the form (re)seeds from `defaultValues`, with `true` when
+   * the values are server truth.
+   *
+   * ⚠️ This is how anything DERIVED from the same snapshot stays in step — the
+   * edit page re-seeds its concurrency baseline here. Deriving it in a separate
+   * effect would let the form correct to server truth while the baseline still
+   * held the cached copy, and that mismatch reads as a phantom conflict (#972).
+   */
+  onSeeded?: (serverTruth: boolean) => void;
   /**
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
@@ -83,7 +108,7 @@ const EMPTY_DEFAULTS: PedidoFormState = {
   ehSaidaOriginal: null,
   ehSaida: true,
   hasUserInteraction: null,
-  estado: 'iniciado',
+  estado: ESTADO_PEDIDO.iniciado,
   numero: null,
   vendedorPedidoOuterRef: null,
   // null (not undefined): Firestore's addDoc rejects `undefined` field values
@@ -250,8 +275,8 @@ function NfeLockNotice({ loading, lockText }: { loading: boolean; lockText: stri
   return null;
 }
 
-function buildDefaults(existing?: Pedido, pedidoId?: string): PedidoFormState {
-  if (!existing) return EMPTY_DEFAULTS;
+function buildDefaults(existing?: Pedido, pedidoId?: string, ehSaida = true): PedidoFormState {
+  if (!existing) return { ...EMPTY_DEFAULTS, ehSaida };
   return {
     ...EMPTY_DEFAULTS,
     ...existing,
@@ -272,6 +297,9 @@ export function PedidoForm({
   pedidoId,
   submitLabel = 'Salvar',
   liveEstado,
+  ehSaida = true,
+  fromCache,
+  onSeeded,
   onSubmit,
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -280,7 +308,15 @@ export function PedidoForm({
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
 
-  const initial = useMemo(() => buildDefaults(defaultValues, pedidoId), [defaultValues, pedidoId]);
+  const initial = useMemo(
+    () => buildDefaults(defaultValues, pedidoId, ehSaida),
+    [defaultValues, pedidoId, ehSaida],
+  );
+
+  // Direction is immutable (enforced by the page model via `ehSaidaOriginal`),
+  // so the initial values — not a watch — are the source of truth.
+  const isEntrada = initial.ehSaida === false;
+  const visibleTabs = new Set(pedidoTabs(isEntrada));
 
   const form = useForm<PedidoFormState, unknown, Pedido>({
     resolver: pedidoResolver,
@@ -292,6 +328,19 @@ export function PedidoForm({
   // screens get this from ObjectView; PedidoForm is a custom form, so wire the
   // shared guard directly.
   useUnsavedChangesGuard(form.formState.isDirty);
+
+  // Paint the first emission, then correct to server truth once — the same
+  // contract ObjectView follows, wired here because this form takes
+  // `defaultValues` at mount only. A dirty form is never repainted.
+  useServerTruthSeed({
+    id: pedidoId,
+    fromCache,
+    isDirty: form.formState.isDirty,
+    onSeed: (serverTruth) => {
+      form.reset(buildDefaults(defaultValues, pedidoId, ehSaida));
+      onSeeded?.(serverTruth);
+    },
+  });
 
   // Keep the form's estado in step with an external change (the pagamento
   // auto-reconcile flips it to pago/aguardando in Firestore). Skip when the user
@@ -380,7 +429,7 @@ export function PedidoForm({
   // (async, racy); the reactive `useSnapshot` here keeps the lock in step live.
   // `liveEstado` (the persisted snapshot estado) is the right source — matching
   // the legacy "loaded estado" — and avoids subscribing the whole form to a watch.
-  const estadoNow: EstadoPedido = liveEstado ?? 'iniciado';
+  const estadoNow: EstadoPedido = liveEstado ?? ESTADO_PEDIDO.iniciado;
   const nfeQuery = useMemo(
     () =>
       pedidoId
@@ -464,15 +513,21 @@ export function PedidoForm({
             <Tabs.Tab value="pagamento" {...tabErrorProps('pagamento')}>
               Pagamento
             </Tabs.Tab>
-            <Tabs.Tab value="link-pgto" {...tabErrorProps('link-pgto')}>
-              Link Pgto
-            </Tabs.Tab>
-            <Tabs.Tab value="incidentes" {...tabErrorProps('incidentes')}>
-              Incidentes
-            </Tabs.Tab>
-            <Tabs.Tab value="devolucao" {...tabErrorProps('devolucao')}>
-              Devolução
-            </Tabs.Tab>
+            {visibleTabs.has('link-pgto') && (
+              <Tabs.Tab value="link-pgto" {...tabErrorProps('link-pgto')}>
+                Link Pgto
+              </Tabs.Tab>
+            )}
+            {visibleTabs.has('incidentes') && (
+              <Tabs.Tab value="incidentes" {...tabErrorProps('incidentes')}>
+                Incidentes
+              </Tabs.Tab>
+            )}
+            {visibleTabs.has('devolucao') && (
+              <Tabs.Tab value="devolucao" {...tabErrorProps('devolucao')}>
+                Devolução
+              </Tabs.Tab>
+            )}
             <Tabs.Tab value="estado" {...tabErrorProps('estado')}>
               Estado/Histórico
             </Tabs.Tab>
@@ -524,26 +579,44 @@ export function PedidoForm({
                 />
               </>
             ) : (
-              <PlaceholderTab name="Pagamento" />
+              // Payment is fully ported (PagamentosSection below); it's just
+              // unavailable until the doc exists, since pagamentos are a
+              // subcollection keyed by pedidoId. Match the sibling create-mode
+              // empty states (Estoque / Estado / Incidentes) — NOT PlaceholderTab,
+              // which wrongly reads "em breve, use o app antigo".
+              <Text c="dimmed" size="sm">
+                Salve o pedido para registrar pagamentos.
+              </Text>
             )}
           </Tabs.Panel>
 
-          <Tabs.Panel value="link-pgto" pt="md">
-            <PlaceholderTab name="Link de pagamento" />
-          </Tabs.Panel>
+          {visibleTabs.has('link-pgto') && (
+            <Tabs.Panel value="link-pgto" pt="md">
+              <PlaceholderTab name="Link de pagamento" />
+            </Tabs.Panel>
+          )}
 
-          <Tabs.Panel value="incidentes" pt="md">
-            <IncidentesTab pedidoId={pedidoId} disabled={disabled} />
-          </Tabs.Panel>
+          {visibleTabs.has('incidentes') && (
+            <Tabs.Panel value="incidentes" pt="md">
+              <IncidentesTab pedidoId={pedidoId} disabled={disabled} />
+            </Tabs.Panel>
+          )}
 
-          <Tabs.Panel value="devolucao" pt="md">
-            {dadosGeraisLockNotice && (
-              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
-                {dadosGeraisLockNotice}
-              </Alert>
-            )}
-            <DevolucaoTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
-          </Tabs.Panel>
+          {visibleTabs.has('devolucao') && (
+            <Tabs.Panel value="devolucao" pt="md">
+              {dadosGeraisLockNotice && (
+                <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                  {dadosGeraisLockNotice}
+                </Alert>
+              )}
+              <DevolucaoTab
+                form={form}
+                db={db}
+                disabled={dadosGeraisDisabled}
+                pedidoId={pedidoId}
+              />
+            </Tabs.Panel>
+          )}
 
           <Tabs.Panel value="estado" pt="md">
             <EstadoHistoricoTab form={form} disabled={disabled} pedidoId={pedidoId} />
@@ -565,6 +638,7 @@ export function PedidoForm({
         submitLabel={submitLabel}
         isSubmitting={form.formState.isSubmitting}
         submitError={submitError}
+        ehSaida={!isEntrada}
         onSaveAndContinue={
           pedidoId
             ? form.handleSubmit((values) => handleSubmit(values, true), onInvalid)

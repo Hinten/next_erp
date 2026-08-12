@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   Alert,
@@ -29,20 +29,17 @@ import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';
+import { AfterSaveBlockedError } from './afterSaveBlocked';
 import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
+import { resolveStampFields, type StampFieldOverride } from './resolveStampFields';
 import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
+import { useServerTruthSeed } from './useServerTruthSeed';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 
 export type { TransactionWrite };
-
-/**
- * Fields dropped from a copied source document — the new record must get its
- * own creation/modification stamps, not inherit the source's.
- */
-const COPY_STRIP_KEYS = ['timestamp', 'ultimaModificacao'];
 
 /**
  * Synthetic error key for key-less (form-level / cross-field) validation
@@ -139,6 +136,23 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    */
   transactionWrites?: (id: string, values: Record<string, unknown>) => TransactionWrite[];
 
+  /**
+   * Extra unsaved state OUTSIDE this form that the leave-guard must also
+   * protect.
+   *
+   * A self-contained tab (one rendered through a `renderInput` that owns its
+   * own editor and its own document) is invisible to `form.formState.isDirty`,
+   * so without this the operator can navigate away from real pending edits and
+   * lose them silently — the guard would report the page as clean because the
+   * produto form is.
+   *
+   * ⚠️ The tab must NOT call `useUnsavedChangesGuard` itself. Two live guards
+   * means two `confirm()` prompts and two sentinel history entries, because the
+   * hook's document-level listener uses `stopPropagation`, which does not stop
+   * other listeners on the same node.
+   */
+  extraDirty?: boolean;
+
   /** Auth uid for the audit entry. */
   currentUserUid: string;
 
@@ -199,6 +213,18 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * omitted, falls back to `window.confirm` with a generic message.
    */
   deleteConfirmMessage?: string;
+
+  /**
+   * Override auto-detect of the creation stamp field (`timestamp` /
+   * `dataCadastro` / …). `false` disables create stamping. Default: first
+   * candidate present on the schema descriptors.
+   */
+  createdAtField?: StampFieldOverride;
+  /**
+   * Override auto-detect of the last-modified stamp field
+   * (`ultimaModificacao`). `false` disables. Default: auto from schema.
+   */
+  modifiedAtField?: StampFieldOverride;
 }
 
 /**
@@ -226,6 +252,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   validate,
   transientFields = [],
   transactionWrites,
+  extraDirty = false,
   currentUserUid,
   pager,
   onSaved,
@@ -238,6 +265,8 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   deleteLabel = 'Excluir',
   canDelete = true,
   deleteConfirmMessage,
+  createdAtField: createdAtFieldProp,
+  modifiedAtField: modifiedAtFieldProp,
 }: ObjectViewProps<S, C>) {
   const editingAllowed = !readOnly && canEdit;
   const deleteVisible = !!onDelete && canDelete;
@@ -247,6 +276,22 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   type Doc = z.infer<C>;
 
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
+  // Creation / last-modified field names + epoch unit for saveRecord stamps.
+  // Auto-detect from the schema; props override (or disable with `false`).
+  const stampFields = useMemo(
+    () =>
+      resolveStampFields(descriptors, {
+        createdAtField: createdAtFieldProp,
+        modifiedAtField: modifiedAtFieldProp,
+      }),
+    [descriptors, createdAtFieldProp, modifiedAtFieldProp],
+  );
+  const copyStripKeys = useMemo(() => {
+    const keys: string[] = [];
+    if (stampFields.createdAtField) keys.push(stampFields.createdAtField);
+    if (stampFields.modifiedAtField) keys.push(stampFields.modifiedAtField);
+    return keys;
+  }, [stampFields.createdAtField, stampFields.modifiedAtField]);
 
   // Once a create-mode save lands, retain the new id so subsequent saves on
   // the same mount are treated as updates (partial patches).
@@ -256,7 +301,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const docRef = useMemo(
     () => (internalId ? collection.docRef(db, pathContext, internalId) : null),
     // pathContext intentionally identity-tracked.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, collection, internalId],
   );
   const docSnap = useDocSnapshot<Doc>(docRef);
@@ -270,7 +314,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const copyDocRef = useMemo(
     () => (copyFromId ? collection.docRef(db, pathContext, copyFromId) : null),
     // pathContext intentionally identity-tracked.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, collection, copyFromId],
   );
   const copySnap = useDocSnapshot<Doc>(copyDocRef);
@@ -334,7 +377,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema, fieldOverrides, validate]);
 
   const form = useForm<FieldValues>({
@@ -347,29 +389,45 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // loaded values. RHF needs `reset()` to also zero out `dirtyFields`.
   // Merge with emptyDefaults so docs missing nullable fields still get null
   // (instead of undefined leaking back through the patch on the next save).
+  //
+  // The IndexedDB persistent cache makes `useDocSnapshot` emit a `fromCache:
+  // true` snapshot FIRST, and a transactional `saveRecord` has NO latency
+  // compensation — so right after editing THIS record (and a reload) the cached
+  // doc can still hold the pre-save value while the server has the new one. We
+  // paint the first emission for instant feedback, then RE-SEED once the
+  // authoritative `fromCache: false` snapshot arrives — but only while the form
+  // is pristine, so an in-progress edit is never clobbered. The seeding logic
+  // (first paint vs. one-time server-truth correction, tracked per record id)
+  // now lives in `useServerTruthSeed`.
+  useServerTruthSeed({
+    id: docSnap.data?.id,
+    fromCache: docSnap.fromCache,
+    isDirty: form.formState.isDirty,
+    onSeed: () => {
+      form.reset({ ...emptyDefaults, ...(docSnap.data?.data as FieldValues) });
+    },
+  });
+  // Create mode has no snapshot to seed from — reset to the page's defaults.
   useEffect(() => {
-    if (docSnap.data) {
-      form.reset({ ...emptyDefaults, ...(docSnap.data.data as FieldValues) });
-    } else if (!internalId) {
+    if (!docSnap.data && !internalId) {
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docSnap.data?.id]);
+  }, [docSnap.data?.id, docSnap.fromCache]);
 
   // Copy mode: once the source doc loads, seed the form with its values. The
   // document id never lives in the schema data, so it's already excluded;
   // creation/modification stamps are stripped so the new record gets fresh
-  // ones. The page's `defaultValues` lose to the source (it's a clone).
+  // ones (resolved field names — e.g. `dataCadastro`, not only `timestamp`).
+  // The page's `defaultValues` lose to the source (it's a clone).
   useEffect(() => {
     if (!copySnap.data || internalId) return;
     const source = { ...(copySnap.data.data as Record<string, unknown>) };
-    for (const key of COPY_STRIP_KEYS) delete source[key];
+    for (const key of copyStripKeys) delete source[key];
     form.reset({
       ...emptyDefaults,
       ...(defaultValues ?? {}),
       ...source,
     } as FieldValues);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copySnap.data?.id]);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -378,7 +436,10 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteText, setDeleteText] = useState('');
   const deleteConfirmed = deleteText.trim().toLowerCase() === 'excluir';
-  useUnsavedChangesGuard(form.formState.isDirty);
+  // `extraDirty` folds in pending edits held by a self-contained tab, which
+  // this form's own dirty state cannot see. That tab must not arm its own
+  // guard — see the prop's doc comment.
+  useUnsavedChangesGuard(form.formState.isDirty || extraDirty);
 
   async function doSave(continueEditing: boolean) {
     setSubmitError(null);
@@ -414,11 +475,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         values[key] = next;
       }
     }
-    // Resolve the unit for the `ultimaModificacao` stamp from the schema so a
-    // numeric-epoch collection gets a number, not an ISO string.
-    const stampDesc = descriptors.find((d) => d.key === 'ultimaModificacao');
-    const stampUnit: 'iso' | 'ms' | 'us' =
-      stampDesc?.kind === 'datetime' ? (stampDesc.dateUnit ?? 'ms') : 'iso';
     // Transient fields (aggregate page-model extras) are validated + rendered
     // but never reach the document: strip them — and their dirty flags — from
     // what `saveRecord` writes. The FULL `values` still flow to `form.reset`,
@@ -446,7 +502,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         // turns them into sibling writes keyed by the resolved record id.
         siblingWrites: transactionWrites ? (id) => transactionWrites(id, values) : undefined,
         currentUserUid,
-        stampUnit,
+        stampUnit: stampFields.stampUnit,
+        // `false` when auto-detect found nothing — don't fall back to the
+        // saveRecord defaults (`timestamp` / `ultimaModificacao`) on schemas
+        // that genuinely lack those keys.
+        createdAtField: stampFields.createdAtField ?? false,
+        modifiedAtField: stampFields.modifiedAtField ?? false,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
       form.reset(values as typeof raw);
@@ -463,6 +524,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         onSaved?.(result.id);
       }
     } catch (err) {
+      // Same contract on the normal save path: the record IS persisted, the
+      // sibling step paused on purpose. `onSaved` is unreachable from here
+      // (it sits after the throw), which is exactly what we want.
+      if (err instanceof AfterSaveBlockedError) {
+        setSubmitError(err.message);
+        return;
+      }
       if (err instanceof NothingChangedError) {
         // The record itself is pristine — but sibling writes may still be
         // pending (e.g. staged child documents). When an `onAfterSave` is
@@ -472,6 +540,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
           try {
             await onAfterSave(internalId, values);
           } catch (afterErr) {
+            // The sibling step deliberately stopped and put something in front
+            // of the operator — show it, but do NOT run `onSaved`, which
+            // navigates away from the screen holding it.
+            if (afterErr instanceof AfterSaveBlockedError) {
+              setSubmitError(afterErr.message);
+              return;
+            }
             if (afterErr instanceof ZodError) {
               // `ZodError.message` is the serialized issues array — join the
               // human messages instead (sibling flushes throw contextualized
@@ -526,7 +601,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       (map[section] ??= []).push(d);
     }
     return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleDescriptors, fieldOverrides, sections?.join('|')]);
 
   // Reverse of `grouped`: top-level field key → section name, for mapping

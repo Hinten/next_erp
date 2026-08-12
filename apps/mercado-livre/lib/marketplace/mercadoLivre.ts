@@ -10,7 +10,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import type { ChannelContext, MarketplaceChannel } from '@delfrance/core/plugins';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import {
   type MercadoLivreConfig,
@@ -96,6 +96,8 @@ export function mercadoLivreOAuthConfig(): MercadoLivreOAuthConfig {
 
 export interface MercadoLivreContext {
   readonly integracaoId: string;
+  /** The parsed integração doc (tabelas/depósito refs ride through). */
+  readonly conta: Readonly<Record<string, unknown>>;
   readonly channel: MarketplaceChannel;
   readonly store: TokenDuravelStore;
   /**
@@ -131,13 +133,14 @@ export async function loadMercadoLivreContext(
   const oauthConfig = mercadoLivreOAuthConfig();
   const store = createTokenDuravelStore(db, integracaoId);
 
-  // The per-account singularities (ML `user_id`, price tables, …) live on the
-  // integracao doc (#289) and ride through `.passthrough()`. Pass them opaquely
-  // in `account`; the plugin reads what it needs.
-  const account: Readonly<Record<string, unknown>> = { user_id: extractUserId(conta) };
+  // The per-account singularity (ML `user_id`) is a typed field on
+  // `integracaoSchema` (#289) rather than opaque passthrough. Pass the parsed
+  // value through; the plugin reads what it needs.
+  const account: Readonly<Record<string, unknown>> = mercadoLivreAccountBag(conta);
 
   return {
     integracaoId,
+    conta,
     channel,
     store,
     async resolveChannelContext(now: number = Date.now()): Promise<ChannelContext> {
@@ -147,10 +150,25 @@ export async function loadMercadoLivreContext(
     async exchangeAndPersist(code: string): Promise<void> {
       const resp = await exchangeCode(oauthConfig, code);
       await store.save(tokenDuravelFromResponse(resp, Date.now()));
+      // Denormalize the ML seller id onto the integração doc so an inbound
+      // webhook resolves this account with a single equality query (the old
+      // `ContaMercadoLivre.user_id`). Merge-only: never touches other fields.
+      if (resp.user_id != null) {
+        await integracaoCollection.merge(db, {}, integracaoId, { user_id: resp.user_id });
+      }
     },
   };
 }
 
-function extractUserId(conta: Record<string, unknown>): unknown {
-  return conta.user_id ?? null;
+/**
+ * The ML-relevant slice of an `integracao` account, typed off
+ * `integracaoSchema` (#289) rather than an ad-hoc `Record<string, unknown>`
+ * read: `user_id` (the ML seller id). The Mercado-Shops price-table refs the
+ * bag used to carry were dropped with the schema fields (Mercado Shops was
+ * discontinued 2025-12-31; nothing ever consumed them).
+ */
+export function mercadoLivreAccountBag(conta: Integracao): Readonly<Record<string, unknown>> {
+  return {
+    user_id: conta.user_id,
+  };
 }

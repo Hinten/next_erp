@@ -48,7 +48,8 @@ or may not bump the XSDs.
 packages/integrations/nfe/
   generated/
     moc7.0/
-      schemas/     # 20 XSDs (vendored from SEFAZ for MOC 7.0)
+      schemas/     # 28 XSDs (vendored from SEFAZ for MOC 7.0)
+                   #   + MANIFEST.json — provenance for THIS MOC's packs
       types/       # codegen output (interfaces + META + Zod mirrors)
   src/
     types/
@@ -59,7 +60,7 @@ packages/integrations/nfe/
 ```
 
 Internal consumers import `'../types/nfe-schema'` (the shim), never
-the versioned path directly. Three places know the active MOC
+the versioned path directly. Four places know the active MOC
 literal (kept tiny on purpose — search-and-replace one constant per
 file to bump):
 
@@ -71,7 +72,11 @@ file to bump):
 ### Adding a new MOC version (SEFAZ ships MOC 8.0 with v4.10 XSDs)
 
 1. `mkdir -p generated/moc8.0/{schemas,types}` and drop the new XSDs
-   into `generated/moc8.0/schemas/`.
+   into `generated/moc8.0/schemas/`. Write a **new**
+   `generated/moc8.0/schemas/MANIFEST.json` recording that pack's
+   provenance (pack name, NT, publish date, URL, role) — do not edit
+   `moc7.0`'s. Each MOC's manifest describes only its own XSDs; every
+   reader filters on `.xsd`, so the JSON is inert in that directory.
 2. Bump `ACTIVE_MOC` in `src/codegen/generate.mjs` and
    `src/xsd/index.ts` to `'8.0'`.
 3. Re-run `pnpm --filter @delfrance/integrations-nfe gen:nfe-types`

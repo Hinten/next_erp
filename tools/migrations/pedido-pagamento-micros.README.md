@@ -22,10 +22,13 @@ Firebase `Timestamp`, which each SDK deserializes differently). `pedido`,
 | `pedidos/{id}/pagamento/{pagId}` _(singular!)_               | `vencimento`, `ultimaModificacao`, `dataCancelamento`, `dataAprovacao`, `dataCadastro`                                                          | ISO-8601 string                         |
 | `metodo_pgto/{id}`                                           | `dataCadastro`                                                                                                                                  | ISO-8601 string                         |
 
-> **Path note:** the pagamento subcollection is `pedidos/{id}/pagamento`
-> (singular). The `pedido` cascade metadata lists a plural `pagamentos` — that
-> is a pre-existing inconsistency; the migration must walk the **singular**
-> path the app actually reads/writes.
+> **Path note (corrected #791):** BOTH paths exist and the migration walks
+> both. Legacy Flutter wrote the **singular** `pedidos/{id}/pagamento`; this app
+> writes the **plural** `pedidos/{id}/pagamentos` (`pagamentoMeta.collectionPath`,
+> which `pagamento.ts` records as matching legacy's own `PAGAMENTO_COLLECTION`
+> constant). The earlier note claimed singular was "the path the app actually
+> reads/writes" — it is not, and as built the migration would have scanned
+> **zero** of this app's pagamento documents and still reported success.
 
 ## Why a backfill is not urgent (tolerant reads)
 
@@ -77,7 +80,7 @@ Batch writes ≤ 500 ops/commit.
 - **Dry-run by default**; `--apply` to write. Dry-run logs every intended
   `path · field · old → new` without writing.
 - **Log every change** to a timestamped file under `out/`.
-- firebase-admin v13.
+- firebase-admin v14.
 
 This is implemented by the `@delfrance/migrations` package:
 

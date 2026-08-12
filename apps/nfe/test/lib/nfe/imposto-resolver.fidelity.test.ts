@@ -69,7 +69,7 @@ function categoriaDoc(
 ): ImpostoCategoria {
   return {
     id: `${categoriaUid}-imp`,
-    impostoOperacaoOuterRef: scope,
+    impostoCategoriaOperacaoOuterRef: scope,
     dataCadastro: null,
     ...impostoBlob(csosn),
   };
@@ -192,8 +192,8 @@ describe('resolver fidelity — stacked priority enforcement', () => {
 describe('resolver fidelity — operacao-scope precedence', () => {
   it('impostoProduto: doc scoped to the active operacao wins over a null-scoped sibling', async () => {
     // Two impostoProduto docs in the same subcollection:
-    //   - one with `impostoOperacaoOuterRef='operacao/op-active'` → CSOSN 101
-    //   - one with `impostoOperacaoOuterRef=null`                  → CSOSN 400 (default)
+    //   - one with `impostoOpercaoOuterRef='operacao/op-active'` → CSOSN 101 (typo key)
+    //   - one with `impostoOpercaoOuterRef=null`                 → CSOSN 400 (default)
     // The scoped doc must win (Flutter parity — `.find()` order matters, but
     // operacaoMatches semantics make the scoped one match first regardless).
     const scoped = produtoDoc('P-1', CSOSN_PRODUTO, `operacao/${ACTIVE_OPERACAO}`);

@@ -9,6 +9,24 @@ const PERM_FISCAL_READ = 1n << 72n;
 const PERM_FISCAL_WRITE = 1n << 73n;
 const PERM_FISCAL_DELETE = 1n << 74n;
 
+// Human-readable labels keyed by wire value. Declared before the enum so it
+// can be attached via `.meta({ labels })` — the schema-driven UI
+// (`@delfrance/ui`) reads that to render the Select / Badge.
+const ESTADO_ENVI_NFE_MSG_LABEL_MAP = {
+  e: 'Erro',
+  '0': 'Iniciado',
+  '1': 'Aguardando envio',
+  a: 'Aguardando envio pós-EPEC (periódico)',
+  c: 'Aguardando EPEC',
+  n: 'Aguardando envio pós-EPEC',
+  '2': 'Respondido',
+  '4': 'Respondido (periódico)',
+  t: 'Respondido (tasks)',
+  '3': 'Concluído',
+  i: 'Sem mais ações',
+  v: 'Aguardando vínculo',
+} as const;
+
 /**
  * `EstadoEnviNFeMsg` — string-coded state of one SEFAZ envio message.
  * Mirrors `EstadoEnviNFeMsg` enum at
@@ -20,20 +38,22 @@ const PERM_FISCAL_DELETE = 1n << 74n;
  * `error`); the rest are accepted on the wire (Zod) for forward
  * compat with future EPEC / contingência paths.
  */
-export const estadoEnviNFeMsgSchema = z.enum([
-  'e', // error
-  '0', // iniciado
-  '1', // aguardando_envio
-  'a', // aguardando_envio_pos_epec_apenas_periodico
-  'c', // aguardando_epec
-  'n', // aguardando_envio_pos_epec
-  '2', // respondido
-  '4', // respondido_apenas_periodico
-  't', // respondido_apenas_tasks
-  '3', // concluido
-  'i', // semMaisAcoes
-  'v', // aguardando_vinculo — CC-e registered but not yet linked (cStat 136), #81
-]);
+export const estadoEnviNFeMsgSchema = z
+  .enum([
+    'e', // error
+    '0', // iniciado
+    '1', // aguardando_envio
+    'a', // aguardando_envio_pos_epec_apenas_periodico
+    'c', // aguardando_epec
+    'n', // aguardando_envio_pos_epec
+    '2', // respondido
+    '4', // respondido_apenas_periodico
+    't', // respondido_apenas_tasks
+    '3', // concluido
+    'i', // semMaisAcoes
+    'v', // aguardando_vinculo — CC-e registered but not yet linked (cStat 136), #81
+  ])
+  .meta({ labels: ESTADO_ENVI_NFE_MSG_LABEL_MAP });
 export type EstadoEnviNFeMsg = z.infer<typeof estadoEnviNFeMsgSchema>;
 
 /**
@@ -68,28 +88,32 @@ export const ESTADO_ENVI_NFE_MSG = {
  */
 export const enviNfeMsgSchema = z.object({
   /** Chaves this msg covers. Phase A always single-element; batch is N. */
-  targetsChnfe: z.array(z.string().length(44)).default([]),
+  targetsChnfe: z.array(z.string().length(44)).default([]).describe('Chaves NF-e'),
   /** SEFAZ lote id. Set on autorizarLote messages; null on cons*. */
-  idLote: z.number().int().nullable(),
+  idLote: z.number().int().nullable().describe('Lote'),
   /** '0' async / '1' sync. Set on autorizarLote messages. */
-  indSinc: z.enum(['0', '1']).nullable(),
+  indSinc: z
+    .enum(['0', '1'])
+    .meta({ labels: { '0': 'Assíncrono', '1': 'Síncrono' } })
+    .nullable()
+    .describe('Modo de envio'),
   /** Request body sent to SEFAZ (signed NFe XML for autorizarLote; null for cons*). */
-  xml_enviado: z.string().min(1).nullable(),
+  xml_enviado: z.string().min(1).nullable().describe('XML enviado'),
   /** Response body from SEFAZ — JSON-stringified parsed object for Phase A. */
-  xml_retorno: z.string().min(1).nullable(),
+  xml_retorno: z.string().min(1).nullable().describe('Retorno SEFAZ'),
   /** Lote receipt number. Carried forward across consult messages. */
-  nRec: z.string().min(1).nullable(),
+  nRec: z.string().min(1).nullable().describe('Recibo (nRec)'),
   /** Last cStat SEFAZ reported on this msg. */
-  cStat: z.string().nullable(),
+  cStat: z.string().nullable().describe('cStat'),
   /** Human-readable motivo. */
-  xMotivo: z.string().nullable(),
+  xMotivo: z.string().nullable().describe('Motivo (xMotivo)'),
   /** Error message (if SOAP transport failed). */
-  error: z.string().nullable(),
+  error: z.string().nullable().describe('Erro'),
   /** Mirrors `EnviNFeMsg.codEmissao` — SEFAZ `tpEmis` for this msg. */
-  tpEmis: z.number().int().nullable(),
-  estado: estadoEnviNFeMsgSchema.default('2'),
-  timestamp: millisSinceEpoch().nullable().default(null),
-  ultima_modificacao: millisSinceEpoch().nullable().default(null),
+  tpEmis: z.number().int().nullable().describe('Tipo de emissão (tpEmis)'),
+  estado: estadoEnviNFeMsgSchema.default(ESTADO_ENVI_NFE_MSG.respondido).describe('Estado'),
+  timestamp: millisSinceEpoch('Criação').nullable().default(null),
+  ultima_modificacao: millisSinceEpoch('Última modificação').nullable().default(null),
 });
 
 export type EnviNFeMsg = z.infer<typeof enviNfeMsgSchema>;

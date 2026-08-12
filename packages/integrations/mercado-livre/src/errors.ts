@@ -20,6 +20,12 @@ export class MercadoLivreHttpError extends MercadoLivreError {
     readonly status: number,
     /** The parsed error body, when JSON; the raw text otherwise. */
     readonly body: unknown,
+    /**
+     * The response's `Retry-After` header in whole seconds, when present and
+     * numeric (429 rate limits) — null otherwise. Callers honour it when
+     * scheduling a pause instead of a fixed default.
+     */
+    readonly retryAfterSec: number | null = null,
   ) {
     super(message);
     this.name = 'MercadoLivreHttpError';
@@ -61,5 +67,25 @@ export class MercadoLivreNetworkError extends MercadoLivreError {
   ) {
     super(message);
     this.name = 'MercadoLivreNetworkError';
+  }
+}
+
+/**
+ * `shipment_labels` refused to emit the label: a 400 with a `failed_shipments`
+ * body (e.g. substatus `invoice_pending` until the NF-e is uploaded), or a 2xx
+ * with an empty body (legacy guard). Distinct from `MercadoLivreHttpError` so
+ * the route can branch on the ML reason instead of a generic HTTP failure.
+ */
+export class MercadoLivreLabelUnavailableError extends MercadoLivreError {
+  constructor(
+    message: string,
+    /**
+     * The raw `failed_shipments[0].message`, in FULL — callers substring-match
+     * `invoice_pending` on it (legacy parity). `''` on the empty-body case.
+     */
+    readonly mlMessage: string,
+  ) {
+    super(message);
+    this.name = 'MercadoLivreLabelUnavailableError';
   }
 }

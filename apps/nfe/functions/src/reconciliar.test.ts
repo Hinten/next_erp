@@ -29,6 +29,8 @@ vi.mock('../../lib/nfe/tasks', async (importOriginal) => {
   };
 });
 
+import { RECONCILE_FUNCTION } from '../../lib/nfe/tasks';
+import * as reconciliarModule from './reconciliar';
 import { handleReconciliarTask } from './reconciliar';
 
 const PAYLOAD = { kind: 'consulta-lote', filialId: 'F-1', nRec: 'REC-1', tpEmis: 1, attempt: 0 };
@@ -98,5 +100,18 @@ describe('handleReconciliarTask disposition', () => {
   it('throws (queue retries) on a transport error during the CC-e re-check', async () => {
     runReconcileCce.mockRejectedValue(new Error('ETIMEDOUT'));
     await expect(handleReconciliarTask(CCE_PAYLOAD)).rejects.toThrow(/ETIMEDOUT/);
+  });
+});
+
+// Rename-safety (#437): the deployed function + auto-provisioned queue name IS the
+// `onTaskDispatched` export symbol, but the producer enqueues onto the queue named
+// by `RECONCILE_FUNCTION` (a decoupled string). If the export is renamed without
+// updating the constant, the producer targets a dead queue and the task silently
+// drops — no compile or runtime error at enqueue. This test reads the module's own
+// export keys, so it fails closed if the two ever drift.
+describe('reconciliarNfe queue-name coupling (#437)', () => {
+  it('exports an onTaskDispatched function named exactly by RECONCILE_FUNCTION', () => {
+    expect(reconciliarModule).toHaveProperty(RECONCILE_FUNCTION);
+    expect(reconciliarModule[RECONCILE_FUNCTION]).toBeDefined();
   });
 });

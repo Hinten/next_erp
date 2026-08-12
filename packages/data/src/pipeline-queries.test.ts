@@ -4,7 +4,11 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // `vi.hoisted` ensures the mock object is built before vi.mock evaluates.
 const { mockPipelinesExports } = vi.hoisted(() => ({
   mockPipelinesExports: {
-    field: (n: string) => ({ kind: 'field', name: n }),
+    field: (n: string) => ({
+      kind: 'field',
+      name: n,
+      as: (alias: string) => ({ kind: 'aliased', alias, expr: { kind: 'field', name: n } }),
+    }),
     and: (...xs: unknown[]) => ({ kind: 'and', xs }),
     or: (...xs: unknown[]) => ({ kind: 'or', xs }),
     ascending: (f: unknown) => ({ kind: 'asc', f }),
@@ -16,6 +20,8 @@ const { mockPipelinesExports } = vi.hoisted(() => ({
     lessThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'lte', l, r }),
     greaterThan: (l: unknown, r: unknown) => ({ kind: 'gt', l, r }),
     greaterThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'gte', l, r }),
+    arrayContains: (f: unknown, v: unknown) => ({ kind: 'arrayContains', f, v }),
+    arrayContainsAny: (f: unknown, vs: unknown) => ({ kind: 'arrayContainsAny', f, vs }),
     documentId: (expr: unknown) => ({
       expr,
       as: (alias: string) => ({ kind: 'aliased', alias, expr }),
@@ -178,6 +184,103 @@ describe('buildPipeline', () => {
     );
   });
 
+  it('array-contains filter builds arrayContains(field, value)', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [{ field: 'targetsChnfe', op: 'array-contains', value: '1'.repeat(44) }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'arrayContains',
+        f: 'targetsChnfe',
+        v: '1'.repeat(44),
+      }),
+    );
+  });
+
+  it('array-contains-any filter passes the whole candidate list', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [{ field: 'targetsChnfe', op: 'array-contains-any', value: ['a', 'b', 'c'] }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'arrayContainsAny',
+        f: 'targetsChnfe',
+        vs: ['a', 'b', 'c'],
+      }),
+    );
+  });
+
+  it('array-contains-any wraps a scalar value into a single-element list', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [{ field: 'targetsChnfe', op: 'array-contains-any', value: 'solo' }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'arrayContainsAny', vs: ['solo'] }),
+    );
+  });
+
+  it('array-contains-any with an empty list throws (callers must short-circuit)', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'enviNfe',
+        filters: [{ field: 'targetsChnfe', op: 'array-contains-any', value: [] }],
+      }),
+    ).toThrow(/empty/);
+  });
+
+  it('idIn with an empty list throws instead of silently full-scanning the collection', () => {
+    const { db } = makeDb(true);
+    expect(() => buildPipeline(db, { collection: 'pedidos', idIn: [] })).toThrow(/empty id list/);
+  });
+
+  it('eq with an array value throws (only array-contains-any takes a list)', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'x',
+        filters: [{ field: 'tipo', op: 'eq', value: ['1', '2'] }],
+      }),
+    ).toThrow(/received an array value/);
+  });
+
+  it('array-contains with an array value throws (single-element membership only)', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'enviNfe',
+        filters: [{ field: 'targetsChnfe', op: 'array-contains', value: ['a', 'b'] }],
+      }),
+    ).toThrow(/received an array value/);
+  });
+
+  it('AND-combines array ops with other column filters in one where(and(...))', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [
+        { field: 'targetsChnfe', op: 'array-contains-any', value: ['a', 'b'] },
+        { field: 'estado', op: 'eq', value: 'e' },
+      ],
+    });
+    expect(stage.where).toHaveBeenCalledTimes(1);
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'and',
+        xs: [
+          expect.objectContaining({ kind: 'arrayContainsAny', f: 'targetsChnfe', vs: ['a', 'b'] }),
+          expect.objectContaining({ kind: 'equal' }),
+        ],
+      }),
+    );
+  });
+
   it('AND-combines multiple column filters', () => {
     const { db, stage } = makeDb(true);
     buildPipeline(db, {
@@ -215,6 +318,48 @@ describe('buildPipeline', () => {
       'email',
       'cpf_cnpj',
       expect.objectContaining({ kind: 'aliased', alias: 'rowId' }),
+    );
+  });
+
+  it('an object select entry projects field(x).as(y)', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'produtos/p1/historicoDeModificacoes',
+      select: [{ field: 'changes.precos', as: 'change' }],
+    });
+    expect(stage.select).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'aliased',
+        alias: 'change',
+        expr: expect.objectContaining({ kind: 'field', name: 'changes.precos' }),
+      }),
+      expect.objectContaining({ kind: 'aliased', alias: 'rowId' }),
+    );
+  });
+
+  it('mixes bare string and object select entries, plus the appended rowId', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'produtos/p1/historicoDeModificacoes',
+      select: [{ field: 'changes.custo', as: 'change' }, 'timestamp'],
+    });
+    expect(stage.select).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'aliased', alias: 'change' }),
+      'timestamp',
+      expect.objectContaining({ kind: 'aliased', alias: 'rowId' }),
+    );
+  });
+
+  it('rejects a select entry that would collide with the reserved rowId projection', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'produtos',
+        select: [{ field: 'sku', as: 'rowId' }],
+      }),
+    ).toThrow(/reserved/);
+    expect(() => buildPipeline(db, { collection: 'produtos', select: ['rowId'] })).toThrow(
+      /reserved/,
     );
   });
 });

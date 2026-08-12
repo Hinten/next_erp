@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
   Alert,
   Button,
   Card,
   Group,
+  Loader,
   Modal,
   NumberInput,
   Select,
@@ -24,21 +25,19 @@ import { notifications } from '@mantine/notifications';
 import { IconCash } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { getDoc, getDocs } from 'firebase/firestore';
+import { getDoc } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import {
-  deletePagamento,
-  reconcilePedidoEstadoFromPagamentos,
-  savePagamento,
-} from '@delfrance/data/pedido';
+import { deletePagamento, saveChequeSplit, savePagamento } from '@delfrance/data/pedido';
 import {
   BANDEIRA_LABELS,
   ESTADO_PEDIDO_LABELS,
   FORMA_PAGAMENTO,
   FORMA_PAGAMENTO_LABELS,
   STATUS_PAGAMENTO_LABELS,
+  bandeiraCartaoSchema,
   pagamentoInesperado,
+  type Bandeira,
   type EstadoPedido,
   type FormaPagamento,
   type Pagamento,
@@ -46,26 +45,32 @@ import {
 } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
 import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
+import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
+import { bandeiraCartaoCollection } from '@/lib/data/bandeiraCartaoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
+import { callReconciliarPagamentoPedido, createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
+import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
 import { gatewayIdFromTipo, getGateway } from '@/lib/plugins/paymentRegistry';
 import {
   EMPTY_PAGAMENTO_FORM,
+  buildChequeSplitPagamentos,
   formFromPagamento,
+  isChequeSplit,
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
   remainingToPay,
-  sumPagamentosPagos,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
-import { useAuth } from '@/lib/auth/useAuth';
 
 const brl = (n: number): string => formatReais(n);
+
+/** Fixed toast id so overlapping reconcile failures reuse one notification. */
+const RECONCILE_ERROR_ID = 'pedido-reconcile-falhou';
 
 const formaOptions = (Object.entries(FORMA_PAGAMENTO_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
@@ -77,21 +82,23 @@ const statusOptions = [
     label,
   })),
 ];
-const bandeiraOptions = [
-  { value: '', label: '(nenhuma)' },
-  ...(Object.entries(BANDEIRA_LABELS) as [string, string][]).map(([value, label]) => ({
-    value,
-    label,
-  })),
+const INTERVALO_OPTIONS = [
+  { value: 'dias', label: 'Dias' },
+  { value: 'meses', label: 'Meses' },
 ];
 
 /**
  * Editable list of pagamentos for a pedido — create / edit / delete plus the
  * inline status change. Immediate writes go through `savePagamento` /
  * `deletePagamento` (the use-case layer), mirroring the Incidentes tab. The card
- * (bandeira/número/autorização) and cheque detail groups are editable per forma;
- * the card catalog fields (tarifa/prazo/CNPJ) and the Mercado Pago link stay
- * pass-through. Refunds still resolve via the PaymentGateway plugin registry.
+ * (bandeira/número/autorização) and cheque detail groups are editable per forma.
+ * Bandeira is picked from the `bandeirasCartao` catalog (filtered by
+ * `ehCredito`), which auto-fills the catalog fields (tarifa/prazo/CNPJ) and
+ * clamps parcelas to the pick's `maxParcelas`; the Mercado Pago link stays
+ * pass-through. A cheque payment being ADDED with `parcelas > 1` fans out into
+ * one pagamento per installment (`buildChequeSplitPagamentos` /
+ * `saveChequeSplit`) instead of a single multi-parcela doc. Refunds still
+ * resolve via the PaymentGateway plugin registry.
  */
 export function PagamentosSection({
   pedidoId,
@@ -121,34 +128,94 @@ export function PagamentosSection({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const { user } = useAuth();
+  const [reconciling, setReconciling] = useState(false);
+  // Reconciles can overlap (e.g. flipping the status on two rows in quick
+  // succession), so the indicator is refcounted — a boolean would be cleared by
+  // whichever call settles FIRST, hiding the spinner while another is in flight.
+  const reconcilesEmVoo = useRef(0);
+  // The most recently REQUESTED bandeira pick — guards the async getDoc below
+  // against resolving out of order (a slow first pick landing after a faster
+  // second one would otherwise overwrite the newer catalog fields with stale
+  // ones).
+  const latestBandeiraPick = useRef<string | null>(null);
 
-  // Auto-estado transition (legacy `cadastroPedidoProvider`): after every
-  // pagamento mutation, re-read the payments, sum the approved ones, and let the
-  // use-case advance/downgrade the pedido `estado` (→ pago / aguardando) plus
-  // append a history row. Best-effort — the pagamento itself is already saved, so
-  // a failed reconcile must not surface as a save error.
-  async function reconcileEstado() {
+  // On a `bandeirasCartao` pick, fetch the catalog doc once and fold its fields
+  // into the form (`bandeira` + tarifa/tarifaFixa/prazoRecebimento/CNPJ), clamping
+  // parcelas to the pick's `maxParcelas`. A clear (`next === null`) just drops the
+  // ref — the last-resolved catalog fields are left as-is (same "preserved"
+  // semantics as an untouched existing card).
+  async function handleBandeiraPick(next: unknown) {
+    const ref = typeof next === 'string' ? next : null;
+    latestBandeiraPick.current = ref;
+    setForm((f) => ({ ...f, bandeiraCartaoRef: ref }));
+    if (ref === null) return;
+    const docRef = dereferenceOuterRef(getFirebaseFirestore(), ref);
+    if (!docRef) return;
     try {
-      const snap = await getDocs(pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId }));
-      const valorPago = sumPagamentosPagos(
-        snap.docs.map((d) => {
-          const p = d.data();
-          return { id: d.id, valor: p.valor, status_pagamento: p.status_pagamento };
-        }),
-      );
-      await reconcilePedidoEstadoFromPagamentos(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        valorPago,
-        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
+      const snap = await getDoc(docRef);
+      // A newer pick superseded this one while the fetch was in flight — drop
+      // this (stale) result instead of clobbering the newer catalog fields.
+      if (latestBandeiraPick.current !== ref) return;
+      const parsed = bandeiraCartaoSchema.safeParse(snap.data());
+      if (!parsed.success) return;
+      const catalog = parsed.data;
+      setForm((f) => ({
+        ...f,
+        bandeira: catalog.bandeira ?? '',
+        cnpjInstituicao: catalog.cnpj_instituicao,
+        tarifa: catalog.tarifa,
+        tarifaFixa: catalog.tarifaFixa,
+        prazoRecebimento: catalog.prazoRecebimento,
+        parcelas: Math.min(f.parcelas, catalog.maxParcelas),
+      }));
+    } catch (err) {
+      // The caller fires this fire-and-forget (`void handleBandeiraPick(...)`),
+      // so an uncaught rejection here would be a silent, unreported failure —
+      // surface it instead of leaving the picker stuck with no explanation.
+      if (!(err instanceof FirebaseError)) throw err;
+      notifications.show({
+        color: 'red',
+        title: 'Falha ao carregar a bandeira selecionada',
+        message: err.message,
       });
+    }
+  }
+
+  // Auto-estado transition (legacy `cadastroPedidoProvider`): after every pagamento
+  // mutation the server-owned `reconciliarPagamentoPedido` callable re-sums the
+  // payments and advances/downgrades the pedido `estado` (→ pago / aguardando). The
+  // `historicoEstadoPedido` row follows from the `onPedidoEstadoChanged` trigger
+  // observing that write. It reads the pedido AND every pagamento in ONE Admin-SDK
+  // transaction (#308) — the client SDK can't query inside a transaction, so the old
+  // client-side sum raced across tabs/sessions.
+  //
+  // Best-effort: the pagamento itself is already committed, so a failed reconcile must
+  // not surface as a save error — but it IS surfaced loudly, because the estado is now
+  // genuinely stale and only a human can settle it. `functions/not-found` in particular
+  // means the callable was never deployed (deploy is manual — apps/functions/CLAUDE.md).
+  async function reconcileEstado() {
+    reconcilesEmVoo.current += 1;
+    setReconciling(true);
+    try {
+      await callReconciliarPagamentoPedido(pedidoId);
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
-      // Reached after save / delete / status change, so keep the message neutral.
+      console.error('reconciliarPagamentoPedido falhou', err);
+      // Mantine IGNORES a `show` whose id is already mounted — it does not replace
+      // it — so hide first. Otherwise a second failure inside the autoClose window
+      // renders NOTHING, and back-to-back failures are exactly what a missing
+      // deploy produces.
+      notifications.hide(RECONCILE_ERROR_ID);
       notifications.show({
-        color: 'yellow',
-        message: 'O estado do pedido não pôde ser atualizado automaticamente.',
+        id: RECONCILE_ERROR_ID,
+        color: 'red',
+        title: 'Estado do pedido não atualizado',
+        message: `A alteração no pagamento foi gravada, mas o estado do pedido não pôde ser recalculado (${err.code}). Ajuste o estado manualmente na aba Estado/Histórico.`,
+        autoClose: 8000,
       });
+    } finally {
+      reconcilesEmVoo.current -= 1;
+      if (reconcilesEmVoo.current === 0) setReconciling(false);
     }
   }
 
@@ -173,11 +240,19 @@ export function PagamentosSection({
     setSaving(true);
     setSaveError(null);
     try {
-      await savePagamento(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        pagamentoId: editing.id,
-        pagamento: pagamentoDataFromForm(form, editing.base),
-      });
+      const port = createClientPedidoPort(getFirebaseFirestore());
+      if (isChequeSplit(form, editing.id)) {
+        await saveChequeSplit(port, {
+          pedidoId,
+          pagamentos: buildChequeSplitPagamentos(form, editing.base),
+        });
+      } else {
+        await savePagamento(port, {
+          pedidoId,
+          pagamentoId: editing.id,
+          pagamento: pagamentoDataFromForm(form, editing.base),
+        });
+      }
       setEditing(null);
       await reconcileEstado();
     } catch (err) {
@@ -201,6 +276,18 @@ export function PagamentosSection({
       });
       setDeleteTarget(null);
       await reconcileEstado();
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        // `deleteTarget` is only cleared on success, so the confirm modal stays
+        // open and the user can retry or cancel.
+        notifications.show({
+          color: 'red',
+          title: 'Falha ao excluir o pagamento',
+          message: err.message,
+        });
+        return;
+      }
+      throw err;
     } finally {
       setDeleting(false);
     }
@@ -222,9 +309,20 @@ export function PagamentosSection({
   return (
     <Stack>
       <Group justify="space-between" align="center">
-        <Title order={3}>Pagamentos</Title>
+        <Group gap="xs" align="center">
+          <Title order={3}>Pagamentos</Title>
+          {/* `handleSave` / `handleDelete` close their own form/modal before awaiting
+              the reconcile, so this shared indicator is what covers all three call
+              sites (add, edit, delete, inline status change). */}
+          {reconciling && (
+            <Group gap={6} c="dimmed">
+              <Loader size="xs" />
+              <Text size="xs">Atualizando o estado do pedido…</Text>
+            </Group>
+          )}
+        </Group>
         {!editing && (
-          <Button size="xs" onClick={openAdd} disabled={disabled}>
+          <Button size="xs" onClick={openAdd} disabled={disabled || reconciling}>
             + Adicionar pagamento
           </Button>
         )}
@@ -246,7 +344,24 @@ export function PagamentosSection({
                 label="Forma de pagamento"
                 data={formaOptions}
                 value={form.forma}
-                onChange={(v) => v && setForm((f) => ({ ...f, forma: v }))}
+                onChange={(v) =>
+                  // Clear the resolved bandeira + catalog fields on forma change,
+                  // not just the picker's ref — a crédito pick filtered by
+                  // ehCredito:true would otherwise still get PERSISTED after
+                  // switching to débito (and vice-versa), even though the picker
+                  // itself visually cleared.
+                  v &&
+                  setForm((f) => ({
+                    ...f,
+                    forma: v,
+                    bandeiraCartaoRef: null,
+                    bandeira: '',
+                    cnpjInstituicao: null,
+                    tarifa: null,
+                    tarifaFixa: null,
+                    prazoRecebimento: null,
+                  }))
+                }
                 allowDeselect={false}
                 searchable
                 nothingFoundMessage="Nenhuma forma encontrada"
@@ -300,13 +415,21 @@ export function PagamentosSection({
             {vis.cartao && (
               <>
                 <Group grow align="flex-start">
-                  <Select
+                  <CollectionSelect
+                    collection={bandeiraCartaoCollection}
+                    labelField="nome"
+                    fieldName="pagamento-bandeira"
                     label="Bandeira"
-                    data={bandeiraOptions}
-                    value={form.bandeira}
-                    onChange={(v) => setForm((f) => ({ ...f, bandeira: v ?? '' }))}
-                    searchable
-                    nothingFoundMessage="Nenhuma bandeira encontrada"
+                    hint="Preenche tarifa, prazo de recebimento e CNPJ automaticamente."
+                    value={form.bandeiraCartaoRef}
+                    onChange={(next) => void handleBandeiraPick(next)}
+                    filters={[
+                      {
+                        field: 'ehCredito',
+                        op: 'eq',
+                        value: Number(form.forma) === FORMA_PAGAMENTO.cartao_credito,
+                      },
+                    ]}
                     disabled={disabled}
                   />
                   <TextInput
@@ -329,10 +452,13 @@ export function PagamentosSection({
                     disabled={disabled}
                   />
                 </Group>
-                <Text size="xs" c="dimmed">
-                  Tarifa, prazo de recebimento e CNPJ da instituição vêm do cadastro de bandeiras e
-                  ainda não são editáveis aqui; os valores existentes são preservados.
-                </Text>
+                {form.bandeiraCartaoRef === null && form.bandeira !== '' && (
+                  <Text size="xs" c="dimmed">
+                    Bandeira atual: {BANDEIRA_LABELS[form.bandeira as Bandeira] ?? form.bandeira}{' '}
+                    (tarifa, prazo e CNPJ preservados do cadastro anterior). Selecione uma bandeira
+                    acima para substituir.
+                  </Text>
+                )}
               </>
             )}
             {vis.cheque && (
@@ -401,12 +527,10 @@ export function PagamentosSection({
                     }}
                     disabled={disabled}
                   />
-                  <TextInput
+                  <TelefoneTextInput
                     label="Telefone"
-                    maxLength={16}
                     value={form.telefone}
-                    onChange={(e) => {
-                      const value = e.currentTarget.value;
+                    onChange={(value) => {
                       setForm((f) => ({ ...f, telefone: value }));
                     }}
                     disabled={disabled}
@@ -422,6 +546,50 @@ export function PagamentosSection({
                   clearable
                   disabled={disabled}
                 />
+                {/* Split only applies to a NEW cheque payment (legacy
+                    `_adicionarCheques`) — editing an existing one just updates its
+                    own parcelas count, it doesn't fan out more docs. */}
+                {form.parcelas > 1 && editing?.id === null && (
+                  <>
+                    <Group grow align="flex-start">
+                      <Select
+                        label="Intervalo entre os cheques"
+                        data={INTERVALO_OPTIONS}
+                        value={form.intervalo}
+                        onChange={(v) =>
+                          v &&
+                          setForm((f) => ({
+                            ...f,
+                            intervalo: v as PagamentoFormState['intervalo'],
+                          }))
+                        }
+                        allowDeselect={false}
+                        disabled={disabled}
+                      />
+                      <NumberInput
+                        label={
+                          form.intervalo === 'dias' ? 'A cada quantos dias' : 'A cada quantos meses'
+                        }
+                        value={form.quantidadeIntervalo}
+                        onChange={(v) => {
+                          const n = typeof v === 'number' ? v : Number(v);
+                          setForm((f) => ({
+                            ...f,
+                            quantidadeIntervalo: Number.isFinite(n) && n >= 1 ? Math.trunc(n) : 1,
+                          }));
+                        }}
+                        min={1}
+                        allowDecimal={false}
+                        clampBehavior="strict"
+                        disabled={disabled}
+                      />
+                    </Group>
+                    <Text size="xs" c="dimmed">
+                      Ao adicionar, {form.parcelas} pagamentos de cheque serão gerados — um por
+                      parcela, com &quot;bom para&quot; espaçados pelo intervalo acima.
+                    </Text>
+                  </>
+                )}
               </Stack>
             )}
             {(vis.vencimento || vis.nFat) && (
@@ -610,6 +778,15 @@ function PagamentoRow({
         pagamento: { ...pagamento, status_pagamento: nextStatus },
       });
       await onAfterChange();
+    } catch (err) {
+      // Same shape as `handleDelete`: without this a rejected save escapes as an
+      // unhandled rejection and the Select silently snaps back with no message.
+      if (!(err instanceof FirebaseError)) throw err;
+      notifications.show({
+        color: 'red',
+        title: 'Falha ao atualizar o status do pagamento',
+        message: err.message,
+      });
     } finally {
       setSavingStatus(false);
     }

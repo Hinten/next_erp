@@ -76,9 +76,30 @@ export default defineConfig({
     // by naming it `<x>.cadastros.e2e.spec.ts` or `<x>.vendas.e2e.spec.ts`;
     // no config edit needed.
     {
-      // Master-data domain → e2e-cadastros.yml
+      // Master-data domain → e2e-cadastros.yml. Excludes recalcular-precos
+      // (see `crud-cadastros-recalculo` below) — that spec needs the whole
+      // catalog quiescent, so it can't share this project's parallel pool.
       name: 'crud-cadastros',
       testMatch: /\.cadastros\.e2e\.spec\.ts$/,
+      testIgnore: /recalcular-precos\.cadastros\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Bulk price recalculation (#544): `Aplicar` scans + writes EVERY
+      // parent produto in the shared `produtos` collection with no
+      // per-spec scoping (the screen exposes none — see the spec's own top
+      // comment). If it ran fullyParallel alongside the rest of
+      // `crud-cadastros`, its writes would race their seed/assert/cleanup
+      // windows — a stray `precos` key can land on another spec's
+      // still-alive produto and break its strict equality assertions
+      // (observed against produto-preco.cadastros.e2e.spec.ts).
+      // `dependencies` makes Playwright run every `crud-cadastros` test
+      // (including each spec's `afterAll` cleanup) to completion FIRST, so
+      // by the time this spec's `Aplicar` fires the shared catalog is
+      // quiescent.
+      name: 'crud-cadastros-recalculo',
+      testMatch: /recalcular-precos\.cadastros\.e2e\.spec\.ts$/,
+      dependencies: ['crud-cadastros'],
       use: { ...devices['Desktop Chrome'] },
     },
     {
@@ -97,21 +118,64 @@ export default defineConfig({
       testMatch: /\.emulator\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
+    // OPT-IN perf/leak project (the checkout 1000-item harness spec,
+    // `*.local.spec.ts`). Playwright runs EVERY configured project when no
+    // `--project` is passed, so this one is only ADDED to the list when
+    // `CHECKOUT_PERF=1` — an unguarded project would drag the slow,
+    // machine-dependent 1000-scan spec into every plain local `playwright test`.
+    // CI never runs it either way: each workflow passes explicit `--project=`
+    // args (see e2e-reusable.yml). CI gates the scan ALGORITHM instead, via the
+    // op-count test in `@delfrance/schemas` (`checkoutEngine.perf.test.ts`).
+    // Run it with (needs the dev server — the harness route is dev-only):
+    //   CHECKOUT_PERF=1 playwright test --project=local-perf
+    ...(process.env.CHECKOUT_PERF === '1'
+      ? [
+          {
+            name: 'local-perf',
+            testMatch: /\.local\.spec\.ts$/,
+            use: { ...devices['Desktop Chrome'] },
+          },
+        ]
+      : []),
   ],
-  webServer: process.env.PLAYWRIGHT_BASE_URL
-    ? undefined
-    : {
-        // Local dev serves with `pnpm dev`. CI overrides this with
-        // `PLAYWRIGHT_WEB_CMD='pnpm exec next start --port 3000'` to serve a
-        // production build — no per-route cold compile, so it answers fast.
-        command: process.env.PLAYWRIGHT_WEB_CMD ?? 'pnpm dev',
-        port: PORT,
-        reuseExistingServer: !process.env.CI,
-        // Next 16 dev cold-compiles every imported module on first request; in
-        // CI we've seen this exceed the previous 60s budget. 180s gives
-        // headroom while still failing the run if the server never comes up.
-        timeout: 180_000,
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
+  webServer: [
+    ...(process.env.PLAYWRIGHT_BASE_URL
+      ? []
+      : [
+          {
+            // Local dev serves with `pnpm dev`. CI overrides this with
+            // `PLAYWRIGHT_WEB_CMD='pnpm exec next start --port 3000'` to serve a
+            // production build — no per-route cold compile, so it answers fast.
+            command: process.env.PLAYWRIGHT_WEB_CMD ?? 'pnpm dev',
+            port: PORT,
+            reuseExistingServer: !process.env.CI,
+            // Next 16 dev cold-compiles every imported module on first request; in
+            // CI we've seen this exceed the previous 60s budget. 180s gives
+            // headroom while still failing the run if the server never comes up.
+            timeout: 180_000,
+            stdout: 'pipe' as const,
+            stderr: 'pipe' as const,
+          },
+        ]),
+    // configuracoes.spec.ts drives the admin endpoints (user creation + claims
+    // refresh), which live in apps/integrations on :3001 — apps/web has no route
+    // handlers at all, so without this server those calls 404 against :3000 and
+    // the suite fails on a status assertion. Opt-in via the env var, mirroring
+    // PLAYWRIGHT_WEB_CMD above: only the vendas CI lane sets it (see
+    // e2e-reusable.yml's `integrations` input). Unset locally, where root
+    // `pnpm dev` already serves :3001 — and where the client falls back to
+    // http://localhost:3001 in development anyway.
+    ...(process.env.PLAYWRIGHT_INTEGRATIONS_CMD
+      ? [
+          {
+            command: process.env.PLAYWRIGHT_INTEGRATIONS_CMD,
+            port: 3001,
+            reuseExistingServer: !process.env.CI,
+            timeout: 180_000,
+            stdout: 'pipe' as const,
+            stderr: 'pipe' as const,
+          },
+        ]
+      : []),
+  ],
 });

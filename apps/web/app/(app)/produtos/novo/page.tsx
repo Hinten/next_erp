@@ -18,11 +18,10 @@ import {
   produtoPageIssues,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
-import { applyPrecosChange, recordCustoHistory } from '@delfrance/data/produto';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
+import { buildProdutoTransactionWrites } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { AnexoManager } from '../_components/AnexoManager';
@@ -48,7 +47,6 @@ export default function NovoProdutoPage() {
   const { user } = useAuth();
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
-  const port = useMemo(() => createClientProdutoPort(db), [db]);
 
   // Listas de preços (live, bounded) — the Preço e custo tab is editable
   // before the first save (precos is a doc field, unlike fotos).
@@ -262,22 +260,11 @@ export default function NovoProdutoPage() {
             impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
           })
         }
-        onAfterSave={async (id, values) => {
-          // First save of a produto born with prices/cost → initial history
-          // records (Flutter's oldPrecos-null branch). New produtos have no
-          // variation children yet, so the propagation inside applyPrecosChange
-          // is a no-op.
-          await applyPrecosChange(port, {
-            produtoId: id,
-            oldPrecos: null,
-            newPrecos: (values.precos as PrecosMap) ?? null,
-          });
-          const custo = typeof values.custo === 'number' ? values.custo : null;
-          if (custo !== null) await recordCustoHistory(port, id, custo);
-
-          // (The extraData singleton is written atomically with the produto doc
-          // via `transactionWrites` — not here.)
-        }}
+        // No onAfterSave here anymore: precos/custo history (this produto's
+        // first-save "oldPrecos: null" records) is now recorded server-side by
+        // the `onProdutoPrecoCustoChanged` Cloud Function trigger (since
+        // 2026-07-21), and the extraData singleton is written atomically with
+        // the produto doc via `transactionWrites`.
         onSaved={(id) => router.replace(`/produtos/${id}/editar`)}
       />
     </Stack>

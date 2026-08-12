@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 
 const PERM_ENDERECO_READ = 1n << 3n;
@@ -41,6 +42,51 @@ export const ufSchema = z.enum([
 export type UF = z.infer<typeof ufSchema>;
 
 /**
+ * Named members of {@link ufSchema}. Each name IS its wire value — a UF sigla is
+ * already the readable form — so unlike the other companion constants in this
+ * package this one buys rename-safety and `Find all references`, not
+ * translation. `UF_SIGLA.EX` is the one that reads better than the raw literal:
+ * it is not a state, it is the endereço-no-exterior marker.
+ *
+ * NOT named `UF`: the `delfrance/prefer-schema-enum` suggestion lands its import
+ * by looking for a specifier named after the TYPE, so a constant sharing that
+ * name would emit `import { UF, UF }`.
+ *
+ * Enforced by that same rule, which fires for any Zod enum that has a companion
+ * constant like this one.
+ */
+export const UF_SIGLA = {
+  AC: 'AC',
+  AL: 'AL',
+  AM: 'AM',
+  AP: 'AP',
+  BA: 'BA',
+  CE: 'CE',
+  DF: 'DF',
+  ES: 'ES',
+  GO: 'GO',
+  MA: 'MA',
+  MG: 'MG',
+  MS: 'MS',
+  MT: 'MT',
+  PA: 'PA',
+  PB: 'PB',
+  PE: 'PE',
+  PI: 'PI',
+  PR: 'PR',
+  RJ: 'RJ',
+  RN: 'RN',
+  RS: 'RS',
+  RO: 'RO',
+  RR: 'RR',
+  SC: 'SC',
+  SE: 'SE',
+  SP: 'SP',
+  TO: 'TO',
+  EX: 'EX',
+} as const satisfies Record<string, UF>;
+
+/**
  * Endereço schema. Subcollection of Cliente.
  * Mirrors `packages/clientes/lib/src/models.dart` Endereco fields.
  */
@@ -57,13 +103,31 @@ export const enderecoSchema = z.object({
   numero: z.string().min(1).max(10).describe('Número'),
   bairro: z.string().min(1).max(100).default('SEM BAIRRO').describe('Bairro'),
   complemento: z.string().max(50).nullable().default(null).describe('Complemento'),
+  /**
+   * Código IBGE do município (`cMun` na NF-e).
+   *
+   * ⚠️ **THIS IS NOT A CACHE. Nothing may write here programmatically.** ⚠️
+   *
+   * `cMun` is resolved at emission time from the `CMUN` collection
+   * (`resolveCodigoMunicipio` in `@delfrance/data/admin`). When that table does
+   * not cover a CEP, ViaCEP answers and the result is written back into
+   * **`CMUN`** — never here. `CMUN` is the cache; this field is not.
+   *
+   * It exists for exactly one situation: the table AND ViaCEP both failed
+   * (rare, but it has happened), and an operator needs to unblock an emission
+   * by hand. That is also why it is visible on the endereço form.
+   *
+   * If you are about to persist a resolved código onto an endereço — don't.
+   * Teach `CMUN` instead; that fixes it for every future emission, for every
+   * endereço sharing that CEP. See #785.
+   */
   codigoMunicipio: z
     .string()
     .max(8)
     .regex(/^\d*$/, 'apenas números')
     .nullable()
     .default(null)
-    .describe('Código do Município'),
+    .describe('Código do Município (IBGE) — preencher só se o sistema não encontrar'),
   cidade: z.string().min(1).max(100).describe('Cidade'),
   estado: ufSchema.describe('Estado (UF)'),
   cPais: z.string().nullable().default(null).describe('Código do País'),
@@ -94,6 +158,9 @@ export const enderecoSchema = z.object({
     .nullable()
     .default(null)
     .describe('Telefone'),
+  // System stamps — stamped by `saveRecord` / ObjectView (hidden from forms).
+  timestamp: millisSinceEpoch('Criação').nullable().default(null),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type Endereco = z.infer<typeof enderecoSchema>;

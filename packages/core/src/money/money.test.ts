@@ -37,26 +37,25 @@ describe('format', () => {
 });
 
 describe('roundReais', () => {
-  it('rounds HALF UP at the 2nd decimal (the 3rd decimal decides)', () => {
-    expect(roundReais(5.523)).toBe(5.52);
-    expect(roundReais(6.555)).toBe(6.56);
-    expect(roundReais(6.739)).toBe(6.74);
-    expect(roundReais(2.675)).toBe(2.68);
+  it('rounds from the IEEE-754 double, matching Dart duasCasasDecimais (toFixed), NOT textbook half-up', () => {
+    // These x.xx5 boundaries round DOWN because the nearest double to each is a
+    // hair BELOW the exact tie (e.g. 1.005 is really 1.00499999999999989…).
+    expect(roundReais(1.005)).toBe(1.0);
+    expect(roundReais(2.675)).toBe(2.67);
+    expect(roundReais(6.555)).toBe(6.55);
+    // ...while this one rounds UP: its double (24.0150000000000005684…) sits a
+    // hair ABOVE the tie. Same rule (round the actual double), opposite result.
+    expect(roundReais(24.015)).toBe(24.02);
   });
 
-  it('is float-robust where toFixed / Math.round are NOT', () => {
-    // The two naive impls disagree AND each is wrong on some input:
-    // toFixed sees the 6.55499… double for 6.555 and rounds DOWN to 6.55,
-    expect(Number((6.555).toFixed(2))).toBe(6.55); // naive #1 (wrong here)
-    // while Math.round(n*100) underflows on 1.005 (1.005*100 = 100.4999…) → 1.00.
-    expect(Math.round(1.005 * 100) / 100).toBe(1); // naive #2 (wrong here)
-    // The canonical helper rounds both half-up correctly.
-    expect(roundReais(6.555)).toBe(6.56);
-    expect(roundReais(1.005)).toBe(1.01);
+  it('agrees with plain Number(n.toFixed(2)) by construction', () => {
+    expect(roundReais(6.555)).toBe(Number((6.555).toFixed(2)));
+    expect(roundReais(1.005)).toBe(Number((1.005).toFixed(2)));
   });
 
-  it('rounds away from zero for negatives (symmetric)', () => {
-    expect(roundReais(-6.555)).toBe(-6.56);
+  it('rounds negatives from their own double the same way (no forced symmetry)', () => {
+    expect(roundReais(-1.005)).toBe(-1.0);
+    expect(roundReais(10.005)).toBe(10.01); // its double sits above the tie
     expect(roundReais(-5.523)).toBe(-5.52);
   });
 
@@ -66,14 +65,17 @@ describe('roundReais', () => {
     expect(roundReais(0)).toBe(0);
   });
 
+  it('rounds ordinary non-boundary values as expected', () => {
+    expect(roundReais(5.523)).toBe(5.52);
+    expect(roundReais(6.739)).toBe(6.74);
+  });
+
   it('passes non-finite values through unchanged', () => {
     expect(roundReais(Number.NaN)).toBeNaN();
     expect(roundReais(Number.POSITIVE_INFINITY)).toBe(Number.POSITIVE_INFINITY);
   });
 
-  it('collapses tiny values that stringify in scientific notation to 0 (not NaN)', () => {
-    // `(1e-7).toString() === "1e-7"`, which the naive `${n}e2` shift would turn
-    // into the invalid literal "1e-7e2" → NaN.
+  it('collapses tiny values to 0 (not NaN)', () => {
     expect(roundReais(1e-7)).toBe(0);
     expect(roundReais(5.5e-17)).toBe(0);
     // The textbook float residual must not poison a near-zero difference.
@@ -87,9 +89,9 @@ describe('roundReais', () => {
 });
 
 describe('formatReais', () => {
-  it('formats a reais amount as BRL, rounding half-up first', () => {
+  it('formats a reais amount as BRL, rounding from the double first', () => {
     const out = formatReais(6.555);
-    expect(out).toContain('6,56');
+    expect(out).toContain('6,55');
     expect(out).toMatch(/R\$/);
   });
 

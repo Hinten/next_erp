@@ -29,6 +29,10 @@
 //       packages/integrations/freight-br/src/melhor-envio/cart.ts
 //       apps/web/lib/nfe/export/csv.ts  (parses authoritative NF-e XML money
 //                                        strings → cents for the export sum)
+//       tools/test-fixtures/src/debug-me-cart.ts  (debug repro of the Melhor
+//                                        Envio wire format; mirrors the
+//                                        allow-listed production serializer
+//                                        packages/integrations/freight-br/src/melhor-envio/cart.ts)
 //
 // Error (not warn): re-introducing ad-hoc rounding is a real consistency bug
 // (it diverges from the NF-e total at x.xx5 edges). Distinct rule name, so it
@@ -42,6 +46,9 @@ const ALLOW_LIST = [
   '/apps/nfe/lib/nfe/orchestrator/generator-input.ts',
   '/packages/integrations/freight-br/src/melhor-envio/cart.ts',
   '/apps/web/lib/nfe/export/csv.ts',
+  // Debug repro of the Melhor Envio wire format; mirrors the allow-listed
+  // production serializer packages/integrations/freight-br/src/melhor-envio/cart.ts.
+  '/tools/test-fixtures/src/debug-me-cart.ts',
 ];
 
 function isHundredLiteral(node) {

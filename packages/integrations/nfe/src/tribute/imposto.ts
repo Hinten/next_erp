@@ -26,6 +26,9 @@ import {
   type Imposto,
   type Origem,
   type TributeItem,
+  CRT,
+  CSOSN,
+  CST_PIS_COFINS,
   IPI_TRIB_CSTS,
   impostoSchema,
   tributeItemSchema,
@@ -108,14 +111,39 @@ function requireICMSConfig(cfg: ConfiguracaoICMS | null | undefined): Configurac
   return cfg;
 }
 
+/**
+ * FCP-ST (Fundo de Combate à Pobreza retido por ST) is an all-or-nothing
+ * wire group: the XSD models the base/rate/value trio as a set that must be
+ * emitted together or omitted entirely. The individual `fmtMoneyOpt` /
+ * `fmtRateOpt` calls would happily emit a partial trio (only the non-null
+ * members), which SEFAZ rejects (cStat 215). Fail fast at build time on a
+ * partial trio, naming the CSOSN and the missing member(s). `fields` carries
+ * the wire names so CSOSN 500's `…Ret` variant reports its own field names.
+ */
+function assertFcpStTrio(
+  csosn: string,
+  fields: ReadonlyArray<readonly [string, number | null | undefined]>,
+): void {
+  const missing = fields.filter(([, value]) => value == null).map(([name]) => name);
+  // 0 missing (full trio) and all missing (no trio) are both valid; a
+  // partial trio — 1 or 2 present — is the only rejected shape.
+  if (missing.length !== 0 && missing.length !== fields.length) {
+    throw new NFeTributeError(
+      `CSOSN '${csosn}' FCP-ST fields are all-or-nothing per the XSD — emit the ` +
+        `complete trio (${fields.map(([name]) => name).join(', ')}) or none; ` +
+        `missing: ${missing.join(', ')}`,
+    );
+  }
+}
+
 function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_imposto_ICMS {
-  if (config.crt === '3') {
+  if (config.crt === CRT.regimeNormal) {
     throw new NFeTributeError(
       'CRT=3 (Regime Normal) is not implemented in this engine (Phase D). ' +
         'Use Simples Nacional configs only.',
     );
   }
-  if (config.crt === '4') {
+  if (config.crt === CRT.meiSimplesNacional) {
     throw new NFeTributeError('CRT=4 (MEI) is not implemented.');
   }
   // CRT='1' (Simples Nacional) or '2' (SN excesso) — both use CSOSN.
@@ -151,6 +179,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '201' requires `configuracaoICMS.csosn201`");
       }
+      assertFcpStTrio('201', [
+        ['vBCFCPST', c.vBCFCPST],
+        ['pFCPST', c.pFCPST],
+        ['vFCPST', c.vFCPST],
+      ]);
       return {
         ICMSSN201: {
           orig: origem,
@@ -175,6 +208,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError(`CSOSN '${csosn}' requires \`configuracaoICMS.csosn202ou203\``);
       }
+      assertFcpStTrio(csosn, [
+        ['vBCFCPST', c.vBCFCPST],
+        ['pFCPST', c.pFCPST],
+        ['vFCPST', c.vFCPST],
+      ]);
       return {
         ICMSSN202: {
           orig: origem,
@@ -196,6 +234,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '500' requires `configuracaoICMS.csosn500`");
       }
+      assertFcpStTrio('500', [
+        ['vBCFCPSTRet', c.vBCFCPSTRet],
+        ['pFCPSTRet', c.pFCPSTRet],
+        ['vFCPSTRet', c.vFCPSTRet],
+      ]);
       return {
         ICMSSN500: {
           orig: origem,
@@ -219,6 +262,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '900' requires `configuracaoICMS.csosn900`");
       }
+      assertFcpStTrio('900', [
+        ['vBCFCPST', c.vBCFCPST],
+        ['pFCPST', c.pFCPST],
+        ['vFCPST', c.vFCPST],
+      ]);
       return {
         ICMSSN900: {
           orig: origem,
@@ -254,24 +302,56 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
  * has `<IPI>` carrying `<cEnq>` then exactly one of `<IPITrib>` (CSTs
  * 00/49/50/99 — tributado, requires `vIPI`) or `<IPINT>` (every other
  * CST — não tributado, only CST). `vIPI` is required for the tributado
- * variant; the other numeric fields are optional and emitted only when
- * provided.
+ * variant, and the XSD `<xs:choice>` after `<CST>` mandates exactly one
+ * complete pair — `(vBC + pIPI)` (por valor) or `(qUnid + vUnid)` (por
+ * quantidade) — never both and never a half pair, enforced here.
  */
 function buildIPI(cfg: ConfiguracaoIPI): TIpi {
   if (IPI_TRIB_CSTS.has(cfg.CST)) {
     if (cfg.vIPI == null) {
       throw new NFeTributeError(`IPI CST=${cfg.CST} (IPITrib) requires \`vIPI\``);
     }
+    // XSD `<IPITrib>` mandates an `<xs:choice>` after `<CST>`: exactly one of
+    // the `(vBC + pIPI)` sequence (por valor) or the `(qUnid + vUnid)` sequence
+    // (por quantidade) — never both, never a half pair. Enforce it here so a
+    // doomed shape fails at build time rather than being rejected by SEFAZ.
+    const hasVBC = cfg.vBC != null;
+    const hasPIPI = cfg.pIPI != null;
+    const hasQUnid = cfg.qUnid != null;
+    const hasVUnid = cfg.vUnid != null;
+    const byValue = hasVBC || hasPIPI;
+    const byQuantity = hasQUnid || hasVUnid;
+    if (byValue && byQuantity) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) must carry exactly one of \`(vBC + pIPI)\` or \`(qUnid + vUnid)\`, not both`,
+      );
+    }
+    if (!byValue && !byQuantity) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) requires exactly one complete pair: \`(vBC + pIPI)\` or \`(qUnid + vUnid)\``,
+      );
+    }
+    if (byValue && !(hasVBC && hasPIPI)) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) por valor requires both \`vBC\` and \`pIPI\` (missing \`${hasVBC ? 'pIPI' : 'vBC'}\`)`,
+      );
+    }
+    if (byQuantity && !(hasQUnid && hasVUnid)) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) por quantidade requires both \`qUnid\` and \`vUnid\` (missing \`${hasQUnid ? 'vUnid' : 'qUnid'}\`)`,
+      );
+    }
     const ipiTrib: TIpi['IPITrib'] = {
       CST: cfg.CST as '00' | '49' | '50' | '99',
       vIPI: fmtMoneyOpt('vIPI', cfg.vIPI)!,
     };
-    const vBC = fmtMoneyOpt('vBC', cfg.vBC);
-    if (vBC != null) ipiTrib.vBC = vBC;
-    const pIPI = fmtRateOpt('pIPI', cfg.pIPI);
-    if (pIPI != null) ipiTrib.pIPI = pIPI;
-    if (cfg.qUnid != null) ipiTrib.qUnid = fmtQuantity('qUnid', cfg.qUnid);
-    if (cfg.vUnid != null) ipiTrib.vUnid = fmtQuantity('vUnid', cfg.vUnid);
+    if (byValue) {
+      ipiTrib.vBC = fmtMoneyOpt('vBC', cfg.vBC)!;
+      ipiTrib.pIPI = fmtRateOpt('pIPI', cfg.pIPI)!;
+    } else {
+      ipiTrib.qUnid = fmtQuantity('qUnid', cfg.qUnid!);
+      ipiTrib.vUnid = fmtQuantity('vUnid', cfg.vUnid!);
+    }
     return { cEnq: cfg.cEnq, IPITrib: ipiTrib };
   }
   return {
@@ -341,8 +421,8 @@ function buildCOFINS(
 
 function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto_PIS {
   switch (cfg.CST) {
-    case '01':
-    case '02': {
+    case CST_PIS_COFINS.tributavelAliquotaBasica:
+    case CST_PIS_COFINS.tributavelAliquotaDiferenciada: {
       // PISAliq — needs vBC + pPIS + vPIS. vBC = vProd (Simples Nacional
       // common posture); pPIS from config; vPIS = vBC × pPIS / 100.
       if (cfg.pPIS == null) {
@@ -359,7 +439,7 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
         },
       };
     }
-    case '03': {
+    case CST_PIS_COFINS.tributavelAliquotaPorUnidade: {
       // PISQtde — by quantity (vAliqProd × qBCProd).
       if (cfg.vAliqProd == null) {
         throw new NFeTributeError('PIS CST=03 requires `vAliqProd`');
@@ -373,39 +453,39 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
         },
       };
     }
-    case '04':
-    case '05':
-    case '06':
-    case '07':
-    case '08':
-    case '09': {
+    case CST_PIS_COFINS.tributavelMonofasicaRevendaAliquotaZero:
+    case CST_PIS_COFINS.tributavelSubstituicaoTributaria:
+    case CST_PIS_COFINS.tributavelAliquotaZero:
+    case CST_PIS_COFINS.isentaContribuicao:
+    case CST_PIS_COFINS.semIncidenciaContribuicao:
+    case CST_PIS_COFINS.suspensaoContribuicao: {
       // PISNT — não tributado.
       return { PISNT: { CST: cfg.CST } };
     }
-    case '49':
-    case '50':
-    case '51':
-    case '52':
-    case '53':
-    case '54':
-    case '55':
-    case '56':
-    case '60':
-    case '61':
-    case '62':
-    case '63':
-    case '64':
-    case '65':
-    case '66':
-    case '67':
-    case '70':
-    case '71':
-    case '72':
-    case '73':
-    case '74':
-    case '75':
-    case '98':
-    case '99': {
+    case CST_PIS_COFINS.outrasOperacoesSaida:
+    case CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoExclusivoNaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoExclusivoExportacao:
+    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoNaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoNaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoExportacao:
+    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoNaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoOutrasOperacoes:
+    case CST_PIS_COFINS.aquisicaoSemDireitoCredito:
+    case CST_PIS_COFINS.aquisicaoComIsencao:
+    case CST_PIS_COFINS.aquisicaoComSuspensao:
+    case CST_PIS_COFINS.aquisicaoAliquotaZero:
+    case CST_PIS_COFINS.aquisicaoSemIncidencia:
+    case CST_PIS_COFINS.aquisicaoSubstituicaoTributaria:
+    case CST_PIS_COFINS.outrasOperacoesEntrada:
+    case CST_PIS_COFINS.outrasOperacoes: {
       // PISOutr — outras operações. SEFAZ XSD models PISOutr as
       // CST, then xs:choice ( vBC + pPIS | qBCProd + vAliqProd ), then vPIS.
       // Codegen-emitted type has all four as optional, but xmllint-wasm
@@ -427,8 +507,8 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
 
 function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_imposto_COFINS {
   switch (cfg.CST) {
-    case '01':
-    case '02': {
+    case CST_PIS_COFINS.tributavelAliquotaBasica:
+    case CST_PIS_COFINS.tributavelAliquotaDiferenciada: {
       if (cfg.pCOFINS == null) {
         throw new NFeTributeError(`COFINS CST=${cfg.CST} requires \`pCOFINS\``);
       }
@@ -443,7 +523,7 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
         },
       };
     }
-    case '03': {
+    case CST_PIS_COFINS.tributavelAliquotaPorUnidade: {
       if (cfg.vAliqProd == null) {
         throw new NFeTributeError('COFINS CST=03 requires `vAliqProd`');
       }
@@ -456,12 +536,12 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
         },
       };
     }
-    case '04':
-    case '05':
-    case '06':
-    case '07':
-    case '08':
-    case '09':
+    case CST_PIS_COFINS.tributavelMonofasicaRevendaAliquotaZero:
+    case CST_PIS_COFINS.tributavelSubstituicaoTributaria:
+    case CST_PIS_COFINS.tributavelAliquotaZero:
+    case CST_PIS_COFINS.isentaContribuicao:
+    case CST_PIS_COFINS.semIncidenciaContribuicao:
+    case CST_PIS_COFINS.suspensaoContribuicao:
       return { COFINSNT: { CST: cfg.CST } };
     default:
       // COFINSOutr — same XSD shape + same posture as PISOutr above:

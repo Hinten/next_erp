@@ -54,6 +54,7 @@ const SENT_FIXED_CNF = '00000042';
 const SENT_EMIT_CPL = 'Sala 12 Andar 3';
 const SENT_DEST_CPL = 'Apto 101 Bloco B';
 const SENT_CLIENTE_EMAIL = 'cliente.teste@example.com';
+const SENT_CLIENTE_ISUF = '123456789';
 
 const SENT_FILIAL: Filial = {
   razaoSocial: 'ACME RAZAO SOCIAL LTDA',
@@ -92,7 +93,7 @@ const SENT_CLIENTE: Cliente = {
   idEstrangeiro: null,
   ie: '222222222',
   imun: null,
-  isUF: null,
+  isUF: SENT_CLIENTE_ISUF,
   email: SENT_CLIENTE_EMAIL,
   telefone: null,
   observacoesInternas: null,
@@ -307,6 +308,15 @@ describe('fidelity — primitives (caller inputs at canonical positions)', () =>
     // `@`, but the generic sanitizer strips `@`. The generator must route
     // emails around the restricted-char filter — assert verbatim survival.
     expectField(out.nfeXml, 'dest', 'email', SENT_CLIENTE_EMAIL);
+  });
+
+  it('cliente.isUF → <ISUF> inside <dest>, in XSD element order', () => {
+    expectField(out.nfeXml, 'dest', 'ISUF', SENT_CLIENTE_ISUF);
+    // The serializer orders by META, not by object key, and the XSD sequence is
+    // indIEDest → IE → ISUF → IM. Asserting the value alone would pass even if
+    // ISUF were emitted in the wrong slot, which the XSD gate rejects.
+    const dest = out.nfeXml.slice(out.nfeXml.indexOf('<dest>'), out.nfeXml.indexOf('</dest>'));
+    expect(dest.indexOf('<ISUF>')).toBeGreaterThan(dest.indexOf('<IE>'));
   });
 });
 
@@ -675,5 +685,58 @@ describe('fidelity — exporta (export operation) block', () => {
   it('omits <exporta> entirely when input.exporta is undefined', () => {
     const out = generateNFe(buildInput());
     expect(out.nfeXml).not.toContain('<exporta>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (i) The <IE> elements are never free text
+// ---------------------------------------------------------------------------
+
+/**
+ * `cliente.ie` is free text and carries the `IE_SENTINELA` tokens alongside
+ * real inscrições. The reader used to emit it verbatim, so
+ * `<IE>Não contribuinte</IE>` reached the signed XML and SEFAZ rejected the
+ * note. Nothing about the sentinel vocabulary is enforced at write time, so
+ * this is the pin: whatever a cliente holds, an `<IE>` that reaches the wire
+ * is alphanumeric, and `dest`'s specifically is digits within the XSD's
+ * `TIeDestNaoIsento` range.
+ */
+describe('fidelity — no <IE> element ever carries free text', () => {
+  const allIeValues = (xml: string): string[] =>
+    [...xml.matchAll(/<IE>([\s\S]*?)<\/IE>/g)].map((m) => m[1] ?? '');
+
+  it.each([
+    ['a real inscrição estadual', '222222222'],
+    ['a punctuated inscrição estadual', '110.042.490.114'],
+    ['the NAO CONTRIBUINTE sentinel', 'NAO CONTRIBUINTE'],
+    ['a hand-typed não contribuinte', 'Não contribuinte'],
+    ['the ISENTO sentinel', 'ISENTO'],
+    ['no inscrição at all', null],
+  ])('%s never leaks a non-alphanumeric <IE>', (_label, ie) => {
+    const out = generateNFe(buildInput({ cliente: { ...SENT_CLIENTE, ie } }));
+    const values = allIeValues(out.nfeXml);
+    // emit always carries one; dest only for indIEDest='1'.
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) expect(value).toMatch(/^[A-Za-z0-9]+$/);
+  });
+
+  it("dest's <IE> matches the XSD TIeDestNaoIsento pattern [0-9]{2,14}", () => {
+    const out = generateNFe(buildInput({ cliente: { ...SENT_CLIENTE, ie: '110.042.490.114' } }));
+    const destBlock = scope(out.nfeXml, 'dest');
+    const enderStart = destBlock.indexOf('<enderDest>');
+    const tail = enderStart === -1 ? destBlock : destBlock.slice(enderStart);
+    const values = allIeValues(tail);
+    expect(values).toHaveLength(1);
+    expect(values[0]).toMatch(/^\d{2,14}$/);
+  });
+
+  // The signed end-to-end XSD pass for a sentinel-carrying cliente lives in
+  // generator.test.ts, which already has the signing fixture — the XSD rejects
+  // an unsigned <NFe> outright, so it cannot run here.
+  it('omits <IE> from dest entirely for a sentinel', () => {
+    const out = generateNFe(buildInput({ cliente: { ...SENT_CLIENTE, ie: 'Não contribuinte' } }));
+    const destBlock = scope(out.nfeXml, 'dest');
+    expect(destBlock).toContain('<indIEDest>9</indIEDest>');
+    expect(allIeValues(destBlock)).toEqual([]);
   });
 });

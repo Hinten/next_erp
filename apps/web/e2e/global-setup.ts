@@ -1,11 +1,12 @@
 import { type Browser, type FullConfig, type Page, chromium, request } from '@playwright/test';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { ensureTestUser, grantAllPerms, seed } from '@delfrance/test-fixtures';
 import { e2eUserEmail } from './_helpers/run-id';
 import { sweepStaleE2EUsers } from './_helpers/admin-cleanup';
+import { verifyE2ENamespaceAccess } from './_helpers/verify-e2e-rules';
 
 /**
  * Playwright globalSetup: prepares the staging backend once per test run.
@@ -18,18 +19,26 @@ import { sweepStaleE2EUsers } from './_helpers/admin-cleanup';
  *      bits + the tenant claim via setCustomUserClaims. globalTeardown
  *      deletes it. No shared persistent account: parallel-safe, no
  *      `E2E_USER_*` secrets, no password drift.
- *   4. Drive the login form, wait for Firebase to persist the session into
+ *   4. Outside emulator mode, probe the DEPLOYED staging ruleset as that user
+ *      over the real REST APIs (never the Admin SDK, which bypasses rules) —
+ *      write+read one doc under this run's `e2e_<runId>_probe` namespace and
+ *      abort with a clear message if denied, instead of letting a stale/wrong
+ *      rules deploy surface as a confusing per-test `PERMISSION_DENIED` deep
+ *      into the suite (#160, #172).
+ *   5. Drive the login form, wait for Firebase to persist the session into
  *      IndexedDB, capture `storageState`, then verify it actually restores an
  *      authenticated session in a fresh context. Retried up to 3×; if no
  *      attempt produces a working storageState we throw — far better than
  *      letting the whole suite run with broken auth and die on test #1.
  *
- * Graceful degradation: if the Admin SDK secrets are missing
- * (FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT) we write an empty
- * storageState and return. The unauthenticated smoke specs (`login.smoke`,
- * `auth-guard.smoke`) still run and pass; the auth-requiring specs
- * (all-pages, CRUD) then fail fast at `/login` — the intended loud signal
- * that the backend wasn't configured.
+ * Auth is mandatory: if the Admin SDK secrets are missing
+ * (FIREBASE_PROJECT_ID, and — outside emulator mode — FIREBASE_SERVICE_ACCOUNT)
+ * this throws immediately instead of degrading to an empty storageState. Every
+ * e2e workflow (e2e-cadastros.yml, e2e-vendas.yml, e2e-emulator.yml) already
+ * injects these via `secrets: inherit` regardless of which Playwright projects
+ * it runs, so there is no CI lane that relies on the old graceful path — a
+ * missing secret is a misconfiguration, not a reason to silently run fewer
+ * specs.
  */
 // This file lives at `apps/web/e2e/global-setup.ts`; the storageState
 // path is its sibling. Resolving against the file URL is robust to
@@ -60,9 +69,8 @@ export default async function globalSetup(_config: FullConfig) {
   );
 
   const storageStatePath = STORAGE_STATE_PATH;
-  await mkdir(dirname(storageStatePath), { recursive: true });
 
-  // --- Graceful degradation ----------------------------------------------
+  // --- Auth is mandatory ---------------------------------------------------
   // In emulator mode a service account is intentionally absent (the emulator
   // ignores real credentials); only the project id is still required.
   const missing: string[] = [];
@@ -70,20 +78,15 @@ export default async function globalSetup(_config: FullConfig) {
   if (!serviceAccount && !emulatorMode) missing.push('FIREBASE_SERVICE_ACCOUNT(_PATH)');
 
   if (missing.length > 0) {
-    console.warn(
-      `\n[globalSetup] skipping auth setup — missing env: ${missing.join(', ')}.\n` +
-        `              Auth-requiring specs (all-pages, CRUD) will fail fast at /login.\n` +
-        `              Configure these as repo secrets to enable the full suite.\n`,
+    throw new Error(
+      `[globalSetup] missing required env: ${missing.join(', ')}. Auth setup is ` +
+        `mandatory for every e2e run — configure these as repo secrets (or run ` +
+        `against the emulator, which only needs FIREBASE_PROJECT_ID).`,
     );
-    await writeFile(
-      storageStatePath,
-      JSON.stringify({ cookies: [], origins: [] }, null, 2),
-      'utf8',
-    );
-    return;
   }
 
   // --- Happy path --------------------------------------------------------
+  await mkdir(dirname(storageStatePath), { recursive: true });
   // Ephemeral test user: a fresh account per run, deleted by globalTeardown.
   const staleSwept = await sweepStaleE2EUsers();
   if (staleSwept > 0) {
@@ -99,6 +102,14 @@ export default async function globalSetup(_config: FullConfig) {
   // mints the ID token that the captured storageState carries, so the claims
   // must already be set or the app would restore a token without them.
   await grantAllPerms(email, { extraClaims: { grupoEconomico: 'seed' } });
+
+  // Fail fast, before the browser login retry loop below burns 3 attempts,
+  // if the DEPLOYED staging ruleset doesn't grant this run's namespace. Real
+  // client REST calls only reach staging's actual rules; the emulator lane
+  // loads its own ruleset fresh every run, so there's no "deploy" to verify.
+  if (!emulatorMode) {
+    await verifyE2ENamespaceAccess(email, password);
+  }
 
   const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 

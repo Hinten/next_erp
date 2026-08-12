@@ -52,7 +52,6 @@ import {
   type Produto,
   cartesianVariations,
   compareSortKeys,
-  diffPrecos,
   findDuplicateSkus,
   normalizeVariacoesUid,
   parseFakePath,
@@ -65,7 +64,6 @@ import {
 } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { newDocId } from '@/lib/produtos/docId';
-import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
 import {
   describeReferences,
   findManyProdutoReferences,
@@ -299,12 +297,15 @@ export function VariationManager({
    *     links may have appeared since the stage-time check) — any hit aborts
    *     the whole flush.
    *
-   * Pricing parity: children CREATED here carry the PARENT's `precos` (with
-   * their initial history records — `produtoTableProvider.dart:497`). Refreshing
-   * the precos of EXISTING children when the parent's map changes happens at the
-   * page layer (the `applyPrecosChange` use-case) so it fires even when the
-   * Variações tab — and therefore this manager's live children snapshot — was
-   * never opened.
+   * Pricing parity: children CREATED here carry the PARENT's `precos`, with NO
+   * history entry for that initial value — the `onProdutoChanged` trigger's
+   * `produtoExtraIgnores` drops `precos` from the diff for any produto with a
+   * `paiId` set, a deliberate omission so the parent's own propagation write
+   * doesn't echo back as a spurious "child changed" entry. Refreshing the
+   * precos of EXISTING children when the parent's map changes is server-owned
+   * too: the `onProdutoChanged` Cloud Function trigger fires on the parent's
+   * produto write, so it propagates even when the Variações tab — and
+   * therefore this manager's live children snapshot — was never opened.
    */
   const flushStagedChildren = async (parentId: string): Promise<void> => {
     const duplicates = findDuplicateSkus(rows);
@@ -385,11 +386,15 @@ export function VariationManager({
         const childId = newDocId();
         batch.set(produtoCollection.docRef(db, {}, childId), docData);
         writes += 1;
-        // Flutter parity: a child born with prices gets its initial history
-        // records (its save() runs the same oldPrecos-null diff).
-        appendPrecoHistory(batch, db, childId, diffPrecos(null, parentPrecos));
+        // A newly created child's initial `precos` gets NO history entry: the
+        // `onProdutoChanged` trigger's `produtoExtraIgnores` drops `precos`
+        // from the diff for any produto with a `paiId` set (it would just echo
+        // the parent's own propagation as a spurious "child changed" entry —
+        // apps/functions/src/produtos/onProdutoChanged.ts), so this is a
+        // deliberate omission, not a gap the client needs to fill.
       } else if (row.dirty || ordem !== row.serverOrdem) {
-        // precos is propagated to existing children at the page layer.
+        // precos is propagated to existing children server-side (the
+        // `onProdutoChanged` trigger, on the parent's produto write).
         batch.update(produtoCollection.docRef(db, {}, row.id), {
           nome: row.nome,
           sku: row.sku === '' ? null : row.sku,

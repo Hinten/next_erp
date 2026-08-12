@@ -26,7 +26,8 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-rules.yml'
   pull_request:
-    branches: [master, main]
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
     paths:
       - 'packages/rules-gen/**'
       - 'packages/schemas/**'
@@ -61,7 +62,9 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
           pnpm --version
 
       - name: Get pnpm store path
@@ -128,7 +131,10 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -166,7 +172,10 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
 
       - name: Install
         run: pnpm install --frozen-lockfile

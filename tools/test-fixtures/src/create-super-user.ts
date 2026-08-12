@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- CLI tool: stdout is the interface */
 /**
  * Promotes a Firebase user (by email) to a durable SUPER USER.
  *
@@ -50,7 +51,7 @@ export async function createSuperUser(
       email,
       isSuperUser: true,
       jaFoiSuperUser: true,
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
     });
     await ref.set(doc);
   }

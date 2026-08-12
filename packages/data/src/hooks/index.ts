@@ -1,4 +1,11 @@
-export { useSnapshot, useDocSnapshot, type SnapshotRow, type SnapshotState } from './useSnapshot';
+export {
+  useSnapshot,
+  useSnapshotWithDocs,
+  useDocSnapshot,
+  mapSnapshotRows,
+  type SnapshotRow,
+  type SnapshotState,
+} from './useSnapshot';
 export { usePipelineSnapshot } from './usePipelineSnapshot';
 export {
   useSubcollectionIdLookup,

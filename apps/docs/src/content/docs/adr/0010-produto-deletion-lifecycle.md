@@ -13,8 +13,8 @@ each tracked by its own issue:
 
 1. **Subcollection orphans (#136).** The Flutter app's generated
    `Produto.deleteCascade` sweeps the doc's 13 known subcollections:
-   `produtoshopee`, `variacaoshopee`, `produtoamazon`, `produtoMercadoLivre`,
-   `variacaoMercadoLivre`, `produtomagalu`, `produtointegrada`, `historicopreco`,
+   `prodshopee`, `variashopee`, `prodAmazon`, `produtoMercadoLivre`,
+   `variacaoMercadoLivre`, `produtoMagalu2`, `produtolojaintegrada`, `historicopreco`,
    `historicocusto`, `produtoextradata`, `imposto`, `foto`, `estoque`. Next's
    plain delete leaves all of these as invisible orphans under
    `produtos/<deletedId>/…`.
@@ -32,7 +32,7 @@ each tracked by its own issue:
    **block** today: a produto cannot be deleted while inbound references exist —
    kit entries (`componentesKit` map keys, queryable via the
    `componentesKitKeys` array) and marketplace variation links (the parent's
-   `variacaoMercadoLivre.produtoVariacaoOuterRef`, `variacaoshopee`, Magalu/Amazon/
+   `variacaoMercadoLivre.produtoVariacaoOuterRef`, `variashopee`, Magalu/Amazon/
    Integrada equivalents). The block is correct but blunt; a proper cascade would
    let the user delete in one confirmed operation.
 
@@ -64,16 +64,38 @@ phase the work so the debris-producing deletes are covered first.
 
 - **`onDocumentDeleted('produtos/{id}')` (#136 + #199)** — the authoritative
   produto delete cascade, core `cascadeProdutoDeletion`. **Shipped.** Rather than
-  enumerate the 13 known subcollections, one `recursiveDelete` over the produto's
-  **own document ref** walks its entire descendant subtree (the Admin SDK
-  BulkWriter deletes every subcollection Firestore would orphan, including new
-  ones, whether or not the parent doc still exists) — closing **#136**. It also
-  cascades **variation children** (sibling top-level `produtos where paiId == id`,
-  not descendants) with a per-child `recursiveDelete`, closing **#199** and
-  retiring the client-side children cascade (`deleteProdutoCascade` now deletes
-  only the parent doc; the inbound-reference guard stays client-side). Idempotent;
-  tolerant of partially-cleaned docs (Flutter may have already swept some). Fully
-  exercisable on the Firestore emulator in `ci-storage.yml`.
+  enumerate the known subcollections, one whole-subtree walk over the produto's
+  **own document ref** deletes every subcollection Firestore would orphan,
+  including new ones, whether or not the parent doc still exists — closing
+  **#136**. It also cascades **variation children** (sibling top-level
+  `produtos where paiId == id`, not descendants) with a per-child walk, closing
+  **#199** and retiring the client-side children cascade (`deleteProdutoCascade`
+  now deletes only the parent doc; the inbound-reference guard stays
+  client-side). Idempotent; tolerant of partially-cleaned docs (Flutter may have
+  already swept some). Fully exercisable on the Firestore emulator in
+  `ci-storage.yml`.
+
+  > **Amended 2026-07 (#728/#729).** The walk was originally
+  > `db.recursiveDelete(produtoRef)`, chosen here precisely *because* it needed no
+  > name enumeration. That reasoning still holds; the mechanism did not.
+  > `recursiveDelete` issues a **kindless** all-descendants query
+  > (`COLLECTION_GROUP * SELECT __name__ LIMIT 5000`), and Firestore **Enterprise**
+  > cannot index it — no wildcard indexes, and a kindless descendant scan has no
+  > field predicate to seek on, so no index can be declared for it either. Nothing
+  > throws; it silently full-scans and Enterprise bills data scanned. Measured on
+  > staging: **~6,184 documents scanned per call, 9,234 calls in 7 days = 57.1M
+  > documents, 93% of the project's read volume**, and identical whether the
+  > produto had fifty subcollection docs or zero — the query is issued before
+  > anything about the subtree is known.
+  >
+  > The cascade now uses `deleteDocumentSubtree` (`@delfrance/data/admin`):
+  > `docRef.listCollections()` (~5 read units, measured) reports the
+  > subcollections that actually hold documents, then one **kinded**, key-bounded,
+  > keys-only query per child rides the always-available document-key index. The
+  > no-enumeration property is preserved — and must stay that way: Flutter writes
+  > subcollections this repo deliberately does not register (`variacoesml`), so a
+  > registry-derived list would orphan them silently. The emulator suite pins that
+  > case.
 - **`onArquivoDeleted` (#95)** — on `arquivos/{id}` delete, delete the Storage
   object the doc owned (and, for a product-image original, cascade to its 3
   derivative objects + docs). Product media is **product-scoped** (paths are
@@ -176,7 +198,7 @@ Replace the delete-block with a confirmed cascade:
    `componentesKit` map and `componentesKitKeys` array (and decide the
    empty-kit semantics).
 2. **Local marketplace variation links** — delete/unlink the parent's
-   `variacaoMercadoLivre`/`variacaoshopee`/… docs that point at the deleted child.
+   `variacaoMercadoLivre`/`variashopee`/… docs that point at the deleted child.
 3. **Remote marketplace state** — unlinking locally is not enough: the listing
    variation still exists on the channel. A real cascade needs a delist/update
    call per channel, which belongs in `apps/integrations` / Cloud Functions, not
@@ -234,10 +256,11 @@ Proposed (2026-06). Phasing: Phase 1 **arquivo side** done — `onArquivoDeleted
 + the create-first upload contract (#95/#202) — plus `onProdutoMediaChanged`, the
 produto-**edit** eager-reap trigger (marks an arquivo when a photo/video is edited out,
 clears it on re-add). The produto-**delete** `onDocumentDeleted('produtos/{id}')`
-cascade (`cascadeProdutoDeletion`) is now **shipped** — a whole-subtree
-`recursiveDelete` on the produto doc ref reclaims every subcollection (#136) and a
-per-child `recursiveDelete` cascades variation children (#199), retiring the client
-children cascade. Phase 2 **implemented** as
+cascade (`cascadeProdutoDeletion`) is now **shipped** — a whole-subtree walk on the
+produto doc ref reclaims every subcollection (#136) and a per-child walk cascades
+variation children (#199), retiring the client children cascade. That walk is
+`deleteDocumentSubtree`, **not** `recursiveDelete`, since #728 — see the amendment
+in Phase 1. Phase 2 **implemented** as
 `reconcileArquivoOrphans` (every 48h): the marked-for-deletion sweep (the eager reap's
 back half — re-verifies the owner before deleting), the phantom-doc sweep, and the
 unreferenced-arquivo sweep (now the backstop), all oldest-first with the grace window

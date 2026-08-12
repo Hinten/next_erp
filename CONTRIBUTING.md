@@ -7,12 +7,14 @@ Thanks for considering a contribution. This monorepo is in active development; e
 Prerequisites:
 
 - Node 22+
-- pnpm 9+
+- pnpm — run `corepack enable` once and the right version is fetched for you.
+  It is pinned by `packageManager` in `package.json` (the single source of
+  truth), so there is no need to install pnpm globally.
 - A Firebase project for testing (your own; the maintainers' staging project is reserved for CI)
 
 ```bash
 pnpm install
-cp .env.example .env.local       # single env file at the repo root — fill in your Firebase config
+cat .env.example .env.secrets.example > .env.local   # ONE root template SET (config + secrets) — fill in
 pnpm dev
 ```
 
@@ -22,7 +24,7 @@ pnpm dev
 ## Workflow
 
 1. Open an issue describing the change before large work.
-2. Branch off `master`. Use `feat/`, `fix/`, `refactor/`, `docs/` prefixes.
+2. Branch off `main`. Use `feat/`, `fix/`, `refactor/`, `docs/` prefixes.
 3. Run `pnpm turbo run lint typecheck test` before pushing.
 4. Follow Conventional Commits (`feat:`, `fix:`, `refactor:`, `feat(integrations):`, …).
 5. PRs require all CI checks green and one maintainer review.

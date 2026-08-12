@@ -14,7 +14,7 @@ back to the App Hosting app, no OIDC. This is a **separate codebase from
 > `firebase-functions` / `xmllint-wasm` / `esbuild` are `apps/nfe` devDeps so the
 > bundle's externals resolve locally. `next build` never bundles this folder.
 
-## Deploy lane (manual & coordinated — root CLAUDE.md rule #1)
+## Deploy lane (manual & coordinated — see root `CLAUDE.md`, Critical rules)
 
 One command, with `FUNCTIONS_REGION` (default `us-east1`) and the app's base
 config set. **Ask the user before running it.**
@@ -28,7 +28,13 @@ The `predeploy` hook runs `apps/nfe/functions/scripts/prepare-deploy.mjs`, which
 
 1. esbuild-bundles `src/index.ts` into `.deploy/nfe-functions/index.js`
    (externals: firebase-admin / firebase-functions / **xmllint-wasm**);
-2. writes a minimal workspace-free `package.json` (those 3 runtime deps only);
+2. writes a minimal workspace-free `package.json` (those 3 runtime deps only).
+   ⚠️ **No lockfile reaches the cloud**, so the buildpack's `npm install` resolves
+   each spec fresh — `firebase-admin` + `firebase-functions` are pinned **exact**
+   here for that reason (a range ships a version CI never tested; 7.3.2 moved
+   `express` 4→5 in a _patch_). Bump them alongside `pnpm-workspace.yaml`'s catalog
+   and the other four artifact manifests —
+   `packages/config-eslint/rules/runtime-deps-pinned.test.js` fails on drift;
 3. **copies the SEFAZ `ca/*.pem` chains + MOC XSD schemas** next to the bundle —
    `src/options.ts` sets `NFE_CA_DIR=./ca` + `NFE_SCHEMA_DIR=./schemas`
    (`import.meta.url`-relative) so the bundled library finds them (its own dir
@@ -53,16 +59,33 @@ firebase functions:secrets:set NFE_CERT_PASSWORD  --project <project-id>  # env-
   → only `NFE_CERT_ENC_KEY` is actually used; **trim the other two** from the
   `secrets` array in `src/options.ts`.
 - **Test path (env-fallback):** a filial with no uploaded cert signs with the env
-  A1 — keep all three, and set `NFE_CERT_ENV_FALLBACK=1` in `.env` (below).
+  A1 — keep all three, and set `NFE_CERT_ENV_FALLBACK=1` in `.env.deploy` (below).
 
 > `NFE_TEST_CNPJ` / `NFE_TEST_IE` are **not** function secrets — the reconcile path
 > never reads them. They're for the **local seed/emit script** (`.env.local`), which
 > stamps the test filial's CNPJ/IE. Don't declare them here.
 
-**Non-secret config (`.env`).** Put non-secret runtime config in
-**`apps/nfe/functions/.env`** (gitignored; see `.env.example`). `prepare-deploy.mjs`
-copies `.env*` (except `.env.local`/`.env.example`) into the artifact, and firebase
-loads it as the function's runtime env at deploy.
+**Non-secret config (`.env.deploy`).** Put non-secret runtime config in
+**`apps/nfe/functions/.env.deploy`** (gitignored; see `.env.example`).
+`prepare-deploy.mjs` copies it into the artifact **as `.env`**, and firebase loads it
+as the function's runtime env at deploy. For config that should apply to ONE project
+only, use `.env.deploy.<project-id>` — it lands as `.env.<project-id>`, which
+firebase-tools applies only when you deploy with that `--project`.
+
+> ⚠️ **Renamed from the bare `.env` (was: everything matching `.env*` except
+> `.env.local`/`.env.example` got copied).** That was a denylist, so every new `.env*`
+> name the repo invented was opt-OUT of being uploaded to the project's
+> `gcf-sources-*` bucket — `.env.secrets` included. The allowlist now lives in
+> `tools/deploy-env/env-files.mjs` and is shared by all five `prepare-deploy.mjs`
+> scripts. **If you already have an `apps/nfe/functions/.env` on your machine, rename
+> it to `.env.deploy`** — the predeploy hook fails loudly with that instruction
+> rather than silently shipping without it. A `.env.secrets*` fails the hook outright.
+
+> The `.env.example` next to this file is the **one deliberate exception** to the
+> repo's one-root-`.env.example` convention (#730): the repo-root `.env.local`
+> feeds the Next apps and never reaches this separate codebase, so these names
+> belong here, not in the root file. The carve-out is pinned in
+> `packages/config-eslint/rules/env-example-location.test.js`.
 
 - For the **env-fallback test**, the only needed var is `NFE_CERT_ENV_FALLBACK=1`.
 - `NFE_AMBIENTE` / `NFE_UF` **default to `homologacao` / `SP`** (`runtime.ts`), so a

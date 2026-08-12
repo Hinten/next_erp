@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { z } from 'zod';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
@@ -26,10 +27,8 @@ import {
 import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   ProdutoReferencedError,
-  applyPrecosChange,
   deleteProdutoCascade,
   propagateKitStatusToChildren,
-  recordCustoHistory,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { uploadProductImage } from '@delfrance/storage';
@@ -42,12 +41,14 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { MercadoLivreTab } from '../../_components/mercado-livre/MercadoLivreTab';
 import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { ImpostoManager } from '../../_components/ImpostoManager';
 import { KitManager, stripKitForSave } from '../../_components/KitManager';
 import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
+import { ModificacoesManager } from '../../_components/ModificacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager, type VariationRow } from '../../_components/VariationManager';
@@ -61,6 +62,29 @@ import {
 /** Max referencing kits listed in the #246 promotion warning (a capped preview). */
 const REFERENCED_BY_DISPLAY = 5;
 
+/**
+ * Edit-only page schema: the aggregate model plus two UI-anchor keys —
+ * `mercadoLivre` and `modificacoes` — whose only job is giving their tab a
+ * field descriptor (both tabs are self-contained; nothing is read from or
+ * written to the form value for either). Edit-only because both need a
+ * SAVED produto (publishing; a modification history), so the create page
+ * keeps the plain aggregate.
+ */
+const produtoEditarSchema = produtoPageBaseSchema.extend({
+  mercadoLivre: z.null().default(null),
+  modificacoes: z.null().default(null),
+});
+
+/** Tab order for the edit page — the shared sections plus Mercado Livre + Modificações. */
+const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Mercado Livre', 'Modificações'];
+
+/** The shared transient keys plus the Mercado Livre + Modificações tab anchors. */
+const PRODUTO_TRANSIENT_FIELDS_EDITAR = [
+  ...PRODUTO_TRANSIENT_FIELDS,
+  'mercadoLivre',
+  'modificacoes',
+];
+
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -68,8 +92,8 @@ export default function EditarProdutoPage() {
   const { allowed: canWrite } = usePermission(PERM.produto.write);
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
-  // Client adapter for the framework-agnostic produto use-cases (history,
-  // child-precos propagation, reference guard + cascade delete).
+  // Client adapter for the framework-agnostic produto use-cases (kit-status
+  // propagation, reference guard + cascade delete).
   const port = useMemo(() => createClientProdutoPort(db), [db]);
 
   // Variation groups (live) — shared between the Variações tab and the
@@ -98,6 +122,16 @@ export default function EditarProdutoPage() {
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
+  // The Mercado Livre tab edits its OWN documents (the link subcollection), so
+  // it is invisible to this form's `isDirty` — without both of these an operator
+  // could edit an anúncio, hit "Salvar alterações", and lose the work with no
+  // prompt at all. `mlDirty` arms the leave-guard through `extraDirty`; the
+  // flush commits the edits as part of the produto save. Stays null while the
+  // tab has never been opened (its editor chunk is not even loaded), which is
+  // why the call below is optional.
+  const flushMercadoLivreRef = useRef<(() => Promise<void>) | null>(null);
+  const [mlDirty, setMlDirty] = useState(false);
+  const handleMlDirtyChange = useCallback((dirty: boolean) => setMlDirty(dirty), []);
   // The variation set the Kit tab consumes (the per-variation grid + the
   // component-picker exclusion: a kit can't contain itself or its variations).
   // VariationManager publishes the LIVE set (saved + staged) once its tab has
@@ -137,11 +171,10 @@ export default function EditarProdutoPage() {
     [params.id, effectiveVariationRows],
   );
 
-  // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
-  // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
-  // first doc emit, so it can serve as the "old" value at onAfterSave time;
-  // the "new" value is read back fresh from the just-saved parent doc (the
-  // live snapshot can't be trusted to have re-emitted yet).
+  // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`)
+  // and the kit-status "old value" fallback in `onAfterSave` (precos/custo
+  // history is no longer read from it — that bookkeeping is server-owned now,
+  // see `lastSavedKitStatus` below).
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
   // Parent kit-status (#298): when this produto is a variation child (`paiId`
@@ -184,34 +217,38 @@ export default function EditarProdutoPage() {
   );
   // True when more kits reference this produto than we display (capped query).
   const referencedByMore = referencedByAll.length > REFERENCED_BY_DISPLAY;
-  const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
-    ready: false,
-    value: null,
-  });
-  // Same bookkeeping for `custo`: a historicoDeCusto record is written on each
-  // change. `ready` guards the first emit so we don't record on initial load.
-  const lastSavedCusto = useRef<{ ready: boolean; value: number | null }>({
-    ready: false,
-    value: null,
-  });
-  // Same bookkeeping for the kit status: when `ehKit`/`ehKitVirtual` flips, the
-  // existing variation children are synced on save (Flutter parity).
+  // Kit-status bookkeeping (Flutter parity, `produtoTableProvider.dart:556-589`):
+  // when `ehKit`/`ehKitVirtual` flips, the existing variation children are
+  // synced on save. `lastSavedKitStatus` pins the PERSISTED status once, from
+  // the first doc emit, so it can serve as the "old" value at onAfterSave time
+  // (precos/custo history had the same pinning idiom, but that bookkeeping is
+  // gone now — the `onProdutoPrecoCustoChanged` trigger diffs against the
+  // stored doc itself).
   const lastSavedKitStatus = useRef<{ ready: boolean; ehKit: boolean; ehKitVirtual: boolean }>({
     ready: false,
     ehKit: false,
     ehKitVirtual: false,
   });
+  // Paint-then-correct, NOT gate-until-server: this ref is the "old" value
+  // `propagateKitStatusToChildren` diffs against at save time, so it must be
+  // populated the moment anything is loaded (a save that finds it unready would
+  // diff against `false` and propagate a change that never happened). The cache
+  // emission seeds it; the authoritative one corrects it, once, while it still
+  // describes the LAST SAVED state — i.e. before the operator saves.
+  const serverPinnedKitStatus = useRef(false);
   useEffect(() => {
-    if (!lastSavedPrecos.current.ready && produtoSnap.data) {
-      lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
-      lastSavedCusto.current = { ready: true, value: produtoSnap.data.data.custo ?? null };
-      lastSavedKitStatus.current = {
-        ready: true,
-        ehKit: produtoSnap.data.data.ehKit ?? false,
-        ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
-      };
+    if (!produtoSnap.data) return;
+    const serverTruth = produtoSnap.fromCache === false;
+    if (lastSavedKitStatus.current.ready && !(serverTruth && !serverPinnedKitStatus.current)) {
+      return;
     }
-  }, [produtoSnap.data]);
+    lastSavedKitStatus.current = {
+      ready: true,
+      ehKit: produtoSnap.data.data.ehKit ?? false,
+      ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
+    };
+    if (serverTruth) serverPinnedKitStatus.current = true;
+  }, [produtoSnap.data, produtoSnap.fromCache]);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
   // to this product and uploads are enabled.
@@ -382,6 +419,35 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      mercadoLivre: {
+        label: 'Mercado Livre',
+        section: 'Mercado Livre',
+        // Self-contained tab (like Estoque): live link-doc status + the publish
+        // action against the apps/mercado-livre backend, decoupled from this
+        // form's save.
+        //
+        // Behind `MercadoLivreTab`, which defers loading the editor chunk until
+        // the tab is actually opened — Mantine keeps inactive panels mounted
+        // under `<Activity mode="hidden">`, so without the gate this subtree
+        // would render (and start its import) on every produto edit.
+        renderInput: (p) => (
+          <MercadoLivreTab
+            produtoId={params.id}
+            db={db}
+            disabled={p.disabled}
+            onDirtyChange={handleMlDirtyChange}
+            flushRef={flushMercadoLivreRef}
+          />
+        ),
+      },
+      modificacoes: {
+        label: 'Modificações',
+        section: 'Modificações',
+        // Self-contained tab (like Estoque/Mercado Livre): a read-only feed of
+        // the produto's unified `historicoDeModificacoes` entries with
+        // per-field revert, decoupled from this form's save.
+        renderInput: () => <ModificacoesManager produtoId={params.id} db={db} />,
+      },
       componentesKit: {
         label: 'Componentes do kit',
         section: 'Kit',
@@ -421,6 +487,7 @@ export default function EditarProdutoPage() {
       referencedByKits,
       referencedByMore,
       referencedBySnap.loading,
+      handleMlDirtyChange,
     ],
   );
 
@@ -460,15 +527,18 @@ export default function EditarProdutoPage() {
         }
       />
       <ObjectView
-        schema={produtoPageBaseSchema}
+        schema={produtoEditarSchema}
         collection={produtoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
-        sections={PRODUTO_SECTIONS}
+        sections={PRODUTO_SECTIONS_EDITAR}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
-        transientFields={PRODUTO_TRANSIENT_FIELDS}
+        transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
+        // Pending Mercado Livre edits live in their own documents and their own
+        // form, so the leave-guard needs to be told about them explicitly.
+        extraDirty={mlDirty}
         transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
         deriveOnSave={(values) => {
           // Keep the Flutter wire shapes on every save: bare group ids sorted
@@ -497,9 +567,11 @@ export default function EditarProdutoPage() {
           // (the schema default) when there are no fotos, so an untouched produto
           // isn't churned from `null` to `[]` on an unrelated save.
           const fotoIds = deriveFotosArquivosIds(values.fotos as Foto[] | null);
+          const gruposDerived = sortGrupoUids(groupsRef.current ?? implied, grupos);
+          const variacoesDerived = normalizeVariacoesUid(uids, grupos);
           return {
-            grupoDeVariacoesUid: sortGrupoUids(groupsRef.current ?? implied, grupos),
-            variacoesUid: normalizeVariacoesUid(uids, grupos),
+            grupoDeVariacoesUid: gruposDerived.length > 0 ? gruposDerived : null,
+            variacoesUid: variacoesDerived.length > 0 ? variacoesDerived : null,
             componentesKit,
             // Sorted so the denorm is order-stable — the keys feed an
             // `array-contains` query (order-insensitive), and Firestore arrays
@@ -537,34 +609,14 @@ export default function EditarProdutoPage() {
           return issues;
         }}
         onAfterSave={async (id, values) => {
-          // `values.precos`/`values.custo` are exactly what this save persisted
-          // (ObjectView hands us the transformed values) — no captured-state
-          // staleness, no re-read race. The domain use-cases record the history
-          // and (on a real change) propagate the precos to every variation child
-          // — which must fire even when only the Preço e custo tab was touched,
-          // so it can't depend on the Variações tab's live snapshot.
-          //
-          // "Old" value = the ref pinned at the first doc emit, or — if a save
-          // beat that emit — the live snapshot, so a fast first save still
-          // records history and only propagates on a real change.
-          const newPrecos = (values.precos as PrecosMap) ?? null;
-          const oldPrecos = lastSavedPrecos.current.ready
-            ? lastSavedPrecos.current.value
-            : (produtoSnap.data?.data.precos ?? null);
-          await applyPrecosChange(port, { produtoId: id, oldPrecos, newPrecos });
-          lastSavedPrecos.current = { ready: true, value: newPrecos };
-
-          // Cost history (historicoDeCusto): one record per change. Only a
-          // numeric custo that actually differs from the last persisted value
-          // is recorded (a cleared/null custo can't be represented as a record).
-          const newCusto = typeof values.custo === 'number' ? values.custo : null;
-          const oldCusto = lastSavedCusto.current.ready
-            ? lastSavedCusto.current.value
-            : (produtoSnap.data?.data.custo ?? null);
-          if (newCusto !== null && newCusto !== oldCusto) {
-            await recordCustoHistory(port, id, newCusto);
-          }
-          lastSavedCusto.current = { ready: true, value: newCusto };
+          // Precos/custo history + child-precos propagation used to be recorded
+          // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
+          // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
+          // Function trigger (since 2026-07-21) fires on the produto write this
+          // save just made, diffs precos/custo against the previous doc itself,
+          // records the history and propagates to the variation children — this
+          // page no longer needs to (and skips entirely for a child produto,
+          // `paiId != null`, and when `propagatePriceToChildren` is false).
 
           // Kit-status propagation (Flutter parity,
           // `produtoTableProvider.dart:556-589`): when the parent's
@@ -604,6 +656,12 @@ export default function EditarProdutoPage() {
           // Then persist each kit-variation child's generated `componentesKit`
           // (from "Gerar Variações") — the child docs exist by now.
           await flushKitVariacoesRef.current?.(id);
+
+          // Mercado Livre last: its link docs have six writers, so a save here
+          // can lose a race and raise `AfterSaveBlockedError` (tier 3). Running
+          // it after the child flushes means that pause never costs the produto
+          // its own sibling writes — they are already committed.
+          await flushMercadoLivreRef.current?.();
         }}
         saveLabel="Salvar alterações"
         canEdit={canWrite}

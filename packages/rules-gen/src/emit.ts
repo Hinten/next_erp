@@ -29,7 +29,7 @@ export function emitRules(
 
   const validators = new Map<string, string[]>(); // name -> clause exprs
   const flatBlocks: string[][] = [];
-  const groupReads = new Map<string, ClaimCheck>(); // leaf -> read check
+  const groupReads = new Map<string, ClaimCheck[]>(); // leaf -> read checks (union)
   const topLevel = new Set<string>(); // single-segment collection names
 
   // Extra blocks are hand-written top-level collections (e.g. grupoEconomico);
@@ -39,9 +39,23 @@ export function emitRules(
   for (const domain of [...domains].sort(byPath)) {
     const { collectionPath } = domain.meta;
     const perms = resolvePermissions(domain.meta);
+    const serverOwned = domain.meta.serverOwned ?? false;
+
+    if (serverOwned && validatorWhitelist.has(collectionPath)) {
+      throw new Error(
+        `${collectionPath}: serverOwned collections cannot be validator-whitelisted — ` +
+          `Admin SDK writes bypass rules entirely, so a field validator would never run.`,
+      );
+    }
+    if (serverOwned && (domain.meta.serverOwnedFields?.length ?? 0) > 0) {
+      throw new Error(
+        `${collectionPath}: serverOwned is exclusive with serverOwnedFields — the whole ` +
+          `collection is already client-write-denied, a per-field guard is meaningless.`,
+      );
+    }
 
     let validatorName: string | null = null;
-    if (validatorWhitelist.has(collectionPath)) {
+    if (!serverOwned && validatorWhitelist.has(collectionPath)) {
       validatorName = `v_${collectionPath
         .split('/')
         .filter((s) => !s.startsWith('{'))
@@ -57,20 +71,31 @@ export function emitRules(
     }
 
     flatBlocks.push(
-      matchBlock(collectionPath, perms, validatorName, domain.meta.serverOwnedFields ?? []),
+      matchBlock(
+        collectionPath,
+        perms,
+        validatorName,
+        domain.meta.serverOwnedFields ?? [],
+        serverOwned,
+      ),
     );
 
-    if (collectionPath.includes('/')) {
+    if (collectionPath.includes('/') && !domain.meta.noCollectionGroupRead) {
       const leaf = collectionPath.split('/').at(-1)!;
-      const existing = groupReads.get(leaf);
-      if (existing && (existing.claim !== perms.read.claim || existing.k !== perms.read.k)) {
-        throw new Error(
-          `collection-group leaf '${leaf}' has conflicting read permissions ` +
-            `(${existing.claim}/${existing.k} vs ${perms.read.claim}/${perms.read.k})`,
-        );
+      // Distinct collections may share a subcollection leaf name — the
+      // legacy-aligned `produtos/{id}/imposto` + `categorias/{id}/imposto`
+      // both end in `imposto`. A `{path=**}/<leaf>` group block cannot tell
+      // the parents apart, so its read check is the UNION of every owning
+      // collection's read claim: holding ANY of them group-reads ALL docs
+      // under that leaf name. Deliberate, read-only widening (writes only
+      // exist on the flat per-parent blocks above); claims are deduped here
+      // and sorted at emission for deterministic output.
+      const checks = groupReads.get(leaf) ?? [];
+      if (!checks.some((c) => c.claim === perms.read.claim && c.k === perms.read.k)) {
+        checks.push(perms.read);
       }
-      groupReads.set(leaf, perms.read);
-    } else {
+      groupReads.set(leaf, checks);
+    } else if (!collectionPath.includes('/')) {
       topLevel.add(collectionPath);
     }
   }
@@ -132,10 +157,15 @@ export function emitRules(
   if (groupReads.size > 0) {
     lines.push('');
     lines.push('    // Collection-group reads (client groupQuery / collectionGroup).');
+    lines.push('    // A leaf shared by several collections carries the UNION of their');
+    lines.push('    // read claims (see the dedupe note in emitRules).');
     for (const leaf of [...groupReads.keys()].sort()) {
-      const check = groupReads.get(leaf)!;
+      const checks = [...groupReads.get(leaf)!].sort(
+        (a, b) => a.claim.localeCompare(b.claim) || a.k - b.k,
+      );
+      const ors = checks.map((c) => `p('${c.claim}', ${c.k})`).join(' || ');
       lines.push(`    match /{path=**}/${leaf}/{docId} {`);
-      lines.push(`      allow read: if isSuperUser() || p('${check.claim}', ${check.k});`);
+      lines.push(`      allow read: if isSuperUser() || ${ors};`);
       lines.push('    }');
     }
   }
@@ -150,10 +180,21 @@ function matchBlock(
   perms: { read: ClaimCheck; write: ClaimCheck; delete: ClaimCheck },
   validatorName: string | null,
   serverOwnedFields: ReadonlyArray<string>,
+  serverOwned: boolean,
 ): string[] {
   const lines: string[] = [];
   lines.push(`    match /${collectionPath}/{docId} {`);
   lines.push(`      allow read: if isSuperUser() || p('${perms.read.claim}', ${perms.read.k});`);
+
+  if (serverOwned) {
+    // Written EXCLUSIVELY by the Admin SDK (a trigger, never a client) — no
+    // su bypass, unlike the per-field serverOwnedFields guard below.
+    lines.push('      // Server-owned collection — Admin SDK only, no su bypass.');
+    lines.push('      allow create, update, delete: if false;');
+    lines.push('    }');
+    return lines;
+  }
+
   // Super user bypasses the write-permission check; the field validator (when
   // present) is ANDed OUTSIDE the bypass, so even a super user writes valid data.
   const w = `(isSuperUser() || p('${perms.write.claim}', ${perms.write.k}))`;

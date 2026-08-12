@@ -77,6 +77,63 @@ describe('emitRules', () => {
     expect(out).not.toContain('allow create, update:');
   });
 
+  it('emits a read-only deny-all block for a serverOwned collection', () => {
+    const owned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ campos: z.array(z.string()) }),
+      meta: {
+        collectionPath: 'produtos/{produtoId}/historicoDeModificacoes',
+        permissions: {
+          read: PERM.produto.read,
+          write: PERM.produto.write,
+          delete: PERM.produto.delete,
+        },
+        serverOwned: true,
+      },
+    };
+    const out = emitRules([owned], [], new Set());
+    expect(out).toContain(
+      'match /produtos/{produtoId}/historicoDeModificacoes/{docId} {\n' +
+        "      allow read: if isSuperUser() || p('d_produto', 1);\n" +
+        '      // Server-owned collection — Admin SDK only, no su bypass.\n' +
+        '      allow create, update, delete: if false;\n' +
+        '    }',
+    );
+    expect(out).not.toContain('v_produtos');
+  });
+
+  it('throws when serverOwned coexists with a validator-whitelist entry', () => {
+    const owned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'foo',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        serverOwned: true,
+      },
+    };
+    expect(() => emitRules([owned], [], new Set(['foo']))).toThrow(/validator-whitelisted/);
+  });
+
+  it('throws when serverOwned coexists with non-empty serverOwnedFields', () => {
+    const owned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'foo',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        serverOwned: true,
+        serverOwnedFields: ['snap'],
+      },
+    };
+    expect(() => emitRules([owned], [], new Set())).toThrow(/exclusive with serverOwnedFields/);
+  });
+
   it('reuses meta placeholders as wildcards and appends {docId}', () => {
     const out = emitRules([domain('clientes/{clienteId}/enderecos')], [], new Set());
     expect(out).toContain('match /clientes/{clienteId}/enderecos/{docId} {');
@@ -92,15 +149,65 @@ describe('emitRules', () => {
     expect(out).not.toContain('/{path=**}/top/');
   });
 
-  it('rejects leaves whose metas disagree on the read permission', () => {
+  it('omits the group block for a leaf that opted out with noCollectionGroupRead', () => {
+    // The flat, parent-scoped block still exists — only the recursive
+    // `{path=**}` read surface is dropped, for collections every read of which
+    // is scoped to one parent anyway (balanço's movimentos / relatorios).
+    const opted: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'a/{aId}/quieto',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        noCollectionGroupRead: true,
+      },
+    };
+    const out = emitRules([opted], [], new Set());
+    expect(out).toContain('match /a/{aId}/quieto/{docId} {');
+    expect(out).not.toContain('/{path=**}/quieto/');
+  });
+
+  it('does not treat an opted-out subcollection as a top-level name', () => {
+    // Regression guard: the opt-out must not fall through to the `topLevel`
+    // branch, or a same-named sibling leaf would falsely trip the collision
+    // check and break generation.
+    const opted: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'a/{aId}/leaf',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        noCollectionGroupRead: true,
+      },
+    };
+    expect(() => emitRules([opted, domain('b/{bId}/leaf')], [], new Set())).not.toThrow();
+    const out = emitRules([opted, domain('b/{bId}/leaf')], [], new Set());
+    // `b`'s leaf still gets its group block — the opt-out is per-domain.
+    expect(out.match(/match \/\{path=\*\*\}\/leaf\/\{docId\}/g)).toHaveLength(1);
+  });
+
+  it('unions the read claims when metas share a subcollection leaf', () => {
+    // The legacy-aligned tax paths made this real: `produtos/{id}/imposto`
+    // and `categorias/{id}/imposto` both end in `imposto`. The group block
+    // cannot tell the parents apart, so EITHER owning collection's read
+    // claim grants the group read (deduped, sorted). Flat blocks keep
+    // their own per-collection permissions.
     const other = {
       read: PERM.produto.read,
       write: PERM.produto.write,
       delete: PERM.produto.delete,
     };
-    expect(() =>
-      emitRules([domain('a/{aId}/leaf'), domain('b/{bId}/leaf', other)], [], new Set()),
-    ).toThrow(/conflicting read permissions/);
+    const out = emitRules([domain('a/{aId}/leaf'), domain('b/{bId}/leaf', other)], [], new Set());
+    expect(out.match(/match \/\{path=\*\*\}\/leaf\/\{docId\}/g)).toHaveLength(1);
+    expect(out).toContain(
+      "allow read: if isSuperUser() || p('d_cliente', 1) || p('d_produto', 1);",
+    );
   });
 
   it('rejects a group leaf that collides with a top-level collection name', () => {

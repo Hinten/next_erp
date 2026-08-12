@@ -24,7 +24,7 @@ export default function NovaOperacaoPage() {
   const router = useRouter();
   const { user } = useAuth();
   const db = getFirebaseFirestore();
-  // When duplicating, copy the source's regraimposto subcollection too (the
+  // When duplicating, copy the source's regras subcollection too (the
   // ObjectView copy mode only clones the operação doc).
   const copyFromId = useSearchParams().get('copyFrom');
 
@@ -83,7 +83,6 @@ export default function NovaOperacaoPage() {
           movimentaIndisponivelEstoque: true,
           indPres: '2',
           indIntermed: '1',
-          timestamp: nowMillis(),
         }}
         saveLabel="Criar"
         showSaveAndContinue={false}

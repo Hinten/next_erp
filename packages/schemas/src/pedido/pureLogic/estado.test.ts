@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ESTADO_NFE } from '../../nfe';
+import { ESTADO_PEDIDO } from '../collection/pedido';
 import {
   nfeFiscalEncerrada,
   pagamentoInesperado,
@@ -10,9 +11,9 @@ import {
 
 describe('podeTrocar', () => {
   it('allows returns only from paid/settled orders', () => {
-    expect(podeTrocar('pago')).toBe(true);
-    expect(podeTrocar('estornadoParcialmente')).toBe(true);
-    expect(podeTrocar('finalizado')).toBe(true);
+    expect(podeTrocar(ESTADO_PEDIDO.pago)).toBe(true);
+    expect(podeTrocar(ESTADO_PEDIDO.estornadoParcialmente)).toBe(true);
+    expect(podeTrocar(ESTADO_PEDIDO.finalizado)).toBe(true);
   });
 
   it('rejects open / cancelled / error states', () => {

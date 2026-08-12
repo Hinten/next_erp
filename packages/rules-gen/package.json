@@ -6,7 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "lint": "echo 'no lint configured for this package yet'",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:rules": "vitest run --config vitest.rules.config.ts",
@@ -14,6 +14,7 @@
     "gen:rules:check": "tsx src/cli.ts --check",
     "gen:rules:e2e": "tsx src/cli.ts --e2e",
     "gen:rules:e2e:check": "tsx src/cli.ts --e2e --check",
+    "report:legacy-coverage": "tsx scripts/legacy-coverage.ts",
     "validate:api": "tsx scripts/api-validate.ts",
     "validate:api:e2e": "tsx scripts/api-validate.ts --e2e",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
@@ -22,17 +23,19 @@
     "@delfrance/auth": "workspace:*",
     "@delfrance/core": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
     "@firebase/rules-unit-testing": "^5.0.1",
-    "@types/node": "^24.10.0",
-    "firebase": "^12.13.0",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "firebase": "catalog:",
     "gaxios": "^7.1.4",
-    "google-auth-library": "^10.6.2",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "google-auth-library": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

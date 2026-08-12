@@ -6,9 +6,11 @@ import { z } from 'zod';
  * the legacy Flutter app reads and writes. A string is SDK-agnostic (Admin,
  * Client and Flutter `DocumentReference` are three different classes),
  * JSON-serializable, and keeps a single Firestore type per field so indexes,
- * exports and structural equality stay consistent. No `*OuterRef` is ever used
- * in a Firestore `where()` — every consumer dereferences app-side — so a native
- * reference buys nothing and only fragments the data.
+ * exports and structural equality stay consistent. Most consumers dereference
+ * app-side rather than filtering in a `where()`. Equality on the string is
+ * valid when needed (e.g. `categoriaPaiOuterRef` for the categorias cascade
+ * in #554) — declare a matching index; Enterprise full-scans otherwise. A
+ * native Firestore `reference` still buys nothing and only fragments the data.
  *
  * Two wire formats exist, both string:
  *  - `documents/<col>/<id>` — Flutter `OuterRefField.toJson` / `pathWithDocuments`
@@ -70,6 +72,23 @@ function segments(raw: string): string[] {
  */
 export function toOuterRef(raw: string): OuterRef {
   return outerRefSchema.parse(`documents/${segments(raw).join('/')}`);
+}
+
+/**
+ * Non-throwing {@link toOuterRef}, widened to `unknown`: returns the canonical
+ * `documents/<col>/<id>`, or `null` when `raw` is not a string or cannot form a
+ * valid (even-segment) document path.
+ *
+ * Reach for this whenever the input is UNTRUSTED — a raw Firestore snapshot
+ * field, a legacy doc written by the Flutter app, a webhook payload — and a
+ * malformed value must degrade to "ref not resolvable" instead of aborting the
+ * caller. A Cloud Function trigger is the canonical case: `toOuterRef`'s throw
+ * there rides the Eventarc retry forever on a permanently bad doc.
+ */
+export function toOuterRefOrNull(raw: unknown): OuterRef | null {
+  if (typeof raw !== 'string') return null;
+  const parsed = outerRefSchema.safeParse(`documents/${segments(raw).join('/')}`);
+  return parsed.success ? parsed.data : null;
 }
 
 /** The document id (last path segment) of any ref form. */

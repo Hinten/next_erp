@@ -4,10 +4,11 @@ import '@mantine/notifications/styles.css';
 import '@mantine/charts/styles.css';
 
 import type { ReactNode } from 'react';
-import { ColorSchemeScript, MantineProvider, mantineHtmlProps } from '@mantine/core';
+import { ColorSchemeScript, mantineHtmlProps } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { AuthProvider } from '@/lib/auth';
 import { QueryProvider } from '@/lib/query/QueryProvider';
+import { MantineAppProvider } from './MantineAppProvider';
 
 export const metadata = {
   title: 'Delfrance',
@@ -21,12 +22,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <ColorSchemeScript defaultColorScheme="light" />
       </head>
       <body>
-        <MantineProvider defaultColorScheme="light">
+        <MantineAppProvider>
           <Notifications position="top-right" containerWidth={480} />
           <QueryProvider>
             <AuthProvider>{children}</AuthProvider>
           </QueryProvider>
-        </MantineProvider>
+        </MantineAppProvider>
       </body>
     </html>
   );

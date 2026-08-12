@@ -6,10 +6,11 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./admin": "./src/admin/index.ts"
   },
   "scripts": {
-    "lint": "echo 'no lint configured for this package yet'",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
@@ -17,12 +18,23 @@
   "dependencies": {
     "@delfrance/data": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase": "^12.13.0",
-    "zod": "^4.4.3"
+    "firebase": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "firebase-admin": "^14"
+  },
+  "peerDependenciesMeta": {
+    "firebase-admin": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "eslint": "catalog:",
+    "firebase-admin": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

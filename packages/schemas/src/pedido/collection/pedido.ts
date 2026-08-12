@@ -54,6 +54,35 @@ export const estadoPedidoSchema = z
 export type EstadoPedido = z.infer<typeof estadoPedidoSchema>;
 
 /**
+ * Named members of {@link estadoPedidoSchema} — the ONLY way to write an
+ * `EstadoPedido` in code. Values are identical to the keys here (unlike
+ * `ESTADO_NFE`, whose wire values are single chars), so this buys rename-safety
+ * and discoverability rather than translation: a typo'd `'cancelaado'` becomes a
+ * compile error instead of a value Firestore happily stores.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const ESTADO_PEDIDO = {
+  iniciado: 'iniciado',
+  carrinho: 'carrinho',
+  carrinhoAbandonado: 'carrinhoAbandonado',
+  escolhendoFormaDePagamento: 'escolhendoFormaDePagamento',
+  aguardandoConfirmacaoDePagamento: 'aguardandoConfirmacaoDePagamento',
+  pagamentoNaoRealizado: 'pagamentoNaoRealizado',
+  emAnalise: 'emAnalise',
+  emProcessamento: 'emProcessamento',
+  pago: 'pago',
+  estornadoParcialmente: 'estornadoParcialmente',
+  estornadoIntegralmente: 'estornadoIntegralmente',
+  processandoCancelamento: 'processandoCancelamento',
+  cancelado: 'cancelado',
+  fraude: 'fraude',
+  finalizado: 'finalizado',
+  error: 'error',
+} as const satisfies Record<string, EstadoPedido>;
+
+/**
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
  * `packages/pedido/lib/src/models.dart` ItemDoPedido. Nested complex
  * fields (`imposto`) are pass-through.
@@ -67,7 +96,13 @@ export const itemDoPedidoSchema = z
     sku: z.string().nullable().default(null),
     gtin: z.string().nullable().default(null),
     nomeDeVenda: z.string().nullable().default(null),
-    precoDeVenda: z.number().min(0.01),
+    // The STORAGE floor is 0, not 0.01: a marketplace line can legitimately
+    // price at zero (100% coupon/cashback, a bonus line, or a `206 Partial
+    // Content` order response whose `unit_price` the mapper fills with `?? 0`)
+    // and must import rather than park the whole delivery (#794). Negative is
+    // still rejected — no channel produces one. The 0.01 DATA-ENTRY floor lives
+    // in the pedido form (`min={0.01}` on the item price input), not here.
+    precoDeVenda: z.number().min(0, 'O preço não pode ser negativo'),
     descontoUnitario: z.number().min(0).nullable().default(0),
     quantidade: z.number().min(0),
     custo: z.number().nullable().default(null),
@@ -88,7 +123,11 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  *
  * A legacy-era pedido with `dataIndisponivelEstoque`/`dataRemocaoEstoque` set but
  * NO snapshot is Flutter-owned: the sync skips it (quantities unknown) instead of
- * guessing.
+ * guessing. The ONE exception is a Mercado Livre pack sibling appended to such a
+ * pedido (#795): the trigger's `before` revision holds exactly the items Flutter
+ * stock-moved, so the snapshot is REBUILT from that anchor rather than guessed —
+ * without it the appended units sell with no movement at all (overselling). See
+ * `detectarCrescimentoLegado` in `apps/functions`.
  */
 export const estoqueAplicadoSchema = z.object({
   /** Depósito that received the applied movements (id, not a path). */
@@ -240,6 +279,14 @@ export const pedidoMeta: CollectionMetadata = {
     write: PERM_PEDIDO_WRITE,
     delete: PERM_PEDIDO_DELETE,
   },
+  // ⚠️ DECLARED BUT DELIBERATELY NOT ENFORCED — there is no `onPedidoDeleted`
+  // cascade trigger, and adding one is a decision that has already been made and
+  // rejected (owner call, 2026-08). `nfev4` holds emitted fiscal documents:
+  // sweeping them on a pedido delete destroys records the business is required
+  // to retain, and no convenience is worth that. Deleting a pedido therefore
+  // ORPHANS these subcollections on purpose. If you are here to "finish" the
+  // cascade with `defineCascadeCaroGenerico`, don't — read
+  // `apps/functions/src/cascades/caroGenericoTriggers.ts` first.
   cascade: [
     { path: 'pedidos/{pedidoId}/itens', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/pagamentos', onDelete: 'cascade' },
@@ -247,8 +294,24 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/incidentes', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
+    { path: 'pedidos/{pedidoId}/orderML', onDelete: 'cascade' },
+    // Freight-history / checkout / checkin subcollections, all three reusing
+    // the legacy leaf names so the Flutter app keeps reading them. The new app
+    // writes two of them: `checkout` (saveCheckout, schema
+    // `checkoutFretePedidoMeta`) and `historicoFtIni`, whose sole writer is the
+    // `onPedidoEstadoChanged` trigger (schema `historicoFreteInicialMeta`).
+    // `checkin` still has no schema and no writer here — only Flutter fills it
+    // — but the cascade must clean it too so a deleted pedido never leaves
+    // orphans (#372). `histestq` is intentionally omitted: it is a dead legacy
+    // constant with no model, rules block, or writer in either app.
+    { path: 'pedidos/{pedidoId}/historicoFtIni', onDelete: 'cascade' },
+    { path: 'pedidos/{pedidoId}/checkout', onDelete: 'cascade' },
+    { path: 'pedidos/{pedidoId}/checkin', onDelete: 'cascade' },
   ],
   defaultQuery: {
+    // Direction slice: one collection serves both /pedidos (saídas) and
+    // /pedidos/entradas — each list binds `ehSaida` via TableView queryParams.
+    where: [{ field: 'ehSaida', param: true }],
     orderBy: [{ field: 'numero', direction: 'desc' }],
     limit: 50,
   },

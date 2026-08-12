@@ -4,8 +4,6 @@ import { nfeConfigCollection, nfev4Collection } from '@delfrance/data/admin/coll
 import {
   applyOutcome,
   autorizarLote,
-  buildNFeProc,
-  classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
   extractCNFFromChave,
@@ -17,6 +15,7 @@ import {
   outcomeFromRetConsSit,
   outcomeFromRetEnviNFe,
   resolveTpEmis,
+  sanitizeNFeText,
   signNFe,
   type NFeStatePatch,
   type SefazCall,
@@ -25,9 +24,11 @@ import {
   type TRetEnviNFe,
 } from '@delfrance/integrations-nfe';
 import {
+  CONTINGENCIA_MODO,
   emissaoNFeBloqueadaPorEstado,
   ESTADO_NFE,
   nfeConfigSchema,
+  TIPO_NFE,
   type ContingenciaModo,
   type EstadoPedido,
   type NFeConfig,
@@ -60,11 +61,12 @@ import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
   buildEnviNFeMsgFromLote,
+  buildProcForAuthorizedOutcome,
   enviNfeCollection,
   existingToEmitResult,
   outcomeFromConsReci,
   persistPatch,
-  procPersistExtras,
+  swapAnchorForProc,
 } from './audit';
 import { buildGeneratorInput } from './generator-input';
 import { enviarEpecParaNota, transmitirPosEpec } from './epec';
@@ -144,6 +146,36 @@ export async function prepareEmission(
       `a operação vinculada não é fiscal (ehFiscal=false) — não emite NF-e`,
     );
   }
+  // tpNF derives from operacao.tipo — a direction mismatch between the pedido
+  // and its operação would emit an entrada NF-e for a sale (or the inverse).
+  // Legacy filtered the operação query by tipo and Dart-asserted (debug-only);
+  // here it hard-blocks: batch → "não emitidas" bucket, single route → 409 (#398).
+  const ehSaidaRaw = (bundle.pedido as { ehSaida?: unknown }).ehSaida;
+  const ehSaida = typeof ehSaidaRaw === 'boolean' ? ehSaidaRaw : true; // pedidoSchema default
+  if (ehSaida !== (bundle.operacao.tipo === TIPO_NFE.saida)) {
+    throw new NFeBlockedError(
+      pedidoId,
+      `pedido.ehSaida=${String(ehSaida)} mas operacao.tipo=${String(bundle.operacao.tipo)} — ` +
+        `tpNF divergiria da direção do pedido; corrija a operação vinculada`,
+    );
+  }
+  // natOp (`naturezaDaOperacao`) is a REQUIRED XSD field (grupo B, A04, 1..60).
+  // The operação schema enforces `min(1)` on the RAW string, but a value made
+  // up entirely of SEFAZ-restricted chars (e.g. '@#%') survives that check yet
+  // `sanitizeNFeText` — the exact transform the generator applies at
+  // `ide.ts` (`natOp: sanitizeNFeText(operacao.naturezaDaOperacao) ?? ''`) —
+  // reduces it to '', so `<natOp>` serializes empty and SEFAZ/XSD rejects the
+  // NF-e. That rejection today only surfaces AFTER numeração was allocated,
+  // burning a número on a doomed emission. Guard here — inside the write-free
+  // prep phase, before either allocation transaction — so the counter is never
+  // consumed for an operação that can't produce a valid natOp.
+  if (sanitizeNFeText(bundle.operacao.naturezaDaOperacao) == null) {
+    throw new NFeOrchestratorError(
+      `pedido '${pedidoId}': operação '${bundle.operacaoId}' has an empty ` +
+        `naturezaDaOperacao after sanitization (natOp='') — the NF-e would be ` +
+        `rejected by the XSD; fix the operação's natureza da operação before emitting`,
+    );
+  }
   await preResolveImpostos(bundle, fs, ctx);
   const items = flattenAndValidate(bundle);
 
@@ -155,8 +187,8 @@ export async function prepareEmission(
   // non-'none' modo carries them forward (a tpEmis=1 NF-e with B28/B29 is a
   // generator error by design).
   const contingencia: EmissionPrep['contingencia'] =
-    cfg.contingencia_modo === 'none'
-      ? { modo: 'none', dhCont: null, xJust: null }
+    cfg.contingencia_modo === CONTINGENCIA_MODO.none
+      ? { modo: CONTINGENCIA_MODO.none, dhCont: null, xJust: null }
       : {
           modo: cfg.contingencia_modo,
           dhCont:
@@ -257,6 +289,43 @@ export function buildNfeDocWrite(
 }
 
 /**
+ * Crash-window doc (#396): the anti-loss anchor is committed (chave + signed
+ * XML persisted) but SEFAZ never confirmed *receipt* — either the send/outcome
+ * was lost entirely (`enviando`, no nRec) or a degraded-async 103 arrived
+ * WITHOUT a receipt (`aguardandoResposta`, no nRec — the reconciler has
+ * nothing to consult by). Those exact bytes MAY already be authorized at
+ * SEFAZ, so a retry must retransmit them UNCHANGED (fresh idLote only):
+ * regenerating would overwrite the anchor with different bytes (fresh dhEmi)
+ * and corrupt any later proc stitch. Both emit paths (single + chunk) share
+ * this predicate so they can never disagree on what counts as a crash window.
+ * Docs WITH an nRec never reach it (the in-flight gates skip them first);
+ * the `!nRec` clause keeps the predicate order-independent anyway.
+ */
+function isCrashWindowAnchor(
+  existing: NotaFiscalEletronica | null,
+): existing is NotaFiscalEletronica & { chave: string; xml_assinado: string } {
+  return (
+    existing != null &&
+    (existing.estado === ESTADO_NFE.enviando ||
+      existing.estado === ESTADO_NFE.aguardandoResposta) &&
+    !existing.nRec &&
+    existing.chave != null &&
+    existing.xml_assinado != null
+  );
+}
+
+/**
+ * The ONLY fields a crash-window retransmit merges onto the doc: lote
+ * bookkeeping — never XML/chave fields, so the #128 anchor survives verbatim.
+ */
+function loteStampMerge(idLote: number) {
+  return nfev4Collection.parseMerge({
+    idLote: String(idLote),
+    ultima_modificacao: new Date().toISOString(),
+  });
+}
+
+/**
  * Phase 2 of the SINGLE-pedido emit cycle: atomic dedup pre-check +
  * allocate (nNF + idLote) + generate + sign + persist `estado='enviando'`.
  * All counter advances and XML persistence happen in ONE Firestore
@@ -323,6 +392,27 @@ export async function runAllocateGenerateSignTx(
     if (!cfgSnap.exists) throw new NFeConfigNotFoundError(bundle.filialId);
     const cfg = nfeConfigSchema.parse(cfgSnap.data()) as NFeConfig;
 
+    // Crash-window doc (#396) — see isCrashWindowAnchor. Retransmit the
+    // STORED bytes unchanged (fresh idLote only) so a duplicidade recovery
+    // pairs the original protNFe with the original bytes (digest match), or a
+    // never-received lote authorizes them normally. Mirrors the pós-EPEC
+    // stored-bytes transmit; rejeitada/error docs below keep regenerating
+    // (their content may have been fixed).
+    if (isCrashWindowAnchor(existing)) {
+      const idLote = cfg.idLote + 1;
+      console.debug(
+        `[nfe/orchestrator] pedido '${pedidoId}' crash-window doc (${existing.estado}, ` +
+          `no nRec) — retransmitting the STORED signed XML for chave ${existing.chave} ` +
+          `(idLote ${idLote})`,
+      );
+      tx.set(
+        nfeConfigRef,
+        nfeConfigCollection.parse({ ...cfg, idLote, timestamp: new Date().toISOString() }),
+      );
+      tx.set(nfeRef, loteStampMerge(idLote), { merge: true });
+      return { skip: false, chave: existing.chave, signedXml: existing.xml_assinado, idLote };
+    }
+
     // Reuse numeração + serie when an existing rejeitada / error /
     // never-sent doc is present; allocate fresh otherwise. idLote
     // always advances — every retry is a fresh SEFAZ lote.
@@ -370,7 +460,22 @@ export async function runAllocateGenerateSignTx(
 export type ChunkMember =
   | { skip: true; pedidoId: string; prep: EmissionPrep; existing: NotaFiscalEletronica }
   | {
+      /**
+       * Crash-window doc (#396): anchor committed (chave + xml_assinado) but
+       * the send/outcome never landed (enviando, no nRec). The chunk transmits
+       * the STORED bytes unchanged — no regenerate/re-sign — so a duplicidade
+       * recovery pairs the original protNFe with the original bytes.
+       */
       skip: false;
+      reuseStored: true;
+      pedidoId: string;
+      prep: EmissionPrep;
+      chave: string;
+      signedXml: string;
+    }
+  | {
+      skip: false;
+      reuseStored?: false;
       pedidoId: string;
       prep: EmissionPrep;
       nNF: number;
@@ -467,6 +572,9 @@ export async function runChunkAllocateTx(
       ref: FirebaseFirestore.DocumentReference;
       data: Record<string, unknown>;
     }> = [];
+    // Crash-window (#396) docs get the shared idLote stamped in THIS tx —
+    // atomic with the counter advance, mirroring the single-pedido path.
+    const storedStamps: FirebaseFirestore.DocumentReference[] = [];
     // Fresh pedidos take contiguous nNFs off `numeracao_atual`; skip/reuse
     // pedidos consume none (Flutter `pedidosSemNota` parity).
     let freshCount = 0;
@@ -497,6 +605,20 @@ export async function runChunkAllocateTx(
           existing.estado === ESTADO_NFE.aguardandoResposta)
       ) {
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
+        continue;
+      }
+      // Crash-window doc (#396) — see isCrashWindowAnchor: ride this chunk
+      // with the STORED signed bytes (no regenerate/re-sign; no nNF consumed).
+      if (isCrashWindowAnchor(existing)) {
+        members.push({
+          skip: false,
+          reuseStored: true,
+          pedidoId: sp.pedidoId,
+          prep: sp.prep,
+          chave: existing.chave,
+          signedXml: existing.xml_assinado,
+        });
+        storedStamps.push(sp.prep.nfeRef);
         continue;
       }
 
@@ -543,6 +665,7 @@ export async function runChunkAllocateTx(
       }),
     );
     for (const p of placeholders) tx.set(p.ref, p.data);
+    for (const ref of storedStamps) tx.set(ref, loteStampMerge(idLote), { merge: true });
 
     return { members, idLote };
   });
@@ -649,15 +772,22 @@ export async function applyAutorizadoOutcome(args: {
     }
   }
 
-  // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and
-  // we still have the matching local signedXml (no chave swap). This
-  // is the canonical form for DANFE rendering and fiscal archives.
-  const nfeProcXml =
-    classifyCStat(patch.cStat) === 'autorizada' && protNFeRaw != null && finalChave === chave
-      ? buildNFeProc(signedXml, protNFeRaw)
-      : null;
+  // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and we
+  // still have the matching local signedXml (no chave swap). The digest-safe
+  // stitch (#396, via `buildProcForAuthorizedOutcome`) refuses to pair the
+  // protocol with bytes it did not authorize (e.g. a duplicidade recovery
+  // after a pre-fix retry regenerated the anchor); 'unknown' (absent digVal /
+  // unextractable digest) never blocks the normal path.
+  const nfeProcXml = buildProcForAuthorizedOutcome({
+    cStat: patch.cStat,
+    chaveMatches: finalChave === chave,
+    signedXml,
+    prot: protNFeRaw,
+    logTag: 'nfe/orchestrator',
+    chave,
+  });
 
-  await persistPatch(nfeRef, patch, nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined);
+  await persistPatch(nfeRef, patch, nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined);
 
   // Degraded async: SEFAZ replied 103 to a (nominally sync) single-pedido send.
   // The doc is now aguardandoResposta with a receipt — hand off to the async
@@ -740,7 +870,7 @@ export async function emitirPedido(
   // EPEC mode: the NF-e is persisted (anti-loss anchor) but NOT sent to the
   // (down) home SEFAZ — the EPEC summary evento goes to the Ambiente
   // Nacional instead. The full NF-e is transmitted post-outage.
-  if (prep.contingencia.modo === 'epec') {
+  if (prep.contingencia.modo === CONTINGENCIA_MODO.epec) {
     return enviarEpecParaNota({
       fs,
       rt,
@@ -840,7 +970,7 @@ export async function emitirPedidosLote(
   //    NFeOrchestratorError) become per-pedido EmitError entries — the
   //    pedido never reaches a lote.
   // One read context for the whole batch — dedups the shared filial /
-  // operação / regraimposto reads and shares one imposto resolver per
+  // operação / regras reads and shares one imposto resolver per
   // operacaoId across all pedidos (PR-δ).
   const ctx = createBatchReadContext();
   const preps = await Promise.allSettled(pedidoIds.map((id) => prepareEmission(fs, rt, id, ctx)));
@@ -930,12 +1060,15 @@ export async function processChunk(
     serie: number;
     existingChave: string | null;
   }> = [];
+  const storedMembers: Array<Extract<ChunkMember, { reuseStored: true }>> = [];
   for (const m of members) {
     if (m.skip) {
       // Mirrors Flutter's `jaAprovadas` short-circuit (tasks.dart:159) —
       // a bloqueada/aprovada/cancelada nfev4 lands in the "Não emitidas"
       // bucket instead of riding the lote.
       txResults.push(existingToEmitResult(m.pedidoId, m.prep.nfeRef.id, m.existing));
+    } else if (m.reuseStored) {
+      storedMembers.push(m);
     } else {
       fresh.push({
         prep: m.prep,
@@ -987,11 +1120,16 @@ export async function processChunk(
       toSend.push(s.value);
     }
   });
+
+  // Crash-window members (#396) ride the same lote with their STORED bytes —
+  // no regenerate/re-sign, no doc overwrite (runChunkAllocateTx already
+  // stamped the shared idLote inside the allocation tx).
+  toSend.push(...storedMembers);
   if (toSend.length === 0) return txResults;
 
   // EPEC mode: no lote — each NF-e gets its own EPEC evento at the Ambiente
   // Nacional (one evento per envEvento in v1). Failures stay per-pedido.
-  if (toSend[0]!.prep.contingencia.modo === 'epec') {
+  if (toSend[0]!.prep.contingencia.modo === CONTINGENCIA_MODO.epec) {
     const epecs = await Promise.allSettled(
       toSend.map((s) =>
         enviarEpecParaNota({

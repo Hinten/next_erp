@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { UF_SIGLA, MODALIDADE_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
 import type { Endereco, Filial, ItemDoPedido } from '@delfrance/schemas';
 
 import { buildPedidoCartPayload } from './melhorEnvioCart';
@@ -13,13 +14,13 @@ function makeFrete(overrides: Partial<FreteInicialFormState> = {}): FreteInicial
     externalOptionIntegracao: 'int-1',
     externalOptionData: null,
     externalOptionSelectionDate: null,
-    estado: 'iniciado',
+    estado: ESTADO_FRETE.iniciado,
     integracaoFreteOuterRef: null,
     integracaoTargetOuterRef: null,
     integracao_path: null,
     clienteRecebedorOuterReference: null,
     enderecoFreteOuterReference: null,
-    modalidade: '0',
+    modalidade: MODALIDADE_FRETE.cif,
     transportadora: null,
     veiculo: null,
     reboques: null,
@@ -64,7 +65,7 @@ const ORIGIN: Endereco = {
   complemento: 'Conj 1',
   codigoMunicipio: null,
   cidade: 'São Paulo',
-  estado: 'SP',
+  estado: UF_SIGLA.SP,
   cPais: null,
   pais: null,
   nome: null,
@@ -74,6 +75,7 @@ const ORIGIN: Endereco = {
   imun: null,
   email: 'loja@example.com',
   telefone: '1133334444',
+  timestamp: null,
 };
 
 const FILIAL: Filial = {
@@ -97,7 +99,7 @@ const DEST_PF: Endereco = {
   complemento: null,
   codigoMunicipio: null,
   cidade: 'Rio de Janeiro',
-  estado: 'RJ',
+  estado: UF_SIGLA.RJ,
   cPais: null,
   pais: null,
   nome: 'Maria Recebedora',
@@ -107,6 +109,7 @@ const DEST_PF: Endereco = {
   imun: null,
   email: 'maria@example.com',
   telefone: '21999998888',
+  timestamp: null,
 };
 
 const ITENS: ItemDoPedido[] = [

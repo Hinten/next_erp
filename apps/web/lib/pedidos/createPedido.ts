@@ -1,51 +1,22 @@
 import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import type { Pedido } from '@delfrance/schemas';
+import { PEDIDO_COUNTER_DOC_ID, mintNumeros, operacaoNumeroPrefix } from '@delfrance/data/pedido';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { counterCollection } from '@/lib/data/counterCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { newDocId } from '@/lib/data/newDocId';
+import { marcarInteracaoDoUsuario } from './interacaoDoUsuario';
 
-/**
- * Fixed width of the zero-padded numeric part of a pedido `numero`
- * (e.g. `42` → `"000042"`). `numero` is stored as a string and is the default
- * list sort key (`pedidoMeta.defaultQuery` orders by `numero` desc, a lexical
- * sort). Because the operação prefix leads the string, that lexical sort groups
- * the `/pedidos` list by prefix and then orders by sequence *within* each
- * prefix — a fixed width keeps that within-prefix ordering correct. (Grouping
- * by operação is intentional; it is not a global-recency order across
- * operações.)
- */
-export const PEDIDO_NUMERO_WIDTH = 6;
-
-/** Doc id of the global pedido sequence in the `counters` collection. */
-export const PEDIDO_COUNTER_DOC_ID = 'pedido';
-
-/** Prefix used when a pedido has no operação to derive one from. */
-export const PEDIDO_NUMERO_NO_OPERACAO_PREFIX = 'NUL';
-
-/**
- * Derive the `numero` prefix from an operação name: its first 3 letters,
- * uppercased. This namespaces UI-created pedido numbers away from numbers that
- * come from other channels (marketplaces), which would otherwise collide with a
- * bare sequence. Falls back to {@link PEDIDO_NUMERO_NO_OPERACAO_PREFIX} when the
- * pedido has no operação (or an empty name).
- */
-export function operacaoNumeroPrefix(nome: string | null | undefined): string {
-  const cleaned = (nome ?? '').trim();
-  if (!cleaned) return PEDIDO_NUMERO_NO_OPERACAO_PREFIX;
-  return cleaned.slice(0, 3).toUpperCase();
-}
-
-/**
- * Compose a pedido `numero` from its operação prefix and sequence value, as
- * `<PREFIX>-<seq>` (e.g. `VEN-000042`). The prefix leads deliberately (human
- * readability + namespacing vs. marketplace numbers), so the default
- * `numero`-desc list sort groups by operação then orders by sequence within
- * each prefix — not a single global sequence order. See `PEDIDO_NUMERO_WIDTH`.
- */
-export function formatPedidoNumero(prefix: string, value: number): string {
-  return `${prefix}-${String(value).padStart(PEDIDO_NUMERO_WIDTH, '0')}`;
-}
+// The numero constants/format helpers moved to `@delfrance/data/pedido`
+// (SDK-agnostic, shared with the devolução transactional flows); re-exported
+// here so existing imports keep working.
+export {
+  PEDIDO_COUNTER_DOC_ID,
+  PEDIDO_NUMERO_NO_OPERACAO_PREFIX,
+  PEDIDO_NUMERO_WIDTH,
+  formatPedidoNumero,
+  operacaoNumeroPrefix,
+} from '@delfrance/data/pedido';
 
 /**
  * Create a pedido with an auto-assigned, human-readable, unique `numero` of the
@@ -54,9 +25,10 @@ export function formatPedidoNumero(prefix: string, value: number): string {
  * global sequence.
  *
  * The pedido id is minted client-side (`newDocId`) so the counter bump and the
- * pedido write share a single `runTransaction`: read the global counter doc,
- * increment it, and write both the counter and the pedido atomically. This is
- * the browser equivalent of the NF-e numeração counter
+ * pedido write share a single `runTransaction`: the counter read/bump/set
+ * protocol lives in `mintNumeros` (`@delfrance/data/pedido`, shared with the
+ * devolução transactional flows), applied here through the counter handle.
+ * This is the browser equivalent of the NF-e numeração counter
  * (`packages/integrations/nfe/src/numeracao/`) — gap-free and unique even under
  * concurrent creates, at the minimum cost of one extra read + one extra write.
  * (The operação is read once, outside the transaction, only to derive the
@@ -65,37 +37,55 @@ export function formatPedidoNumero(prefix: string, value: number): string {
  * The transaction retries automatically on contention; if it ultimately fails
  * it throws, so a pedido is never created without a `numero`.
  *
- * @returns the new pedido's Firestore doc id.
+ * @returns the new pedido's Firestore doc id + its minted `numero`.
  */
-export async function createPedidoWithNumero(db: Firestore, values: Pedido): Promise<string> {
-  const prefix = await resolveOperacaoPrefix(db, values.operacaoPedidoOuterRef);
+export async function createPedidoWithNumero(
+  db: Firestore,
+  values: Pedido,
+): Promise<{ id: string; numero: string }> {
+  const nome = await resolveOperacaoNome(db, values.operacaoPedidoOuterRef);
+  const prefix = operacaoNumeroPrefix(nome);
   const pedidoId = newDocId();
+  // Set by the FINAL (committed) attempt; reset per attempt since the
+  // transaction re-runs on contention.
+  let numero = '';
   await runTransaction(db, async (tx) => {
     const counterRef = counterCollection.docRef(db, {}, PEDIDO_COUNTER_DOC_ID);
     // Reads must precede writes in a Firestore transaction.
     const snap = await tx.get(counterRef);
-    const current = snap.exists() ? (snap.data()?.value ?? 0) : 0;
-    const next = current + 1;
-    tx.set(counterRef, { value: next });
-    tx.set(pedidoCollection.docRef(db, {}, pedidoId), {
-      ...values,
-      numero: formatPedidoNumero(prefix, next),
-    });
+    const counterDoc = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+    const { numeros, counterOp } = mintNumeros(counterDoc, [prefix]);
+    numero = numeros[0]!;
+    // `mintNumeros` always emits the counter write as a `set` op — the check
+    // only narrows the `PedidoWriteOp` union (a `delete` carries no data).
+    if (counterOp.type !== 'set') throw new Error('mintNumeros: counterOp must be a set op');
+    tx.set(counterRef, counterOp.data as never);
+    // This function is only ever reached from `NovoPedidoView` — an operator
+    // pressing "Salvar" — so the pedido is human-authored by construction. See
+    // `marcarInteracaoDoUsuario` for why the flag has to be written.
+    tx.set(
+      pedidoCollection.docRef(db, {}, pedidoId),
+      marcarInteracaoDoUsuario({ ...values, numero }),
+    );
   });
-  return pedidoId;
+  return { id: pedidoId, numero };
 }
 
 /**
- * Resolve the operação prefix from the pedido's `operacaoPedidoOuterRef`. Reads
- * the operação doc (a legacy outer-ref, so via the generic dereference) to get
- * its `nome`. Returns the no-operação sentinel when there's no ref or the doc is
- * missing; a read failure (FirebaseError) propagates so the create surfaces it
- * rather than silently mislabeling the pedido.
+ * Resolve an operação's `nome` from a pedido's `operacaoPedidoOuterRef`. Reads
+ * the operação doc (a legacy outer-ref, so via the generic dereference —
+ * tolerant of non-string legacy ref shapes) to get its `nome`. Returns null
+ * when there's no ref, the doc is missing or `nome` isn't a string (→ the
+ * `NUL` prefix via `operacaoNumeroPrefix`); a read failure (FirebaseError)
+ * propagates so callers surface it rather than silently mislabeling the pedido.
  */
-async function resolveOperacaoPrefix(db: Firestore, operacaoRef: unknown): Promise<string> {
+export async function resolveOperacaoNome(
+  db: Firestore,
+  operacaoRef: unknown,
+): Promise<string | null> {
   const ref = dereferenceOuterRef(db, operacaoRef);
-  if (ref == null) return PEDIDO_NUMERO_NO_OPERACAO_PREFIX;
+  if (ref == null) return null;
   const snap = await getDoc(ref);
   const nome = snap.exists() ? (snap.data() as { nome?: unknown }).nome : null;
-  return operacaoNumeroPrefix(typeof nome === 'string' ? nome : null);
+  return typeof nome === 'string' ? nome : null;
 }

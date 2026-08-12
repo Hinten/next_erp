@@ -7,19 +7,16 @@ import {
 import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
-  applyPrecosChange,
   buildChildrenComponentesKitOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
   buildKitStatusChildOps,
   buildLocalizacaoOp,
-  buildPrecoHistoryOps,
   deleteProdutoCascade,
   findProdutoReferences,
   planMovimentacao,
   propagateKitStatusToChildren,
-  propagatePrecosToChildren,
-  recordPrecoHistory,
+  resolveKitGuardInputs,
   saveChildrenComponentesKit,
   saveProdutoExtraData,
 } from './usecases';
@@ -28,55 +25,40 @@ interface MemoryOpts {
   children?: ProdutoSnapshot[];
   /** Per-produto-id inbound references. */
   refs?: Record<string, { kits?: ProdutoSnapshot[]; subcols?: string[] }>;
+  /** Per-produto-id `ehKit` flag; an id absent here does not resolve to a doc. */
+  kitFlags?: Record<string, boolean>;
 }
 
 function memoryPort(opts: MemoryOpts = {}) {
   const committed: ProdutoWriteOp[][] = [];
+  const kitFlagCalls: string[][] = [];
   let n = 0;
   const port: ProdutoDataPort = {
     newId: () => `id${++n}`,
     now: () => 1000,
     getChildren: async () => opts.children ?? [],
     getKitReferences: async (id) => opts.refs?.[id]?.kits ?? [],
+    getKitFlags: async (ids) => {
+      kitFlagCalls.push(ids);
+      return ids
+        .filter((id) => opts.kitFlags?.[id] !== undefined)
+        .map((id) => ({ id, ehKit: opts.kitFlags![id]! }));
+    },
     subcollectionHasDocs: async (id, name) => (opts.refs?.[id]?.subcols ?? []).includes(name),
     commit: async (ops) => {
       committed.push(ops);
     },
   };
-  return { port, committed };
+  return { port, committed, kitFlagCalls };
 }
+
+/** A `componentesKit` entry (only the key matters to the guard resolver). */
+const kitEntry = () => ({ quantidade: 1, limitarEstoque: true, timestamp: null });
 
 const snap = (id: string, precos: ProdutoSnapshot['precos'], nome = id): ProdutoSnapshot => ({
   id,
   nome,
   precos,
-});
-
-describe('preco/custo history ops', () => {
-  it('buildPrecoHistoryOps emits the Flutter wire shape', () => {
-    const { port } = memoryPort();
-    const ops = buildPrecoHistoryOps(port, 'p1', [
-      { listaId: 'L1', valorOriginal: null, valorFinal: 10 },
-    ]);
-    expect(ops).toEqual([
-      {
-        type: 'set',
-        path: 'produtos/p1/historicoDePrecos/id1',
-        data: {
-          listaDePrecoHistoricoOuterRef: 'documents/listaDePrecos/L1',
-          valorOriginal: null,
-          valorFinal: 10,
-          timestamp: 1000,
-        },
-      },
-    ]);
-  });
-
-  it('recordPrecoHistory is a no-op for an empty change set', async () => {
-    const { port, committed } = memoryPort();
-    await recordPrecoHistory(port, 'p1', []);
-    expect(committed).toEqual([]);
-  });
 });
 
 describe('produto extra data (Descrição + Google Merchant singleton)', () => {
@@ -138,16 +120,18 @@ describe('produto estoque — localização (buildLocalizacaoOp)', () => {
 });
 
 describe('produto estoque — movimentação (planMovimentacao)', () => {
-  it('entrada keeps the magnitudes positive and records a non-balanço history', () => {
+  it('entrada keeps the magnitudes positive and records a signed movimento', () => {
     const plan = planMovimentacao(
       { tipo: 'entrada', quantidade: 5, quantidadeReservada: 0, motivo: 'compra' },
       1000,
     );
     expect(plan).toMatchObject({ ehBalanco: false, quantidade: 5, quantidadeReservada: 0 });
+    // Read-free: the delta is known, the resulting saldo is not.
     expect(plan.historico).toEqual({
-      ehBalanco: null,
-      quantidade: 5,
-      quantidadeReservada: 0,
+      movimento: 5,
+      movimentoReservada: 0,
+      saldo: null,
+      saldoReservada: null,
       motivo: 'compra',
       timestamp: 1000,
     });
@@ -159,16 +143,101 @@ describe('produto estoque — movimentação (planMovimentacao)', () => {
       1000,
     );
     expect(plan).toMatchObject({ ehBalanco: false, quantidade: -3, quantidadeReservada: -1 });
-    expect(plan.historico).toMatchObject({ quantidade: -3, quantidadeReservada: -1 });
+    expect(plan.historico).toMatchObject({ movimento: -3, movimentoReservada: -1 });
   });
 
-  it('balanço passes through the absolute counted values and flags ehBalanco', () => {
+  it('entrada/saída fill the saldo pair when `atual` is supplied', () => {
+    const plan = planMovimentacao(
+      { tipo: 'saida', quantidade: 3, quantidadeReservada: 1, motivo: null },
+      1000,
+      { quantidade: 10, quantidadeReservada: 4 },
+    );
+    expect(plan.historico).toMatchObject({
+      movimento: -3,
+      movimentoReservada: -1,
+      saldo: 7,
+      saldoReservada: 3,
+    });
+  });
+
+  it('records the CLAMPED reservada delta when `atual` makes the floor observable', () => {
+    // Releasing 5 against a stored 2: the caller floors reservada at 0, so only
+    // -2 actually applies. Recording the requested -5 would drift the ledger
+    // from the stored counter by exactly the clamped amount (ADR 0014).
+    const plan = planMovimentacao(
+      { tipo: 'saida', quantidade: 0, quantidadeReservada: 5, motivo: null },
+      1000,
+      { quantidade: 10, quantidadeReservada: 2 },
+    );
+    expect(plan.historico).toMatchObject({ movimentoReservada: -2, saldoReservada: 0 });
+  });
+
+  it('balanço writes the absolute value but records it as a SIGNED delta', () => {
+    // The whole point of v2: the estoque doc gets the counted value, the ledger
+    // gets `contado − atual` so `sum(movimento)` stays meaningful.
     const plan = planMovimentacao(
       { tipo: 'balanco', quantidade: 42, quantidadeReservada: 2, motivo: 'contagem' },
       1000,
+      { quantidade: 50, quantidadeReservada: 3 },
     );
     expect(plan).toMatchObject({ ehBalanco: true, quantidade: 42, quantidadeReservada: 2 });
-    expect(plan.historico).toMatchObject({ ehBalanco: true, quantidade: 42 });
+    expect(plan.historico).toMatchObject({
+      movimento: -8,
+      movimentoReservada: -1,
+      saldo: 42,
+      saldoReservada: 2,
+    });
+  });
+
+  it('a balanço against a missing/zero estoque records the full counted value as the delta', () => {
+    const plan = planMovimentacao(
+      { tipo: 'balanco', quantidade: 42, quantidadeReservada: 0, motivo: null },
+      1000,
+      { quantidade: 0, quantidadeReservada: 0 },
+    );
+    expect(plan.historico).toMatchObject({ movimento: 42, saldo: 42 });
+  });
+
+  it('a balanço planned WITHOUT `atual` records movimento null — unknown, never a fake delta', () => {
+    // Callers must read first; if one does not, consumers must see "unknown"
+    // and fail open rather than sum an absolute value as if it were a delta.
+    const plan = planMovimentacao(
+      { tipo: 'balanco', quantidade: 42, quantidadeReservada: 2, motivo: null },
+      1000,
+    );
+    expect(plan.historico).toMatchObject({
+      movimento: null,
+      movimentoReservada: null,
+      saldo: 42,
+      saldoReservada: 2,
+    });
+  });
+
+  it('clamps a negative counted reservada into BOTH the write and the recorded saldo', () => {
+    // The plan describes exactly what lands on the doc, so a balanço's
+    // `quantidadeReservada` must equal its `historico.saldoReservada` — the
+    // caller writes it verbatim and must not need a second floor of its own.
+    const plan = planMovimentacao(
+      { tipo: 'balanco', quantidade: 5, quantidadeReservada: -3, motivo: null },
+      1000,
+      { quantidade: 5, quantidadeReservada: 1 },
+    );
+    expect(plan.quantidadeReservada).toBe(0);
+    expect(plan.historico).toMatchObject({ saldoReservada: 0, movimentoReservada: -1 });
+    expect(plan.quantidadeReservada).toBe(plan.historico.saldoReservada);
+  });
+
+  it('leaves a NEGATIVE entrada/saída reservada delta unclamped — there it is an increment', () => {
+    // Only the balanço's field is an absolute value. A saída's is the signed
+    // delta the caller `increment`s, so clamping it here would silently drop
+    // the release of a reservation.
+    const plan = planMovimentacao(
+      { tipo: 'saida', quantidade: 1, quantidadeReservada: 2, motivo: null },
+      1000,
+      { quantidade: 10, quantidadeReservada: 5 },
+    );
+    expect(plan.quantidadeReservada).toBe(-2);
+    expect(plan.historico).toMatchObject({ saldoReservada: 3, movimentoReservada: -2 });
   });
 });
 
@@ -387,49 +456,76 @@ describe('propagateKitStatusToChildren', () => {
   });
 });
 
-describe('propagatePrecosToChildren', () => {
-  it('updates only the children whose precos differ', async () => {
-    const { port, committed } = memoryPort({
-      children: [snap('c1', { L1: { valor: 5 } }), snap('c2', { L1: { valor: 10 } })],
+describe('resolveKitGuardInputs (agent/MCP kit-guard resolution #479)', () => {
+  it('resolves componentKitIds to the components whose produto is itself a kit', async () => {
+    const { port } = memoryPort({ kitFlags: { compKit: true, compPlain: false } });
+    const out = await resolveKitGuardInputs(port, {
+      componentesKit: { compKit: kitEntry(), compPlain: kitEntry() },
+      paiId: null,
     });
-    const updated = await propagatePrecosToChildren(port, 'p1', { L1: { valor: 10 } });
-    expect(updated).toEqual(['c1']);
-    expect(committed).toEqual([
-      [{ type: 'update', path: 'produtos/c1', data: { precos: { L1: { valor: 10 } } } }],
-    ]);
+    expect(out.componentKitIds).toEqual(['compKit']);
+    expect(out.parentIsKit).toBeNull();
   });
 
-  it('does nothing when every child already matches', async () => {
-    const { port, committed } = memoryPort({ children: [snap('c1', { L1: { valor: 10 } })] });
-    expect(await propagatePrecosToChildren(port, 'p1', { L1: { valor: 10 } })).toEqual([]);
-    expect(committed).toEqual([]);
-  });
-});
-
-describe('applyPrecosChange', () => {
-  it('records history + propagates when the map changed', async () => {
-    const { port, committed } = memoryPort({ children: [snap('c1', { L1: { valor: 5 } })] });
-    const out = await applyPrecosChange(port, {
-      produtoId: 'p1',
-      oldPrecos: { L1: { valor: 5 } },
-      newPrecos: { L1: { valor: 10 } },
-    });
-    expect(out).toEqual({ changed: true });
-    // one commit for history, one for child propagation
-    expect(committed).toHaveLength(2);
-    expect(committed[0]?.[0]?.path).toBe('produtos/p1/historicoDePrecos/id1');
-    expect(committed[1]?.[0]).toMatchObject({ type: 'update', path: 'produtos/c1' });
+  it('resolves parentIsKit=true when the paiId parent is a kit', async () => {
+    const { port } = memoryPort({ kitFlags: { pai1: true } });
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: 'pai1' });
+    expect(out.parentIsKit).toBe(true);
+    expect(out.componentKitIds).toEqual([]);
   });
 
-  it('is a no-op when the map is unchanged', async () => {
-    const { port, committed } = memoryPort({ children: [snap('c1', { L1: { valor: 5 } })] });
-    const out = await applyPrecosChange(port, {
-      produtoId: 'p1',
-      oldPrecos: { L1: { valor: 5 } },
-      newPrecos: { L1: { valor: 5 } },
+  it('resolves parentIsKit=false when the paiId parent is not a kit', async () => {
+    const { port } = memoryPort({ kitFlags: { pai1: false } });
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: 'pai1' });
+    expect(out.parentIsKit).toBe(false);
+  });
+
+  it('resolves parentIsKit as null (absent, not false) for a produto with no paiId', async () => {
+    const { port, kitFlagCalls } = memoryPort();
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: null });
+    expect(out).toEqual({ componentKitIds: [], parentIsKit: null });
+    // No components and no parent → no doc read at all.
+    expect(kitFlagCalls).toEqual([]);
+  });
+
+  it('treats an empty-string paiId as "no parent" (parentIsKit null, no read)', async () => {
+    const { port, kitFlagCalls } = memoryPort();
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: '' });
+    expect(out.parentIsKit).toBeNull();
+    expect(kitFlagCalls).toEqual([]);
+  });
+
+  it('treats a component/parent id that resolves to no produto as a non-kit', async () => {
+    // compGone / paiGone are absent from kitFlags → not returned by getKitFlags.
+    const { port } = memoryPort({ kitFlags: { compKit: true } });
+    const out = await resolveKitGuardInputs(port, {
+      componentesKit: { compKit: kitEntry(), compGone: kitEntry() },
+      paiId: 'paiGone',
     });
-    expect(out).toEqual({ changed: false });
-    expect(committed).toEqual([]);
+    expect(out.componentKitIds).toEqual(['compKit']);
+    expect(out.parentIsKit).toBe(false);
+  });
+
+  it('drops an empty-string component key (invalid doc id) instead of reading it', async () => {
+    const { port, kitFlagCalls } = memoryPort({ kitFlags: { compKit: true } });
+    const out = await resolveKitGuardInputs(port, {
+      componentesKit: { compKit: kitEntry(), '': kitEntry() },
+      paiId: null,
+    });
+    expect(out.componentKitIds).toEqual(['compKit']);
+    // The '' key never reaches the port (it would be an invalid Firestore ref).
+    expect(kitFlagCalls[0]).not.toContain('');
+    expect(kitFlagCalls[0]).toEqual(['compKit']);
+  });
+
+  it('batches all component ids + the paiId into a single getKitFlags call (deduped)', async () => {
+    const { port, kitFlagCalls } = memoryPort({ kitFlags: { a: true, b: false, pai: true } });
+    await resolveKitGuardInputs(port, {
+      componentesKit: { a: kitEntry(), b: kitEntry() },
+      paiId: 'pai',
+    });
+    expect(kitFlagCalls).toHaveLength(1);
+    expect([...kitFlagCalls[0]!].sort()).toEqual(['a', 'b', 'pai']);
   });
 });
 
@@ -439,7 +535,7 @@ describe('findProdutoReferences', () => {
       refs: {
         p1: {
           kits: [snap('k1', null, 'Kit A')],
-          subcols: ['variacaoMercadoLivre', 'produtoshopee'],
+          subcols: ['variacaoMercadoLivre', 'prodshopee'],
         },
       },
     });

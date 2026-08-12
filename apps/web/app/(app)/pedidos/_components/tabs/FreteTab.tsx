@@ -7,11 +7,11 @@ import { IconExclamationCircle } from '@tabler/icons-react';
 import { Controller } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
 import {
+  MODALIDADE_FRETE,
   ESTADO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
   estadoFreteSchema,
-  freightCapsFor,
-  freteDoPedidoSchema,
+  isFreteMarketplaceOwned,
   modalidadeFreteSchema,
   type ModalidadeFrete,
 } from '@delfrance/schemas';
@@ -22,7 +22,8 @@ import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import type { FreteInicialFormState } from '../types';
 import { collectFreteErrors } from '../freteErrors';
-import { fretePath, type PedidoFormHandle } from './frete/fields';
+import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
+import { seedFreteInicial } from './frete/seedFreteInicial';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
@@ -50,8 +51,11 @@ export interface FreteTabProps {
  */
 export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const freteInicial = form.watch('freteInicial');
-  const modalidade: ModalidadeFrete = freteInicial?.modalidade ?? '9';
-  const temFrete = freteInicial != null && modalidade !== '9';
+  const modalidade: ModalidadeFrete = freteInicial?.modalidade ?? MODALIDADE_FRETE.semTransporte;
+  const temFrete = freteInicial != null && modalidade !== MODALIDADE_FRETE.semTransporte;
+  // Direction of the pedido — seeds `ehReverso` on a fresh freteInicial
+  // (entrada → reverse by default).
+  const ehSaida = form.watch('ehSaida') ?? true;
 
   const clientePedidoOuterRef = form.watch('clientePedidoOuterRef');
 
@@ -87,7 +91,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
       return;
     }
     if (!freteInicial) {
-      const seeded = freteDoPedidoSchema.parse({ estado: 'iniciado', modalidade: next.data });
+      const seeded = seedFreteInicial(next.data, ehSaida);
       form.setValue('freteInicial', seeded as unknown as FreteInicialFormState, {
         shouldDirty: true,
         shouldValidate: true,
@@ -150,7 +154,11 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // by hand-editing the pedido. While the integração doc is still resolving
   // the header stays locked as well (tipo unknown = ownership unknown); a
   // resolved-but-missing doc unlocks it so a dangling ref can be fixed.
-  const marketplaceOwned = freightCapsFor(tipo).marketplaceOwned;
+  // Shared predicate with the pedido estado reconcile, which refuses to authorize
+  // dispatch on a marketplace-owned block (#702). The two feed it DIFFERENT tipos
+  // and can disagree: here it is the resolved `int_frete` doc, server-side it is
+  // `freteInicial.externalOptionIntegracao` (no extra read inside the transaction).
+  const marketplaceOwned = isFreteMarketplaceOwned(tipo);
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 
@@ -316,6 +324,14 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 error={fieldState.error?.message}
               />
             )}
+          />
+
+          <FreteSwitchField
+            form={form}
+            name="ehReverso"
+            label="Frete reverso"
+            description="Transporte no sentido cliente → loja (padrão em entradas)."
+            disabled={headerDisabled}
           />
 
           <Divider />

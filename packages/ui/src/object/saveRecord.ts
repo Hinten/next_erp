@@ -9,12 +9,11 @@ import {
 import type { z, ZodTypeAny } from 'zod';
 import { nowMicros, nowMillis } from '@delfrance/core/datetime';
 import { type CollectionHandle, type PathContext } from '@delfrance/data';
-import { writeAuditEntry } from '@delfrance/data/audit';
 import { isEmpty, pickDirty } from './diff';
 
 /**
  * A sibling document write that must ride the SAME transaction as the main
- * record — so the two commit together or not at all, in a single round-trip.
+ * record — so the two commit together or not at all.
  * The motivating case: a produto's `extraData` singleton, which on a flaky
  * connection used to be a separate `writeBatch` that could be lost while the
  * produto doc committed (orphan state). `ref` is a converter-bound
@@ -37,7 +36,13 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
   values: T;
   /** RHF `formState.dirtyFields`. */
   dirtyFields: Partial<Record<keyof T, unknown>>;
-  /** Uid threaded through to the audit entry. */
+  /**
+   * Uid of the acting user. Unused internally since the audit-entry write it
+   * fed was retired (the dormant `writeAuditEntry` stub — no feature ever
+   * activated it); kept required because `ObjectView` and its many callers
+   * already thread it through, and a future consumer (e.g. a real audit trail)
+   * can pick it back up without a signature change.
+   */
   currentUserUid: string;
   /**
    * Additional documents to write atomically with the main record, in the SAME
@@ -49,14 +54,26 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
    */
   siblingWrites?: (id: string) => TransactionWrite[];
   /**
-   * Wire unit for the `ultimaModificacao` stamp, resolved from the schema by
-   * the caller (ObjectView reads the field descriptor). `'iso'` (the default)
+   * Wire unit for create/last-modified stamps, resolved from the schema by the
+   * caller (ObjectView reads the field descriptor). `'iso'` (the default)
    * writes an ISO-8601 string; `'ms'` / `'us'` write a numeric epoch for
-   * collections whose timestamp fields use `millisSinceEpoch()` /
+   * collections whose stamp fields use `millisSinceEpoch()` /
    * `microsSinceEpoch()`. Without this, a numeric-epoch collection would get an
    * ISO string stamped into a `z.number()` field.
    */
   stampUnit?: 'iso' | 'ms' | 'us';
+  /**
+   * Last-modified field name. Default `'ultimaModificacao'`. Pass `false` to
+   * disable modified stamping entirely (e.g. schemas without that concept).
+   */
+  modifiedAtField?: string | false;
+  /**
+   * Creation field name (create-only, nullish coalesce — Flutter
+   * `timestamp ??= now`). Default `'timestamp'`. Pass `false` to disable.
+   * Domains that wire creation as `dataCadastro` pass that name (ObjectView
+   * auto-detects from the schema descriptors).
+   */
+  createdAtField?: string | false;
 }
 
 export interface SaveRecordResult<T> {
@@ -72,17 +89,30 @@ export class NothingChangedError extends Error {
   }
 }
 
+/** Keys that must never be used as dynamic object property names. */
+const PROTOTYPE_POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 /**
- * Save a single record (create or update) inside a transaction. The
- * transaction also runs `writeAuditEntry`, which is a no-op stub today but
- * will record a per-mutation audit row in the same atomic write.
+ * Resolve a stamp field option to a safe key (or `undefined` when disabled /
+ * invalid). Rejects prototype-polluting keys so a caller-supplied
+ * `createdAtField` / `modifiedAtField` cannot mutate `Object.prototype`.
+ */
+function resolveStampKey(option: string | false | undefined, fallback: string): string | undefined {
+  if (option === false) return undefined;
+  const key = option ?? fallback;
+  if (PROTOTYPE_POLLUTION_KEYS.has(key)) return undefined;
+  return key;
+}
+
+/**
+ * Save a single record (create or update) inside a transaction.
  *
- * Why a transaction for a one-doc write? Two reasons:
- *  1. Forces the audit entry to ride the same atomic boundary as the data
- *     write when the stub gets activated.
- *  2. The caller's API surface ("save" returns Promise<void>) doesn't need
- *     to change later when more sibling writes (e.g. denormalized counters)
- *     join the same transaction.
+ * Why a transaction for a one-doc write? The caller's API surface ("save"
+ * returns Promise<void>) doesn't need to change later when more sibling
+ * writes (e.g. denormalized counters) join the same transaction — the main
+ * doc and every sibling write already commit atomically (the SDK may retry
+ * the transaction internally; atomicity, not a single round-trip, is the
+ * guarantee).
  */
 export async function saveRecord<
   S extends ZodTypeAny,
@@ -109,8 +139,8 @@ export async function saveRecord<
 
   // The main doc is written on every create, and on an update only when its
   // dirty patch is non-empty. A sibling-only update (empty patch) skips the main
-  // write entirely — so neither the data NOR the `ultimaModificacao` stamp
-  // touches the otherwise-unchanged doc.
+  // write entirely — so neither the data NOR the last-modified stamp touches
+  // the otherwise-unchanged doc.
   const writeMainDoc = !isUpdate || !isEmpty(patch);
 
   // Nothing to write at all → "no changes" (only reachable on update; a create
@@ -118,21 +148,40 @@ export async function saveRecord<
   // Descrição), so the no-op only fires when neither side has work.
   if (!writeMainDoc && siblings.length === 0) throw new NothingChangedError();
 
-  // Stamp the last-modified field (when the schema has one) ONLY when the main
-  // doc is actually written — so the TableView update-monitor sees real edits,
-  // and a sibling-only save doesn't bump an otherwise-unchanged parent. On
-  // create `patch` aliases `input.values`, so stamping `input.values` covers both.
-  if (writeMainDoc && 'ultimaModificacao' in input.values) {
-    const now =
-      input.stampUnit === 'us'
-        ? nowMicros()
-        : input.stampUnit === 'ms'
-          ? nowMillis()
-          : new Date().toISOString();
-    if (isUpdate) {
-      (patch as Record<string, unknown>).ultimaModificacao = now;
-    } else {
-      (input.values as Record<string, unknown>).ultimaModificacao = now;
+  // Field names: default to the monorepo majority (`timestamp` /
+  // `ultimaModificacao`); ObjectView overrides for `dataCadastro` etc.
+  // `false` (or a prototype-polluting key) disables that stamp entirely.
+  const modifiedKey = resolveStampKey(input.modifiedAtField, 'ultimaModificacao');
+  const createdKey = resolveStampKey(input.createdAtField, 'timestamp');
+
+  // Stamps run ONLY when the main doc is actually written — so the TableView
+  // update-monitor sees real edits, and a sibling-only save doesn't bump an
+  // otherwise-unchanged parent. On create `patch` aliases `input.values`, so
+  // stamping `input.values` covers both.
+  if (writeMainDoc) {
+    const valuesRec = input.values as Record<string, unknown>;
+    const needsModified = !!modifiedKey && modifiedKey in valuesRec;
+    const needsCreated =
+      !isUpdate && !!createdKey && createdKey in valuesRec && valuesRec[createdKey] == null;
+
+    if (needsModified || needsCreated) {
+      const now =
+        input.stampUnit === 'us'
+          ? nowMicros()
+          : input.stampUnit === 'ms'
+            ? nowMillis()
+            : new Date().toISOString();
+
+      if (needsModified && modifiedKey) {
+        if (isUpdate) {
+          (patch as Record<string, unknown>)[modifiedKey] = now;
+        } else {
+          valuesRec[modifiedKey] = now;
+        }
+      }
+      if (needsCreated && createdKey) {
+        valuesRec[createdKey] = now;
+      }
     }
   }
 
@@ -157,14 +206,6 @@ export async function saveRecord<
       else if (w.type === 'delete') tx.delete(w.ref as DocumentReference);
       else tx.set(w.ref as DocumentReference, w.data as never);
     }
-
-    writeAuditEntry(tx, {
-      collectionPath: input.collection.resolvePath(input.pathContext),
-      docId: ref.id,
-      uid: input.currentUserUid,
-      kind: isUpdate ? 'update' : 'create',
-      patch: patch as Record<string, unknown>,
-    });
   });
 
   return { id: ref.id, patch };

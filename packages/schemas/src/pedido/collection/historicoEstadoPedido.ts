@@ -16,15 +16,36 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * `.old/packages/pedido/lib/src/models.dart:3838`. One audit row per
  * `estado` transition of the parent pedido: the new state, who changed it,
  * and when.
+ *
+ * Written EXCLUSIVELY by the `onPedidoEstadoChanged` Cloud Function
+ * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which observes every
+ * `pedidos/{pedidoId}` write from every writer — the web editor, the Mercado
+ * Pago webhook, Mercado Livre order import, scripts — and appends one row per
+ * transition. Nothing appends rows at the call site any more, and
+ * `serverOwned` makes a client attempt fail (`delfrance/no-client-estado-history-write`
+ * catches it at lint time).
  */
 export const historicoEstadoPedidoSchema = z
   .object({
     estado: estadoPedidoSchema.describe('Estado'),
+    /**
+     * `documents/usuarios/<uid>` of whoever caused the transition, or `null`
+     * when there is no end user behind it (Admin-SDK writes: webhooks,
+     * marketplace import, scripts). The trigger derives it from the Firestore
+     * event's auth context and deliberately stores `null` rather than guessing
+     * — see `resolveUsuarioOuterRef`.
+     */
     usuarioHistoricoEstadosPedidoOuterRef: outerRefSchema
       .nullable()
       .default(null)
       .describe('Usuário'),
     data: microsSinceEpoch('Data').nullable().default(null),
+    /**
+     * CloudEvent id of the pedido write that produced this row — also the
+     * document id, which is what makes the at-least-once trigger idempotent.
+     * Null on legacy rows written before the trigger existed.
+     */
+    eventId: z.string().nullable().default(null),
   })
   .passthrough();
 
@@ -36,6 +57,23 @@ export const historicoEstadoPedidoMeta: CollectionMetadata = {
     read: PERM_PEDIDO_READ,
     write: PERM_PEDIDO_WRITE,
     delete: PERM_PEDIDO_DELETE,
+  },
+  // An audit trail the audited party can rewrite is not an audit trail: rules
+  // deny every client create/update/delete (no `su` bypass), leaving the
+  // `onPedidoEstadoChanged` trigger as the sole writer. Read stays open to
+  // `d_pedido` read. Same posture as `historicoDeModificacoes`.
+  serverOwned: true,
+  // The estado-history read (`EstadoHistoricoTab`): newest-first, one page.
+  // Declared here so the `defaultQuery.indexes` meta-test REQUIRES the matching
+  // `historicoEstadoPedido(data desc)` entry in firestore.indexes.json — the tab
+  // has always issued this sort, but with no defaultQuery nothing forced the
+  // index, so on this Enterprise edition every tab open silently full-scanned
+  // the subcollection and billed the data scanned (#717). Identical precedent:
+  // `historicoEstoqueMeta` in
+  // `packages/schemas/src/produto/collection/historicoEstoque.ts`.
+  defaultQuery: {
+    orderBy: [{ field: 'data', direction: 'desc' }],
+    limit: 50,
   },
 };
 

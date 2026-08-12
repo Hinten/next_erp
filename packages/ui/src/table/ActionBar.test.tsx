@@ -132,4 +132,46 @@ describe('ActionBar', () => {
     // the click-through. Assert the attribute is set.
     expect(item.hasAttribute('data-disabled')).toBe(true);
   });
+
+  it('enables a requiresSelection action when one visible row and fallback is on', () => {
+    const run = vi.fn();
+    wrap(
+      <ActionBar
+        actions={[
+          {
+            ...makeAction('1', run),
+            requiresSelection: true,
+            fallbackToSingleVisibleRow: true,
+          },
+        ]}
+        selectedRows={[]}
+        visibleRows={[ROW]}
+      />,
+    );
+    const btn = screen.getByRole('button', { name: 'Ação 1' });
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(btn);
+    expect(run).toHaveBeenCalledWith([ROW]);
+  });
+
+  it('keeps the action disabled with multiple visible rows and no selection', () => {
+    const run = vi.fn();
+    const row2: SnapshotRow<Row> = { id: '2', path: 'x/2', data: { name: 'b' } };
+    wrap(
+      <ActionBar
+        actions={[
+          {
+            ...makeAction('1', run),
+            requiresSelection: true,
+            fallbackToSingleVisibleRow: true,
+          },
+        ]}
+        selectedRows={[]}
+        visibleRows={[ROW, row2]}
+      />,
+    );
+    expect((screen.getByRole('button', { name: 'Ação 1' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
 });

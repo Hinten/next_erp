@@ -24,7 +24,7 @@ import { db } from './admin';
 export const DEV_OPERACAO_ID = 'dev-operacao-01';
 /**
  * Stable id for the regraImposto rule seeded under
- * `operacao/{DEV_OPERACAO_ID}/regraimposto/`. Matches the dev produto
+ * `operacao/{DEV_OPERACAO_ID}/regras/`. Matches the dev produto
  * (`dev-camiseta-pai`) so the resolver cascade resolves to CSOSN 102 +
  * PIS/COFINS CST 49 for pedidos that omit item-stamped imposto.
  *
@@ -42,11 +42,12 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
     tipo: 1, // saída
     ehServico: false,
     ehExterior: false,
-    // Cliente seeded by seed-pedidos-dev is PF (no IE) → orchestrator
-    // stamps `indIEDest='9'` (Não Contribuinte). SEFAZ requires the
-    // matching `indFinal='1'` on `<ide>`, which only flips when
-    // `operacao.ehConsumidorFinal=true` (parties.ts:84 + ide.ts:103).
-    // Without this pair, SEFAZ rejects with cStat=696.
+    // Cliente seeded by seed-pedidos-dev is PF → orchestrator stamps
+    // `indIEDest='9'` (Não Contribuinte) whatever `ie` holds, since the
+    // ladder in `buildDest` only reaches '1'/'2' for a pessoa jurídica.
+    // SEFAZ requires the matching `indFinal='1'` on `<ide>`, which only
+    // flips when `operacao.ehConsumidorFinal=true` (`buildDest` in
+    // parties.ts + ide.ts). Without this pair, SEFAZ rejects with cStat=696.
     ehConsumidorFinal: true,
     padrao: true,
     ativo: true,
@@ -87,7 +88,7 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
   await db()
     .collection('operacao')
     .doc(DEV_OPERACAO_ID)
-    .collection('regraimposto')
+    .collection('regras')
     .doc(DEV_REGRA_IMPOSTO_ID)
     .set({
       nome: 'Resolver cascade test (dev)',
@@ -109,7 +110,7 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
 
 export async function cleanupDevOperacoes(): Promise<{ deleted: number }> {
   // Remove the regraImposto subcoll before the parent doc.
-  const regraRef = db().collection('operacao').doc(DEV_OPERACAO_ID).collection('regraimposto');
+  const regraRef = db().collection('operacao').doc(DEV_OPERACAO_ID).collection('regras');
   const regraSnap = await regraRef.get();
   for (const doc of regraSnap.docs) {
     await doc.ref.delete();

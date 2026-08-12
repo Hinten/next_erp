@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/firebase",
-  "//": "Emulator-ONLY config for the estoque e2e lane (.github/workflows/e2e-emulator.yml runs `firebase emulators:exec --config firebase.e2e.json --only auth,firestore,functions`). Serves the `storage`-codebase functions so the browser test drives the real `aplicarEstoque` callable locally — no staging deploy needed. Loads `firestore.e2e.rules` (the SAME namespaced ruleset staging uses for e2e) so the `e2e_<runId>_*` fixtures aren't default-denied for the client's reads/writes. Deploy-isolated: never point `firebase deploy` at this file (CLAUDE.md critical rule #1).",
+  "//": "Emulator-ONLY config for the callable/trigger e2e lane (.github/workflows/e2e-emulator.yml runs `firebase emulators:exec --config firebase.e2e.json --only auth,firestore,storage,functions` over every `*.emulator.e2e.spec.ts`). Serves the `storage`-codebase functions FROM SOURCE so the browser tests drive the real `aplicarEstoque` and `reconciliarPagamentoPedido` callables locally — no staging deploy needed. Loads `firestore.e2e.rules` (the SAME namespaced ruleset staging uses for e2e) so the `e2e_<runId>_*` fixtures aren't default-denied for the client's reads/writes. Deploy-isolated: never point `firebase deploy` at this file (root `CLAUDE.md`, Critical rules).",
   "functions": [
     {
       "source": "apps/functions",

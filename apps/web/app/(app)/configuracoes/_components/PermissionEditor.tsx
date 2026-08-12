@@ -23,6 +23,7 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   regraImposto: 'Regras de imposto',
   arquivo: 'Arquivos',
   frete: 'Frete',
+  cmun: 'Tabela de municípios (CEP → IBGE)',
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -77,23 +78,4 @@ export function PermissionEditor({ value, onChange, readOnly = false }: Permissi
       )}
     </Stack>
   );
-}
-
-/**
- * Human-readable list of granted permission labels (e.g. "Clientes: Ler").
- * Used in detail views where a checkbox grid would be visually noisy.
- */
-export function permissionLabels(value: bigint): string[] {
-  const out: string[] = [];
-  for (const [domain, actions] of Object.entries(PERM) as [
-    keyof typeof PERM,
-    Record<string, bigint>,
-  ][]) {
-    for (const [action, bit] of Object.entries(actions)) {
-      if ((value & bit) === bit) {
-        out.push(`${DOMAIN_LABELS[domain]}: ${ACTION_LABELS[action] ?? action}`);
-      }
-    }
-  }
-  return out;
 }

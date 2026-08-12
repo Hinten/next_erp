@@ -7,9 +7,16 @@ SEFAZ update-watch routine automates it.
 - **Generator**: `packages/integrations/nfe/src/codegen/generate.mjs` —
   zero-dependency (built-in minimal XML parser). See ADR 0004.
 - **Script**: `pnpm --filter @delfrance/integrations-nfe gen:nfe-types`.
-- **Input**: `packages/integrations/nfe/schemas/*.xsd` (vendored).
-- **Output**: `packages/integrations/nfe/src/types/nfe-schema.ts` (committed).
-- **Provenance**: `packages/integrations/nfe/schemas/MANIFEST.json`.
+- **Input**: `packages/integrations/nfe/generated/moc7.0/schemas/*.xsd`
+  (vendored — `moc<ACTIVE_MOC>`, see the package CLAUDE.md for the pinning).
+- **Output**: `packages/integrations/nfe/generated/moc7.0/types/` — **two**
+  committed files, `nfe-schema.ts` and `nfe-schema-zod.ts`.
+  `src/types/nfe-schema*.ts` are re-export **shims** the generator never
+  writes to; mistaking them for the output is what made the `ci-nfe.yml`
+  drift check a no-op (#611).
+- **Provenance**: `packages/integrations/nfe/generated/moc7.0/schemas/MANIFEST.json`
+  — beside the XSDs it describes, and **scoped to one MOC**: a future MOC 8.0
+  pack gets its own `generated/moc8.0/schemas/MANIFEST.json`.
 
 ## When to re-run
 
@@ -28,17 +35,25 @@ schemas. The schema list page:
    (all web-service envelope schemas + leiaute) or a **leiaute delta** (only
    `leiauteNFe`/`nfe`/`tiposBasico`/`DFeTiposBasicos`). Check the file count
    after unzipping.
-3. **Re-vendor `schemas/`.** A full pack replaces the base set; a leiaute
-   delta overlays its files on top of the current base (newer leiaute wins).
-   The current set = `PL_009i` base + `PL_010c` leiaute overlay (20 files).
+3. **Re-vendor `generated/moc7.0/schemas/`.** A full pack replaces the base
+   set; a leiaute delta overlays its files on top of the current base (newer
+   leiaute wins). The current set = `PL_009i` base + `PL_010c` leiaute
+   overlay, 28 `.xsd` files on disk (the generator reads 27 —
+   `xmldsig-core-schema` is excluded, see below). `MANIFEST.json` shares the
+   directory; every reader filters on `.xsd`, so it is inert.
 4. **Verify imports resolve** — every `xs:include`/`xs:import`
-   `schemaLocation` must point at a file present in `schemas/`.
-5. **Update `MANIFEST.json`** — pack name, NT, publish date, URL, role.
+   `schemaLocation` must point at a file present in
+   `generated/moc7.0/schemas/`.
+5. **Update `generated/moc7.0/schemas/MANIFEST.json`** — pack name, NT,
+   publish date, URL, role. Vendoring a **new MOC** means a new manifest in
+   that MOC's own `schemas/` dir, never an edit to the old one.
 6. **Run** `gen:nfe-types`.
-7. **Typecheck and review** the `src/types/nfe-schema.ts` diff — a new NT
+7. **Typecheck and review** the `generated/moc7.0/types/` diff — a new NT
    usually adds/renames fields; check nothing the generator can't express
    slipped in (see below).
-8. Commit; the change rides through `ci-nfe.yml` (homologação round-trip).
+8. Commit; the change rides through `ci-nfe.yml`, whose "Codegen sanity" step
+   re-runs the generator and fails on any diff under `generated/` — so
+   forgetting to commit the regenerated output is caught, not silent.
 
 ## Generator design & gotchas
 

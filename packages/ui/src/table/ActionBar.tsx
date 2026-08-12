@@ -6,6 +6,7 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
+import { actionDisabledReason } from './resolveActionRows';
 import { useActionRunner } from './useActionRunner';
 
 /**
@@ -22,6 +23,11 @@ export interface ActionBarProps<T> {
   actions: Array<ActionConfig<T>>;
   /** Rows currently checked in the table. */
   selectedRows: SnapshotRow<T>[];
+  /**
+   * Rows currently shown in the table (filtered page). Powers
+   * `ActionConfig.fallbackToSingleVisibleRow`.
+   */
+  visibleRows?: SnapshotRow<T>[];
   /** Render a "Novo" button at the start when set. */
   newHref?: string;
   /** Custom render for "Novo" (e.g. a Next Link). */
@@ -51,6 +57,7 @@ export interface ActionBarProps<T> {
 export function ActionBar<T>({
   actions,
   selectedRows,
+  visibleRows = [],
   newHref,
   renderNewButton,
   copyHref,
@@ -58,7 +65,11 @@ export function ActionBar<T>({
   actionsLayout = 'auto',
   overflowThreshold = 3,
 }: ActionBarProps<T>) {
-  const { trigger, confirmModal } = useActionRunner({ selectedRows, onActionComplete });
+  const { trigger, confirmModal } = useActionRunner({
+    selectedRows,
+    visibleRows,
+    onActionComplete,
+  });
 
   const copyRow = selectedRows.length === 1 ? selectedRows[0] : null;
 
@@ -107,13 +118,14 @@ export function ActionBar<T>({
             </Menu.Target>
             <Menu.Dropdown>
               {actions.map((a) => {
-                const disabled = !!a.requiresSelection && selectedRows.length === 0;
+                const reason = actionDisabledReason(a, selectedRows, visibleRows);
                 return (
                   <Menu.Item
                     key={a.id}
                     leftSection={a.icon}
                     color={a.color}
-                    disabled={disabled}
+                    disabled={reason !== null}
+                    title={reason ?? undefined}
                     onClick={() => trigger(a)}
                   >
                     {a.label}
@@ -124,13 +136,14 @@ export function ActionBar<T>({
           </Menu>
         ) : (
           actions.map((a) => {
-            const disabled = !!a.requiresSelection && selectedRows.length === 0;
+            const reason = actionDisabledReason(a, selectedRows, visibleRows);
             return (
               <Button
                 key={a.id}
                 variant="default"
                 color={a.color}
-                disabled={disabled}
+                disabled={reason !== null}
+                title={reason ?? undefined}
                 onClick={() => trigger(a)}
               >
                 {a.label}

@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { type Foto, deriveFotosArquivosIds, tabelaDeMedidasSchema } from '@delfrance/schemas';
-import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView, stripMarkedForDeletion } from '@delfrance/ui';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -35,7 +34,6 @@ export default function NovaTabelaDeMedidasPage() {
         collection={tabelaDeMedidasCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
-        defaultValues={{ dataCadastro: nowMillis() }}
         sections={MEDIDA_SECTIONS}
         // The marketplace size-chart maps are authored by the marketplace
         // integrations, not this form; excluding them keeps them out of the

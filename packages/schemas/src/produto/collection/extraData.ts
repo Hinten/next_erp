@@ -24,6 +24,15 @@ export const CONDICAO_PRODUTO_LABELS: Record<CondicaoProduto, string> = {
 /** Google Shopping `age_group` (string enum). */
 export const googleAgeGroupSchema = z.enum(['newborn', 'infant', 'toddler', 'kids', 'adult']);
 export type GoogleAgeGroup = z.infer<typeof googleAgeGroupSchema>;
+
+/** Named members of {@link googleAgeGroupSchema} — the Google Merchant values. */
+export const GOOGLE_AGE_GROUP = {
+  newborn: 'newborn',
+  infant: 'infant',
+  toddler: 'toddler',
+  kids: 'kids',
+  adult: 'adult',
+} as const satisfies Record<string, GoogleAgeGroup>;
 export const GOOGLE_AGE_GROUP_LABELS: Record<GoogleAgeGroup, string> = {
   newborn: 'Recém-nascido (0 a 3 meses)',
   infant: 'Bebê (3 a 12 meses)',
@@ -35,6 +44,13 @@ export const GOOGLE_AGE_GROUP_LABELS: Record<GoogleAgeGroup, string> = {
 /** Google Shopping `gender` (string enum). */
 export const googleGenderSchema = z.enum(['male', 'female', 'unisex']);
 export type GoogleGender = z.infer<typeof googleGenderSchema>;
+
+/** Named members of {@link googleGenderSchema} — the Google Merchant values. */
+export const GOOGLE_GENDER = {
+  male: 'male',
+  female: 'female',
+  unisex: 'unisex',
+} as const satisfies Record<string, GoogleGender>;
 export const GOOGLE_GENDER_LABELS: Record<GoogleGender, string> = {
   male: 'Masculino',
   female: 'Feminino',

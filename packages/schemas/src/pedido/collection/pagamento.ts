@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { roundReais } from '@delfrance/core/money';
 import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../shared/datetime';
 import { bandeiraSchema } from '../../bandeiraCartao';
 import { outerRefSchema } from '../../shared/outerRef';
+import { ESTADO_PEDIDO } from './pedido';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
@@ -135,25 +137,57 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
     case STATUS_PAGAMENTO.pendente:
     case STATUS_PAGAMENTO.pago_parcialmente:
     case STATUS_PAGAMENTO.em_processo_aprovacao:
-      return 'aguardandoConfirmacaoDePagamento';
+      return ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento;
     case STATUS_PAGAMENTO.em_revisao:
-      return 'emAnalise';
+      return ESTADO_PEDIDO.emAnalise;
     case STATUS_PAGAMENTO.aprovado:
     case STATUS_PAGAMENTO.em_disputa:
-      return 'pago';
+      return ESTADO_PEDIDO.pago;
     case STATUS_PAGAMENTO.recusado:
-      return 'pagamentoNaoRealizado';
+      return ESTADO_PEDIDO.pagamentoNaoRealizado;
     case STATUS_PAGAMENTO.cancelado:
-      return 'cancelado';
+      return ESTADO_PEDIDO.cancelado;
     case STATUS_PAGAMENTO.estornado:
     case STATUS_PAGAMENTO.devolvido:
     case STATUS_PAGAMENTO.estornado_totalmente:
-      return 'estornadoIntegralmente';
+      return ESTADO_PEDIDO.estornadoIntegralmente;
     case STATUS_PAGAMENTO.estornado_parcialmente:
-      return 'estornadoParcialmente';
+      return ESTADO_PEDIDO.estornadoParcialmente;
     default:
-      return 'error';
+      return ESTADO_PEDIDO.error;
   }
+}
+
+/**
+ * Whether a payment counts toward "paid": no status (`null`/`undefined`) OR
+ * `aprovado`. This is the canonical rule shared by every "how much is paid?"
+ * consumer — the web footer's Vlr. Pago, the NFe bundle (`apps/nfe`'s
+ * `bundle.ts`, "matches Flutter"), and the server-side estado reconciles — so
+ * the payment total is computed identically everywhere. Every other status
+ * (pendente, em disputa, recusado, cancelado, estornado…) does NOT cover the
+ * total.
+ */
+export function isPagamentoPagante(status: number | null | undefined): boolean {
+  return status == null || status === STATUS_PAGAMENTO.aprovado;
+}
+
+/**
+ * Total amount already paid on a pedido: the sum of every {@link isPagamentoPagante}
+ * payment's `valor`, 2-decimal-rounded. The one summing rule behind `valorPago`
+ * for the estado auto-transition (the admin `reconcilePedidoEstado` and
+ * `reconcilePedidoFromPagamento`, both in
+ * `packages/data/src/admin/pedidoReconcile.ts`) as well as the footer's Vlr.
+ * Pago / Troco. Accepts any row carrying `valor` + `status_pagamento` (a full
+ * `Pagamento` doc or a lighter summary).
+ */
+export function sumPagamentosPagos(
+  pagamentos: ReadonlyArray<{ valor: number; status_pagamento?: number | null }>,
+): number {
+  return roundReais(
+    pagamentos
+      .filter((p) => isPagamentoPagante(p.status_pagamento))
+      .reduce((sum, p) => sum + (p.valor ?? 0), 0),
+  );
 }
 
 /**
@@ -282,7 +316,17 @@ export const metodoPagamentoSchema = z.object({
   tipo: tipoIntegracaoPgtoSchema,
   hasLinkPagamento: z.boolean().default(false),
   nome: z.string().min(1).max(255),
+  /**
+   * The Mercado Pago collector id this account maps to (MP's numeric
+   * `user_id`), denormalized onto the doc so an inbound webhook can resolve
+   * its owning `metodo_pgto` account with a single equality query — mirrors
+   * `integracaoSchema.user_id`. Null for an account not yet OAuth-connected.
+   * Stamped at OAuth exchange.
+   */
+  user_id: z.number().int().nullable().default(null),
   dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
+  // Same µs unit as `dataCadastro` — stamped by `saveRecord` on every write.
+  ultimaModificacao: microsSinceEpoch('Última modificação').nullable().optional(),
 });
 export type MetodoPagamento = z.infer<typeof metodoPagamentoSchema>;
 
@@ -292,6 +336,17 @@ export const metodoPagamentoMeta: CollectionMetadata = {
     read: PERM_METODO_PGTO_READ,
     write: PERM_METODO_PGTO_WRITE,
     delete: PERM_METODO_PGTO_DELETE,
+  },
+  // Declares that deleting a Mercado Pago account frees its OAuth credential
+  // subcollection, mirroring `integracao` → `credenciais`. NOTE: like the
+  // `integracao` cascade, this is declarative metadata only — server-side
+  // enforcement (a delete trigger) is tracked by the generic cascade work
+  // (#401/#516/#517); until it lands, a deleted account orphans its
+  // admin-only `credenciais` doc.
+  cascade: [{ path: 'metodo_pgto/{metodoId}/credenciais', onDelete: 'cascade' }],
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
   },
 };
 

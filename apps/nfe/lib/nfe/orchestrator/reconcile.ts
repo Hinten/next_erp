@@ -23,8 +23,6 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
-  buildNFeProc,
-  classifyCStat,
   consultarLote,
   MAX_RECONCILE_ATTEMPTS,
   type SefazCall,
@@ -37,10 +35,11 @@ import { sefazCallFor } from './sefaz-call';
 import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
+  buildProcForAuthorizedOutcome,
   enviNfeCollection,
   outcomeFromConsReci,
   persistPatch,
-  procPersistExtras,
+  swapAnchorForProc,
 } from './audit';
 
 /** Summary of one lote reconcile — the caller re-enqueues iff `stillPending > 0`. */
@@ -143,19 +142,24 @@ export async function reconcileByRecibo(params: {
 
     // Build <nfeProc> when SEFAZ authorized this chave and we still hold the
     // matching signed XML — same atomic anchor-clear as the emit path (#128).
+    // The digest-safe stitch (#396, via `buildProcForAuthorizedOutcome`)
+    // refuses to pair the protocol with bytes it did not authorize (e.g. a
+    // pre-fix retry overwrote the anchor with a regenerated XML); the doc
+    // then stays aprovada WITHOUT proc for a DistDFe/manual fetch.
     const ourProt = ret.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
-    const nfeProcXml =
-      !chaveSwapped &&
-      classifyCStat(patch.cStat) === 'autorizada' &&
-      ourProt != null &&
-      data.xml_assinado != null
-        ? buildNFeProc(data.xml_assinado, ourProt)
-        : null;
+    const nfeProcXml = buildProcForAuthorizedOutcome({
+      cStat: patch.cStat,
+      chaveMatches: !chaveSwapped,
+      signedXml: data.xml_assinado,
+      prot: ourProt,
+      logTag: 'nfe/reconcile',
+      chave,
+    });
 
     await persistPatch(
       doc.ref,
       patch,
-      nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined,
+      nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
     );
 
     if (patch.estado === ESTADO_NFE.aguardandoResposta) stillPending++;

@@ -330,6 +330,48 @@ describe('buildImpostoXml — IPI', () => {
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
   });
+
+  // --- XSD (vBC + pIPI) XOR (qUnid + vUnid) choice enforcement (#508) ---
+
+  it('IPITrib with both pairs present throws naming the conflict', () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: {
+        cEnq: '999',
+        CST: '00',
+        vBC: 1500,
+        pIPI: 5,
+        qUnid: 10,
+        vUnid: 2.5,
+        vIPI: 75,
+      },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(/not both/);
+  });
+
+  it('IPITrib with neither pair present throws naming the required choice', () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '00', vIPI: 75 },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(/exactly one complete pair/);
+  });
+
+  it.each([
+    ['vBC', { vBC: 1500 }, /por valor.*missing `pIPI`/],
+    ['pIPI', { pIPI: 5 }, /por valor.*missing `vBC`/],
+    ['qUnid', { qUnid: 10 }, /por quantidade.*missing `vUnid`/],
+    ['vUnid', { vUnid: 2.5 }, /por quantidade.*missing `qUnid`/],
+  ])('IPITrib half pair (only %s) throws naming the missing field', (_label, half, re) => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '00', vIPI: 75, ...half },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(re);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -549,6 +591,148 @@ describe('buildImpostoXml — failure modes', () => {
       configuracaoICMS: { crt: '1', csosn: '500' },
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FCP-ST all-or-nothing trio (#507)
+//
+// The FCP-ST base/rate/value trio must be emitted together or not at all;
+// a partial trio is rejected at build time. CSOSN 500 carries the `…Ret`
+// variant of the trio.
+// ---------------------------------------------------------------------------
+
+describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
+  // [csosn, sub-config key, base fields, trio field names] per CSOSN case.
+  const CASES = [
+    [
+      '201',
+      'csosn201',
+      { pCredSN: 1.25, vCredICMSSN: 18.75, modBCST: '4', vBCST: 1800, pICMSST: 18, vICMSST: 324 },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+    [
+      '202',
+      'csosn202ou203',
+      { modBCST: '4', vBCST: 1800, pICMSST: 18, vICMSST: 324 },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+    [
+      '203',
+      'csosn202ou203',
+      { modBCST: '4', vBCST: 1800, pICMSST: 18, vICMSST: 324 },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+    [
+      '500',
+      'csosn500',
+      { vBCSTRet: 1500, pST: 18, vICMSSTRet: 270 },
+      ['vBCFCPSTRet', 'pFCPSTRet', 'vFCPSTRet'],
+    ],
+    [
+      '900',
+      'csosn900',
+      // FCP-ST rides after the ST group in the XSD sequence, so the ST fields
+      // must be present for the full-trio emission to validate.
+      {
+        modBC: '3',
+        vBC: 1500,
+        pICMS: 18,
+        vICMS: 270,
+        modBCST: '4',
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+      },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+  ] as const;
+
+  // Wire values for the trio, keyed by field name (base + value = money 2dp,
+  // rate = 4dp).
+  const trioValues: Record<string, number> = {
+    vBCFCPST: 1800,
+    pFCPST: 2,
+    vFCPST: 36,
+    vBCFCPSTRet: 1500,
+    pFCPSTRet: 2,
+    vFCPSTRet: 30,
+  };
+
+  it.each(CASES)('CSOSN %s → full trio emits all three', async (csosn, key, base, trio) => {
+    const sub = { ...base } as Record<string, number>;
+    for (const f of trio) sub[f] = trioValues[f];
+    const imposto = impostoFor(csosn, { [key]: sub });
+    const xml = buildImpostoXml(imposto, item1500);
+    for (const f of trio) expect(xml).toContain(`<${f}>`);
+    await assertXsdValid(xml);
+  });
+
+  it.each(CASES)('CSOSN %s → absent trio emits none', async (csosn, key, base, trio) => {
+    const imposto = impostoFor(csosn, { [key]: { ...base } });
+    const xml = buildImpostoXml(imposto, item1500);
+    for (const f of trio) expect(xml).not.toContain(`<${f}>`);
+    await assertXsdValid(xml);
+  });
+
+  // Zero is a legitimate FCP-ST value (schema is nonnegative), so a full trio
+  // with a 0 member counts as complete — it must emit, not be misread as a
+  // partial trio. Pins the guard's `== null` semantics against a `!value`
+  // regression.
+  it.each(CASES)(
+    'CSOSN %s → full trio with a 0 member emits (0 is present)',
+    async (csosn, key, base, trio) => {
+      const sub = { ...base } as Record<string, number>;
+      for (const f of trio) sub[f] = 0;
+      const imposto = impostoFor(csosn, { [key]: sub });
+      let xml = '';
+      expect(() => {
+        xml = buildImpostoXml(imposto, item1500);
+      }).not.toThrow();
+      for (const f of trio) expect(xml).toContain(`<${f}>`);
+      await assertXsdValid(xml);
+    },
+  );
+
+  /** Capture the message of the NFeTributeError buildImpostoXml throws. */
+  function tributeErrorMessage(imposto: Imposto): string {
+    try {
+      buildImpostoXml(imposto, item1500);
+    } catch (err) {
+      if (err instanceof NFeTributeError) return err.message;
+      throw err;
+    }
+    throw new Error('expected buildImpostoXml to throw NFeTributeError');
+  }
+
+  // Each single-field-present and each two-fields-present combination rejects.
+  it.each(CASES)('CSOSN %s → partial trio (1 or 2 of 3) throws', (csosn, key, base, trio) => {
+    const partials = [
+      [trio[0]],
+      [trio[1]],
+      [trio[2]],
+      [trio[0], trio[1]],
+      [trio[0], trio[2]],
+      [trio[1], trio[2]],
+    ];
+    for (const present of partials) {
+      const sub = { ...base } as Record<string, number>;
+      for (const f of present) sub[f] = trioValues[f];
+      const imposto = impostoFor(csosn, { [key]: sub });
+      expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+      const message = tributeErrorMessage(imposto);
+      expect(message).toContain(`CSOSN '${csosn}'`);
+      // Assert against the `missing:` clause specifically (not the always-
+      // present "complete trio (…)" enumeration): it must list exactly the
+      // absent members and none of the present ones. Assert the marker is
+      // present first, so a future message-format change fails loudly here
+      // instead of silently slicing the last character (indexOf → -1).
+      expect(message).toContain('missing:');
+      const missingClause = message.slice(message.indexOf('missing:'));
+      const missing = trio.filter((f) => !present.includes(f));
+      for (const m of missing) expect(missingClause).toContain(m);
+      for (const p of present) expect(missingClause).not.toContain(p);
+    }
   });
 });
 
@@ -952,5 +1136,50 @@ describe('aggregateTotals + buildTotalXml — RTC totals', () => {
     const totals = aggregateTotals(items, {}, { emitRtc: true });
     expect(totals.rtc).toBeUndefined();
     expect(buildTotalXml(totals)).not.toContain('IBSCBSTot');
+  });
+});
+
+describe('aggregateTotals — indTot=0 (não compõe o total, #398)', () => {
+  const IMPOSTO_201 = impostoFor('201', {
+    csosn201: {
+      pCredSN: 1.25,
+      vCredICMSSN: 18.75,
+      modBCST: '4',
+      vBCST: 1800,
+      pICMSST: 18,
+      vICMSST: 324,
+    },
+  });
+
+  it('excludes the item from vProd/vNF but keeps its tribute values in the buckets', () => {
+    // Deliberate deviation from the legacy Flutter engine, which emitted
+    // indTot='0' but still summed the item (a latent totals-mismatch
+    // rejection — MOC 7.0 W16: ICMSTot.vProd = Σ vProd dos itens com indTot=1).
+    const totals = aggregateTotals([
+      { item: { vProd: 1500 }, imposto: impostoFor102() },
+      { item: { vProd: 500, indTot: '0' }, imposto: IMPOSTO_201 },
+    ]);
+    expect(totals.vProd).toBe(1500); // 500 excluded
+    expect(totals.vBCST).toBe(1800); // ST bucket still sums the excluded item
+    expect(totals.vST).toBe(324);
+    // vNF = vProd + vST + vFCPST = 1500 + 324 + 0.
+    expect(totals.vNF).toBe(1824);
+  });
+
+  it('vProd collapses to 0 when every item is indTot=0', () => {
+    const totals = aggregateTotals([
+      { item: { vProd: 500, indTot: '0' }, imposto: impostoFor102() },
+    ]);
+    expect(totals.vProd).toBe(0);
+    expect(totals.vNF).toBe(0);
+  });
+
+  it("indTot='1' and absent behave identically (regression: default composes)", () => {
+    const explicit = aggregateTotals([
+      { item: { vProd: 1500, indTot: '1' }, imposto: impostoFor102() },
+    ]);
+    const absent = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor102() }]);
+    expect(explicit).toEqual(absent);
+    expect(explicit.vProd).toBe(1500);
   });
 });

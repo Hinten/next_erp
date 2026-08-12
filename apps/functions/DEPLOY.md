@@ -5,7 +5,7 @@ These are the **Cloud Functions** for the storage pipeline (currently
 at the repo root exists **only** for the emulator suite (`ci-storage.yml`) and is
 deliberately kept away from `firebase deploy`.
 
-Deploys are **manual and coordinated** (CLAUDE.md critical rule #1). This doc is
+Deploys are **manual and coordinated** — see the Deploying section in `apps/functions/CLAUDE.md`. This doc is
 the lane; it does not run in CI.
 
 ## Prerequisites
@@ -64,6 +64,14 @@ generated `package.json` (`scripts/prepare-deploy.mjs`) carries **only the three
 `dependencies` — no devDependencies, no `workspace:*`, no build script** — so the
 cloud install resolves cleanly and runs no build.
 
+⚠️ **No lockfile reaches the cloud**, so that install resolves each spec fresh.
+`firebase-admin` and `firebase-functions` are therefore pinned **exact** in
+`apps/functions/package.json` (not `^` ranges): a range installs whatever is newest
+at deploy time, which is a version no CI lane ever tested — `firebase-functions@7.3.2`
+moved `express` 4→5 in a _patch_ release exactly that way. Bump them together with
+`pnpm-workspace.yaml`'s catalog and the other four artifact manifests;
+`packages/config-eslint/rules/runtime-deps-pinned.test.js` fails on any drift.
+
 `prepare-deploy.mjs` also junctions the workspace's `node_modules` into
 `.deploy/functions/`, because firebase-tools' **local** trigger analysis locates and
 spawns the Functions SDK by looking for `<source>/node_modules/.bin/firebase-functions`
@@ -92,6 +100,22 @@ Once step 5 passes, close **#137**. The same lane will later ship the deletion-
 lifecycle functions (#136 / #95) — see ADR 0010, the produto deletion lifecycle
 ADR added in PR #170 (`apps/docs/src/content/docs/adr/0010-produto-deletion-lifecycle.md`;
 it lands with that PR, so the path resolves once both merge to main).
+
+## `onProdutoPrecoCustoChanged` (price/custo history + child propagation)
+
+Ships in this same `functions:storage` codebase — no config change, no new
+deploy command; it goes out with the next `firebase deploy --only
+functions:storage` run above. It moves `historicoDePrecos`/`historicoDeCusto`
+recording and parent→children `precos` propagation server-side (previously the
+Next produto editor's `onAfterSave`).
+
+**Deploy this trigger BEFORE OR WITH the web release that removes the
+client-side history/propagation writes** — until it's live, an edit made while
+only the OLD client code runs would record no history and propagate nothing.
+Deploying the trigger first is safe on its own (both the old client writes and
+the new trigger writes for a while, which is the accepted dual-run — see the
+schema/trigger PR notes), so when in doubt deploy the function first and ship
+the client change after.
 
 ## Known first-run gotchas (not yet executed)
 

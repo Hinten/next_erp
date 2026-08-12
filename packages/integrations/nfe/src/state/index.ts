@@ -26,6 +26,11 @@ export {
   assertNotConsumoIndevido,
 } from './consumo-indevido';
 
+// Final-estado helpers live in @delfrance/schemas (browser-safe, shared with
+// the UI); re-exported here so library consumers get them next to the state
+// machine they gate.
+export { ESTADOS_FINAIS_NFE, isEstadoFinalNFe } from '@delfrance/schemas';
+
 /**
  * Bounded poll cap for `cStat=105` (lote still processing) and `cStat=635`
  * (lote queued). Matches the old Flutter code's 4-attempt ceiling.
@@ -85,7 +90,7 @@ export function nextConsultaDelayMs(attempt: number, tMedSeconds?: string | numb
 export type CStatCategory =
   /** 100, 150 — NF-e authorized. Adopt the `protNFe`. */
   | 'autorizada'
-  /** 101 — cancelada via evento. */
+  /** 101 — cancelada via evento; 151 — cancelamento homologado fora de prazo. */
   | 'cancelada'
   /** 102 — número inutilizado. */
   | 'inutilizada'
@@ -122,7 +127,9 @@ const CERT_REJECTION = new Set(['280', '281', '286']);
 /** Classify a SEFAZ `cStat` into a coarse category. */
 export function classifyCStat(cStat: string): CStatCategory {
   if (cStat === '100' || cStat === '150') return 'autorizada';
-  if (cStat === '101') return 'cancelada';
+  // 151 = cancelamento homologado fora de prazo — same terminal cancelada as
+  // 101 (already in STATUS_BLOQUEADORES).
+  if (cStat === '101' || cStat === '151') return 'cancelada';
   if (cStat === '102') return 'inutilizada';
   if (cStat === '110' || cStat === '301' || cStat === '302') return 'denegada';
   if (cStat === '103') return 'lote-recebido';
@@ -271,9 +278,38 @@ export interface NFeStatePatch {
  * by the `processar-pendentes` poller.
  */
 export function applyOutcome(
-  current: { estado: EstadoNFe; retries: number | null },
+  current: {
+    estado: EstadoNFe;
+    retries: number | null;
+    /** Persisted cStat/xMotivo — kept on the doc when the terminal defense fires. */
+    cStat?: string | null;
+    xMotivo?: string | null;
+  },
   outcome: SefazOutcome,
 ): NFeStatePatch {
+  // Defense-in-depth: a cancelada/inutilizada doc is TERMINAL — no later
+  // SEFAZ outcome can legitimately move it anywhere else. The classic trap is
+  // a consSitNFe for a cancelada NF-e still returning the ORIGINAL
+  // authorization protNFe (cStat 100), but the same applies to any other
+  // mapped estado (105 → aguardandoResposta, a rejection → rejeitada,
+  // 656 → error) and to mapped-null outcomes that would otherwise schedule a
+  // retry/recovery on a doc that is already done. Only an outcome that maps
+  // to the SAME terminal estado (e.g. 'c' + 101) flows through normally.
+  if (
+    (current.estado === ESTADO_NFE.cancelada ||
+      current.estado === ESTADO_NFE.numeracaoInutilizada) &&
+    cStatToEstado(outcome.cStat) !== current.estado
+  ) {
+    return {
+      estado: current.estado,
+      cStat: current.cStat ?? outcome.cStat,
+      xMotivo: current.xMotivo ?? outcome.xMotivo,
+      retries: 0,
+      nRec: outcome.nRec ?? null,
+      action: 'done-terminal',
+      tMed: null,
+    };
+  }
   const action = nextAction(outcome.cStat, current.retries ?? 0);
   const mappedEstado = cStatToEstado(outcome.cStat);
   const estado = mappedEstado ?? current.estado;

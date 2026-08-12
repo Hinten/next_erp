@@ -1,4 +1,4 @@
-export { theme } from './theme';
+export { cssVariablesResolver, theme } from './theme';
 export { PageHeader, type PageHeaderProps } from './PageHeader';
 export { PlaceholderPage, type PlaceholderPageProps } from './PlaceholderPage';
 
@@ -33,6 +33,7 @@ export {
   type TransactionWrite,
   type ValidationIssue,
 } from './object/ObjectView';
+export { AfterSaveBlockedError } from './object/afterSaveBlocked';
 export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
@@ -46,4 +47,12 @@ export {
   type SaveRecordInput,
   type SaveRecordResult,
 } from './object/saveRecord';
+export {
+  resolveStampFields,
+  CREATED_AT_CANDIDATES,
+  MODIFIED_AT_CANDIDATES,
+  type ResolvedStampFields,
+  type StampFieldOverride,
+} from './object/resolveStampFields';
+export { useServerTruthSeed, type ServerTruthSeedArgs } from './object/useServerTruthSeed';
 export { useUnsavedChangesGuard } from './object/useUnsavedChangesGuard';

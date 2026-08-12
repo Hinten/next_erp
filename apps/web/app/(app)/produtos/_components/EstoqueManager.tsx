@@ -4,9 +4,17 @@ import { type FocusEvent, useMemo, useState } from 'react';
 import { ActionIcon, Box, Divider, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { IconPencil } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
+import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import type { Firestore } from 'firebase/firestore';
-import { estoqueDisponivel, makeEstoqueUid, type EstoqueProduto } from '@delfrance/schemas';
+import { getDocsFromServer, type Firestore } from 'firebase/firestore';
+import {
+  componentesKitEntries,
+  estoqueDisponivel,
+  estoqueDisponivelComKit,
+  makeEstoqueUid,
+  type ComponentesKit,
+  type EstoqueProduto,
+} from '@delfrance/schemas';
 import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { depositoCollection } from '@/lib/data/depositoCollection';
@@ -24,6 +32,8 @@ interface ProdutoRow {
   id: string;
   nome: string | null;
   sku: string | null;
+  ehKit: boolean;
+  componentesKit: ComponentesKit | null;
 }
 interface DepositoRow {
   id: string;
@@ -97,12 +107,20 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
       id: produtoId,
       nome: parentSnap.data.data.nome ?? null,
       sku: parentSnap.data.data.sku ?? null,
+      ehKit: parentSnap.data.data.ehKit === true,
+      componentesKit: parentSnap.data.data.componentesKit ?? null,
     };
     const ordemOf = (d: { data: { ordem?: number | null } }) => d.data.ordem ?? 0;
     const children = (childrenSnap.data ?? [])
       .slice()
       .sort((a, b) => ordemOf(a) - ordemOf(b))
-      .map((d) => ({ id: d.id, nome: d.data.nome ?? null, sku: d.data.sku ?? null }));
+      .map((d) => ({
+        id: d.id,
+        nome: d.data.nome ?? null,
+        sku: d.data.sku ?? null,
+        ehKit: d.data.ehKit === true,
+        componentesKit: d.data.componentesKit ?? null,
+      }));
     return [parent, ...children];
   }, [produtoId, parentSnap.data, childrenSnap.data]);
 
@@ -203,6 +221,61 @@ function EstoqueProdutoSection({
     return map;
   }, [estoquesSnap.data]);
 
+  // Kit sections also read each `limitarEstoque` component's estoques so the
+  // Disponível cell can append the computed kit availability (Flutter
+  // `getEstoqueDisponivel`, `produtoCadastro.dart:1885`). One-shot server reads
+  // per countable component (small, picker-curated maps) — the 30s query
+  // staleTime plays the role of the legacy 1-minute cache, so a component
+  // stock moved elsewhere stays stale until refetch, same tradeoff.
+  const countableIds = useMemo(
+    () =>
+      produto.ehKit
+        ? componentesKitEntries(produto.componentesKit)
+            .filter(([, kit]) => kit.limitarEstoque !== false)
+            .map(([id]) => id)
+            .sort()
+        : [],
+    [produto.ehKit, produto.componentesKit],
+  );
+  const kitEstoquesQuery = useQuery({
+    queryKey: ['kitComponentEstoques', produto.id, countableIds],
+    enabled: countableIds.length > 0,
+    queryFn: async () => {
+      const entries = await Promise.all(
+        countableIds.map(async (compId) => {
+          const snap = await getDocsFromServer(
+            buildQuery(estoqueProdutoCollection.ref(db, { produtoId: compId }), [
+              limit(ESTOQUE_LIMIT),
+            ]),
+          );
+          const byEstoqueId = new Map<string, number>();
+          for (const doc of snap.docs) {
+            const disp = estoqueDisponivel(doc.data());
+            // Soft-parse can hand back junk quantities → NaN; drop the doc so
+            // the pure helper counts the component as missing (= 0).
+            if (Number.isFinite(disp)) byEstoqueId.set(doc.id, disp);
+          }
+          return [compId, byEstoqueId] as const;
+        }),
+      );
+      return new Map(entries);
+    },
+  });
+  const kit: KitInfo | null = produto.ehKit
+    ? {
+        componentesKit: produto.componentesKit,
+        state:
+          countableIds.length === 0
+            ? 'ready'
+            : kitEstoquesQuery.isError
+              ? 'error'
+              : kitEstoquesQuery.data
+                ? 'ready'
+                : 'loading',
+        estoquesByComponentId: kitEstoquesQuery.data ?? null,
+      }
+    : null;
+
   const label = produtoLabel(produto);
 
   return (
@@ -222,6 +295,7 @@ function EstoqueProdutoSection({
               produtoLabel={label}
               deposito={dep}
               estoque={est}
+              kit={kit}
               disabled={disabled}
             />
           );
@@ -231,12 +305,21 @@ function EstoqueProdutoSection({
   );
 }
 
+/** Kit context a section passes to its rows (`null` for non-kit produtos). */
+interface KitInfo {
+  componentesKit: ComponentesKit | null;
+  state: 'loading' | 'error' | 'ready';
+  /** Countable component produto id → (estoque doc id → finite `disponivel`). */
+  estoquesByComponentId: ReadonlyMap<string, ReadonlyMap<string, number>> | null;
+}
+
 interface RowProps {
   db: Firestore;
   produtoId: string;
   produtoLabel: string;
   deposito: DepositoRow;
   estoque: EstoqueProduto | undefined;
+  kit: KitInfo | null;
   disabled?: boolean;
 }
 
@@ -247,6 +330,7 @@ function EstoqueDepositoRow({
   produtoLabel,
   deposito,
   estoque,
+  kit,
   disabled,
 }: RowProps) {
   const [modalOpen, setModalOpen] = useState(false);
@@ -302,9 +386,12 @@ function EstoqueDepositoRow({
       <Text size="sm" ta="right" style={{ flex: 1 }}>
         {fmt(reservada)}
       </Text>
-      <Text size="sm" ta="right" style={{ flex: 1 }}>
-        {fmt(estoqueDisponivel({ quantidade, quantidadeReservada: reservada }))}
-      </Text>
+      <DisponivelCell
+        ownDisponivel={estoqueDisponivel({ quantidade, quantidadeReservada: reservada })}
+        kit={kit}
+        depositoId={deposito.id}
+        ariaSuffix={ariaSuffix}
+      />
       <Tooltip label="Editar estoque">
         <ActionIcon
           variant="subtle"
@@ -328,5 +415,46 @@ function EstoqueDepositoRow({
         hasExisting={hasExisting}
       />
     </Group>
+  );
+}
+
+interface DisponivelCellProps {
+  ownDisponivel: number;
+  kit: KitInfo | null;
+  depositoId: string;
+  ariaSuffix: string;
+}
+
+/**
+ * The Disponível value; kit produtos append the computed kit availability in
+ * parens — own + what the components allow building — mirroring the Flutter
+ * cell (`produtoCadastro.dart:1870-1897`, `(...)` while loading, `(Erro)` on
+ * failure). Renders even when the kit's own estoque doc is missing (own = 0).
+ */
+function DisponivelCell({ ownDisponivel, kit, depositoId, ariaSuffix }: DisponivelCellProps) {
+  let kitSuffix = '';
+  if (kit) {
+    if (kit.state === 'loading') kitSuffix = ' (...)';
+    else if (kit.state === 'error') kitSuffix = ' (Erro)';
+    else {
+      const disponivelByProdutoId: Record<string, number | undefined> = {};
+      for (const [compId] of componentesKitEntries(kit.componentesKit)) {
+        disponivelByProdutoId[compId] = kit.estoquesByComponentId
+          ?.get(compId)
+          ?.get(makeEstoqueUid(compId, depositoId));
+      }
+      const total = estoqueDisponivelComKit(
+        { ehKit: true, componentesKit: kit.componentesKit },
+        ownDisponivel,
+        disponivelByProdutoId,
+      );
+      kitSuffix = ` (${fmt(total)})`;
+    }
+  }
+  return (
+    <Text size="sm" ta="right" style={{ flex: 1 }} aria-label={`Disponível ${ariaSuffix}`}>
+      {fmt(ownDisponivel)}
+      {kitSuffix}
+    </Text>
   );
 }

@@ -49,6 +49,7 @@ const NAV: NavEntry[] = [
         perm: PERM.pagamento.read,
       },
       { href: '/nfe/exportar', label: 'Exportar NF-e', perm: PERM.nfe.read },
+      { href: '/nfe/comunicacoes', label: 'Comunicações NF-e', perm: PERM.fiscal.read },
     ],
   },
   {
@@ -60,9 +61,22 @@ const NAV: NavEntry[] = [
       { href: '/categorias', label: 'Categorias', perm: PERM.categoria.read },
       { href: '/medidas', label: 'Medidas', perm: PERM.produto.read },
       { href: '/listas-de-precos', label: 'Lista de Precos', perm: PERM.produto.read },
+      {
+        href: '/produtos/recalcular-precos',
+        label: 'Recalcular Preços',
+        perm: PERM.produto.write,
+      },
+      {
+        href: '/produtos/alterar-precos',
+        label: 'Alterar Preço em Massa',
+        perm: PERM.produto.write,
+      },
       { href: '/depositos', label: 'Depositos de Estoque', perm: PERM.estoque.read },
       { href: '/etiquetas', label: 'Etiquetas', perm: PERM.produto.read },
-      { href: '/balanco', label: 'Balanço', perm: PERM.produto.read },
+      // Balanço reads and writes estoque, not produtos — same bit as
+      // /depositos above. It was on `produto.read`, which let a produto-only
+      // user open a screen every query inside it would then be denied.
+      { href: '/balanco', label: 'Balanço', perm: PERM.estoque.read },
     ],
   },
   {
@@ -77,7 +91,10 @@ const NAV: NavEntry[] = [
       { href: '/canais/mercado-livre', label: 'Mercado Livre' },
       { href: '/canais/shopee', label: 'Shopee' },
       { href: '/canais/webchat', label: 'Webchat' },
-      { href: '/whatsapp', label: 'Whatsapp', perm: PERM.chat.read },
+      { href: '/canais/whatsapp', label: 'WhatsApp' },
+      // The WhatsApp chat INBOX moved into the unified `/chat` inbox (PR-C2,
+      // supersedes #528's separate `/whatsapp` entry); `/canais/whatsapp` above
+      // stays as the account-config screen.
     ],
   },
   {
@@ -89,6 +106,11 @@ const NAV: NavEntry[] = [
       { href: '/logistica/fob', label: 'Por conta do destinatário (FOB)', perm: PERM.frete.read },
       { href: '/logistica/retirada', label: 'Retirada', perm: PERM.frete.read },
     ],
+  },
+  {
+    label: 'Despacho',
+    perm: PERM.pedido.write,
+    children: [{ href: '/despacho/checkout', label: 'Checkout', perm: PERM.pedido.write }],
   },
   {
     label: 'Meios de Pagamento',
@@ -125,9 +147,34 @@ const isDev = process.env.NODE_ENV === 'development';
 
 const matches = (haystack: string, needle: string) => haystack.toLocaleLowerCase().includes(needle);
 
+/** Every leaf href in NAV (groups flattened) — the candidates for active matching. */
+const ALL_LEAF_HREFS: string[] = NAV.flatMap((entry) =>
+  isGroup(entry) ? entry.children.map((c) => c.href) : [entry.href],
+);
+
+/**
+ * The single active nav href for a pathname: the LONGEST leaf href the pathname
+ * matches exactly or as a `${href}/` prefix. Returning only the most-specific
+ * match stops a parent route (`/pedidos`) from lighting up alongside a nested
+ * sibling whose href is a sub-path of it (`/pedidos/entradas`) — a plain
+ * `startsWith` test lights both. Detail routes with no sibling nav entry
+ * (`/pedidos/123/editar`) still resolve to their parent (`/pedidos`).
+ */
+export function activeHrefFor(pathname: string | null): string | null {
+  if (!pathname) return null;
+  let best: string | null = null;
+  for (const href of ALL_LEAF_HREFS) {
+    if (pathname === href || pathname.startsWith(`${href}/`)) {
+      if (best === null || href.length > best.length) best = href;
+    }
+  }
+  return best;
+}
+
 export function SidebarNav() {
   const { claims, loading } = useTenant();
   const pathname = usePathname();
+  const activeHref = activeHrefFor(pathname);
   const [search, setSearch] = useState('');
 
   const permitted = useMemo(() => {
@@ -190,10 +237,10 @@ export function SidebarNav() {
               group={entry}
               defaultOpened={expand}
               permitted={permitted}
-              pathname={pathname}
+              activeHref={activeHref}
             />
           ) : (
-            <LeafNode key={entry.href} leaf={entry} permitted={permitted} pathname={pathname} />
+            <LeafNode key={entry.href} leaf={entry} permitted={permitted} activeHref={activeHref} />
           ),
         )}
       </Stack>
@@ -205,19 +252,17 @@ function GroupNode({
   group,
   defaultOpened,
   permitted,
-  pathname,
+  activeHref,
 }: {
   group: NavGroup;
   defaultOpened: boolean;
   permitted: (perm?: bigint) => boolean;
-  pathname: string | null;
+  activeHref: string | null;
 }) {
   const groupAllowed = permitted(group.perm);
   if (!groupAllowed && !isDev) return null;
 
-  const childActive = group.children.some(
-    (c) => pathname === c.href || pathname?.startsWith(`${c.href}/`),
-  );
+  const childActive = group.children.some((c) => c.href === activeHref);
 
   return (
     <NavLink
@@ -227,7 +272,7 @@ function GroupNode({
       childrenOffset={28}
     >
       {group.children.map((leaf) => (
-        <LeafNode key={leaf.href} leaf={leaf} permitted={permitted} pathname={pathname} />
+        <LeafNode key={leaf.href} leaf={leaf} permitted={permitted} activeHref={activeHref} />
       ))}
     </NavLink>
   );
@@ -236,14 +281,14 @@ function GroupNode({
 function LeafNode({
   leaf,
   permitted,
-  pathname,
+  activeHref,
 }: {
   leaf: NavLeaf;
   permitted: (perm?: bigint) => boolean;
-  pathname: string | null;
+  activeHref: string | null;
 }) {
   const allowed = permitted(leaf.perm);
-  const active = pathname === leaf.href || pathname?.startsWith(`${leaf.href}/`);
+  const active = leaf.href === activeHref;
 
   if (!allowed) {
     if (!isDev) return null;

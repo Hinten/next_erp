@@ -55,6 +55,34 @@ export const ESTADO_NFE_LABELS: Record<EstadoNFe, string> = {
 };
 
 /**
+ * SEFAZ-final estados — another consulta can never legitimately change them.
+ * Consultation flows (`consultarPedido`, the manual "Verificar novamente"
+ * action) must short-circuit on these WITHOUT calling SEFAZ: `consSitNFe` for
+ * a cancelada NF-e still returns the ORIGINAL authorization protNFe (cStat
+ * 100), which would regress the doc to `aprovada`. `rejeitada`/`error` are
+ * deliberately absent — re-verifying a possibly-stale local failure is the
+ * whole point of the manual consulta.
+ */
+export const ESTADOS_FINAIS_NFE: ReadonlySet<EstadoNFe> = new Set<EstadoNFe>([
+  ESTADO_NFE.aprovada,
+  ESTADO_NFE.cancelada,
+  ESTADO_NFE.numeracaoInutilizada,
+]);
+
+/** `true` when the estado is SEFAZ-final (see {@link ESTADOS_FINAIS_NFE}). */
+export function isEstadoFinalNFe(estado: EstadoNFe | null | undefined): boolean {
+  return estado != null && ESTADOS_FINAIS_NFE.has(estado);
+}
+
+/**
+ * NF-e chave de acesso: exactly 44 digits. Shared source for every place
+ * that validates a chave string (pedido `chNFeReferenciadas`, UI inputs).
+ * Keep byte-identical to the pattern historically inlined at those call
+ * sites (`/^\d{44}$/`) — see the anchor test in `nfe.test.ts`.
+ */
+export const CHAVE_NFE_REGEX = /^\d{44}$/;
+
+/**
  * NotaFiscalEletronica — documento fiscal eletrônico. Subcoleção de Pedido
  * (`pedidos/{pedidoId}/nfev4` — wire name original do Flutter). Read-only na
  * UI Next; emissão fica no `apps/integrations`/Cloud Functions (Phase 5).
@@ -64,7 +92,7 @@ export const nfeSchema = z.object({
   numeracao: z.number().int(),
   serie: z.number().int(),
   tpEmis: z.number().int().default(1),
-  estado: estadoNFeSchema.default('0'),
+  estado: estadoNFeSchema.default(ESTADO_NFE.gerado),
 
   /**
    * Denormalized owning-filial id (the parent pedido's filial). Lets a

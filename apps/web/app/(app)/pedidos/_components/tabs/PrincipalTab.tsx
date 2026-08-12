@@ -31,13 +31,14 @@ import { OperacaoPicker } from '@/components/pickers/OperacaoPicker';
 import { IntegracaoPicker } from '@/components/pickers/IntegracaoPicker';
 import { ListaDePrecosPicker } from '@/components/pickers/ListaDePrecosPicker';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
+import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
 import type { PedidoFormState } from '../types';
 import { makeRowId } from '../flattenItens';
 import { precoFromProduto } from '../precoLookup';
-import { ProdutoThumbnail } from '../ProdutoThumbnail';
+import { ProdutoThumbnail } from '@/components/ProdutoThumbnail';
 import { ProdutoVariacaoLabel } from '../ProdutoVariacaoLabel';
 import { useEstoqueDisponivel } from '../useEstoqueDisponivel';
 
@@ -69,6 +70,25 @@ export function PrincipalTab({
 }: PrincipalTabProps) {
   const ehSaida = form.watch('ehSaida') ?? true;
   const listaDePrecosOuterRef = form.watch('listaDePrecosOuterRef');
+  const integracaoOuterRef = form.watch('integracaoPedidoOuterRef');
+
+  // The pedido's fulfillment depósito, resolved ONCE (integração →
+  // `depositoOuterRef`) and shared by every item's stock badge (#427). Null
+  // until an integração with a depósito is picked — the badge then falls back
+  // to the all-depósito own sum. Same deref chain as the pedido-print assembler.
+  const integracaoRef = useMemo(
+    () => dereferenceOuterRef(db, integracaoOuterRef),
+    [db, integracaoOuterRef],
+  );
+  const integracaoRefTyped = useMemo(
+    () => (integracaoRef ? integracaoCollection.docRef(db, {}, integracaoRef.id) : null),
+    [db, integracaoRef],
+  );
+  const { data: integracaoDoc } = useDocSnapshot(integracaoRefTyped);
+  const depositoId = useMemo(
+    () => dereferenceOuterRef(db, integracaoDoc?.data.depositoOuterRef)?.id ?? null,
+    [db, integracaoDoc],
+  );
 
   const fieldArray = useFieldArray({
     control: form.control,
@@ -272,6 +292,7 @@ export function PrincipalTab({
                 db={db}
                 disabled={disabled}
                 listaId={listaId}
+                depositoId={depositoId}
               />
             ))}
           </Table.Tbody>
@@ -317,12 +338,15 @@ function ItemRow({
   db,
   disabled,
   listaId,
+  depositoId,
 }: {
   index: number;
   form: UseFormReturn<PedidoFormState, unknown, Pedido>;
   db: Firestore;
   disabled?: boolean;
   listaId: string | null;
+  /** Pedido's integração depósito (kit-aware badge); null → all-depósito sum. */
+  depositoId: string | null;
 }) {
   const item = form.watch(`_itensFlat.${index}`);
   // Watch produtoUid as its own primitive so the docRef memo dep is a string
@@ -342,7 +366,20 @@ function ItemRow({
   const { data: produtoDoc } = useDocSnapshot(produtoRef);
   const produto: Produto | null = produtoDoc?.data ?? null;
 
-  const estoque = useEstoqueDisponivel(db, produtoUid);
+  // `id: produtoUid` immediately (own-badge starts before the doc lands); kit
+  // fields fill in from the produto doc, so kits become kit-aware a beat later.
+  const produtoParaEstoque = useMemo(
+    () =>
+      produtoUid
+        ? {
+            id: produtoUid,
+            ehKit: produto?.ehKit ?? false,
+            componentesKit: produto?.componentesKit ?? null,
+          }
+        : null,
+    [produtoUid, produto?.ehKit, produto?.componentesKit],
+  );
+  const estoque = useEstoqueDisponivel(db, produtoParaEstoque, depositoId);
 
   const qtyRef = useRef<HTMLInputElement>(null);
 

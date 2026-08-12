@@ -3,6 +3,11 @@
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
 import defaultQueryNeedsIndex from './rules/default-query-needs-index.js';
 import noAdHocMoneyRounding from './rules/no-ad-hoc-money-rounding.js';
+import noOptionalWithoutNullable from './rules/no-optional-without-nullable.js';
+import noErrorAsSoleInstanceof from './rules/no-error-as-sole-instanceof.js';
+import preferSchemaEnum from './rules/prefer-schema-enum.js';
+import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.js';
+import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -58,6 +63,11 @@ export function typeAware(
           { checksVoidReturn: { attributes: false } },
         ],
         '@typescript-eslint/await-thenable': 'error',
+        // Type-aware: it resolves the Zod enum from the type of the position
+        // the literal sits in, so it lives here rather than in the base block.
+        // The `delfrance` plugin is registered in the base block, which merges
+        // with this one for the same file.
+        'delfrance/prefer-schema-enum': 'error',
       },
     },
   ];
@@ -67,6 +77,23 @@ const config = [
   {
     ignores: ['**/.next/**', '**/dist/**', '**/out/**', '**/node_modules/**', '**/coverage/**'],
   },
+  // ESLint's flat-config default (`**/*.{js,mjs,cjs}`) does not include `.ts` —
+  // a file is only linted at all if SOME block's `files` matches it. Without
+  // this block, `eslint .` would silently skip root-level `*.ts` config files
+  // (e.g. a library workspace's own `vitest.config.ts`) in any workspace that
+  // doesn't also spread `typeAware(...)`. Deliberately non-type-aware (no
+  // `parserOptions.projectService`, no `rules`) — it only lets the TS parser
+  // see the file. `typeAware(...)` is spread after `...base` in every
+  // consumer, so for files it also covers its block sits later in the array
+  // and wins (a later block's `languageOptions` for the same file replaces
+  // this one's, it doesn't merge with it).
+  {
+    files: ['**/*.{ts,tsx,mts,cts}'],
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+    },
+  },
   {
     plugins: {
       delfrance: {
@@ -74,6 +101,11 @@ const config = [
           'no-inline-admin-collection': noInlineAdminCollection,
           'default-query-needs-index': defaultQueryNeedsIndex,
           'no-ad-hoc-money-rounding': noAdHocMoneyRounding,
+          'no-optional-without-nullable': noOptionalWithoutNullable,
+          'no-error-as-sole-instanceof': noErrorAsSoleInstanceof,
+          'prefer-schema-enum': preferSchemaEnum,
+          'no-client-estado-history-write': noClientEstadoHistoryWrite,
+          'no-env-secrets-access': noEnvSecretsAccess,
         },
       },
     },
@@ -122,11 +154,6 @@ const config = [
             'Generic catch is forbidden. The catch body must contain either an `instanceof <SpecificError>` check OR a `throw` (rethrow). Silent fallbacks hide bugs during debugging.',
         },
       ],
-      // React Compiler-aware rules from eslint-plugin-react-hooks v7. The
-      // project doesn't enable React Compiler yet; keep these as advisory
-      // warnings instead of errors so existing patterns don't block CI.
-      'react-hooks/set-state-in-effect': 'warn',
-      'react-hooks/preserve-manual-memoization': 'warn',
 
       // Keep Admin-SDK collection handles in the canonical registry at
       // packages/data/src/admin/collections (imported via
@@ -146,6 +173,63 @@ const config = [
       // are forbidden (the canonical impls + wire-format serializers are
       // allow-listed in the rule). See rules/no-ad-hoc-money-rounding.js.
       'delfrance/no-ad-hoc-money-rounding': 'error',
+
+      // In packages/schemas, `.optional()` must be paired with `.nullable()` —
+      // the Firebase SDK rejects `undefined` in addDoc/setDoc, so a bare
+      // `.optional()` is a runtime crash on the first blank input. The rule
+      // self-scopes by path, so this entry is inert outside packages/schemas,
+      // which receives it by spreading this base like every other library.
+      // See rules/no-optional-without-nullable.js.
+      'delfrance/no-optional-without-nullable': 'error',
+
+      // The half of the no-generic-catch rule the `no-restricted-syntax`
+      // selectors below cannot express: they check that SOME `instanceof`
+      // exists, not WHICH class. `Error` is the parent of every exception, so
+      // narrowing only on it swallows FirebaseError/ZodError alike.
+      //
+      // The distinct rule name matters: flat config does full-replacement per
+      // rule NAME, so this survives the `no-restricted-syntax` overrides in
+      // apps/nfe and packages/integrations/nfe that drop the base catch
+      // selectors — which is exactly where it earns its keep (18 of the 51
+      // current hits are in apps/nfe).
+      //
+      // Warn, not error: 51 pre-existing sites, mostly benign `.message`
+      // extraction. A ratchet against backsliding, mirroring
+      // no-inline-admin-collection. NOTE lint-staged runs `--max-warnings 0`,
+      // so editing one of those 51 files means fixing it first.
+      'delfrance/no-error-as-sole-instanceof': 'warn',
+
+      // `pedidos/{id}/historicoEstadoPedido` (the pedido `estado` trail) and
+      // `pedidos/{id}/historicoFtIni` (the `freteInicial.estado` trail) have
+      // exactly one writer between them: the `onPedidoEstadoChanged` Cloud
+      // Function, which appends a row to whichever estado moved. Both schemas
+      // mark the collection `meta.serverOwned`, so the generated rules already
+      // deny every client write — this rule is the fast feedback loop in front
+      // of that gate.
+      //
+      // Error, not warn (unlike no-inline-admin-collection): there are ZERO
+      // pre-existing sites to ratchet down from on either trail (neither has
+      // ever had a writer outside `apps/functions`), and a hit is never stylistic —
+      // it is a write that WILL fail with `permission-denied` at runtime, in a
+      // place where the old code swallowed FirebaseError into a toast. Failing
+      // the build beats shipping a silently missing audit row.
+      'delfrance/no-client-estado-history-write': 'error',
+
+      // `.env.secrets.example` (committed, blank) and its gitignored filled-in
+      // sibling hold the repo's credential material. Nothing automated may read
+      // either: a Cloud Functions deploy config ships `"ignore": ["node_modules"]`
+      // and nothing else, so anything a predeploy hook writes into the artifact is
+      // uploaded to the project's `gcf-sources-*` bucket AND baked in plaintext into
+      // the Cloud Run revision. This rule is deliberately enabled HERE, in the base
+      // block, and not inside `typeAware(...)`: that block is `files`-scoped to
+      // `**/*.{ts,tsx,mts,cts}`, which would silently exclude the five
+      // `prepare-deploy.mjs` scripts — the exact files this guards.
+      //
+      // Error, not warn: zero pre-existing sites, and the failure mode is
+      // credential material reaching a cloud bucket, not a style nit. The non-JS
+      // surface ESLint cannot parse (workflows, firebase configs, shell scripts) is
+      // covered by `rules/env-secrets-no-copy.test.js`.
+      'delfrance/no-env-secrets-access': 'error',
     },
   },
 ];

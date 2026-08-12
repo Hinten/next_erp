@@ -123,7 +123,7 @@ export interface PedidoPrintModel {
 /**
  * Bare `<id>` from a `Foto` ref string (`arquivos/<id>` or
  * `documents/arquivos/<id>`), or `null` — the last non-empty path segment.
- * Mirrors the `idFromRef` in `ProdutoThumbnail.tsx`.
+ * Mirrors the `idFromRef` in `components/ProdutoThumbnail.tsx`.
  */
 export function arquivoIdFromRef(ref: string | null | undefined): string | null {
   if (!ref) return null;

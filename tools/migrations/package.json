@@ -6,21 +6,32 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
+    "audit:estoque-reservada-negativa": "dotenv -e ../../.env.local -- tsx src/2026-08-estoque-reservada-negativa/audit.ts",
+    "audit:ml-pedido-pago": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-pedido-pago-audit/audit.ts",
+    "clean": "rm -rf dist .turbo out *.tsbuildinfo",
+    "lint": "eslint .",
+    "migrate:deposito-outer-ref": "dotenv -e ../../.env.local -- tsx src/2026-08-deposito-outer-ref/migrate.ts",
+    "migrate:historico-estoque-v2": "dotenv -e ../../.env.local -- tsx src/2026-08-historico-estoque-v2/migrate.ts",
+    "migrate:ml-integracoes-com-produto": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-integracoes-com-produto/migrate.ts",
+    "migrate:ml-lastmarketplaceupdate": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-lastmarketplaceupdate/backfill.ts",
+    "migrate:ml-precos-ghost-keys": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-precos-ghost-keys/migrate.ts",
     "migrate:pedido-pagamento-micros": "dotenv -e ../../.env.local -- tsx src/2026-06-pedido-pagamento-micros/migrate.ts",
-    "lint": "echo 'no lint configured for this package yet'",
-    "typecheck": "tsc --noEmit",
+    "migrate:telefone-e164": "dotenv -e ../../.env.local -- tsx src/2026-08-telefone-e164/migrate.ts",
     "test": "vitest run",
-    "clean": "rm -rf dist .turbo out *.tsbuildinfo"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
-    "firebase-admin": "^13.9.0"
+    "@delfrance/schemas": "workspace:*",
+    "firebase-admin": "catalog:"
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "@types/node": "^24.10.0",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

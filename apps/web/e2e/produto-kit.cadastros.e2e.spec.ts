@@ -1,10 +1,12 @@
 import { expect, test } from '@playwright/test';
 import {
   cleanupByNamePrefix,
+  cleanupProdutoEstoque,
   e2ePrefix,
   getProdutoData,
   getProdutoIdByNome,
   seedComponenteKit,
+  seedKitEstoqueFixtures,
   seedKitParaGerar,
 } from './_helpers/seed-data';
 import { expectToast, fillField, selectFieldWithSearch } from './helpers/object-view';
@@ -163,5 +165,52 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
         { timeout: 30_000 },
       )
       .toEqual({ kit: null, ehKit: false });
+  });
+});
+
+/**
+ * Display coverage for the kit available-stock computation (#238): the Estoque
+ * tab's Disponível cell appends `(own + min over limitarEstoque components of
+ * disponivel/quantidade)` for kit produtos — Flutter `getEstoqueDisponivel`
+ * parity, fractional and pt-BR-formatted. Stock is Admin-seeded (display-only —
+ * no `aplicarEstoque` callable involved).
+ */
+test.describe.serial('Produtos kit e2e — estoque disponível do kit (Estoque tab)', () => {
+  const prefix = e2ePrefix('prod-kit-est');
+  let kitId = '';
+  let comp1Id = '';
+  let comp2Id = '';
+  let depositoNome = '';
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(120_000);
+    const seed = await seedKitEstoqueFixtures(prefix);
+    kitId = seed.kitId;
+    comp1Id = seed.comp1Id;
+    comp2Id = seed.comp2Id;
+    depositoNome = seed.depositoNome;
+    await warmRoutes(browser, [`/produtos/${kitId}/editar`]);
+  });
+
+  test.afterAll(async () => {
+    for (const id of [kitId, comp1Id, comp2Id]) {
+      if (id) await cleanupProdutoEstoque(id);
+    }
+    await cleanupByNamePrefix('produtos', prefix);
+    await cleanupByNamePrefix('depositos', prefix);
+  });
+
+  test('the Disponível cell appends the computed kit availability', async ({ page }) => {
+    await page.goto(`/produtos/${kitId}/editar`);
+    await page.getByRole('tab', { name: 'Estoque' }).click();
+    await expect(page.getByLabel(`Localização ${kitId} ${depositoNome}`)).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // own 1,00; components allow min((10−1)/2 = 4.5, 11/3 ≈ 3.67) → 1 + 11/3 → "(4,67)".
+    // toHaveText auto-retries through the transient `1,00 (...)` loading state.
+    await expect(page.getByLabel(`Disponível ${kitId} ${depositoNome}`)).toHaveText('1,00 (4,67)', {
+      timeout: 30_000,
+    });
   });
 });

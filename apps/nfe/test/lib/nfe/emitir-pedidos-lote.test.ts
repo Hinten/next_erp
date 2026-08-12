@@ -28,7 +28,7 @@ import {
   generateNFe,
   signNFe,
 } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import { CONTINGENCIA_MODO, AMBIENTE_NFE, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
 import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
@@ -115,9 +115,9 @@ const SEED_NFE_CONFIG: NFeConfig = {
   numeracao_atual: 0,
   serie: 1,
   idLote: 0,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
   emitirReformaTributaria: false,
-  contingencia_modo: 'none',
+  contingencia_modo: CONTINGENCIA_MODO.none,
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
   timestamp: null,
@@ -412,11 +412,14 @@ function fakeFirestore(opts: BatchHarnessOpts) {
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
-          set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
-            assertSignedXmlNeverLost(ref.path, data, undefined);
-            writes.push({ path: ref.path, data });
-            docs[ref.path] = data;
-            opts.events.push(`set:${ref.path}`);
+          // Identical write semantics to a direct ref.set (incl. the #128
+          // anchor assert + merge handling) — delegate, don't re-implement.
+          set: (
+            ref: ReturnType<typeof makeRef>,
+            data: Record<string, unknown>,
+            setOpts?: { merge?: boolean },
+          ) => {
+            void ref.set(data, setOpts);
           },
         };
         return fn(tx);
@@ -639,7 +642,7 @@ describe('emitirPedidosLote — single filial happy path', () => {
 });
 
 describe('emitirPedidosLote — batch read dedup (PR-δ)', () => {
-  it('reads a shared filial + operação (+ regraimposto) once across the batch', async () => {
+  it('reads a shared filial + operação (+ regras) once across the batch', async () => {
     const events: string[] = [];
     const { fs } = fakeFirestore({
       events,
@@ -684,7 +687,7 @@ describe('emitirPedidosLote — batch read dedup (PR-δ)', () => {
     // pedido doc is still read three times (one per id).
     expect(events.filter((e) => e === 'get:filiais/F-1')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:operacao/O-1')).toHaveLength(1);
-    expect(events.filter((e) => e === 'get:operacao/O-1/regraimposto')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:operacao/O-1/regras')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:pedidos/PED-1')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:pedidos/PED-2')).toHaveLength(1);
   });
@@ -841,6 +844,52 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     expect(freshGenCall?.[0].cNF).toBeUndefined();
   });
 
+  it('#396: a crash-window member rides the lote with its STORED bytes — no regenerate', async () => {
+    const events: string[] = [];
+    const STORED_XML =
+      '<NFe><infNFe Id="NFe35260514200166000187550010000000007100000009">…stored…</infNFe>' +
+      '<Signature><SignedInfo><Reference><DigestValue>D==</DigestValue></Reference></SignedInfo></Signature></NFe>';
+    const crashExisting = {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: '1',
+      estado: ESTADO_NFE.enviando, // anchor committed, send/outcome lost
+      chave: '35260514200166000187550010000000007100000009',
+      idLote: '3',
+      cStat: null,
+      xMotivo: null,
+      nRec: null,
+      retries: 0,
+      data_emissao: new Date().toISOString(),
+      xml_assinado: STORED_XML,
+    };
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+        { pedidoId: 'PED-CRASH', filialId: 'F-1', existingNFe: crashExisting },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH', 'PED-CRASH']);
+
+    // The stored bytes rode the lote verbatim; only the fresh member was generated.
+    const loteArg = vi.mocked(autorizarLote).mock.calls[0]![1] as { NFe: readonly string[] };
+    expect(loteArg.NFe).toContain(STORED_XML);
+    expect(vi.mocked(generateNFe).mock.calls.some((call) => call[0]?.numeracao === 7)).toBe(false);
+    expect(vi.mocked(generateNFe).mock.calls.some((call) => call[0]?.numeracao === 1)).toBe(true);
+    // Counter advanced by the fresh count only; crash member consumed no nNF.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(1);
+    // The crash member's doc kept its anchor and got the shared idLote stamped.
+    const crashDoc = docs['pedidos/PED-CRASH/nfev4/s1'] as Record<string, unknown>;
+    expect(crashDoc.xml_assinado).toBe(STORED_XML);
+    expect(typeof crashDoc.idLote).toBe('string');
+  });
+
   it('allocates contiguous fresh nNFs for an all-fresh chunk', async () => {
     const events: string[] = [];
     const { fs, docs } = fakeFirestore({
@@ -982,7 +1031,7 @@ describe('emitirPedidosLote — partial-failure aggregation', () => {
 describe('emitirPedidosLote — contingência EPEC', () => {
   const EPEC_NFE_CONFIG: NFeConfig = {
     ...SEED_NFE_CONFIG,
-    contingencia_modo: 'epec',
+    contingencia_modo: CONTINGENCIA_MODO.epec,
     contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
     contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   };

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
@@ -11,6 +11,7 @@ const docState: {
     data: undefined | null | { id: string; data: unknown };
     loading: boolean;
     error: undefined;
+    fromCache?: boolean;
   };
 } = {
   current: { data: null, loading: false, error: undefined },
@@ -46,6 +47,7 @@ function fakeCollection(): CollectionHandle<typeof schema> {
     ref: () => ({}) as never,
     docRef: () => ({}) as never,
     converter: {} as never,
+    merge: () => Promise.resolve(),
   };
 }
 
@@ -183,6 +185,114 @@ describe('ObjectView', () => {
 
     fireEvent.click(confirmBtn);
     expect(onDelete).toHaveBeenCalledWith('rec-1');
+
+    docState.current = { data: null, loading: false, error: undefined };
+  });
+
+  // Persistent-cache convergence: `useDocSnapshot` emits a stale `fromCache:
+  // true` doc first (a transactional save has no latency compensation, so the
+  // cache lags the server right after editing this record), then the
+  // authoritative `fromCache: false` doc. The form must paint the first and
+  // then converge to server truth — without clobbering in-progress edits.
+  const editSchema = z.object({
+    numero: z.string().nullable().optional().describe('Número'),
+  });
+
+  function numeroInput(): HTMLInputElement {
+    return screen.getByRole('textbox', { name: 'Número' }) as HTMLInputElement;
+  }
+
+  it('re-seeds from the server snapshot after a stale cache emission (pristine form)', async () => {
+    // First emission: the stale cached doc (pre-save value).
+    docState.current = {
+      data: { id: 'e1', data: { numero: '100' } },
+      loading: false,
+      error: undefined,
+      fromCache: true,
+    };
+    const { rerender } = render(
+      <Wrap>
+        <ObjectView
+          schema={editSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="e1"
+        />
+      </Wrap>,
+    );
+    // Cache paint: instant feedback with the (stale) cached value.
+    await waitFor(() => expect(numeroInput().value).toBe('100'));
+
+    // Second emission: the server confirms the freshly-saved value.
+    docState.current = {
+      data: { id: 'e1', data: { numero: '250' } },
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
+    rerender(
+      <Wrap>
+        <ObjectView
+          schema={editSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="e1"
+        />
+      </Wrap>,
+    );
+    // Converged to server truth.
+    await waitFor(() => expect(numeroInput().value).toBe('250'));
+
+    docState.current = { data: null, loading: false, error: undefined };
+  });
+
+  it('never clobbers in-progress edits when the server snapshot arrives', async () => {
+    docState.current = {
+      data: { id: 'e2', data: { numero: '100' } },
+      loading: false,
+      error: undefined,
+      fromCache: true,
+    };
+    const { rerender } = render(
+      <Wrap>
+        <ObjectView
+          schema={editSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="e2"
+        />
+      </Wrap>,
+    );
+    await waitFor(() => expect(numeroInput().value).toBe('100'));
+
+    // The user starts editing (form becomes dirty) BEFORE the server snapshot.
+    fireEvent.change(numeroInput(), { target: { value: '999' } });
+    expect(numeroInput().value).toBe('999');
+
+    // A late `fromCache: false` emission arrives — it must NOT overwrite the
+    // user's unsaved edit.
+    docState.current = {
+      data: { id: 'e2', data: { numero: '250' } },
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
+    rerender(
+      <Wrap>
+        <ObjectView
+          schema={editSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="e2"
+        />
+      </Wrap>,
+    );
+    // Still the user's value — the edit was preserved.
+    await waitFor(() => expect(numeroInput().value).toBe('999'));
 
     docState.current = { data: null, loading: false, error: undefined };
   });

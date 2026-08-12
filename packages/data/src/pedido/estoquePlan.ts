@@ -4,6 +4,7 @@ import type {
   EstoqueAplicado,
   TipoMovimentoEstoque,
 } from '@delfrance/schemas';
+import { TIPO_MOVIMENTO_ESTOQUE } from '@delfrance/schemas';
 
 /**
  * Pure planning for the pedido → estoque sync (`sincronizarEstoquePedido`,
@@ -17,6 +18,31 @@ import type {
  * pedido's `estoqueAplicado` snapshot — what was REALLY applied — never a
  * recomputation from the current items.
  */
+
+/**
+ * The pedido fields the estoque sync owns end to end — it is their only writer,
+ * and no interactive editor in `apps/web` can author any of them.
+ *
+ * Deliberately shared, because it has exactly TWO consumers that must never
+ * disagree:
+ *
+ *  1. `sincronizarEstoquePedido`'s `CAMPOS_ESCRITOS` — what the trigger writes
+ *     back onto the pedido doc (and what its loop guard ignores).
+ *  2. `CONCURRENCY_IGNORE` in `./usecases` — what the editor's optimistic-
+ *     concurrency guard must NOT treat as a remote change. The write-back does
+ *     not stamp `ultimaModificacao`, so the snapshot compare is the only thing
+ *     that sees it; while these were compared, the trigger's own write-back
+ *     raised a "Pedido alterado" modal naming fields the operator can neither
+ *     see nor edit, and the save never went through (#972).
+ *
+ * One list means the writer and the guard cannot drift apart — adding a fourth
+ * field here extends both at once.
+ */
+export const CAMPOS_ESTOQUE_SYNC = [
+  'estoqueAplicado',
+  'dataIndisponivelEstoque',
+  'dataRemocaoEstoque',
+] as const;
 
 /* -------------------------------------------------------------------------- */
 /*                       Item → per-produto quantity map                      */
@@ -156,13 +182,13 @@ interface Contribuicao {
 }
 
 function classificarTipo(c: Contribuicao): TipoMovimentoEstoque {
-  if (c.remAlvo > c.remAplicado) return 'saida';
-  if (c.remAlvo < c.remAplicado) return 'devolucao';
-  if (c.addAlvo > c.addAplicado) return 'entrada';
-  if (c.addAlvo < c.addAplicado) return 'estorno';
-  if (c.resAplicado === 0 && c.resAlvo > 0) return 'reserva';
-  if (c.resAlvo === 0 && c.resAplicado > 0) return 'liberacaoReserva';
-  return 'ajusteReserva';
+  if (c.remAlvo > c.remAplicado) return TIPO_MOVIMENTO_ESTOQUE.saida;
+  if (c.remAlvo < c.remAplicado) return TIPO_MOVIMENTO_ESTOQUE.devolucao;
+  if (c.addAlvo > c.addAplicado) return TIPO_MOVIMENTO_ESTOQUE.entrada;
+  if (c.addAlvo < c.addAplicado) return TIPO_MOVIMENTO_ESTOQUE.estorno;
+  if (c.resAplicado === 0 && c.resAlvo > 0) return TIPO_MOVIMENTO_ESTOQUE.reserva;
+  if (c.resAlvo === 0 && c.resAplicado > 0) return TIPO_MOVIMENTO_ESTOQUE.liberacaoReserva;
+  return TIPO_MOVIMENTO_ESTOQUE.ajusteReserva;
 }
 
 const MOTIVO_POR_TIPO: Record<TipoMovimentoEstoque, (n: string) => string> = {

@@ -1,14 +1,17 @@
+/* eslint-disable no-console -- CLI script: stdout is the interface */
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
-// Live diagnostic: prove the orphan-sweep queries are index-backed (NOT a
-// collection scan). This Firestore Enterprise edition creates NO indexes
-// automatically, so both queries rely on declared entries in
-// firestore.indexes.json: the phantom sweep on `arquivos(uploadState, criadoEm)`,
-// the unreferenced candidate scan on `arquivos(criadoEm)`, and the marked sweep on
-// `arquivos(markedForDeletionAt)`. (The real candidate scan is a regex pipeline on
-// top of that `criadoEm` index; this script explains the equivalent classic range
-// query to confirm the index is used.)
+// Live diagnostic: prove the phantom-doc and marked-for-deletion sweep queries
+// are index-backed (NOT a collection scan). This Firestore Enterprise edition
+// creates NO indexes automatically, so both rely on declared entries in
+// firestore.indexes.json: the phantom sweep on `arquivos(uploadState, criadoEm)`
+// and the marked sweep on `arquivos(markedForDeletionAt)`. The THIRD sweep,
+// `sweepUnreferencedArquivos`, is deliberately NOT checked here since #234: it
+// now pages `arquivos` by document key (`FieldPath.documentId()`, Firestore's
+// always-available native ordering) with a persisted round-robin cursor instead
+// of an indexed `criadoEm` range scan — see `apps/functions/CLAUDE.md` — so
+// there is no index for it to ride.
 // This script confirms `indexesUsed` is non-empty and the reads are bounded.
 //
 // Query Explain needs a real Firestore (Enterprise) — the emulator does not
@@ -62,10 +65,6 @@ await explain(
     .where('criadoEm', '<', cutoff)
     .orderBy('criadoEm', 'asc')
     .limit(100),
-);
-await explain(
-  'candidate criadoEm index — arquivos where criadoEm<cutoff orderBy criadoEm limit 100 (the index the regex pipeline rides)',
-  db.collection('arquivos').where('criadoEm', '<', cutoff).orderBy('criadoEm', 'asc').limit(100),
 );
 await explain(
   'marked sweep — arquivos where markedForDeletionAt<cutoff orderBy markedForDeletionAt limit 100',

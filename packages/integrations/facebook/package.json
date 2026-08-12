@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
@@ -13,8 +14,10 @@
     "@delfrance/core": "workspace:*"
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

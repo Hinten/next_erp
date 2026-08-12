@@ -14,7 +14,11 @@
  *  - a **re-check** of the newest token before POSTing (a concurrent refresh may
  *    have just landed — use it instead of refreshing again);
  *  - a **loser fallback**: if our POST loses the race (`invalid_grant` / HTTP
- *    error), re-read the newest valid token the winner just wrote and use it.
+ *    error), re-read the newest valid token the winner just wrote and use it —
+ *    **twice**, the second time after `LOSER_REREAD_DELAY_MS`. The loser learns
+ *    it lost *before* the winner finishes (rejecting a used token is cheaper for
+ *    ML than minting and rotating a pair), so a single immediate re-read often
+ *    beats the winner's `save()` and surfaces a spurious re-consent prompt.
  *
  * The OAuth refresh is deliberately **NOT** wrapped in a Firestore transaction:
  * `runTransaction` retries its callback on contention, which would re-fire the
@@ -45,6 +49,20 @@ const CURRENT_DOC_ID = 'current';
 
 /** Refresh a token this close to (or past) its expiry, never mid-flight. */
 export const REFRESH_SKEW_MS = 60_000;
+
+/**
+ * Wait between the loser fallback's two re-reads — long enough for the winner's
+ * `save()` to commit. 250 ms is the old app's own value: its abandoned
+ * (commented-out) transactional refresh waited exactly that before re-reading.
+ *
+ * ⚠️ Widening `REFRESH_SKEW_MS` is NOT an alternative to this — the window being
+ * covered is the ML round-trip plus one Firestore write, not the expiry threshold.
+ */
+export const LOSER_REREAD_DELAY_MS = 250;
+
+/** Real timer. `GetOrRefreshOpts.sleep` replaces it so tests never wait. */
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Small guard subtracted from the computed expiry (mirrors the old app's -5s). */
 const EXPIRY_GUARD_MS = 5_000;
@@ -112,6 +130,8 @@ export interface GetOrRefreshOpts {
     config: MercadoLivreOAuthConfig,
     refreshToken: string,
   ) => Promise<TokenResponse>;
+  /** Injectable for tests; defaults to a real timer. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -128,6 +148,7 @@ export async function getOrRefreshAccessToken(
   const now = opts.now ?? Date.now();
   const cutoff = now + (opts.skewMs ?? REFRESH_SKEW_MS);
   const refresh = opts.refresh ?? refreshAccessToken;
+  const sleep = opts.sleep ?? defaultSleep;
 
   const valid = await store.loadValid(cutoff);
   if (valid) return valid.access_token;
@@ -154,8 +175,16 @@ export async function getOrRefreshAccessToken(
     // winner just wrote a fresh token — re-read and use it. Only re-raise when
     // there is genuinely no valid credential.
     if (err instanceof MercadoLivreReauthRequiredError || err instanceof MercadoLivreHttpError) {
+      // Two reads, not one. The first costs nothing when the winner's write has
+      // already landed; the second covers the likelier ordering, where it had
+      // not — our rejection came back before the winner finished minting. The
+      // cutoff stays the PRE-POST value: conservative (the winner's token must
+      // clear the full skew measured from the original `now`) and deterministic.
       const winner = await store.loadValid(cutoff);
       if (winner) return winner.access_token;
+      await sleep(LOSER_REREAD_DELAY_MS);
+      const late = await store.loadValid(cutoff);
+      if (late) return late.access_token;
     }
     throw err;
   }

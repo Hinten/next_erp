@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
-import { pedidoSchema, type EstadoPedido } from '../collection/pedido';
+import { CHAVE_NFE_REGEX } from '../../nfe';
+import { ESTADO_PEDIDO, pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
 import { historicoEstadoPedidoSchema } from '../collection/historicoEstadoPedido';
@@ -96,7 +97,9 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
   // Every referenced NF-e access key (`chNFeReferenciadas`) must be a 44-digit
   // chave — an invalid one is accepted by the form today and only fails at NF-e
   // emission. Block the save here (the Fiscal tab also shows a per-input hint).
-  if ((data.chNFeReferenciadas ?? []).some((c) => c != null && c !== '' && !/^\d{44}$/.test(c))) {
+  if (
+    (data.chNFeReferenciadas ?? []).some((c) => c != null && c !== '' && !CHAVE_NFE_REGEX.test(c))
+  ) {
     issues.push({
       path: 'chNFeReferenciadas',
       message: 'Chave de acesso referenciada deve ter 44 dígitos.',
@@ -113,7 +116,7 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
   // `cadastroPedidoProvider.dart:1169`). Only enforced when `pagamentos` is
   // supplied (an MCP agent / integrated save) — the per-tab web flows save the
   // pedido doc and the payments separately, so this stays out of their way.
-  if (data.pagamentos != null && data.estado === 'pago') {
+  if (data.pagamentos != null && data.estado === ESTADO_PEDIDO.pago) {
     const aprovado = data.pagamentos
       .filter((p) => p.status_pagamento === STATUS_PAGAMENTO.aprovado)
       .reduce((sum, p) => sum + (p.valor ?? 0), 0);

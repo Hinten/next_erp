@@ -1,41 +1,20 @@
-// Library-side ESLint config. Like packages/integrations/nfe, it does NOT
-// spread `@delfrance/config-eslint`'s base array: the base ships React Compiler
-// (`react-hooks/*`) rules that need `eslint-plugin-react-hooks`, only present
-// via `eslint-config-next` in the apps. This package has no React surface, so
-// we wire up just the one rule it needs — `delfrance/default-query-needs-index`,
-// which validates every collection meta's `defaultQuery` against
-// firestore.indexes.json — plus the Prettier compatibility layer.
-import tseslint from 'typescript-eslint';
-import defaultQueryNeedsIndex from '@delfrance/config-eslint/rules/default-query-needs-index.js';
-import noAdHocMoneyRounding from '@delfrance/config-eslint/rules/no-ad-hoc-money-rounding.js';
-import { prettier } from '@delfrance/config-eslint';
+// Library-side ESLint config. `@delfrance/config-eslint`'s base array is now
+// composable — the react-hooks rules moved to the opt-in `./react` subpath, so
+// a non-React package like this one can spread the base directly instead of
+// hand-wiring its own rule set.
+//
+// The base registers the `delfrance` plugin and configures every non-type-aware
+// rule in it, so this package needs no plugin block of its own: at `error`,
+// default-query-needs-index, no-ad-hoc-money-rounding, no-optional-without-nullable
+// and no-client-estado-history-write; at `warn`, no-inline-admin-collection and
+// no-error-as-sole-instanceof. The seventh, `prefer-schema-enum`, is type-aware
+// and therefore lives inside `typeAware(...)` — spread below, which is what turns
+// it on here.
+//
+// Two of those matter most in this package: no-optional-without-nullable
+// self-scopes by path and only ever fires on `packages/schemas`, and
+// default-query-needs-index reads every `meta.defaultQuery` declared here
+// against firestore.indexes.json.
+import base, { prettier, typeAware } from '@delfrance/config-eslint';
 
-const config = [
-  {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', '*.tsbuildinfo'],
-  },
-  {
-    files: ['src/**/*.ts'],
-    languageOptions: {
-      parser: tseslint.parser,
-      parserOptions: { ecmaVersion: 'latest', sourceType: 'module' },
-    },
-    plugins: {
-      delfrance: {
-        rules: {
-          'default-query-needs-index': defaultQueryNeedsIndex,
-          'no-ad-hoc-money-rounding': noAdHocMoneyRounding,
-        },
-      },
-    },
-    rules: {
-      'delfrance/default-query-needs-index': 'error',
-      'delfrance/no-ad-hoc-money-rounding': 'error',
-    },
-  },
-  // eslint-config-prettier LAST — disables stylistic rules that conflict with
-  // Prettier (formatting is owned by the repo-root prettier.config.mjs).
-  prettier,
-];
-
-export default config;
+export default [...base, ...typeAware(import.meta.dirname, { files: ['src/**/*.ts'] }), prettier];

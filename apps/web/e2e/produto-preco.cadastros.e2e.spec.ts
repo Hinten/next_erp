@@ -4,9 +4,6 @@ import {
   cleanupProdutoSubcollection,
   e2ePrefix,
   getProdutoData,
-  listHistoricoCusto,
-  listHistoricoPrecos,
-  seedHistoricoCusto,
   seedListasDePreco,
   seedProdutoComFilho,
 } from './_helpers/seed-data';
@@ -15,10 +12,17 @@ import { warmRoutes } from './helpers/warmup';
 
 /**
  * End-to-end coverage for the produto "Preço e custo" tab: price-per-lista
- * editing (Flutter `precos` map wire shape), the automatic price-history
- * records, the formula recalc engine, the price propagation to variation
- * children and the read-only custo history. Runs serially — later tests
- * build on the prices written by earlier ones.
+ * editing (Flutter `precos` map wire shape), the formula recalc engine, the
+ * read-only custo-history modal and the min-price/staged-removal validation.
+ * Runs serially — later tests build on the prices written by earlier ones.
+ *
+ * The automatic modification-history records and the parent→children precos
+ * propagation are owned by the produto-write Cloud Function trigger, which
+ * writes the unified `historicoDeModificacoes` subcollection the cost-history
+ * modal reads. This suite does NOT assert them: the trigger IS deployed on
+ * staging, so what the modal shows depends on whichever concurrent specs also
+ * touched the produto, which is not a stable assertion. `produto-preco.emulator.e2e.spec.ts`
+ * covers the trigger's real output deterministically instead.
  */
 test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
   const prefix = e2ePrefix('prod-preco');
@@ -44,9 +48,14 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
 
   test.afterAll(async () => {
     await Promise.all([
+      // Legacy subcollections nothing writes anymore — harmless no-ops today,
+      // kept in case a stray write ever lands there again.
       cleanupProdutoSubcollection(parentId, 'historicoDePrecos'),
       cleanupProdutoSubcollection(parentId, 'historicoDeCusto'),
       cleanupProdutoSubcollection(childId, 'historicoDePrecos'),
+      // The unified history subcollection the modal reads — empty today (no
+      // deployed trigger on staging), but not once it is.
+      cleanupProdutoSubcollection(parentId, 'historicoDeModificacoes'),
     ]);
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupByNamePrefix('listaDePrecos', prefix);
@@ -60,7 +69,7 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
     });
   }
 
-  test('writes the precos map wire shape and the initial history record', async ({ page }) => {
+  test('writes and updates the precos map wire shape', async ({ page }) => {
     await openPrecoTab(page);
     await typeMoney(page, varejoNome, '30');
     await clickSave(page, 'Salvar alterações');
@@ -69,30 +78,15 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
       .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 30 } });
 
-    // Flutter parity: a price added from nothing records valorFinal only.
-    await expect
-      .poll(async () => (await listHistoricoPrecos(parentId)).length, { timeout: 15_000 })
-      .toBe(1);
-    const [record] = await listHistoricoPrecos(parentId);
-    expect(record).toMatchObject({ valorOriginal: null, valorFinal: 30 });
-    expect(String(record!.listaDePrecoHistoricoOuterRef).split('/').pop()).toBe(varejoId);
-    expect(typeof record!.timestamp).toBe('number');
-  });
-
-  test('records valorOriginal → valorFinal on a price change', async ({ page }) => {
+    // A later change persists too — not just the initial add. (History
+    // recording is the produto-write trigger's job now — see
+    // produto-preco.emulator.e2e.spec.ts.)
     await openPrecoTab(page);
     await typeMoney(page, varejoNome, '35');
     await clickSave(page, 'Salvar alterações');
-
     await expect
-      .poll(
-        async () =>
-          (await listHistoricoPrecos(parentId)).some(
-            (r) => r.valorOriginal === 30 && r.valorFinal === 35,
-          ),
-        { timeout: 15_000 },
-      )
-      .toBe(true);
+      .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
+      .toEqual({ [varejoId]: { valor: 35 } });
   });
 
   test('recalculates the price from custo via the lista formulas', async ({ page }) => {
@@ -110,40 +104,6 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
     await expect
       .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 25 } });
-    // The recalc save must propagate the new price to the variation child too.
-    await expect
-      .poll(async () => (await getProdutoData(childId))?.precos, { timeout: 15_000 })
-      .toEqual({ [varejoId]: { valor: 25 } });
-  });
-
-  test('propagates the parent prices to variation children on save', async ({ page }) => {
-    // The flush runs on every save — by now the child must mirror the parent.
-    await expect
-      .poll(async () => (await getProdutoData(childId))?.precos, { timeout: 15_000 })
-      .toEqual({ [varejoId]: { valor: 25 } });
-
-    // And a fresh save keeps them in sync after another change.
-    await openPrecoTab(page);
-    await typeMoney(page, varejoNome, '40');
-    await clickSave(page, 'Salvar alterações');
-    await expect
-      .poll(async () => (await getProdutoData(childId))?.precos, { timeout: 15_000 })
-      .toEqual({ [varejoId]: { valor: 40 } });
-  });
-
-  test('records cost history on a custo change and shows it', async ({ page }) => {
-    // The recalc test above saved custo=10 → a historicoDeCusto record must
-    // have been written (the write fix). Then a seeded record shows in the modal.
-    await expect
-      .poll(async () => (await listHistoricoCusto(parentId)).some((r) => r.valor === 10), {
-        timeout: 15_000,
-      })
-      .toBe(true);
-
-    await seedHistoricoCusto(parentId, 8.5);
-    await openPrecoTab(page);
-    await page.getByRole('button', { name: 'Histórico de custo' }).click();
-    await expect(page.getByText(/8,50/)).toBeVisible({ timeout: 15_000 });
   });
 
   test('rejects a price of 0 (min R$ 0,01) without silently dropping it', async ({ page }) => {
@@ -151,9 +111,9 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
     await typeMoney(page, varejoNome, '0');
     await clickSave(page, 'Salvar alterações');
     // Validation blocks the save and shows the row error — the value is NOT
-    // silently dropped, and the persisted price stays at 40 (from the test above).
+    // silently dropped, and the persisted price stays at 25 (the recalc test above).
     await expect(page.getByText(/preço mínimo é R\$ 0,01/)).toBeVisible({ timeout: 10_000 });
-    expect((await getProdutoData(parentId))?.precos).toEqual({ [varejoId]: { valor: 40 } });
+    expect((await getProdutoData(parentId))?.precos).toEqual({ [varejoId]: { valor: 25 } });
   });
 
   test('removes a price only via the trash button (staged), applied on save', async ({ page }) => {

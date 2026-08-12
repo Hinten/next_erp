@@ -15,6 +15,7 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
+import { PERM } from '@delfrance/auth';
 import {
   type Cliente,
   type TipoCliente,
@@ -24,6 +25,7 @@ import {
 } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { formatCpfCnpj, formatTelefone, obscure } from '@/lib/pedido-print/format';
+import { usePermission } from '@/lib/auth';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { ENDERECO_SEARCH_LIMIT, searchClienteIdsByEndereco } from './_lib/buscaPorEndereco';
@@ -32,18 +34,9 @@ import { ENDERECO_SEARCH_LIMIT, searchClienteIdsByEndereco } from './_lib/buscaP
 // search results exist.
 const NO_IDS: string[] = [];
 
-// Telefone is stored as digits-only E.164 (no '+'), so BR numbers carry a
-// leading `55` country code. Strip it before formatting so `formatTelefone`
-// (which masks 10/11-digit BR numbers) sees the local number; legacy raw
-// 10/11-digit numbers and foreign numbers pass through untouched.
-function renderTelefone(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  const local = digits.length >= 12 && digits.startsWith('55') ? digits.slice(2) : digits;
-  return formatTelefone(local);
-}
-
 export default function ClientesPage() {
   const db = getFirebaseFirestore();
+  const { allowed: canDelete } = usePermission(PERM.cliente.delete);
   // `enderecoInput` is the live text field; `enderecoTerm` is the committed
   // term (set on submit) that actually drives the search query.
   const [enderecoInput, setEnderecoInput] = useState('');
@@ -171,30 +164,38 @@ export default function ClientesPage() {
               renderCell: (value) => (value ? obscure(formatCpfCnpj(String(value))) : '—'),
             },
             telefone: {
-              renderCell: (value) => (value ? renderTelefone(String(value)) : '—'),
+              renderCell: (value) => (value ? formatTelefone(String(value)) : '—'),
             },
           }}
           selectable
-          actions={[
-            {
-              id: 'delete',
-              label: 'Excluir',
-              color: 'red',
-              requiresSelection: true,
-              refreshOnComplete: true,
-              confirm: {
-                title: 'Excluir clientes',
-                message: 'Clientes excluídos não podem ser restaurados. Confirmar exclusão?',
-              },
-              run: async (rows) => {
-                await Promise.all(
-                  rows.map((r: { id: string; data: Cliente }) =>
-                    deleteDoc(clienteCollection.docRef(db, {}, r.id)),
-                  ),
-                );
-              },
-            },
-          ]}
+          // Hiding, not disabling: `ActionConfig` has no `hidden` flag, so the
+          // gate filters the array (same shape as /canais/whatsapp). Firestore
+          // already refuses the write — this stops the button promising what
+          // the rules reject.
+          actions={
+            canDelete
+              ? [
+                  {
+                    id: 'delete',
+                    label: 'Excluir',
+                    color: 'red',
+                    requiresSelection: true,
+                    refreshOnComplete: true,
+                    confirm: {
+                      title: 'Excluir clientes',
+                      message: 'Clientes excluídos não podem ser restaurados. Confirmar exclusão?',
+                    },
+                    run: async (rows) => {
+                      await Promise.all(
+                        rows.map((r: { id: string; data: Cliente }) =>
+                          deleteDoc(clienteCollection.docRef(db, {}, r.id)),
+                        ),
+                      );
+                    },
+                  },
+                ]
+              : []
+          }
         />
       )}
     </Stack>

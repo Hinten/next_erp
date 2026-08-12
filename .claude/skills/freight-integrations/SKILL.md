@@ -37,7 +37,7 @@ another aggregator) slot in by **category** — see *Provider categories* below.
 | ↳ browser-safe client | `freight-br/src/http-client` (subpath `…/http-client`) | The typed `FreightHttpClient` `apps/web` calls (`.conta()`/`.comprar()`/`.imprimir()`/`.rastrear()`/`.calculate()`) + pure builders (`buildCartItem`, `buildCalculatePayload`). |
 | **ME app** (API-only) | `apps/melhor-envio` (`@delfrance/melhor-envio-app`, `:3005`) | Thin route handlers under `app/api/freight/melhor-envio/{oauth/start,calculate,conta,comprar,imprimir,rastrear}`, the OAuth `callback`, the `webhooks/melhor-envio` receiver, and `lib/freight/*` (`loadMelhorEnvioContext`, the Firestore token store, signed-state HMAC, error→HTTP mapper). Has its **own** `CLAUDE.md`. |
 | **Web UI** (client-first) | `apps/web/app/(app)/pedidos/_components` + `…/logistica` | Frete tab (`tabs/FreteTab.tsx` + `tabs/frete/*`), the `/pedidos` etiqueta row action (`EtiquetaRowAction` → `EtiquetaComprarModal`), the object-view print/track panel (`EtiquetaMelhorEnvioPanel`), the `/logistica` `int_frete` CRUD. `useFreightClient()` targets the ME app via `NEXT_PUBLIC_MELHOR_ENVIO_URL`. |
-| **Schemas** | `packages/schemas/src/{integracao,frete}.ts` | `intFreteSchema` (the config doc, discriminated by `tipo`), `freteDoPedidoSchema` (`freteInicial`), `volumeSchema`, `PERM.frete`, and **`FREIGHT_TIPO_CAPS`** (the per-tipo capability table). Source of truth → `firestore.rules`. |
+| **Schemas** | `packages/schemas/src/integracao.ts` + `packages/schemas/src/shared/frete.ts` | `intFreteSchema` (the config doc, discriminated by `tipo`), `freteDoPedidoSchema` (`freteInicial`), `volumeSchema`, `PERM.frete`, and **`FREIGHT_TIPO_CAPS`** (the per-tipo capability table). Source of truth → `firestore.rules`. |
 
 Freight does **not** use a `core/plugins` registry contract (the old
 `FreightProvider` was removed — #262): that 3-method shape couldn't express
@@ -48,7 +48,7 @@ read-only category. The real provider-neutral surface emerged bottom-up —
 ## Provider categories
 
 Every freight `tipo` is one of three categories. The per-tipo flags live in **one
-table** — `FREIGHT_TIPO_CAPS` in `packages/schemas/src/frete.ts`
+table** — `FREIGHT_TIPO_CAPS` in `packages/schemas/src/shared/frete.ts`
 (`Record<IntegracaoFrete, FreightTipoCapabilities>`) — the single source of truth
 the etiqueta dispatch (`etiquetaRowState`) and the Frete tab read. Adding a `tipo`
 without a caps row is a **compile error**.
@@ -71,6 +71,7 @@ backend.
 - `freteInicial.externalOption*` — `externalOptionId` (string), `externalOptionIntegracao` (the **tipo** enum), `externalOptionData` (opaque `Record<string,unknown>` — any provider's quote/option blob).
 - `freteInicial.printLabelId` / `codRastreio` — label id + tracking code; the webhook finds a pedido by `printLabelId`.
 - `freteInicial.estado` — `EstadoFrete` (27 states); `isFreteJaPostado` / `ESTADOS_FRETE_NAO_POSTADO` gate the re-emit/reprint risk confirm.
+  - ⚠️ **Two different questions — don't reuse one for the other (#702).** `isFreteJaPostado` = "has a label likely been emitted" → gates label re-emit/reprint (the risk confirm). `podeAutorizarDespacho` / `ESTADOS_FRETE_PRE_AUTORIZACAO` = "may a payment authorize dispatch from here" → used by the pedido estado reconcile. Negating the first one authorizes dispatch out of `emSeparacao` / `empacotado` / `checkFinalizado` and regresses warehouse (and stock) progress.
 - `int_frete.mapa` — the marketplace shipping-option → target `int_frete` + `targetTipoIntegracao` routing table (the fetch category's remap).
 - `FreightHttpClient` (6 methods) — already provider-neutral; only the route paths are ME-specific today.
 
@@ -84,6 +85,14 @@ can't downgrade) → **idempotent patch** of `freteInicial.estado`/`codRastreio`
 new provider supplies only its signature verification + status map; the
 find/guard/patch core is reusable — extract `applyFreightStatusUpdate` to
 `@delfrance/data/admin` when a 2nd caller (webhook OR order-sync poll) appears.
+(That house rule has since been exercised once: the triplicated notification
+persistence became `@delfrance/data/admin/notifications` — see the
+`webhook-notifications` skill.)
+
+⚠️ This receiver is also the **only** implemented one still processing inline —
+no queue, no failure persistence, no reprocess sweep — so a Firestore outage
+mid-webhook loses the update entirely. Putting it on the shared notification
+pipeline is tracked as a #360 follow-up.
 
 ## The flow (happy path)
 

@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { roundReais } from '@delfrance/core/money';
-import { FORMA_PAGAMENTO, pagamentoSchema, type FreteDoPedido } from '@delfrance/schemas';
+import {
+  MODALIDADE_FRETE,
+  ORIGEM,
+  FORMA_PAGAMENTO,
+  pagamentoSchema,
+  type FreteDoPedido,
+} from '@delfrance/schemas';
 
 import {
   apportionDescontos,
@@ -47,7 +53,7 @@ function item(partial: Partial<FiscalItem>): FiscalItem {
     descontoUnitario,
     quantidade,
     imposto: {
-      origem: '0',
+      origem: ORIGEM.nacional,
       unidade: 'UN',
       NCM: '61091000',
       cfop: '5102',
@@ -231,7 +237,7 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
     // (55) is overridden to vNF by the documented Flutter-parity rule.
     const bundle = fullBundle({
       pagamentos: [{ valor: 55, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
-      frete: { modalidade: '0', valorCobrado: 20 } as FreteDoPedido,
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
     });
     const out = build(bundle);
     expect(out.pagXml).toContain('<vPag>120.00</vPag>');
@@ -263,5 +269,137 @@ describe('buildGeneratorInput — guard uses the WIRE (rounded) vPag values', ()
     const items = [item({ precoDeVenda: 66.66, quantidade: 1 })];
     const out = buildGeneratorInput(bundle, items, 7, 1, 'homologacao');
     expect(out.pagXml).toContain('<vPag>33.33</vPag>');
+  });
+});
+
+/** Imposto that opts the item OUT of the NF-e totals (indTot='0', #398). */
+const IMPOSTO_FORA_DO_TOTAL = {
+  origem: '0',
+  unidade: 'UN',
+  NCM: '61091000',
+  cfop: '5102',
+  compoeValorTotalDaNFe: false,
+  configuracaoICMS: { crt: '1', csosn: '102' },
+} as const;
+
+describe('indTot — compoeValorTotalDaNFe (#398)', () => {
+  it("maps compoeValorTotalDaNFe=false to indTot='0'; absent/true to '1'", () => {
+    const items = [
+      item({ produtoUid: 'a' }), // no flag → composes
+      item({ produtoUid: 'b', imposto: IMPOSTO_FORA_DO_TOTAL as never }),
+    ];
+    const gis = buildGenItems(items, bundleWith(OP), false);
+    expect(gis[0]!.indTot).toBe('1');
+    expect(gis[1]!.indTot).toBe('0');
+  });
+
+  it('excludes non-composing items from ICMSTot vProd and vNF', () => {
+    const bundle = fullBundle({});
+    const items = [
+      item({ produtoUid: 'a', precoDeVenda: 100, quantidade: 1 }),
+      item({
+        produtoUid: 'b',
+        precoDeVenda: 50,
+        quantidade: 1,
+        imposto: IMPOSTO_FORA_DO_TOTAL as never,
+      }),
+    ];
+    const out = buildGeneratorInput(bundle, items, 7, 1, 'homologacao');
+    expect(out.totalXml).toContain('<vProd>100.00</vProd>');
+    expect(out.totalXml).toContain('<vNF>100.00</vNF>');
+  });
+
+  it('gives non-composing items no share of descontoTotal (pin lands on the last composing item)', () => {
+    const items = [
+      item({ produtoUid: 'a', precoDeVenda: 100, quantidade: 1 }),
+      item({
+        produtoUid: 'b',
+        precoDeVenda: 100,
+        quantidade: 1,
+        imposto: IMPOSTO_FORA_DO_TOTAL as never,
+      }),
+      item({ produtoUid: 'c', precoDeVenda: 300, quantidade: 1 }),
+    ];
+    // 40 over composing net 400 → a: 10, b (fora do total): 0, c (pinned): 30.
+    expect(apportionDescontos(items, bundleWith(OP, { descontoTotal: 40 }))).toEqual([10, 0, 30]);
+  });
+
+  it('pin still lands the exact remainder when the LAST array item is non-composing', () => {
+    const items = [
+      item({ produtoUid: 'a', precoDeVenda: 100, quantidade: 1 }),
+      item({ produtoUid: 'b', precoDeVenda: 300, quantidade: 1 }),
+      item({
+        produtoUid: 'c',
+        precoDeVenda: 100,
+        quantidade: 1,
+        imposto: IMPOSTO_FORA_DO_TOTAL as never,
+      }),
+    ];
+    const shares = apportionDescontos(items, bundleWith(OP, { descontoTotal: 40 }));
+    expect(shares).toEqual([10, 30, 0]);
+    expect(shares.reduce((s, v) => s + v, 0)).toBe(40);
+  });
+
+  it("keeps a non-composing item's unit discount on its det but out of the totals vDesc", () => {
+    const bundle = fullBundle({});
+    const items = [
+      item({ produtoUid: 'a', precoDeVenda: 100, quantidade: 1 }),
+      item({
+        produtoUid: 'b',
+        precoDeVenda: 100,
+        quantidade: 1,
+        descontoUnitario: 5,
+        imposto: IMPOSTO_FORA_DO_TOTAL as never,
+      }),
+    ];
+    const out = buildGeneratorInput(bundle, items, 7, 1, 'homologacao');
+    const gis = buildGenItems(items, bundle, false);
+    expect(gis[1]!.vDesc).toBe(5); // stays on the det
+    expect(out.totalXml).toContain('<vDesc>0.00</vDesc>'); // out of the totals
+    expect(out.totalXml).toContain('<vNF>100.00</vNF>');
+  });
+
+  it('stamps frete-emitente vFrete on the FIRST COMPOSING det, not a non-composing one', () => {
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 55, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
+    });
+    const items = [
+      item({
+        produtoUid: 'a',
+        precoDeVenda: 50,
+        quantidade: 1,
+        imposto: IMPOSTO_FORA_DO_TOTAL as never,
+      }),
+      item({ produtoUid: 'b', precoDeVenda: 100, quantidade: 1 }),
+    ];
+    const out = buildGeneratorInput(bundle, items, 7, 1, 'homologacao');
+    expect(out.itens[0]!.vFrete).toBeUndefined();
+    expect(out.itens[1]!.vFrete).toBe(20);
+    // vNF = composing vProd (100) + frete (20); the single payment overrides to vNF.
+    expect(out.totalXml).toContain('<vNF>120.00</vNF>');
+    expect(out.pagXml).toContain('<vPag>120.00</vPag>');
+  });
+});
+
+describe('frete-emitente with no composing item (review fix)', () => {
+  it('throws instead of stamping vFrete on an indTot=0 det', () => {
+    const bundle = fullBundle({
+      pagamentos: [],
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
+    });
+    const items = [
+      item({
+        produtoUid: 'a',
+        precoDeVenda: 50,
+        quantidade: 1,
+        imposto: IMPOSTO_FORA_DO_TOTAL as never,
+      }),
+    ];
+    // A det-level vFrete on an excluded item breaks the indTot-conditioned
+    // Σ rule; with EVERY item excluded there is no coherent NF-e to emit.
+    expect(() => buildGeneratorInput(bundle, items, 7, 1, 'homologacao')).toThrow(
+      /nenhum item compõe o total/,
+    );
   });
 });

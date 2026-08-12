@@ -21,6 +21,16 @@ export { RECENCY_SORT } from './types';
 export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
+
+// The four LOCAL resilience fields shared by every failures-only inbound-webhook
+// notification collection. Exported so a NEW channel's schema can spread the same
+// block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
+export {
+  notificacaoResilienciaStatusSchema,
+  NOTIFICACAO_RESILIENCIA_STATUS,
+  notificationResilienceFields,
+  type NotificacaoResilienciaStatus,
+} from './shared/notificationResilience';
 // Re-export `nowMicros` so schema consumers (e.g. @delfrance/storage,
 // apps/functions) can stamp numeric-epoch fields without a direct @delfrance/core
 // dep. (The other epoch/coercion helpers are imported straight from
@@ -31,14 +41,13 @@ export { nowMicros } from '@delfrance/core/datetime';
 // data layer (which depends on schemas, not core directly) can detect changes.
 export { valuesEqual } from '@delfrance/core';
 
-export { auditEntrySchema, type AuditEntry } from './shared/audit';
-
 export {
   outerRefSchema,
   idRefSchema,
   docIdSchema,
   outerRefLooseSchema,
   toOuterRef,
+  toOuterRefOrNull,
   idFromRef,
   parseRef,
   type OuterRef,
@@ -53,20 +62,63 @@ export {
   clienteFormSchema,
   clienteMeta,
   tipoClienteSchema,
+  TIPO_CLIENTE,
   TIPO_CLIENTE_LABELS,
+  IE_SENTINELA,
+  normalizarIe,
   refineClienteTipoDocumento,
   type Cliente,
   type TipoCliente,
 } from './cliente';
+
+// The shared cliente-resolution DECISION (#786): telefone/e-mail are signals,
+// cpf_cnpj/idEstrangeiro are identity. Consumed by the web dedup screen and by
+// every unattended server importer, so the two can never drift apart again.
+// `normalizeDocumento` rides along for the same reason `valuesEqual` does above.
+export {
+  CLIENTE_MATCH_KEY,
+  CLIENTE_STRONG_KEYS,
+  CLIENTE_WEAK_KEYS,
+  emailLookupShapes,
+  idCompatible,
+  identityValue,
+  isSameCliente,
+  isSameEmail,
+  isSameTelefone,
+  normalizeDocumento,
+  normalizeNome,
+  sanitizeTelefone,
+  shouldUpdateName,
+  telefoneLookupShapes,
+  type ClienteIdentityKeys,
+  type ClienteMatchKey,
+  type ClienteResolveFields,
+} from './clienteIdentity';
 
 export {
   endereco,
   enderecoSchema,
   enderecoMeta,
   ufSchema,
+  UF_SIGLA,
   type Endereco,
   type UF,
 } from './endereco';
+
+export {
+  ENDERECO_FALLBACKS,
+  ENDERECO_PREFIXOS_MINIMO,
+  NFE_ENDERECO_LIMITES,
+  buildEnderecoForcado,
+  rawEnderecoInputSchema,
+  recoverEnderecoFromCep,
+  resolveUf,
+  sanitizeCep,
+  type EnderecoBuildOutcome,
+  type EnderecoForcado,
+  type EnderecoRecuperado,
+  type RawEnderecoInput,
+} from './enderecoBuilder';
 
 // All produto-owned schemas + logic live in ./produto, grouped by kind
 // (collections, embedded objects, pure logic, page model). Domains produto only
@@ -76,10 +128,14 @@ export * from './produto';
 export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 
 export {
+  ESTADO_FRETE,
   ESTADO_FRETE_LABELS,
   ESTADOS_FRETE_NAO_POSTADO,
+  ESTADOS_FRETE_PRE_AUTORIZACAO,
   FREIGHT_TIPO_CAPS,
+  INTEGRACAO_FRETE,
   INTEGRACAO_FRETE_LABELS,
+  MODALIDADE_FRETE,
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
   estadoFreteSchema,
@@ -87,7 +143,9 @@ export {
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
+  isFreteMarketplaceOwned,
   modalidadeFreteSchema,
+  podeAutorizarDespacho,
   reboqueSchema,
   transportadoraSchema,
   veiculoSchema,
@@ -132,6 +190,16 @@ export {
 // in ./pedido, grouped by kind like ./produto.
 export * from './pedido';
 
+export {
+  // `credenciaisMetodoPgto` is intentionally NOT exported as a DomainSchema and
+  // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
+  // store (mirrors `credenciaisIntegracao` / `certificadoSecreto`). Only its
+  // schema/meta/type are public.
+  credenciaisMetodoPgtoSchema,
+  credenciaisMetodoPgtoMeta,
+  type CredenciaisMetodoPgto,
+} from './credenciaisMetodoPgto';
+
 export { counter, counterSchema, counterMeta, type Counter } from './counter';
 
 export {
@@ -145,11 +213,13 @@ export {
   estadoConversaSchema,
   estadoEnvioMensagemSchema,
   tipoMensagemSchema,
+  ORIGEM_CONVERSA,
   ORIGEM_LABELS,
   ESTADO_CONVERSA,
   ESTADO_CONVERSA_LABELS,
   ESTADO_ENVIO,
   ESTADO_ENVIO_LABELS,
+  TIPO_MENSAGEM,
   TIPO_MENSAGEM_LABELS,
   podeReabrirConversa,
   type Conversa,
@@ -161,6 +231,13 @@ export {
 } from './conversa';
 
 export {
+  ORIGEM_RULES,
+  WHATSAPP_ANEXO_LIMITS,
+  type OrigemRule,
+  type WhatsappAnexoTipo,
+} from './conversaOrigem';
+
+export {
   integracao,
   integracaoSchema,
   integracaoMeta,
@@ -168,21 +245,168 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
+  // Shopee brand cache subcollection — a real DomainSchema, registered in
+  // ALL_DOMAINS, reusing the parent `integracao` permission bits.
+  brandShopee,
+  brandShopeeSchema,
+  brandShopeeMeta,
+  // WhatsApp weekly business-hours building blocks, used by `integracaoSchema`'s
+  // `horario_funcionamento` field.
+  horarioWhatsappSchema,
+  periodoWhatsappSchema,
+  // Legacy-exact codec for `Horario_Whatsapp.abertura`/`.fechamento` — the
+  // business-hours editor (#528) and the #529 `estaAberto` port MUST use these
+  // (never re-derive the ms by hand); byte-compatible with the Flutter wire.
+  encodeHorarioMs,
+  decodeHorarioMs,
   // `credenciaisIntegracao` is intentionally NOT exported as a DomainSchema and
   // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
   // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
   credenciaisIntegracaoSchema,
   credenciaisIntegracaoMeta,
-  // `tokenDuravel` is likewise admin-only / default-deny (Mercado Livre durable
-  // credential in the old Flutter wire shape, shared during dual-run) — not a
-  // DomainSchema, not in ALL_DOMAINS; only its schema/meta/type are public.
+  // ⚠️ `token6h` / `tokenDuravel` are the ONE exception to the deny-all rule
+  // above: the old Flutter Mercado Livre credential shapes, REGISTERED in
+  // ALL_DOMAINS so the generated ruleset keeps granting the still-running
+  // Flutter client the access its own ruleset gives it today. Time-boxed —
+  // #829 reverts them to the bare-constant deny-all shape.
+  token6h,
+  token6hSchema,
+  token6hMeta,
+  tokenDuravel,
   tokenDuravelSchema,
   tokenDuravelMeta,
+  // `credenciaisWhatsapp` mirrors `credenciaisIntegracao`: admin-only,
+  // default-deny WhatsApp permanent-token store — not a DomainSchema, not in
+  // ALL_DOMAINS; only its schema/meta/type are public.
+  credenciaisWhatsappSchema,
+  credenciaisWhatsappMeta,
   type Integracao,
   type IntegracaoTipo,
+  type BrandShopee,
+  type HorarioWhatsapp,
+  type PeriodoWhatsapp,
   type CredenciaisIntegracao,
+  type Token6h,
   type TokenDuravel,
+  type CredenciaisWhatsapp,
 } from './integracao';
+
+export {
+  // ⚠️ The inbound webhook log. Unlike its Mercado Pago / WhatsApp siblings this
+  // one IS registered in ALL_DOMAINS — dual-run parity with the legacy ruleset,
+  // reverted by #829. The new app reaches it only through the Admin SDK.
+  notificacaoMercadoLivre,
+  notificacaoStatusSchema,
+  notificacaoMercadoLivreSchema,
+  notificacaoMercadoLivreMeta,
+  notificacaoResourceId,
+  type NotificacaoStatus,
+  type NotificacaoMercadoLivre,
+} from './notificacaoMercadoLivre';
+
+export {
+  // ⚠️ DUAL-RUN ONLY (#829) — pre-sale ML questions, written exclusively by the
+  // legacy backend. Registered for literal parity with the legacy ruleset; the
+  // new app routes questions into `chat`/`mensagem` instead (#532, #533).
+  questionMercadoLivre,
+  questionMercadoLivreSchema,
+  questionMercadoLivreMeta,
+  statusQuestionMercadoLivreSchema,
+  STATUS_QUESTION_MERCADO_LIVRE,
+  statusAnswerMercadoLivreSchema,
+  STATUS_ANSWER_MERCADO_LIVRE,
+  answerMercadoLivreSchema,
+  fromMercadoLivreSchema,
+  phoneMercadoLivreSchema,
+  type QuestionMercadoLivre,
+  type StatusQuestionMercadoLivre,
+  type StatusAnswerMercadoLivre,
+  type AnswerMercadoLivre,
+  type FromMercadoLivre,
+  type PhoneMercadoLivre,
+} from './questionMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
+  // mirrors notificacaoMercadoLivre above (#531).
+  notificacaoMercadoPagoStatusSchema,
+  notificacaoMercadoPagoSchema,
+  type NotificacaoMercadoPagoStatus,
+  type NotificacaoMercadoPago,
+} from './notificacaoMercadoPago';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
+  // anúncios" mass-import job/checkpoint doc (#621).
+  importacaoMercadoLivreStatusSchema,
+  IMPORTACAO_MERCADO_LIVRE_STATUS,
+  massImportOptionsSchema,
+  massImportFailureSchema,
+  importacaoMercadoLivreSchema,
+  type ImportacaoMercadoLivreStatus,
+  type MassImportOptions,
+  type MassImportFailure,
+  type ImportacaoMercadoLivre,
+} from './importacaoMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the flag-gated order-backfill sweep (#360, Step 9 PR 4).
+  // Bare schema+meta (perms 0n), not a DomainSchema — see the NOTE at the
+  // bottom of backfillPedidosMercadoLivre.ts.
+  backfillPedidosMercadoLivreSchema,
+  backfillPedidosMercadoLivreMeta,
+  type BackfillPedidosMercadoLivre,
+} from './backfillPedidosMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // state doc for the flag-gated ML stock-sync sweeps (Step 10). Bare
+  // schema+meta (perms 0n), not a DomainSchema — see the NOTE at the bottom
+  // of estoqueMercadoLivreSync.ts.
+  estoqueMercadoLivreSyncSchema,
+  estoqueMercadoLivreSyncMeta,
+  type EstoqueMercadoLivreSync,
+} from './estoqueMercadoLivreSync';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the manual "Atualizar
+  // preços" bulk price-push job/checkpoint doc (Step 11 PR-C), mirrors
+  // importacaoMercadoLivre above.
+  envioPrecoMercadoLivreStatusSchema,
+  ENVIO_PRECO_MERCADO_LIVRE_STATUS,
+  envioPrecoFilaItemSchema,
+  envioPrecoSkipSchema,
+  envioPrecoFailureSchema,
+  envioPrecoMercadoLivreSchema,
+  type EnvioPrecoMercadoLivreStatus,
+  type EnvioPrecoFilaItem,
+  type EnvioPrecoSkip,
+  type EnvioPrecoFailure,
+  type EnvioPrecoMercadoLivre,
+} from './envioPrecoMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
+  // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
+  // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // arquivoOrphanSweepState.ts.
+  ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
+  arquivoOrphanSweepStateSchema,
+  arquivoOrphanSweepStateMeta,
+  type ArquivoOrphanSweepState,
+} from './arquivoOrphanSweepState';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
+  // mirrors notificacaoMercadoPago above (#527). Bare schema+meta (perms 0n),
+  // not a DomainSchema — see the NOTE at the bottom of notificacoesWhatsapp.ts.
+  notificacoesWhatsappStatusSchema,
+  notificacoesWhatsappSchema,
+  notificacoesWhatsappMeta,
+  type NotificacoesWhatsappStatus,
+  type NotificacoesWhatsapp,
+} from './notificacoesWhatsapp';
 
 export {
   cargo,
@@ -192,6 +416,16 @@ export {
   encodePermissoes,
   type Cargo,
 } from './cargo';
+export {
+  cmun,
+  cmunSchema,
+  cmunMeta,
+  cmunDocId,
+  origemCmunSchema,
+  ORIGEM_CMUN,
+  type Cmun,
+  type OrigemCmun,
+} from './cmun';
 
 export {
   usuario,
@@ -204,6 +438,37 @@ export {
 } from './usuario';
 
 export { deposito, depositoSchema, depositoMeta, type Deposito } from './deposito';
+
+export {
+  balanco,
+  balancoSchema,
+  balancoMeta,
+  movimentoBalanco,
+  movimentoBalancoSchema,
+  movimentoBalancoMeta,
+  relatorioBalanco,
+  relatorioBalancoSchema,
+  relatorioBalancoMeta,
+  itemRelatorioBalancoSchema,
+  finalizacaoBalancoSchema,
+  estadoBalancoSchema,
+  estadoBalanco,
+  balancoAceitaLancamento,
+  podeFinalizarBalanco,
+  relatorioBalancoShardId,
+  RELATORIO_BALANCO_SHARD_SIZE,
+  ESTADO_BALANCO,
+  ESTADO_BALANCO_VALUES,
+  ESTADO_BALANCO_LABELS,
+  ESTADO_BALANCO_VISIVEL_LABELS,
+  type Balanco,
+  type EstadoBalanco,
+  type EstadoBalancoVisivel,
+  type FinalizacaoBalanco,
+  type MovimentoBalanco,
+  type RelatorioBalanco,
+  type ItemRelatorioBalanco,
+} from './balanco';
 
 export {
   grupoDeVariacoes,
@@ -228,6 +493,16 @@ export {
 } from './tabelaDeMedidas';
 
 export {
+  mlSizeChartRowSchema,
+  mlSizeChartSchema,
+  mlSizeChartWriteSchema,
+  mlSizeChartsForContaSchema,
+  mlSizeChartsForConta,
+  type MlSizeChart,
+  type MlSizeChartRow,
+} from './tabelaDeMedidasMercadoLivre';
+
+export {
   listaDePrecos,
   listaDePrecosSchema,
   listaDePrecosMeta,
@@ -250,6 +525,9 @@ export {
   indIntermedOperacaoSchema,
   origemProdutoImpostoSchema,
   TIPO_NFE,
+  IND_PRES_OPERACAO,
+  IND_INTERMED_OPERACAO,
+  ORIGEM_PRODUTO_IMPOSTO,
   TIPO_NFE_LABELS,
   FIN_NFE_OPERACAO_LABELS,
   IND_PRES_OPERACAO_LABELS,
@@ -301,6 +579,9 @@ export {
   estadoNFeSchema,
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
+  ESTADOS_FINAIS_NFE,
+  isEstadoFinalNFe,
+  CHAVE_NFE_REGEX,
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';
@@ -311,6 +592,8 @@ export {
   nfeConfigMeta,
   ambienteNFEschema,
   contingenciaModoSchema,
+  AMBIENTE_NFE,
+  CONTINGENCIA_MODO,
   type NFeConfig,
   type AmbienteNFE,
   type ContingenciaModo,
@@ -379,6 +662,17 @@ export {
   indISSSchema,
   indIncentivoSchema,
   IPI_TRIB_CSTS,
+  // enum member constants
+  CRT,
+  CSOSN,
+  CST,
+  MOD_BC,
+  MOD_BCST,
+  ORIGEM,
+  CST_PIS_COFINS,
+  CST_IPI,
+  IND_ISS,
+  IND_INCENTIVO,
   // ICMS sub-configs (SN + Regime Normal)
   confICMSSN101Schema,
   confICMSSN201Schema,
@@ -407,6 +701,7 @@ export {
   configuracaoIBSCBSSchema,
   // canonical per-item Imposto
   impostoSchema,
+  normalizeNCM,
   // label maps
   CRT_LABELS,
   CSOSN_LABELS,
@@ -479,6 +774,7 @@ export {
   normalizeContentType,
   externalIdSchema,
   FILETYPE,
+  FILETYPE_VALUES,
   ARQUIVOS_COLLECTION,
   type Arquivo,
   type Filetype,
@@ -522,4 +818,10 @@ export {
   type Foto,
   type FotoRefs,
 } from './storage/foto';
-export { videoSchema, videoFormatoSchema, type Video, type VideoFormato } from './storage/video';
+export {
+  videoSchema,
+  videoFormatoSchema,
+  VIDEO_FORMATO,
+  type Video,
+  type VideoFormato,
+} from './storage/video';

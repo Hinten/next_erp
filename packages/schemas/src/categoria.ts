@@ -20,7 +20,7 @@ export const categoriaSchema = z.object({
   nomeCompleto: z.string().max(2000).nullable().default(null).describe('Nome completo'),
   permiteCadastro: z.boolean().default(true).describe('Permite cadastro'),
   categoriaGoogleId: z.string().nullable().default(null).describe('Google Product Category ID'),
-  categoriaPaiOuterRef: outerRefSchema.nullable().default(null),
+  categoriaPaiOuterRef: outerRefSchema.nullable().default(null).describe('Categoria pai'),
   // Milliseconds since epoch (numeric-epoch standard); reads tolerantly.
   timestamp: millisSinceEpoch().nullable().default(null),
   // System field — creation stays in `timestamp`; this is stamped by

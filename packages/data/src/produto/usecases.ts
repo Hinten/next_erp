@@ -1,9 +1,6 @@
 import {
-  diffPrecos,
   estoqueProdutoMeta,
   estoqueProdutoSchema,
-  historicoCustoMeta,
-  historicoPrecoMeta,
   impostoProdutoMeta,
   impostoProdutoSchema,
   makeEstoqueUid,
@@ -11,24 +8,32 @@ import {
   produtoExtraDataMeta,
   produtoExtraDataSchema,
   produtoMeta,
-  samePrecos,
   PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
   type ComponentesKit,
   type ImpostoProduto,
-  type PrecoChange,
-  type PrecosMap,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoWriteOp } from './port';
 
 // ---------------------------------------------------------------------------
 // Paths (derived from the schema metas so they can never drift from the rules)
+//
+// Price/cost history (`historicoDePrecos`/`historicoDeCusto`) and the
+// parent→children precos propagation used to live here (`buildPrecoHistoryOps`,
+// `recordPrecoHistory`, `buildCustoHistoryOp`, `recordCustoHistory`,
+// `propagatePrecosToChildren`, `applyPrecosChange`) — removed 2026-07-21. Both
+// are now server-owned by the `onProdutoChanged` Cloud Function trigger
+// (apps/functions), which fires on every produto write, diffs the changed
+// top-level fields against the previous doc into one unified
+// `historicoDeModificacoes` entry, and propagates precos to children (gated on
+// `paiId == null` and `propagatePriceToChildren`). There is no remaining
+// client-side history write; a newly created variation child's initial precos
+// deliberately gets no entry either (the trigger's `produtoExtraIgnores` drops
+// `precos` from the diff for any produto with a `paiId` set).
 // ---------------------------------------------------------------------------
 
 const PRODUTOS = produtoMeta.collectionPath; // produtos
-const HISTORICO_PRECO = historicoPrecoMeta.collectionPath; // produtos/{produtoId}/historicoDePrecos
-const HISTORICO_CUSTO = historicoCustoMeta.collectionPath; // produtos/{produtoId}/historicoDeCusto
 const EXTRA_DATA = produtoExtraDataMeta.collectionPath; // produtos/{produtoId}/extraData
 const ESTOQUE = estoqueProdutoMeta.collectionPath; // produtos/{produtoId}/estoques
 const IMPOSTO = impostoProdutoMeta.collectionPath; // produtos/{produtoId}/imposto
@@ -36,66 +41,6 @@ const IMPOSTO = impostoProdutoMeta.collectionPath; // produtos/{produtoId}/impos
 const produtoDocPath = (id: string) => `${PRODUTOS}/${id}`;
 const subDocPath = (template: string, produtoId: string, docId: string) =>
   `${template.replace('{produtoId}', produtoId)}/${docId}`;
-
-// ---------------------------------------------------------------------------
-// Price / cost history (Flutter `Produto.save()` history writes)
-// ---------------------------------------------------------------------------
-
-/**
- * Build one `historicoDePrecos` set-op per price change — mirror of the Flutter
- * history writes (`models.dart:2078-2130`). Wire shape: outerRef =
- * `documents/listaDePrecos/<id>` (`pathWithDocuments`), `valorOriginal` /
- * `valorFinal` explicitly null when absent, `timestamp` = ms epoch.
- */
-export function buildPrecoHistoryOps(
-  port: ProdutoDataPort,
-  produtoId: string,
-  changes: PrecoChange[],
-): ProdutoWriteOp[] {
-  const timestamp = port.now();
-  return changes.map((change) => ({
-    type: 'set',
-    path: subDocPath(HISTORICO_PRECO, produtoId, port.newId()),
-    data: {
-      listaDePrecoHistoricoOuterRef: `documents/listaDePrecos/${change.listaId}`,
-      valorOriginal: change.valorOriginal,
-      valorFinal: change.valorFinal,
-      timestamp,
-    },
-  }));
-}
-
-/** Build one `historicoDeCusto` set-op (`{ valor, timestamp: ms-epoch }`). */
-export function buildCustoHistoryOp(
-  port: ProdutoDataPort,
-  produtoId: string,
-  valor: number,
-): ProdutoWriteOp {
-  return {
-    type: 'set',
-    path: subDocPath(HISTORICO_CUSTO, produtoId, port.newId()),
-    data: { valor, timestamp: port.now() },
-  };
-}
-
-/** Record price-change history (no-op when there are no changes). */
-export async function recordPrecoHistory(
-  port: ProdutoDataPort,
-  produtoId: string,
-  changes: PrecoChange[],
-): Promise<void> {
-  if (changes.length === 0) return;
-  await port.commit(buildPrecoHistoryOps(port, produtoId, changes));
-}
-
-/** Record one cost-change history record. */
-export async function recordCustoHistory(
-  port: ProdutoDataPort,
-  produtoId: string,
-  valor: number,
-): Promise<void> {
-  await port.commit([buildCustoHistoryOp(port, produtoId, valor)]);
-}
 
 // ---------------------------------------------------------------------------
 // Produto extra data (Descrição + Google Merchant — the singleton subdocument)
@@ -191,44 +136,111 @@ export interface MovimentacaoInput {
   motivo: string | null;
 }
 
-/** The resolved movement: signed deltas (or absolutes for balanço) + audit record. */
+/**
+ * The estoque counters the movement lands ON TOP of. Optional for entrada/saída
+ * (their delta is known without reading anything, which is what keeps that path
+ * read-free — #387), **required for a balanço**, whose signed delta exists only
+ * relative to the value it replaces.
+ */
+export interface EstoqueAtual {
+  quantidade: number;
+  quantidadeReservada: number;
+}
+
+/** The resolved movement: what to write on the estoque doc + the audit record. */
 export interface MovimentacaoPlan {
   /** `true` for a balanço (absolute set) vs a regular increment movement. */
   ehBalanco: boolean;
   /** Entrada/saída: the signed delta to `increment`. Balanço: the absolute value. */
   quantidade: number;
+  /**
+   * Same split as `quantidade` — and on a **balanço** it is already clamped ≥ 0,
+   * so it always equals `historico.saldoReservada`: the plan describes exactly
+   * what lands on the doc, and the caller writes it verbatim. On entrada/saída
+   * it is a signed delta, so a negative value is correct and expected there.
+   */
   quantidadeReservada: number;
-  /** The `HistoricoEstoque` audit record to append (signed delta, Flutter parity). */
+  /**
+   * The `HistoricoEstoque` v2 record to append. `movimento` is a **signed delta
+   * on every row, balanço included** — the ledger has to stay summable (ADR
+   * 0014). `null` only when a balanço was planned without `atual`, which every
+   * caller should avoid; consumers read null as *unknown* and fail open.
+   */
   historico: {
-    ehBalanco: boolean | null;
-    quantidade: number;
-    quantidadeReservada: number;
+    movimento: number | null;
+    movimentoReservada: number | null;
+    saldo: number | null;
+    saldoReservada: number | null;
     motivo: string | null;
     timestamp: number;
   };
 }
 
 /**
- * Resolve a movement into signed quantities + its audit record — pure mirror of
+ * Resolve a movement into the estoque write + its audit record — pure mirror of
  * the Flutter `Estoque.movimentar` (`models.dart:4164`). Saída negates the
  * magnitudes (the delta the caller `increment`s); balanço passes them through as
- * the absolute counted values. The caller (client adapter) applies the
- * conflict-safe write: `increment` for entrada/saída (never overwrites the server
- * count), an absolute set for balanço — plus this `historico` record.
+ * the absolute counted values. The caller applies the conflict-safe write:
+ * `increment` for entrada/saída (never overwrites the server count), an absolute
+ * set for balanço — plus this `historico` record.
+ *
+ * ⚠️ `atual` is what makes a **balanço** summable: its `movimento` is
+ * `contado − atual`, so the caller must read the doc inside a transaction first.
+ * Entrada/saída need no read and pass `null`, so their `saldo` is null too —
+ * best-effort by design, not an omission.
+ *
+ * ⚠️ Known imprecision on the read-free path: `quantidadeReservada` is floored at
+ * 0 by the caller's follow-up transform, so a saída that would drive the
+ * reservation negative records the *requested* `movimentoReservada` rather than
+ * the effective one. Supplying `atual` removes the gap (the floor is applied
+ * here too); without it there is nothing to floor against.
  */
-export function planMovimentacao(input: MovimentacaoInput, now: number): MovimentacaoPlan {
+export function planMovimentacao(
+  input: MovimentacaoInput,
+  now: number,
+  atual: EstoqueAtual | null = null,
+): MovimentacaoPlan {
   const sign = input.tipo === 'saida' ? -1 : 1;
   const quantidade = sign * input.quantidade;
   const quantidadeReservada = sign * input.quantidadeReservada;
   const ehBalanco = input.tipo === 'balanco';
+
+  if (ehBalanco) {
+    // The absolute set the caller writes. Clamped ONCE, here, so the plan is
+    // self-consistent: for a balanço `quantidadeReservada` IS the value that
+    // lands on the doc, and it must equal the `saldoReservada` the ledger
+    // records. (Entrada/saída below stay unclamped — there the field is a
+    // signed delta the caller `increment`s, and a negative one is correct.)
+    const saldoReservada = Math.max(0, input.quantidadeReservada);
+    return {
+      ehBalanco,
+      quantidade: input.quantidade,
+      quantidadeReservada: saldoReservada,
+      historico: {
+        movimento: atual ? input.quantidade - atual.quantidade : null,
+        movimentoReservada: atual ? saldoReservada - atual.quantidadeReservada : null,
+        saldo: input.quantidade,
+        saldoReservada,
+        motivo: input.motivo,
+        timestamp: now,
+      },
+    };
+  }
+
+  const saldoReservada = atual
+    ? Math.max(0, atual.quantidadeReservada + quantidadeReservada)
+    : null;
   return {
     ehBalanco,
     quantidade,
     quantidadeReservada,
     historico: {
-      ehBalanco: ehBalanco ? true : null,
-      quantidade,
-      quantidadeReservada,
+      movimento: quantidade,
+      // With `atual` the floor is observable, so record the delta that actually
+      // applied; without it, the requested one is the best available answer.
+      movimentoReservada: atual ? saldoReservada! - atual.quantidadeReservada : quantidadeReservada,
+      saldo: atual ? atual.quantidade + quantidade : null,
+      saldoReservada,
       motivo: input.motivo,
       timestamp: now,
     },
@@ -457,50 +469,64 @@ export async function propagateKitStatusToChildren(
 }
 
 // ---------------------------------------------------------------------------
-// Child precos propagation (Flutter per-child `updateOnly`, NO history)
+// Cross-document kit-guard input resolution (agent/MCP save path — #479)
+//
+// `produtoPageIssues` (packages/schemas pageModel) guards two cross-document kit
+// invariants via inputs the React editar page fills from the UI: `componentKitIds`
+// (kit-of-kit, #239 — the KitManager picker excludes kits) and `parentIsKit`
+// (child-of-kit-parent, #298 — a page-level `paiId` lookup). A non-UI save path
+// (agent/MCP) has neither, so it resolves the same two inputs itself by reading
+// each component's `ehKit` and the parent's `ehKit`.
 // ---------------------------------------------------------------------------
 
-/**
- * Refresh the `precos` of every existing variation child whose map differs
- * from the parent's value — Flutter's `produtoTableProvider.dart:556-568`.
- * Pedidos resolve the price on the SOLD child doc, so a stale child would sell
- * at the old price. Returns the ids that were updated.
- *
- * (The adapter forces the children read to the server — a cache-served read on
- * a freshly navigated editor can be cold and silently skip the propagation.)
- */
-export async function propagatePrecosToChildren(
-  port: ProdutoDataPort,
-  parentId: string,
-  precos: PrecosMap,
-): Promise<string[]> {
-  const children = await port.getChildren(parentId);
-  const stale = children.filter((c) => !samePrecos(c.precos, precos));
-  if (stale.length === 0) return [];
-  await port.commit(
-    stale.map((c) => ({
-      type: 'update',
-      path: produtoDocPath(c.id),
-      data: { precos: precos ?? null },
-    })),
-  );
-  return stale.map((c) => c.id);
+/** The cross-document kit inputs the PageModel guards need, resolved from docs. */
+export interface ResolvedKitGuards {
+  /**
+   * Ids among `componentesKit` whose produto is itself a kit (`ehKit === true`) —
+   * a forbidden kit-of-kit (#239). Empty when no component is a kit.
+   */
+  componentKitIds: string[];
+  /**
+   * The parent's `ehKit` when this produto is a variation child (has a `paiId`).
+   * `null` when it has no `paiId` — a top-level produto resolves as absent, never
+   * `false`, so the child-of-kit-parent guard (#298) doesn't misfire on a parent.
+   */
+  parentIsKit: boolean | null;
 }
 
 /**
- * Diff old→new precos, record the history, and — when the map changed —
- * propagate it to the variation children. The composite the editor's
- * `onAfterSave` and a future agent both call. Returns whether anything changed.
+ * Resolve the two cross-document kit inputs (`componentKitIds`, `parentIsKit`)
+ * that {@link ProdutoPageValidationInput} carries, for a picker-less save path
+ * (agent/MCP). Reads each `componentesKit` key's `ehKit` and — when `paiId` is
+ * set — the parent doc's `ehKit`, in one batched {@link ProdutoDataPort.getKitFlags}.
+ *
+ * A component or parent id that doesn't resolve to a produto is treated as a
+ * non-kit (absent from `componentKitIds`; a set-but-missing `paiId` resolves
+ * `parentIsKit` false). A produto with no `paiId` resolves `parentIsKit` as
+ * `null`. No fetch happens when there are no components and no `paiId`.
  */
-export async function applyPrecosChange(
+export async function resolveKitGuardInputs(
   port: ProdutoDataPort,
-  args: { produtoId: string; oldPrecos: PrecosMap; newPrecos: PrecosMap },
-): Promise<{ changed: boolean }> {
-  const changes = diffPrecos(args.oldPrecos, args.newPrecos);
-  if (changes.length === 0) return { changed: false };
-  await recordPrecoHistory(port, args.produtoId, changes);
-  await propagatePrecosToChildren(port, args.produtoId, args.newPrecos);
-  return { changed: true };
+  args: { componentesKit?: ComponentesKit | null; paiId?: string | null },
+): Promise<ResolvedKitGuards> {
+  // A component id / paiId is a produto doc id, so drop any empty string: it's
+  // never a real produto, and it would be an invalid Firestore doc reference
+  // (`doc(db, 'produtos', '')` throws) — treat it as a non-kit, not a crash.
+  const componentIds = Object.keys(args.componentesKit ?? {}).filter((id) => id !== '');
+  // `|| null` (not `?? null`): a top-level produto's "no parent" may arrive as
+  // null OR an empty string; both must resolve `parentIsKit` to null (absent),
+  // never false — the guard (#298) must not misfire on a parent produto.
+  const paiId = args.paiId || null;
+  if (componentIds.length === 0 && paiId === null) {
+    return { componentKitIds: [], parentIsKit: null };
+  }
+  const ids = [...new Set([...componentIds, ...(paiId !== null ? [paiId] : [])])];
+  const flags = await port.getKitFlags(ids);
+  const ehKitById = new Map(flags.map((f) => [f.id, f.ehKit] as const));
+  return {
+    componentKitIds: componentIds.filter((id) => ehKitById.get(id) === true),
+    parentIsKit: paiId === null ? null : ehKitById.get(paiId) === true,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -514,11 +540,11 @@ const GUARD_PROBE_CONCURRENCY = 4;
 export const MARKETPLACE_CHANNEL_LABELS: Record<string, string> = {
   produtoMercadoLivre: 'Mercado Livre',
   variacaoMercadoLivre: 'Mercado Livre',
-  produtoshopee: 'Shopee',
-  variacaoshopee: 'Shopee',
-  produtomagalu: 'Magalu',
-  produtoamazon: 'Amazon',
-  produtointegrada: 'Loja Integrada',
+  prodshopee: 'Shopee',
+  variashopee: 'Shopee',
+  produtoMagalu2: 'Magalu',
+  prodAmazon: 'Amazon',
+  produtolojaintegrada: 'Loja Integrada',
 };
 
 /** Inbound references that make a produto unsafe to delete. */

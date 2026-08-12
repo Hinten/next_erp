@@ -1,0 +1,40 @@
+{
+  "name": "@delfrance/whatsapp-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e ../../.env.local -- next dev --port 3008",
+    "build": "dotenv -e ../../.env.local -- next build",
+    "start": "dotenv -e ../../.env.local -- next start --port 3008",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf .next .turbo dist coverage"
+  },
+  "dependencies": {
+    "@delfrance/auth": "workspace:*",
+    "@delfrance/core": "workspace:*",
+    "@delfrance/data": "workspace:*",
+    "@delfrance/integrations-whatsapp-cloud-api": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
+    "@delfrance/storage": "workspace:*",
+    "firebase-admin": "catalog:",
+    "firebase-functions": "catalog:",
+    "next": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "esbuild": "catalog:",
+    "eslint": "catalog:",
+    "eslint-config-next": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

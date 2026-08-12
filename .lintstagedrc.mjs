@@ -6,15 +6,43 @@ const ROOT = process.cwd();
 // Workspaces that ship their own ESLint flat config. ESLint 9 flat config is
 // resolved from the CWD, so a single `eslint` invoked at the repo root would
 // NOT pick up these per-package configs — each staged file has to be linted
-// with the CWD set to its owning workspace. Sorted longest-first so the more
-// specific `packages/integrations/nfe` matches before any shorter prefix.
+// with the CWD set to its owning workspace. Every workspace except apps/docs
+// and packages/config-tsconfig; --max-warnings 0 + pre-existing warns = deliberate ratchet.
+// Sorted longest-first so the more specific `packages/integrations/nfe` matches
+// before any shorter prefix.
 const ESLINT_WORKSPACES = [
   'apps/web',
   'apps/integrations',
   'apps/nfe',
   'apps/webchat',
+  'apps/melhor-envio',
+  'apps/mercado-livre',
+  'apps/mercado-pago',
+  'apps/whatsapp',
+  'apps/functions',
+  'apps/example',
+  'packages/schemas',
+  'packages/auth',
+  'packages/core',
+  'packages/data',
+  'packages/plugin-sdk',
+  'packages/rules-gen',
+  'packages/storage',
+  'packages/ui',
+  'packages/config-eslint',
+  'packages/config-vitest',
   'packages/integrations/nfe',
   'packages/integrations/freight-br',
+  'packages/integrations/mercado-livre',
+  'packages/integrations/mercado-pago',
+  'packages/integrations/whatsapp-cloud-api',
+  'packages/integrations/amazon-sp-api',
+  'packages/integrations/facebook',
+  'packages/integrations/loja-integrada',
+  'packages/integrations/magalu',
+  'packages/integrations/shopee',
+  'tools/migrations',
+  'tools/test-fixtures',
 ].sort((a, b) => b.length - a.length);
 
 const CODE_RE = /\.(ts|tsx|mts|cts)$/;
@@ -36,8 +64,8 @@ export default function lintStaged(stagedFiles) {
   }
 
   // 2) ESLint --fix, grouped by owning workspace. Code files that live outside
-  //    any ESLint-config workspace (e.g. packages/schemas) have no config to
-  //    run against, so they get Prettier only.
+  //    any ESLint-config workspace (e.g. packages/core, packages/ui) have no
+  //    config to run against, so they get Prettier only.
   const byWorkspace = new Map();
   for (const abs of stagedFiles) {
     if (!CODE_RE.test(abs)) continue;

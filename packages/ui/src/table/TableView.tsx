@@ -1,6 +1,6 @@
 'use client';
 
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useLocalStorage } from '@mantine/hooks';
 import {
@@ -27,7 +27,9 @@ import {
   buildQuery,
   limit as fsLimit,
   orderByField,
+  whereArrayContains,
   whereEqual,
+  whereOp,
 } from '@delfrance/data';
 import type { CollectionMetadata } from '@delfrance/schemas';
 import {
@@ -105,6 +107,17 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   virtualColumns?: ReadonlyArray<VirtualColumn<z.infer<S>>>;
 
   actions?: Array<ActionConfig<z.infer<S>>>;
+  /**
+   * How the ActionBar lays out bulk actions — forwarded to `ActionBar`.
+   * Defaults to `'auto'` (inline until `overflowThreshold`, then overflow menu).
+   */
+  actionsLayout?: import('./ActionBar').ActionsLayout;
+  /**
+   * With `actionsLayout: 'auto'`, collapse into the overflow menu once the
+   * action count exceeds this. Default 3. Raise it on screens with more
+   * bulk actions so e2e/users still see labeled buttons (e.g. /pedidos).
+   */
+  overflowThreshold?: number;
   selectable?: boolean;
 
   /**
@@ -166,6 +179,20 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   orderBy?: { field: string; direction?: 'asc' | 'desc' };
 
   /**
+   * Page-owned server-side filters, AND-combined with the `meta.defaultQuery`
+   * base filters and the user's column filters (applied in that order: base,
+   * extra, column). Unlike column filters they carry no filter UI and never
+   * round-trip through the URL — the page computes them (e.g. a resolved
+   * chave list for an `array-contains-any`). An `array-contains-any` entry
+   * whose value is an EMPTY array short-circuits to an empty result set
+   * WITHOUT querying (an empty candidate list means "no rows"). An array
+   * value on any OTHER op is a programmer error and throws (same guard as
+   * `buildPipeline`) rather than silently rendering an empty table. Ignored
+   * under `queryOverride` — that query is caller-owned.
+   */
+  extraFilters?: ReadonlyArray<PipelineFieldFilter>;
+
+  /**
    * Escape hatch: pass a custom `Query` (e.g. with composite filters the
    * Pipelines wrapper doesn't cover). When set, search/orderBy/pageSize and
    * `meta.defaultQuery` are ignored — the caller owns the query lifecycle.
@@ -179,9 +206,27 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * `actions` move into the panel, still acting on the current selection
    * (the same actions in two places would mean two confirm modals). The
    * panel collapses to a slim rail; the collapsed state persists per
-   * collection in localStorage.
+   * collection in localStorage. `width` widens the expanded rail past its
+   * 220px default, for panels that host more than buttons (see
+   * `renderActionsPanelExtra`).
    */
-  actionsPanel?: boolean | { defaultCollapsed?: boolean };
+  actionsPanel?: boolean | { defaultCollapsed?: boolean; width?: number };
+  /**
+   * Extra content rendered inside the `actionsPanel`, below the buttons —
+   * e.g. the live progress of a job the buttons started. Ignored when
+   * `actionsPanel` is off. A render prop (same idiom as `renderNewButton`),
+   * so the content is a component element and may own hooks. `collapsed`
+   * lets the caller shrink to a badge on the slim rail instead of vanishing.
+   */
+  renderActionsPanelExtra?: (ctx: { collapsed: boolean }) => ReactNode;
+
+  /**
+   * Called whenever the checked row set changes (and once with `[]` on
+   * mount). Lets a page react to the selection outside an action — e.g. to
+   * look up per-row state the panel then renders. Purely observational:
+   * TableView owns the selection either way.
+   */
+  onSelectionChange?: (rows: SnapshotRow<z.infer<S>>[]) => void;
 }
 
 /**
@@ -200,6 +245,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   fields: fieldOverrides = {},
   virtualColumns = [],
   actions = [],
+  actionsLayout,
+  overflowThreshold,
   selectable = false,
   copyHref,
   monitorField,
@@ -212,8 +259,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   queryParams,
   pageSize,
   orderBy,
+  extraFilters,
   queryOverride,
   actionsPanel,
+  renderActionsPanelExtra,
+  onSelectionChange,
 }: TableViewProps<S>) {
   // Derive once per schema identity.
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
@@ -240,7 +290,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const columnsStorageKey = useMemo(
     () => `delfrance:tableview:columns:${collection.resolvePath(pathContext)}`,
     // pathContext is identity-tracked like the rest of the data layer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [collection],
   );
 
@@ -258,7 +307,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const panelStorageKey = useMemo(
     () => `delfrance:tableview:actionspanel:${collection.resolvePath(pathContext)}`,
     // pathContext is identity-tracked like the rest of the data layer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [collection],
   );
   const [panelCollapsed, setPanelCollapsed] = useLocalStorage<boolean>({
@@ -266,6 +314,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     defaultValue:
       typeof actionsPanel === 'object' ? (actionsPanel.defaultCollapsed ?? false) : false,
   });
+  const panelWidth = typeof actionsPanel === 'object' ? actionsPanel.width : undefined;
 
   const visibleKeys = useMemo(() => new Set(visibleKeysArr), [visibleKeysArr]);
 
@@ -364,7 +413,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     return null;
     // filtersSerial stands in for `filters`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subLookupFields, filtersSerial]);
 
   const subLookup = useSubcollectionIdLookup(db, subLookupSpec);
@@ -382,7 +430,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const serverFilters = useMemo<Record<string, ColumnFilterValue>>(() => {
     if (subLookupKeys.size === 0) return filters;
     return Object.fromEntries(Object.entries(filters).filter(([k]) => !subLookupKeys.has(k)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersSerial, subLookupKeys]);
   const serverFiltersSerial = useMemo(
     () =>
@@ -419,9 +466,23 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     });
     // queryParamsSerial stands in for queryParams; defaultQuery is identity-
     // tracked like meta itself.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultQuery, queryParamsSerial]);
   const baseFiltersSerial = useMemo(() => JSON.stringify(baseFilters), [baseFilters]);
+
+  // Page-owned extra filters (see the prop jsdoc). Serialized for memo deps
+  // so callers needn't memoize the array. An `array-contains-any` entry whose
+  // candidate list resolved to nothing means "no rows" — short-circuit instead
+  // of querying, mirroring `lookupEmpty`. Scoped to that op on purpose: an
+  // empty array on any other op is a programmer error that must reach the
+  // `buildPipeline` guard (or the fallback guard below) and throw, not render
+  // an empty table. Under `queryOverride` the extras (and the short-circuit)
+  // don't apply: that query is caller-owned.
+  const extraFiltersSerial = useMemo(() => JSON.stringify(extraFilters ?? null), [extraFilters]);
+  const extraEmpty =
+    !queryOverride &&
+    (extraFilters ?? []).some(
+      (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
+    );
 
   // Sort actually issued to Firestore: an explicit user/prop sort wins;
   // otherwise the declared default `orderBy` (full array — supports multi-key
@@ -432,7 +493,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       return defaultQuery.orderBy.map((o) => ({ field: o.field, direction: o.direction }));
     }
     return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sort?.field, sort?.direction, defaultQuery]);
   // Column the header arrow points at when the user hasn't sorted yet.
   const displaySort: SortState | undefined =
@@ -479,14 +539,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // A subcollection-lookup filter is active but still resolving, or it
     // resolved to zero parent ids — either way don't query the collection.
     if (lookupLoading || lookupEmpty) return null;
+    // An extraFilters entry carries an empty candidate list → no rows; don't
+    // query at all (buildPipeline would throw on the empty list).
+    if (extraEmpty) return null;
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
-        // Base equality filters (from meta.defaultQuery) AND the user's
-        // per-column filters (minus subcollection-lookup keys, applied via
-        // `idIn`). Base first so it reads like the declared query.
+        // Base equality filters (from meta.defaultQuery), the page-owned
+        // extraFilters, AND the user's per-column filters (minus
+        // subcollection-lookup keys, applied via `idIn`). Base first so it
+        // reads like the declared query.
         filters: [
           ...baseFilters,
+          ...(extraFilters ?? []),
           ...Object.entries(serverFilters).map(([field, v]) => ({ field, ...v })),
         ],
         // Constrain to the parent ids a subcollection lookup resolved (NF
@@ -508,7 +573,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     db,
     collection,
@@ -516,6 +580,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
+    extraFiltersSerial,
+    extraEmpty,
     serverFiltersSerial,
     idInSerial,
     lookupLoading,
@@ -530,15 +596,61 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // A subcollection lookup resolves via `idIn` (pipeline-only). On the classic
     // fallback we can't honor it, so render nothing rather than the whole list.
     if (lookupActive) return null;
+    // Same short-circuit as the pipeline path: an empty extra-filter
+    // candidate list means "no rows" — don't build a query.
+    if (extraEmpty) return null;
     const base = collection.ref(db, pathContext);
     const constraints = [];
     // Base equality filters first (same as the pipeline path) — these must
     // never be dropped. equality + orderBy is a legal classic query.
     for (const f of baseFilters) constraints.push(whereEqual(f.field, f.value));
+    // Page-owned extraFilters stay server-side on the classic path too. The
+    // pipeline-only ops degrade: `array-contains-any` maps to the classic
+    // operator, which caps the candidate list at 30 values (Firestore limit —
+    // callers must truncate); `contains`/`startsWith` have no classic
+    // equivalent, so extra filters using them are pipeline-only by contract.
+    for (const f of extraFilters ?? []) {
+      // Mirror `buildPipeline`'s guard: only `array-contains-any` takes a
+      // list. Surfacing the error beats silently querying nonsense.
+      if (f.op !== 'array-contains-any' && Array.isArray(f.value)) {
+        throw new Error(
+          `TableView: extraFilters op "${f.op}" on "${f.field}" received an array ` +
+            `value; only "array-contains-any" accepts a list.`,
+        );
+      }
+      switch (f.op) {
+        case 'eq':
+          constraints.push(whereEqual(f.field, f.value));
+          break;
+        case 'lt':
+          constraints.push(whereOp(f.field, '<', f.value));
+          break;
+        case 'lte':
+          constraints.push(whereOp(f.field, '<=', f.value));
+          break;
+        case 'gt':
+          constraints.push(whereOp(f.field, '>', f.value));
+          break;
+        case 'gte':
+          constraints.push(whereOp(f.field, '>=', f.value));
+          break;
+        case 'array-contains':
+          constraints.push(whereArrayContains(f.field, f.value));
+          break;
+        case 'array-contains-any':
+          constraints.push(whereOp(f.field, 'array-contains-any', f.value));
+          break;
+        case 'contains':
+        case 'startsWith':
+          throw new Error(
+            `TableView: extraFilters op "${f.op}" on "${f.field}" is pipeline-only ` +
+              `and has no classic-query fallback.`,
+          );
+      }
+    }
     for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
     constraints.push(fsLimit(effectiveLimit));
     return buildQuery(base, constraints);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     db,
     collection,
@@ -548,6 +660,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
+    extraFiltersSerial,
+    extraEmpty,
     refreshKey,
   ]);
 
@@ -562,14 +676,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
   const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
     () => {
-      // A subcollection lookup that matched nothing → no rows (no query ran).
-      if (lookupEmpty) return [];
+      // A subcollection lookup that matched nothing, or an extra filter with
+      // an empty candidate list → no rows (no query ran).
+      if (lookupEmpty || extraEmpty) return [];
       if (pipeline || !snap.data) return snap.data;
       return applyColumnFilters(snap.data, serverFilters);
     },
     // serverFiltersSerial stands in for the `serverFilters` object content.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pipeline, snap.data, serverFiltersSerial, lookupEmpty],
+    [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
   );
 
   // Collapse "Carregar mais" back to one page whenever the query shape changes
@@ -577,8 +691,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // makes sense for the result set the user was looking at.
   useEffect(() => {
     setPages(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersSerial, baseFiltersSerial, queryParamsSerial, sort?.field, sort?.direction]);
+  }, [
+    filtersSerial,
+    baseFiltersSerial,
+    extraFiltersSerial,
+    queryParamsSerial,
+    sort?.field,
+    sort?.direction,
+  ]);
 
   // Drop selected ids that left the current row set (filter change, refresh,
   // delete in another tab) so bulk actions and the header checkbox never act
@@ -668,6 +788,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [rows, selected],
   );
 
+  // Notify on the selected ID SET, never on `selectedRows`: that memo is
+  // re-derived on every snapshot tick, so depending on it would re-fire the
+  // callback for unrelated row updates. Both the rows and the callback are
+  // read through a latest-ref so a consumer passing an inline arrow (the
+  // normal case) doesn't turn "set state from the callback" into a loop.
+  const selectionNotifyRef = useRef<{
+    rows: SnapshotRow<z.infer<S>>[];
+    cb: TableViewProps<S>['onSelectionChange'];
+  }>({ rows: selectedRows, cb: onSelectionChange });
+  useEffect(() => {
+    selectionNotifyRef.current = { rows: selectedRows, cb: onSelectionChange };
+  });
+  useEffect(() => {
+    selectionNotifyRef.current.cb?.(selectionNotifyRef.current.rows);
+  }, [selected]);
+
   // Update-monitor field: explicit prop wins; otherwise prefer a
   // last-modified field, then the creation timestamp.
   const resolvedMonitorField = useMemo<string | null>(() => {
@@ -741,9 +877,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 <ActionBar
                   actions={actions}
                   selectedRows={selectedRows}
+                  visibleRows={rows ?? []}
                   newHref={newHref}
                   renderNewButton={renderNewButton}
                   copyHref={copyHref}
+                  actionsLayout={actionsLayout}
+                  overflowThreshold={overflowThreshold}
                   onActionComplete={() => {
                     setSelected(new Set());
                     setRefreshKey((k) => k + 1);
@@ -955,6 +1094,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           <ActionSidePanel
             actions={actions}
             selectedRows={selectedRows}
+            visibleRows={rows ?? []}
             newHref={newHref}
             renderNewButton={renderNewButton}
             copyHref={copyHref}
@@ -964,6 +1104,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             }}
             collapsed={panelCollapsed}
             onToggleCollapsed={() => setPanelCollapsed((c) => !c)}
+            width={panelWidth}
+            extra={renderActionsPanelExtra?.({ collapsed: panelCollapsed })}
           />
         )}
       </Group>

@@ -49,6 +49,11 @@ ruleTester.run('no-ad-hoc-money-rounding', rule, {
       code: `export const toCents = (n) => Math.round(n * 100);`,
       filename: '/repo/apps/web/lib/nfe/export/csv.ts',
     },
+    {
+      name: 'test-fixtures debug-me-cart.ts mirrors the ME wire-format serializer',
+      code: `export const toCents = (n) => Math.round(n * 100);`,
+      filename: '/repo/tools/test-fixtures/src/debug-me-cart.ts',
+    },
   ],
   invalid: [
     {

@@ -46,6 +46,23 @@ export const FIN_NFE_OPERACAO_LABELS: Record<FinNFeOperacao, string> = {
 export const indPresOperacaoSchema = z.enum(['0', '1', '2', '3', '4', '5', '9']);
 export type IndPresOperacao = z.infer<typeof indPresOperacaoSchema>;
 
+/**
+ * Named members of {@link indPresOperacaoSchema}; names from
+ * {@link IND_PRES_OPERACAO_LABELS}.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const IND_PRES_OPERACAO = {
+  naoSeAplica: '0',
+  presencial: '1',
+  naoPresencialInternet: '2',
+  naoPresencialTeleatendimento: '3',
+  nfceConsumidorFinal: '4',
+  presencialForaEstabelecimento: '5',
+  naoPresencialOutros: '9',
+} as const satisfies Record<string, IndPresOperacao>;
+
 export const IND_PRES_OPERACAO_LABELS: Record<IndPresOperacao, string> = {
   '0': 'Não se aplica',
   '1': 'Operação presencial',
@@ -62,6 +79,15 @@ export const IND_PRES_OPERACAO_LABELS: Record<IndPresOperacao, string> = {
 export const indIntermedOperacaoSchema = z.enum(['0', '1']);
 export type IndIntermedOperacao = z.infer<typeof indIntermedOperacaoSchema>;
 
+/**
+ * Named members of {@link indIntermedOperacaoSchema}; names from
+ * {@link IND_INTERMED_OPERACAO_LABELS}.
+ */
+export const IND_INTERMED_OPERACAO = {
+  semIntermediador: '0',
+  plataformaTerceiros: '1',
+} as const satisfies Record<string, IndIntermedOperacao>;
+
 export const IND_INTERMED_OPERACAO_LABELS: Record<IndIntermedOperacao, string> = {
   '0': 'Operação sem intermediador',
   '1': 'Operação em site/plataforma de terceiros',
@@ -72,6 +98,27 @@ export const IND_INTERMED_OPERACAO_LABELS: Record<IndIntermedOperacao, string> =
  */
 export const origemProdutoImpostoSchema = z.enum(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
 export type OrigemProdutoImposto = z.infer<typeof origemProdutoImpostoSchema>;
+
+/**
+ * Named members of {@link origemProdutoImpostoSchema} — the SEFAZ "origem da
+ * mercadoria" table, same names as `ORIGEM` in `imposto/tribute.ts`.
+ *
+ * This enum and `Origem` are the same concept declared twice, with an identical
+ * member set. `prefer-schema-enum` keeps them straight by name — `imposto.origem`
+ * resolves to `ORIGEM`, this field to `ORIGEM_PRODUTO_IMPOSTO` — so both are
+ * enforced. Collapsing the duplicate is still worth doing on its own merits.
+ */
+export const ORIGEM_PRODUTO_IMPOSTO = {
+  nacional: '0',
+  estrangeiraImportacaoDireta: '1',
+  estrangeiraMercadoInterno: '2',
+  nacionalConteudoImportacaoAte70: '3',
+  nacionalProcessoProdutivoBasico: '4',
+  nacionalConteudoImportacaoAte40: '5',
+  estrangeiraImportacaoDiretaSemSimilar: '6',
+  estrangeiraMercadoInternoSemSimilar: '7',
+  nacionalConteudoImportacaoAcima70: '8',
+} as const satisfies Record<string, OrigemProdutoImposto>;
 
 /**
  * Operacao — operação fiscal (CFOPs, configurações tributárias). Mirrors
@@ -97,8 +144,8 @@ export const operacaoSchema = z.object({
   ehFiscal: z.boolean().default(true),
 
   finNFe: finNFeOperacaoSchema.nullable().optional(),
-  indPres: indPresOperacaoSchema.default('2'),
-  indIntermed: indIntermedOperacaoSchema.default('1'),
+  indPres: indPresOperacaoSchema.default(IND_PRES_OPERACAO.naoPresencialInternet),
+  indIntermed: indIntermedOperacaoSchema.default(IND_INTERMED_OPERACAO.plataformaTerceiros),
 
   cfop: z.string().nullable(),
   cfopInterestadual: z.string().nullable(),
@@ -116,7 +163,10 @@ export const operacaoSchema = z.object({
 
   infCpl: z.string().max(5000).nullable(),
 
+  // System stamps — create-only `timestamp` (nullish coalesce) and
+  // `ultimaModificacao` on every write; both stamped by `saveRecord`.
   timestamp: millisSinceEpoch().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type Operacao = z.infer<typeof operacaoSchema>;

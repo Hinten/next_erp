@@ -22,6 +22,7 @@ describe('usuarioSchema', () => {
       isSuperUser: false,
       jaFoiColaborador: false,
       jaFoiSuperUser: false,
+      externalId: null,
     });
   });
 
@@ -41,6 +42,41 @@ describe('usuarioSchema', () => {
         email: 'ana@example.com',
       }).success,
     ).toBe(false);
+  });
+
+  it('defaults email to null when absent', () => {
+    const out = usuarioSchema.parse({ nome: 'Sem Email' });
+    expect(out.email).toBeNull();
+  });
+
+  it('parses a sem-auth external-channel contact: externalId set, email null', () => {
+    // Mirrors the WhatsApp discover_user port (#527): a chat participant that
+    // never authenticates via Firebase Auth, identified only by the
+    // sha256('<canal>-<externalId>') hash.
+    const out = usuarioSchema.parse({
+      nome: 'Cliente WhatsApp',
+      email: null,
+      externalId: 'a3f8...deadbeef',
+    });
+    expect(out.email).toBeNull();
+    expect(out.externalId).toBe('a3f8...deadbeef');
+  });
+
+  it('defaults apelido to null when absent', () => {
+    const out = usuarioSchema.parse({ nome: 'Sem Apelido' });
+    expect(out.apelido).toBeNull();
+  });
+
+  it('round-trips apelido — the ML buyer nickname on a sem-auth contact', () => {
+    // The ML claims import (Step 14) stores the buyer's site nickname here.
+    const out = usuarioSchema.parse({
+      nome: 'Cliente Mercado Livre',
+      apelido: 'COMPRADOR123',
+      email: null,
+      externalId: '92ba...5014',
+    });
+    expect(out.apelido).toBe('COMPRADOR123');
+    expect(usuarioSchema.parse(out).apelido).toBe('COMPRADOR123');
   });
 });
 

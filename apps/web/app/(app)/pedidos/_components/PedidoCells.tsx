@@ -30,16 +30,15 @@ import {
   type Pedido,
   TIPO_CLIENTE_LABELS,
   type TipoCliente,
+  freightCapsFor,
   pedidoTotal,
 } from '@delfrance/schemas';
 import { microsToMillis } from '@delfrance/core/datetime';
 import { formatReais } from '@delfrance/core/money';
 import {
-  ActionIcon,
   Anchor,
   Badge,
   Button,
-  CopyButton,
   Group,
   HoverCard,
   type MantineColor,
@@ -48,8 +47,9 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconBan, IconCheck, IconCopy, IconFileDownload, IconFileText } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconFileDownload, IconFileText } from '@tabler/icons-react';
 
+import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -96,20 +96,6 @@ const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
   [ESTADO_NFE.numeracaoInutilizada]: 'gray',
   [ESTADO_NFE.error]: 'red',
 };
-
-function CopyIconButton({ value, label }: { value: string; label: string }) {
-  return (
-    <CopyButton value={value} timeout={1500}>
-      {({ copied, copy }) => (
-        <Tooltip label={copied ? 'Copiado!' : label} withArrow withinPortal position="top">
-          <ActionIcon variant="subtle" color="gray" size="sm" onClick={copy} aria-label={label}>
-            {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
-          </ActionIcon>
-        </Tooltip>
-      )}
-    </CopyButton>
-  );
-}
 
 export function NFCell({ pedidoId }: { pedidoId: string }) {
   const db = getFirebaseFirestore();
@@ -411,9 +397,15 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
   const label = ESTADO_FRETE_LABELS[estado] ?? estado;
 
   // Show the etiqueta HoverCard when there's something to act on — a bought
-  // label (reprint/track) or a selected quote (buy). Otherwise keep the
-  // lightweight tracking tooltip.
-  const hasEtiquetaAction = frete?.printLabelId != null || frete?.externalOptionId != null;
+  // label (reprint/track), a selected quote (buy), or a fetch-label
+  // marketplace frete (real ML pedidos carry NEITHER printLabelId nor
+  // externalOptionId — only externalOptionIntegracao identifies them).
+  // Otherwise keep the lightweight tracking tooltip.
+  const canFetchLabel =
+    frete?.externalOptionIntegracao != null &&
+    freightCapsFor(frete.externalOptionIntegracao).canFetchLabel;
+  const hasEtiquetaAction =
+    frete?.printLabelId != null || frete?.externalOptionId != null || canFetchLabel;
   if (!hasEtiquetaAction) {
     const tooltipParts: string[] = [];
     if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);

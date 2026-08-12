@@ -15,8 +15,6 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
-  buildNFeProc,
-  classifyCStat,
   consultarSituacaoNFe,
   DEFAULT_STUCK_TIMEOUT_MS,
   isStuckEnviando,
@@ -33,7 +31,11 @@ import {
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime, resolveFilialRuntimeByCnpj } from '../filial-cert';
-import { persistPatch, procPersistExtras } from '../orchestrator/audit';
+import {
+  buildProcForAuthorizedOutcome,
+  persistPatch,
+  swapAnchorForProc,
+} from '../orchestrator/audit';
 import { loadNfeConfigForEmission } from '../orchestrator/bundle';
 import { reconcileCartaCorrecaoVinculo } from '../orchestrator/carta-correcao';
 import { transmitirPosEpec } from '../orchestrator/epec';
@@ -316,22 +318,25 @@ export async function runProcessarPendentes(args: {
       // persist the `nfeProc` here too (the emit path does it inside
       // `applyAutorizadoOutcome`), so a cron-recovered doc can render a DANFE
       // and sheds the duplicate signed XML in the same atomic write (#128). A
-      // 539 chave-swap skips it (the local signed XML no longer matches).
-      const nfeProcXml =
-        !chaveSwapped &&
-        classifyCStat(patch.cStat) === 'autorizada' &&
-        retSit.protNFe != null &&
-        retSit.protNFe.infProt.chNFe === data.chave &&
-        data.xml_assinado != null
-          ? buildNFeProc(data.xml_assinado, retSit.protNFe)
-          : null;
+      // 539 chave-swap skips it (the local signed XML no longer matches), and
+      // the digest-safe stitch (#396) skips it when the stored bytes are not
+      // the ones this protocol authorized (pre-fix regenerated retries) — the
+      // doc stays aprovada WITHOUT proc for a DistDFe/manual fetch.
+      const nfeProcXml = buildProcForAuthorizedOutcome({
+        cStat: patch.cStat,
+        chaveMatches: !chaveSwapped && retSit.protNFe?.infProt.chNFe === data.chave,
+        signedXml: data.xml_assinado,
+        prot: retSit.protNFe ?? null,
+        logTag: 'nfe/processar-pendentes',
+        chave: data.chave,
+      });
       // persistPatch (not an inline merge) so its nRec preservation applies
       // here too: a consSit outcome carries no receipt, and overwriting the
       // nRec saved on cStat=103 with null would orphan the lote-poll trail.
       await persistPatch(
         doc.ref,
         patch,
-        nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined,
+        nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
       );
       recovered++;
     } catch (e) {

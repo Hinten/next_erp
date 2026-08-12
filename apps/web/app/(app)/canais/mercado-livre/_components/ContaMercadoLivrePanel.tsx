@@ -13,6 +13,7 @@ import {
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { mercadoLivreQueryErrorMessage } from './mercadoLivreJobErrors';
 
 /**
  * Mercado Livre account panel on /canais/mercado-livre/[id] — shows the
@@ -20,6 +21,14 @@ import {
  * kicks off the server-side OAuth flow on apps/mercado-livre. Mounted beside
  * the integracao editor. The browser never sees a Mercado Livre token.
  * Mirrors the Melhor Envio ContaPanel.
+ *
+ * The two account-wide bulk jobs ("Importar todos os anúncios" #621 and
+ * "Atualizar preços" Step 11 PR-D) used to live here; #816 moved them to the
+ * channel list (`/canais/mercado-livre`), where they act on the table's
+ * selection and can run for several contas at once. Their progress moved with
+ * them, and deliberately does NOT get a read-only mirror here: the job docs
+ * are admin-only/default-deny, so this page has no way to reach one — every
+ * lookup is by conta, and the conta is exactly what the list already knows.
  */
 export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string }) {
   const client = useMercadoLivreClient();
@@ -89,7 +98,14 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
           )}
         </Group>
 
-        {query.error != null && <ContaError error={query.error} />}
+        {query.error != null && (
+          <Alert color="yellow" variant="light">
+            {mercadoLivreQueryErrorMessage(query.error, {
+              network: 'Falha de rede ao consultar a conta.',
+              unknown: 'Não foi possível consultar a conta.',
+            })}
+          </Alert>
+        )}
 
         {connected && me && (
           <Text size="sm">
@@ -116,20 +132,5 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
         </Group>
       </Stack>
     </Card>
-  );
-}
-
-/** Render a conta query error, keeping unknown failures generic. */
-function ContaError({ error }: { error: unknown }) {
-  const message =
-    error instanceof MercadoLivreClientHttpError
-      ? error.message
-      : error instanceof MercadoLivreClientNetworkError
-        ? 'Falha de rede ao consultar a conta.'
-        : 'Não foi possível consultar a conta.';
-  return (
-    <Alert color="yellow" variant="light">
-      {message}
-    </Alert>
   );
 }

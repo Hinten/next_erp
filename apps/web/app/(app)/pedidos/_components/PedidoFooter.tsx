@@ -6,7 +6,7 @@ import { type Firestore } from 'firebase/firestore';
 import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
+import { ESTADO_PEDIDO, derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
 import { formatReais, roundReais } from '@delfrance/core/money';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
@@ -33,6 +33,12 @@ export interface PedidoFooterProps {
   submitLabel: string;
   isSubmitting: boolean;
   submitError: string | null;
+  /**
+   * Direction of the pedido. An orçamento (quote) is a sale-side artifact, so
+   * the "Compartilhar orçamento" menu is hidden on an entrada (inbound:
+   * purchase / return). Defaults to saída (`true`) for back-compat.
+   */
+  ehSaida?: boolean;
   /**
    * Programmatic "save and stay" submit. When provided (edit mode), a second
    * "Salvar e continuar editando" button runs this instead of navigating away.
@@ -83,6 +89,7 @@ export function PedidoFooter({
   submitLabel,
   isSubmitting,
   submitError,
+  ehSaida = true,
   onSaveAndContinue,
 }: PedidoFooterProps) {
   // `useWatch` (not `form.watch`): this is a child component that receives `form`
@@ -148,7 +155,7 @@ export function PedidoFooter({
   const estado = useWatch({ control: form.control, name: 'estado' });
   const underpaid =
     pedidoId != null &&
-    estado === 'pago' &&
+    estado === ESTADO_PEDIDO.pago &&
     roundReais(valorPago) < roundReais(totals.valorCobrado);
 
   return (
@@ -225,7 +232,7 @@ export function PedidoFooter({
             {troco > 0 && <FooterStat label="Troco" value={brl(troco)} />}
           </Group>
           <Group gap="xs" wrap="nowrap" align="center">
-            <OrcamentoShareMenu db={db} pedidoId={pedidoId} />
+            {ehSaida && <OrcamentoShareMenu db={db} pedidoId={pedidoId} />}
             {pedidoId && onSaveAndContinue && (
               <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
                 <Button

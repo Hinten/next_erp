@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { millisSinceEpoch } from '../../shared/datetime';
 import { outerRefSchema } from '../../shared/outerRef';
 import { fotoSchema } from '../../storage/foto';
 import { videoSchema } from '../../storage/video';
@@ -61,7 +62,33 @@ export const produtoSchema = z
     // Kit + visibility + freight flags. Defaults match the Flutter
     // constructor defaults (`models.dart:1320-1333`): all false — a new produto
     // starts as a DRAFT (`publicado=false`), published explicitly by the user.
+    /**
+     * This produto is assembled from `componentesKit` rather than stocked on
+     * its own. Its availability is DERIVED at read time from the components
+     * (`kitEstoqueDisponivel`) and a sale moves the components' stock, never
+     * the kit's — see ADR 0014.
+     */
     ehKit: z.boolean().default(false),
+    /**
+     * A kit whose composition the **marketplace** resolves instead of us.
+     *
+     * ⚠️ Virtual does NOT mean unpublished, internal, or exempt from stock
+     * signals. A virtual kit is published and sold like any other kit; the only
+     * difference is the **shape of the upload**. For an ordinary kit we publish
+     * one listing and send the kit's own computed availability. For a virtual
+     * kit we upload the **components** and the marketplace manages the stock,
+     * deriving what can be assembled on its side.
+     *
+     * Consequence for anything reading this flag: its estoque doc still needs
+     * the same treatment as an ordinary kit's — notably the `ultimaModificacao`
+     * stamp a sale writes (ADR 0014) — because the channels that DO support
+     * this upload shape consume that signal.
+     *
+     * Mercado Livre has no proper support for it, which is why the ML sweep
+     * alone declines to send a quantity for a virtual kit
+     * (`quantidadeParaEnvio` → null). That is a per-channel limitation, **not**
+     * a property of virtual kits, and it must not be generalized into one.
+     */
     ehKitVirtual: z.boolean().default(false),
     publicado: z.boolean().default(false),
     ofereceFreteGratis: z.boolean().default(false),
@@ -76,6 +103,13 @@ export const produtoSchema = z
     // formula recalc (kits: Flutter sums component costs — Kit tab concern).
     precos: z.record(z.string(), precoSchema).nullable().default(null),
     custo: z.number().min(0).nullable().default(null),
+    // Gates the server-side propagation of this PARENT's `precos` map onto its
+    // variation children (the `onProdutoPrecoCustoChanged` Cloud Function,
+    // apps/functions). Default true = every parent price edit cascades to the
+    // children, matching the legacy Flutter behavior. false = the user
+    // maintains each variation's prices manually — a future UI toggle exposes
+    // this; the field has no editor yet.
+    propagatePriceToChildren: z.boolean().default(true),
 
     // Variations.
     grupoDeVariacoesUid: z.array(z.string()).nullable().default(null),
@@ -85,6 +119,45 @@ export const produtoSchema = z
     componentesKitKeys: z.array(z.string()).nullable().default(null),
     componentesKit: componentesKitSchema.nullable().default(null),
     integracoesComProduto: z.array(z.string()).default([]),
+
+    /**
+     * ⛔ DEAD WEIGHT — no query consumers, deleted at the Flutter decommission
+     * (#431 lock 3). Do not build on these three.
+     *
+     * "No query consumers" precisely: nothing in this repo filters, projects or
+     * orders by them, and no code reads one to make a decision about anything
+     * else. They ARE read in four places — `stampChildMarketplace`,
+     * `removeMarketplaceEntry`, `applyMarketplaceDeletion` and the publish
+     * read-clean-write — but only to compute the next value of the same field.
+     * That is maintenance, not consumption, and it all dies with the field.
+     *
+     * They are Firestore **Standard**-edition workarounds. `marketplace` was a
+     * map so the old app could find a produto AND learn which channel an id
+     * belonged to **without a join**; `marketplaceIds` was its flat index. On
+     * **Enterprise** both questions have direct answers: the link
+     * subcollections are collection-group-indexed by `id`/`itemId` (12 call
+     * sites, e.g. `orderProdutoResolve.ts`), and the channel is simply the
+     * subcollection's NAME. CLAUDE.md's "re-derive it, don't transcribe it"
+     * applies literally here.
+     *
+     * ⚠️ **Never add a reader.** Nothing in this repo queries them — and
+     * nothing can afford to: `firestore.indexes.json` declares **no index on
+     * either**, so on Enterprise a query would silently full-scan `produtos`
+     * and bill the data. Resolve produto-by-item-id through the link
+     * subcollection instead.
+     *
+     * The only real consumer was ever the deployed Flutter backend, which does
+     * not survive the cutover — so as of the owner decision on 2026-08-10 these
+     * have no consumer in any window. The writes are kept purely so the
+     * decommission can delete the whole cluster in one piece (#961).
+     *
+     * ⚠️ And they are already unreliable, which is why nobody should try to
+     * repair them: an entry is **never removed when a link doc is deleted** (no
+     * code does that, by design); legacy's own ML order probe omits
+     * `relevantData` while several writers include it, so `array-contains` —
+     * which compares the whole map — misses them; and `marketplaceIds` drifts
+     * from `marketplace` by construction. Details and the audit: #961.
+     */
     marketplaceIds: z.array(z.string()).nullable().default(null),
     marketplace: z.array(z.unknown()).default([]),
     statusProdutosMarketplace: z.record(z.string(), z.unknown()).nullable().default(null),
@@ -95,6 +168,12 @@ export const produtoSchema = z
 
     // Server-managed.
     nome_embedding: z.unknown().nullable().default(null),
+
+    // System stamps — create-only `timestamp` (nullish coalesce) and
+    // `ultimaModificacao` on every write; both stamped by `saveRecord` /
+    // ObjectView so the TableView update-monitor sees edits.
+    timestamp: millisSinceEpoch('Criação').nullable().default(null),
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
   })
   .passthrough();
 

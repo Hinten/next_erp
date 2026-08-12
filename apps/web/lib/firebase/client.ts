@@ -6,7 +6,13 @@ import {
   initializeAuth,
   indexedDBLocalPersistence,
 } from 'firebase/auth';
-import { type Firestore, connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
+import {
+  type Firestore,
+  connectFirestoreEmulator,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 import { type Functions, connectFunctionsEmulator, getFunctions } from 'firebase/functions';
 import { type FirebaseStorage, getStorage } from 'firebase/storage';
 
@@ -26,6 +32,19 @@ const config = {
 // Ports mirror `firebase.functions.json`; unset → the normal production path, so the
 // staging e2e and the real app are unaffected.
 const USE_FIREBASE_EMULATOR = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === 'true';
+
+/**
+ * True when this build talks to the emulator suite.
+ *
+ * ⚠️ Needed as a CAPABILITY gate, not just for wiring: the emulator is a
+ * Standard-edition Firestore and rejects the Pipelines API, while the SDK still
+ * exposes `db.pipeline()` — so `isPipelineSupported(db)` answers *yes* and the
+ * call fails at execution time. Any code with a pipeline path plus a classic
+ * fallback must branch on THIS, not on the SDK probe.
+ */
+export function isUsingFirebaseEmulator(): boolean {
+  return USE_FIREBASE_EMULATOR;
+}
 const EMULATOR_HOST = process.env.NEXT_PUBLIC_FIREBASE_EMULATOR_HOST ?? '127.0.0.1';
 
 let app: FirebaseApp | undefined;
@@ -56,7 +75,17 @@ export function getFirebaseAuth(): Auth {
 export function getFirebaseFirestore(): Firestore {
   if (db) return db;
   const databaseId = process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ?? 'default';
-  db = getFirestore(getFirebaseApp(), databaseId);
+  // `initializeFirestore` (vs `getFirestore`) lets us enable the IndexedDB
+  // persistent cache with multi-tab coordination: the inbox streams the same
+  // conversas/messages across the app, so a warm local cache makes navigation
+  // instant and cuts reads. This is the ONLY caller (the module-level `db`
+  // singleton guards against a second init on the same app+database), and the
+  // 3rd positional arg pins the named database (`default`, not `(default)`).
+  db = initializeFirestore(
+    getFirebaseApp(),
+    { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) },
+    databaseId,
+  );
   if (USE_FIREBASE_EMULATOR) {
     connectFirestoreEmulator(db, EMULATOR_HOST, 8080);
   }

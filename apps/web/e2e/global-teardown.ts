@@ -1,23 +1,33 @@
-import { cleanupE2EDocs, runTeardown } from '@delfrance/test-fixtures';
+import { runTeardown } from '@delfrance/test-fixtures';
 import { requiresAuthEnv } from './helpers/env';
 import { deleteAuthUserByEmail } from './_helpers/admin-cleanup';
-import { e2eUserEmail, getRunId } from './_helpers/run-id';
+import { isAdminSdkError, sweepCurrentRunFixtures } from './_helpers/stale-sweep';
+import { e2eUserEmail } from './_helpers/run-id';
 
 /**
  * Playwright globalTeardown: removes all e2e fixtures from staging.
  *
  *  - `runTeardown()` deletes every collection prefixed with this run's
  *    namespace (e.g. `e2e_local_grupoEconomico`).
- *  - `cleanupE2EDocs(path, prefix)` sweeps real collections (`clientes`,
- *    `categorias`) for stray docs left when a spec failed before its own
- *    afterEach cleanup. In CI it scopes the sweep to this run's prefix
- *    (`e2e-<runId>-`) so the two parallel e2e workflows (which share these
- *    real collections) don't delete each other's in-flight docs; locally,
- *    with no GITHUB_RUN_ID, it keeps the broad `e2e-` sweep to also clear
- *    cruft left by earlier local runs.
+ *  - `sweepCurrentRunFixtures()` sweeps this run's docs out of the real
+ *    collections, for every target in `E2E_FIXTURE_TARGETS` — the same registry
+ *    the start-of-run orphan sweep uses. It replaces a hardcoded six-collection
+ *    list that matched on **doc id only**, so it missed both the ~13 other
+ *    collections the suite seeds and every row a test created through the UI
+ *    (those get Firestore auto-ids and carry the prefix in a field). It also
+ *    deletes recursively where a subcollection can exist, which the old
+ *    `WriteBatch` sweep left stranded.
  *  - `deleteAuthUserByEmail` removes this run's ephemeral Firebase Auth user
  *    (`globalSetup` created it). A leak here is also caught next run by
  *    `sweepStaleE2EUsers`.
+ *
+ * Playwright does not run `globalTeardown` when the job is **cancelled**, and
+ * every e2e workflow sets `cancel-in-progress: true`, so this used to be skipped
+ * on exactly the runs that leak most. Two things now cover that: the
+ * `if: always()` step in `e2e-reusable.yml` invokes this module directly (see
+ * the bottom of the file), and the start-of-run sweep in `_setup/combined.ts`
+ * reclaims whatever still got through (#712). Teardown is the fast path, not
+ * the guarantee.
  *
  * Skip rule mirrors `requiresAuthEnv()` — when the Admin SDK env is
  * missing, globalSetup exits early, so there's nothing to tear down.
@@ -25,12 +35,11 @@ import { e2eUserEmail, getRunId } from './_helpers/run-id';
  * against an unconfigured project and crash the whole run with a stack
  * trace that "wasn't part of any test".
  *
- * Even when env IS complete, we swallow errors inside teardown — a
+ * Even when env IS complete, we swallow Admin-SDK errors inside teardown — a
  * failed cleanup shouldn't mask the spec results. Just log and move on.
  */
 export default async function globalTeardown() {
   if (!requiresAuthEnv()) {
-    // eslint-disable-next-line no-console
     console.warn(
       '[globalTeardown] skipping — auth env incomplete; specs skipped, ' + 'nothing to clean up.',
     );
@@ -40,52 +49,47 @@ export default async function globalTeardown() {
   try {
     await runTeardown();
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[globalTeardown] runTeardown failed (continuing): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
+    if (!isAdminSdkError(err)) throw err;
+    console.warn(`[globalTeardown] runTeardown failed (continuing): ${String(err)}`);
   }
 
-  const collections = [
-    'clientes',
-    'categorias',
-    'depositos',
-    'filiais',
-    'motivosincidentes',
-    'bandeirasCartao',
-  ];
-  // CI: GITHUB_RUN_ID is stable across the runner + workers, so a run-scoped
-  // prefix matches every doc this run seeded (`e2e-<runId>-<tag>-NNN`) and
-  // nothing from the sibling workflow. Local: getRunId() is a per-call
-  // timestamp, so fall back to the broad prefix.
-  const runPrefix = process.env.GITHUB_RUN_ID ? `e2e-${getRunId()}-` : 'e2e-';
-  for (const c of collections) {
-    try {
-      const deleted = await cleanupE2EDocs(c, runPrefix);
-      if (deleted > 0) {
-        // eslint-disable-next-line no-console
-        console.log(`[globalTeardown] swept ${deleted} stray e2e docs from ${c}/`);
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[globalTeardown] cleanupE2EDocs(${c}) failed (continuing): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+  try {
+    await sweepCurrentRunFixtures();
+  } catch (err) {
+    if (!isAdminSdkError(err)) throw err;
+    console.warn(`[globalTeardown] fixture sweep failed (continuing): ${String(err)}`);
   }
 
   try {
     await deleteAuthUserByEmail(e2eUserEmail());
   } catch (err) {
-    // eslint-disable-next-line no-console
+    if (!isAdminSdkError(err)) throw err;
     console.warn(
-      `[globalTeardown] deleting the ephemeral e2e user failed (continuing): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `[globalTeardown] deleting the ephemeral e2e user failed (continuing): ${String(err)}`,
     );
   }
+}
+
+/**
+ * Direct invocation, so an `if: always()` CI step can run teardown after a
+ * cancelled job — the case Playwright's own `globalTeardown` never reaches.
+ * Mirrors the same block in `_helpers/stale-sweep.ts`.
+ *
+ * Always exits 0: this runs when the suite has already failed or been killed,
+ * and a janitor must never be the thing that reds a job.
+ */
+const isDirectInvocation =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('global-teardown.ts') ||
+  process.argv[1]?.endsWith('global-teardown.js');
+
+if (isDirectInvocation) {
+  // Awaited, not floating: the CI step's whole job is to finish sweeping before
+  // the runner tears the container down. A floating promise only survives
+  // because pending gRPC sockets happen to keep the event loop alive — relying
+  // on that to not orphan fixtures is exactly the bet this step exists to stop
+  // making. `module: ESNext` + `target: ES2022`, so top-level await is fine.
+  await globalTeardown().catch((err: unknown) => {
+    console.warn(`[globalTeardown] failed: ${String(err)}`);
+  });
 }

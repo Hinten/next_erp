@@ -1,7 +1,9 @@
+/* eslint-disable no-console -- CLI script: stdout is the interface */
 import { bundle } from '../build.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
+import { copyDeployEnv } from '../../../tools/deploy-env/env-files.mjs';
 
 // Builds the deploy artifact for the `storage` Cloud Functions codebase. Run as
 // the deploy `predeploy` hook (`node apps/functions/scripts/prepare-deploy.mjs`)
@@ -14,7 +16,7 @@ import { mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync
 // even with `--omit=dev`, so the real package.json's workspace devDeps
 // (@delfrance/config-tsconfig / data / schemas) break the build no matter what.
 // esbuild already bundles data & schemas into index.js, so the cloud only needs
-// the 3 real runtime deps. We emit a minimal package.json carrying exactly those —
+// the 4 real runtime deps. We emit a minimal package.json carrying exactly those —
 // no devDependencies, no `workspace:*`, no build script.
 
 // apps/functions (this script lives in apps/functions/scripts/).
@@ -38,10 +40,11 @@ mkdirSync(deployDir, { recursive: true });
 const region = await bundle(join(deployDir, 'index.js'));
 
 // 2. Emit the minimal, workspace-free package.json. `dependencies` is copied
-//    verbatim from the real package.json — it is already exactly the 3 runtime
-//    externals (firebase-admin / firebase-functions / sharp), none of them
-//    `workspace:*`. devDependencies and scripts are deliberately omitted so the
-//    buildpack only `npm install`s those three and never runs a build.
+//    verbatim from the real package.json — it is already exactly the 4 runtime
+//    externals (firebase-admin / firebase-functions / @google-cloud/firestore /
+//    sharp), none of them `workspace:*`. devDependencies and scripts are
+//    deliberately omitted so the buildpack only `npm install`s those four and
+//    never runs a build.
 const realPkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
 const deployPkg = {
   name: realPkg.name,
@@ -54,16 +57,14 @@ const deployPkg = {
 };
 writeFileSync(join(deployDir, 'package.json'), JSON.stringify(deployPkg, null, 2) + '\n');
 
-// 2b. The cloud buildpack runs a STRICT `npm install` (npm 7+ peer resolution).
-//     `firebase-functions` (incl. the latest 7.x) still pins its peer to
-//     `firebase-admin@^11 || ^12 || ^13`, so admin 14 — which we need for the
-//     `@google-cloud/firestore` v8 Pipelines API (the arquivo orphan sweep) —
-//     trips ERESOLVE in the cloud even though the combo is runtime-fine (the
-//     ci-storage emulator suite passes on admin 14 + functions 6.x). Ship an
-//     `.npmrc` that relaxes ONLY the cloud peer check; the repo + CI installs are
-//     unaffected (this file lives only in the generated artifact). Drop this once
-//     firebase-functions adds `^14` to its peer range.
-writeFileSync(join(deployDir, '.npmrc'), 'legacy-peer-deps=true\n');
+// 2b. Copy the optional runtime env file into the artifact. firebase loads `.env`
+//     + `.env.<projectId>` from the source dir at deploy; the operator-authored
+//     source name is `.env.deploy` (or `.env.deploy.<projectId>`) and the copy
+//     strips the `.deploy` infix. The allowlist is anchored and a `.env.secrets*`
+//     fails the hook outright — see tools/deploy-env/env-files.mjs. This does NOT
+//     reintroduce gotcha #2 (never read `.env.local` during deploy): `.env.local`
+//     is one of the two names the allowlist deliberately ignores.
+const copiedEnv = copyDeployEnv(pkgDir, deployDir);
 
 // 3. Junction the workspace's installed node_modules into the artifact, so
 //    firebase-tools' LOCAL trigger analysis can find and spawn the Functions SDK
@@ -71,7 +72,7 @@ writeFileSync(join(deployDir, '.npmrc'), 'legacy-peer-deps=true\n');
 //    node_modules). The same-depth artifact path (above) is what makes the pnpm
 //    relative symlinks inside resolve through the junction. Kept OUT of the upload
 //    by `ignore: ["node_modules"]` in firebase.functions.deploy.json — the cloud
-//    reinstalls the 3 deps from the minimal package.json above.
+//    reinstalls the 4 deps from the minimal package.json above.
 const realNodeModules = join(pkgDir, 'node_modules');
 if (existsSync(realNodeModules)) {
   // 'junction' needs an absolute target on Windows and is ignored (→ dir symlink)
@@ -84,5 +85,7 @@ if (existsSync(realNodeModules)) {
 }
 
 console.log(
-  `prepared .deploy/functions — region=${region}, deps=${Object.keys(realPkg.dependencies).join(', ')}`,
+  `prepared .deploy/functions — region=${region}, ` +
+    `deps=${Object.keys(realPkg.dependencies).join(', ')}, ` +
+    `env=${copiedEnv.length ? copiedEnv.join(' + ') : 'none'}`,
 );

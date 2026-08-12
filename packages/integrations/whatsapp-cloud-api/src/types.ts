@@ -9,6 +9,15 @@ import { z } from 'zod';
  * order, etc.) round-trip without breaking parse.
  */
 
+/**
+ * The only `changes[].field` value the dispatcher (#527) currently acts on.
+ * `webhookEnvelopeSchema` accepts any string field (WhatsApp Business
+ * Management webhooks reuse the same envelope shape with other field
+ * values), so the dispatcher switches on this constant rather than relying
+ * on the schema to reject unknown fields.
+ */
+export const WEBHOOK_FIELD_MESSAGES = 'messages' as const;
+
 export const wamediaSchema = z
   .object({
     id: z.string(),
@@ -16,6 +25,72 @@ export const wamediaSchema = z
     sha256: z.string().optional(),
     filename: z.string().optional(),
     caption: z.string().optional(),
+  })
+  .passthrough();
+
+/**
+ * `messages[].reaction` — emoji reaction to a prior message.
+ */
+export const reactionSchema = z
+  .object({
+    message_id: z.string().nullish(),
+    emoji: z.string().nullish(),
+  })
+  .passthrough();
+
+/**
+ * `messages[].referral` — ad/post click-to-WhatsApp context. Field names
+ * mirror `mensagemSchema.referral` in `packages/schemas/src/conversa.ts` so
+ * the dispatcher can pass this through without renaming keys.
+ */
+export const referralSchema = z
+  .object({
+    source_url: z.string().nullish(),
+    source_type: z.string().nullish(),
+    source_id: z.string().nullish(),
+    headline: z.string().nullish(),
+    body: z.string().nullish(),
+    media_type: z.string().nullish(),
+    image_url: z.string().nullish(),
+    video_url: z.string().nullish(),
+    thumbnail_url: z.string().nullish(),
+    ctwa_clid: z.string().nullish(),
+  })
+  .passthrough();
+
+/**
+ * `messages[].interactive` — button/list reply. Shape varies by
+ * `interactive.type` (`button_reply` vs `list_reply`); stay tolerant
+ * rather than modeling every variant.
+ */
+export const interactiveSchema = z.object({}).passthrough();
+
+/**
+ * `messages[].button` — quick-reply tap on a legacy template button.
+ */
+export const buttonSchema = z
+  .object({
+    text: z.string().nullish(),
+    payload: z.string().nullish(),
+  })
+  .passthrough();
+
+/** `messages[].location` — tolerant; not consumed by this package yet. */
+export const locationSchema = z.object({}).passthrough();
+
+/** `messages[].order` — tolerant; not consumed by this package yet. */
+export const orderSchema = z.object({}).passthrough();
+
+/**
+ * `messages[].errors` — per-message delivery/processing errors, distinct
+ * from the top-level `value.errors` and `statuses[].errors`.
+ */
+export const messageErrorSchema = z
+  .object({
+    code: z.number(),
+    title: z.string().nullish(),
+    message: z.string().nullish(),
+    error_data: z.record(z.string(), z.unknown()).nullish(),
   })
   .passthrough();
 
@@ -46,6 +121,13 @@ export const incomingMessageSchema = z
     audio: wamediaSchema.optional(),
     document: wamediaSchema.optional(),
     sticker: wamediaSchema.optional(),
+    reaction: reactionSchema.nullish(),
+    referral: referralSchema.nullish(),
+    interactive: interactiveSchema.nullish(),
+    button: buttonSchema.nullish(),
+    location: locationSchema.nullish(),
+    order: orderSchema.nullish(),
+    errors: z.array(messageErrorSchema).nullish(),
     context: z
       .object({
         from: z.string().optional(),
@@ -106,7 +188,12 @@ export const webhookEnvelopeSchema = z.object({
       id: z.string(),
       changes: z.array(
         z.object({
-          field: z.literal('messages'),
+          // WhatsApp Business Management webhooks reuse this same envelope
+          // with other `field` values (e.g. `account_update`,
+          // `phone_number_quality_update`); only `WEBHOOK_FIELD_MESSAGES`
+          // is dispatched today, but the schema stays a plain string so
+          // it doesn't reject those other events at parse time.
+          field: z.string(),
           value: valuePayloadSchema,
         }),
       ),
@@ -114,6 +201,94 @@ export const webhookEnvelopeSchema = z.object({
   ),
 });
 
+/**
+ * Response body of `GET /{media-id}` — resolves a media id to a short-lived
+ * download URL. Reference:
+ * https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media#retrieve-media-url
+ *
+ * Mirrors legacy `GetMedia` (`.old/packages/canais_de_venda/whatsapp_cloud_api/lib/src/api_v23/media.dart`).
+ * `sha256`/`file_size` are marked optional here even though the documented
+ * payload always includes them — tolerant parsing so an API change that
+ * drops a field degrades to `undefined` instead of throwing.
+ */
+export const mediaMetadataSchema = z
+  .object({
+    id: z.string(),
+    url: z.string(),
+    mime_type: z.string(),
+    sha256: z.string().optional(),
+    file_size: z.number().optional(),
+  })
+  .passthrough();
+
+export type MediaMetadata = z.infer<typeof mediaMetadataSchema>;
+
+/**
+ * Response body of `GET /{phoneNumberId}?fields=status,quality_rating,
+ * code_verification_status,display_phone_number,verified_name,throughput` —
+ * the phone-number node used by the account-health surface. Reference:
+ * https://developers.facebook.com/docs/graph-api/reference/whats-app-business-phone-number
+ *
+ * Every field is nullable-tolerant and the enum-ish fields (`status`,
+ * `quality_rating`, `code_verification_status`) are typed as plain strings so
+ * an unknown/new Graph enum value passes through verbatim instead of throwing.
+ * Documented values today: `status` ∈ CONNECTED / PENDING / MIGRATED / BANNED /
+ * RESTRICTED / RATE_LIMITED / FLAGGED / DISCONNECTED / DELETED / ...;
+ * `quality_rating` ∈ GREEN / YELLOW / RED / UNKNOWN / NA;
+ * `code_verification_status` ∈ VERIFIED / NOT_VERIFIED / EXPIRED.
+ */
+export const phoneNumberStatusSchema = z
+  .object({
+    id: z.string().nullish(),
+    status: z.string().nullish(),
+    quality_rating: z.string().nullish(),
+    code_verification_status: z.string().nullish(),
+    display_phone_number: z.string().nullish(),
+    verified_name: z.string().nullish(),
+    throughput: z.object({ level: z.string().nullish() }).passthrough().nullish(),
+  })
+  .passthrough();
+
+export type PhoneNumberStatus = z.infer<typeof phoneNumberStatusSchema>;
+
+/**
+ * One entry of `GET /{wabaId}/subscribed_apps` — the app subscribed to the
+ * WhatsApp Business Account's webhooks. Reference:
+ * https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/subscribed_apps
+ * Tolerant: only `whatsapp_business_api_data.name` is consumed (for the health
+ * check's "which app" detail); everything else rides `.passthrough()`.
+ */
+export const subscribedAppSchema = z
+  .object({
+    whatsapp_business_api_data: z
+      .object({
+        id: z.string().nullish(),
+        name: z.string().nullish(),
+        link: z.string().nullish(),
+      })
+      .passthrough()
+      .nullish(),
+  })
+  .passthrough();
+
+export type SubscribedApp = z.infer<typeof subscribedAppSchema>;
+
+/** Envelope of `GET /{wabaId}/subscribed_apps` — `{ data: SubscribedApp[] }`. */
+export const subscribedAppsResponseSchema = z
+  .object({
+    data: z.array(subscribedAppSchema).nullish(),
+  })
+  .passthrough();
+
+export type SubscribedAppsResponse = z.infer<typeof subscribedAppsResponseSchema>;
+
 export type IncomingMessage = z.infer<typeof incomingMessageSchema>;
 export type StatusUpdate = z.infer<typeof statusUpdateSchema>;
 export type WebhookEnvelope = z.infer<typeof webhookEnvelopeSchema>;
+export type Reaction = z.infer<typeof reactionSchema>;
+export type Referral = z.infer<typeof referralSchema>;
+export type Interactive = z.infer<typeof interactiveSchema>;
+export type ButtonReply = z.infer<typeof buttonSchema>;
+export type Location = z.infer<typeof locationSchema>;
+export type Order = z.infer<typeof orderSchema>;
+export type MessageError = z.infer<typeof messageErrorSchema>;

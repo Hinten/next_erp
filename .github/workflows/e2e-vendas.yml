@@ -9,9 +9,13 @@ name: E2E — Vendas
 # isolates its Firestore namespace + ephemeral user.
 on:
   pull_request:
-    branches: [master, main]
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
     paths:
       - 'apps/web/**'
+      # The configuracoes suite drives this app's admin endpoints, and the lane
+      # now builds and serves it — so a change there can break this lane.
+      - 'apps/integrations/**'
       - 'packages/schemas/**'
       - 'packages/ui/**'
       - 'packages/data/**'
@@ -47,4 +51,7 @@ jobs:
     with:
       projects: configuracoes crud-vendas
       slug: vendas
+      # configuracoes.spec.ts POSTs to /api/admin/users + .../claims, which are
+      # served by apps/integrations on :3001, not by apps/web.
+      integrations: true
     secrets: inherit

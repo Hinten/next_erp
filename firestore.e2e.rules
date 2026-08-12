@@ -46,7 +46,9 @@ service cloud.firestore {
       return (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
         && (!c.hasAny(['hasLinkPagamento']) || d.get('hasLinkPagamento', null) is bool)
         && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 255)
-        && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1);
+        && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1)
+        && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
+        && (!c.hasAny(['user_id']) || (d.get('user_id', null) == null || d.get('user_id', null) is int));
     }
 
     // d = incoming document, c = touched keys (keys() on create,
@@ -147,10 +149,13 @@ service cloud.firestore {
         && (!c.hasAny(['pesoLiquidoKg']) || (d.get('pesoLiquidoKg', null) == null || d.get('pesoLiquidoKg', null) is number))
         && (!c.hasAny(['precos']) || (d.get('precos', null) == null || d.get('precos', null) is map))
         && (!c.hasAny(['profundidadeCm']) || (d.get('profundidadeCm', null) == null || d.get('profundidadeCm', null) is number))
+        && (!c.hasAny(['propagatePriceToChildren']) || d.get('propagatePriceToChildren', null) is bool)
         && (!c.hasAny(['publicado']) || d.get('publicado', null) is bool)
         && (!c.hasAny(['sku']) || (d.get('sku', null) == null || d.get('sku', null) is string && d.get('sku', null).size() <= 255))
         && (!c.hasAny(['statusProdutosMarketplace']) || (d.get('statusProdutosMarketplace', null) == null || d.get('statusProdutosMarketplace', null) is map))
         && (!c.hasAny(['tabelaDeMedidasModaUid']) || (d.get('tabelaDeMedidasModaUid', null) == null || d.get('tabelaDeMedidasModaUid', null) is string))
+        && (!c.hasAny(['timestamp']) || (d.get('timestamp', null) == null || d.get('timestamp', null) is int))
+        && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['variacoesUid']) || (d.get('variacoesUid', null) == null || d.get('variacoesUid', null) is list))
         && (!c.hasAny(['videos']) || (d.get('videos', null) == null || d.get('videos', null) is list));
     }
@@ -159,6 +164,25 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_arquivo', 1);
       allow create, update: if isSuperUser() || p('d_arquivo', 2);
       allow delete: if isSuperUser() || p('d_arquivo', 4);
+    }
+
+    match /balanco/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      allow create: if (isSuperUser() || p('d_estoque', 2)) && (!request.resource.data.keys().hasAny(['dataFinalizado']) || request.resource.data.get('dataFinalizado', null) == null) && (!request.resource.data.keys().hasAny(['estado']) || request.resource.data.get('estado', null) == null) && (!request.resource.data.keys().hasAny(['finalizacao']) || request.resource.data.get('finalizacao', null) == null);
+      allow update: if (isSuperUser() || p('d_estoque', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['dataFinalizado', 'estado', 'finalizacao']);
+      allow delete: if isSuperUser() || p('d_estoque', 4);
+    }
+
+    match /balanco/{balancoId}/movimentos/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      allow create, update: if isSuperUser() || p('d_estoque', 2);
+      allow delete: if isSuperUser() || p('d_estoque', 4);
+    }
+
+    match /balanco/{balancoId}/relatorios/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /bandeirasCartao/{docId} {
@@ -179,7 +203,7 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_categoria', 4);
     }
 
-    match /categorias/{categoriaId}/impostocategoria/{docId} {
+    match /categorias/{categoriaId}/imposto/{docId} {
       allow read: if isSuperUser() || p('d_impostoCategoria', 1);
       allow create, update: if isSuperUser() || p('d_impostoCategoria', 2);
       allow delete: if isSuperUser() || p('d_impostoCategoria', 4);
@@ -208,6 +232,12 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_endereco', 1);
       allow create, update: if isSuperUser() || p('d_endereco', 2);
       allow delete: if isSuperUser() || p('d_endereco', 4);
+    }
+
+    match /CMUN/{docId} {
+      allow read: if isSuperUser() || p('d_cmun', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /counters/{docId} {
@@ -270,6 +300,24 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 
+    match /integracao/{integracaoId}/brandshopee/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
+    match /integracao/{integracaoId}/token6h/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
+    match /integracao/{integracaoId}/tokenDuravel/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /listaDePrecos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -289,13 +337,19 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
+    match /notificacoesMercadoLivre/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /operacao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
       allow create, update: if isSuperUser() || p('d_fiscal', 2);
       allow delete: if isSuperUser() || p('d_fiscal', 4);
     }
 
-    match /operacao/{operacaoId}/regraimposto/{docId} {
+    match /operacao/{operacaoId}/regras/{docId} {
       allow read: if isSuperUser() || p('d_regraImposto', 1);
       allow create, update: if isSuperUser() || p('d_regraImposto', 2);
       allow delete: if isSuperUser() || p('d_regraImposto', 4);
@@ -308,10 +362,22 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
-    match /pedidos/{pedidoId}/historicoEstadoPedido/{docId} {
+    match /pedidos/{pedidoId}/checkout/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
       allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
+    match /pedidos/{pedidoId}/historicoEstadoPedido/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
+    match /pedidos/{pedidoId}/historicoFtIni/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /pedidos/{pedidoId}/incidentes/{docId} {
@@ -330,6 +396,12 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_fiscal', 1);
       allow create, update: if isSuperUser() || p('d_fiscal', 2);
       allow delete: if isSuperUser() || p('d_fiscal', 4);
+    }
+
+    match /pedidos/{pedidoId}/orderML/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
     match /pedidos/{pedidoId}/pagamentos/{docId} {
@@ -370,6 +442,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
+    match /produtos/{produtoId}/historicoDeModificacoes/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /produtos/{produtoId}/historicoDePrecos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -382,19 +460,25 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_impostoProduto', 4);
     }
 
-    match /produtos/{produtoId}/produtoamazon/{docId} {
+    match /produtos/{produtoId}/prodAmazon/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/produtointegrada/{docId} {
+    match /produtos/{produtoId}/prodshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/produtomagalu/{docId} {
+    match /produtos/{produtoId}/produtolojaintegrada/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      allow create, update: if isSuperUser() || p('d_produto', 2);
+      allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
+    match /produtos/{produtoId}/produtoMagalu2/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
@@ -406,22 +490,22 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/produtoshopee/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-      allow create, update: if isSuperUser() || p('d_produto', 2);
-      allow delete: if isSuperUser() || p('d_produto', 4);
-    }
-
     match /produtos/{produtoId}/variacaoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/variacaoshopee/{docId} {
+    match /produtos/{produtoId}/variashopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
+    match /questionsML/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 
     match /tabMedi/{docId} {
@@ -445,8 +529,16 @@ service cloud.firestore {
     }
 
     // Collection-group reads (client groupQuery / collectionGroup).
+    // A leaf shared by several collections carries the UNION of their
+    // read claims (see the dedupe note in emitRules).
+    match /{path=**}/brandshopee/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+    }
     match /{path=**}/cartacorrecao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
+    }
+    match /{path=**}/checkout/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
     }
     match /{path=**}/enderecos/{docId} {
       allow read: if isSuperUser() || p('d_endereco', 1);
@@ -463,6 +555,9 @@ service cloud.firestore {
     match /{path=**}/historicoDeCusto/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
+    match /{path=**}/historicoDeModificacoes/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
     match /{path=**}/historicoDePrecos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
@@ -472,11 +567,11 @@ service cloud.firestore {
     match /{path=**}/historicoEstoque/{docId} {
       allow read: if isSuperUser() || p('d_estoque', 1);
     }
-    match /{path=**}/imposto/{docId} {
-      allow read: if isSuperUser() || p('d_impostoProduto', 1);
+    match /{path=**}/historicoFtIni/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
     }
-    match /{path=**}/impostocategoria/{docId} {
-      allow read: if isSuperUser() || p('d_impostoCategoria', 1);
+    match /{path=**}/imposto/{docId} {
+      allow read: if isSuperUser() || p('d_impostoCategoria', 1) || p('d_impostoProduto', 1);
     }
     match /{path=**}/incidentes/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
@@ -493,26 +588,35 @@ service cloud.firestore {
     match /{path=**}/nfev4/{docId} {
       allow read: if isSuperUser() || p('d_nfe', 1);
     }
+    match /{path=**}/orderML/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+    }
     match /{path=**}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
+    }
+    match /{path=**}/prodAmazon/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/prodshopee/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/produtoMagalu2/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/produtoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
-    match /{path=**}/produtoamazon/{docId} {
+    match /{path=**}/produtolojaintegrada/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
-    match /{path=**}/produtointegrada/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/produtomagalu/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/produtoshopee/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/regraimposto/{docId} {
+    match /{path=**}/regras/{docId} {
       allow read: if isSuperUser() || p('d_regraImposto', 1);
+    }
+    match /{path=**}/token6h/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+    }
+    match /{path=**}/tokenDuravel/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
     }
     match /{path=**}/tokenMelEnv/{docId} {
       allow read: if isSuperUser() || p('d_frete', 2);
@@ -520,7 +624,7 @@ service cloud.firestore {
     match /{path=**}/variacaoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
-    match /{path=**}/variacaoshopee/{docId} {
+    match /{path=**}/variashopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
   }

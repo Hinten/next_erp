@@ -16,6 +16,36 @@ on:
       - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
+      # The pedido estado reconcile + everything its emulator suite exercises: the
+      # transition rule table (`nextPedidoEstado`), the paying-status/sum rule
+      # (`sumPagamentosPagos`) and the frete-estado allow-list that decides dispatch
+      # authorization (`ESTADOS_FRETE_PRE_AUTORIZACAO`, #702) all live outside this
+      # file, so editing any one alone would otherwise skip the only test that runs
+      # the real Admin-SDK transaction.
+      - 'packages/data/src/admin/pedidoReconcile*.ts'
+      - 'packages/data/src/pedido/usecases.ts'
+      # A GLOB, deliberately, in place of the single `pagamento.ts` it replaces.
+      # Every pedido subcollection the emulator suite parses through belongs here
+      # (pagamento, plus the two trigger-written audit trails), and a named-file
+      # list rots the moment one is added or renamed: `ci.yml` excludes
+      # @delfrance/functions from its turbo `test` filter, so a schema edit that
+      # matches nothing here runs in NO lane — the check reports *skipped*, never
+      # failed. This repo has already shipped that bug twice (ci-freight, ci-nfe).
+      # An over-broad filter costs runner minutes; a stale one costs coverage
+      # silently, so the glob wins.
+      - 'packages/schemas/src/pedido/collection/**'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
+      - 'packages/data/src/admin/collections/historicoFreteInicialCollection.ts'
+      - 'packages/schemas/src/shared/frete.ts'
+      # `onPedidoEstadoChanged` writes the estado audit trail THROUGH these two
+      # (`historicoEstadoPedidoCollection.parse`), and since #697 they are the
+      # only place the row shape is asserted — the always-on assertion that used
+      # to live in `@delfrance/data` went away with the client-side writer, and
+      # `ci.yml` excludes `@delfrance/functions` from its test filter. Without
+      # these entries a PR editing only the schema runs no test that reads the
+      # trail's fields at all.
+      - 'packages/schemas/src/pedido/collection/historicoEstadoPedido.ts'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'
@@ -23,7 +53,8 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-storage.yml'
   pull_request:
-    branches: [master, main]
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
     paths:
       - 'packages/storage/**'
       - 'apps/functions/**'
@@ -32,6 +63,36 @@ on:
       - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
+      # The pedido estado reconcile + everything its emulator suite exercises: the
+      # transition rule table (`nextPedidoEstado`), the paying-status/sum rule
+      # (`sumPagamentosPagos`) and the frete-estado allow-list that decides dispatch
+      # authorization (`ESTADOS_FRETE_PRE_AUTORIZACAO`, #702) all live outside this
+      # file, so editing any one alone would otherwise skip the only test that runs
+      # the real Admin-SDK transaction.
+      - 'packages/data/src/admin/pedidoReconcile*.ts'
+      - 'packages/data/src/pedido/usecases.ts'
+      # A GLOB, deliberately, in place of the single `pagamento.ts` it replaces.
+      # Every pedido subcollection the emulator suite parses through belongs here
+      # (pagamento, plus the two trigger-written audit trails), and a named-file
+      # list rots the moment one is added or renamed: `ci.yml` excludes
+      # @delfrance/functions from its turbo `test` filter, so a schema edit that
+      # matches nothing here runs in NO lane — the check reports *skipped*, never
+      # failed. This repo has already shipped that bug twice (ci-freight, ci-nfe).
+      # An over-broad filter costs runner minutes; a stale one costs coverage
+      # silently, so the glob wins.
+      - 'packages/schemas/src/pedido/collection/**'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
+      - 'packages/data/src/admin/collections/historicoFreteInicialCollection.ts'
+      - 'packages/schemas/src/shared/frete.ts'
+      # `onPedidoEstadoChanged` writes the estado audit trail THROUGH these two
+      # (`historicoEstadoPedidoCollection.parse`), and since #697 they are the
+      # only place the row shape is asserted — the always-on assertion that used
+      # to live in `@delfrance/data` went away with the client-side writer, and
+      # `ci.yml` excludes `@delfrance/functions` from its test filter. Without
+      # these entries a PR editing only the schema runs no test that reads the
+      # trail's fields at all.
+      - 'packages/schemas/src/pedido/collection/historicoEstadoPedido.ts'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'
@@ -64,7 +125,9 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
           pnpm --version
 
       - name: Get pnpm store path
@@ -134,7 +197,10 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
 
       - name: Install
         run: pnpm install --frozen-lockfile

@@ -1,4 +1,5 @@
 import type { IntegracaoFrete } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 
 /**
  * The four `/logistica/*` screens are slices of the single `int_frete`
@@ -9,6 +10,13 @@ import type { IntegracaoFrete } from '@delfrance/schemas';
  * `mapa` (marketplace → internal routing) is excluded everywhere — it has no
  * UI yet (marketplace freight is read-only for now); existing values survive
  * untouched because ObjectView only writes dirty fields.
+ *
+ * `contaMercadoLivreMercadoEnviosOuterRef` is excluded for a different reason:
+ * it is **server-owned** (the `onIntegracaoMercadoLivreChanged` trigger keeps
+ * the ML freight doc in sync with its conta — #782) and only ever set on the
+ * `mercadoLivre` tipo, which has no slice here at all. Since `intFreteSchema`
+ * is shared by all four slices and this filter is an EXCLUDE-list, leaving it
+ * out would render it as an editable text input on every screen below.
  */
 export interface LogisticaSlice {
   /** Route segment under /logistica. */
@@ -25,8 +33,14 @@ export interface LogisticaSlice {
   sections: readonly string[];
 }
 
-/** Hidden on every slice: pinned/stamped/no-UI-yet fields. */
-export const SHARED_EXCLUDED = ['tipo', 'dataCadastro', 'mapa'] as const;
+/** Hidden on every slice: pinned/stamped/no-UI-yet/server-owned fields. */
+export const SHARED_EXCLUDED = [
+  'tipo',
+  'dataCadastro',
+  'ultimaModificacao',
+  'mapa',
+  'contaMercadoLivreMercadoEnviosOuterRef',
+] as const;
 
 /** Tab names — `intFreteFields` assigns the special editors to them; every
  * unsectioned field lands on the first tab. */
@@ -40,7 +54,7 @@ export const SECTION = {
 export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = {
   retirada: {
     slug: 'retirada',
-    tipo: 'retiradaNaLoja',
+    tipo: INTEGRACAO_FRETE.retiradaNaLoja,
     titulo: 'Retirada na loja',
     tituloNovo: 'Nova retirada na loja',
     descricao: 'Pontos de retirada (balcão) com horários de corte para disponibilidade.',
@@ -50,7 +64,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
   },
   motoboy: {
     slug: 'motoboy',
-    tipo: 'motoboy',
+    tipo: INTEGRACAO_FRETE.motoboy,
     titulo: 'Motoboy',
     tituloNovo: 'Novo motoboy',
     descricao: 'Entrega local por motoboy — tarifas por faixa de CEP e horários de corte.',
@@ -60,7 +74,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
   },
   fob: {
     slug: 'fob',
-    tipo: 'fob',
+    tipo: INTEGRACAO_FRETE.fob,
     titulo: 'Por conta do destinatário (FOB)',
     tituloNovo: 'Novo frete FOB',
     descricao: 'Entrega organizada e paga pelo destinatário.',
@@ -70,7 +84,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
   },
   'melhor-envios': {
     slug: 'melhor-envios',
-    tipo: 'melhorEnvios',
+    tipo: INTEGRACAO_FRETE.melhorEnvios,
     titulo: 'Melhor Envios',
     tituloNovo: 'Nova conta Melhor Envios',
     descricao:

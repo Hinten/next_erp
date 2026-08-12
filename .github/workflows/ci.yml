@@ -4,7 +4,10 @@ on:
   push:
     branches: [master, main]
   pull_request:
-    branches: [master, main]
+    # `branches:` matches the PR's BASE, not its head — so the prefix entries
+    # are what give a stacked PR (B -> A -> main) CI. Stack onto one of them; a
+    # child based on any other prefix reports zero checks, not a failure.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,7 +34,9 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
           pnpm --version
 
       - name: Get pnpm store path
@@ -101,14 +106,25 @@ jobs:
     permissions:
       actions: read
       pull-requests: write
+      # `contents: read` is for the stale-base-hint step's `compare` API call
+      # (and the checkout that supplies it) — not for this job's log fetching.
+      contents: read
     steps:
-      - name: Fetch failed job logs and comment on PR
+      # Checked out ONLY to supply the stale-base-hint composite action. Pinned
+      # to the BASE ref, never the PR head: this job holds `pull-requests: write`,
+      # so the script it executes has to come from trusted `main` rather than
+      # from the branch under test.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Fetch failed job logs
+        id: collect
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -uo pipefail
@@ -118,8 +134,12 @@ jobs:
             --jq '.jobs[] | select(.conclusion == "failure") | [.id, .name] | @tsv' > /tmp/failed-jobs.tsv
           if [ ! -s /tmp/failed-jobs.tsv ]; then
             echo "Nenhum job em falha encontrado — nada a reportar."
+            # A step `exit 0` no longer ends the job now that commenting is its
+            # own step — gate the remaining steps on this output instead.
+            echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "found=true" >> "$GITHUB_OUTPUT"
           {
             echo "## CI falhou"
             echo
@@ -144,4 +164,28 @@ jobs:
               echo
             } >> /tmp/body.md
           done < /tmp/failed-jobs.tsv
-          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/body.md
+
+      # This lane runs no Playwright specs, so the per-spec culprit match never
+      # fires here — what it contributes is the plain "your base is N commits
+      # behind" advisory. Reads /tmp/job-*.log, so it runs after the fetch.
+      - name: Stale-base hint
+        if: ${{ steps.collect.outputs.found == 'true' }}
+        uses: ./.github/actions/stale-base-hint
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on PR
+        if: ${{ steps.collect.outputs.found == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # O hint vem primeiro — é o que evita alguém investigar uma falha que
+          # a própria base já corrigiu. Arquivo vazio quando não há defasagem,
+          # deixando o comentário idêntico ao formato anterior. O `touch` garante
+          # que um hint pulado ou interrompido nunca quebre o comentário.
+          touch /tmp/stale-hint.md
+          cat /tmp/stale-hint.md /tmp/body.md > /tmp/comment.md
+          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/comment.md

@@ -27,7 +27,7 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
 });
 
 import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import { CONTINGENCIA_MODO, AMBIENTE_NFE, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -154,16 +154,16 @@ const CFG_EPEC: NFeConfig = {
   numeracao_atual: 9,
   serie: 1,
   idLote: 3,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
   emitirReformaTributaria: false,
-  contingencia_modo: 'epec',
+  contingencia_modo: CONTINGENCIA_MODO.epec,
   contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
   contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   timestamp: null,
 };
 const CFG_NONE: NFeConfig = {
   ...CFG_EPEC,
-  contingencia_modo: 'none',
+  contingencia_modo: CONTINGENCIA_MODO.none,
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
 };
@@ -355,6 +355,32 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
     expect(recoveryWrite?.data.xml_nfe_proc).toContain('<NFe>…signed…</NFe>');
     expect(recoveryWrite?.data.xml_nfe_proc).toContain('<nProt>635260000000123</nProt>');
     expect(recoveryWrite?.data.xml_assinado).toBeNull();
+  });
+
+  it('#396: digest MISMATCH between stored bytes and the recovered protNFe → aprovada WITHOUT proc, anchor kept', async () => {
+    const storedWithDigest =
+      '<NFe><infNFe>…signed…</infNFe><Signature><SignedInfo><Reference>' +
+      '<DigestValue>StoredDigest==</DigestValue></Reference></SignedInfo></Signature></NFe>';
+    const { fs, docs, writes } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ xml_assinado: storedWithDigest }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const ret = consSitRet('100', true) as { protNFe: { infProt: Record<string, unknown> } };
+    ret.protNFe.infProt.digVal = 'OtherDigest=='; // authorized DIFFERENT bytes
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(ret as never);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toMatchObject({ scanned: 1, recovered: 1 });
+    expect((docs['pedidos/PED-2/nfev4/s6'] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+    // No proc persisted; the anchor survives for a DistDFe/manual fetch.
+    const recoveryWrite = writes.find((w) => w.path === 'pedidos/PED-2/nfev4/s6');
+    expect(recoveryWrite?.data.xml_nfe_proc).toBeUndefined();
+    expect(recoveryWrite?.data.xml_assinado).toBeUndefined(); // not cleared
+    expect((docs['pedidos/PED-2/nfev4/s6'] as { xml_assinado: string }).xml_assinado).toBe(
+      storedWithDigest,
+    );
   });
 
   it('preserves the nRec saved on cStat=103 — a consSit outcome carries no receipt', async () => {

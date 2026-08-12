@@ -1,4 +1,4 @@
-export type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
+export type { ProdutoDataPort, ProdutoSnapshot, ProdutoKitFlag, ProdutoWriteOp } from './port';
 
 export {
   movimentacaoInputSchema,
@@ -7,10 +7,6 @@ export {
 } from './estoqueComando';
 
 export {
-  buildPrecoHistoryOps,
-  buildCustoHistoryOp,
-  recordPrecoHistory,
-  recordCustoHistory,
   buildExtraDataWriteOps,
   saveProdutoExtraData,
   buildLocalizacaoOp,
@@ -18,6 +14,7 @@ export {
   type TipoMovimentacao,
   type MovimentacaoInput,
   type MovimentacaoPlan,
+  type EstoqueAtual,
   buildImpostoWriteOps,
   saveProdutoImpostos,
   buildChildrenComponentesKitOps,
@@ -26,8 +23,8 @@ export {
   buildKitStatusChildOps,
   propagateKitStatusToChildren,
   type KitStatusChange,
-  propagatePrecosToChildren,
-  applyPrecosChange,
+  resolveKitGuardInputs,
+  type ResolvedKitGuards,
   findProdutoReferences,
   hasReferences,
   describeReferences,

@@ -120,8 +120,8 @@ export const PERM = {
     write: 1n << 89n,
     delete: 1n << 90n,
   },
-  // ImpostoCategoria — `categorias/{categoriaId}/impostocategoria`
-  // subcollection. Historically mis-assigned to bits 78-80: bit 80 belongs to
+  // ImpostoCategoria — `categorias/{categoriaId}/imposto` subcollection
+  // (legacy Flutter wire name). Historically mis-assigned to bits 78-80: bit 80 belongs to
   // arquivo.read, and 78-79 sit in the fiscal byte but were never grantable
   // (absent from this map, the cargo editor and ALL_PERMS), so relocating to
   // byte 12 has no migration cost. Bits 78-79 stay unused; do not reuse them
@@ -132,8 +132,8 @@ export const PERM = {
     write: 1n << 97n,
     delete: 1n << 98n,
   },
-  // RegraImposto — `operacao/{operacaoId}/regraimposto` subcollection.
-  // Historically mis-assigned to bits 81-83 (81-82 belong to arquivo
+  // RegraImposto — `operacao/{operacaoId}/regras` subcollection (legacy
+  // Flutter wire name). Historically mis-assigned to bits 81-83 (81-82 belong to arquivo
   // write/delete); never grantable, relocated alongside impostoCategoria in
   // byte 12. Mirrored by `regraImpostoMeta` in
   // packages/schemas/src/regraImposto.ts.
@@ -141,6 +141,19 @@ export const PERM = {
     read: 1n << 99n,
     write: 1n << 100n,
     delete: 1n << 101n,
+  },
+  // CMUN — the CEP-faixa → IBGE município table (legacy Flutter `TabelaoCmun`,
+  // permCode 'c2'). Byte 13; bits 102-103 are the spare tail of byte 12 and
+  // cannot hold a three-bit domain. Reads must stay grantable: the Flutter app
+  // still queries this collection during the dual run, and a collection with no
+  // readable rules block is denied outright. Writes are `serverOwned` — the
+  // ruleset denies every client write regardless of this bit; it exists so the
+  // generator has a single PERM bit per action, which `claims-map.ts` requires.
+  // Mirrored by `cmunMeta` in packages/schemas/src/cmun.ts.
+  cmun: {
+    read: 1n << 104n,
+    write: 1n << 105n,
+    delete: 1n << 106n,
   },
 } as const;
 

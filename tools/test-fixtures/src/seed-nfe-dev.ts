@@ -301,13 +301,16 @@ export async function cleanupDevNFe(): Promise<{ deleted: number }> {
   return { deleted };
 }
 
+/** A malformed/invalid `--estado=` CLI flag — caught at the call site to print a clean message. */
+class FlagUsageError extends Error {}
+
 /** Parse `--estado=<code>` from argv, validating against the wire codes. */
 function parseEstadoFlag(): string | null {
   const arg = process.argv.find((a) => a.startsWith('--estado='));
   if (!arg) return null;
   const code = arg.slice('--estado='.length);
   if (!ESTADO_CODES.includes(code)) {
-    throw new Error(`Invalid --estado=${code}. Valid codes: ${ESTADO_CODES.join(' ')}`);
+    throw new FlagUsageError(`Invalid --estado=${code}. Valid codes: ${ESTADO_CODES.join(' ')}`);
   }
   return code;
 }
@@ -329,8 +332,9 @@ if (isDirectInvocation) {
     let estado: string | null;
     try {
       estado = parseEstadoFlag();
-    } catch (err: unknown) {
-      console.error(err instanceof Error ? err.message : err);
+    } catch (err) {
+      if (!(err instanceof FlagUsageError)) throw err;
+      console.error(err.message);
       process.exit(1);
     }
     runner = seedDevNFe(estado).then(({ written, estado: applied }) => {

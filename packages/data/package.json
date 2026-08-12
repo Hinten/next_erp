@@ -10,27 +10,32 @@
     "./hooks": "./src/hooks/index.ts",
     "./hooks/usePipelineSnapshot": "./src/hooks/usePipelineSnapshot.ts",
     "./pipeline-queries": "./src/pipeline-queries.ts",
-    "./audit": "./src/audit.ts",
     "./server": "./src/server/index.ts",
     "./admin": "./src/admin/index.ts",
+    "./admin/cache": "./src/admin/cache/index.ts",
+    "./admin/clientes": "./src/admin/clientes/index.ts",
     "./admin/collections": "./src/admin/collections/index.ts",
+    "./admin/grpcErrors": "./src/admin/grpcErrors.ts",
+    "./admin/notifications": "./src/admin/notifications/index.ts",
     "./produto": "./src/produto/index.ts",
+    "./balanco": "./src/balanco/index.ts",
     "./pedido": "./src/pedido/index.ts"
   },
   "scripts": {
-    "lint": "echo 'no lint configured for this package yet'",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@delfrance/core": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase": "^12.13.0",
-    "zod": "^4.4.3"
+    "firebase": "catalog:",
+    "zod": "catalog:"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5",
-    "firebase-admin": "^13",
+    "firebase-admin": "^14",
     "react": ">=18"
   },
   "peerDependenciesMeta": {
@@ -45,12 +50,14 @@
     }
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "@tanstack/react-query": "^5.100.10",
-    "@types/react": "^19.2.0",
-    "firebase-admin": "^13.9.0",
-    "react": "^19.2.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "@tanstack/react-query": "catalog:",
+    "@types/react": "catalog:",
+    "eslint": "catalog:",
+    "firebase-admin": "catalog:",
+    "react": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

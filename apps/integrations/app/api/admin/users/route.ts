@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { FirebaseAppError } from 'firebase-admin/app';
+import { FirebaseAuthError } from 'firebase-admin/auth';
 import { z } from 'zod';
 import { PERM, rulesClaimsFromBits } from '@delfrance/auth';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
@@ -27,8 +29,11 @@ function err(status: number, body: ErrorBody) {
   return NextResponse.json(body, { status });
 }
 
-function mapFirebaseError(e: unknown): { status: number; body: ErrorBody } {
-  const code = (e as { code?: string }).code;
+function mapFirebaseError(e: FirebaseAuthError | FirebaseAppError): {
+  status: number;
+  body: ErrorBody;
+} {
+  const code = e.code;
   switch (code) {
     case 'auth/email-already-exists':
       return { status: 409, body: { error: 'E-mail já cadastrado.', code } };
@@ -43,10 +48,7 @@ function mapFirebaseError(e: unknown): { status: number; body: ErrorBody } {
     default:
       return {
         status: 500,
-        body: {
-          error: e instanceof Error ? e.message : 'Erro interno.',
-          code,
-        },
+        body: { error: e.message, code },
       };
   }
 }
@@ -127,7 +129,12 @@ export async function POST(req: Request) {
     });
     uid = created.uid;
   } catch (e) {
-    if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
+    // createUser rejects with FirebaseAuthError for input-level failures
+    // ('auth/email-already-exists', 'auth/invalid-password', …) and
+    // FirebaseAppError when the Admin SDK itself failed to initialize
+    // ('app/invalid-credential' → mapFirebaseError's 500 default).
+    // Anything else is unexpected: rethrow.
+    if (e instanceof FirebaseAuthError || e instanceof FirebaseAppError) {
       const { status, body } = mapFirebaseError(e);
       return err(status, body);
     }
@@ -145,6 +152,8 @@ export async function POST(req: Request) {
 
   const usuarioDoc: Usuario = {
     nome: body.nome,
+    // Nickname only applies to sem-auth external-channel contacts (ML buyers).
+    apelido: null,
     email: body.email,
     cargos: [...cargosById.keys()],
     colaborador: body.colaborador,
@@ -153,7 +162,11 @@ export async function POST(req: Request) {
     jaFoiColaborador: body.colaborador,
     jaFoiSuperUser: body.isSuperUser,
     ultimoAcesso: null,
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
+    // This admin-created account is always a real Firebase Auth user (with
+    // an email), never a sem-auth external-channel contact — see
+    // `usuarioSchema`'s `externalId` doc comment.
+    externalId: null,
   };
   await usuarioCollection.set(db, {}, uid, usuarioDoc);
 

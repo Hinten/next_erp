@@ -4,6 +4,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
   mediaPath,
   nowMicros,
   productAnexoPath,
@@ -193,13 +194,14 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
       .doc(ownerId)
       .set({ fotos: [{ arquivoOuterRef: `arquivos/${ref.id}` }], videos: [], anexos: [] });
 
-    // Inject the candidate batch — the real fetch is a regex pipeline, which does
-    // not run in the emulator. The owner lookup (`resolveReferenced`) is the REAL
-    // getAll-based default, so this exercises the actual reference resolution.
+    // Inject a fixed page (skipping the real document-key pagination) — the
+    // owner lookup (`resolveReferenced`) is the REAL getAll-based default, so
+    // this still exercises the actual reference resolution.
     const candidates = [ref, unref, vid, anx, missing].map((c) => ({
       ref: db.collection('arquivos').doc(c.id),
       id: c.id,
       filepath: c.filepath,
+      criadoEm: past,
     }));
     await sweepUnreferencedArquivos(db, bucket, async () => candidates);
 
@@ -208,6 +210,170 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     expect((await db.collection('arquivos').doc(vid.id).get()).exists).toBe(false); // orphan video → deleted
     expect((await db.collection('arquivos').doc(anx.id).get()).exists).toBe(false); // orphan anexo → deleted
     expect((await db.collection('arquivos').doc(missing.id).get()).exists).toBe(false); // owner gone → deleted
+  });
+
+  it('unreferenced sweep persists a round-robin cursor: advances on a full page, wraps on a short one (#234)', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const cursorRef = db
+      .collection('arquivoOrphanSweepState')
+      .doc(ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID);
+    await cursorRef.delete(); // start clean — the doc is a singleton shared across ticks
+
+    // `filepath: null` → parseOwnedMediaDir rejects every row, so no delete or
+    // owner-lookup is attempted; this isolates the assertions to cursor
+    // mechanics (already covered separately by the test above).
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      ref: db.collection('arquivos').doc(`fake-full-${i}`),
+      id: `fake-full-${i}`,
+      filepath: null,
+      criadoEm: null,
+    }));
+    await sweepUnreferencedArquivos(db, bucket, async () => fullPage);
+    expect((await cursorRef.get()).data()?.lastKey).toBe('fake-full-99'); // full page → cursor advances, no wrap
+
+    const shortPage = [
+      {
+        ref: db.collection('arquivos').doc('fake-short-0'),
+        id: 'fake-short-0',
+        filepath: null,
+        criadoEm: null,
+      },
+    ];
+    await sweepUnreferencedArquivos(db, bucket, async () => shortPage);
+    expect((await cursorRef.get()).data()?.lastKey).toBeNull(); // short page → reached the end → wraps
+
+    await cursorRef.delete();
+  });
+
+  it('unreferenced sweep (real page fetch, no seam) reclaims orphans via document-key pagination (#234)', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const cursorRef = db
+      .collection('arquivoOrphanSweepState')
+      .doc(ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID);
+    await cursorRef.delete();
+
+    const ownerId = `p${randomUUID().replace(/-/g, '')}`; // owner produto never created → every seeded arquivo is an orphan
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const hashes = Array.from({ length: 3 }, () => randomUUID().replace(/-/g, ''));
+    for (const hash of hashes) {
+      const oPath = productOriginalPath(ownerId, hash, 'png');
+      const slash = oPath.lastIndexOf('/');
+      await db
+        .collection('arquivos')
+        .doc(productArquivoId(ownerId, hash))
+        .set({
+          filetype: 'image',
+          filepath: oPath.slice(0, slash),
+          filename: oPath.slice(slash + 1),
+          contentType: 'image/png',
+          url: null,
+          externalIds: [],
+          uploadState: 'finalized',
+          criadoEm: past,
+        });
+    }
+
+    // No seams: exercises the real `fetchArquivoPage` (a classic
+    // FieldPath.documentId() query — no pipeline, unlike the old regex scan)
+    // and the real `resolveReferencedRefs`.
+    await sweepUnreferencedArquivos(db, bucket);
+
+    for (const hash of hashes) {
+      expect(
+        (await db.collection('arquivos').doc(productArquivoId(ownerId, hash)).get()).exists,
+      ).toBe(false);
+    }
+
+    await cursorRef.delete();
+  });
+
+  it('real page fetch resumes after a persisted cursor: skips docs at/before it, reaps docs after it (#234)', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const cursorRef = db
+      .collection('arquivoOrphanSweepState')
+      .doc(ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID);
+    await cursorRef.delete();
+
+    const ownerId = `p${randomUUID().replace(/-/g, '')}`; // owner produto never created → every seeded arquivo is an orphan
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const seed = async (docId: string) => {
+      const oPath = productOriginalPath(ownerId, randomUUID().replace(/-/g, ''), 'png');
+      const slash = oPath.lastIndexOf('/');
+      await db
+        .collection('arquivos')
+        .doc(docId)
+        .set({
+          filetype: 'image',
+          filepath: oPath.slice(0, slash),
+          filename: oPath.slice(slash + 1),
+          contentType: 'image/png',
+          url: null,
+          externalIds: [],
+          uploadState: 'finalized',
+          criadoEm: past,
+        });
+    };
+    // Explicit, orderable doc ids (independent of the usual `<ownerId>_<hash>`
+    // convention — the sweep only cares about `filepath`, not the id shape) so
+    // the key ordering the cursor relies on is deterministic in this test.
+    const beforeId = `aaa-cursor-test-${randomUUID().replace(/-/g, '')}`;
+    const afterId = `zzz-cursor-test-${randomUUID().replace(/-/g, '')}`;
+    await seed(beforeId);
+    await seed(afterId);
+
+    // Pretend a previous tick already scanned through `beforeId` — the real
+    // fetch's `startAfter(lastKey)` must exclude it (and anything before it),
+    // not just the seam-based mechanics tested above.
+    await cursorRef.set({ lastKey: beforeId, updatedAt: past });
+
+    await sweepUnreferencedArquivos(db, bucket); // real fetch + real resolve, no seams
+
+    expect((await db.collection('arquivos').doc(beforeId).get()).exists).toBe(true); // before the cursor → never scanned
+    expect((await db.collection('arquivos').doc(afterId).get()).exists).toBe(false); // after the cursor → scanned, orphaned → deleted
+
+    await db.collection('arquivos').doc(beforeId).delete(); // cleanup — the sweep correctly never touches it
+    await cursorRef.delete();
+  });
+
+  it('real page fetch coerces a legacy non-numeric criadoEm so old docs are still swept (#234)', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const cursorRef = db
+      .collection('arquivoOrphanSweepState')
+      .doc(ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID);
+    await cursorRef.delete();
+
+    const ownerId = `p${randomUUID().replace(/-/g, '')}`; // owner produto never created → orphan
+    const hash = randomUUID().replace(/-/g, '');
+    const oPath = productOriginalPath(ownerId, hash, 'png');
+    const slash = oPath.lastIndexOf('/');
+    const id = productArquivoId(ownerId, hash);
+    // Legacy shape: an ISO string instead of the schema's µs-int wire format —
+    // `microsSinceEpoch()` tolerates this on a normal read via `coerceToMicros`;
+    // the sweep's raw-field fetch must too, or such a doc is skipped forever.
+    const pastIso = new Date(Number(nowMicros() - 10 * DAY_MICROS) / 1000).toISOString();
+    await db
+      .collection('arquivos')
+      .doc(id)
+      .set({
+        filetype: 'image',
+        filepath: oPath.slice(0, slash),
+        filename: oPath.slice(slash + 1),
+        contentType: 'image/png',
+        url: null,
+        externalIds: [],
+        uploadState: 'finalized',
+        criadoEm: pastIso,
+      });
+
+    await sweepUnreferencedArquivos(db, bucket); // real fetch, no seams
+
+    expect((await db.collection('arquivos').doc(id).get()).exists).toBe(false);
+
+    await cursorRef.delete();
   });
 
   it('resolveReferencedArquivoRefs reads only the named produtos and skips missing ones', async () => {

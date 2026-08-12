@@ -8,7 +8,8 @@ name: E2E — Cadastros
 # its own GITHUB_RUN_ID isolates its Firestore namespace + ephemeral user.
 on:
   pull_request:
-    branches: [master, main]
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
     paths:
       - 'apps/web/**'
       - 'packages/schemas/**'
@@ -44,6 +45,10 @@ jobs:
           github.event.pull_request.head.repo.fork == false }}
     uses: ./.github/workflows/e2e-reusable.yml
     with:
-      projects: smoke crud-cadastros
+      # crud-cadastros-recalculo depends on crud-cadastros (playwright.config.ts)
+      # so it only starts once every other cadastros CRUD spec — including
+      # their `afterAll` cleanup — has finished, avoiding a shared-catalog
+      # write race with the bulk price-recalculation suite (#544).
+      projects: smoke crud-cadastros crud-cadastros-recalculo
       slug: cadastros
     secrets: inherit

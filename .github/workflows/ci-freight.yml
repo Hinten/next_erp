@@ -12,16 +12,19 @@ on:
     paths:
       - 'apps/melhor-envio/**'
       - 'packages/integrations/freight-br/**'
-      - 'packages/schemas/src/frete.ts'
+      # Under `shared/` since 6ab8d290 — a stale root path silently matches nothing.
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-freight.yml'
   pull_request:
-    branches: [master, main]
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
     paths:
       - 'apps/melhor-envio/**'
       - 'packages/integrations/freight-br/**'
-      - 'packages/schemas/src/frete.ts'
+      # Under `shared/` since 6ab8d290 — a stale root path silently matches nothing.
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-freight.yml'
@@ -53,7 +56,9 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
           pnpm --version
 
       - name: Get pnpm store path
@@ -128,7 +133,10 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
 
       - name: Install
         run: pnpm install --frozen-lockfile

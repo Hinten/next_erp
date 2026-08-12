@@ -1,3 +1,4 @@
+import { deleteDocumentSubtree } from '@delfrance/data/admin';
 import { db } from './admin';
 import { DEV_INTEGRACAO_ID } from './seed-filiais-dev';
 import { DEV_OPERACAO_ID } from './seed-operacoes-dev';
@@ -298,7 +299,7 @@ const PEDIDOS: PedidoSeed[] = [
     valorCobrado: 100.0,
     // Resolver cascade exercise — items have NO `imposto` stamped, so
     // the orchestrator must resolve via the `regraImposto` doc seeded
-    // under `operacao/{DEV_OPERACAO_ID}/regraimposto/{DEV_REGRA_IMPOSTO_ID}`
+    // under `operacao/{DEV_OPERACAO_ID}/regras/{DEV_REGRA_IMPOSTO_ID}`
     // (matches produtos:['dev-camiseta-pai'] → CSOSN 102 + PIS/COFINS 49).
     // Without that rule the emit would throw NFeMissingImpostoError.
     pagamentos: [{ forma_de_pagamento: 1, valor: 100.0, aVista: true }],
@@ -319,9 +320,9 @@ async function writeCliente(): Promise<void> {
     // Known-valid test CPF (passes check digits). PF avoids
     // cStat=234 ("IE do destinatário não vinculada ao CNPJ") — the
     // previous PJ pair (CNPJ 11222333000181 + IE 110042490114) was
-    // not recognised by SEFAZ-SP HOM. PF has no IE; the orchestrator
-    // stamps `indIEDest='9'` (Não Contribuinte) and the paired
-    // `operacao.ehConsumidorFinal=true` keeps `indFinal='1'` so
+    // not recognised by SEFAZ-SP HOM. A pessoa física always gets
+    // `indIEDest='9'` (Não Contribuinte) and never an `<IE>`, and the
+    // paired `operacao.ehConsumidorFinal=true` keeps `indFinal='1'` so
     // SEFAZ doesn't reject with cStat=696.
     cpf_cnpj: '12345678909',
     idEstrangeiro: null,
@@ -528,22 +529,28 @@ export async function seedDevPedidos(): Promise<{ created: number }> {
 
 export async function cleanupDevPedidos(): Promise<{ deleted: number }> {
   let deleted = 0;
-  for (const id of devPedidoIds()) {
-    // Delete the pedido and its ENTIRE subtree in one BulkWriter walk.
-    // Firestore doesn't cascade subcollections when the parent doc is
-    // deleted, and the pedido schema declares six (`itens`, `pagamentos`,
-    // `historicoEstadoPedido`, `incidentes`, `frete`, `nfev4`) plus a
-    // `nfev4/{nfeId}/cartacorrecao` grandchild — a hardcoded list orphaned
-    // everything not in it (#257). `recursiveDelete` sweeps the whole
-    // subtree with no name enumeration, so new subcollections are covered
-    // automatically. Mirrors `cascadeProdutoDeletion` in
-    // apps/functions/src/produtos/onProdutoDeleted.ts.
-    await db().recursiveDelete(db().collection('pedidos').doc(id));
-    deleted += 1;
+  const writer = db().bulkWriter();
+  try {
+    for (const id of devPedidoIds()) {
+      // Delete the pedido and its ENTIRE subtree. Firestore doesn't cascade
+      // subcollections when the parent doc is deleted, and the pedido schema
+      // declares six (`itens`, `pagamentos`, `historicoEstadoPedido`,
+      // `incidentes`, `frete`, `nfev4`) plus a `nfev4/{nfeId}/cartacorrecao`
+      // grandchild — a hardcoded list orphaned everything not in it (#257).
+      // `deleteDocumentSubtree` asks `listCollections()` rather than a name
+      // list, so new subcollections are covered automatically AND it avoids
+      // `recursiveDelete`'s kindless descendant scan, which Firestore
+      // Enterprise cannot index (#728). Mirrors `cascadeProdutoDeletion` in
+      // apps/functions/src/produtos/onProdutoDeleted.ts.
+      await deleteDocumentSubtree(db(), db().collection('pedidos').doc(id), { writer });
+      deleted += 1;
+    }
+    // The cliente can own an `enderecos` subcollection (the endereço fiscal
+    // stamped on withCliente pedidos) — the same walk sweeps it too.
+    await deleteDocumentSubtree(db(), db().collection('clientes').doc(CLIENTE_ID), { writer });
+  } finally {
+    await writer.close();
   }
-  // The cliente can own an `enderecos` subcollection (the endereço fiscal
-  // stamped on withCliente pedidos) — recursiveDelete sweeps it too.
-  await db().recursiveDelete(db().collection('clientes').doc(CLIENTE_ID));
   return { deleted };
 }
 

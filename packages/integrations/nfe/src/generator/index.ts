@@ -63,7 +63,12 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     utcOffsetMinutes,
   });
   const emit = buildEmit(input.filial);
-  const dest = buildDest(input.cliente, input.enderecoDest, input.ambiente);
+  const dest = buildDest(
+    input.cliente,
+    input.enderecoDest,
+    input.ambiente,
+    input.operacao.ehExterior,
+  );
 
   // Codegen interfaces lack an index signature, so cast to the serializer's
   // XmlValue. The shapes are structurally compatible — the cast is type-only.

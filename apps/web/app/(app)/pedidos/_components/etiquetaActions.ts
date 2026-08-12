@@ -5,9 +5,10 @@
  * `emitirOuImprimirFrete` (`.old/lib/despacho/pages/emitirOuImprimirFrete.dart`),
  * which was a unified BUY-or-reprint action dispatched by carrier `tipo`.
  *
- * v1 supports **Melhor Envio only** (the only ported carrier). `etiquetaRowState`
- * is the pure dispatch decision; `resolveEtiquetaCartInput` lazily resolves the
- * cart primitives from a pedido **doc** (not the form) for the buy.
+ * Supports Melhor Envio (buy/reprint) and Mercado Livre (fetch-label via the
+ * marketplace's own client). `etiquetaRowState` is the pure dispatch decision;
+ * `resolveEtiquetaCartInput` lazily resolves the cart primitives from a pedido
+ * **doc** (not the form) for the buy.
  */
 import { type DocumentReference, type Firestore, getDoc, getDocs } from 'firebase/firestore';
 import {
@@ -30,13 +31,25 @@ import { type ClienteDestinoLike, buildPedidoCartPayload } from './tabs/frete/me
 import type { FreteInicialFormState } from './types';
 
 /** Which etiqueta action the row offers. */
-export type EtiquetaAction = 'imprimir' | 'comprar' | 'quote-first' | 'unsupported' | 'none';
+export type EtiquetaAction =
+  | 'imprimir'
+  | 'comprar'
+  | 'fetch-label'
+  | 'quote-first'
+  | 'unsupported'
+  | 'none';
 
 export interface EtiquetaRowStateInput {
   /** The integração tipo (null while still resolving / no integração). */
   readonly tipo: IntegracaoFrete | null;
   readonly printLabelId: string | null;
   readonly externalOptionId: string | null;
+  /**
+   * The marketplace shipment id (`freteInicial.externalId`). NOT a dispatch
+   * gate: a fetch-label tipo offers the action even without it — the provider
+   * surfaces the missing-shipment support error, same rule as the checkout.
+   */
+  readonly externalId: string | null;
   readonly estado: EstadoFrete | undefined;
 }
 
@@ -49,11 +62,11 @@ export interface EtiquetaRowStateResult {
 /**
  * Pure dispatch: given the resolved carrier tipo + the persisted frete fields,
  * decide which action the row offers. Driven by `FREIGHT_TIPO_CAPS` rather than a
- * hard-coded carrier check — a bought, printable label → reprint; a selected
+ * hard-coded carrier check — a bought, printable label → reprint; a fetch-label
+ * tipo (Mercado Livre) → fetch + print via the marketplace client; a selected
  * quote on a buyable tipo → buy; a quotable tipo with neither → quote-first;
- * anything else → unsupported. Today only Melhor Envio sets the `can*` flags, so
- * every other tipo still resolves to `'unsupported'` (the marketplace fetch flow
- * is Phase 5/6).
+ * anything else → unsupported. The other marketplaces set no `can*` flag, so
+ * they still resolve to `'unsupported'` (their fetch flows are Phase 5/6).
  */
 export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowStateResult {
   const { tipo, printLabelId, externalOptionId, estado } = input;
@@ -64,9 +77,36 @@ export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowState
   // unknown/legacy value (→ unsupported) instead of throwing on a missing row.
   const caps = freightCapsFor(tipo);
   if (printLabelId != null && caps.canPrint) return { action: 'imprimir', needsPostedConfirm };
+  // Deliberately NOT gated on `externalId` — the provider surfaces the legacy
+  // support error for a missing shipment id, same rule as the checkout.
+  if (caps.canFetchLabel) return { action: 'fetch-label', needsPostedConfirm };
   if (caps.canBuy && externalOptionId != null) return { action: 'comprar', needsPostedConfirm };
   if (caps.canQuote) return { action: 'quote-first', needsPostedConfirm };
   return { action: 'unsupported', needsPostedConfirm };
+}
+
+/**
+ * Direction mismatch between the pedido and its frete — legacy port of the
+ * `emitirOuImprimirFrete` pre-print confirm: printing a reverse label on a
+ * saída (or a non-reverse one on an entrada) is usually a mistake, so the row
+ * action asks before printing. `null` = directions agree, print freely.
+ */
+export type EtiquetaMismatch = 'saida-reversa' | 'entrada-nao-reversa' | null;
+
+/**
+ * Pure predicate. Nullish tolerant with the wire defaults (`ehReverso` → false,
+ * `ehSaida` → true): a mismatch is exactly when the resolved flags are EQUAL —
+ * a saída ships loja → cliente (não reverso), an entrada cliente → loja
+ * (reverso), so agreement means `ehReverso === !ehSaida`.
+ */
+export function etiquetaMismatch(
+  ehReverso: boolean | null | undefined,
+  ehSaida: boolean | null | undefined,
+): EtiquetaMismatch {
+  const reverso = ehReverso ?? false;
+  const saida = ehSaida ?? true;
+  if (reverso !== saida) return null;
+  return saida ? 'saida-reversa' : 'entrada-nao-reversa';
 }
 
 export type ResolveEtiquetaCartResult =

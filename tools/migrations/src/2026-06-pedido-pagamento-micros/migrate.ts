@@ -5,14 +5,23 @@ import {
   type Query,
   type QueryDocumentSnapshot,
 } from 'firebase-admin/firestore';
-import { type MigrationContext, type MigrationSummary, runMigration } from '../runner';
 import {
+  isMainModule,
+  type MigrationContext,
+  type MigrationSummary,
+  runMigration,
+} from '../runner';
+import {
+  FRETE_FIELDS,
+  PAGAMENTO_FIELDS,
+  PEDIDO_FIELDS,
   buildUpdate,
   transformMetodoPgto,
   transformPagamento,
   transformPedido,
   type DocTransform,
 } from './transform';
+import { emptyStats, formatReport, record as recordShape, type ShapeStats } from './shapeReport';
 
 /**
  * Backfill: `pedido` / `pagamento` / embedded `frete` / `metodo_pgto` datetime
@@ -62,7 +71,54 @@ async function* pagesByDocId(coll: CollectionReference): AsyncGenerator<QueryDoc
   }
 }
 
+/** `--report-only`: classify every datetime field, write nothing, print a table. */
+async function runReport(ctx: MigrationContext): Promise<MigrationSummary> {
+  const porCampo = new Map<string, ShapeStats>();
+  const anota = (campo: string, valor: unknown): void => {
+    let s = porCampo.get(campo);
+    if (!s) porCampo.set(campo, (s = emptyStats()));
+    recordShape(s, valor);
+  };
+  let docsScanned = 0;
+
+  for await (const docs of pagesByDocId(ctx.db.collection('pedidos'))) {
+    for (const doc of docs) {
+      docsScanned += 1;
+      const data = doc.data() as Record<string, unknown>;
+      for (const f of PEDIDO_FIELDS) anota(`pedido.${f}`, data[f]);
+
+      const frete = data.freteInicial;
+      if (frete != null && typeof frete === 'object') {
+        const bloco = frete as Record<string, unknown>;
+        for (const f of FRETE_FIELDS) anota(`pedido.freteInicial.${f}`, bloco[f]);
+      }
+
+      for (const nome of ['pagamento', 'pagamentos'] as const) {
+        const pagSnap = await doc.ref.collection(nome).get();
+        for (const pag of pagSnap.docs) {
+          docsScanned += 1;
+          const pagData = pag.data() as Record<string, unknown>;
+          for (const f of PAGAMENTO_FIELDS) anota(`${nome}.${f}`, pagData[f]);
+        }
+      }
+    }
+  }
+
+  for await (const docs of pagesByDocId(ctx.db.collection('metodo_pgto'))) {
+    for (const doc of docs) {
+      docsScanned += 1;
+      anota('metodo_pgto.dataCadastro', doc.get('dataCadastro'));
+    }
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(formatReport(porCampo));
+  return { docsScanned, docsChanged: 0 };
+}
+
 async function run(ctx: MigrationContext): Promise<MigrationSummary> {
+  if (ctx.reportOnly) return runReport(ctx);
+
   let docsScanned = 0;
   let docsChanged = 0;
 
@@ -74,12 +130,19 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
       const data = doc.data() as Record<string, unknown>;
       if (await applyTransform(ctx, doc.ref, data, transformPedido)) docsChanged += 1;
 
-      // pagamento is a small per-pedido subcollection — a single get is fine.
-      const pagSnap = await doc.ref.collection('pagamento').get();
-      for (const pag of pagSnap.docs) {
-        docsScanned += 1;
-        const pagData = pag.data() as Record<string, unknown>;
-        if (await applyTransform(ctx, pag.ref, pagData, transformPagamento)) docsChanged += 1;
+      // BOTH pagamento subcollections. Legacy Flutter wrote the SINGULAR
+      // `pagamento`; this app writes the PLURAL `pagamentos`
+      // (`pagamentoMeta.collectionPath`). Walking only one silently skips every
+      // document written by the other — and a clean report would then be read as
+      // "pagamento datetimes are canonical" when half of them were never looked
+      // at. Both are small per-pedido subcollections, so a single get each is fine.
+      for (const nome of ['pagamento', 'pagamentos'] as const) {
+        const pagSnap = await doc.ref.collection(nome).get();
+        for (const pag of pagSnap.docs) {
+          docsScanned += 1;
+          const pagData = pag.data() as Record<string, unknown>;
+          if (await applyTransform(ctx, pag.ref, pagData, transformPagamento)) docsChanged += 1;
+        }
       }
     }
   }
@@ -97,13 +160,8 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   return { docsScanned, docsChanged };
 }
 
-const isDirectInvocation =
-  process.argv[1]?.endsWith('migrate.ts') === true ||
-  process.argv[1]?.endsWith('migrate.js') === true;
-
-if (isDirectInvocation) {
+if (isMainModule(import.meta.url)) {
   runMigration('pedido-pagamento-micros', run).catch((err: unknown) => {
-    // eslint-disable-next-line no-console
     console.error(err);
     process.exitCode = 1;
   });

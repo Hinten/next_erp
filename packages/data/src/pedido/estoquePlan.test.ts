@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EstoqueAplicado, ItemDoPedido } from '@delfrance/schemas';
+import { TIPO_MOVIMENTO_ESTOQUE } from '@delfrance/schemas';
 import {
   calcularAlteracoesEstoque,
   planSincronizacaoEstoque,
@@ -253,7 +254,7 @@ describe('planSincronizacaoEstoque — apply / release / convergence', () => {
         alteracoes: {},
         efeito: { reservar: false, remover: false, adicionar: false },
         aplicado: aplicadoBase({ removido: { p1: 5 }, reservado: { p2: 1 } }),
-        tipoOverride: 'exclusaoPedido',
+        tipoOverride: TIPO_MOVIMENTO_ESTOQUE.exclusaoPedido,
       }),
     );
     expect(plan.deltas).toHaveLength(2);

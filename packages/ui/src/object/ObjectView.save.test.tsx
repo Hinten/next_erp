@@ -45,6 +45,7 @@ vi.mock('@mantine/notifications', async () => {
 });
 
 import { ObjectView } from './ObjectView';
+import { AfterSaveBlockedError } from './afterSaveBlocked';
 import { DELETE_MARK, stripMarkedForDeletion } from './markForDeletion';
 
 const schema = z.object({
@@ -58,6 +59,7 @@ function fakeCollection(): CollectionHandle<typeof schema> {
     ref: () => ({}) as never,
     docRef: () => ({}) as never,
     converter: {} as never,
+    merge: () => Promise.resolve(),
   };
 }
 
@@ -351,6 +353,78 @@ describe('ObjectView save flow', () => {
     });
     expect(onAfterSave).toHaveBeenCalledTimes(2);
     expect(screen.getByText('Falha ao salvar as variações.')).toBeTruthy();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('AfterSaveBlockedError surfaces in the alert and never navigates away', async () => {
+    // The record IS saved by the time onAfterSave runs; this error means the
+    // sibling step paused on purpose and put something in front of the operator
+    // (a write conflict to review). Calling onSaved would navigate off the very
+    // screen holding it.
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValue({ id: 'EXISTING', patch: {} });
+    const onSaved = vi.fn();
+    const onAfterSave = vi
+      .fn()
+      .mockRejectedValue(new AfterSaveBlockedError('O anúncio foi alterado por outra pessoa.'));
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          onAfterSave={onAfterSave}
+          onSaved={onSaved}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Bloqueado' } });
+      fireEvent.blur(nome);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(screen.getByText('O anúncio foi alterado por outra pessoa.')).toBeTruthy();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('AfterSaveBlockedError is handled on the pristine (NothingChanged) path too', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockRejectedValue(new NothingChanged('Nada alterado.'));
+    const onSaved = vi.fn();
+    const onAfterSave = vi
+      .fn()
+      .mockRejectedValue(new AfterSaveBlockedError('Conflito no anúncio.'));
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          onAfterSave={onAfterSave}
+          onSaved={onSaved}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(onAfterSave).toHaveBeenCalled();
+    expect(screen.getByText('Conflito no anúncio.')).toBeTruthy();
     expect(onSaved).not.toHaveBeenCalled();
   });
 

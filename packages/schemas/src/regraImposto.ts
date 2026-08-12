@@ -10,8 +10,7 @@ const PERM_REGRA_IMPOSTO_WRITE = 1n << 100n;
 const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
 
 /**
- * RegraImposto — subcoleção
- * `operacao/{operacaoId}/regraimposto/{auto-id}`.
+ * RegraImposto — subcoleção `operacao/{operacaoId}/regras/{auto-id}`.
  * Per-operação Imposto rule; the resolver's last fallback before the
  * pedido item carries no resolvable imposto (in which case emission
  * fails loudly).
@@ -21,6 +20,18 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  * array. Empty arrays do not match (so an empty rule never fires).
  * When multiple rules match, the first one in the loaded order wins
  * (Flutter parity — Firestore order, no priority field).
+ *
+ * **Wire = the legacy Flutter shape, read verbatim (#398/#423).** The
+ * Firestore collection ID is `regras` (the legacy Dart getter was NAMED
+ * `regraimposto`, but its collectionId was `'regras'`). Legacy docs carry
+ * an UPPERCASE `CFOP` (kept here as a read fallback — the resolver folds it
+ * into the engine's lowercase `cfop`), path-shaped `produtos`/`categorias`
+ * entries (`produtos/<uid>`, sometimes `documents/...`-prefixed, sometimes
+ * bare uids — the legacy writers were inconsistent; matching is by trailing
+ * segment), and free-form NCMs (matched digits-only via `normalizeNCM`, so
+ * the element schema is deliberately lenient — the MacrosTab form normalizes
+ * entries and rejects non-8-digit NCMs before writing). Both apps share the
+ * database — no migration.
  *
  * `nome` is optional but recommended for UI / audit.
  *
@@ -32,11 +43,13 @@ export const regraImpostoSchema = z.object({
   nome: z.string().min(1).max(255).nullable().default(null),
   produtos: z.array(z.string()).default([]),
   categorias: z.array(z.string()).default([]),
-  ncms: z.array(z.string().regex(/^\d{8}$/)).default([]),
+  ncms: z.array(z.string()).default([]),
   // Dados Gerais (lenient strings, optional — a rule may omit them; the
   // resolver re-validates via the engine `impostoSchema`).
   origem: z.string().nullable().optional(),
   cfop: z.string().nullable().optional(),
+  /** Legacy Flutter wire key (uppercase). Read fallback for `cfop` — never written by the new editor. */
+  CFOP: z.string().nullable().optional(),
   cfopInterestadual: z.string().nullable().optional(),
   NCM: z.string().nullable().optional(),
   NVE: z.string().nullable().optional(),
@@ -54,7 +67,7 @@ export const regraImpostoSchema = z.object({
 export type RegraImposto = z.infer<typeof regraImpostoSchema>;
 
 export const regraImpostoMeta: CollectionMetadata = {
-  collectionPath: 'operacao/{operacaoId}/regraimposto',
+  collectionPath: 'operacao/{operacaoId}/regras',
   permissions: {
     read: PERM_REGRA_IMPOSTO_READ,
     write: PERM_REGRA_IMPOSTO_WRITE,

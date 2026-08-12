@@ -1,10 +1,5 @@
-import {
-  isFreteJaPostado,
-  valuesEqual,
-  type EstadoFrete,
-  type EstadoPedido,
-  type Pedido,
-} from '@delfrance/schemas';
+import { ESTADO_PEDIDO, valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -105,11 +100,50 @@ export class PedidoConflictError extends Error {
 }
 
 /**
- * Doc metadata excluded from the concurrency snapshot: `ultimaModificacao` /
- * `timestamp` are stamps, not user data, so a difference in them alone is not a
- * meaningful conflict to warn about.
+ * Fields excluded from the concurrency snapshot.
+ *
+ * THE RULE: a field is excluded **iff no interactive editor in this application
+ * can author it** — a stamp, an event-clock watermark, or state a trigger owns.
+ * Everything else still conflicts, including fields the operator is not
+ * currently saving: that is the whole point of comparing a snapshot rather than
+ * a timestamp (see `remotelyChangedFields`).
+ *
+ * The rule is not new policy; it is what already produced every entry here:
+ *
+ *  - `ultimaModificacao` / `timestamp` — stamps, not user data.
+ *  - `lastMarketplaceUpdate` (#791) — the marketplace event-clock watermark, so
+ *    it moves whenever a channel import runs. While it was compared, any such
+ *    import hard-failed the save of an operator who merely had the pedido editor
+ *    open, with a conflict modal naming a field they cannot see or edit.
+ *  - `CAMPOS_ESTOQUE_SYNC` (#972) — the same failure, one trigger later. The
+ *    pedido→estoque sync writes these back seconds after the save that triggered
+ *    it and does NOT stamp `ultimaModificacao`, so this compare was the only
+ *    thing that saw the write-back. `estoqueAplicado` is in
+ *    `pedidoMeta.serverOwnedFields` (the rules DENY the client writing it) and
+ *    the two markers are read-only in the Estoque tab, so `buildPedidoPatch` can
+ *    never carry any of them — excluding them removes a false conflict without
+ *    opening an overwrite.
+ *
+ * ⚠️ What keeps this honest: `CAMPOS_OBSERVADOS ∩ CAMPOS_ESTOQUE_SYNC = ∅` in
+ * the sync (pinned by its own test), so the operator-visible CAUSE of a stock
+ * movement — `estado`, `itens`, `ehSaida` — is still compared and still
+ * conflicts.
  */
-const CONCURRENCY_IGNORE = new Set(['ultimaModificacao', 'timestamp']);
+const CONCURRENCY_IGNORE = new Set<string>([
+  'ultimaModificacao',
+  'timestamp',
+  'lastMarketplaceUpdate',
+  ...CAMPOS_ESTOQUE_SYNC,
+]);
+
+/**
+ * Is a remote change to `field` something the operator could have authored, and
+ * therefore worth interrupting them over? Exposed for the drift test that pins
+ * `serverOwnedFields ⊆ ignored` — the guard itself uses it directly.
+ */
+export function isIgnoredForConcurrency(field: string): boolean {
+  return CONCURRENCY_IGNORE.has(field);
+}
 
 /**
  * Field keys whose value changed between the doc as loaded into the editor
@@ -129,7 +163,7 @@ export function remotelyChangedFields(
   const keys = new Set([...Object.keys(baseline), ...Object.keys(current)]);
   const changed: string[] = [];
   for (const key of keys) {
-    if (CONCURRENCY_IGNORE.has(key)) continue;
+    if (isIgnoredForConcurrency(key)) continue;
     if (!valuesEqual(baseline[key], current[key])) changed.push(key);
   }
   return changed;
@@ -171,48 +205,13 @@ export async function savePedido(
 }
 
 // ---------------------------------------------------------------------------
-// Estado history (legacy `HistoricoEstadosPedido` write on estado change)
+// Estado history
 // ---------------------------------------------------------------------------
-
-const HISTORICO_ESTADO_PATH = (pedidoId: string, docId: string): string =>
-  `pedidos/${pedidoId}/historicoEstadoPedido/${docId}`;
-
-/**
- * Build one `historicoEstadoPedido` set-op recording a pedido's new `estado` and
- * who set it — mirror of the legacy `Pedido.save()` history write
- * (`models.dart:3838`). `data` is a µs-epoch stamp; `usuarioRef` is the
- * `documents/usuarios/<uid>` outer-ref string (null when unknown).
- */
-export function buildEstadoHistoryOp(
-  port: PedidoDataPort,
-  pedidoId: string,
-  estado: EstadoPedido,
-  usuarioRef: string | null,
-): PedidoWriteOp {
-  return {
-    type: 'set',
-    path: HISTORICO_ESTADO_PATH(pedidoId, port.newId()),
-    data: {
-      estado,
-      usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
-      data: port.now(),
-    },
-  };
-}
-
-/**
- * Append a `historicoEstadoPedido` audit row for a manual estado change. The
- * editor calls this AFTER the pedido doc save committed the new `estado`, so the
- * history reflects what was persisted; a future MCP agent calls it the same way.
- */
-export async function recordEstadoChange(
-  port: PedidoDataPort,
-  args: { pedidoId: string; estado: EstadoPedido; usuarioRef?: string | null },
-): Promise<void> {
-  await port.commit([
-    buildEstadoHistoryOp(port, args.pedidoId, args.estado, args.usuarioRef ?? null),
-  ]);
-}
+// There is deliberately NO history helper here. `historicoEstadoPedido` rows are
+// written exclusively by the `onPedidoEstadoChanged` Cloud Function, which
+// observes every `pedidos/{pedidoId}` write — so any code path that changes
+// `estado` is covered automatically and none may append rows itself (the rules
+// deny client writes to that subcollection).
 
 // ---------------------------------------------------------------------------
 // Incidentes (pedidos/{id}/incidentes subcollection CRUD)
@@ -304,6 +303,22 @@ export async function deletePagamento(
   await port.commit([{ type: 'delete', path: PAGAMENTO_PATH(args.pedidoId, args.pagamentoId) }]);
 }
 
+/**
+ * Create several NEW pagamento docs in one commit — the cheque parcela split
+ * (legacy `_adicionarCheques`: a cheque payment with `parcelas > 1` becomes one
+ * pagamento per installment instead of a single doc carrying the count). Each
+ * entry mints its own id via `buildPagamentoOp`; `port.commit` batches them
+ * atomically like every other multi-op write in this port.
+ */
+export async function saveChequeSplit(
+  port: PedidoDataPort,
+  args: { pedidoId: string; pagamentos: Record<string, unknown>[] },
+): Promise<void> {
+  await port.commit(
+    args.pagamentos.map((pagamento) => buildPagamentoOp(port, args.pedidoId, null, pagamento)),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Auto-estado from pagamentos (legacy `cadastroPedidoProvider` transition)
 // ---------------------------------------------------------------------------
@@ -318,14 +333,14 @@ export async function deletePagamento(
  * — participate.
  */
 const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
-  'iniciado',
-  'carrinho',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
-  'emAnalise',
-  'emProcessamento',
-  'pago',
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.pagamentoNaoRealizado,
+  ESTADO_PEDIDO.emAnalise,
+  ESTADO_PEDIDO.emProcessamento,
+  ESTADO_PEDIDO.pago,
 ]);
 
 /**
@@ -354,71 +369,61 @@ export function nextPedidoEstado(
   if (total <= 0) return null;
   const fullyPaid = valorPago >= total;
   if (fullyPaid) {
-    return estado === 'pago' ? null : { estado: 'pago', autorizarDespacho: true };
+    return estado === ESTADO_PEDIDO.pago
+      ? null
+      : { estado: ESTADO_PEDIDO.pago, autorizarDespacho: true };
   }
-  if (valorPago > 0 && estado !== 'pago' && estado !== 'aguardandoConfirmacaoDePagamento') {
-    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+  if (
+    valorPago > 0 &&
+    estado !== ESTADO_PEDIDO.pago &&
+    estado !== ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento
+  ) {
+    return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
-  if (estado === 'pago') {
+  if (estado === ESTADO_PEDIDO.pago) {
     // Was fully paid, no longer is → downgrade.
-    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+    return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
   return null;
 }
 
+// The client-side reconcile that used to live here
+// (`reconcilePedidoEstadoFromPagamentos`) was removed in favour of the
+// server-owned `reconcilePedidoEstado` (`../admin/pedidoReconcile`), exposed as
+// the `reconciliarPagamentoPedido` callable: the Firebase JS SDK cannot read a
+// query inside `runTransaction` (only documents), so the client could never sum
+// the pagamentos atomically with the pedido read and two concurrent reconciles
+// could settle on a stale estado (#308). The Admin SDK can, so the reconcile
+// moved server-side. `nextPedidoEstado` above stays — it is the pure rule the
+// server path applies.
+
 /**
- * Reconcile a pedido's `estado` from the total approved payments (`valorPago`),
- * porting the legacy transition that ran after each pagamento save/delete/status
- * change. Reads the pedido's own `valorCobrado` (total) transactionally, applies
- * {@link nextPedidoEstado}, and — only on a transition — writes the new `estado`
- * (flipping `freteInicial.estado` to `despachoAutorizado` when it becomes `pago`)
- * and appends a `historicoEstadoPedido` audit row (best-effort, mirroring
- * `recordEstadoChange`). A no-op when the estado already matches. Returns the new
- * estado, or `null` when nothing changed.
+ * Manually cancel a pedido — the operator-driven "Também deseja cancelar o
+ * pedido?" prompt shown after an NF-e cancelamento (#74, legacy
+ * `cancelamentoNFe.dart:229-261`). Sets `estado: 'cancelado'` unconditionally
+ * (no terminal-state gate: the operator explicitly chose this, unlike the
+ * payment-driven server reconcile in `../admin/pedidoReconcile`). Idempotent:
+ * a no-op when the pedido is already `cancelado` or missing. Returns whether
+ * the estado actually changed.
  *
- * `valorPago` is summed by the caller from a read taken just before this call,
- * not inside the transaction — the Firebase JS SDK can't read a query inside
- * `runTransaction` (only documents), so the pagamentos total and the pedido's
- * `valorCobrado` aren't one atomic snapshot. Two reconciles racing on the same
- * pedido can therefore briefly settle on a stale estado; it self-heals on the
- * next pagamento mutation. A fully consistent version would need a server-side
- * (admin SDK) reconcile.
+ * Writes ONLY the pedido doc. The `historicoEstadoPedido` row is appended by
+ * the `onPedidoEstadoChanged` trigger, which observes this very write and
+ * derives the actor from its auth context — so no `usuarioRef` is threaded
+ * through here, and appending a row by hand would now be denied by the rules
+ * (`meta.serverOwned`).
  */
-export async function reconcilePedidoEstadoFromPagamentos(
+export async function cancelarPedido(
   port: PedidoDataPort,
-  args: { pedidoId: string; valorPago: number; usuarioRef?: string | null },
-): Promise<EstadoPedido | null> {
-  let transitionedTo: EstadoPedido | null = null;
+  args: { pedidoId: string },
+): Promise<boolean> {
+  let changed = false;
   await port.updatePedido(args.pedidoId, (current) => {
     // Reset per attempt: the client adapter re-runs `apply` on transaction
     // contention, so only the final (committed) attempt must set this.
-    transitionedTo = null;
-    if (current === null) return {};
-    const estado = current.estado as EstadoPedido;
-    const total = typeof current.valorCobrado === 'number' ? current.valorCobrado : 0;
-    const next = nextPedidoEstado(estado, total, args.valorPago);
-    if (next === null) return {};
-    transitionedTo = next.estado;
-    const patch: Record<string, unknown> = { estado: next.estado, ultimaModificacao: port.now() };
-    if (
-      next.autorizarDespacho &&
-      current.freteInicial &&
-      typeof current.freteInicial === 'object'
-    ) {
-      const frete = current.freteInicial as Record<string, unknown>;
-      const freteEstado = frete.estado as EstadoFrete | undefined;
-      // Only authorize dispatch from a pre-shipment state — never regress an
-      // in-flight frete (postado / a caminho / entregue) back to authorized.
-      if (!freteEstado || !isFreteJaPostado(freteEstado)) {
-        patch.freteInicial = { ...frete, estado: 'despachoAutorizado' };
-      }
-    }
-    return patch;
+    changed = false;
+    if (current === null || current.estado === ESTADO_PEDIDO.cancelado) return {};
+    changed = true;
+    return { estado: ESTADO_PEDIDO.cancelado, ultimaModificacao: port.now() };
   });
-  if (transitionedTo !== null) {
-    await port.commit([
-      buildEstadoHistoryOp(port, args.pedidoId, transitionedTo, args.usuarioRef ?? null),
-    ]);
-  }
-  return transitionedTo;
+  return changed;
 }

@@ -10,6 +10,7 @@ import {
   type NFeEmitResult,
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
+import { ESTADO_NFE } from '@delfrance/schemas';
 import type { Pedido } from '@delfrance/schemas';
 
 import { dispatchEmitirNFe, NFeLoteNotImplementedError } from './bulkEmit';
@@ -45,6 +46,7 @@ function fakeClient(impl: NFeHttpClient['emitir']): NFeHttpClient {
     emitir: impl,
     emitirLote: vi.fn(),
     consultar: vi.fn(),
+    verificar: vi.fn(),
     consultaCadastro: vi.fn(),
     processarPendentes: vi.fn(),
     cancelar: vi.fn(),
@@ -62,7 +64,7 @@ function emitResult(over: Partial<NFeEmitResult> = {}): NFeEmitResult {
   return {
     nfeId: 'nfev4-001',
     pedidoId: 'PED-001',
-    estado: 'a',
+    estado: ESTADO_NFE.aprovada,
     chave: '35260514200166000187550010000000071000000018',
     nRec: '12345',
     cStat: '100',
@@ -109,7 +111,7 @@ describe('dispatchEmitirNFe', () => {
   it("EPEC 468 result → copyable yellow 'não sincronizado' toast (wait-and-retry)", async () => {
     const emitir = vi.fn().mockResolvedValue(
       emitResult({
-        estado: 'p',
+        estado: ESTADO_NFE.epecAprovado,
         cStat: '468',
         xMotivo: 'Rejeição: EPEC não Sincronizado na Base de Dados da SEFAZ Autorizadora',
         nRec: null,

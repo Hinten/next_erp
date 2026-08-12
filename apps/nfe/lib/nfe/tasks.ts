@@ -30,10 +30,20 @@ import type { TpEmis } from '@delfrance/integrations-nfe';
 
 import { safeLog } from './log';
 
-/** The `onTaskDispatched` function (and its auto-created queue) in apps/nfe/functions. */
-const RECONCILE_FUNCTION = 'reconciliarNfe';
+/**
+ * The deployed `onTaskDispatched` function name — which is ALSO its
+ * auto-provisioned Cloud Tasks queue name. Single source of truth, shared by the
+ * producer (here — `FirebaseTaskQueueScheduler` builds the region-qualified queue
+ * path from it) and the consumer (`apps/nfe/functions/src/reconciliar.ts`, whose
+ * `export const reconciliarNfe` MUST be named exactly this). Lives in this neutral
+ * shared module because the app cannot import the functions-trigger file (that
+ * would pull the Functions SDK into the Next bundle and run `onTaskDispatched` at
+ * load). Rename in BOTH places, or the producer enqueues onto a queue that no
+ * longer exists → the task silently drops. The CC-e variant rides the same queue.
+ */
+export const RECONCILE_FUNCTION = 'reconciliarNfe';
 /** Region the reconcile function/queue live in (must match the functions' FUNCTIONS_REGION). */
-const reconcileRegion = (): string => process.env.NFE_TASKS_REGION ?? 'us-east1';
+const reconcileRegion = (): string => process.env.NFE_TASKS_REGION?.trim() || 'us-east1';
 
 /**
  * JSON body the queue delivers to the reconcile function. Shared between the

@@ -124,6 +124,30 @@ export interface CollectionMetadata {
    * the `su` super-user claim does NOT bypass this.
    */
   serverOwnedFields?: ReadonlyArray<string>;
+  /**
+   * Suppresses the `match /{path=**}/<leaf>/{docId}` collection-group READ
+   * block the generator emits for every subcollection by default.
+   *
+   * That block exists so a client can run a `collectionGroup` query across all
+   * parents; it carries the same read claim as the parent-scoped block, so it
+   * widens the query *shape*, not who may read. Set this when no such query
+   * exists — a collection whose every read is scoped to one parent gains
+   * nothing from the block and only offers one more surface to get wrong.
+   * Ignored on top-level collections, which never get a group block.
+   */
+  noCollectionGroupRead?: boolean;
+  /**
+   * Marks a collection written EXCLUSIVELY by the Admin SDK (a Cloud
+   * Function trigger, never a client). The rules generator denies all client
+   * writes outright — `allow create, update, delete: if false;` — with no
+   * `su` super-user bypass, unlike the per-field `serverOwnedFields` guard.
+   * Read access still follows `permissions.read` as usual. Mutually
+   * exclusive with `serverOwnedFields` and with a `VALIDATOR_WHITELIST`
+   * entry for the collection — declaring either alongside `serverOwned` is a
+   * contradiction (a field-level write guard is meaningless when writes are
+   * denied entirely) and the generator throws at generation time.
+   */
+  serverOwned?: boolean;
 }
 
 export interface DomainSchema<T extends z.ZodTypeAny> {

@@ -1,13 +1,12 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { Suspense, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Alert, Anchor, Group, Stack, Title } from '@mantine/core';
 import { FirebaseError } from 'firebase/app';
 import { IconMapPin, IconUserExclamation } from '@tabler/icons-react';
 import { clienteFormSchema } from '@delfrance/schemas';
-import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { CnpjLookupConfigProvider, CnpjLookupField } from '@/components/inputs/CnpjLookupField';
 import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
@@ -27,9 +26,26 @@ const CLIENTE_FORM_FIELDS = {
 };
 
 export default function NovoClientePage() {
+  // `useSearchParams` (prefill from the chat side panel) requires a Suspense
+  // boundary in Next 16.
+  return (
+    <Suspense fallback={null}>
+      <NovoClienteForm />
+    </Suspense>
+  );
+}
+
+function NovoClienteForm() {
   const router = useRouter();
   const { user } = useAuth();
   const filialId = useDefaultFilialId();
+  // Optional prefill from the chat side panel's "Criar cliente" link:
+  // `?userCliente=<documents/usuarios/uid>&nome=<conversa nome>`. `userCliente`
+  // stays excluded from the form (below) but rides through `defaultValues` and
+  // is persisted on create (saveRecord writes the full form values on create).
+  const searchParams = useSearchParams();
+  const userClientePrefill = searchParams.get('userCliente');
+  const nomePrefill = searchParams.get('nome');
 
   // No cliente id yet → the resolved address can't be written to the enderecos
   // subcollection. Hold it and relay to the detail page after the cliente saves.
@@ -125,7 +141,11 @@ export default function NovoClientePage() {
           collection={clienteCollection}
           db={getFirebaseFirestore()}
           currentUserUid={user?.uid ?? ''}
-          defaultValues={{ timestamp: nowMillis() }}
+          defaultValues={{
+            // `timestamp` / `ultimaModificacao` stamped by saveRecord on create.
+            ...(nomePrefill ? { nome: nomePrefill } : {}),
+            ...(userClientePrefill ? { userCliente: userClientePrefill } : {}),
+          }}
           excludedFields={[
             'timestamp',
             'ultimaModificacao',

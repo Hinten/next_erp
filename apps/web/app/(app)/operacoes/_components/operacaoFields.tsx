@@ -26,15 +26,15 @@ export const OPERACAO_SECTIONS = [
   'Regras de imposto',
 ] as const;
 
-/** `estados` is a legacy duplicate of `estadosDestino`; `timestamp` is stamped. */
-export const OPERACAO_EXCLUDED_FIELDS = ['timestamp', 'estados'];
+/** `estados` is a legacy duplicate of `estadosDestino`; stamps are system fields. */
+export const OPERACAO_EXCLUDED_FIELDS = ['timestamp', 'ultimaModificacao', 'estados'];
 
-/** The transient host field for the self-contained Macros (regraimposto) tab. */
+/** The transient host field for the self-contained Macros (regras) tab. */
 export const OPERACAO_TRANSIENT_FIELDS = ['macros'];
 
 /**
  * Wider page schema: the operação doc + a transient `macros` host field that
- * renders the self-contained regraimposto editor (never written to the doc).
+ * renders the self-contained regras editor (never written to the doc).
  * operacaoSchema has no top-level refine, so `.extend` is safe.
  */
 export const operacaoPageSchema = operacaoSchema.extend({
