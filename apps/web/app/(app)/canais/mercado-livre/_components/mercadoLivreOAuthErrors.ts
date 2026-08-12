@@ -29,6 +29,12 @@ const MENSAGENS: Readonly<Record<string, string>> = {
   ml_rejeitou:
     'O Mercado Livre recusou a conexão. Confira o client id / secret da aplicação no painel de desenvolvedor — e, se a aplicação foi recriada, se o segredo publicado no servidor é o novo.',
   rede: 'Não foi possível falar com o Mercado Livre. Tente novamente em alguns instantes.',
+  // The 200-but-unparseable arm. Named separately because it has ONE overwhelmingly
+  // likely cause and a concrete fix: `tokenResponseSchema` requires `refresh_token`,
+  // and ML omits it when the aplicação does not grant `offline_access` — so the
+  // credentials are fine and the scope is not.
+  resposta_invalida:
+    'O Mercado Livre aceitou a conexão mas devolveu uma resposta incompleta — falta o refresh_token. Marque a opção de refresh token (escopo offline_access) na aplicação, no painel de desenvolvedor do Mercado Livre, e conecte de novo.',
   exchange: 'Falha ao trocar o código de autorização por um token de acesso.',
   // --- list page (no trustworthy id) ---
   config: 'O backend está sem a chave de assinatura do state. Avise quem cuida do deploy.',

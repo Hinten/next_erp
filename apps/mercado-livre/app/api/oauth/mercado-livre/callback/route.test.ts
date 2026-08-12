@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import {
+  MercadoLivreError,
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
   MercadoLivreReauthRequiredError,
@@ -119,9 +120,10 @@ describe('GET /api/oauth/mercado-livre/callback', () => {
       () => new MercadoLivreReauthRequiredError('refresh_failed', 'code expirado', 400, {}),
     ],
     ['ml_rejeitou', () => new MercadoLivreHttpError('ML /oauth/token: nope', 400, {})],
+    ['resposta_invalida', () => new MercadoLivreValidationError('formato inesperado', [])],
     ['rede', () => new MercadoLivreNetworkError('fetch falhou')],
-    // Matched by the guard (extends MercadoLivreError) but deliberately unmapped.
-    ['exchange', () => new MercadoLivreValidationError('formato inesperado', [])],
+    // Matched by the guard (the base class) but deliberately unmapped.
+    ['exchange', () => new MercadoLivreError('algo novo')],
   ])('when the exchange fails with %s', (reason, makeError) => {
     it(`redirects to the account page with reason=${reason}`, async () => {
       h.exchangeAndPersist.mockRejectedValue(makeError());
@@ -158,6 +160,42 @@ describe('GET /api/oauth/mercado-livre/callback', () => {
       body: { error: 'invalid_client' },
       redirectUri: 'https://ml.example.com/api/oauth/mercado-livre/callback',
     });
+  });
+
+  it('names the failing fields when ML returns 200 with an unparseable body', async () => {
+    // The real-world case this arm exists for: an aplicação without `offline_access`
+    // gets a 200 with NO `refresh_token`, which tokenResponseSchema requires. Logging
+    // only "formato inesperado" is true and useless — the field name IS the diagnosis.
+    h.exchangeAndPersist.mockRejectedValue(
+      new MercadoLivreValidationError('Resposta do /oauth/token em formato inesperado.', [
+        { code: 'invalid_type', path: ['refresh_token'], message: 'Required' },
+      ]),
+    );
+    await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
+
+    expect(spyErro.mock.calls[0]![1]).toMatchObject({
+      reason: 'resposta_invalida',
+      camposInvalidos: ['refresh_token: invalid_type'],
+    });
+  });
+
+  it('logs only issue paths and codes, never the offending token value', async () => {
+    // Zod issues can carry the input under inspection, and here that input is a
+    // TOKEN RESPONSE — passing the raw issues through would put a live access_token
+    // into Cloud Logging.
+    h.exchangeAndPersist.mockRejectedValue(
+      new MercadoLivreValidationError('formato inesperado', [
+        {
+          code: 'invalid_type',
+          path: ['access_token'],
+          message: 'Required',
+          input: 'APP_USR-um-token-de-verdade',
+        },
+      ]),
+    );
+    await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
+
+    expect(JSON.stringify(spyErro.mock.calls[0])).not.toContain('APP_USR-um-token-de-verdade');
   });
 
   it('never logs the authorization code', async () => {
