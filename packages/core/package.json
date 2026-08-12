@@ -23,7 +23,9 @@
     "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
+  "//temporal-polyfill": "Literal, NOT catalog: — single-consumer (this package alone). Used by src/datetime for lossless ISO parsing: Date.parse truncates to milliseconds, so a provider's sub-millisecond digits were being discarded and then refilled with zeros by the ×1000. Temporal.Instant.from keeps them. Drop this dep and switch to the native global once the Functions runtime reaches nodejs26 AND the browser baseline ships Temporal — the call sites already speak the spec API, so it is an import deletion.",
   "dependencies": {
+    "temporal-polyfill": "^1.0.3",
     "zod": "catalog:"
   },
   "devDependencies": {
