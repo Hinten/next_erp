@@ -51,7 +51,11 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
-import { INTEGRACAO_TIPO, NOTIFICACAO_RESILIENCIA_STATUS } from '@delfrance/schemas';
+import {
+  INTEGRACAO_TIPO,
+  NOTIFICACAO_RESILIENCIA_STATUS,
+  notificationResilienceFields,
+} from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
   createMercadoLivreApi,
@@ -62,6 +66,7 @@ import {
   notificacaoMercadoLivreCollection,
 } from '@delfrance/data/admin/collections';
 import {
+  asInt,
   asMillis,
   defineNotificationPipeline,
   MAX_TENTATIVAS,
@@ -145,13 +150,17 @@ export function isKnownTopic(topic: string): boolean {
 }
 
 /**
- * The lean ML-wire payload the receiver enqueues onto the task queue and the
- * task handler re-validates (belt-and-suspenders across the wire boundary).
- * Tolerant (`passthrough`, nullable) — ML silently renames/adds fields. `sent`
- * / `received` are already normalized to epoch millis (or null) by `asMillis`
- * before enqueue, so a persisted failure doc can never be rejected on them.
+ * The lean ML-wire payload the receiver enqueues onto the task queue.
+ * Tolerant (`passthrough`, nullable) — ML silently renames/adds fields, and the
+ * remainder is what makes a dead-letter row worth reading. `sent`/`received`
+ * are already normalized to epoch millis (or null) by `asMillis` before
+ * enqueue, so a persisted failure doc can never be rejected on them.
+ *
+ * This is the SHAPE. Everything that produces one runs {@link normalizeMlWire}
+ * first — see {@link mlNotificationTaskSchema} for why the queue boundary binds
+ * the two together instead of trusting its input.
  */
-export const mlNotificationTaskSchema = z
+const mlNotificationWireSchema = z
   .object({
     id: z.string().nullable().default(null),
     resource: z.string().min(1),
@@ -163,54 +172,259 @@ export const mlNotificationTaskSchema = z
     received: z.number().nullable().default(null),
   })
   .passthrough();
-export type MlNotificationPayload = z.infer<typeof mlNotificationTaskSchema>;
+export type MlNotificationPayload = z.infer<typeof mlNotificationWireSchema>;
 
-/** The receiver-side extraction of a raw ML POST body. */
-export interface ParsedNotification {
-  /** ML notification id (`_id`/`id`) — dedup/doc key hint (null ⇒ auto-id). */
-  id: string | null;
-  /** The lean payload enqueued onto the task queue. */
-  payload: MlNotificationPayload;
-}
+/**
+ * What the task handler re-validates with on the far side of the Cloud Tasks
+ * wire (belt-and-suspenders) — the shape above, preceded by the same
+ * normalization the receiver applies.
+ *
+ * The preprocess is not decoration. `handleTask` DROPS a payload that fails
+ * this parse, silently and with no retry, because a failure there is by
+ * contract an enqueue bug. That makes "every enqueue site normalized its
+ * payload" a load-bearing invariant enforced by nothing: `MlNotificationPayload`
+ * is `{…} & Record<string, unknown>`, so TypeScript accepts a raw body at every
+ * `enqueue` call, and there are already two producers (the receiver and the
+ * order backfill). Normalizing HERE converts that silent drop into a correct
+ * parse, and is free when the producer already did it — every coercer in
+ * `normalizeMlWire` is idempotent.
+ */
+export const mlNotificationTaskSchema = z.preprocess(
+  (v) =>
+    v != null && typeof v === 'object' && !Array.isArray(v)
+      ? normalizeMlWire(v as Record<string, unknown>)
+      : v,
+  mlNotificationWireSchema,
+);
 
+// `asInt` (ML's `user_id`/`application_id`/`attempts`) and `asMillis` (its
+// `sent`/`received`, ISO-8601 or epoch millis) are the shared receiver coercers
+// from `@delfrance/data/admin/notifications` — normalized at the source so a
+// persisted failure doc can never be rejected by the strict write validator. ML
+// sometimes sends an empty string or a field it later renames. Both live there
+// rather than here BECAUSE of #810: the private `asInt` this file used to carry
+// had drifted strict (numbers only) while its sibling `asMillis` accepted
+// numeric strings, and a `user_id` arriving as a string would have nulled the
+// seller id on every delivery — stopping ingestion repo-wide with no error.
 function asString(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
-function asInt(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : null;
+
+/** The wire keys this module owns outright — everything else is the remainder. */
+const KNOWN_WIRE_KEYS: ReadonlySet<string> = new Set([
+  '_id',
+  'id',
+  'resource',
+  'topic',
+  'user_id',
+  'application_id',
+  'attempts',
+  'sent',
+  'received',
+]);
+
+/**
+ * The LOCAL resilience field names, read off the shared builder so they cannot
+ * drift from what the pipeline writes. They are stripped from the remainder in
+ * BOTH directions: a provider-controlled `status`/`tentativas` must never enter
+ * a payload, and a doc being rehydrated by the sweep must not carry its own
+ * bookkeeping back into the wire shape.
+ */
+const RESILIENCE_KEYS: ReadonlySet<string> = new Set(Object.keys(notificationResilienceFields()));
+
+/** Firestore refuses a field named `__anything__`, and an empty field name. */
+const RESERVED_FIELD_NAME = /^__.*__$/;
+
+/**
+ * Remainder budget. ML's real notification body is ~200 bytes of flat scalars,
+ * so in practice nothing here ever fires; it exists because the remainder is
+ * unauthenticated attacker-controlled JSON (the origin check in
+ * `webhookOrigin.ts` fails OPEN when unconfigured or when `application_id` is
+ * absent) and it lands in two places that reject oversize input by THROWING:
+ * the Cloud Tasks enqueue and a Firestore document. The byte figure is far
+ * below both limits (1 MiB each). It can stay this generous only because
+ * Firestore Enterprise auto-creates no single-field indexes — on Standard the
+ * per-index-entry limit would bite first.
+ */
+const REMAINDER_MAX_VALUE_CHARS = 512;
+const REMAINDER_MAX_BYTES = 8 * 1024;
+
+function truncate(s: string, max = REMAINDER_MAX_VALUE_CHARS): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
-// `asMillis` (ML's `sent`/`received`, ISO-8601 or epoch millis) is the shared
-// receiver coercer from `@delfrance/data/admin/notifications` — normalized at the
-// source so a persisted failure doc can never be rejected by the strict write
-// validator. ML sometimes sends an empty string or a field it later renames.
+
+/**
+ * Reduce one remainder value to something Firestore is guaranteed to store.
+ * Scalars pass; everything else becomes its JSON text. That is deliberately
+ * lossy in shape but never in evidence — a dead-letter row is read by a human,
+ * and a legible `{"a":[[1]]}` beats an `INVALID_ARGUMENT` that 5xxes the
+ * receiver (which is how ML disables a topic). Returns `undefined` to drop.
+ */
+function scalarize(v: unknown): string | number | boolean | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string') return truncate(v);
+  try {
+    return truncate(JSON.stringify(v) ?? 'null');
+  } catch (err) {
+    // Circular structures and BigInt — reachable from a Firestore doc value
+    // (a DocumentReference is circular), not from a parsed JSON body.
+    if (!(err instanceof TypeError)) throw err;
+    return null;
+  }
+}
+
+/**
+ * Bound the passthrough remainder so it can never be the reason a notification
+ * fails to enqueue or to persist. Keys are sorted first so the budget spends
+ * deterministically — a Firestore `data()` does not preserve write order.
+ */
+function sanitizeRemainder(o: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let budget = REMAINDER_MAX_BYTES;
+  let dropped = 0;
+  for (const key of Object.keys(o).sort()) {
+    if (key === '' || RESERVED_FIELD_NAME.test(key)) {
+      dropped += 1;
+      continue;
+    }
+    const value = scalarize(o[key]);
+    if (value === undefined) continue;
+    const cost = key.length + (typeof value === 'string' ? value.length : 8);
+    if (cost > budget) {
+      dropped += 1;
+      continue;
+    }
+    budget -= cost;
+    out[key] = value;
+  }
+  if (dropped > 0) {
+    console.warn('[mercado-livre] notification remainder truncated', {
+      dropped,
+      kept: Object.keys(out).length,
+    });
+  }
+  return out;
+}
+
+/**
+ * A notification id safe to use as a Firestore DOCUMENT ID — `docIdOf` feeds it
+ * straight into `docRef(...).create()`, so an unvalidated one is a PATH, not a
+ * name. `"a/b/c"` resolves into a nested subcollection the sweep's top-level
+ * query can never see (a silent black hole), and `"a/b"` throws a plain `Error`
+ * the receiver rethrows as 5xx — which is how ML disables a topic. Anything
+ * refused falls back to null ⇒ an auto id: losing redelivery dedup for a bogus
+ * id costs nothing, since no genuine ML id has this shape.
+ */
+const MAX_DOC_ID_CHARS = 1500;
+function asDocId(v: string | null): string | null {
+  if (v == null) return null;
+  if (v === '.' || v === '..') return null;
+  if (v.includes('/') || RESERVED_FIELD_NAME.test(v)) return null;
+  return v.length <= MAX_DOC_ID_CHARS ? v : null;
+}
+
+/**
+ * Coerce a raw ML body (or a stored failure doc) onto the shapes
+ * {@link mlNotificationTaskSchema} accepts, **preserving every other key** as
+ * the passthrough remainder.
+ *
+ * Coercion runs BEFORE the parse, which is what makes the parse total: for any
+ * body that clears the `resource`/`topic` gate, the schema cannot fail. It is
+ * therefore the TYPE gate, not the trust boundary — the trust boundary is
+ * re-fetching the resource from ML with the account token.
+ *
+ * ⚠️ The `_id` → `id` alias is load-bearing and must survive any refactor here.
+ * ML sends `_id` on webhook / `missed_feeds` deliveries and `id` only on
+ * realtime, while `docIdOf` keys the failure doc off `id`. Handing the raw body
+ * straight to the schema would leave `id` null for every real delivery and mint
+ * an auto id instead, silently destroying redelivery dedup. `_id` is dropped
+ * afterwards rather than kept in the remainder — it is pure duplication.
+ */
+function normalizeMlWire(o: Record<string, unknown>): Record<string, unknown> {
+  const remainder: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(o)) {
+    if (!KNOWN_WIRE_KEYS.has(key) && !RESILIENCE_KEYS.has(key)) remainder[key] = value;
+  }
+  return {
+    ...sanitizeRemainder(remainder),
+    id: asDocId(asString(o._id) ?? asString(o.id)),
+    resource: asString(o.resource),
+    topic: asString(o.topic),
+    user_id: asInt(o.user_id),
+    application_id: asInt(o.application_id),
+    attempts: asInt(o.attempts),
+    sent: asMillis(o.sent),
+    received: asMillis(o.received),
+  };
+}
+
+/** Compact, value-free rendering of a parse failure — safe for an `erro` column. */
+const MAX_ISSUE_CHARS = 300;
+function describeIssues(issues: readonly { path: PropertyKey[]; code: string }[]): string {
+  return truncate(
+    issues.map((i) => `${i.path.join('.') || '(raiz)'}: ${i.code}`).join('; '),
+    MAX_ISSUE_CHARS,
+  );
+}
+
+/**
+ * A coercion that discarded a value ML actually sent is the early warning for a
+ * wire-format change on their side. Logged by TYPE, never by value — the body
+ * is untrusted and this goes to Cloud Logging.
+ */
+const COERCED_FIELDS = ['user_id', 'application_id', 'attempts', 'sent', 'received'] as const;
+function warnOnLossyCoercion(
+  raw: Record<string, unknown>,
+  normalized: Record<string, unknown>,
+): void {
+  for (const key of COERCED_FIELDS) {
+    if (raw[key] != null && normalized[key] == null) {
+      console.warn('[mercado-livre] notification field dropped by coercion', {
+        key,
+        receivedType: typeof raw[key],
+      });
+    }
+  }
+}
 
 /**
  * Extract a persistable notification from the raw ML POST body. Returns null
  * for noise (non-object, or missing `topic`/`resource` — health pings and
  * malformed bodies) so the receiver can ack without enqueuing. Accepts both
  * `_id` (webhook / missed_feeds) and `id` (realtime) as the notification id.
+ *
+ * The payload is the SCHEMA's output, not a hand-built literal (#810): the
+ * literal enumerated eight keys, so every field ML added was stripped here and
+ * the `.passthrough()` on both this channel's schemas was dead for anything the
+ * receiver produced — making the dead-letter record lossy exactly when it is
+ * the only surviving evidence.
  */
-export function parseNotificationBody(raw: unknown): ParsedNotification | null {
+export function parseNotificationBody(raw: unknown): MlNotificationPayload | null {
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
-  const resource = asString(o.resource);
-  const topic = asString(o.topic);
-  if (!resource || !topic) return null;
+  const normalized = normalizeMlWire(o);
 
-  const id = asString(o._id) ?? asString(o.id);
-  return {
-    id,
-    payload: {
-      id,
-      resource,
-      topic,
-      user_id: asInt(o.user_id),
-      application_id: asInt(o.application_id),
-      attempts: asInt(o.attempts),
-      sent: asMillis(o.sent),
-      received: asMillis(o.received),
-    },
-  };
+  // The inner shape, since `normalized` already is what the task schema's
+  // preprocess would produce — normalizing twice is harmless but re-logs.
+  const parsed = mlNotificationWireSchema.safeParse(normalized);
+  if (!parsed.success) {
+    // A missing `resource`/`topic` is ordinary noise (health pings) — ack
+    // quietly. Anything else is unreachable after normalization, so it means
+    // the schema and this function have diverged. It must be LOUD: a silent
+    // null here is indistinguishable from a ping, which is precisely how #810's
+    // second failure mode would have stopped ingestion with no signal at all.
+    if (normalized.resource != null && normalized.topic != null) {
+      console.error('[mercado-livre] notification failed its own schema after normalization', {
+        issues: describeIssues(parsed.error.issues),
+      });
+    }
+    return null;
+  }
+  warnOnLossyCoercion(o, parsed.data);
+  return parsed.data;
 }
 
 /**
@@ -699,32 +913,43 @@ function pipelineFor(runners: NotificationRunners = {}) {
     taskSchema: mlNotificationTaskSchema,
     docIdOf: (p) => p.id,
     dedupKeyOf: (p) => p.resource,
-    // Spread the whole payload: this channel's schema is `.passthrough()`, so a
-    // field ML adds without telling us still rides along onto the failure doc.
-    toDocFields: (p) => ({ ...p }),
-    fromDoc: (parsed) => {
-      const doc = parsed as MlNotificationPayload;
-      // N6 validation: prevent downstream processing of ghost documents. When a
-      // notification doc is concurrently deleted, the sweep's `store.mark()`
-      // merge can recreate it with only {status, tentativas, erro, processedAt}.
-      // This validation throws on rehydration of such corrupted docs, causing
-      // the sweep to park them (with error message as audit trail) rather than
-      // processing them as ghosts with undefined resource/topic fields.
-      if (!doc.resource || !doc.topic) {
+    // The whole payload, re-normalized: this channel's schema is
+    // `.passthrough()`, so a field ML adds without telling us rides along onto
+    // the failure doc — true since #810, when the receiver stopped hand-building
+    // an 8-key literal. Re-running the normalizer is idempotent (every value is
+    // already coerced and bounded) and is what makes that safety a GATE rather
+    // than a claim about provenance: `MlNotificationPayload` is
+    // `{…} & Record<string, unknown>`, so TypeScript cannot stop a future third
+    // enqueue site from handing us something unsanitized.
+    toDocFields: (p) => normalizeMlWire(p),
+    fromDoc: (parsed, raw) => {
+      // `parseRead` is SOFT — it logs and returns the raw document on a schema
+      // mismatch — so `parsed` is not to be trusted, and casting it was the one
+      // TypeScript assertion left on a message payload in this path (#810).
+      // Parse it through the same normalizer + schema the receiver uses.
+      const doc =
+        parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : raw;
+      const result = mlNotificationWireSchema.safeParse(normalizeMlWire(doc));
+      if (!result.success) {
+        // Subsumes the old hand-rolled N6 ghost check: when a notification doc
+        // is concurrently deleted, the sweep's `store.mark()` merge recreates it
+        // carrying only {status, tentativas, erro, processedAt}, and
+        // `resource: z.string().min(1)` refuses exactly that. Throwing here
+        // parks the row with an audit trail instead of letting an undefined
+        // `resource` reach `lastSegment` as a TypeError.
+        //
+        // ⚠️ Keep this message SHORT and value-free. It is written verbatim to
+        // the doc's `erro` by `store.mark`; an oversize one makes that write
+        // fail, which leaves `processedAt` unadvanced — and a doc whose cursor
+        // never moves is re-picked by every single sweep, forever, eating the
+        // batch limit.
         throw new Error(
-          `Notificação mercado-livre corrompida: campos obrigatórios ausentes (resource: ${doc.resource}, topic: ${doc.topic})`,
+          `Notificação mercado-livre corrompida: campos inválidos (${describeIssues(result.error.issues)})`,
         );
       }
-      return {
-        id: doc.id,
-        resource: doc.resource,
-        topic: doc.topic,
-        user_id: doc.user_id,
-        application_id: doc.application_id,
-        attempts: doc.attempts,
-        sent: doc.sent,
-        received: doc.received,
-      };
+      return result.data;
     },
     process: (db, payload) => processNotificationPayload(db, payload, runners),
     toDisposition: (outcome, payload, phase): NotificationDisposition => {

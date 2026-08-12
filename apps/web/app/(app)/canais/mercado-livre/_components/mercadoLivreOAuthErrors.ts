@@ -1,0 +1,75 @@
+'use client';
+
+import { useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { notifications } from '@mantine/notifications';
+
+/**
+ * The OAuth callback outcome (`?ml=connected|error&reason=…`), turned into
+ * something an operator can act on.
+ *
+ * The callback on apps/mercado-livre redirects here with a `reason` slug. Until
+ * #1012's follow-up it emitted the single word `exchange` for five unrelated
+ * failures, and this screen interpolated that slug raw — the user saw
+ * "Falha ao conectar a conta Mercado Livre (exchange)." and had no next step.
+ * Each slug now names one cause, and each cause names one action.
+ *
+ * ⚠️ Two of these slugs land on the LIST page, not the detail page: the callback
+ * redirects to `/canais/mercado-livre` whenever it has no trustworthy integração
+ * id (`config`, `missing_params`, `bad_state`). That page had no handling at all,
+ * so those three failed completely silently — hence `MercadoLivreCallbackToast`.
+ */
+const MENSAGENS: Readonly<Record<string, string>> = {
+  // --- detail page (a trustworthy integracaoId was recovered from the state) ---
+  server_config:
+    'O backend do Mercado Livre está sem as credenciais da aplicação (client id / secret). Avise quem cuida do deploy.',
+  conta: 'Esta conta não está configurada como uma integração do Mercado Livre.',
+  codigo_invalido:
+    'O código de autorização expirou ou já foi usado. Clique em Conectar para recomeçar.',
+  ml_rejeitou:
+    'O Mercado Livre recusou a conexão. Confira o client id / secret da aplicação no painel de desenvolvedor — e, se a aplicação foi recriada, se o segredo publicado no servidor é o novo.',
+  rede: 'Não foi possível falar com o Mercado Livre. Tente novamente em alguns instantes.',
+  exchange: 'Falha ao trocar o código de autorização por um token de acesso.',
+  // --- list page (no trustworthy id) ---
+  config: 'O backend está sem a chave de assinatura do state. Avise quem cuida do deploy.',
+  missing_params: 'O Mercado Livre não devolveu o código de autorização.',
+  bad_state: 'A assinatura do state não confere. Recomece a conexão a partir da tela da conta.',
+};
+
+/**
+ * ⚠️ `reason` arrives in the URL, so it is untrusted input. React escapes it, but
+ * an unrecognised slug is still only echoed when it looks like one of ours — an
+ * arbitrary query string must never be reflected into the UI verbatim.
+ */
+const SLUG_SEGURO = /^[a-z_]{1,32}$/;
+
+export function mercadoLivreCallbackMessage(reason: string | null): string {
+  const conhecido = reason ? MENSAGENS[reason] : undefined;
+  if (conhecido) return conhecido;
+  return reason && SLUG_SEGURO.test(reason)
+    ? `Motivo não reconhecido (${reason}).`
+    : 'Motivo não informado.';
+}
+
+/**
+ * Toast the callback outcome once per navigation. Shared by the account panel and
+ * the channel list so the two screens cannot drift apart — the list is reachable
+ * by three of the failure slugs and the detail page by the other six.
+ */
+export function useMercadoLivreCallbackToast(): void {
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const ml = searchParams.get('ml');
+    if (ml === 'connected') {
+      notifications.show({ color: 'green', message: 'Conta Mercado Livre conectada.' });
+      return;
+    }
+    if (ml !== 'error') return;
+    notifications.show({
+      color: 'red',
+      title: 'Falha ao conectar a conta Mercado Livre',
+      message: mercadoLivreCallbackMessage(searchParams.get('reason')),
+    });
+  }, [searchParams]);
+}

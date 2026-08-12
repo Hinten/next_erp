@@ -107,7 +107,13 @@ export function findChartRow(
   for (const row of chart.rows ?? []) {
     if (row.id == null || row.id === '' || row.varianteUid == null) continue;
     if (childVariantIds.has(lastSegment(row.varianteUid))) {
-      const size = (row.attributes ?? []).find((a) => a.id === 'SIZE') ?? null;
+      // `sizeCalculado` first: ML COMPUTES each row's SIZE from the chart's
+      // main attribute, and on a footwear chart (main attribute `EU_SIZE`,
+      // `M_US_SIZE`, …) the row carries no SIZE of its own, so ML's computed
+      // value is the only one that will match the listing. An apparel chart —
+      // and every chart written before the cache existed, Flutter's included —
+      // falls through to the row's own SIZE, exactly as before.
+      const size = row.sizeCalculado ?? (row.attributes ?? []).find((a) => a.id === 'SIZE') ?? null;
       return { rowId: row.id, size };
     }
   }

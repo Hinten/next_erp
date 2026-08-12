@@ -16,6 +16,12 @@ export * from './mapping/importVariations';
 export * from './mapping/importUserProduct';
 export * from './mapping/pictures';
 export * from './zplDanfeFilter';
+// AI attribute suggestion — pure logic only. No AI SDK is imported anywhere in
+// this package: the schema is a plain JSON Schema and the prompt a plain
+// object, so whichever runtime A2 settles on consumes them unchanged.
+export * from './ai/attributeSchema';
+export * from './ai/attributePrompt';
+export * from './ai/attributeApply';
 
 /**
  * Mercado Livre plugin (MarketplaceChannel).
