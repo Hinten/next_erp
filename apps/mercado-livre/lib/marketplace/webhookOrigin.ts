@@ -42,10 +42,19 @@ export type ApplicationIdVerdict = 'ok' | 'skip' | 'absent' | 'foreign';
  * Coerce an ML application id to its canonical digit string, or null when the
  * value is not one.
  *
- * Deliberately read off the RAW body instead of `parseNotificationBody`'s
- * output: that path runs `asInt`, which returns null for a numeric *string*
- * (#810 tracks it as too strict). A tolerant coercion here means a wire-format
- * wobble on ML's side can never turn genuine traffic into a 403.
+ * ⚠️ Deliberately read off the RAW body, and this must STAY that way even
+ * though `parseNotificationBody` now produces a validated payload (#810). The
+ * reason is ORDERING, not typing: this gate exists to refuse a foreign payload
+ * *before* anything is enqueued or written, so it necessarily runs before the
+ * parse. Moving it onto the parsed payload would put an enqueue ahead of the
+ * check and undo #811.
+ *
+ * The coercion also stays stricter than the shared `asInt` on purpose — an
+ * application id is `/^[1-9]\d*$/`, never `0`, never negative — so a comparison
+ * failure here is a real mismatch rather than a coercion artefact. The two
+ * disagreeing is harmless and expected: `asInt` may put a coerced
+ * `application_id` on the payload while this reports `absent`, which only ever
+ * costs a log line, never a rejection.
  */
 function normalizeApplicationId(value: unknown): string | null {
   if (typeof value === 'number') {

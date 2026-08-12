@@ -57,7 +57,7 @@ describe('checkApplicationId', () => {
     });
 
     it.each([APP_ID, ` ${APP_ID} `, `\t${APP_ID}\n`])(
-      'accepts our id as the string %j — `asInt` would drop it (#810)',
+      'accepts our id as the (possibly padded) string %j — this gate never sees the coerced payload',
       (value) => {
         expect(checkApplicationId({ application_id: value })).toBe('ok');
       },
