@@ -119,7 +119,7 @@ import {
 } from './bulkEstoquePlan';
 import type { MlStockTaskScheduler } from './mlStockTasks';
 import { MlTasksDisabledError } from './mlTasks';
-import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';
+import { MercadoLivreContaNotConfiguredError, buildMercadoLivreContext } from './mercadoLivre';
 
 /** Which of the two scheduled ticks is running (drives window + cursor rules). */
 export type StockSweepMode = 'incremental' | 'daily' | 'reconciliacao';
@@ -811,7 +811,20 @@ export async function runStockSweep(
       // Multiorigin guard (module doc): probe `GET /users/me` BEFORE any
       // discovery — a `warehouse_management` conta gets a loud refusal, never
       // enqueued sends ML would silently drop.
-      const ctx = await loadMercadoLivreContext(db, integracaoId);
+      // The enumeration above already fetched this document, and it satisfies
+      // both guards `loadMercadoLivreContext` performs: the doc EXISTS (the query
+      // returned it) and `tipo === mercadoLivre` (a query predicate). The query's
+      // `ativo` filter is an extra restriction the loader does not apply. So
+      // re-reading here would be one redundant point read per conta per tick.
+      // Parse at THIS point rather than in the loop header: we are already past
+      // the depósito guard, so exactly the contas that used to be re-read are the
+      // ones parsed, and the legacy partial docs the raw read above dodges never
+      // reach `parseRead`.
+      const conta = integracaoCollection.parseRead(
+        doc.data(),
+        integracaoCollection.docPath({}, integracaoId),
+      );
+      const ctx = buildMercadoLivreContext(db, integracaoId, conta);
       const channelCtx = await ctx.resolveChannelContext(nowMs);
       const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
       const user = await getMe(api);
