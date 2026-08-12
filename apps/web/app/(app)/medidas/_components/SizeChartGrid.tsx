@@ -14,7 +14,7 @@ import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 
 import type { ChartCellValue, ChartRowDraft } from '@/lib/mercado-livre/chartRows';
 import { cellErrorKey } from '@/lib/mercado-livre/chartRows';
-import type { ChartColumn, ChartColumnPart } from '@/lib/mercado-livre/chartSpec';
+import { type ChartColumn, type ChartColumnPart, unitLabel } from '@/lib/mercado-livre/chartSpec';
 
 /** Width of the frozen first column, shared by the header and body cells. */
 const MAIN_COL_WIDTH = 180;
@@ -103,7 +103,12 @@ export function SizeChartGrid({
                     size="xs"
                     mt={4}
                     aria-label={`Unidade de ${column.label}`}
-                    data={column.unit.options.map((u) => ({ value: u.id, label: u.name }))}
+                    // `unitLabel` spells out ML's inch unit, whose id and name
+                    // are both a bare `"` and render as a blank-looking option.
+                    data={column.unit.options.map((u) => ({
+                      value: u.id,
+                      label: unitLabel(u.id),
+                    }))}
                     value={units[column.key] ?? column.unit.default}
                     onChange={(v) => {
                       onUnitChange(column.key, v);
@@ -115,7 +120,7 @@ export function SizeChartGrid({
                 ) : (
                   units[column.key] != null && (
                     <Text size="xs" c="dimmed">
-                      {units[column.key]}
+                      {unitLabel(units[column.key]!)}
                     </Text>
                   )
                 )}
