@@ -148,6 +148,15 @@ export function invalidateConta(integracaoId: string): void {
  * `user_id == userId`, so it is stale too — and the query re-runs once against
  * Firestore. Bounded by construction: one eviction, one retry, no loop.
  *
+ * ⚠️ A DELETED conta is the same staleness, and must be treated the same way.
+ * Only an id that still resolves may be returned: handing back an id whose
+ * document is gone makes `loadMercadoLivreContext` throw
+ * `MercadoLivreContaNotConfiguredError`, which the pipeline reads as retryable
+ * and eventually persists as a failure — strictly worse than not caching, since
+ * the uncached query would have resolved `null` → `{ kind: 'no-account' }` →
+ * the deferred lane. Deletion arrives from apps/web's BROWSER client, so no
+ * server-side evict can front-run it and this check is the only guard.
+ *
  * In steady state this costs one cache hit and PRE-WARMS the entry that
  * `loadMercadoLivreContext` and `loadContaBag` need microseconds later.
  */
@@ -160,8 +169,17 @@ export async function resolveContaAtivaPorUserId(
   if (id == null) return null;
 
   const conta = await contaReader.get(db, {}, id);
-  if (conta == null || conta.user_id === userId) return id;
+  if (conta != null && conta.user_id === userId) return id;
 
+  // Stale mapping, in either of its two forms: the document is GONE (the
+  // operator deleted the conta from apps/web — a browser write no server
+  // instance can be told about), or it now names a different seller. Both are
+  // handled the same way, and returning the id in the absent case would be
+  // actively worse than not caching: the caller's `loadMercadoLivreContext`
+  // would throw `MercadoLivreContaNotConfiguredError`, which the pipeline reads
+  // as retryable and eventually persists as a failure — where the uncached path
+  // resolves `null` → `{ kind: 'no-account' }` → the DEFERRED lane, which is
+  // both correct and recoverable via `redriveDeferredForUserId`.
   integracaoByUserId.invalidate([userId]);
   contaReader.invalidate({}, id);
   return integracaoByUserId.get([userId], load);
