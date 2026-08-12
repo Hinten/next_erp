@@ -7,7 +7,7 @@
  * `apps/integrations` (it touches `client_secret`). The browser never
  * imports this module.
  */
-import { MelhorEnvioError, MelhorEnvioHttpError } from './errors';
+import { MelhorEnvioHttpError, MelhorEnvioNetworkError, MelhorEnvioSchemaError } from './errors';
 import { type TokenResponse, tokenErrorSchema, tokenResponseSchema } from './types';
 
 export const MELHOR_ENVIO_HOSTS = {
@@ -96,8 +96,12 @@ async function postToken(
       body: new URLSearchParams(body),
     });
   } catch (err) {
-    throw new MelhorEnvioError(
+    // A dedicated class, not the bare base: the base is ALSO what an unmapped
+    // failure looks like, so callers could not tell a dead network from an
+    // unrecognised error.
+    throw new MelhorEnvioNetworkError(
       `Falha de rede ao chamar Melhor Envio /oauth/token: ${err instanceof Error ? err.message : 'fetch failed'}`,
+      err,
     );
   }
 
@@ -113,7 +117,19 @@ async function postToken(
   }
 
   if (res.ok) {
-    return tokenResponseSchema.parse(parsed);
+    // `safeParse`, not `parse`: a raw ZodError is not a MelhorEnvioError, so it
+    // escaped every `isMelhorEnvioError` guard and turned a malformed 200 into an
+    // unhandled 500 at the OAuth callback instead of a redirect naming the cause.
+    // `refresh_token` is required here, so this arm is genuinely reachable.
+    const result = tokenResponseSchema.safeParse(parsed);
+    if (!result.success) {
+      throw new MelhorEnvioSchemaError(
+        'Resposta do /oauth/token do Melhor Envio em formato inesperado.',
+        result.error.issues,
+        parsed,
+      );
+    }
+    return result.data;
   }
 
   const errBody = tokenErrorSchema.safeParse(parsed);

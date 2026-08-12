@@ -56,11 +56,65 @@ export class MelhorEnvioValidationError extends MelhorEnvioError {
 export class MelhorEnvioReauthRequiredError extends MelhorEnvioError {
   public readonly reason: 'no_token' | 'refresh_failed';
   public readonly body: unknown;
-  constructor(reason: 'no_token' | 'refresh_failed', message: string, body?: unknown) {
+  public readonly status: number | null;
+  constructor(
+    reason: 'no_token' | 'refresh_failed',
+    message: string,
+    body?: unknown,
+    status: number | null = null,
+  ) {
     super(message);
     this.name = 'MelhorEnvioReauthRequiredError';
     this.reason = reason;
     this.body = body;
+    this.status = status;
+  }
+}
+
+/**
+ * A **200 whose body did not match the expected schema** — ME answered OK and we
+ * cannot use the payload.
+ *
+ * Deliberately NOT `MelhorEnvioValidationError`: that one means ME's own `422`
+ * field-errors payload and the route layer maps it to HTTP 422
+ * (`apps/melhor-envio/lib/freight/respond.ts`). Conflating the two would turn a
+ * broken upstream response into a "your input was invalid" 422.
+ *
+ * Before this existed, `oauth.ts` called `tokenResponseSchema.parse()` and a
+ * malformed 200 escaped as a bare `ZodError` — which `isMelhorEnvioError` rejects,
+ * so the OAuth callback rethrew it and the browser got an unhandled 500 instead of
+ * a redirect it could explain.
+ *
+ * `issues` holds the Zod issues. ⚠️ Callers logging them must take PATHS and CODES
+ * only: an issue can carry the inspected input, and on the token path that input is
+ * a token response.
+ */
+export class MelhorEnvioSchemaError extends MelhorEnvioError {
+  public readonly issues: unknown;
+  public readonly body: unknown;
+  constructor(message: string, issues: unknown, body: unknown) {
+    super(message);
+    this.name = 'MelhorEnvioSchemaError';
+    this.issues = issues;
+    this.body = body;
+  }
+}
+
+/**
+ * A network-level failure reaching Melhor Envio (fetch threw).
+ *
+ * Exists so a transport failure is distinguishable from "some other ME error":
+ * it used to be raised as the bare `MelhorEnvioError` base, which is also what an
+ * unmapped error looks like, so no caller could tell a dead network from an
+ * unrecognised failure. Mirrors `FreightNetworkError` in `../http-client/errors`.
+ */
+export class MelhorEnvioNetworkError extends MelhorEnvioError {
+  constructor(
+    message: string,
+    override readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'MelhorEnvioNetworkError';
   }
 }
 

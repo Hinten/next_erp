@@ -39,8 +39,12 @@ vi.mock('@delfrance/integrations-freight-br', async (importActual) => {
   return { ...actual, exchangeCode: h.exchangeCode };
 });
 
-const { loadMelhorEnvioContext, MelhorEnvioConfigError, MelhorEnvioContaNotConfiguredError } =
-  await import('./melhorEnvio');
+const {
+  loadMelhorEnvioContext,
+  melhorEnvioRedirectUri,
+  MelhorEnvioConfigError,
+  MelhorEnvioContaNotConfiguredError,
+} = await import('./melhorEnvio');
 
 const db = {} as never;
 
@@ -61,6 +65,34 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+describe('melhorEnvioRedirectUri', () => {
+  const CAMINHO = '/api/oauth/melhor-envio/callback';
+
+  it('builds the callback URI from MELHOR_ENVIO_PUBLIC_URL', () => {
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', 'https://me.example.com');
+    expect(melhorEnvioRedirectUri()).toBe(`https://me.example.com${CAMINHO}`);
+  });
+
+  it('strips a trailing slash so the URI matches the ME registration exactly', () => {
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', 'https://me.example.com/');
+    expect(melhorEnvioRedirectUri()).toBe(`https://me.example.com${CAMINHO}`);
+  });
+
+  it('falls back to localhost when the origin is unset', () => {
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', undefined);
+    expect(melhorEnvioRedirectUri()).toBe(`http://localhost:3005${CAMINHO}`);
+  });
+
+  it.each(['', '   '])('treats a blank origin (%j) as unset', (valor) => {
+    // The old `??` guarded only undefined/null, so a blank env var produced
+    // `base === ''` and sent the RELATIVE "/api/oauth/melhor-envio/callback" to ME
+    // as the redirect_uri — a silent mismatch, since nothing on this path logged.
+    // Same `??`-versus-empty-string hole #887 fixed for *_TASKS_REGION.
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', valor);
+    expect(melhorEnvioRedirectUri()).toBe(`http://localhost:3005${CAMINHO}`);
+  });
 });
 
 describe('loadMelhorEnvioContext', () => {

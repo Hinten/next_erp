@@ -52,9 +52,22 @@ function isSandbox(): boolean {
   return process.env.MELHOR_ENVIO_SANDBOX !== 'false';
 }
 
-/** The OAuth redirect URI — must match what's registered in the ME app. */
+/**
+ * The OAuth redirect URI — must match what's registered in the ME app.
+ *
+ * ⚠️ A BLANK `MELHOR_ENVIO_PUBLIC_URL=` must fall back like an unset one. The old
+ * `??` guarded only `undefined`/`null`, so a blank value produced `base === ''` and
+ * sent the relative `"/api/oauth/melhor-envio/callback"` to ME as the `redirect_uri`
+ * — which ME rejects as a mismatch, silently, since nothing on this path logged.
+ * Same `??`-versus-empty-string hole #887 fixed for `*_TASKS_REGION`.
+ *
+ * The localhost default stays: local dev has no public origin. It is also why a
+ * misconfigured deployed backend fails at ME rather than at boot — hence the value
+ * being echoed in the callback's failure log.
+ */
 export function melhorEnvioRedirectUri(): string {
-  const base = (process.env.MELHOR_ENVIO_PUBLIC_URL ?? 'http://localhost:3005').replace(/\/$/, '');
+  const raw = process.env.MELHOR_ENVIO_PUBLIC_URL?.trim();
+  const base = (raw && raw.length > 0 ? raw : 'http://localhost:3005').replace(/\/$/, '');
   return `${base}/api/oauth/melhor-envio/callback`;
 }
 
