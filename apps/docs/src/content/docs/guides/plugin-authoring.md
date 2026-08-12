@@ -62,7 +62,7 @@ The example registers a flat-rate `TaxProvider` and exercises every public surfa
 
 ## How in-tree channels are actually wired
 
-`PluginRegistry` is real (`packages/core/src/plugins/index.ts`) and so is the `defineIntegration` path above — but **nothing in the repo registers a marketplace at boot**. There is no `delfrance.config.ts`, and no boot step that seeds a marketplace registry. The only registry instance in an app is `apps/web/lib/plugins/paymentRegistry.ts`, which is deliberately empty and serves payments only.
+`PluginRegistry` is real (`packages/core/src/plugins/index.ts`) and so is the `defineIntegration` path above — but **nothing in the repo registers a marketplace at boot**. There is no `delfrance.config.ts`, and no boot step that seeds a marketplace registry. Only two registry instances exist at all: `apps/web/lib/plugins/paymentRegistry.ts`, which is deliberately empty and serves payments only, and the one `apps/example` builds to demo a `TaxProvider`. Neither is a marketplace, and `registerMarketplace` is called nowhere outside its own unit test.
 
 In-tree channels are wired the other way round: **one App Hosting backend per channel**, and the channel object is constructed **per request** from the Firestore `integracao` document that the request names. Mercado Livre is the worked example — every ML route calls:
 
