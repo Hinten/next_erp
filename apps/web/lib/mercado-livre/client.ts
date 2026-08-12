@@ -286,6 +286,12 @@ export interface MercadoLivreChartValidationError {
   chartIndex: number;
   code: string | null;
   message: string | null;
+  /** Offending row, or null for a chart-level problem (a rejected name, …). */
+  rowIndex: number | null;
+  /** Attribute ids the cell covers — more than one for a combined column. */
+  attributeIds: string[];
+  /** The row's main-attribute value as ML echoed it, for when `rowIndex` is null. */
+  rowMainValue: string | null;
 }
 
 export interface MercadoLivreSyncChartsResult {
@@ -293,6 +299,22 @@ export interface MercadoLivreSyncChartsResult {
   tabelas: unknown[];
   validationErrors: MercadoLivreChartValidationError[];
   updated: boolean;
+}
+
+/** `POST size-charts/excluir` — ML accepted the REMOVAL REQUEST (see the method doc). */
+export interface MercadoLivreChartDeleteResult {
+  requested: true;
+  message: string | null;
+  tabelas: unknown[];
+}
+
+/** `POST size-charts/verificar-exclusao` — the verdict on a pending removal. */
+export interface MercadoLivreChartDeleteCheckResult {
+  /** True ⇒ ML confirmed the removal and the guia is off the tabMedi doc. */
+  removed: boolean;
+  /** `'ACTIVE'` = still linked to a listing; null once ML stopped serving it. */
+  chartStatus: string | null;
+  tabelas: unknown[];
 }
 
 /** A binary shipment label fetched from the mercado-livre backend (`GET etiqueta`). */
@@ -464,6 +486,30 @@ export interface MercadoLivreClient {
     tabMediId: string;
     tabelas: unknown[];
   }): Promise<MercadoLivreSyncChartsResult>;
+  /**
+   * Ask ML to remove one guia de tamanho (PERM.integracao.write).
+   *
+   * ⚠️ Resolving does NOT mean the guia is gone: ML acks the request and then
+   * checks asynchronously (up to 24h) that no listing still links it, keeping
+   * it silently if one does. The guia stays on the doc flagged
+   * `exclusaoSolicitadaEm`; call `sizeChartVerificarExclusao` for the verdict.
+   */
+  sizeChartExcluir(input: {
+    integracaoId: string;
+    tabMediId: string;
+    chartId: string;
+  }): Promise<MercadoLivreChartDeleteResult>;
+  /**
+   * Settle a pending removal (PERM.integracao.write): reads the chart back from
+   * ML and, once ML confirms it is gone, drops it from the tabMedi doc.
+   * `removed: false` with `chartStatus: 'ACTIVE'` means it is still linked to a
+   * listing and has to be unlinked first.
+   */
+  sizeChartVerificarExclusao(input: {
+    integracaoId: string;
+    tabMediId: string;
+    chartId: string;
+  }): Promise<MercadoLivreChartDeleteCheckResult>;
   /**
    * Fetch the pedido's marketplace-generated shipment label (PERM.frete.read).
    * Binary success body; error bodies are JSON and surface as a
@@ -677,6 +723,16 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
     sizeChartSync: (input) =>
       call<MercadoLivreSyncChartsResult>('/api/marketplace/mercado-livre/size-charts/sync', input),
+    sizeChartExcluir: (input) =>
+      call<MercadoLivreChartDeleteResult>(
+        '/api/marketplace/mercado-livre/size-charts/excluir',
+        input,
+      ),
+    sizeChartVerificarExclusao: (input) =>
+      call<MercadoLivreChartDeleteCheckResult>(
+        '/api/marketplace/mercado-livre/size-charts/verificar-exclusao',
+        input,
+      ),
     etiqueta: (pedidoId, formato) =>
       fetchArtifact(
         `/api/marketplace/mercado-livre/etiqueta?pedidoId=${encodeURIComponent(pedidoId)}&formato=${formato}`,

@@ -15,16 +15,21 @@ import {
 import { MlTasksDisabledError, type MlTaskScheduler } from './mlTasks';
 
 const h = vi.hoisted(() => ({
-  loadCtx: vi.fn(),
+  buildCtx: vi.fn(),
   createApi: vi.fn(),
 }));
 
 // The sweep builds its ML API via the exact `runOrderImport` chain
-// (loadMercadoLivreContext → resolveChannelContext → createMercadoLivreApi);
+// (buildMercadoLivreContext → resolveChannelContext → createMercadoLivreApi);
 // both seams are mocked partially so the error classes stay real.
+//
+// The seam is `buildMercadoLivreContext`, NOT `loadMercadoLivreContext`: the
+// enumeration query already fetched the conta, so the sweep never re-reads it.
+// `not.toHaveBeenCalled()` on this mock therefore also proves no context was
+// built — and the `opLog` assertions prove no redundant document read.
 vi.mock('./mercadoLivre', async (importActual) => {
   const actual = await importActual<typeof import('./mercadoLivre')>();
-  return { ...actual, loadMercadoLivreContext: h.loadCtx };
+  return { ...actual, buildMercadoLivreContext: h.buildCtx };
 });
 vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
   const actual = await importActual<typeof import('@delfrance/integrations-mercado-livre')>();
@@ -179,20 +184,26 @@ function makeScheduler() {
   return { scheduler, enqueue };
 }
 
-/** Wire the mocked context→api chain to a fake `searchOrders`. */
+/**
+ * Wire the mocked context→api chain to a fake `searchOrders`. Note the
+ * implementation is SYNC and takes a third `conta` argument — the enumerated
+ * document the sweep threads down instead of re-reading.
+ */
 function wireApi(searchOrders: MercadoLivreApi['searchOrders']): void {
-  h.loadCtx.mockImplementation(async (_db: Firestore, integracaoId: string) => ({
-    integracaoId,
-    conta: {},
-    channel: {},
-    store: {},
-    resolveChannelContext: async () => ({
+  h.buildCtx.mockImplementation(
+    (_db: Firestore, integracaoId: string, conta: Record<string, unknown>) => ({
       integracaoId,
-      accessToken: `tok-${integracaoId}`,
-      account: {},
+      conta,
+      channel: {},
+      store: {},
+      resolveChannelContext: async () => ({
+        integracaoId,
+        accessToken: `tok-${integracaoId}`,
+        account: {},
+      }),
+      exchangeAndPersist: async () => {},
     }),
-    exchangeAndPersist: async () => {},
-  }));
+  );
   h.createApi.mockReturnValue({ searchOrders } as unknown as MercadoLivreApi);
 }
 
@@ -224,7 +235,7 @@ function syntheticPayload(orderId: number, userId: number): Record<string, unkno
 
 beforeEach(() => {
   process.env[ORDER_BACKFILL_FLAG_ENV] = '1';
-  h.loadCtx.mockReset();
+  h.buildCtx.mockReset();
   h.createApi.mockReset();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -249,7 +260,7 @@ describe('runOrderBackfillSweep — flag gate', () => {
 
     expect(result).toEqual({ enabled: false, contas: [] });
     expect(db.opLog).toHaveLength(0);
-    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.buildCtx).not.toHaveBeenCalled();
     expect(searchOrders).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
   });
@@ -280,7 +291,7 @@ describe('runOrderBackfillSweep — account enumeration', () => {
     const result = await run(db, scheduler);
 
     expect(result).toEqual({ enabled: true, contas: [] });
-    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.buildCtx).not.toHaveBeenCalled();
     expect(searchOrders).not.toHaveBeenCalled();
   });
 
@@ -302,7 +313,7 @@ describe('runOrderBackfillSweep — account enumeration', () => {
         error: 'integração sem user_id — reconecte a conta',
       },
     ]);
-    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.buildCtx).not.toHaveBeenCalled();
     expect(searchOrders).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
     // lastError stamped, cursorUs NOT created/advanced.
@@ -360,6 +371,30 @@ describe('runOrderBackfillSweep — happy path', () => {
       lastSweepAtUs: NOW_US,
       lastError: null,
     });
+  });
+
+  it('never point-reads a conta the enumeration query already fetched', async () => {
+    // The enumeration downloads each conta's full document, so re-reading it
+    // per conta inside the loop was one redundant read per conta per tick. A
+    // TTL cache could not have fixed it: the tick period (15 min) equals
+    // `READ_CACHE_TTL.config`, so every tick would have been a cold miss.
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', 111);
+    seedConta(db, 'INT-B', 222);
+    wireApi(vi.fn(async (_params: SearchParams) => page([], 0)));
+    const { scheduler } = makeScheduler();
+
+    await run(db, scheduler);
+
+    expect(db.opLog.filter((o) => o.path.startsWith(`${INTEGRACAO_PATH}/`))).toEqual([]);
+    // …and the context was still built for both, from the enumerated document.
+    expect(h.buildCtx).toHaveBeenCalledTimes(2);
+    expect(h.buildCtx).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      'INT-A',
+      expect.objectContaining({ user_id: 111 }),
+    );
   });
 
   it('existing cursor → window starts at cursorUs - 5min overlap', async () => {

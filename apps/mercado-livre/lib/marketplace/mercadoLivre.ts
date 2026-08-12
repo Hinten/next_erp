@@ -57,9 +57,22 @@ export class MercadoLivreNotImplementedError extends Error {
 
 const CLIENT_SECRET_ENV_VAR = 'MERCADO_LIVRE_CLIENT_SECRET';
 
-/** The OAuth redirect URI — must match what's registered in the ML app. */
+/**
+ * The OAuth redirect URI — must match what's registered in the ML app.
+ *
+ * ⚠️ A BLANK `MERCADO_LIVRE_PUBLIC_URL=` must fall back like an unset one. The old
+ * `??` guarded only `undefined`/`null`, so a blank value produced `base === ''` and
+ * sent the relative `"/api/oauth/mercado-livre/callback"` to ML as the `redirect_uri`
+ * — which ML rejects at the token step with a 400 that this app could not report.
+ * Same `??`-versus-empty-string hole #887 fixed for `*_TASKS_REGION`.
+ *
+ * The localhost default is deliberate and stays: local dev has no public origin.
+ * It is also why a misconfigured deployed backend fails at ML rather than at boot —
+ * the value is echoed in the callback's failure log so it can be seen.
+ */
 export function mercadoLivreRedirectUri(): string {
-  const base = (process.env.MERCADO_LIVRE_PUBLIC_URL ?? 'http://localhost:3006').replace(/\/$/, '');
+  const raw = process.env.MERCADO_LIVRE_PUBLIC_URL?.trim();
+  const base = (raw && raw.length > 0 ? raw : 'http://localhost:3006').replace(/\/$/, '');
   return `${base}/api/oauth/mercado-livre/callback`;
 }
 
@@ -133,7 +146,41 @@ export async function loadMercadoLivreContext(
       `Integração ${integracaoId} não é do tipo Mercado Livre.`,
     );
   }
+  return buildMercadoLivreContext(db, integracaoId, conta);
+}
 
+/**
+ * The context assembly with the account document ALREADY read. Everything here
+ * is env-only plus a token store that performs no I/O at construction — the
+ * `.get()` in `loadMercadoLivreContext` is the whole of the loader's Firestore
+ * cost, so a caller that already holds the parsed conta can skip it entirely.
+ *
+ * Exists for the two sweeps. Both enumerate with a query that already downloads
+ * the full document (`estoqueSweep.ts` / `orderBackfill.ts`, each proved by the
+ * raw field read in their loop bodies), then re-read those same documents one at
+ * a time.
+ *
+ * Skipping the loader there loses no validation. `loadMercadoLivreContext`
+ * guards exactly two things — the document EXISTS, and `tipo === mercadoLivre`
+ * — and an enumerated document satisfies both by construction: it exists because
+ * the query returned it, and `tipo` is one of the query's own predicates. (The
+ * enumerations also filter `ativo == true`, which the loader does NOT check at
+ * all — an extra restriction, not a missing one. Callers that care about
+ * `ativo` read it off `ctx.conta` themselves; `nfeUpload.ts` is the live
+ * example.)
+ *
+ * A TTL cache cannot fix the redundant read: the sweep period (15 min) equals
+ * `READ_CACHE_TTL.config`, so every tick would be a cold miss.
+ * Passing the snapshot down costs nothing and has no staleness window at all —
+ * the data is microseconds old, fresher than a re-read would be. Same shape as
+ * the `estoqueMercadoLivreSync` state doc, which `runStockSweep` already reads
+ * once per conta and threads into `sweepConta` as `stateRaw`.
+ */
+export function buildMercadoLivreContext(
+  db: Firestore,
+  integracaoId: string,
+  conta: Integracao,
+): MercadoLivreContext {
   const channel = createMercadoLivreChannel(mercadoLivreConfig());
   const oauthConfig = mercadoLivreOAuthConfig();
   const store = createTokenDuravelStore(db, integracaoId);

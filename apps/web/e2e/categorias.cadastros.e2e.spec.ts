@@ -19,6 +19,7 @@ import {
   clickSave,
   clickSaveAndContinue,
   confirmDelete,
+  expectFieldAfterReload,
   expectFieldError,
   expectToast,
   fillField,
@@ -175,9 +176,7 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     await applyTextFilter(page, 'Nome', childNome);
     await page.getByRole('row', { name: new RegExp(childNome) }).click();
     await page.waitForURL(/\/categorias\/[^/]+$/, { timeout: 10_000 });
-    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue(
-      `${parentRenamed} > ${childNome}`,
-    );
+    await expectFieldAfterReload(page, 'Nome completo', `${parentRenamed} > ${childNome}`);
   });
 
   test('rejects creating a categoria without a Nome (required field)', async ({ page }) => {
@@ -219,9 +218,9 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/categorias$/, { timeout: 15_000 });
 
     await page.goto(`/categorias/${row(5)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(novoNome);
+    await expectFieldAfterReload(page, 'Nome', novoNome);
     // Root category (seed has no parent) → breadcrumb equals nome.
-    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue(novoNome);
+    await expectFieldAfterReload(page, 'Nome completo', novoNome);
     await expect(page.getByLabel('Nome completo', { exact: true })).toBeDisabled();
   });
 
