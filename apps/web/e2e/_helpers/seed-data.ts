@@ -2691,6 +2691,10 @@ export async function seedProdutoMlPublicado(
     paiId: null,
     ordem: null,
     timestamp: new Date().toISOString(),
+    // The conta-link denorm the bulk stock push reads to decide which channels
+    // a selection touches (#819). Without it the produto looks unlinked and the
+    // dialog reports "Produto não tem integrações".
+    integracoesComProduto: [integracaoId],
   });
   batch.set(
     db().collection('produtos').doc(produtoId).collection('produtoMercadoLivre').doc(mlItemId),

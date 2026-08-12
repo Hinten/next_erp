@@ -19,20 +19,15 @@
  * published; ML errors map through `mercadoLivreErrorResponse`.
  */
 import { NextResponse } from 'next/server';
-import {
-  MercadoLivreHttpError,
-  createMercadoLivreApi,
-  estadoFromMlStatus,
-} from '@delfrance/integrations-mercado-livre';
+import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { podeEnviarEstoque } from '@/lib/marketplace/estoquePlan';
-import { applyItemStatusToLink } from '@/lib/marketplace/itemsStatusSync';
 import { refMatchesIntegracao } from '@/lib/marketplace/linkRefs';
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import { reverificarAnuncio } from '@/lib/marketplace/reverificarAnuncio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -97,38 +92,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     const channelCtx = await ctx.resolveChannelContext();
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
-    const item = await api.getItem(itemId);
-    await applyItemStatusToLink(db, integracaoId, target, item, {
-      nowMs,
-      // The whole point of the action: drop the stale diagnosis so the produto
-      // tab stops showing a fault the listing may no longer have.
-      extra: { errors: [] },
-    });
-    return NextResponse.json({
-      estado: estadoFromMlStatus(item.status),
-      status: item.status ?? null,
-      subStatus: item.sub_status ?? null,
-      enviavel: podeEnviarEstoque(item.status, item.sub_status).enviar,
-    });
+    // The behaviour (record ML's real state, clear `errors`, stamp `closed` on
+    // a 404) lives in lib/marketplace/reverificarAnuncio.ts — shared verbatim
+    // with the manual stock push's re-arm pass (#819).
+    return NextResponse.json(await reverificarAnuncio(db, integracaoId, target, api, nowMs));
   } catch (err) {
-    if (err instanceof MercadoLivreHttpError && err.status === 404) {
-      // Gone on ML. Record the closed state rather than leaving a stale
-      // `status: 'active'` behind — same reasoning as the stock sender's
-      // terminal branch, and the sweep's whitelist then skips it.
-      await applyItemStatusToLink(
-        db,
-        integracaoId,
-        target,
-        { status: 'closed', sub_status: [] },
-        { nowMs, extra: { errors: [] } },
-      );
-      return NextResponse.json({
-        estado: estadoFromMlStatus('closed'),
-        status: 'closed',
-        subStatus: [],
-        enviavel: false,
-      });
-    }
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);
     throw err;
   }

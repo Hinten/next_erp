@@ -1,4 +1,5 @@
 import { ESTADO_PEDIDO, valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -99,17 +100,50 @@ export class PedidoConflictError extends Error {
 }
 
 /**
- * Doc metadata excluded from the concurrency snapshot: `ultimaModificacao` /
- * `timestamp` / `lastMarketplaceUpdate` are stamps, not user data, so a
- * difference in them alone is not a meaningful conflict to warn about.
+ * Fields excluded from the concurrency snapshot.
  *
- * `lastMarketplaceUpdate` joined the list with #791. It is the marketplace
- * event-clock watermark, so it moves whenever a channel import runs — and while
- * it was compared, any such import hard-failed the save of an operator who
- * merely had the pedido editor open, with a conflict modal naming a field they
- * cannot see or edit.
+ * THE RULE: a field is excluded **iff no interactive editor in this application
+ * can author it** — a stamp, an event-clock watermark, or state a trigger owns.
+ * Everything else still conflicts, including fields the operator is not
+ * currently saving: that is the whole point of comparing a snapshot rather than
+ * a timestamp (see `remotelyChangedFields`).
+ *
+ * The rule is not new policy; it is what already produced every entry here:
+ *
+ *  - `ultimaModificacao` / `timestamp` — stamps, not user data.
+ *  - `lastMarketplaceUpdate` (#791) — the marketplace event-clock watermark, so
+ *    it moves whenever a channel import runs. While it was compared, any such
+ *    import hard-failed the save of an operator who merely had the pedido editor
+ *    open, with a conflict modal naming a field they cannot see or edit.
+ *  - `CAMPOS_ESTOQUE_SYNC` (#972) — the same failure, one trigger later. The
+ *    pedido→estoque sync writes these back seconds after the save that triggered
+ *    it and does NOT stamp `ultimaModificacao`, so this compare was the only
+ *    thing that saw the write-back. `estoqueAplicado` is in
+ *    `pedidoMeta.serverOwnedFields` (the rules DENY the client writing it) and
+ *    the two markers are read-only in the Estoque tab, so `buildPedidoPatch` can
+ *    never carry any of them — excluding them removes a false conflict without
+ *    opening an overwrite.
+ *
+ * ⚠️ What keeps this honest: `CAMPOS_OBSERVADOS ∩ CAMPOS_ESTOQUE_SYNC = ∅` in
+ * the sync (pinned by its own test), so the operator-visible CAUSE of a stock
+ * movement — `estado`, `itens`, `ehSaida` — is still compared and still
+ * conflicts.
  */
-const CONCURRENCY_IGNORE = new Set(['ultimaModificacao', 'timestamp', 'lastMarketplaceUpdate']);
+const CONCURRENCY_IGNORE = new Set<string>([
+  'ultimaModificacao',
+  'timestamp',
+  'lastMarketplaceUpdate',
+  ...CAMPOS_ESTOQUE_SYNC,
+]);
+
+/**
+ * Is a remote change to `field` something the operator could have authored, and
+ * therefore worth interrupting them over? Exposed for the drift test that pins
+ * `serverOwnedFields ⊆ ignored` — the guard itself uses it directly.
+ */
+export function isIgnoredForConcurrency(field: string): boolean {
+  return CONCURRENCY_IGNORE.has(field);
+}
 
 /**
  * Field keys whose value changed between the doc as loaded into the editor
@@ -129,7 +163,7 @@ export function remotelyChangedFields(
   const keys = new Set([...Object.keys(baseline), ...Object.keys(current)]);
   const changed: string[] = [];
   for (const key of keys) {
-    if (CONCURRENCY_IGNORE.has(key)) continue;
+    if (isIgnoredForConcurrency(key)) continue;
     if (!valuesEqual(baseline[key], current[key])) changed.push(key);
   }
   return changed;

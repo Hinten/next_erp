@@ -72,6 +72,86 @@ export function widgetKind(attr: MercadoLivreCategoriaAtributo): AttrWidgetKind 
   }
 }
 
+/**
+ * Options for an enumerated attribute, keyed by ML's value id.
+ *
+ * A value ML ships without an id falls back to its own name as the key — the
+ * alternative is dropping the option entirely, and an option the operator can
+ * see but not choose is worse than one stored by name.
+ *
+ * ⚠️ That fallback makes two entries able to claim the same key: a value whose
+ * NAME happens to equal another value's real ML **id**. Unlikely with ML's
+ * numeric ids, but the consequence is silent — a Mantine Select with duplicate
+ * values is ambiguous, and `rowFromSelect` would resolve the pick to whichever
+ * came first. So keys are deduplicated here and an entry carrying a real id
+ * always wins, which is the same precedence `rowFromSelect` applies.
+ *
+ * Source order is preserved: ML orders a category's values deliberately, and
+ * sorting id-bearing entries first would reshuffle every dropdown to fix a
+ * collision that almost never happens.
+ */
+export function selectOptions(
+  attr: MercadoLivreCategoriaAtributo,
+): Array<{ value: string; label: string }> {
+  const byValue = new Map<string, { value: string; label: string; hasId: boolean; at: number }>();
+
+  attr.values.forEach((v, at) => {
+    const hasId = v.id != null && v.id !== '';
+    const value = (v.id ?? v.name ?? '').trim();
+    const label = (v.name ?? v.id ?? '').trim();
+    if (value === '' || label === '') return;
+
+    const existing = byValue.get(value);
+    // Keep what is there unless this entry is strictly better: a real id
+    // outranks a name-derived key. Equal rank ⇒ first one wins.
+    if (existing && (existing.hasId || !hasId)) return;
+    byValue.set(value, { value, label, hasId, at });
+  });
+
+  return [...byValue.values()]
+    .sort((a, b) => a.at - b.at)
+    .map(({ value, label }) => ({ value, label }));
+}
+
+/**
+ * The row a Select's chosen option produces.
+ *
+ * A Mantine `Select` reports the option **value**, so the id round-trips and
+ * the name is looked back up — the reverse of the `Autocomplete` case, where
+ * the reported string is the label and {@link resolveTypedValue} has to resolve
+ * it. Getting these two backwards stores an id in `value_name`, which ML
+ * rejects as an unknown value.
+ *
+ * ⚠️ Resolution is **id first, name second** — not a single `v.id ?? v.name`
+ * comparison. Those differ only when one value's name equals another's real id,
+ * and there the one-pass version returns whichever appears first in ML's list,
+ * storing a value the operator did not pick with nothing on screen to show for
+ * it. This mirrors the precedence `selectOptions` uses to key the same options.
+ */
+export function rowFromSelect(
+  attr: MercadoLivreCategoriaAtributo,
+  selected: string | null,
+): AttrRow {
+  if (selected == null || selected === '') {
+    return { id: attr.id, value_id: null, value_name: null, unit_id: null };
+  }
+  const match =
+    attr.values.find((v) => v.id != null && v.id !== '' && v.id === selected) ??
+    attr.values.find((v) => (v.id == null || v.id === '') && v.name === selected);
+  return {
+    id: attr.id,
+    value_id: match?.id ?? null,
+    value_name: match?.name ?? selected,
+    unit_id: null,
+  };
+}
+
+/** The Select value that renders a stored row, or null when it holds none. */
+export function selectValueOf(row: AttrRow | undefined): string | null {
+  if (!row || isNaRow(row)) return null;
+  return row.value_id ?? row.value_name ?? null;
+}
+
 /** `number` and `number_unit` accept digits only (`:1283-1286`). */
 export function isNumericAttr(attr: MercadoLivreCategoriaAtributo): boolean {
   return attr.valueType === 'number' || attr.valueType === 'number_unit';

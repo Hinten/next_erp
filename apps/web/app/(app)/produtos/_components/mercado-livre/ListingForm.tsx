@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Controller, useForm } from 'react-hook-form';
+import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
@@ -9,7 +9,6 @@ import {
   Button,
   Fieldset,
   Group,
-  NumberInput,
   Select,
   SimpleGrid,
   Textarea,
@@ -17,11 +16,19 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import {
-  channelOptions,
+  attributesForSave,
+  seedRows,
+  validateAttr,
+  type AttrRow,
+} from '@/lib/mercado-livre/attributeForm';
+import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+
+import {
   CONDITION_OPTIONS,
   LISTING_TYPE_OPTIONS,
   listingTypeLabel,
@@ -43,13 +50,22 @@ import {
   saveListing,
 } from '@/lib/mercado-livre/saveListing';
 import type { OperatorOwnedKey } from '@/lib/mercado-livre/listingPatch';
+import { AtributosSection } from './AtributosSection';
+import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
 import { ListingField, textOr } from './ListingField';
+
+/** ML metadata barely moves; a half-hour is generous and still bounded. */
+const METADATA_STALE_MS = 30 * 60 * 1000;
 
 export interface ListingFormProps {
   produtoId: string;
   /** Firestore id of the `produtoMercadoLivre` doc being edited. */
   linkDocId: string;
+  /** The ML account this listing belongs to — needed for every metadata call. */
+  integracaoId: string;
+  /** Seeds the category suggestion request. */
+  produtoNome: string;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -86,6 +102,8 @@ export interface ListingFormProps {
 export function ListingForm({
   produtoId,
   linkDocId,
+  integracaoId,
+  produtoNome,
   link,
   db,
   canWrite,
@@ -93,6 +111,7 @@ export function ListingForm({
   onDirtyChange,
   registerFlush,
 }: ListingFormProps) {
+  const client = useMercadoLivreClient();
   const form = useForm<ListingFormInput, unknown, ListingFormValues>({
     resolver: zodResolver(listingFormSchema),
     defaultValues: toFormValues(link),
@@ -113,8 +132,49 @@ export function ListingForm({
   const baselineRef = useRef<ProdutoMercadoLivreLink>(link);
 
   const titleRule = useMemo(() => titleEditability(link), [link]);
-  const channelSelectData = useMemo(() => channelOptions(link.channels), [link.channels]);
   const isPublished = link.id != null;
+
+  // ---- Attributes ---------------------------------------------------------
+  // Deliberately NOT a react-hook-form field. The set of attributes is decided
+  // by an async metadata call keyed on the category, so an RHF array would have
+  // to be re-seeded on every arrival with `shouldDirty: false`, and every
+  // re-seed is a chance to either wipe a pending edit or mark a pristine form
+  // dirty. Holding the edits beside the form and deriving the rest is simpler
+  // and has no effect in it.
+  // `useWatch`, not `form.watch()`: the latter returns a fresh function the
+  // React Compiler cannot memoize, so it opts the whole component out of
+  // compilation (`react-hooks/incompatible-library`).
+  const categoryId = useWatch({ control: form.control, name: 'category_id' });
+  const effectiveCategoryId = categoryId == null || categoryId === '' ? null : categoryId;
+  const atributosQuery = useQuery({
+    queryKey: ['ml', 'atributos', integracaoId, effectiveCategoryId],
+    enabled: effectiveCategoryId != null && client != null,
+    staleTime: METADATA_STALE_MS,
+    queryFn: () => client!.categoriaAtributos({ integracaoId, categoryId: effectiveCategoryId! }),
+  });
+  const attrs = useMemo(() => atributosQuery.data?.atributos ?? [], [atributosQuery.data]);
+  const omitidos = useMemo(() => atributosQuery.data?.omitidos ?? [], [atributosQuery.data]);
+
+  // Edits are stamped with the category they were made under, so switching
+  // category falls back to the freshly seeded rows instead of showing values
+  // that belong to a different attribute set.
+  const [edited, setEdited] = useState<{ categoryId: string | null; rows: AttrRow[] } | null>(null);
+  const seededRows = useMemo(
+    () => seedRows(attrs, link.attributes ?? null),
+    [attrs, link.attributes],
+  );
+  const attrDirty = edited != null && edited.categoryId === effectiveCategoryId;
+  const attrRows = attrDirty ? edited.rows : seededRows;
+
+  const attrErrors = useMemo(() => {
+    const out: Record<string, string> = {};
+    const byId = new Map(attrRows.map((r) => [r.id, r]));
+    for (const attr of attrs) {
+      const message = validateAttr(attr, byId.get(attr.id));
+      if (message != null) out[attr.id] = message;
+    }
+    return out;
+  }, [attrs, attrRows]);
 
   // Re-seed from the live snapshot ONLY while the operator has nothing pending.
   // A publish or a webhook landing mid-edit must not silently rewrite the text
@@ -126,8 +186,8 @@ export function ListingForm({
   }, [link, isDirty, form]);
 
   useEffect(() => {
-    onDirtyChange(linkDocId, isDirty);
-  }, [linkDocId, isDirty, onDirtyChange]);
+    onDirtyChange(linkDocId, isDirty || attrDirty);
+  }, [linkDocId, isDirty, attrDirty, onDirtyChange]);
 
   useEffect(
     () => () => {
@@ -152,24 +212,41 @@ export function ListingForm({
 
       const baseline = override ?? baselineRef.current;
       const port = createClientListingPort(db, produtoId, linkDocId);
+
+      // `attributes` rides ONLY when the operator edited it AND the metadata
+      // that governs the purge has actually loaded. `attributesForSave` decides
+      // what survives by iterating that metadata, so running it against an
+      // empty list would be deciding with no information — and this is the
+      // field where the cost of that is silent: dropping `SIZE_GRID_ID` breaks
+      // every size-chart binding with nothing on screen to show for it.
+      const values = toPatchValues(parsed.data);
+      const attributesRide = attrDirty && atributosQuery.data != null;
+      if (attributesRide) {
+        values.attributes = attributesForSave(attrs, attrRows, link.attributes ?? null, omitidos);
+      }
+
       setSaving(true);
       try {
         await saveListing(port, {
-          values: toPatchValues(parsed.data),
-          dirty: form.formState.dirtyFields as Record<string, unknown>,
+          values,
+          dirty: {
+            ...(form.formState.dirtyFields as Record<string, unknown>),
+            ...(attributesRide ? { attributes: true } : {}),
+          },
           baseline,
           baselineMs: baseline.ultimaModificacao ?? null,
         });
         // Zero the dirty state without waiting for the snapshot round trip, so
         // the produto's leave-guard clears the moment the write lands.
         form.reset(parsed.data);
-        // Advance the baseline to what we just wrote. Waiting for the snapshot
-        // instead would leave a window where a second save compares against the
-        // pre-save doc and reports a conflict with our own write.
-        baselineRef.current = {
-          ...baseline,
-          ...toPatchValues(parsed.data),
-        } as ProdutoMercadoLivreLink;
+        // Drop the local attribute edits so the grid re-derives from the doc.
+        setEdited(null);
+        // Advance the baseline to what we just wrote — `values`, not a fresh
+        // `toPatchValues`, so the attributes that rode are part of it. Waiting
+        // for the snapshot instead would leave a window where a second save
+        // compares against the pre-save doc and reports a conflict with our own
+        // write.
+        baselineRef.current = { ...baseline, ...values } as ProdutoMercadoLivreLink;
         setConflict(null);
         if (mode === 'button') {
           notifications.show({ color: 'green', message: 'Anúncio salvo.' });
@@ -208,7 +285,18 @@ export function ListingForm({
         setSaving(false);
       }
     },
-    [db, form, linkDocId, produtoId],
+    [
+      db,
+      form,
+      linkDocId,
+      produtoId,
+      attrDirty,
+      attrRows,
+      attrs,
+      omitidos,
+      atributosQuery.data,
+      link.attributes,
+    ],
   );
 
   // The flush closure is re-read from a ref so the registration itself stays
@@ -263,15 +351,13 @@ export function ListingForm({
           />
           <Controller
             control={form.control}
-            name="channels"
+            name="category_id"
             render={({ field, fieldState }) => (
-              <Select
-                label="Canais"
-                data={channelSelectData}
-                value={field.value}
-                onChange={(v) => field.onChange(v ?? 'marketplace')}
-                onBlur={field.onBlur}
-                allowDeselect={false}
+              <CategoriaField
+                integracaoId={integracaoId}
+                produtoNome={produtoNome}
+                value={field.value === '' ? null : field.value}
+                onChange={field.onChange}
                 disabled={readOnly}
                 error={fieldState.error?.message}
               />
@@ -326,55 +412,21 @@ export function ListingForm({
               )}
             />
           )}
-          <Controller
-            control={form.control}
-            name="tarifaFrete"
-            render={({ field, fieldState }) => (
-              <NumberInput
-                label="Tarifa de frete"
-                prefix="R$ "
-                decimalScale={2}
-                min={0}
-                value={field.value ?? ''}
-                onChange={(v) => field.onChange(v === '' ? null : Number(v))}
-                onBlur={field.onBlur}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="crossdocking"
-            render={({ field, fieldState }) => (
-              <NumberInput
-                label="Crossdocking"
-                description="Dias de preparação antes do envio."
-                allowDecimal={false}
-                min={0}
-                value={field.value ?? ''}
-                onChange={(v) => field.onChange(v === '' ? null : Number(v))}
-                onBlur={field.onBlur}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="video_id"
-            render={({ field, fieldState }) => (
-              <TextInput
-                {...field}
-                value={field.value ?? ''}
-                label="Vídeo (YouTube)"
-                description="Somente o id do vídeo."
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
         </SimpleGrid>
+      </Fieldset>
+
+      <Fieldset legend="Atributos da categoria" variant="unstyled">
+        <AtributosSection
+          categoryId={effectiveCategoryId}
+          attrs={attrs}
+          rows={attrRows}
+          onRowsChange={(rows) => setEdited({ categoryId: effectiveCategoryId, rows })}
+          errors={attrErrors}
+          leaf={atributosQuery.data?.leaf ?? true}
+          loading={atributosQuery.isPending && effectiveCategoryId != null}
+          failed={atributosQuery.isError}
+          disabled={readOnly}
+        />
       </Fieldset>
 
       <Group justify="flex-end">
