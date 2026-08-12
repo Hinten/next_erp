@@ -536,7 +536,11 @@ export function SizeChartEditorModal({
         <Divider />
 
         {specsError && (
-          <Alert color="red" variant="light">
+          <Alert
+            color="red"
+            variant="light"
+            title="Não foi possível carregar os dados do Mercado Livre"
+          >
             {reportableMessage(
               specsError,
               'Não foi possível carregar as especificações do domínio.',
