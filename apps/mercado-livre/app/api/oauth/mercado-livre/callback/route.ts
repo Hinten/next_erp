@@ -6,23 +6,72 @@
  * the only trust anchor: verify it, resolve the `integracao` account, exchange
  * the code for tokens, persist (single-token), and redirect the browser back
  * into the web app. Mirrors apps/melhor-envio's OAuth callback.
- *
- * NOTE (Phase 5): `exchangeAndPersist` currently throws NotImplemented — the
- * ML token exchange lands with the per-channel port. The state verification,
- * account resolution, and redirect plumbing are wired.
  */
 import { NextResponse } from 'next/server';
+import {
+  MercadoLivreHttpError,
+  MercadoLivreNetworkError,
+  MercadoLivreReauthRequiredError,
+} from '@delfrance/integrations-mercado-livre';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
+import {
+  MercadoLivreConfigError,
+  MercadoLivreContaNotConfiguredError,
+  loadMercadoLivreContext,
+  mercadoLivreRedirectUri,
+} from '@/lib/marketplace/mercadoLivre';
 import { MarketplaceStateError, verifyState } from '@/lib/marketplace/state';
 import { isMercadoLivreError } from '@/lib/marketplace/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+/**
+ * ⚠️ `??` guards only `undefined`/`null`, so a BLANK `WEB_APP_URL=` would yield
+ * `base === ''` and redirect the browser to a relative-looking URL. Treat blank as
+ * unset — same `??`-versus-empty-string hole #887 fixed for `*_TASKS_REGION`, and
+ * the same one `mercadoLivreRedirectUri()` carries.
+ */
 function webBase(): string {
-  return (process.env.WEB_APP_URL ?? 'http://localhost:3000').replace(/\/$/, '');
+  const raw = process.env.WEB_APP_URL?.trim();
+  return (raw && raw.length > 0 ? raw : 'http://localhost:3000').replace(/\/$/, '');
+}
+
+/**
+ * Map a failure to a DISTINCT redirect `reason`.
+ *
+ * `isMercadoLivreError` matches five disjoint families — missing server credentials,
+ * a bad integração doc, an ML rejection, a dead code, a network failure — and this
+ * route used to collapse all of them into the single word `exchange`. That made a
+ * misconfigured backend indistinguishable from an expired authorization code, from
+ * the browser and from the logs alike.
+ *
+ * Slugs only: never put ML's error text in a query string. `exchange` stays as the
+ * fallback so an unrecognised member of the guard still redirects instead of 500ing.
+ *
+ * ⚠️ `server_config`, not `config` — `config` already means "the state secret is
+ * unset" on the LIST page, and reusing it here would merge two unrelated causes.
+ */
+function exchangeFailureReason(err: unknown): string {
+  if (err instanceof MercadoLivreConfigError) return 'server_config';
+  if (err instanceof MercadoLivreContaNotConfiguredError) return 'conta';
+  if (err instanceof MercadoLivreReauthRequiredError) return 'codigo_invalido';
+  if (err instanceof MercadoLivreHttpError) return 'ml_rejeitou';
+  if (err instanceof MercadoLivreNetworkError) return 'rede';
+  return 'exchange';
+}
+
+/**
+ * The ML response detail, when the error carries one. Both classes below hold the
+ * parsed body; `MercadoLivreReauthRequiredError` only started doing so alongside
+ * this change (it previously dropped status + body for `invalid_grant`, which is
+ * the single most likely code-exchange failure).
+ */
+function errorDetail(err: unknown): { status?: number | null; body?: unknown } {
+  if (err instanceof MercadoLivreHttpError) return { status: err.status, body: err.body };
+  if (err instanceof MercadoLivreReauthRequiredError) return { status: err.status, body: err.body };
+  return {};
 }
 
 /** Redirect to a specific Mercado Livre account page with status params. */
@@ -63,8 +112,25 @@ export async function GET(req: Request): Promise<NextResponse> {
     await ctx.exchangeAndPersist(code);
     return backToAccount(integracaoId, { ml: 'connected' });
   } catch (err) {
-    if (isMercadoLivreError(err))
-      return backToAccount(integracaoId, { ml: 'error', reason: 'exchange' });
+    if (isMercadoLivreError(err)) {
+      const reason = exchangeFailureReason(err);
+      // The ONLY record of this failure. Without it the operator sees a six-character
+      // slug in a toast and nothing else — which is exactly how a broken connect stayed
+      // undiagnosable. `redirectUri` is included because it is computed from env and is
+      // otherwise unobservable from outside the running backend.
+      //
+      // ⚠️ Never log the `code`, the client secret, or any token: `code` is a live
+      // credential until it is exchanged, and Cloud Logging is broadly readable.
+      console.error('[mercado-livre/oauth-callback] falha ao trocar o code por tokens', {
+        integracaoId,
+        reason,
+        erro: err.name,
+        mensagem: err.message,
+        redirectUri: mercadoLivreRedirectUri(),
+        ...errorDetail(err),
+      });
+      return backToAccount(integracaoId, { ml: 'error', reason });
+    }
     throw err;
   }
 }
