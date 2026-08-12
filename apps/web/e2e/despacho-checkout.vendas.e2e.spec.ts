@@ -10,6 +10,8 @@ import { warmRoutes } from './helpers/warmup';
  * against the real UI + Firestore + the post-save/reprint network seams:
  *
  *   1. happy path      — scan a 1-line pedido, save, read back the checkout doc.
+ *   1b. pedido editor  — the pedido edit page's read-only Checkout tab (#368)
+ *       Checkout tab       shows the same doc the happy-path save just wrote.
  *   2. kit             — a whole-kit scan completes the kit line.
  *   3. wrong product   — scanning an unexpected produto logs "Produto não esperado".
  *   4. wrong-label     — THE point of this PR: reprinting a PAST checkout's label
@@ -154,6 +156,28 @@ test.describe.serial('Despacho — checkout (e2e)', () => {
     await expect
       .poll(() => readFreteEstado(fx.happyId), { timeout: 20_000 })
       .toBe('checkFinalizado');
+  });
+
+  test('pedido editor Checkout tab shows the just-saved checkout (#368)', async ({ page }) => {
+    // Depends on the previous test's save — describe.serial guarantees order.
+    await page.goto(`/pedidos/${fx.happyId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('tab', { name: 'Checkout' }).click();
+
+    // Item row: produto nome (= lineProdutoId in this fixture) + sku + qty badge.
+    await expect(page.getByText(fx.lineProdutoId)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(fx.lineSku)).toBeVisible();
+    await expect(page.getByText('1×')).toBeVisible();
+
+    // Frete-at-checkout snapshot: the fixture's freteInicial before the save
+    // flipped it to checkFinalizado (CIF / "Em separação" / R$ 25,90).
+    await expect(page.getByText('Contratação por conta do Emitente (CIF)')).toBeVisible();
+    await expect(page.getByText('Em separação')).toBeVisible();
+    await expect(page.getByText(/R\$\s*25,90/)).toBeVisible();
+
+    // Responsável: the logged-in SU account resolved from the checkout doc's
+    // usuarioCheckoutFretePedidoOuterRef — permission-gated text must NOT show.
+    await expect(page.getByText(/Sem permissão/)).toHaveCount(0);
   });
 
   test('kit: a whole-kit scan completes the kit line', async ({ page }) => {
