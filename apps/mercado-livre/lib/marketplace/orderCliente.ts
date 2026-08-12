@@ -246,8 +246,11 @@ export function billingInfoToEnderecoFields(info: MlBillingInfo): EnderecoBuildO
 /**
  * `shipment.receiver_address` — untyped on `MlShipment` (see the plugin's
  * `mlShipmentSchema` doc), so it is PARSED rather than cast. The previous
- * `as unknown as {…}` asserted a shape nothing had checked, on a payload that
- * is not Zod-validated at the webhook either (#810).
+ * `as unknown as {…}` asserted a shape nothing had checked. Note that #810
+ * validating the webhook body does NOT cover this: a shipment is re-fetched
+ * from the ML API, and both that schema and the notification one are
+ * `.passthrough()` by design — they check the fields we name, never the ones
+ * we don't.
  *
  * Leaf values stay `unknown` on purpose: the shared builder coerces scalars and
  * discards the rest, so this schema only has to describe the nesting.

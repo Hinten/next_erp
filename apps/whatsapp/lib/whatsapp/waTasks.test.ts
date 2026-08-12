@@ -58,6 +58,18 @@ describe('createWhatsappTaskScheduler', () => {
     );
   });
 
+  it('treats blank WHATSAPP_TASKS_REGION as unset and falls through to default', async () => {
+    vi.stubEnv('WHATSAPP_TASKS_DISABLED', '');
+    // Empty string should be treated as unset
+    vi.stubEnv('WHATSAPP_TASKS_REGION', '');
+    vi.stubEnv('FUNCTIONS_REGION', undefined);
+    const scheduler = createWhatsappTaskScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east5/functions/processWhatsappNotification',
+    );
+  });
+
   it('the disabled valve throws WhatsappTasksDisabledError instead of enqueuing', async () => {
     vi.stubEnv('WHATSAPP_TASKS_DISABLED', '1');
     const scheduler = createWhatsappTaskScheduler();

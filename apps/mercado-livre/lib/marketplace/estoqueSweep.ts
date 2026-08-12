@@ -2,7 +2,7 @@
  * Flag-gated Mercado Livre **stock sweeps** (Step 10 PR C) — the core behind
  * the 15-minute incremental and the 2AM daily `onSchedule` ticks. Per active
  * conta it runs THE produtos-first joined query
- * (`estoquePlan.fetchStockFamilies`) page by page, computes every family
+ * (`bulkEstoquePlan.fetchStockFamilies`) page by page, computes every family
  * member's quantity AT SWEEP TIME (`quantidadesDaFamilia`) and at the WINDOW
  * START (`quantidadesAnteriores`, from the LAZY, TICK-SHARED ledger sum),
  * applies the send policy (`deveEnviarFamilia`),
@@ -116,7 +116,7 @@ import {
   quantidadesAnteriores,
   quantidadesDaFamilia,
   windowOverlapSec,
-} from './estoquePlan';
+} from './bulkEstoquePlan';
 import type { MlStockTaskScheduler } from './mlStockTasks';
 import { MlTasksDisabledError } from './mlTasks';
 import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';

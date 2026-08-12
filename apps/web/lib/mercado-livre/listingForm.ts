@@ -6,6 +6,25 @@
  * every one of these fields ends up in a Mercado Livre payload, and a mapping
  * slip here is a rejected publish with no local symptom.
  *
+ * ## What is deliberately NOT here
+ *
+ * The form holds only what the OPERATOR decides about the listing. Everything
+ * that describes the product itself lives on the produto and is read from there
+ * at publish time — editing a second copy here would only let the two diverge:
+ *
+ *  - **`crossdocking` and `video_id`** are produto fields
+ *    (`produto.crossdocking`, `produto.videos`). ⚠️ Neither the link's
+ *    `crossdocking` nor its `channels` ever reaches the ML payload at all —
+ *    `buildItemPayload` does not read them — so they were editable and inert.
+ *  - **`channels`** — Mercado Shops is discontinued, so a listing is always
+ *    `['marketplace']` and there is nothing to choose.
+ *  - **`tarifaFrete`** is an internal figure, not something ML is told.
+ *  - **`fotos`** come from the produto's own Fotos tab; publish derives the
+ *    listing pictures from `produto.fotos`.
+ *
+ * Their stored values are left untouched — nothing here deletes them — they
+ * simply stop being editable from this screen.
+ *
  * ⚠️ This schema is **UI-only** and must never be merged into
  * `produtoMercadoLivreLinkSchema`. A `.min()`/`.max()` on the stored schema
  * makes the whole document fail its soft read, which silently discards every
@@ -13,12 +32,6 @@
  */
 import { z } from 'zod';
 
-import {
-  channelsToPreset,
-  parseRawChannelValue,
-  presetToChannels,
-  rawChannelValue,
-} from './listingFields';
 import type { OperatorOwnedKey } from './listingPatch';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
@@ -29,15 +42,11 @@ export const listingFormSchema = z.object({
   title: z.string().trim().min(1, 'Informe o título do anúncio.'),
   descricao: z.string().max(DESCRICAO_MAX, 'A descrição excede o limite do Mercado Livre.'),
   condition: z.enum(['new', 'used']),
-  channels: z.string().min(1, 'Escolha onde o anúncio aparece.'),
+  // Not `.min(1)`: a draft may legitimately be saved before its category is
+  // chosen (an operator fixing the título first), and publish already refuses a
+  // listing without one. Blocking the save would trap the other edits.
+  category_id: z.string(),
   listing_type_id: z.string(),
-  tarifaFrete: z.number().min(0, 'A tarifa de frete não pode ser negativa.').nullable(),
-  crossdocking: z
-    .number()
-    .int('Informe o prazo em dias inteiros.')
-    .min(0, 'O prazo não pode ser negativo.')
-    .nullable(),
-  video_id: z.string().trim(),
 });
 
 export type ListingFormInput = z.input<typeof listingFormSchema>;
@@ -45,31 +54,20 @@ export type ListingFormValues = z.output<typeof listingFormSchema>;
 
 /** Seed the form from the stored doc. */
 export function toFormValues(link: ProdutoMercadoLivreLink): ListingFormInput {
-  const preset = channelsToPreset(link.channels);
   return {
     title: link.title ?? '',
     descricao: link.descricao ?? '',
     condition: link.condition === 'used' ? 'used' : 'new',
-    // An unmodelled `channels` array is carried through verbatim rather than
-    // snapped to the nearest preset — see `channelOptions`.
-    channels:
-      preset ??
-      ((link.channels?.length ?? 0) > 0 ? rawChannelValue(link.channels!) : 'marketplace'),
+    category_id: link.category_id ?? '',
     listing_type_id: link.listing_type_id ?? '',
-    tarifaFrete: link.tarifaFrete ?? null,
-    crossdocking: link.crossdocking ?? null,
-    video_id: link.video_id ?? '',
   };
 }
 
 /**
  * Form values → the doc-shaped values the patch builder reads.
  *
- * Two things happen here and nowhere else: the channels preset becomes the
- * stored array, and a text input cleared to `''` becomes `null`. The second
- * matters because ML treats an empty string as a real value — an empty
- * `video_id` is a request to attach a video with no id, not a request to remove
- * the video.
+ * A text input cleared to `''` becomes `null`, because ML treats an empty
+ * string as a real value rather than as an absence.
  */
 export function toPatchValues(
   values: ListingFormValues,
@@ -78,12 +76,8 @@ export function toPatchValues(
     title: values.title.trim(),
     descricao: blankToNull(values.descricao),
     condition: values.condition,
-    channels: parseRawChannelValue(values.channels) ??
-      presetToChannels(values.channels) ?? ['marketplace'],
+    category_id: blankToNull(values.category_id),
     listing_type_id: blankToNull(values.listing_type_id),
-    tarifaFrete: values.tarifaFrete,
-    crossdocking: values.crossdocking,
-    video_id: blankToNull(values.video_id),
   };
 }
 
