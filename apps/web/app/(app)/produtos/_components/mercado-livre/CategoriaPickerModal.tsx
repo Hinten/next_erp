@@ -21,8 +21,13 @@ import {
   canSelectCategoria,
   categoriaBreadcrumb,
   levelChildren,
+  PATH_SEPARATOR,
+  sugestaoPath,
 } from '@/lib/mercado-livre/categoriaTree';
-import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import {
+  useMercadoLivreClient,
+  type MercadoLivreCategoriaSugestao,
+} from '@/lib/mercado-livre/client';
 
 /** ML metadata barely moves; a half-hour is generous and still bounded. */
 const METADATA_STALE_MS = 30 * 60 * 1000;
@@ -51,6 +56,30 @@ export interface CategoriaPickerModalProps {
  * catalogue is tens of thousands of nodes, and the operator only ever walks one
  * branch of it.
  */
+/**
+ * One suggestion's label: the ancestor trail dimmed, the leaf emphasised.
+ *
+ * Two lines rather than one long string, because the trail is context and the
+ * leaf is the answer — and because "Calçados, Roupas e Bolsas › Roupas ›
+ * Camisetas e Regatas" on a single line truncates away exactly the segment that
+ * distinguishes it from the next row.
+ */
+function SugestaoLabel({ sugestao }: { sugestao: MercadoLivreCategoriaSugestao }) {
+  const { trail, leaf } = sugestaoPath(sugestao);
+  return (
+    <Stack gap={0}>
+      {trail.length > 0 && (
+        <Text size="xs" c="dimmed">
+          {trail.join(PATH_SEPARATOR)}
+        </Text>
+      )}
+      <Text size="sm" fw={500}>
+        {leaf}
+      </Text>
+    </Stack>
+  );
+}
+
 export function CategoriaPickerModal({
   opened,
   onClose,
@@ -138,7 +167,11 @@ export function CategoriaPickerModal({
             {(suggestionsQuery.data?.sugestoes ?? []).map((s) => (
               <NavLink
                 key={s.categoryId}
-                label={s.categoryName ?? s.categoryId}
+                // ⚠️ The full path, not just the leaf. ML files the same leaf
+                // name under several parents, so a leaf-only label rendered the
+                // same text on every row and the list looked like one category
+                // suggested five times.
+                label={<SugestaoLabel sugestao={s} />}
                 description={s.domainName ?? s.domainId ?? undefined}
                 rightSection={
                   <Badge size="xs" variant="light">

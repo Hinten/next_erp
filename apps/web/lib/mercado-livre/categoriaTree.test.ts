@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { MercadoLivreCategorias } from './client';
+import type { MercadoLivreCategoriaSugestao, MercadoLivreCategorias } from './client';
 
 import {
   canSelectCategoria,
   categoriaBreadcrumb,
   formatCategoriaPath,
+  formatSugestaoPath,
   levelChildren,
   ROOT_LABEL,
+  sugestaoPath,
 } from './categoriaTree';
 
 type Node = NonNullable<MercadoLivreCategorias['node']>;
@@ -85,5 +87,101 @@ describe('levelChildren', () => {
 
   it('is empty while the level is still loading', () => {
     expect(levelChildren(undefined)).toEqual([]);
+  });
+});
+
+describe('sugestaoPath', () => {
+  function sugestao(over: Partial<MercadoLivreCategoriaSugestao> = {}) {
+    return {
+      categoryId: 'MLB31447',
+      categoryName: 'Camisetas e Regatas',
+      domainId: 'MLB-T_SHIRTS',
+      domainName: 'Camisetas',
+      pathFromRoot: [
+        { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+        { id: 'MLB108704', name: 'Roupas' },
+        { id: 'MLB31447', name: 'Camisetas e Regatas' },
+      ],
+      ...over,
+    } satisfies MercadoLivreCategoriaSugestao;
+  }
+
+  it('separates the ancestors from the leaf', () => {
+    // The ancestors ARE the distinguishing information: ML files the same leaf
+    // name under several parents, so a leaf-only label renders identically on
+    // every row and the list looks like one category suggested five times.
+    expect(sugestaoPath(sugestao())).toEqual({
+      trail: ['Calçados, Roupas e Bolsas', 'Roupas'],
+      leaf: 'Camisetas e Regatas',
+    });
+  });
+
+  it('never repeats the leaf in the trail', () => {
+    // ML includes the node itself at the end of `path_from_root`, and the caller
+    // renders the leaf separately.
+    expect(sugestaoPath(sugestao()).trail).not.toContain('Camisetas e Regatas');
+  });
+
+  it('distinguishes two suggestions that share a leaf name', () => {
+    // The exact bug: five rows reading "Camisetas e Regatas", told apart only by
+    // an opaque MLB id.
+    const masculinas = sugestao({
+      categoryId: 'MLB31447',
+      pathFromRoot: [
+        { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+        { id: 'MLB108704', name: 'Roupas Masculinas' },
+        { id: 'MLB31447', name: 'Camisetas e Regatas' },
+      ],
+    });
+    const femininas = sugestao({
+      categoryId: 'MLB439327',
+      pathFromRoot: [
+        { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+        { id: 'MLB108705', name: 'Roupas Femininas' },
+        { id: 'MLB439327', name: 'Camisetas e Regatas' },
+      ],
+    });
+    expect(formatSugestaoPath(masculinas)).not.toBe(formatSugestaoPath(femininas));
+    expect(formatSugestaoPath(masculinas)).toContain('Roupas Masculinas');
+    expect(formatSugestaoPath(femininas)).toContain('Roupas Femininas');
+  });
+
+  it('degrades to the leaf alone when the path could not be resolved', () => {
+    // One unresolvable category must not take the whole list down, so the route
+    // sends `null` and the row stays selectable.
+    expect(sugestaoPath(sugestao({ pathFromRoot: null }))).toEqual({
+      trail: [],
+      leaf: 'Camisetas e Regatas',
+    });
+  });
+
+  it('falls back to ids when ML sends no names', () => {
+    const out = sugestaoPath(
+      sugestao({
+        categoryName: null,
+        pathFromRoot: [
+          { id: 'MLB1430', name: '  ' },
+          { id: 'MLB31447', name: null },
+        ],
+      }),
+    );
+    expect(out).toEqual({ trail: ['MLB1430'], leaf: 'MLB31447' });
+  });
+});
+
+describe('formatSugestaoPath', () => {
+  it('joins the whole path root-first', () => {
+    expect(
+      formatSugestaoPath({
+        categoryId: 'MLB31447',
+        categoryName: 'Camisetas e Regatas',
+        domainId: null,
+        domainName: null,
+        pathFromRoot: [
+          { id: 'MLB1430', name: 'Roupas' },
+          { id: 'MLB31447', name: 'Camisetas e Regatas' },
+        ],
+      }),
+    ).toBe('Roupas › Camisetas e Regatas');
   });
 });

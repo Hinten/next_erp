@@ -225,6 +225,17 @@ export interface MercadoLivreCategoriaSugestao {
   categoryName: string | null;
   domainId: string | null;
   domainName: string | null;
+  /**
+   * Ancestor trail, root-first, resolved server-side because
+   * `domain_discovery/search` returns only the LEAF name.
+   *
+   * ⚠️ Without it the picker is unusable, not merely terse: ML files the same
+   * leaf name (e.g. "Camisetas e Regatas") under several different parents, so
+   * every suggestion renders identically and the operator cannot tell which is
+   * which. `null` when the path could not be resolved — the row degrades to its
+   * leaf name rather than disappearing.
+   */
+  pathFromRoot: Array<{ id: string; name: string | null }> | null;
 }
 
 /**
