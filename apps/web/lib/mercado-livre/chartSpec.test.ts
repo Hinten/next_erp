@@ -12,6 +12,7 @@ import {
   mainAttributeCandidates,
   maxRows,
   resolveChartAttributeValue,
+  unitLabel,
 } from './chartSpec';
 
 /**
@@ -435,6 +436,27 @@ describe('mainAttributeCandidates', () => {
       'MANUFACTURER_SIZE',
       'EU_SIZE',
     ]);
+  });
+});
+
+describe('unitLabel', () => {
+  it('spells out the inch unit, whose ML id is a bare double quote', () => {
+    // ML sends `units: [{id: '"', name: '"'}, …]`. Rendered raw it looks like a
+    // blank option — it is real data, not a null, and must not be filtered out.
+    expect(unitLabel('"')).toBe('pol. (")');
+  });
+
+  it('leaves every other unit exactly as ML sent it', () => {
+    for (const unit of ['cm', 'EU', 'US', 'UK', 'AR', 'BR']) {
+      expect(unitLabel(unit)).toBe(unit);
+    }
+  });
+
+  it('is what the picker shows for the T_SHIRTS chest column', () => {
+    const chest = byKey(extractColumns(tshirtGrid, 'BODY_MEASURE'), 'CHEST_CIRCUMFERENCE_FROM');
+    expect(chest.unit.options.map((u) => unitLabel(u.id))).toEqual(['cm', 'pol. (")']);
+    // The stored VALUE stays ML's own id — that is what goes up in `unit_id`.
+    expect(chest.unit.options.map((u) => u.id)).toEqual(['cm', '"']);
   });
 });
 
