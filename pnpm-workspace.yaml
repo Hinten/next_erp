@@ -44,6 +44,9 @@ catalogMode: strict
 cleanupUnusedCatalogs: true
 allowBuilds:
   '@firebase/util': true
+  # Pure TypeScript SDK — ws, p-retry, protobufjs and google-auth-library, none
+  # of them native. Nothing to compile, so its install script stays blocked.
+  '@google/genai': false
   '@parcel/watcher': true
   '@swc/core': true
   core-js: false

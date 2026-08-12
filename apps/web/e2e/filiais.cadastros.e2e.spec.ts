@@ -17,6 +17,7 @@ import {
 import {
   clickSave,
   confirmDelete,
+  expectFieldAfterReload,
   expectFieldError,
   fillField,
   selectField,
@@ -183,7 +184,7 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/configuracoes\/filiais$/, { timeout: 15_000 });
 
     await page.goto(`/configuracoes/filiais/${row(5)}`);
-    await expect(page.getByLabel('Nome Fantasia', { exact: true })).toHaveValue('editado-e2e');
+    await expectFieldAfterReload(page, 'Nome Fantasia', 'editado-e2e');
   });
 
   test('shows the NFe config panel and the certificado upload panel on the edit page', async ({
