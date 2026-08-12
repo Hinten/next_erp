@@ -81,8 +81,29 @@ const CATALOG_KEEPERS = [
   { manifest: 'packages/ui/package.json', field: 'devDependencies' },
 ];
 
-/** Exact semver — no `^`, `~`, `x`, range, `catalog:`, `workspace:*` or URL. */
-const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+/**
+ * Exact STABLE semver — no `^`, `~`, `x`, range, `catalog:`, `workspace:*` or URL, and
+ * additionally no prerelease/build metadata.
+ *
+ * ⚠️ Deliberately STRICTER than `runtime-deps-pinned.test.js`'s `EXACT_SEMVER`, which
+ * admits `-rc.1`/`+build`. That guard only needs a spec the cloud `npm install` can
+ * resolve, and a prerelease qualifies. Here the spec is additionally judged by
+ * `checkNextJSVersion`, which routes prereleases down a DIFFERENT branch:
+ *
+ *     const baseVersion = isPrerelease ? semVer.coerce(version)?.version : null;
+ *     const isSafe = satisfies(version, SAFE_NEXTJS_VERSIONS)
+ *       || (baseVersion && satisfies(baseVersion, STRICTLY_SAFE_NEXTJS_VERSIONS));
+ *
+ * A prerelease never satisfies `SAFE_NEXTJS_VERSIONS` (semver only matches a prerelease
+ * against a comparator carrying one), so it is decided by its COERCED base against
+ * `STRICTLY_SAFE_NEXTJS_VERSIONS` — a range sitting one patch HIGHER on every backport
+ * line (`~16.0.8` vs `~16.0.7`, `~15.5.8` vs `~15.5.7`, …). So `16.0.7` deploys and
+ * `16.0.7-canary.1` does NOT, and CVE_FLOOR below models only the stable path. Rather
+ * than encode a second, higher floor for a case this repo has never used, reject
+ * prereleases outright: it keeps the floor honest instead of silently optimistic.
+ * (It also keeps the floor's `Number()` parse total — `'6-canary'` is `NaN`.)
+ */
+const EXACT_SEMVER = /^\d+\.\d+\.\d+$/;
 
 /**
  * The floor of the branch this repo is on, from `@apphosting/adapter-nextjs`'s
@@ -199,6 +220,14 @@ describe('App Hosting apps pin next to an exact literal version', () => {
 
   it('the pinned version clears the App Hosting CVE floor', () => {
     const spec = catalogSpec('next');
+    // Guard the read BEFORE splitting: a missing catalog entry (cleanupUnusedCatalogs,
+    // or a trailing comment breaking the line-anchored regex) would otherwise throw a
+    // bare TypeError here and bury the actionable message the previous test prints.
+    expect(
+      spec,
+      '`next` is missing from the pnpm-workspace.yaml catalog — see the catalog test above ' +
+        'for the two ways that happens. Fix that first; this floor check depends on it.',
+    ).toBeDefined();
     const parts = spec.split('.').map(Number);
     const [major, minor] = parts;
     const clears = major > CVE_FLOOR[0] || (major === CVE_FLOOR[0] && minor >= CVE_FLOOR[1]);
