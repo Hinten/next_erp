@@ -1,0 +1,123 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MercadoLivreReauthRequiredError } from '@delfrance/integrations-mercado-livre';
+
+import { SizeChartNotFoundError } from '@/lib/marketplace/sizeChartDelete';
+import { TabelaDeMedidasNotFoundError } from '@/lib/marketplace/sizeChartSync';
+
+// verifyCaller / context loader / the verify op are mocked; the route's own
+// logic (body validation, wiring, error mapping) runs real.
+const h = vi.hoisted(() => ({
+  verifyCaller: vi.fn(),
+  loadCtx: vi.fn(),
+  resolveChannelContext: vi.fn(),
+  verifySizeChartDeletion: vi.fn(),
+}));
+
+vi.mock('@/lib/firebase/admin', () => ({
+  getAdminFirestore: () => ({}),
+}));
+
+vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/auth/verifyCaller')>();
+  return { ...actual, verifyCaller: h.verifyCaller };
+});
+
+vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+  return { ...actual, loadMercadoLivreContext: h.loadCtx };
+});
+
+vi.mock('@/lib/marketplace/sizeChartDelete', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/sizeChartDelete')>();
+  return { ...actual, verifySizeChartDeletion: h.verifySizeChartDeletion };
+});
+
+const { POST } = await import('./route');
+
+function req(body: unknown): Request {
+  return new Request(
+    'http://localhost:3006/api/marketplace/mercado-livre/size-charts/verificar-exclusao',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    },
+  );
+}
+
+const VALID = { integracaoId: 'int-1', tabMediId: 'tm-1', chartId: '1594439' };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.verifyCaller.mockResolvedValue({ uid: 'u1' });
+  h.resolveChannelContext.mockResolvedValue({
+    integracaoId: 'int-1',
+    accessToken: 'AT',
+    account: {},
+  });
+  h.loadCtx.mockResolvedValue({
+    integracaoId: 'int-1',
+    resolveChannelContext: h.resolveChannelContext,
+  });
+  h.verifySizeChartDeletion.mockResolvedValue({ removed: false, chartStatus: null, tabelas: [] });
+});
+
+describe('POST /api/marketplace/mercado-livre/size-charts/verificar-exclusao', () => {
+  it('reports a confirmed removal', async () => {
+    h.verifySizeChartDeletion.mockResolvedValue({
+      removed: true,
+      chartStatus: 'INACTIVE',
+      tabelas: [],
+    });
+    const res = await POST(req(VALID));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ removed: true, chartStatus: 'INACTIVE' });
+
+    const [deps, tabMediId, chartId] = h.verifySizeChartDeletion.mock.calls[0]!;
+    expect(deps).toMatchObject({ integracaoId: 'int-1' });
+    expect(tabMediId).toBe('tm-1');
+    expect(chartId).toBe('1594439');
+  });
+
+  it('reports "still linked" as a 200 — it is an answer, not a failure', async () => {
+    h.verifySizeChartDeletion.mockResolvedValue({
+      removed: false,
+      chartStatus: 'ACTIVE',
+      tabelas: [{ id: '1594439' }],
+    });
+    const res = await POST(req(VALID));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ removed: false, chartStatus: 'ACTIVE' });
+  });
+
+  it('400s on missing fields, invalid JSON and non-object bodies', async () => {
+    expect((await POST(req({ integracaoId: 'int-1' }))).status).toBe(400);
+    expect((await POST(req({ ...VALID, chartId: '' }))).status).toBe(400);
+    expect((await POST(req('{nope'))).status).toBe(400);
+    expect((await POST(req('null'))).status).toBe(400);
+    expect((await POST(req('[1,2]'))).status).toBe(400);
+    expect(h.verifySizeChartDeletion).not.toHaveBeenCalled();
+  });
+
+  it('404s for an unknown tabMedi and for an unknown chart', async () => {
+    h.verifySizeChartDeletion.mockRejectedValue(new TabelaDeMedidasNotFoundError('tm-1'));
+    expect((await POST(req(VALID))).status).toBe(404);
+
+    h.verifySizeChartDeletion.mockRejectedValue(new SizeChartNotFoundError('1594439'));
+    expect((await POST(req(VALID))).status).toBe(404);
+  });
+
+  it('maps a dead credential to 409 via the shared error mapper', async () => {
+    h.resolveChannelContext.mockRejectedValue(
+      new MercadoLivreReauthRequiredError('no_token', 'não conectada'),
+    );
+    expect((await POST(req(VALID))).status).toBe(409);
+  });
+
+  it('propagates the auth failure from verifyCaller', async () => {
+    const denied = { error: new (await import('next/server')).NextResponse(null, { status: 403 }) };
+    h.verifyCaller.mockResolvedValue(denied);
+    expect((await POST(req(VALID))).status).toBe(403);
+  });
+});
