@@ -10,13 +10,15 @@ import { warmRoutes } from './helpers/warmup';
  * against the real UI + Firestore + the post-save/reprint network seams:
  *
  *   1. happy path      — scan a 1-line pedido, save, read back the checkout doc.
- *   1b. pedido editor  — the pedido edit page's read-only Checkout tab (#368)
- *       Checkout tab       shows the same doc the happy-path save just wrote.
  *   2. kit             — a whole-kit scan completes the kit line.
  *   3. wrong product   — scanning an unexpected produto logs "Produto não esperado".
  *   4. wrong-label     — THE point of this PR: reprinting a PAST checkout's label
  *      REGRESSION         targets THAT row's pedido, not the most-recent one.
  *   5. 120-item bulk   — a 120-line pedido loads/scans/saves through the real path.
+ *   6. pedido editor   — the pedido edit page's read-only Checkout tab (#368)
+ *      Checkout tab        shows the same doc test 1's save just wrote. Placed
+ *                          LAST so a failure here never skips tests 2-5
+ *                          (describe.serial skips everything after a failure).
  *
  * Network is stubbed (below): the local print agent, the Melhor Envio `/imprimir`
  * route, and every `/api/nfe/**` call — so post-save never reaches real SEFAZ
@@ -158,28 +160,6 @@ test.describe.serial('Despacho — checkout (e2e)', () => {
       .toBe('checkFinalizado');
   });
 
-  test('pedido editor Checkout tab shows the just-saved checkout (#368)', async ({ page }) => {
-    // Depends on the previous test's save — describe.serial guarantees order.
-    await page.goto(`/pedidos/${fx.happyId}/editar`);
-    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('tab', { name: 'Checkout' }).click();
-
-    // Item row: produto nome (= lineProdutoId in this fixture) + sku + qty badge.
-    await expect(page.getByText(fx.lineProdutoId)).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(fx.lineSku)).toBeVisible();
-    await expect(page.getByText('1×')).toBeVisible();
-
-    // Frete-at-checkout snapshot: the fixture's freteInicial before the save
-    // flipped it to checkFinalizado (CIF / "Em separação" / R$ 25,90).
-    await expect(page.getByText('Contratação por conta do Emitente (CIF)')).toBeVisible();
-    await expect(page.getByText('Em separação')).toBeVisible();
-    await expect(page.getByText(/R\$\s*25,90/)).toBeVisible();
-
-    // Responsável: the logged-in SU account resolved from the checkout doc's
-    // usuarioCheckoutFretePedidoOuterRef — permission-gated text must NOT show.
-    await expect(page.getByText(/Sem permissão/)).toHaveCount(0);
-  });
-
   test('kit: a whole-kit scan completes the kit line', async ({ page }) => {
     await installRouteStubs(page);
     await loadPedido(page, fx.kitPedidoNumero);
@@ -302,5 +282,41 @@ test.describe.serial('Despacho — checkout (e2e)', () => {
         { timeout: 30_000 },
       )
       .toBe(120);
+  });
+
+  // Placed LAST in this describe.serial block on purpose: a failure here must
+  // not skip the pre-existing checkout-save coverage above it (describe.serial
+  // skips every test AFTER the first failure). Depends on the happy-path
+  // test's save (test #1) having already run.
+  test('pedido editor Checkout tab shows the just-saved checkout (#368)', async ({ page }) => {
+    await page.goto(`/pedidos/${fx.happyId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('tab', { name: 'Checkout' }).click();
+
+    // Item row: produto nome (= lineProdutoId in this fixture) + sku + qty badge.
+    // The nome/sku text each resolves through their own live doc-snapshot
+    // subscription mounted AFTER the checkout doc itself loads and the tab
+    // switches — a real 2-stage network round trip, so give it the same
+    // generous budget the rest of this suite uses (not the 5s Playwright
+    // default).
+    await expect(page.getByText(fx.lineProdutoId)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(fx.lineSku)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('1×')).toBeVisible({ timeout: 15_000 });
+
+    // Frete-at-checkout snapshot: the fixture's freteInicial before the save
+    // flipped it to checkFinalizado (CIF / "Em separação" / R$ 25,90).
+    await expect(page.getByText('Contratação por conta do Emitente (CIF)')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText('Em separação')).toBeVisible({ timeout: 15_000 });
+    // Regex getByText matches EVERY element whose full text contains the
+    // substring, including the enclosing Card (whose aggregate text also
+    // contains it) — not just the Text node — so `.first()` avoids a
+    // strict-mode violation on 2 resolved elements.
+    await expect(page.getByText(/R\$\s*25,90/).first()).toBeVisible({ timeout: 15_000 });
+
+    // Responsável: the logged-in SU account resolved from the checkout doc's
+    // usuarioCheckoutFretePedidoOuterRef — permission-gated text must NOT show.
+    await expect(page.getByText(/Sem permissão/)).toHaveCount(0);
   });
 });
