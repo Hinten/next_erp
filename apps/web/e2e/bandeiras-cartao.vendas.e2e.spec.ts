@@ -19,6 +19,7 @@ import {
   clickSave,
   clickSaveAndContinue,
   confirmDelete,
+  expectFieldAfterReload,
   expectFieldError,
   expectToast,
   fillField,
@@ -166,9 +167,7 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
     await page.waitForURL(/\/bandeiras-cartao$/, { timeout: 15_000 });
 
     await page.goto(`/bandeiras-cartao/${row(5)}`);
-    await expect(page.getByLabel('CNPJ da instituição', { exact: true })).toHaveValue(
-      '12345678000199',
-    );
+    await expectFieldAfterReload(page, 'CNPJ da instituição', '12345678000199');
   });
 
   test('edits a bandeira and continues editing', async ({ page }) => {

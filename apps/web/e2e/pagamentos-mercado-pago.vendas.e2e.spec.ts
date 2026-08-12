@@ -6,7 +6,7 @@ import {
   seedMetodoPagamento,
 } from './_helpers/seed-data';
 import { applyTextFilter, expectRowHidden, expectRowVisible } from './helpers/table-view';
-import { clickSave, confirmDelete, fillField } from './helpers/object-view';
+import { clickSave, confirmDelete, expectFieldAfterReload, fillField } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -106,7 +106,7 @@ test.describe.serial('Pagamentos Mercado Pago e2e — TableView / ObjectView', (
     await page.waitForURL(/\/pagamentos\/mercado-pago$/, { timeout: 15_000 });
 
     await page.goto(`/pagamentos/mercado-pago/${row(4)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-004-editada`);
+    await expectFieldAfterReload(page, 'Nome', `${prefix}-004-editada`);
   });
 
   test('deletes a conta through the typed-confirm modal', async ({ page }) => {

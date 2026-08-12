@@ -59,6 +59,45 @@ describe('useServerTruthSeed', () => {
     expect(seen).toEqual([false]);
   });
 
+  it('pays an owed correction once the form goes pristine again', () => {
+    // The counterpart to the test above, and the reason `isDirty` is a
+    // dependency. The server snapshot lands mid-edit and is rightly skipped —
+    // but it must not be LOST. Keyed on `[id, fromCache]` alone it was: neither
+    // value changes again, so nothing ever re-ran, and the operator kept
+    // editing a form whose untouched fields still held the pre-write cache.
+    const seen = seedThrough([
+      { id: 'p1', fromCache: true, isDirty: false },
+      { id: 'p1', fromCache: false, isDirty: true },
+      { id: 'p1', fromCache: false, isDirty: false },
+    ]);
+    expect(seen).toEqual([false, true]);
+  });
+
+  it('pays an owed correction at most once', () => {
+    // Going dirty again after the debt is settled must not re-seed — by then
+    // the form holds server truth and any edit on top of it is the operator's.
+    const seen = seedThrough([
+      { id: 'p1', fromCache: true, isDirty: false },
+      { id: 'p1', fromCache: false, isDirty: true },
+      { id: 'p1', fromCache: false, isDirty: false },
+      { id: 'p1', fromCache: false, isDirty: true },
+      { id: 'p1', fromCache: false, isDirty: false },
+    ]);
+    expect(seen).toEqual([false, true]);
+  });
+
+  it('owes nothing when no server snapshot ever arrived', () => {
+    // A dirty→pristine transition is not itself a reason to re-seed; only an
+    // authoritative snapshot is. Otherwise an operator undoing their own typing
+    // would get the stale cache re-applied on top.
+    const seen = seedThrough([
+      { id: 'p1', fromCache: true, isDirty: false },
+      { id: 'p1', fromCache: true, isDirty: true },
+      { id: 'p1', fromCache: true, isDirty: false },
+    ]);
+    expect(seen).toEqual([false]);
+  });
+
   it('re-seeds when the record changes, even from cache', () => {
     const seen = seedThrough([
       { id: 'p1', fromCache: false, isDirty: false },
