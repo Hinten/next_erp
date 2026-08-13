@@ -19,9 +19,11 @@
  * substantive rather than a paths-filter entry.
  */
 import { randomUUID } from 'node:crypto';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { putOauthState } from '@/lib/marketplace/oauthStateStore';
 import { signState } from '@/lib/marketplace/state';
 
 import { GET } from './route';
@@ -79,11 +81,16 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
     const contaRef = db().collection('integracao').doc(integracaoId);
     await contaRef.set({
       nome: 'conta ML de teste',
-      tipo: 1, // INTEGRACAO_TIPO.mercadoLivre
+      tipo: INTEGRACAO_TIPO.mercadoLivre,
       ativo: true,
     });
 
-    const state = signState(integracaoId, STATE_SECRET);
+    // #821: the signed state is no longer sufficient on its own — `/oauth/start`
+    // RECORDS the attempt and the callback REDEEMS it, so the state is
+    // single-use. Seed the record the same way the start route would.
+    const { state, nonce } = signState(integracaoId, STATE_SECRET);
+    await putOauthState(db(), integracaoId, { nonce, codeVerifier: null });
+
     const url = `https://ml.example.invalid/api/oauth/mercado-livre/callback?code=TG-code-123&state=${encodeURIComponent(state)}`;
 
     const before = Date.now();
@@ -122,7 +129,7 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
       user_id: ML_TOKEN_RESPONSE.user_id,
       nome: 'conta ML de teste',
       ativo: true,
-      tipo: 1,
+      tipo: INTEGRACAO_TIPO.mercadoLivre,
     });
 
     // 4. The outbound request really was the documented token exchange.
@@ -135,12 +142,50 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
     expect(String(init.body)).toContain('client_id=2069392825111111');
   });
 
+  it('#821: replaying a VALID state is rejected — the record is single-use', async () => {
+    const integracaoId = `int${randomUUID().replace(/-/g, '')}`;
+    const contaRef = db().collection('integracao').doc(integracaoId);
+    await contaRef.set({
+      nome: 'conta ML',
+      tipo: INTEGRACAO_TIPO.mercadoLivre,
+      ativo: true,
+    });
+
+    const { state, nonce } = signState(integracaoId, STATE_SECRET);
+    await putOauthState(db(), integracaoId, { nonce, codeVerifier: null });
+
+    const url = `https://ml.example.invalid/api/oauth/mercado-livre/callback?code=TG-code-123&state=${encodeURIComponent(state)}`;
+
+    const first = await GET(new Request(url));
+    expect(first.headers.get('location')).toContain('ml=connected');
+
+    // The HMAC is still perfectly valid on the second call — integrity was never
+    // the question. Only the redeemed record distinguishes them, and
+    // `consumeOauthState` stamps `consumidoEm` inside the transaction that read
+    // it. Before #821 this replay overwrote the account's credential with
+    // whoever drove the second callback.
+    const second = await GET(new Request(url));
+    expect(second.headers.get('location')).toContain('reason=bad_state');
+
+    // The winner's token survived — a rejected replay must not disturb it.
+    const token = await contaRef.collection('tokenDuravel').doc('current').get();
+    expect(token.exists).toBe(true);
+    expect(token.data()).toMatchObject({ access_token: ML_TOKEN_RESPONSE.access_token });
+    // And the rejection happened BEFORE the exchange: only the first call
+    // reached Mercado Livre.
+    expect(fetchStub).toHaveBeenCalledOnce();
+  });
+
   it('a state signed with a DIFFERENT secret is rejected and writes nothing', async () => {
     const integracaoId = `int${randomUUID().replace(/-/g, '')}`;
     const contaRef = db().collection('integracao').doc(integracaoId);
-    await contaRef.set({ nome: 'conta ML', tipo: 1, ativo: true });
+    await contaRef.set({
+      nome: 'conta ML',
+      tipo: INTEGRACAO_TIPO.mercadoLivre,
+      ativo: true,
+    });
 
-    const forged = signState(integracaoId, 'outro-segredo-qualquer');
+    const { state: forged } = signState(integracaoId, 'outro-segredo-qualquer');
     const res = await GET(
       new Request(
         `https://ml.example.invalid/api/oauth/mercado-livre/callback?code=TG-code-123&state=${encodeURIComponent(forged)}`,

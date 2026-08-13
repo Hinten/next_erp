@@ -260,6 +260,57 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('server-owned integracao.user_id (meta.serverOwnedFields) — #821/T4', () => {
+    // `user_id` is the Mercado Livre webhook ROUTING key: an inbound
+    // notification finds its account with `where('user_id','==',…)`. A client
+    // able to write it could repoint another seller's notification stream at
+    // its own integração, or break routing outright. The only legitimate writer
+    // is the OAuth exchange, through the rules-bypassing Admin SDK.
+    const writer = () => db({ d_integracao: 2 });
+
+    it('allows a create carrying the field only as null (client parse default)', async () => {
+      await assertSucceeds(
+        setDoc(doc(writer(), 'integracao/uid-null'), {
+          nome: 'ML',
+          tipo: 'mercadoLivre',
+          user_id: null,
+        }),
+      );
+      await assertSucceeds(
+        setDoc(doc(writer(), 'integracao/uid-absent'), { nome: 'ML', tipo: 'mercadoLivre' }),
+      );
+    });
+
+    it('denies a create forging a seller id', async () => {
+      await assertFails(
+        setDoc(doc(writer(), 'integracao/uid-forge'), {
+          nome: 'ML',
+          tipo: 'mercadoLivre',
+          user_id: 123456789,
+        }),
+      );
+    });
+
+    it('denies any update touching the field — set, clear, or delete', async () => {
+      await seed('integracao/uid-upd', { nome: 'ML', tipo: 'mercadoLivre', user_id: 111 });
+      // The hijack: repoint this account at another seller's stream.
+      await assertFails(updateDoc(doc(writer(), 'integracao/uid-upd'), { user_id: 222 }));
+      await assertFails(updateDoc(doc(writer(), 'integracao/uid-upd'), { user_id: null }));
+      await assertFails(updateDoc(doc(writer(), 'integracao/uid-upd'), { user_id: deleteField() }));
+    });
+
+    it('allows updates that leave the field untouched', async () => {
+      await seed('integracao/uid-other', { nome: 'ML', tipo: 'mercadoLivre', user_id: 111 });
+      await assertSucceeds(updateDoc(doc(writer(), 'integracao/uid-other'), { nome: 'ML 2' }));
+    });
+
+    it('does not yield to the super-user claim (server-owned beats su)', async () => {
+      await seed('integracao/uid-su', { nome: 'ML', tipo: 'mercadoLivre', user_id: 111 });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(updateDoc(doc(su, 'integracao/uid-su'), { user_id: 222 }));
+    });
+  });
+
   describe('server-owned produtos/historicoDeModificacoes (meta.serverOwned)', () => {
     // Written EXCLUSIVELY by the onProdutoChanged trigger (Admin SDK, which
     // bypasses rules entirely). Reads follow the ordinary produto read bit;

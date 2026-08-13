@@ -24,6 +24,7 @@ import {
   notificacoesWhatsappCollection,
 } from '@delfrance/data/admin/collections';
 
+import { invalidateWhatsappConta } from './contaCache';
 import { loadWhatsappContext } from './whatsapp';
 
 export type HealthStatus = 'ok' | 'warn' | 'fail' | 'skip';
@@ -242,6 +243,7 @@ export async function buildWhatsappHealth(
       if (conta.verificado !== true) {
         try {
           await integracaoCollection.merge(db, {}, integracaoId, { verificado: true });
+          invalidateWhatsappConta(integracaoId);
         } catch (err) {
           // Best-effort self-heal — a write failure is not a health failure,
           // but it must leave a trace (a persistent failure here means

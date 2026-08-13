@@ -22,10 +22,7 @@
  * the specific doc seeded rather than on aggregate counts.
  */
 import { randomUUID } from 'node:crypto';
-import {
-  notificacaoMercadoLivreCollection,
-  integracaoCollection,
-} from '@delfrance/data/admin/collections';
+import { notificacaoMercadoLivreCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { beforeEach, describe, expect, it } from 'vitest';
 

@@ -18,10 +18,12 @@
  *
  * **1. The input is `unknown`, and parsing it never throws.** Provider payloads
  * are not to be trusted: ML's `receiver_address` is reached through an
- * unchecked cast and its webhook bodies are not validated at all (#810), so a
- * `street_number` can arrive as the number `50` and would otherwise be written
- * into Firestore as a number. {@link rawEnderecoInputSchema} coerces scalars to
- * strings and everything else to `null`.
+ * unchecked cast, and every schema on that path — the webhook body's included,
+ * even after #810 Zod-validated it — is `.passthrough()`, which checks the
+ * fields it names and nothing else. So a `street_number` can still arrive as
+ * the number `50` and would otherwise be written into Firestore as a number.
+ * {@link rawEnderecoInputSchema} coerces scalars to strings and everything else
+ * to `null`.
  *
  * **2. The output is emissible, not merely storable.** `enderecoSchema` is
  * looser than the NF-e `TEndereco` XSD in both directions — it accepts a
