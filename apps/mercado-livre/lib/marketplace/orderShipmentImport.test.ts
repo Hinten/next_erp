@@ -21,11 +21,11 @@ import {
   type OccOpKind,
   type OccTransaction,
   type OccWriteKind,
-} from './testing/occTransaction';
+} from '@delfrance/data/testing';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Own copy of the STORE (a concurrent agent owns `orderPaymentImport.test.ts`);
-// the transaction semantics are the SHARED `OccEngine` (`./testing/occTransaction`),
+// the transaction semantics are the SHARED `OccEngine` (`@delfrance/data/testing`),
 // because a per-file OCC model that drifts is worse than none.
 // Scoped to what `orderShipmentImport.ts` touches: `integracao`, `int_frete`,
 // `pedidos/{pedidoId}/orderML` (collectionGroup, docs carry `ref.parent.parent.id`

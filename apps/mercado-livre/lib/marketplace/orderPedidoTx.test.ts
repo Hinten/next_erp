@@ -11,7 +11,7 @@ import {
   type OccOpKind,
   type OccTransaction,
   type OccWriteKind,
-} from './testing/occTransaction';
+} from '@delfrance/data/testing';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 
 /* ------------------------------ fake Firestore ---------------------------- */
@@ -22,7 +22,7 @@ import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 // "reads-before-writes" test asserts on it directly instead of inferring
 // ordering from side effects.
 //
-// `runTransaction` delegates to the SHARED `OccEngine` (`./testing/occTransaction`)
+// `runTransaction` delegates to the SHARED `OccEngine` (`@delfrance/data/testing`)
 // — the one piece the four FakeDbs in this folder do not duplicate, because a
 // per-file OCC model that drifts is worse than none. Everything else stays this
 // file's own, which is what the "own copy" comments were always about.
@@ -745,7 +745,7 @@ describe('discoverPedidoMercadoLivre — embedded payments upsert', () => {
 
 /* --------------------------- concurrency (real OCC) ------------------------ */
 // These exercise the shared `OccEngine`'s retry path — the one the previous
-// non-isolated fake could not model at all. See `./testing/occTransaction.ts`.
+// non-isolated fake could not model at all. See `packages/data/src/testing/occTransaction.ts`.
 
 describe('discoverPedidoMercadoLivre — concurrent pack siblings', () => {
   /**
