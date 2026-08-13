@@ -26,6 +26,19 @@ import { describe, expect, it } from 'vitest';
  * `.github/scripts/e2e-affected.mjs`), and reports through an unskippable `gate`
  * job whose name is pinned as a required status check on `protect-main`.
  *
+ * ⚠️ ASSERTION 1 CAN GO RED ON `main` HAVING PASSED ON EVERY PR — and that is the
+ * guard working, not a bug in it. Every lane checks out
+ * `github.event.pull_request.head.sha`, i.e. the PR HEAD, not GitHub's merge ref,
+ * so a repo-state assertion only ever sees its own branch. It happened the day
+ * this file was written: #999 added `ci-mercado-livre.yml` to `main` at 15:11,
+ * #1031 added the total-partition assertion at 16:34 from a branch that never
+ * contained it, both PRs were honestly green, and the merge result had 15
+ * workflows against 14 classified. If you are reading this because `main` is red
+ * on this assertion, the fix is almost certainly to classify a lane someone added
+ * concurrently — not to weaken the partition. Closing the skew itself would mean
+ * requiring branches to be up to date before merging, which is a `protect-main`
+ * setting and a deliberate cost, not a code change here.
+ *
  * ⚠️ WHY THE GATE MUST BE UNSKIPPABLE. A job skipped by `if:` still publishes a
  * check run, with conclusion `skipped`, and GitHub's required-status-check
  * evaluation treats `skipped` as SATISFYING the requirement. A gate carrying any
@@ -126,6 +139,24 @@ const LANES = {
         id: 'freight-live',
         check: 'Freight live (Melhor Envio sandbox)',
         class: 'optional:live_enabled+not_fork',
+      },
+    ],
+  },
+  '.github/workflows/ci-mercado-livre.yml': {
+    gate: 'CI gate (mercado-livre)',
+    scope: 'CI scope (mercado-livre)',
+    // One root, not two: `@delfrance/integrations-mercado-livre` is already in the
+    // app's closure. That is #823's acceptance criterion ("a PR touching ONLY the
+    // library must run this lane") satisfied by the graph rather than by a second
+    // entry someone has to remember to keep.
+    roots: ['@delfrance/mercado-livre-app'],
+    // Fully offline — no ML credentials, ever (ML has no sandbox), so the one
+    // suite job is required and the lane runs on forks too.
+    jobs: [
+      {
+        id: 'ml-firestore-emulator',
+        check: 'ML backend on the Firestore emulator',
+        class: 'required',
       },
     ],
   },
