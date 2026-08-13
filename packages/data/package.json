@@ -20,7 +20,8 @@
     "./admin/oauth-state": "./src/admin/oauthState/index.ts",
     "./produto": "./src/produto/index.ts",
     "./balanco": "./src/balanco/index.ts",
-    "./pedido": "./src/pedido/index.ts"
+    "./pedido": "./src/pedido/index.ts",
+    "./testing": "./src/testing/index.ts"
   },
   "scripts": {
     "lint": "eslint .",
