@@ -250,7 +250,12 @@ export const intFreteMeta: CollectionMetadata = {
     write: PERM_FRETE_WRITE,
     delete: PERM_FRETE_DELETE,
   },
-  cascade: [{ path: 'int_frete/{intFreteId}/tokenMelEnv', onDelete: 'cascade' }],
+  // `oauthState` holds the per-attempt OAuth connect record (#1034); it frees on
+  // delete for the same reason `tokenMelEnv` does — it is credential material.
+  cascade: [
+    { path: 'int_frete/{intFreteId}/oauthState', onDelete: 'cascade' },
+    { path: 'int_frete/{intFreteId}/tokenMelEnv', onDelete: 'cascade' },
+  ],
   // Like `integracao`, this collection mixes freight-integration types; each
   // logistics slice lists one `tipo` via TableView's `queryParams`.
   defaultQuery: {
