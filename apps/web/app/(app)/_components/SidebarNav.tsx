@@ -138,6 +138,7 @@ const NAV: NavEntry[] = [
       { href: '/configuracoes/filiais', label: 'Filiais' },
       { href: '/configuracoes/cargos', label: 'Cargos' },
       { href: '/configuracoes/usuarios', label: 'Usuários' },
+      { href: '/configuracoes/ia', label: 'Inteligência artificial' },
     ],
   },
 ];

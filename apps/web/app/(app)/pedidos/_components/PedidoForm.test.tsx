@@ -14,6 +14,7 @@ vi.mock('./tabs', () => {
     FreteTab: Empty,
     IncidentesTab: Empty,
     DevolucaoTab: Empty,
+    CheckoutTab: Empty,
     EstadoHistoricoTab: Empty,
     EstoqueSyncTab: Empty,
     // Mirror the REAL PlaceholderTab copy so that if the Pagamento panel ever

@@ -34,9 +34,20 @@ name: CI — Mercado Livre (Firestore emulator)
 #     on Enterprise a missing index does not throw — it silently full-scans and
 #     bills the scan. That is guard C/D in
 #     packages/data/src/admin/notifications/notificationGuardrails.test.ts.
-#   - Cloud Tasks. There is no emulator for it anywhere. The receiver test drives
-#     the MERCADO_LIVRE_TASKS_DISABLED outage path only; the region-qualified
-#     queue path and its us-central1 silent-drop hazard stay uncovered.
+#   - The Cloud Tasks enqueue. A `tasks` emulator DOES exist
+#     (`firebase emulators:start --only tasks`) — but it cannot exercise THIS
+#     code. `mlTasks.ts` enqueues against the partial resource name
+#     `locations/<region>/functions/<queue>`, and the emulator 404s that format,
+#     accepting only a bare function name (firebase-admin-node#2725, open — it
+#     builds a URL with `locations/<region>` duplicated). The region
+#     qualification is not optional here: without it the Admin SDK targets
+#     us-central1 and the task silently drops, which is the exact hazard worth
+#     testing. Its `scheduleDelaySeconds` is ignored too (firebase-tools#8254,
+#     open), which is the receiver's 10s refetch delay. Testing the bare-name
+#     form instead would only prove a path production never takes. `retryConfig`
+#     and `rateLimits` ARE emulated, but those are asserted statically in
+#     processNotification.test.ts. So the receiver test drives the
+#     MERCADO_LIVRE_TASKS_DISABLED outage path only.
 #   - The nested apps/mercado-livre/functions triggers (a deploy-artifact sub-build).
 #   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still

@@ -83,9 +83,9 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    Firebase project (`FIREBASE_PROJECT_ID`; the carve-outs point the same var at
    the offline `demo-erp`), with seed/teardown in `tools/test-fixtures`. The
    carve-outs are `ci-storage.yml`, `ci-rules.yml`, `ci-mercado-livre.yml`
-   (`firebase.mercado-livre.json`, firestore only — it runs the ML backend's
-   `*.firestore.test.ts`, which `vitest.config.ts` excludes from the unit run so
-   they execute in no other lane), and `e2e-emulator.yml`
+   (`firebase.mercado-livre.json`, firestore only — runs every
+   `apps/mercado-livre/**/*.firestore.test.ts`, the one lane where the ML
+   backend meets a real Firestore), and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
    `*.emulator.e2e.spec.ts` — five today. Every other e2e spec hits staging. Do
    **not** add a local-dev emulator mode: `NEXT_PUBLIC_USE_FIREBASE_EMULATOR`
@@ -184,10 +184,12 @@ freight-br and whatsapp-cloud-api are implemented — the other five throw
 
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
 `migrations`. Firebase configs: `firebase.json` (prod), `firebase.staging.json`,
-emulator-only `firebase.{functions,rules,e2e,mercado-livre}.json`, and five
-deploy-isolated `firebase.<codebase>.deploy.json`. ⚠️ `firebase.mercado-livre.json`
-and `firebase.mercado-livre.deploy.json` differ by one `.deploy` segment and only
-the latter can push anything — read the filename before any deploy.
+emulator-only `firebase.{functions,rules,e2e}.json` plus
+`firebase.mercado-livre.json`, and five deploy-isolated
+`firebase.<codebase>.deploy.json`. ⚠️ `firebase.mercado-livre.json` (emulator,
+firestore only) sits one dot from `firebase.mercado-livre.deploy.json` (the ML
+functions codebase) — the emulator one declares no rules/indexes/functions path
+at all, so a stray deploy against it can push nothing.
 
 ## Common commands
 
