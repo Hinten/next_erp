@@ -21,6 +21,7 @@ export {
   type OccEngineOptions,
   type OccHost,
   type OccOpKind,
+  type OccPrecondition,
   type OccReadable,
   type OccRef,
   type OccTransaction,

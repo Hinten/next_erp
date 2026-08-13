@@ -18,3 +18,5 @@ export {
   type CachedDocReader,
   type CachedDocReaderOptions,
 } from './cachedDocReader';
+
+export { type CacheReport, readCacheDelta, readCacheMark, readCacheSummary } from './cacheReport';

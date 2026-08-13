@@ -12,8 +12,14 @@ const h = vi.hoisted(() => ({
   register: vi.fn(async () => undefined),
   deregister: vi.fn(async () => undefined),
   load: vi.fn(),
+  loadForUpdate: vi.fn(),
   save: vi.fn(async () => undefined),
 }));
+
+/** gRPC FAILED_PRECONDITION, as the Admin SDK surfaces a lost `lastUpdateTime`. */
+function failedPrecondition(): Error {
+  return Object.assign(new Error('FAILED_PRECONDITION'), { code: 9 });
+}
 
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
 
@@ -52,14 +58,21 @@ const STORED = {
 };
 
 beforeEach(() => {
+  // ⚠️ `clearAllMocks` clears CALLS, not implementations — a `mockRejectedValue`
+  // from one test leaks into every later one. `register` and `save` are both
+  // rejected by tests below, so both must be re-armed here explicitly.
   vi.clearAllMocks();
+  h.register.mockResolvedValue(undefined);
+  h.deregister.mockResolvedValue(undefined);
+  h.save.mockResolvedValue(undefined);
   h.verifyCaller.mockResolvedValue({ caller: { uid: 'u1' } });
   h.buildClient.mockResolvedValue({ register: h.register, deregister: h.deregister });
   h.load.mockResolvedValue({ ...STORED });
+  h.loadForUpdate.mockResolvedValue({ cred: { ...STORED }, version: 'v1' });
   h.loadCtx.mockResolvedValue({
     integracaoId: 'i1',
     buildClient: h.buildClient,
-    store: { load: h.load, save: h.save },
+    store: { load: h.load, loadForUpdate: h.loadForUpdate, save: h.save },
   });
 });
 
@@ -72,7 +85,10 @@ describe('POST /api/whatsapp/registro', () => {
     // The pin must never appear in the response.
     expect(JSON.stringify(json)).not.toContain('135790');
     expect(h.register).toHaveBeenCalledWith({ pin: '135790' });
-    expect(h.save).toHaveBeenCalledWith(expect.objectContaining({ pin: '135790' }));
+    // ADR 0011 tier 1 — the write-back carries the version it was derived from.
+    expect(h.save).toHaveBeenCalledWith(expect.objectContaining({ pin: '135790' }), {
+      expectedVersion: 'v1',
+    });
   });
 
   it('reuses the stored pin when the body has none (re-register)', async () => {
@@ -131,6 +147,59 @@ describe('POST /api/whatsapp/registro', () => {
     const res = await POST(postReq({ integracaoId: 'i1', pin: '135790' }));
     expect(res.status).toBe(403);
     expect(h.register).not.toHaveBeenCalled();
+  });
+
+  // ── #824 / ADR 0011 tier 1 ──────────────────────────────────────────────
+  // The Graph `register` call sits between the read and the write-back, so a
+  // token stored meanwhile must survive. See `credentialStore.race.test.ts`
+  // for the store-level proof that the precondition is actually enforced.
+
+  it('re-reads and re-applies only the pin when a concurrent token save wins', async () => {
+    h.loadForUpdate
+      .mockResolvedValueOnce({ cred: { ...STORED, permanent_token: 'TKN_OLD' }, version: 'v1' })
+      .mockResolvedValueOnce({ cred: { ...STORED, permanent_token: 'TKN_NEW' }, version: 'v2' });
+    h.save.mockRejectedValueOnce(failedPrecondition());
+
+    const res = await POST(postReq({ integracaoId: 'i1', pin: '135790' }));
+
+    expect(res.status).toBe(200);
+    expect(h.loadForUpdate).toHaveBeenCalledTimes(2);
+    // The retry must re-DERIVE. Re-applying the losing patch would reintroduce
+    // exactly the overwrite the precondition just prevented.
+    expect(h.save).toHaveBeenLastCalledWith(
+      expect.objectContaining({ permanent_token: 'TKN_NEW', pin: '135790' }),
+      { expectedVersion: 'v2' },
+    );
+    // Graph is NOT called again — the registration already succeeded, and Meta
+    // caps repeat registers (code 133016).
+    expect(h.register).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces rather than spins when every attempt loses the race', async () => {
+    h.save.mockRejectedValue(failedPrecondition());
+
+    await expect(POST(postReq({ integracaoId: 'i1', pin: '135790' }))).rejects.toThrow(
+      /registrado no Graph, mas o PIN não pôde ser gravado/,
+    );
+    expect(h.save).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not resurrect a credential revoked while Graph was registering', async () => {
+    h.loadForUpdate.mockResolvedValue(null);
+
+    const res = await POST(postReq({ integracaoId: 'i1', pin: '135790' }));
+
+    expect(res.status).toBe(200);
+    expect(h.save).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a non-precondition store failure instead of retrying it', async () => {
+    h.save.mockRejectedValue(Object.assign(new Error('PERMISSION_DENIED'), { code: 7 }));
+
+    await expect(POST(postReq({ integracaoId: 'i1', pin: '135790' }))).rejects.toThrow(
+      /PERMISSION_DENIED/,
+    );
+    expect(h.save).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import type { Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
@@ -57,6 +58,12 @@ function parentDocId(colPath: string): string {
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly opLog: Array<{ op: OccOpKind; path: string }> = [];
+  /**
+   * Collection path of every QUERY executed, in order. Separate from `opLog`,
+   * which records document-level ops through the OCC engine — a query is not one
+   * of those, and on Enterprise it is the read whose SCANNED BYTES are billed.
+   */
+  readonly queryLog: string[] = [];
   private readonly patches = new Map<string, DocData>();
   private autoN = 0;
 
@@ -99,9 +106,10 @@ class FakeDb {
     return this.patches.get(`${path}/${id}`);
   }
 
-  private query(entries: Array<[string, DocData, string]>) {
+  private query(entries: Array<[string, DocData, string]>, colPath = '') {
     const clauses: Array<[string, unknown]> = [];
     let lim: number | null = null;
+    const self = this;
     const q = {
       where(field: string, _op: string, value: unknown) {
         clauses.push([field, value]);
@@ -112,6 +120,7 @@ class FakeDb {
         return q;
       },
       async get() {
+        self.queryLog.push(colPath);
         let rows = entries.filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
         if (lim != null) rows = rows.slice(0, lim);
         return {
@@ -153,7 +162,12 @@ class FakeDb {
       path,
       doc: (id?: string) => self.makeDocRef(path, id ?? `auto-${++self.autoN}`),
       where: (field: string, op: string, value: unknown) =>
-        self.query([...col.entries()].map(([id, d]) => [id, d, path])).where(field, op, value),
+        self
+          .query(
+            [...col.entries()].map(([id, d]) => [id, d, path]),
+            path,
+          )
+          .where(field, op, value),
       get: async () => ({
         docs: [...col.entries()].map(([id, d]) => ({ id, data: () => d, exists: true })),
       }),
@@ -167,7 +181,7 @@ class FakeDb {
         for (const [id, d] of col) entries.push([id, d, path]);
       }
     }
-    return this.query(entries);
+    return this.query(entries, `collectionGroup:${groupId}`);
   }
 
   async runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
@@ -276,7 +290,15 @@ function deps(db: FakeDb, api: MercadoLivreApi): ShipmentImportDeps {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // This suite runs the REAL `loadContaBag`, which now shares a module-scope
+  // cache keyed by the document PATH — so a fresh `FakeDb` per test does NOT
+  // isolate it, and every test here seeds `conta-A` with different overrides.
+  __resetAllReadCaches();
   vi.mocked(resolvePrazoDespacho).mockResolvedValue(null);
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 /* ----------------------------------- tests --------------------------------- */
@@ -555,6 +577,76 @@ describe('importShipmentMercadoLivre — happy path write', () => {
 
     const freteInicial = db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData;
     expect(freteInicial.integracaoFreteOuterRef).toBe('documents/int_frete/if-canon');
+  });
+
+  it('reads the conta document ONCE across repeated shipments notifications', async () => {
+    // ML emits a `shipments` notification on every substatus transition, and
+    // `loadContaBag` used to point-read `integracao/{id}` on each one. The
+    // account now shares one cached entry with `loadMercadoLivreContext`.
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFreteCanonico(db, 'if-canon');
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000,
+      },
+    });
+    const api = makeApi({
+      getShipment: vi.fn(async () =>
+        makeShipment({ id: 777, orderId: 1, lastUpdated: '2026-01-15T00:00:00.000-03:00' }),
+      ),
+    });
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+    await importShipmentMercadoLivre(deps(db, api), 777);
+
+    const contaGets = db.opLog.filter(
+      (e) => e.op === 'get' && e.path === `integracao/${INTEGRACAO_ID}`,
+    );
+    expect(contaGets).toHaveLength(1);
+  });
+
+  it('resolves the int_frete doc ONCE across repeated shipments notifications', async () => {
+    // `resolveMercadoEnviosIntFreteOuterRef` is unconditional on this path, and
+    // its miss branch scans the whole `int_frete` collection — the scanned-bytes
+    // cost the cache exists for. Seeded with the BARE back-ref so the tolerant
+    // scan is what runs.
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000,
+      },
+    });
+    const api = makeApi({
+      getShipment: vi.fn(async () =>
+        makeShipment({ id: 777, orderId: 1, lastUpdated: '2026-01-15T00:00:00.000-03:00' }),
+      ),
+    });
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+    // The bare back-ref means the indexed equality misses and the tolerant scan
+    // runs, so the first import costs TWO int_frete queries. Asserted rather
+    // than derived, so this can never silently compare 0 against 0.
+    expect(db.queryLog.filter((p) => p === 'int_frete')).toHaveLength(2);
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+    expect(db.queryLog.filter((p) => p === 'int_frete')).toHaveLength(2);
+
+    // …and the resolve still produced the right ref.
+    const freteInicial = db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData;
+    expect(freteInicial.integracaoFreteOuterRef).toBe('documents/int_frete/if-1');
   });
 
   it('calls resolvePrazoDespacho with fallbackUs null and the account sellerId', async () => {
