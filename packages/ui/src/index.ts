@@ -34,6 +34,13 @@ export {
   type ValidationIssue,
 } from './object/ObjectView';
 export { AfterSaveBlockedError } from './object/afterSaveBlocked';
+export { ConflictModal, type ConflictModalProps } from './object/ConflictModal';
+export {
+  buildConflictFields,
+  labelFromShape,
+  type BuildConflictFieldsOptions,
+  type ConflictField,
+} from './object/conflictFields';
 export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';

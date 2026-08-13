@@ -13,7 +13,7 @@ replaces the legacy Flutter one, every collection listed as **not covered** belo
 becomes default-denied for the still-running Flutter client — silently. This page is
 the mechanical diff behind that cutover decision (issue #783).
 
-**71 of 149** legacy match blocks have no counterpart in the
+**69 of 149** legacy match blocks have no counterpart in the
 generated ruleset.
 
 > The **Flutter client usage** column is a heuristic: it maps each legacy block to the
@@ -28,13 +28,11 @@ generated ruleset.
 | Collection | Kind | Legacy perm | Actions | Flutter client usage |
 | --- | --- | --- | --- | --- |
 | `algolia` | collection | `AG1` | read, create, update, delete | `Algolia` — `lib/global/search/providers/algoliaProvider.dart`, `lib/produtos/pages/produtoTableView.dart` |
-| `balanco` | collection | `be22` | read, create, update, delete | `BalancoEstoque` — `lib/produtos/models.dart`, `lib/produtos/pages/balancoEstoque.dart` |
 | `balanco/*/movimento` | collection | `be23` | read, create, update, delete | `MovimentoBalancoEstoque` — `lib/produtos/models.dart`, `lib/produtos/pages/balancoEstoque.dart` |
 | `balanco/*/relatorio` | collection | `be25` | read, create, update, delete | `RelatorioBalanco` — `lib/produtos/pages/balancoEstoque.dart` |
 | `cargo` | collection | `u1` | read, create, update, delete | `Cargo` — `lib/user/pages/cargo.dart`, `lib/user/pages/cargoTableView.dart`, `lib/user/pages/novo_user_interno.dart` +2 more |
 | `categorias/*/categorialojaintegrada` | collection | `l2` | read, create, update, delete | `CategoriaLojaIntegrada` — **backend only** |
 | `chat/*/resumo` | collection | `ar` | read, create, update, delete | `ResumoIa` — **backend only** |
-| `CMUN` | collection | `c2` | read, create, update, delete | `TabelaoCmun` — `lib/clientes/etc.dart` |
 | `etiquetas` | collection | `et0` | read, create, update, delete | `TelaEtiqueta` — `lib/etiquetas/models.dart`, `lib/produtos/pages/etiquetas.dart` |
 | `filiais/*/certificados` | collection | `cer` | read, create, update, delete | `CertificadoDigital` — `lib/grupoEconomico/pages/filiaisTableView.dart` |
 | `filiais/*/enviNfe/*/epec` | collection | `ep1` | read, create, update, delete | `EpecMsg` — **backend only** |
@@ -104,6 +102,7 @@ generated ruleset.
 | Collection | Kind | Legacy perm | Actions | Flutter client usage |
 | --- | --- | --- | --- | --- |
 | `arquivos` | collection | `q1` | read, create, update, delete | `Arquivo` — `lib/canaisDeVenda/amazon/pages/importarProdutos.dart`, `lib/canaisDeVenda/mercadoLivre/exportarProdutos.dart`, `lib/chat/basico/chat_input.dart` +19 more |
+| `balanco` | collection | `be22` | read, create, update, delete | `BalancoEstoque` — `lib/produtos/models.dart`, `lib/produtos/pages/balancoEstoque.dart` |
 | `bandeirasCartao` | collection | `pb` | read, create, update, delete | `BandeiraCartao` — `lib/pagamento/widgets/cartao_credito.dart`, `lib/pagamento/widgets/cartao_debito.dart`, `lib/pedido/models.dart` +1 more |
 | `categorias` | collection | `13` | read, create, update, delete | `Categoria` — `lib/canaisDeVenda/amazon/pages/linkVariacoes.dart`, `lib/canaisDeVenda/lojaIntegrada/pages/cadastroProduto2.dart`, `lib/canaisDeVenda/mercadoLivre/api.dart` +10 more |
 | `categorias/*/imposto` | collection | `1pc` | read, create, update, delete | `ImpostoCategoria` — **backend only** |
@@ -111,6 +110,7 @@ generated ruleset.
 | `chat/*/mensagem` | collection | `a1` | read, create, update, delete | `Mensagem` — `lib/canaisDeVenda/atualizarPreco.dart`, `lib/chat/basico/conversa_popup_menu.dart`, `lib/chat/basico/mensagem.dart` +10 more |
 | `clientes` | collection | `c0` | read, create, update, delete | `Cliente` — `lib/chat/conversa.dart`, `lib/chat/providers/old/chat.dart`, `lib/clientes/models.dart` +9 more |
 | `clientes/*/enderecos` | collection | `c1` | read, create, update, delete | `Categoria` — `lib/canaisDeVenda/amazon/pages/linkVariacoes.dart`, `lib/canaisDeVenda/lojaIntegrada/pages/cadastroProduto2.dart`, `lib/canaisDeVenda/mercadoLivre/api.dart` +10 more |
+| `CMUN` | collection | `c2` | read, create, update, delete | `TabelaoCmun` — `lib/clientes/etc.dart` |
 | `depositos` | collection | `17` | read, create, update, delete | `Deposito` — `lib/canaisDeVenda/pages/seletorDeIntegracao.dart`, `lib/produtos/models.dart`, `lib/produtos/pages/balancoEstoque.dart` +4 more |
 | `filiais` | collection | `g1` | read, create, update, delete | `Filial` — `lib/grupoEconomico/models.dart`, `lib/grupoEconomico/pages/filiaisTableView.dart`, `lib/grupoEconomico/widgets.dart` +2 more |
 | `filiais/*/enviNfe` | collection | `nf1` | read, create, update, delete | `EnviNFeMsg` — **backend only** |

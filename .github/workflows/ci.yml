@@ -75,13 +75,21 @@ jobs:
         run: pnpm format:check
 
       - name: Test
-        # NF-e packages are excluded here because ci-nfe.yml owns their
-        # offline + live test pipeline. The freight (Melhor Envio) packages are
-        # likewise owned by ci-freight.yml (offline + the live sandbox lane,
-        # whose *.sandbox.test.ts THROWS in CI without a token — so it must not
-        # be collected here). The storage/functions packages are owned by
-        # ci-storage.yml (unit + emulator suites). Lint / typecheck / build
-        # above still cover the full graph so cross-package breaks surface.
+        # Every exclusion here is owned by exactly one domain lane, which runs
+        # those tests instead. NF-e → ci-nfe.yml (offline + live). Freight
+        # (Melhor Envio) → ci-freight.yml (offline + the live sandbox lane, whose
+        # *.sandbox.test.ts THROWS in CI without a token — so it must not be
+        # collected here). storage/functions → ci-storage.yml (unit + emulator).
+        # Mercado Livre → ci-mercado-livre.yml, which runs the unit suite in
+        # `ML offline (unit)` and the *.firestore.test.ts suite on the emulator.
+        #
+        # ⚠️ An exclusion is a promise that the owning lane runs those tests. When
+        # the lane skips, they run NOWHERE — which is why every lane derives its
+        # scope from the dependency graph and reports through a pinned gate. Do
+        # not add a filter here without an owner on the other side.
+        #
+        # Lint / typecheck / build above stay full-graph and unfiltered, so
+        # cross-package breaks still surface here on every PR.
         run: |
           pnpm turbo run test \
             --filter '!@delfrance/nfe-app' \
@@ -89,7 +97,9 @@ jobs:
             --filter '!@delfrance/melhor-envio-app' \
             --filter '!@delfrance/integrations-freight-br' \
             --filter '!@delfrance/storage' \
-            --filter '!@delfrance/functions'
+            --filter '!@delfrance/functions' \
+            --filter '!@delfrance/mercado-livre-app' \
+            --filter '!@delfrance/integrations-mercado-livre'
 
       # Persist Next.js's incremental build cache across runs for every Next app
       # `turbo run build` compiles (apps/*/.next/cache — non-Next apps have none

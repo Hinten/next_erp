@@ -33,11 +33,10 @@ import {
 import { notifications } from '@mantine/notifications';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { getDoc, runTransaction } from 'firebase/firestore';
+import { getDoc } from 'firebase/firestore';
 import { z } from 'zod';
 
 import { PERM } from '@delfrance/auth';
-import { nowMillis } from '@delfrance/core/datetime';
 import {
   NFeHttpError,
   NFeNetworkError,
@@ -46,14 +45,23 @@ import {
 import {
   CONTINGENCIA_MODO,
   AMBIENTE_NFE,
+  nfeConfigSchema,
   type ContingenciaModo,
   type NFeConfig,
 } from '@delfrance/schemas';
+import { buildConflictFields, ConflictModal, labelFromShape } from '@delfrance/ui';
 
 import { usePermission } from '@/lib/auth';
 import { NFE_CONFIG_DOC_ID, nfeConfigCollection } from '@/lib/data/nfeConfigCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
+import { createNfeConfigPort } from '@/lib/nfe/nfeConfigPort';
+import {
+  NfeConfigConflictError,
+  NfeConfigMissingError,
+  saveNfeConfig,
+  type PanelOwnedKey,
+} from '@/lib/nfe/saveNfeConfig';
 
 const MODO_LABELS: Record<ContingenciaModo, string> = {
   none: 'Normal (sem contingência)',
@@ -142,43 +150,48 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
   const [justificativa, setJustificativa] = useState<string | null>(null);
   const [rtc, setRtc] = useState<boolean | null>(null);
 
+  // The remote doc a conflict was raised against, plus which panel fields
+  // collided. It becomes the baseline a "Salvar mesmo assim" re-applies over —
+  // so a THIRD change landing meanwhile raises the modal again instead of being
+  // swallowed by a blind force-write.
+  const [conflict, setConflict] = useState<{
+    current: NFeConfig;
+    fields: PanelOwnedKey[];
+  } | null>(null);
+
   const cfg = cfgQuery.data ?? null;
+  // Once a conflict is known, the server's version is the truth the form
+  // mirrors — showing the operator the stale doc they already lost to would be
+  // worse than useless.
+  const base = conflict?.current ?? cfg;
   // Local edits win; otherwise mirror the persisted doc.
-  const modoValue = modo ?? cfg?.contingencia_modo ?? 'none';
-  const justValue = justificativa ?? cfg?.contingencia_justificativa ?? '';
-  const rtcValue = rtc ?? cfg?.emitirReformaTributaria ?? false;
+  const modoValue = modo ?? base?.contingencia_modo ?? 'none';
+  const justValue = justificativa ?? base?.contingencia_justificativa ?? '';
+  const rtcValue = rtc ?? base?.emitirReformaTributaria ?? false;
   const dirty =
-    cfg != null &&
-    (modoValue !== cfg.contingencia_modo ||
-      (modoValue !== 'none' && justValue !== (cfg.contingencia_justificativa ?? '')) ||
-      rtcValue !== (cfg.emitirReformaTributaria ?? false));
+    base != null &&
+    (modoValue !== base.contingencia_modo ||
+      (modoValue !== 'none' && justValue !== (base.contingencia_justificativa ?? '')) ||
+      rtcValue !== (base.emitirReformaTributaria ?? false));
   const justInvalid = modoValue !== 'none' && (justValue.length < 15 || justValue.length > 255);
 
   const save = useMutation({
     mutationFn: async () => {
-      if (!cfg) return;
-      const now = nowMillis();
-      const ref = nfeConfigCollection.docRef(db, { filialId }, NFE_CONFIG_DOC_ID);
-      // Transactional read-modify-write: the counters (numeracao_atual /
-      // idLote) advance server-side on every emission, so building the write
-      // from the CACHED cfg could roll them back. The tx re-reads the doc and
-      // only the three contingency fields come from the form.
-      await runTransaction(db, async (tx) => {
-        const snap = await tx.get(ref);
-        if (!snap.exists()) return; // deleted concurrently — nothing to update
-        const fresh = snap.data();
-        const next: NFeConfig = {
-          ...fresh,
-          contingencia_modo: modoValue,
-          contingencia_justificativa: modoValue === 'none' ? null : justValue,
-          // Stamp dhCont when the mode turns ON; keep it while it stays on;
-          // clear it on the way back to normal.
-          contingencia_dataInicio:
-            modoValue === 'none' ? null : (fresh.contingencia_dataInicio ?? now),
-          emitirReformaTributaria: rtcValue,
-          timestamp: now,
-        };
-        tx.set(ref, next);
+      if (!base) return;
+      // ⚠️ `modo` / `justificativa` / `rtc` — the raw local edits, NOT the
+      // `*Value` bindings. Those fold in the render-time doc, and the whole
+      // point is that the write must not carry it: an untouched field is passed
+      // as `null` so `saveNfeConfig` re-derives it from the tx-fresh doc.
+      //
+      // "Salvar mesmo assim" takes this SAME path — there is no force flag. It
+      // differs only in `base`, which by then is the version the modal showed
+      // (`conflict.current`), so the guard still runs and a third write landing
+      // meanwhile raises the modal again instead of being overwritten.
+      await saveNfeConfig(createNfeConfigPort(db, filialId), {
+        modo,
+        justificativa,
+        rtc,
+        baseline: base,
       });
     },
     onSuccess: () => {
@@ -186,9 +199,20 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
       setModo(null);
       setJustificativa(null);
       setRtc(null);
+      setConflict(null);
       void queryClient.invalidateQueries({ queryKey: ['nfeconfig', filialId] });
     },
     onError: (err) => {
+      // Tier 3 — someone else changed a field this save writes. Show them what,
+      // and let them decide; never discard what the operator typed.
+      if (err instanceof NfeConfigConflictError) {
+        setConflict({ current: err.current, fields: err.fields });
+        return;
+      }
+      if (err instanceof NfeConfigMissingError) {
+        notifications.show({ color: 'red', title: 'Falha ao salvar', message: err.message });
+        return;
+      }
       if (err instanceof FirebaseError || err instanceof z.ZodError) {
         notifications.show({ color: 'red', title: 'Falha ao salvar', message: err.message });
         return;
@@ -196,6 +220,21 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
       throw err;
     },
   });
+
+  /**
+   * "Recarregar do servidor" — take the server's version for the fields that
+   * actually collided, and KEEP every edit that did not. Only what genuinely
+   * conflicted is dropped; the operator does not lose unrelated typing.
+   */
+  function reloadFromServer(): void {
+    for (const key of conflict?.fields ?? []) {
+      if (key === 'contingencia_modo') setModo(null);
+      if (key === 'contingencia_justificativa') setJustificativa(null);
+      if (key === 'emitirReformaTributaria') setRtc(null);
+    }
+    setConflict(null);
+    void queryClient.invalidateQueries({ queryKey: ['nfeconfig', filialId] });
+  }
 
   if (cfgQuery.isLoading) return <Loader size="sm" />;
   if (cfgQuery.isError) {
@@ -302,6 +341,27 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
           </Group>
         </Stack>
       )}
+
+      <ConflictModal
+        opened={conflict !== null}
+        title="Configuração de NF-e alterada"
+        description="A configuração desta filial foi alterada desde que você abriu esta aba."
+        fields={
+          conflict
+            ? buildConflictFields(
+                cfg ?? {},
+                conflict.current,
+                conflict.fields,
+                new Set<string>(conflict.fields),
+                { labelFor: (f) => labelFromShape(nfeConfigSchema.shape, f) },
+              )
+            : []
+        }
+        saving={save.isPending}
+        onForceSave={() => save.mutate()}
+        onReloadFromServer={reloadFromServer}
+        onCancel={() => setConflict(null)}
+      />
     </Stack>
   );
 }
