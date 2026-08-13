@@ -177,6 +177,25 @@ describe('GET /api/oauth/mercado-pago/callback', () => {
     });
   });
 
+  it('survives a malformed issues array instead of turning the log into a 500', async () => {
+    // `issues` is typed `unknown`. Destructuring a null entry throws a TypeError,
+    // and it would throw INSIDE the catch block — replacing the redirect that names
+    // the cause with an unhandled 500.
+    h.exchangeAndPersist.mockRejectedValue(
+      new MercadoPagoValidationError('formato inesperado', [
+        null,
+        'nem um objeto',
+        { code: 'invalid_type', path: ['refresh_token'] },
+      ]),
+    );
+    const res = await GET(req({ code: 'auth-code', state: signState('m1', STATE_SECRET) }));
+
+    expect(location(res).searchParams.get('reason')).toBe('resposta_invalida');
+    expect(spyErro.mock.calls[0]![1]).toMatchObject({
+      camposInvalidos: ['(desconhecido)', '(desconhecido)', 'refresh_token: invalid_type'],
+    });
+  });
+
   it('logs only issue paths and codes, never the offending token value', async () => {
     // ⚠️ A Zod issue can carry the input under inspection, and on this path that
     // input is a TOKEN RESPONSE.
