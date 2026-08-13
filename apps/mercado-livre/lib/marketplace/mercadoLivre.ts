@@ -19,6 +19,7 @@ import {
   exchangeCode,
 } from '@delfrance/integrations-mercado-livre';
 
+import { invalidateConta, readConta } from './contaCache';
 import {
   type TokenDuravelStore,
   createTokenDuravelStore,
@@ -120,22 +121,25 @@ export interface MercadoLivreContext {
    * account must reconnect via OAuth.
    */
   resolveChannelContext(now?: number): Promise<ChannelContext>;
-  /** Exchange an authorization code and persist the resulting credential. */
-  exchangeAndPersist(code: string): Promise<void>;
+  /**
+   * Exchange an authorization code and persist the resulting credential.
+   * `codeVerifier` is the PKCE proof (RFC 7636) minted by the connect route and
+   * redeemed from the OAuth state record; omit it when PKCE is off for this ML
+   * application. The refresh grant never carries one.
+   */
+  exchangeAndPersist(code: string, codeVerifier?: string): Promise<void>;
 }
 
 export async function loadMercadoLivreContext(
   db: Firestore,
   integracaoId: string,
 ): Promise<MercadoLivreContext> {
-  const snap = await integracaoCollection.docRef(db, {}, integracaoId).get();
-  if (!snap.exists) {
+  // The cached reader replaces the READ, not the contract — both throws below
+  // are unchanged, and a `null` stands in for `!snap.exists`.
+  const conta = await readConta(db, integracaoId);
+  if (conta == null) {
     throw new MercadoLivreContaNotConfiguredError(`Integração ${integracaoId} não encontrada.`);
   }
-  const conta = integracaoCollection.parseRead(
-    snap.data(),
-    integracaoCollection.docPath({}, integracaoId),
-  );
   if (conta.tipo !== INTEGRACAO_TIPO.mercadoLivre) {
     throw new MercadoLivreContaNotConfiguredError(
       `Integração ${integracaoId} não é do tipo Mercado Livre.`,
@@ -194,14 +198,18 @@ export function buildMercadoLivreContext(
       const accessToken = await getOrRefreshAccessToken(store, oauthConfig, { now });
       return { integracaoId, accessToken, account };
     },
-    async exchangeAndPersist(code: string): Promise<void> {
-      const resp = await exchangeCode(oauthConfig, code);
+    async exchangeAndPersist(code: string, codeVerifier?: string): Promise<void> {
+      const resp = await exchangeCode(oauthConfig, code, codeVerifier);
       await store.save(tokenDuravelFromResponse(resp, Date.now()));
       // Denormalize the ML seller id onto the integração doc so an inbound
       // webhook resolves this account with a single equality query (the old
       // `ContaMercadoLivre.user_id`). Merge-only: never touches other fields.
       if (resp.user_id != null) {
         await integracaoCollection.merge(db, {}, integracaoId, { user_id: resp.user_id });
+        // This process just wrote the document it caches. Covers THIS instance;
+        // elsewhere `isFresh` refuses the pre-back-fill copy and the drift check
+        // in `resolveContaAtivaPorUserId` catches a reconnect to another account.
+        invalidateConta(integracaoId);
       }
     },
   };

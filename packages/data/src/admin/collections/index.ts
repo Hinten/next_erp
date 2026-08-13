@@ -36,6 +36,7 @@ export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
 export { integracaoCollection } from './integracaoCollection';
 export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
+export { oauthStateCollection } from './oauthStateCollection';
 export { tokenDuravelCollection } from './tokenDuravelCollection';
 export {
   produtoMercadoLivreLinkCollection,
@@ -62,5 +63,6 @@ export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection
 export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
+export { missedFeedsMercadoLivreCollection } from './missedFeedsMercadoLivreCollection';
 export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
 export { envioPrecoMercadoLivreCollection } from './envioPrecoMercadoLivreCollection';

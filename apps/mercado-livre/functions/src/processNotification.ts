@@ -7,6 +7,7 @@ import {
   handleNotificationTask,
 } from '../../lib/marketplace/notificacao';
 import { getDb } from './lib/admin';
+import { readCacheSummary } from '@delfrance/data/admin/cache';
 
 /**
  * Cloud Tasks dispatcher for ML webhook notifications (Step 6). The receiver
@@ -49,6 +50,9 @@ export const processMercadoLivreNotification = onTaskDispatched(
       outcome: result.outcome,
       topic: result.topic,
       retryCount: req.retryCount ?? 0,
+      // CUMULATIVE for this instance — a notification has no tick to bracket.
+      // The three-reads-into-one collapse is what this line makes visible.
+      readCache: readCacheSummary(),
     });
   },
 );
