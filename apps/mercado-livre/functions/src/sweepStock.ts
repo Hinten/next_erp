@@ -10,6 +10,7 @@ import {
 } from '../../lib/marketplace/estoqueSweep';
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';
+import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 
 /**
  * The two ML stock-sync sweep schedules (Step 10 PR C) — thin `onSchedule`
@@ -63,6 +64,9 @@ function sweepScheduleOptions(schedule: string): ScheduleOptions {
 
 /** Run one sweep tick and log its summary (the importMercadoLivreOrders discipline). */
 async function runAndLog(mode: StockSweepMode): Promise<void> {
+  // Bracket the tick: the snapshot counters are cumulative for the process, so
+  // only a delta answers "for THIS sweep" — the number #754 asks for.
+  const cacheMark = readCacheMark();
   const result = await runStockSweep(getDb(), mode, {
     scheduler: createMlStockTaskScheduler(),
     nowMs: Date.now(),
@@ -94,6 +98,10 @@ async function runAndLog(mode: StockSweepMode): Promise<void> {
     // send queue is being throttled by ML, not that the sweep is idle.
     paused: result.contas.filter((c) => c.paused).length,
     errorCount: errors.length,
+    // Read-cache hits/misses accrued by THIS tick. All-zeroes means either an
+    // idle tick or the `DATA_READ_CACHE_DISABLED` kill switch — which
+    // short-circuits before any counter moves. That is the A/B baseline.
+    readCache: readCacheDelta(cacheMark),
   });
   if (errors.length > 0) {
     logger.warn(`[mercado-livre] stock sweep (${mode}) had per-conta failures`, {

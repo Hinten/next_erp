@@ -5,7 +5,9 @@ export default defineConfig({
   test: {
     name: '@delfrance/melhor-envio-app',
     environment: 'node',
-    include: ['{app,lib}/**/*.test.ts'],
+    // `proxy.ts` (the CORS middleware) sits at the app root, outside every
+    // directory glob above — name its test explicitly or it never runs.
+    include: ['{app,lib}/**/*.test.ts', 'proxy.test.ts'],
   },
   resolve: {
     alias: {

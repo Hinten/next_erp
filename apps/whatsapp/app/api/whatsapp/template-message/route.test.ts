@@ -33,6 +33,10 @@ vi.mock('@delfrance/data/admin/collections', () => ({
     docRef: h.msgDocRef,
     parse: h.msgParse,
   },
+  // `lib/whatsapp/contaCache` builds its module-scope reader at import time and
+  // this suite reaches it transitively. Never exercised here (the route's
+  // context loader is mocked), and the reader touches the handle lazily.
+  integracaoCollection: {},
 }));
 
 vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
