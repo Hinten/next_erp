@@ -11,50 +11,30 @@ backend. See `README.md` and `CONTRIBUTING.md`. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
-**No PR-triggered lane has a top-level `paths:` filter**, so every PR gets all
-eight; `ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
-pipelines `ci-{nfe,freight,storage,rules}.yml` own.
+CI — the eight lanes in `.github/workflows/` run **concurrently**, gated on
+nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
+from the workspace dependency graph and reports through one unskippable check;
+`ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
+pipelines `ci-{nfe,freight,storage,rules}.yml` own. **Touching
+`.github/workflows/` → the `ci-lanes` skill**, which carries the whole design.
 
-**"CI green" means "the suite passed."** Each lane always publishes one
-unskippable check, and these are the pinnable names:
+Four rules you must not break without reading it first:
 
-| lane | gate | lane | gate |
-| --- | --- | --- | --- |
-| e2e-cadastros | `E2E gate (cadastros)` | ci-nfe | `CI gate (nfe)` |
-| e2e-vendas | `E2E gate (vendas)` | ci-freight | `CI gate (freight)` |
-| e2e-emulator | `E2E gate (emulator)` | ci-storage | `CI gate (storage)` |
-| ci.yml | `lint-typecheck-test` | ci-rules | `CI gate (rules)` |
+1. ⚠️ **Never put a `paths:` on a lane's `pull_request:`, and never pin a check
+   that can be skipped.** A non-matching `paths:` publishes **no check at all** —
+   not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
+   GitHub counts as **satisfying** a required check. Both are silent passes.
+2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
+   unique repo-wide. The pinnable ones are `E2E gate (cadastros|vendas|emulator)`,
+   `CI gate (nfe|freight|storage|rules)` and `lint-typecheck-test`.
+3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
+   downstream job makes it run even after its upstream failed. Let `needs:` carry
+   the skip instead.
+4. ⚠️ The `push:` triggers **keep** their `paths:` deliberately; only
+   `pull_request:` goes without.
 
-Green means the suite passed, or that nothing the lane depends on changed *and the
-check says which paths and why*. Red means it failed, was cancelled, or was
-skipped for a reason the gate cannot justify.
-
-⚠️ **Never put a `paths:` on a lane's `pull_request:`, and never pin a check that
-can be skipped.** A non-matching `paths:` means GitHub publishes **no check at
-all** — not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`,
-which GitHub counts as **satisfying** a required check. Both are silent passes.
-⚠️ A check-run name carries **no workflow prefix**, so names must be unique
-repo-wide; three lanes used to publish an identical
-`Lint / typecheck / unit / build (offline)`.
-
-Scope lives in each lane's `changes` job, derived from the **workspace dependency
-graph** (`.github/scripts/e2e-affected.mjs --roots`) rather than a hand-written
-list. Both old lists were wrong: the e2e one omitted
-`packages/integrations/{nfe,freight-br}` and `packages/storage` (all imported by
-`apps/web`), and no domain list contained `packages/data`, which all six
-lane-owned workspaces depend on — so a data-only PR ran their tests **nowhere**.
-Everything unattributable (root configs, `firestore.rules`) runs the lane;
-**another lane's workflow file does not** (`--self` declares which are a lane's
-own). One deliberate exception uses literal paths instead of the graph:
-`nfe-live`, via `--only-paths`, because it emits at SEFAZ homologação which
-rate-limits — there, skipping is cheap and over-running is not. Enforced by
-`packages/config-eslint/rules/ci-lane-gates.test.js`.
-
-⚠️ The `push:` triggers **keep** their `paths:`. Nothing on the push path is a
-required check, and the `changes` job short-circuits to run=true on non-PR events,
-so removing them would run the full live SEFAZ pipeline on every merge to `main`
-for no gating benefit.
+Enforced by `packages/config-eslint/rules/ci-lane-gates.test.js` — every workflow
+must be a registered lane or an explicitly excused one.
 
 Every `pull_request` base filter is
 `[master, main, production, 'claude/**', 'feat/**', 'fix/**']`. That key matches
