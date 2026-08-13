@@ -367,6 +367,17 @@ export {
 } from './backfillPedidosMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
+  // for the flag-gated `missed_feeds` backstop sweep (#812). Bare schema+meta
+  // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // missedFeedsMercadoLivre.ts. Carries no cursor by design: ML's feed has no
+  // time filter, so retention vs schedule period is what guarantees coverage.
+  missedFeedsMercadoLivreSchema,
+  missedFeedsMercadoLivreMeta,
+  type MissedFeedsMercadoLivre,
+} from './missedFeedsMercadoLivre';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
   // state doc for the flag-gated ML stock-sync sweeps (Step 10). Bare
   // schema+meta (perms 0n), not a DomainSchema — see the NOTE at the bottom
