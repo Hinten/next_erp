@@ -70,7 +70,7 @@ const LANES = {
     // A fork skip here is deliberately RED, unlike the domain live lanes: the
     // staging suite is the ONLY verification of this code, so unverified must not
     // read as verified. Hence the suite job is `required`, not `optional:not_fork`.
-    jobs: [{ id: 'cadastros', check: 'cadastros / e2e', class: 'required' }],
+    jobs: [{ id: 'cadastros', check: 'cadastros / e2e', class: 'required', readsFork: true }],
   },
   '.github/workflows/e2e-vendas.yml': {
     gate: 'E2E gate (vendas)',
@@ -78,7 +78,7 @@ const LANES = {
     // This lane also builds and serves apps/integrations on :3001 for the
     // configuracoes suite, so a change there can break it.
     roots: ['@delfrance/web', '@delfrance/integrations-app'],
-    jobs: [{ id: 'vendas', check: 'vendas / e2e', class: 'required' }],
+    jobs: [{ id: 'vendas', check: 'vendas / e2e', class: 'required', readsFork: true }],
   },
   '.github/workflows/e2e-emulator.yml': {
     gate: 'E2E gate (emulator)',
@@ -207,7 +207,16 @@ function findByPathspec(pathspec) {
   return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
 }
 
-const read = (file) => readFileSync(resolve(REPO_ROOT, file), 'utf8');
+/**
+ * ⚠️ Normalise to LF. `core.autocrlf=true` checks these files out as CRLF on
+ * Windows while CI (and the index) sees LF, and every scanner below is
+ * line-anchored. Without this the `if:`-block regex silently matched NOTHING
+ * locally — so the guard-drift assertion passed by examining zero operands, and
+ * only the Linux run was honest. A vacuous local green is exactly the failure
+ * mode this whole file exists to prevent, so the normalisation belongs at the
+ * single point every assertion reads through.
+ */
+const read = (file) => readFileSync(resolve(REPO_ROOT, file), 'utf8').split('\r\n').join('\n');
 
 /** Lines of a top-level block (`on:`, `jobs:`), exclusive of the header. */
 function topBlock(source, key) {
@@ -311,6 +320,18 @@ describe('CI lanes always report', () => {
       'lint-typecheck-test',
       'report-failure',
     ]);
+
+    // ⚠️ Line-ending independence, checked explicitly. `core.autocrlf=true` hands
+    // Windows a CRLF working tree while CI and the index see LF, and every scanner
+    // here is line-anchored. That difference once made the guard-drift assertion
+    // pass locally by extracting an EMPTY `if:` block and examining zero operands —
+    // a vacuous green that only the Linux run exposed. `read()` normalises, and
+    // this proves it: the same fixture with CRLF must parse identically.
+    const crlf = fixture.split('\n').join('\r\n');
+    const normalise = (s) => s.split('\r\n').join('\n');
+    expect(Object.keys(jobBlocks(normalise(crlf)))).toEqual(['first-job', 'second_job']);
+    const ifBlock = (body) => body.match(/^\s{4}if\s*:\s*(.+)$/m)?.[1] ?? '';
+    expect(ifBlock(jobBlocks(normalise(crlf))['second_job'])).toBe('always()');
   });
 
   // ------------------------------------------------------------------
@@ -796,6 +817,11 @@ describe('CI lanes always report', () => {
           'github.event_name', // the workflow_dispatch escape hatch
         ];
         const allowed = [...ALWAYS_ALLOWED, ...claimed.map((g) => BACKING[g]).filter(Boolean)];
+        // `readsFork` without `optional:not_fork` is the e2e lanes' deliberate
+        // asymmetry: the job DOES skip on a fork, but the gate treats that skip as
+        // RED rather than excusing it, because the staging suite is the only
+        // verification of that code. The operand is legitimate; the guard is not.
+        if (job.readsFork) allowed.push(BACKING.not_fork);
         const operands = [
           ...ifBlock.matchAll(/needs\.changes\.outputs\.[A-Za-z0-9_]+|github\.[A-Za-z0-9_.]+/g),
         ].map((m) => m[0]);
