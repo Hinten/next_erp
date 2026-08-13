@@ -343,7 +343,20 @@ export const metodoPagamentoMeta: CollectionMetadata = {
   // enforcement (a delete trigger) is tracked by the generic cascade work
   // (#401/#516/#517); until it lands, a deleted account orphans its
   // admin-only `credenciais` doc.
-  cascade: [{ path: 'metodo_pgto/{metodoId}/credenciais', onDelete: 'cascade' }],
+  // `oauthState` is the per-attempt OAuth connect record (#1034) — it holds a
+  // live PKCE `code_verifier`, so it frees on delete alongside the credential.
+  cascade: [
+    { path: 'metodo_pgto/{metodoId}/credenciais', onDelete: 'cascade' },
+    { path: 'metodo_pgto/{metodoId}/oauthState', onDelete: 'cascade' },
+  ],
+  // `user_id` is the MP WEBHOOK ROUTING KEY (#1034, sibling of #821/T4): an
+  // inbound payment notification resolves its collector by this field. Left
+  // client-writable, any holder of `d_metodoPagamento` write could repoint one
+  // seller's payment stream at another account's document straight from the
+  // client SDK. Its only legitimate writer is the OAuth exchange
+  // (`exchangeAndPersist`, apps/mercado-pago), which goes through the Admin SDK
+  // and bypasses rules; `apps/web` already excludes the field from the form.
+  serverOwnedFields: ['user_id'],
   defaultQuery: {
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,

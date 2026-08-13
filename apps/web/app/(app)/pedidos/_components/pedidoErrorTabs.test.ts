@@ -77,13 +77,14 @@ describe('pedidoTabs', () => {
     expect(pedidoTabs(true)).toContain('pagamento');
   });
 
-  it('entrada excludes exactly the three saída-only tabs, preserving order', () => {
+  it('entrada excludes exactly the four saída-only tabs, preserving order', () => {
     const saida = pedidoTabs(false);
     const entrada = pedidoTabs(true);
     expect(saida.filter((v) => !entrada.includes(v))).toEqual([
       'link-pgto',
       'incidentes',
       'devolucao',
+      'checkout',
     ]);
     // Entrada is a strict, order-preserving subset of saída.
     expect(entrada).toEqual(saida.filter((v) => entrada.includes(v)));
