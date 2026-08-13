@@ -57,6 +57,15 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   derives the required index from it, and compares with `indexSatisfies`, which honours `order`.
   (The hand-rolled block that used to sit in `notificacao.test.ts` compared `fieldPath` only, so
   flipping `user_id` to `DESCENDING` passed it while breaking the query — #823.)
+  ⚠️ `docIdOf` is `p.id ?? derivedDocId(p)` (**#807**). Three producers hand the store a
+  payload ML gave no `_id`/`id` for — the order backfill (synthesised, so there IS no ML
+  event), a `missed_feeds` entry whose `_id` is absent or path-shaped, and a body carrying
+  neither — and an auto doc id means `store.create`'s ALREADY_EXISTS collision, the whole
+  dedup mechanism, never fires. The fallback is `<topic>:<resource>` (slashes to `_`, then
+  back through `asDocId`): `topic` because `orders_v2`/`orders` share `/orders/<id>`, the
+  WHOLE resource because `<topic>:<last segment>` would collide `/orders/7` with
+  `/shipments/7`. The doc's `id` FIELD stays null — the derived value keys the document, it
+  is not a claim ML issued one.
 - `lib/marketplace/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
   backstop. Everything else in this channel can only re-drive a notification that was
   RECEIVED; this asks ML what it failed to deliver (`GET /missed_feeds` — filed only

@@ -238,10 +238,16 @@ async function recordContaError(
 }
 
 /**
- * The dedup key for one entry. ML's `_id` when usable; otherwise a composite of
- * the fields that identify the WORK, because a missing `_id` also means
- * `docIdOf` will mint an auto id downstream and lose failure-doc dedup — worth a
- * warn, not a drop.
+ * The dedup key for one entry — the in-tick `Set` only; the failure doc's own
+ * identity is `docIdOf`'s business. ML's `_id` when usable; otherwise a composite
+ * of the fields that identify the WORK, because two entries ML filed without an
+ * `_id` are indistinguishable by id yet may still be the same job. Worth a warn,
+ * not a drop: an entry with no `_id` is a shape ML is not supposed to send.
+ *
+ * ⚠️ `sent` rides this key but deliberately NOT `docIdOf`'s #807 fallback, which
+ * is `<topic>:<resource>` — it varies per delivery, which is what makes it right
+ * for "did I already handle this entry in THIS tick" and wrong for "is this the
+ * same failure I already recorded".
  */
 function dedupKeyOf(entry: MlMissedFeed): string {
   const id = typeof entry._id === 'string' && entry._id.length > 0 ? entry._id : null;

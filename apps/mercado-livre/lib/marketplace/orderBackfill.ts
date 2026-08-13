@@ -251,6 +251,10 @@ async function sweepConta(
     for (const order of results) {
       // (d) Synthetic notification — must satisfy `mlNotificationTaskSchema`.
       // NO `scheduleDelaySeconds`: backfilled orders are settled (module doc).
+      // ⚠️ `id: null` is DELIBERATE and must stay: no ML event stands behind a
+      // backfilled order, so claiming an id here would be a lie. The failure doc
+      // still dedups — `docIdOf` derives `<topic>:<resource>` when ML sent no id
+      // (#807, `notificacao.ts`). Do not "fix" this to a synthetic id.
       const payload: MlNotificationPayload = {
         id: null,
         resource: `/orders/${order.id}`,

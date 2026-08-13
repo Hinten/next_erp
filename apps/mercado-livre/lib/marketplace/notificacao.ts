@@ -328,6 +328,39 @@ function asDocId(v: string | null): string | null {
 }
 
 /**
+ * The failure-doc id for a payload ML gave us no usable `_id`/`id` for — **#807**.
+ * Three producers reach that state: the order-backfill sweep (its `orders_v2`
+ * notifications are synthesised, so there is no ML event behind them), a
+ * `missed_feeds` entry whose `_id` is absent or refused by {@link asDocId}, and a
+ * webhook body carrying neither key. Without a fallback each persist mints a
+ * fresh auto id, `store.create`'s ALREADY_EXISTS collision — the whole dedup
+ * mechanism — never fires, and a repeatedly-failing resource accumulates one dead
+ * document per attempt instead of converging on one.
+ *
+ * `topic` is part of the key because `orders_v2` and `orders` share the
+ * `/orders/<id>` resource and are different work; the composite mirrors
+ * `missedFeedsSweep.ts`'s in-tick `dedupKeyOf`, minus its `sent` component, which
+ * varies per delivery and would defeat the dedup this exists to create. The WHOLE
+ * resource rides, not just its last segment: `orders_v2:123` would let
+ * `/orders/123` and `/shipments/123` collide into one doc and silently drop a
+ * genuinely different notification.
+ *
+ * The composite is routed back through {@link asDocId}, so a malformed or hostile
+ * `topic`/`resource` degrades to an auto id exactly as today rather than becoming
+ * a Firestore PATH.
+ *
+ * ⚠️ Deliberate consequence: a doc that reaches `parked` under a derived id is a
+ * terminal tombstone for that `(topic, resource)` — a later failure for the same
+ * pair collides and is ignored. That IS the convergence being bought, and the
+ * parked doc already records the condition. `resolve`/`drop` DELETE the doc, so a
+ * successful re-drive frees the id again.
+ */
+function derivedDocId(p: MlNotificationPayload): string | null {
+  const resource = p.resource.replace(/\/+/g, '_').replace(/^_+|_+$/g, '');
+  return asDocId(`${p.topic}:${resource}`);
+}
+
+/**
  * Coerce a raw ML body (or a stored failure doc) onto the shapes
  * {@link mlNotificationTaskSchema} accepts, **preserving every other key** as
  * the passthrough remainder.
@@ -920,7 +953,9 @@ function pipelineFor(runners: NotificationRunners = {}) {
     channel: 'mercado-livre',
     collection: notificacaoMercadoLivreCollection,
     taskSchema: mlNotificationTaskSchema,
-    docIdOf: (p) => p.id,
+    // ML's own event id when it sent one; otherwise a deterministic composite so
+    // the id-less producers still dedup on ALREADY_EXISTS — see `derivedDocId`.
+    docIdOf: (p) => p.id ?? derivedDocId(p),
     dedupKeyOf: (p) => p.resource,
     // The whole payload, re-normalized: this channel's schema is
     // `.passthrough()`, so a field ML adds without telling us rides along onto

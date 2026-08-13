@@ -568,6 +568,94 @@ describe('handleNotificationTask', () => {
     expect(db.docs(NOTIF).size).toBe(0);
   });
 
+  /**
+   * #807. Three producers can hand the store a payload with no `_id`/`id`: the
+   * order-backfill sweep (its `orders_v2` notifications are synthesised, so no ML
+   * event stands behind them), a `missed_feeds` entry whose `_id` is absent or
+   * path-shaped, and a webhook body carrying neither key. Each persist used to
+   * mint a fresh auto id, so `store.create`'s ALREADY_EXISTS collision — the whole
+   * dedup mechanism — never fired and a repeatedly-failing resource accumulated
+   * one dead document per attempt.
+   *
+   * Driven through `handleNotificationTask` rather than by exporting
+   * `derivedDocId`: the same altitude at which `asDocId` is covered above. Every
+   * case rides the `no-account` arm (seller 999 is never seeded), which persists a
+   * `deferred` doc through the same `docIdOf` path a `failed` one takes.
+   */
+  describe('failure-doc id when ML sent no id (#807)', () => {
+    /** What `payloadOf`'s defaults derive to: topic `questions` + `/questions/123`. */
+    const DERIVED = 'questions:questions_123';
+
+    it('an id-less payload lands on a DERIVED doc id, not an auto one', async () => {
+      const db = new FakeDb();
+      const r = await handleNotificationTask(asDb(db), payloadOf({ id: null, user_id: 999 }), 0);
+      expect(r.outcome).toBe('deferred');
+      expect([...db.docs(NOTIF).keys()]).toEqual([DERIVED]);
+      // The `id` FIELD stays null. The derived value keys the DOCUMENT; it is not
+      // a claim that ML issued an event id.
+      expect(db.docs(NOTIF).get(DERIVED)!.id).toBeNull();
+    });
+
+    it('a second id-less delivery COLLIDES and keeps the first record', async () => {
+      const db = new FakeDb();
+      const p = payloadOf({ id: null, user_id: 999 });
+
+      await handleNotificationTask(asDb(db), p, 0);
+      // Mutating the stored retry state is what makes this distinguishing: "one
+      // document" alone would also hold if the second create had silently
+      // OVERWRITTEN the first instead of raising code 6.
+      db.docs(NOTIF).get(DERIVED)!.tentativas = 3;
+      await handleNotificationTask(asDb(db), p, 0);
+
+      expect(db.docs(NOTIF).size).toBe(1);
+      expect(db.docs(NOTIF).get(DERIVED)!.tentativas).toBe(3);
+    });
+
+    it('keys on the TOPIC too — one resource under two topics is two jobs', async () => {
+      const db = new FakeDb();
+      // `orders_v2` and `orders` both carry `/orders/<id>`, so keying on the
+      // resource alone would collapse two unrelated failures into one document.
+      const over = { id: null, user_id: 999, resource: '/orders/7' };
+      await handleNotificationTask(asDb(db), payloadOf({ ...over, topic: 'orders_v2' }), 0);
+      await handleNotificationTask(asDb(db), payloadOf({ ...over, topic: 'orders' }), 0);
+
+      expect([...db.docs(NOTIF).keys()].sort()).toEqual(['orders:orders_7', 'orders_v2:orders_7']);
+    });
+
+    it('keys on the WHOLE resource, not just its last segment', async () => {
+      const db = new FakeDb();
+      // A `<topic>:<last segment>` key would let these collide on `7` and drop one
+      // of them silently.
+      const over = { id: null, user_id: 999, topic: 'orders_v2' };
+      await handleNotificationTask(asDb(db), payloadOf({ ...over, resource: '/orders/7' }), 0);
+      await handleNotificationTask(asDb(db), payloadOf({ ...over, resource: '/shipments/7' }), 0);
+
+      expect([...db.docs(NOTIF).keys()].sort()).toEqual([
+        'orders_v2:orders_7',
+        'orders_v2:shipments_7',
+      ]);
+    });
+
+    it('a real ML id still wins over the derived one', async () => {
+      const db = new FakeDb();
+      await handleNotificationTask(asDb(db), payloadOf({ user_id: 999 }), 0);
+      expect([...db.docs(NOTIF).keys()]).toEqual(['N1']);
+    });
+
+    it('degrades to an auto id when the composite cannot be a document id', async () => {
+      const db = new FakeDb();
+      // A topic carrying a slash would make the composite a PATH — `asDocId`
+      // refuses it, and what is left is exactly the pre-#807 auto-id behaviour.
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: null, user_id: 999, topic: 'a/b' }),
+        0,
+      );
+      expect(r.outcome).toBe('deferred');
+      expect([...db.docs(NOTIF).keys()][0]).toMatch(/^auto-/);
+    });
+  });
+
   it('items topic + a linked produto → dispatches the status-sync (resolver built, item fetched), acks done', async () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
