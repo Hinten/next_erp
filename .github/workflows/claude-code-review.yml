@@ -83,8 +83,9 @@ jobs:
       actions: read # Lets Claude read this PR's CI results
     env:
       # FUNCTIONS_REGION is in turbo.json's `globalEnv`, so it participates in
-      # every task hash. It is set to the value ci.yml uses so a cache entry
-      # warmed here is the one a later `turbo run` looks up, not a hash mismatch.
+      # every task hash. Set to ci.yml's value so a scoped `turbo run` the
+      # reviewer fires can hit the restored cache rather than miss on a hash
+      # mismatch.
       FUNCTIONS_REGION: us-east1
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
@@ -135,15 +136,15 @@ jobs:
             turbo-review-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-review-${{ runner.os }}-
 
+      # `node_modules` is what a scratch verification needs — a `node -e` that
+      # imports a real module, a targeted vitest run. There is deliberately no
+      # typecheck-warming step after it: that existed to make a full
+      # `turbo run typecheck` cheap for the reviewer, and the reviewer no longer
+      # runs one (ci.yml already did, on this commit). Warming a cache nothing
+      # reads costs minutes of Actions time on every review. A scoped
+      # `--filter <pkg>` typecheck is fast enough cold.
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
-
-      # Warms the cache so the typecheck Claude runs to verify a finding is a
-      # cache hit for everything the PR did not touch. `|| true` because a PR
-      # under review may legitimately fail typecheck — that is a finding, not a
-      # reason to abort the review.
-      - name: Warm the typecheck cache
-        run: pnpm turbo run typecheck || true
 
       - name: Run Claude Code Review
         uses: anthropics/claude-code-action@v1
@@ -173,17 +174,26 @@ jobs:
             ones that cover the paths this PR touches. Violations of those rules
             are findings.
 
-            Verify before you report. Dependencies are installed and you can run
-            `pnpm turbo run lint typecheck`, `pnpm turbo run test`, and vitest
-            directly in a workspace — a finding you confirmed by running
-            something is worth ten you inferred from naming.
+            Do not re-run the repo's gates. CI already ran `turbo run lint
+            typecheck`, `turbo run test`, `format:check` and `build` on this
+            exact commit, and you can read the results — so a red gate is
+            something to look up, never something to reproduce.
 
-            Two things about running the suites here. Turbo hashes its declared
-            inputs, not the repo, so `turbo run test` can replay a cached green
-            for a test that greps the filesystem; when a result decides whether
-            you report a finding, run vitest directly in the workspace instead.
-            And if a command you need is not permitted, say so plainly in the
-            review rather than reporting findings as if you had verified them.
+            Run things CI cannot. CI answers "do the existing tests pass"; you
+            answer "is this correct", and the findings worth having are the ones
+            no test covers. When a specific finding turns on behaviour you are
+            inferring, build the smallest experiment that settles it — a `node
+            -e` against the real module, a scratch vitest on a case you invent,
+            a scoped `turbo run typecheck --filter <pkg>` after a type argument.
+            Dependencies are installed, so all of that works. A finding you
+            confirmed by running something is worth ten you inferred from naming.
+
+            Two cautions. Turbo hashes its declared inputs, not the repo, so a
+            turbo task can replay a cached green for a test that greps the
+            filesystem; when a result decides whether you report a finding, run
+            vitest directly in the workspace instead. And if a command you need
+            is not permitted, say so plainly in the review rather than reporting
+            findings as if you had verified them.
 
             House style for the review itself:
             - Inline comments for specific issues; one top-level comment for the
