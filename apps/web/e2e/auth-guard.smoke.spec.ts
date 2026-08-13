@@ -22,5 +22,7 @@ test.describe('Auth guard', () => {
     await page.goto('/clientes');
     await page.waitForURL('**/login', { timeout: 5000 });
     await expect(page.getByLabel('Senha')).toBeVisible();
+    // DELIBERATE FAILURE — proving the gate goes red. Revert before merging.
+    expect(1).toBe(2);
   });
 });
