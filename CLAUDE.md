@@ -12,39 +12,54 @@ repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
 CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
-`ci.yml` and the three e2e lanes have **no path filter**, so every PR gets all
-four; `ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
+**No PR-triggered lane has a top-level `paths:` filter**, so every PR gets all
+eight; `ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
 pipelines `ci-{nfe,freight,storage,rules}.yml` own.
 
-**"CI green" now means "e2e passed."** Each e2e lane always publishes one
-unskippable check — **`E2E gate (cadastros)` / `(vendas)` / `(emulator)`** — and
-those are the pinnable names. Green means the suite passed, or that nothing the
-lane depends on changed *and the check says which paths and why*. Red means it
-failed, was cancelled, or was skipped for a reason the gate cannot justify
-(a fork PR cannot read staging secrets, so it is **red**, not green).
+**"CI green" means "the suite passed."** Each lane always publishes one
+unskippable check, and these are the pinnable names:
 
-⚠️ Never put a top-level `paths:` on an e2e lane, and never pin a check that can
-be skipped. A non-matching `paths:` means GitHub publishes **no check at all** —
-not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
-GitHub counts as **satisfying** a required check. Both are silent passes. Scope
-lives in each lane's `changes` job instead, which derives the answer from the
-**workspace dependency graph** (`.github/scripts/e2e-affected.mjs`) rather than a
-hand-written list — the old list omitted `packages/integrations/{nfe,freight-br}`
-and `packages/storage`, all three of which `apps/web` imports. Everything
-unattributable (root configs, `firestore.rules`, `.github/**`) runs the suite.
-Enforced by `packages/config-eslint/rules/e2e-lane-gates.test.js`.
+| lane | gate | lane | gate |
+| --- | --- | --- | --- |
+| e2e-cadastros | `E2E gate (cadastros)` | ci-nfe | `CI gate (nfe)` |
+| e2e-vendas | `E2E gate (vendas)` | ci-freight | `CI gate (freight)` |
+| e2e-emulator | `E2E gate (emulator)` | ci-storage | `CI gate (storage)` |
+| ci.yml | `lint-typecheck-test` | ci-rules | `CI gate (rules)` |
 
-⚠️ The domain pipelines `ci-{nfe,freight,storage,rules}.yml` are still
-`paths:`-filtered and still publish nothing when they skip. That is a deliberate
-remaining exception, not a model to copy — their offline suites are covered by
-`ci.yml`'s full-graph lint/typecheck/build.
+Green means the suite passed, or that nothing the lane depends on changed *and the
+check says which paths and why*. Red means it failed, was cancelled, or was
+skipped for a reason the gate cannot justify.
+
+⚠️ **Never put a `paths:` on a lane's `pull_request:`, and never pin a check that
+can be skipped.** A non-matching `paths:` means GitHub publishes **no check at
+all** — not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`,
+which GitHub counts as **satisfying** a required check. Both are silent passes.
+⚠️ A check-run name carries **no workflow prefix**, so names must be unique
+repo-wide; three lanes used to publish an identical
+`Lint / typecheck / unit / build (offline)`.
+
+Scope lives in each lane's `changes` job, derived from the **workspace dependency
+graph** (`.github/scripts/e2e-affected.mjs --roots`) rather than a hand-written
+list. Both old lists were wrong: the e2e one omitted
+`packages/integrations/{nfe,freight-br}` and `packages/storage` (all imported by
+`apps/web`), and no domain list contained `packages/data`, which all six
+lane-owned workspaces depend on — so a data-only PR ran their tests **nowhere**.
+Everything unattributable (root configs, `firestore.rules`) runs the lane;
+**another lane's workflow file does not** (`--self` declares which are a lane's
+own). One deliberate exception uses literal paths instead of the graph:
+`nfe-live`, via `--only-paths`, because it emits at SEFAZ homologação which
+rate-limits — there, skipping is cheap and over-running is not. Enforced by
+`packages/config-eslint/rules/ci-lane-gates.test.js`.
+
+⚠️ The `push:` triggers **keep** their `paths:`. Nothing on the push path is a
+required check, and the `changes` job short-circuits to run=true on non-PR events,
+so removing them would run the full live SEFAZ pipeline on every merge to `main`
+for no gating benefit.
 
 Every `pull_request` base filter is
-`[master, main, production, 'claude/**', 'feat/**', 'fix/**']` (`ci.yml` and the
-domain pipelines omit `production`; the release PR gets those from the `push:` on
-`main`). That key matches the PR's **base**, so a **stacked PR** must sit on one of
-those prefixes — on anything else (`chore/`, `docs/`, …) it reports zero checks,
-not failures.
+`[master, main, production, 'claude/**', 'feat/**', 'fix/**']`. That key matches
+the PR's **base**, so a **stacked PR** must sit on one of those prefixes — on
+anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 
 ## Critical rules
 

@@ -21,25 +21,27 @@ on:
       - 'firestore.rules'
       - 'firestore.e2e.rules'
       - 'firebase.rules.json'
-      - 'firebase.staging.json'
+      # `firebase.staging.json` was here but no step in this lane reads it —
+      # `packages/rules-gen/scripts/api-validate.ts` opens `firestore.rules` /
+      # `firestore.e2e.rules` straight off disk. It only ever cost a lane run.
       - 'firestore.indexes.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-rules.yml'
   pull_request:
-    # The prefix entries cover stacked PRs — see ci.yml.
-    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
-    paths:
-      - 'packages/rules-gen/**'
-      - 'packages/schemas/**'
-      - 'packages/auth/**'
-      - 'packages/core/src/tenant/**'
-      - 'firestore.rules'
-      - 'firestore.e2e.rules'
-      - 'firebase.rules.json'
-      - 'firebase.staging.json'
-      - 'firestore.indexes.json'
-      - 'pnpm-lock.yaml'
-      - '.github/workflows/ci-rules.yml'
+    # The prefix entries cover stacked PRs — see ci.yml. `production` is the
+    # release base (main → production); without it this lane reports no check at
+    # all on the PR that actually ships.
+    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    # ⚠️ NO `paths:` here, deliberately — a non-matching `paths:` publishes NO
+    # check run at all, so nothing can be pinned to this lane. Scope lives in the
+    # `changes` job below. This list was the closest to correct of the four, but
+    # it still narrowed `packages/core` to `src/tenant/**`, and this lane owns the
+    # ruleset drift check, the emulator behaviour suite and the server-side
+    # compile — none of which run anywhere else.
+    #
+    # `push:` keeps its `paths:`; see the note in ci-nfe.yml. One entry was
+    # dropped from it: `firebase.staging.json`, which no step in this lane reads
+    # (`api-validate.ts` opens firestore.rules / firestore.e2e.rules directly).
   workflow_dispatch:
 
 concurrency:
@@ -47,13 +49,87 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ~20s. Reads the workspace manifests and asks whether anything this lane
+  # actually depends on changed. No `pnpm install` — plain Node reading
+  # package.json files.
+  changes:
+    name: CI scope (rules)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_e2e: ${{ steps.decide.outputs.run_e2e || steps.collect.outputs.run_e2e }}
+      reason: ${{ steps.decide.outputs.reason || steps.collect.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Collect the changed paths
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          FILES="$RUNNER_TEMP/changed-files.txt"
+          : > "$FILES"
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+          decided() {
+            {
+              echo "decided=true"
+              echo "run_e2e=true"
+              echo "reason=$1"
+            } >> "$GITHUB_OUTPUT"
+            echo "run_e2e=true :: $1"
+          }
+
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            decided "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the lane."
+            exit 0
+          fi
+
+          if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
+                 --jq '.[] | .filename, (.previous_filename // empty)' > "$FILES"
+          then
+            decided "could not list the PR's files — running the lane (fail safe)."
+            exit 0
+          fi
+
+          n=$(wc -l < "$FILES" | tr -d ' ')
+          if [ "$n" -ge 3000 ]; then
+            decided "the API returned $n path(s) — truncated. Running the lane (fail safe)."
+            exit 0
+          fi
+          echo "Collected $n changed path(s)."
+
+      - name: Decide whether this lane must run
+        id: decide
+        if: steps.collect.outputs.decided != 'true'
+        run: |
+          node .github/scripts/e2e-affected.mjs \
+            --kind CI \
+            --lane rules \
+            --roots @delfrance/rules-gen \
+            --self .github/workflows/ci-rules.yml \
+            --files "${{ steps.collect.outputs.files }}"
+
   rules-offline:
-    name: Lint / typecheck / unit / drift check (offline)
+    name: Rules offline (lint + typecheck + unit + drift)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    # Observed max across 15 successful runs: 1.3 min.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v6
         with:
@@ -109,13 +185,15 @@ jobs:
         run: pnpm --filter @delfrance/rules-gen gen:rules:e2e:check
 
   rules-emulator:
-    name: Behavior suite on the Firestore emulator
+    name: Rules emulator (firestore)
     runs-on: ubuntu-latest
-    needs: rules-offline
+    # Observed max across 15 successful runs: 1.9 min.
+    timeout-minutes: 20
+    needs: [changes, rules-offline]
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v6
         with:
@@ -152,18 +230,29 @@ jobs:
             "pnpm --filter @delfrance/rules-gen test:rules"
 
   rules-api-validate:
-    name: Server-side compile validation (Rules API)
+    name: Rules API compile (projects.test)
     runs-on: ubuntu-latest
-    needs: rules-offline
+    # Observed max across 15 successful runs: 0.8 min.
+    timeout-minutes: 15
+    needs: [changes, rules-offline]
     # Fork PRs can't see repo secrets, so the call would only fail noisily —
     # skip it there. Pushes and manual dispatch are always same-repo.
+    #
+    # The gate treats this skip as GREEN-with-a-named-caveat rather than red,
+    # unlike the staging e2e lanes. The difference is what is left uncovered: there
+    # the skipped suite was the ONLY verification of the change, whereas here
+    # `rules-offline`'s drift check and `rules-emulator`'s behaviour suite have both
+    # already passed. The only gap is the server-side compile + deploy-size check,
+    # and CLAUDE.md rule 2 makes `firebase deploy` a manual human step where that
+    # failure would surface anyway.
     if: >-
-      ${{ github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.fork == false }}
+      ${{ needs.changes.outputs.run_e2e == 'true' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.fork == false) }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v6
         with:
@@ -193,10 +282,17 @@ jobs:
         run: pnpm --filter @delfrance/rules-gen validate:api:e2e
 
   report-failure:
-    name: Post failure note on PR
-    needs: [rules-offline, rules-emulator, rules-api-validate]
-    if: failure() && github.event_name == 'pull_request'
+    # Renamed: three lanes shared the check name `Post failure note on PR`, and a
+    # check-run name carries no workflow prefix, so they were indistinguishable.
+    name: Rules failure note
+    needs: [changes, rules-offline, rules-emulator, rules-api-validate]
+    # Fork guard added: this job holds `pull-requests: write`, which a fork run's
+    # read-only token cannot exercise — it would 403 and mask the real failure.
+    if: >-
+      ${{ failure() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
@@ -214,3 +310,201 @@ jobs:
             await github.rest.issues.createComment({
               owner, repo, issue_number: prNumber, body,
             });
+
+  # THE pinnable check for this lane. Everything above can legitimately be
+  # skipped; this cannot.
+  #
+  # ⚠️ `if: always()` and NOTHING else, on purpose. A job skipped by `if:` still
+  # publishes a check run, with conclusion `skipped`, and GitHub's required-
+  # status-check evaluation treats `skipped` as SATISFYING the requirement. A gate
+  # carrying any other condition would go green in exactly the cases it exists to
+  # report on. Do not add one.
+  #
+  # ⚠️ `needs:` lists the CERTIFIABLE jobs only. The report-* jobs are `skipped` on
+  # every green run, so needing them would make this gate permanently red.
+  gate:
+    name: CI gate (rules)
+    needs: [changes, rules-offline, rules-emulator, rules-api-validate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          LANE: CI gate (rules)
+          SCOPE_JOB: CI scope (rules)
+          PR: ${{ github.event.pull_request.number }}
+
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_LANE: ${{ needs.changes.outputs.run_e2e }}
+          REASON: ${{ needs.changes.outputs.reason }}
+
+          # --- recorded guards. ONLY these can excuse a skip. ------------------
+          GUARD_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          GUARD_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+
+          # --- per-job results -------------------------------------------------
+          RESULT_OFFLINE: ${{ needs.rules-offline.result }}
+          RESULT_EMULATOR: ${{ needs.rules-emulator.result }}
+          RESULT_API: ${{ needs.rules-api-validate.result }}
+
+          # --- the manifest. One row per certified job:
+          #       <result env var>|required|optional:<guard>[+<guard>]|<published check-run name>
+          #     The check-run name must match the job's `name:` byte for byte — it
+          #     is how the anti-vacuity lock finds the job in the jobs API.
+          JOBS: |
+            RESULT_OFFLINE|required|Rules offline (lint + typecheck + unit + drift)
+            RESULT_EMULATOR|required|Rules emulator (firestore)
+            RESULT_API|optional:not_fork|Rules API compile (projects.test)
+        run: |
+          set -uo pipefail
+          ROWS="$RUNNER_TEMP/gate-rows.md";        : > "$ROWS"
+          NOTES="$RUNNER_TEMP/gate-notes.md";      : > "$NOTES"
+          CERTIFY="$RUNNER_TEMP/gate-certify.txt"; : > "$CERTIFY"
+
+          row()  { printf '| `%s` | `%s` | %s |\n' "$1" "$2" "$3" >> "$ROWS"; }
+          note() { printf '%s\n\n' "$1" >> "$NOTES"; }
+
+          report() {
+            {
+              echo "### $LANE — $1"
+              echo
+              echo "$2"
+              echo
+              echo "| check run | result | verdict |"
+              echo "| --- | --- | --- |"
+              cat "$ROWS"
+              echo
+              echo "Scope (\`$SCOPE_JOB\`): \`run=${RUN_LANE:-<empty>}\` — ${REASON:-<none recorded>}"
+              echo
+              cat "$NOTES"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          fail() { report "NOT verified" "$1"; echo "::error title=$LANE::$1";  exit 1; }
+          # Mirror a PASS into the log too: otherwise a green gate is visible only
+          # in the step summary, which is not part of what the failure reporters
+          # collect, so a green gate could never be audited from the logs.
+          pass() { report "verified"     "$1"; echo "::notice title=$LANE::$1"; exit 0; }
+
+          # (1) The decider must have concluded. "We do not know" is never green.
+          [ "$CHANGES_RESULT" = "success" ] || \
+            fail "The scope job concluded \`$CHANGES_RESULT\`, so nothing decided whether this lane had to run."
+
+          # (2) ...and it must have produced a verdict.
+          case "$RUN_LANE" in
+            true|false) : ;;
+            *) fail "The scope job produced no verdict (\`run=${RUN_LANE:-<empty>}\`)." ;;
+          esac
+
+          # explain_skip <guard-spec>: 0 + sets WHY when a RECORDED input accounts
+          # for the skip, 1 otherwise. This is the whole trick — the gate re-derives
+          # the predicate that should have caused the skip instead of trusting the
+          # job's declared class. An `if:` clause nobody taught this function about
+          # matches no guard, so the skip goes RED.
+          explain_skip() {
+            WHY=""
+            if [ "$GUARD_DISPATCH" = "true" ]; then return 1; fi
+            local g
+            local IFS='+'
+            for g in $1; do
+              case "$g" in
+                not_fork)
+                  if [ "${GUARD_FORK:-}" = "true" ]; then
+                    WHY="this PR comes from a fork, and fork PRs cannot read repo secrets. A maintainer can verify from an in-repo branch: \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\`."
+                    return 0
+                  fi ;;
+                *) return 1 ;;
+              esac
+            done
+            return 1
+          }
+
+          # (3) Walk the manifest.
+          #     `done <<< "$JOBS"` is a HERESTRING, not a pipe: a pipe would run the
+          #     loop in a subshell and every RED/BROKEN assignment would be
+          #     discarded, making this gate unconditionally green.
+          RED=""; BROKEN=""
+          while IFS='|' read -r var class check; do
+            case "${var:-}" in ''|'#'*) continue ;; esac
+            result="${!var:-}"
+
+            case "$class" in
+              required)   guards='' ;;
+              optional:*) guards="${class#optional:}" ;;
+              *) fail "Gate manifest error: \`$check\` declares an unknown class \`$class\`. Refusing to certify a lane whose own manifest this gate cannot parse." ;;
+            esac
+
+            case "$result" in
+              success)
+                printf '%s\n' "$check" >> "$CERTIFY"
+                row "$check" "$result" "ran and passed"
+                ;;
+              skipped)
+                if [ -n "$BROKEN" ]; then
+                  row "$check" "$result" "not reached — \`$BROKEN\` did not succeed"
+                elif [ "$RUN_LANE" = "false" ]; then
+                  row "$check" "$result" "not required — nothing this lane depends on changed"
+                elif [ -n "$guards" ] && explain_skip "$guards"; then
+                  row "$check" "$result" "**DID NOT RUN** — $WHY"
+                  note "**\`$check\` did not run on this PR** — $WHY"
+                  echo "::warning title=$LANE::\`$check\` did not run — $WHY"
+                else
+                  row "$check" "$result" "**UNEXPLAINED SKIP**"
+                  RED="${RED}\`$check\` was skipped and this gate cannot explain why: the lane is in scope and no recorded guard (${guards:-none, this job is required}) accounts for it. Someone added an \`if:\` without teaching the gate about it. "
+                fi
+                ;;
+              '')
+                row "$check" "$result" "**NO RESULT**"
+                RED="${RED}This gate has no result for \`$check\` — its \`needs:\` list and its manifest disagree. "
+                ;;
+              *)
+                row "$check" "$result" "**NOT a pass**"
+                # `cancelled` covers concurrency cancel-in-progress AND the job
+                # timeout, and is deliberately red: a suite that was killed proved
+                # nothing.
+                RED="${RED}\`$check\` concluded \`$result\`. "
+                BROKEN="$check"
+                ;;
+            esac
+          done <<< "$JOBS"
+
+          # (4) Positive proof, not merely the absence of failure — the e2e gate's
+          #     anti-vacuity lock generalised to N jobs. `needs.<job>.result` reports
+          #     what the runner thinks; it does not assert a job of that name ever
+          #     existed. Ask the API, once.
+          if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+                 --jq '.jobs[] | [.name, (.conclusion // "pending")] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
+          then
+            fail "Could not list this run's jobs, so this gate cannot prove the certified jobs actually ran. Refusing to certify on \`needs.*.result\` alone."
+          fi
+
+          while IFS= read -r check; do
+            [ -n "$check" ] || continue
+            # Last match wins, mirroring the e2e gate's `| last`: re-running a single
+            # job appends a second entry under the same name.
+            actual=$(awk -F'\t' -v n="$check" '$1 == n { c = $2 } END { print (c == "" ? "missing" : c) }' "$RUNNER_TEMP/jobs.tsv")
+            if [ "$actual" != "success" ]; then
+              RED="${RED}\`needs\` reported success for \`$check\`, but the job of that name in this run concluded \`$actual\`. Refusing to certify a lane whose job cannot be found. "
+            fi
+          done < "$CERTIFY"
+
+          # (5) Advisory outcomes never red the gate — that is the designed PR
+          #     posture — but they must not be invisible in it either.
+          if [ -n "${ADVISORY_LIVE:-}" ]; then
+            note "**Advisory (non-fatal on PR/push) step failures inside the live suite:** $ADVISORY_LIVE Re-run via \`workflow_dispatch\`, where they are FATAL, to confirm."
+            echo "::warning title=$LANE::advisory step failure(s) in nfe-live: $ADVISORY_LIVE"
+          fi
+
+          [ -z "$RED" ] || fail "$RED"
+
+          if [ ! -s "$CERTIFY" ]; then
+            pass "No run was required — $REASON See the \`$SCOPE_JOB\` job summary for the full path attribution."
+          fi
+          pass "Every required job for this lane concluded \`success\`. Scope: $REASON"
