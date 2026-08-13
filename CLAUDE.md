@@ -137,7 +137,14 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    interchangeable** — `ultimaModificacao` is µs on pedido/pagamento/produto but
    **ms** on the ML links, and `historicoFtIni.data` is ms while
    `historicoEstadoPedido.data` is µs, so a cross-unit comparison is a guard that
-   never fires. See ADR 0011.
+   never fires. See ADR 0011. ⚠️ There is deliberately **no lint rule** for this —
+   the property is semantic and every syntactic proxy was measured and rejected
+   (#776). The backstop is
+   `packages/config-eslint/rules/firestore-transaction-inventory.test.js`: every
+   source file running a `runTransaction` is inventoried with its class (**A**
+   self-contained · **B** outside decision + a named guard · **C** network I/O in
+   the window), and a new or renamed call site reds CI until it says which it is.
+   A class-B/C site with no guard is a finding, not an inventory line.
 8. **The production data has not moved yet — everything here runs on staging.**
    The real data still sits in the legacy Flutter project on Firestore
    **Standard**, with the Flutter app live-writing to it. It moves exactly once,
@@ -324,11 +331,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Eight custom lint rules in `packages/config-eslint/rules/`:
+- Nine custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
   `no-optional-without-nullable`, `no-client-estado-history-write`,
   `no-env-secrets-access` and
-  `prefer-schema-enum` (error), `no-inline-admin-collection` and
+  `prefer-schema-enum` (error), `no-inline-admin-collection`,
+  `no-lossy-date-parse` and
   `no-error-as-sole-instanceof` (warn). `no-env-secrets-access` bans any literal
   naming `.env.secrets` — the repo's credential template, which nothing automated
   may read; its non-JS half (workflows, firebase configs, shell) is the

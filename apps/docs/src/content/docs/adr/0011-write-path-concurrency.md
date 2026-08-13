@@ -127,9 +127,21 @@ detect. Tier 3 exists because a human's unsaved work is not ours to discard.
 
 ### Where this is enforced
 
-Root `CLAUDE.md` Critical rule 7 is the short form. The repo-wide sweep, the
-shared helper in `packages/data`, and the lint rule that catches the
-stale-closure shape are tracked as issues, not shipped here.
+Root `CLAUDE.md` Critical rule 7 is the short form. The repo-wide sweep and the
+shared helper in `packages/data` are tracked as issues, not shipped here.
+
+**There is no lint rule, and there will not be one** (#776). Three candidate
+checks were implemented against the repo and measured: "every `tx` write must be
+preceded by a `tx.get` of the same ref" fires on 19 of 48 call sites with zero
+true positives, "no non-`tx` `await` inside the callback" fires on 8 with zero,
+and the one-hop dataflow version cannot separate the four real fixtures the audit
+produced — the two broken sites and the two correct ones all build their write
+from a binding declared before the transaction, and what separates them is
+whether a *guard* exists, which is semantic. The instrument instead is
+`packages/config-eslint/rules/firestore-transaction-inventory.test.js`: every
+source file running a transaction is inventoried with its class (A self-contained
+/ B outside decision + named guard / C network I/O in the window), and a new or
+renamed call site fails CI until it says which it is.
 
 ## Consequences
 
@@ -180,9 +192,19 @@ stale-closure shape are tracked as issues, not shipped here.
 - **Do nothing and rely on review** → rejected: three instances of the same
   stale-closure bug reached production in reviewed code within a single audit
   pass.
+- **A lint rule for the stale-closure shape** → rejected, with measurements
+  (#776, see *Where this is enforced*). The property is semantic — "a guard
+  exists and covers this binding" — so every syntactic proxy either misses the
+  known-bad sites or also fires on the known-good ones. The AST-only variant is
+  additionally defeated by this repo's own `no-inline-admin-collection` rule,
+  which forces every ref through a collection handle built inline at the write
+  site, leaving ~72% of writes structurally incomparable to their read. A
+  file-level inventory test carries the classification instead.
 
 ## Status
 
 Proposed (2026-08). Codified as Critical rule 7 in the root `CLAUDE.md`. The
-repo-wide audit, the shared helper, and the automated check are tracked
-separately; no call sites are migrated by this ADR.
+repo-wide audit (#824) and the shared helper (#839) are tracked separately; no
+call sites are migrated by this ADR. The automated check landed as the
+transaction inventory test described above — #776 is closed, and its verdict is
+recorded in that file's docblock.
