@@ -111,15 +111,25 @@ Two suites, deliberately separated by filename:
   ALREADY_EXISTS/NOT_FOUND semantics, the receiver writing a real failure doc via the
   `MERCADO_LIVRE_TASKS_DISABLED` valve, and `exchangeAndPersist`.
 
-⚠️ **Not covered by either, so do not read a green lane as more than it is:** the Cloud
-Tasks enqueue→dispatch hop — a `tasks` emulator **does** exist, but it cannot exercise
-this code: `mlTasks.ts` enqueues against `locations/<region>/functions/<queue>` and the
-emulator 404s that format, taking only a bare function name (firebase-admin-node#2725,
-open), while the region qualification is mandatory in production or the task silently
-drops to us-central1; `scheduleDelaySeconds` is ignored there too (firebase-tools#8254,
-open), which is the receiver's 10s refetch delay. Only the *outage* path
-(`MERCADO_LIVRE_TASKS_DISABLED`) is tested. Also uncovered: the nested `functions/`
-triggers, composite **index declaration** (the emulator
+- **Cloud Tasks round trip** — `test:tasks` (`*.tasks.test.ts`), run by the same workflow
+  under `--config firebase.mercado-livre.tasks.json --only firestore,functions,tasks`.
+  It serves the REAL functions codebase (built first by `prepare-deploy.mjs`, since
+  `predeploy` hooks do not run under `emulators:exec`) and drives
+  receiver → `mlTasks.ts` enqueue → tasks emulator → the real
+  `processMercadoLivreNotification` → a real Firestore write. ⚠️ `FUNCTIONS_REGION`
+  (inlined into the bundle) and `MERCADO_LIVRE_TASKS_REGION` (read by the enqueuer) MUST
+  match — a mismatch is the silent drop `mlTasks.ts` warns about, and it is what this
+  test detects. It uses a seller with no integração so the path needs no ML API call, no
+  token and no real secret, and executes only classic queries (the Pipelines API does not
+  run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
+
+⚠️ **Not covered, so do not read a green lane as more than it is:**
+`scheduleDelaySeconds` — the emulator's dispatch loop is pure FIFO with no `scheduleTime`
+predicate (`firebase-tools#8254`, open, triaged upstream as a feature request), so the
+receiver's 10s order-family refetch delay cannot be observed; `mlTasks.test.ts` pins it
+statically and the round trip uses a no-delay topic. Also uncovered: the nested
+`functions/` **Firestore triggers** (the lane loads them but drives none), composite
+**index declaration** (the emulator
 auto-creates them; that is guard C/D in `notificationGuardrails.test.ts`), Firestore
 rules (the Admin SDK bypasses them — `ci-rules.yml` owns those), the Enterprise Pipelines
 API (the emulator is Standard edition and still exposes `db.pipeline()`), and the ML API

@@ -1,8 +1,9 @@
-name: CI — Mercado Livre (Firestore emulator)
+name: CI — Mercado Livre (emulator integration)
 
 # Integration lane for the Mercado Livre backend (#823). Runs every
-# `apps/mercado-livre/**/*.firestore.test.ts` against a REAL Firestore (the
-# emulator), because all ~93 offline ML tests mock Firestore away — the shared
+# `apps/mercado-livre/**/*.firestore.test.ts` against a REAL Firestore, and every
+# `*.tasks.test.ts` against a real Firestore + Cloud Tasks + Functions — because
+# all ~93 offline ML tests mock Firestore away — the shared
 # notification pipeline drives a hand-rolled `FakeDb`, and the token store an
 # in-memory `fakeStore` with a scripted `validSeq`. Those cover the LOGIC; this
 # lane covers the Firestore SEMANTICS the logic is built on (real query
@@ -16,6 +17,19 @@ name: CI — Mercado Livre (Firestore emulator)
 # vitest.firestore.setup.ts installs a fetch kill-switch that throws on any
 # non-localhost host so "offline" is a property of the lane, not of the author.
 #
+# TWO jobs. `ml-firestore-emulator` needs Firestore alone and stays fast;
+# `ml-tasks-roundtrip` additionally boots the functions + tasks emulators and
+# serves the real ML functions codebase, so it pays an artifact build and a
+# slower start. Splitting them keeps the common case cheap.
+#
+# ⚠️ An earlier revision of this header claimed Cloud Tasks could not be
+# emulated at all, then that the emulator rejected our region-qualified queue
+# name (firebase-admin-node#2725). BOTH were wrong: a `tasks` emulator exists,
+# and that issue was closed 2024-10-11 and fixed in firebase-admin 12.7.0 — this repo
+# pins 14.2.0. `locations/<region>/functions/<queue>` is therefore both the
+# production-correct and the emulator-correct form, and no production code
+# changed to make the round trip testable.
+#
 # Unlike ci-storage.yml this has NO offline sibling job: `ci.yml` does not
 # exclude the ML workspaces from `turbo run test`, so the unit suite already
 # runs there on every PR (ci.yml has no `paths:` filter at all). Keeping it that
@@ -28,20 +42,13 @@ name: CI — Mercado Livre (Firestore emulator)
 #     on Enterprise a missing index does not throw — it silently full-scans and
 #     bills the scan. That is guard C/D in
 #     packages/data/src/admin/notifications/notificationGuardrails.test.ts.
-#   - The Cloud Tasks enqueue. A `tasks` emulator DOES exist
-#     (`firebase emulators:start --only tasks`) — but it cannot exercise THIS
-#     code. `mlTasks.ts` enqueues against the partial resource name
-#     `locations/<region>/functions/<queue>`, and the emulator 404s that format,
-#     accepting only a bare function name (firebase-admin-node#2725, open — it
-#     builds a URL with `locations/<region>` duplicated). The region
-#     qualification is not optional here: without it the Admin SDK targets
-#     us-central1 and the task silently drops, which is the exact hazard worth
-#     testing. Its `scheduleDelaySeconds` is ignored too (firebase-tools#8254,
-#     open), which is the receiver's 10s refetch delay. Testing the bare-name
-#     form instead would only prove a path production never takes. `retryConfig`
-#     and `rateLimits` ARE emulated, but those are asserted statically in
-#     processNotification.test.ts. So the receiver test drives the
-#     MERCADO_LIVRE_TASKS_DISABLED outage path only.
+#   - `scheduleDelaySeconds`. The tasks emulator's dispatch loop is pure FIFO
+#     with no `scheduleTime` predicate, so the receiver's 10s refetch delay for
+#     the order-family topics cannot be observed here (firebase-tools#8254 —
+#     genuinely open, and triaged upstream as a feature request). mlTasks.test.ts
+#     pins that option statically instead, and the round-trip job below uses a
+#     no-delay topic so it never leans on the broken behaviour. `retryConfig` and
+#     `rateLimits` ARE emulated.
 #   - The nested apps/mercado-livre/functions triggers (a deploy-artifact sub-build).
 #   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
@@ -70,7 +77,9 @@ on:
       - 'packages/schemas/src/notificacaoMercadoLivre.ts'
       - 'packages/schemas/src/shared/notificationResilience.ts'
       - 'firestore.indexes.json'
-      - 'firebase.mercado-livre.json'
+      # Glob so the emulator configs (…json, …tasks.json) and the deploy config
+      # all trigger the lane — a new config must never land untested.
+      - 'firebase.mercado-livre*.json'
       - 'pnpm-lock.yaml'
       # Self-reference: without it, a PR that only edits this workflow never
       # exercises it.
@@ -91,7 +100,9 @@ on:
       - 'packages/schemas/src/notificacaoMercadoLivre.ts'
       - 'packages/schemas/src/shared/notificationResilience.ts'
       - 'firestore.indexes.json'
-      - 'firebase.mercado-livre.json'
+      # Glob so the emulator configs (…json, …tasks.json) and the deploy config
+      # all trigger the lane — a new config must never land untested.
+      - 'firebase.mercado-livre*.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-mercado-livre.yml'
   workflow_dispatch:
@@ -193,9 +204,102 @@ jobs:
             --only firestore \
             "pnpm --filter @delfrance/mercado-livre-app test:firestore"
 
+  ml-tasks-roundtrip:
+    name: ML webhook → Cloud Tasks → onTaskDispatched
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      # ⚠️ These two MUST match. FUNCTIONS_REGION is inlined into the functions
+      # bundle at build time; MERCADO_LIVRE_TASKS_REGION is read by the enqueuer
+      # at run time. A mismatch is exactly the silent drop mlTasks.ts warns about
+      # — and it is what the round-trip test detects (verified: with the enqueuer
+      # on us-central1 and the bundle on us-east5, the emulator answers
+      # "Tried to queue a task from a non-existent queue" and the doc lands
+      # `failed` instead of `deferred`).
+      FUNCTIONS_REGION: us-east5
+      MERCADO_LIVRE_TASKS_REGION: us-east5
+      FIREBASE_PROJECT_ID: demo-erp
+      FIREBASE_DATABASE_ID: default
+      REQUIRE_EMULATOR: '1'
+      # 8 of the 15 ML functions declare these as `secrets:`, and demo-erp has no
+      # Secret Manager. Dummy values are safe AND sufficient: the exercised path
+      # (a seller with no integração) never refreshes a token, and the lane's
+      # fetch kill-switch throws on any non-localhost host regardless.
+      MERCADO_LIVRE_CLIENT_ID: '1111111111111111'
+      MERCADO_LIVRE_CLIENT_SECRET: dummy-secret-not-a-credential
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      # `predeploy` hooks do NOT run under emulators:exec, so the artifact has to
+      # be built explicitly. ⚠️ `build.mjs` alone emits only dist/index.js —
+      # prepare-deploy.mjs is the ONLY path that produces a servable folder
+      # (bundle + package.json with main/type + the node_modules junction that
+      # firebase-tools' trigger analysis needs). Mirrors ci-storage.yml, which
+      # likewise builds immediately before its emulators:exec.
+      - name: Build the ML functions deploy artifact
+        run: node apps/mercado-livre/functions/scripts/prepare-deploy.mjs
+
+      - name: Assert the test filter resolves to a real package
+        run: |
+          set -euo pipefail
+          matched=$(pnpm ls --filter @delfrance/mercado-livre-app --depth -1 --parseable | grep -c . || true)
+          echo "packages matched by the filter: $matched"
+          if [ "$matched" != "1" ]; then
+            echo "::error::pnpm --filter matched $matched packages — the emulator step would exit 0 without running anything."
+            exit 1
+          fi
+
+      # firestore + functions + tasks. The tasks emulator only has queues because
+      # the FUNCTIONS emulator registers them from the trigger definitions, so
+      # both are required; emulators:exec exports CLOUD_TASKS_EMULATOR_HOST into
+      # the child, which is what the Admin SDK reroutes on.
+      - name: Run the Cloud Tasks round trip
+        run: |
+          firebase emulators:exec \
+            --config firebase.mercado-livre.tasks.json \
+            --project demo-erp \
+            --only firestore,functions,tasks \
+            "pnpm --filter @delfrance/mercado-livre-app test:tasks"
+
   report-failure:
     name: Post failure note on PR
-    needs: [ml-firestore-emulator]
+    needs: [ml-firestore-emulator, ml-tasks-roundtrip]
     if: failure() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
