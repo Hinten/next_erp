@@ -545,7 +545,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     setConflict(null);
   }
 
-  async function doSave(continueEditing: boolean, force = false) {
+  async function doSave(continueEditing: boolean) {
     setSubmitError(null);
     // Apply per-field save-time transforms (e.g. the staged-deletion convention:
     // `prepareForSave: stripMarkedForDeletion` drops items marked for removal).
@@ -606,11 +606,15 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         // turns them into sibling writes keyed by the resolved record id.
         siblingWrites: transactionWrites ? (id) => transactionWrites(id, values) : undefined,
         currentUserUid,
-        // ADR 0011 tier 3. `force` skips the comparison because the operator
-        // has just reviewed the remote version in the modal — and the baseline
-        // was re-based onto it, so a THIRD writer landing meanwhile raises the
-        // modal again instead of being swallowed.
-        baseline: disableConcurrencyGuard || force ? undefined : (baseline.current ?? undefined),
+        // ADR 0011 tier 3. "Salvar mesmo assim" does NOT come through here with
+        // the guard off — it comes through with `baseline.current` already
+        // re-based onto the version the modal showed (see the catch below).
+        // The comparison therefore still runs, and that is the whole point: a
+        // THIRD writer landing while the operator read the diff raises the modal
+        // again instead of being silently overwritten. Skipping the check on an
+        // override would reintroduce the lost update one step later, against a
+        // write the operator had just been told was safe.
+        baseline: disableConcurrencyGuard ? undefined : (baseline.current ?? undefined),
         ignoreFields: concurrencyIgnoreFields ? new Set(concurrencyIgnoreFields) : undefined,
         stampUnit: stampFields.stampUnit,
         // `false` when auto-detect found nothing — don't fall back to the
@@ -1025,7 +1029,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
             onForceSave={() => {
               const { continueEditing } = conflict!;
               setConflict(null);
-              void doSave(continueEditing, true);
+              // Plain re-save. `baseline.current` was re-based onto the version
+              // shown when the conflict was caught, so the guard still runs: if
+              // nothing moved since, this commits; if a third writer landed
+              // meanwhile, the modal comes straight back with THAT version.
+              void doSave(continueEditing);
             }}
             onReloadFromServer={reloadFromServer}
             onCancel={() => setConflict(null)}

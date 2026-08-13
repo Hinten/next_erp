@@ -42,10 +42,17 @@ function formatValue(v: unknown): string {
  *  - **Recarregar do servidor** — take the server's version for the contested
  *    fields and keep every uncontested edit the operator already made. Their
  *    typing is not thrown away; only what actually collided is.
- *  - **Salvar mesmo assim** — re-apply over the version they just reviewed. It
- *    re-BASELINES rather than force-writing blind, so a third change landing
- *    between the modal opening and this click raises the modal again instead of
- *    being swallowed.
+ *  - **Salvar mesmo assim** — re-apply over the version they just reviewed.
+ *
+ * ⚠️ That last one is a re-BASELINE, not a force-write, and the distinction is
+ * the whole safety property: the caller re-points its baseline at the version
+ * this modal displayed and re-runs the SAME guarded save. It must not disable
+ * the guard. Wired the other way — an override that skips the check — a third
+ * write landing between this modal opening and the click is silently
+ * overwritten, which is the original lost update moved one step later and
+ * applied to a write the operator was just told was safe. It converges either
+ * way (each click re-baselines and retries), so skipping the check buys nothing
+ * and costs the guarantee.
  *
  * Never a silent drop: "silently discarding what someone typed is never the
  * answer" (ADR 0011). Generalized out of `apps/web`'s `PedidoConflictModal`

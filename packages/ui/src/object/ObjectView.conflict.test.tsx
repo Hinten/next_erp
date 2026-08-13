@@ -179,7 +179,7 @@ describe('ObjectView — tier-3 conflict (#824)', () => {
     expect(screen.getByText('Sobrescreve')).toBeTruthy();
   });
 
-  it('"Salvar mesmo assim" retries WITHOUT a baseline, re-based on what was shown', async () => {
+  it('"Salvar mesmo assim" re-baselines onto the reviewed version — it does NOT disable the guard', async () => {
     saveRecordMock
       .mockRejectedValueOnce(new RecordConflictError({ nome: 'Alexandra' }, ['nome']))
       .mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
@@ -191,7 +191,30 @@ describe('ObjectView — tier-3 conflict (#824)', () => {
     });
 
     expect(saveRecordMock).toHaveBeenCalledTimes(2);
-    expect(saveRecordMock.mock.calls[1]?.[0]).toMatchObject({ baseline: undefined });
+    // An earlier revision passed `baseline: undefined` here, which turned the
+    // override into a blind write: a THIRD writer landing while the operator
+    // read the diff was silently overwritten. The retry must carry the version
+    // the modal showed, so the guard runs again against it.
+    expect(saveRecordMock.mock.calls[1]?.[0]).toMatchObject({
+      baseline: { nome: 'Alexandra' },
+    });
+  });
+
+  it('a THIRD write during the override raises the modal again, with the newer version', async () => {
+    saveRecordMock
+      .mockRejectedValueOnce(new RecordConflictError({ nome: 'Alexandra' }, ['nome']))
+      // …someone else saved again while the operator was reading the diff.
+      .mockRejectedValueOnce(new RecordConflictError({ nome: 'Alexandrina' }, ['nome']));
+    renderView();
+    await editAndSave('Nome', 'Alicia');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar mesmo assim' }));
+    });
+
+    // Still open, now showing the THIRD writer's value rather than swallowing it.
+    expect(screen.getByRole('button', { name: 'Salvar mesmo assim' })).toBeTruthy();
+    expect(screen.getByText('Alexandrina')).toBeTruthy();
   });
 
   it('"Recarregar do servidor" takes the server value and KEEPS the uncontested edit', async () => {
