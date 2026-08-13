@@ -23,7 +23,9 @@
     "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
+  "//temporal-polyfill": "A literal spec rather than `catalog:` — 'literal' here means NOT the catalog reference, not 'exact': this package is the only consumer, and the root CLAUDE.md reserves catalog: for deps declared by 2+ workspace manifests. A caret range is correct because nothing resolves this spec without a lockfile — the only manifests that ship lockfile-free are the five deploy artifacts, whose `dependencies` are copied verbatim, and temporal-polyfill is not among them: @delfrance/core is a devDependency of apps/functions and esbuild inlines it into the bundle. Contrast the exact pins on next / firebase-admin / firebase-functions, which exist precisely because those DO get resolved fresh in the cloud. Used by src/datetime for lossless ISO parsing: Date.parse truncates to milliseconds, so a provider's sub-millisecond digits were being discarded and then refilled with zeros by the ×1000. Temporal.Instant.from keeps them. Drop this dep and switch to the native global once the Functions runtime reaches nodejs26 AND the browser baseline ships Temporal — the call sites already speak the spec API, so it is an import deletion.",
   "dependencies": {
+    "temporal-polyfill": "^1.0.3",
     "zod": "catalog:"
   },
   "devDependencies": {

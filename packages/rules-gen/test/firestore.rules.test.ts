@@ -260,6 +260,50 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('server-owned metodo_pgto.user_id (meta.serverOwnedFields) — #1034', () => {
+    // The Mercado Pago sibling of the `integracao` case below: `user_id` is the
+    // COLLECTOR id an inbound payment notification resolves the account by, so a
+    // client able to write it could repoint another seller's payment stream —
+    // and the money with it. Only the OAuth exchange writes it, via the Admin SDK.
+    //
+    // ⚠️ `metodo_pgto` is validator-whitelisted, so the emitted guard is ANDed
+    // with `v_metodo_pgto(...)` rather than standing alone as `integracao`'s
+    // does. These cases pin that the composition still denies.
+    const writer = () => db({ d_metodoPagamento: 2 });
+
+    it('allows a create carrying the field only as null (client parse default)', async () => {
+      await assertSucceeds(
+        setDoc(doc(writer(), 'metodo_pgto/mp-null'), { nome: 'MP', tipo: 1, user_id: null }),
+      );
+      await assertSucceeds(setDoc(doc(writer(), 'metodo_pgto/mp-absent'), { nome: 'MP', tipo: 1 }));
+    });
+
+    it('denies a create forging a collector id', async () => {
+      await assertFails(
+        setDoc(doc(writer(), 'metodo_pgto/mp-forge'), { nome: 'MP', tipo: 1, user_id: 123456789 }),
+      );
+    });
+
+    it('denies any update touching the field — set, clear, or delete', async () => {
+      await seed('metodo_pgto/mp-upd', { nome: 'MP', tipo: 1, user_id: 111 });
+      // The hijack: repoint this account at another collector.
+      await assertFails(updateDoc(doc(writer(), 'metodo_pgto/mp-upd'), { user_id: 222 }));
+      await assertFails(updateDoc(doc(writer(), 'metodo_pgto/mp-upd'), { user_id: null }));
+      await assertFails(updateDoc(doc(writer(), 'metodo_pgto/mp-upd'), { user_id: deleteField() }));
+    });
+
+    it('allows updates that leave the field untouched', async () => {
+      await seed('metodo_pgto/mp-other', { nome: 'MP', tipo: 1, user_id: 111 });
+      await assertSucceeds(updateDoc(doc(writer(), 'metodo_pgto/mp-other'), { nome: 'MP 2' }));
+    });
+
+    it('does not yield to the super-user claim (server-owned beats su)', async () => {
+      await seed('metodo_pgto/mp-su', { nome: 'MP', tipo: 1, user_id: 111 });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(updateDoc(doc(su, 'metodo_pgto/mp-su'), { user_id: 222 }));
+    });
+  });
+
   describe('server-owned integracao.user_id (meta.serverOwnedFields) — #821/T4', () => {
     // `user_id` is the Mercado Livre webhook ROUTING key: an inbound
     // notification finds its account with `where('user_id','==',…)`. A client
