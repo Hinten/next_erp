@@ -280,6 +280,12 @@ export {
   // ALL_DOMAINS; only its schema/meta/type are public.
   credenciaisWhatsappSchema,
   credenciaisWhatsappMeta,
+  // `oauthState` mirrors `credenciaisIntegracao` too: the admin-only,
+  // default-deny per-attempt OAuth connect record (#821) that makes a signed
+  // `state` single-use and parks the PKCE `code_verifier` — not a DomainSchema,
+  // not in ALL_DOMAINS; only its schema/meta/type are public.
+  oauthStateSchema,
+  oauthStateMeta,
   type Integracao,
   type IntegracaoTipo,
   type BrandShopee,
@@ -289,6 +295,7 @@ export {
   type Token6h,
   type TokenDuravel,
   type CredenciaisWhatsapp,
+  type OauthState,
 } from './integracao';
 
 export {
@@ -358,6 +365,17 @@ export {
   backfillPedidosMercadoLivreMeta,
   type BackfillPedidosMercadoLivre,
 } from './backfillPedidosMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
+  // for the flag-gated `missed_feeds` backstop sweep (#812). Bare schema+meta
+  // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // missedFeedsMercadoLivre.ts. Carries no cursor by design: ML's feed has no
+  // time filter, so retention vs schedule period is what guarantees coverage.
+  missedFeedsMercadoLivreSchema,
+  missedFeedsMercadoLivreMeta,
+  type MissedFeedsMercadoLivre,
+} from './missedFeedsMercadoLivre';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
