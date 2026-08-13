@@ -2,20 +2,27 @@ name: Claude Code Review
 
 # On-demand code review, requested with a top-level PR comment:
 #
-#   @reviewbot              -> medium effort (the default)
-#   @reviewbot high         -> broader coverage
-#   @reviewbot review max   -> the word `review` is optional, for muscle memory
+#   !reviewbot              -> medium effort (the default)
+#   !reviewbot high         -> broader coverage
+#   !reviewbot review max   -> the word `review` is optional, for muscle memory
 #
 # Nothing here runs automatically. Reviewing every push is what exhausted the
 # Copilot quota, and this lane bills your Claude subscription via
 # CLAUDE_CODE_OAUTH_TOKEN, so asking for a review stays a deliberate act.
 #
-# The trigger is deliberately NOT `@claude`. That is claude-code-action's
-# default phrase and Agent HQ's documented one, so keying this lane on it means
-# a second Claude workflow — or Agent HQ, if it is ever enabled here — answers
-# the same comment and you pay twice for two different reviews. A distinct
-# phrase also decouples the two lanes: claude.yml needs no exclusion rule,
-# because `@reviewbot` simply does not contain `@claude`.
+# ⚠️ The `!` prefix is load-bearing — do not "tidy" this into `@reviewbot`.
+# In a GitHub comment `@word` is a USER MENTION: github.com/ReviewBot is a real
+# account, so `@reviewbot` rendered as a link to that stranger's profile and
+# notified them on every request. Any `@name` trigger has this problem, because
+# the name can be registered by someone at any time — the fix is to leave the
+# mention namespace entirely, not to hunt for a free handle.
+#
+# It is also deliberately not `@claude`, which is claude-code-action's default
+# phrase and Agent HQ's documented one: keying this lane on it means a second
+# Claude workflow — or Agent HQ, if it is ever enabled here — answers the same
+# comment and you pay twice for two different reviews. Having its own phrase
+# also decouples the lanes: claude.yml needs no exclusion rule, because
+# `!reviewbot` does not contain `@claude`.
 on:
   issue_comment:
     types: [created]
@@ -31,7 +38,7 @@ concurrency:
 
 jobs:
   # A cheap gate job, seconds long and with no checkout. GitHub expressions have
-  # no regex, so the `if:` below can only test a prefix — and `@reviewbots should
+  # no regex, so the `if:` below can only test a prefix — and `!reviewbots should
   # look at this` satisfies a prefix test, which would start a paid review. The
   # strict match is a regex here, and the expensive job depends on its verdict,
   # so a near-miss costs a few runner-seconds instead of a review.
@@ -42,7 +49,7 @@ jobs:
     if: >-
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
-      startsWith(github.event.comment.body, '@reviewbot')
+      startsWith(github.event.comment.body, '!reviewbot')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -58,17 +65,17 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           first=$(printf '%s' "$COMMENT_BODY" | head -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')
-          if printf '%s' "$first" | grep -qE '^@reviewbot([[:space:]]|$)'; then
+          if printf '%s' "$first" | grep -qE '^!reviewbot([[:space:]]|$)'; then
             match=true
           else
             match=false
           fi
           # The effort must be the token right after the command, not merely
-          # present somewhere on the line — otherwise "@reviewbot please, low
+          # present somewhere on the line — otherwise "!reviewbot please, low
           # risk change" silently downgrades the review to low. The optional
-          # `review` word is tolerated so the older `@claude review high` habit
-          # still lands on the right effort.
-          effort=$(printf '%s' "$first" | sed -nE 's#^@reviewbot([[:space:]]+review)?[[:space:]]+(low|medium|high|max)([[:space:]].*)?$#\2#p')
+          # `review` word is tolerated so that the habit left over from the
+          # earlier `... review high` spellings still lands on the right effort.
+          effort=$(printf '%s' "$first" | sed -nE 's#^!reviewbot([[:space:]]+review)?[[:space:]]+(low|medium|high|max)([[:space:]].*)?$#\2#p')
           {
             echo "match=$match"
             echo "effort=${effort:-medium}"
