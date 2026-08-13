@@ -29,6 +29,14 @@ catalog:
   firebase-functions: 7.3.2
   google-auth-library: ^10.6.2
   jsdom: ^29.1.1
+  # ⚠️ Exact, and COPIED as a literal into the 7 apps/*/package.json that have an
+  # apphosting.yaml — the App Hosting Next buildpack cannot read pnpm-lock.yaml and
+  # blocks the deploy on the raw string `catalog:`. Its only remaining `catalog:`
+  # consumers are apps/webchat and packages/ui; drop BOTH and
+  # `cleanupUnusedCatalogs: true` deletes this line on the next install. Guarded by
+  # packages/config-eslint/rules/apphosting-next-pinned.test.js. A bump = 8 edits.
+  # Keep this comment on its own lines: the guard reads the catalog with a
+  # line-anchored regex, which a trailing `# …` would break.
   next: 16.2.6
   node-forge: ^1.4.0
   react: ^19.2.0
@@ -44,6 +52,9 @@ catalogMode: strict
 cleanupUnusedCatalogs: true
 allowBuilds:
   '@firebase/util': true
+  # Pure TypeScript SDK — ws, p-retry, protobufjs and google-auth-library, none
+  # of them native. Nothing to compile, so its install script stays blocked.
+  '@google/genai': false
   '@parcel/watcher': true
   '@swc/core': true
   core-js: false
