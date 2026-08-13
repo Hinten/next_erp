@@ -19,6 +19,12 @@ function allowedOrigins(): Set<string> {
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
+  // #821/T5: a page served from a developer machine has no business making
+  // credentialed cross-origin calls to a production backend, so the dev origin
+  // is a DEV-ONLY convenience (it keeps `pnpm dev` config-free).
+  // ⚠️ In production the allow-list is EXACTLY `ALLOWED_ADMIN_ORIGINS` — a
+  // backend deployed without that variable set allows no origin at all.
+  if (process.env.NODE_ENV === 'production') return new Set<string>(extra);
   return new Set<string>([DEV_ORIGIN, ...extra]);
 }
 

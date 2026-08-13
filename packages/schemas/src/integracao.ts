@@ -370,6 +370,19 @@ export const integracaoMeta: CollectionMetadata = {
     write: PERM_INTEGRACAO_WRITE,
     delete: PERM_INTEGRACAO_DELETE,
   },
+  // `user_id` is the WEBHOOK ROUTING KEY (#821/T4): `resolveIntegracaoByUserId`
+  // is how every inbound Mercado Livre notification finds its account. Left
+  // client-writable, any holder of `d_integracao` write could repoint one
+  // seller's notification stream at another account's document, or break
+  // routing outright, straight from the client SDK. Its only legitimate writer
+  // is the OAuth exchange (`exchangeAndPersist`, apps/mercado-livre), which
+  // goes through the Admin SDK and bypasses rules; `apps/web` already excludes
+  // the field from all three integração forms. Legacy parity is not a reason to
+  // keep it open — the Flutter connect screen client-wrote it, but the field
+  // only became load-bearing in the new architecture.
+  // ⛔ Do NOT extend this to WhatsApp's `wa_id`/`phoneNumberId`: those are
+  // operator-entered in the browser (see `whatsappFieldOverrides.tsx`).
+  serverOwnedFields: ['user_id'],
   // Deleting a channel account frees its OAuth credential subcollections,
   // mirroring `int_frete` → `tokenMelEnv`. WhatsApp's permanent-token store
   // (`credenciaisWhatsapp`) is a separate subcollection (distinct schema —
@@ -377,9 +390,11 @@ export const integracaoMeta: CollectionMetadata = {
   // token stores cascade too: they hold a live `refresh_token`, and the legacy
   // Flutter `deleteCascade` on a conta already deleted both, so omitting them
   // here would orphan a working credential (drop these two with #829).
+  // `oauthState` holds a live PKCE `code_verifier`, so it frees on delete too.
   cascade: [
     { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
+    { path: 'integracao/{integracaoId}/oauthState', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/token6h', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/tokenDuravel', onDelete: 'cascade' },
   ],
@@ -677,3 +692,78 @@ export const credenciaisWhatsappMeta: CollectionMetadata = {
 // `credenciaisWhatsappMeta`, mirroring `credenciaisIntegracaoMeta`). The admin
 // collection handle consumes the path + schema directly; the server-side
 // cascade on `integracao` delete frees the subcollection without a rules block.
+
+/* -------------------------------------------------------------------------- */
+/*                      OauthState (subcollection) — #821                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Per-attempt OAuth connect record — `integracao/{integracaoId}/oauthState`.
+ *
+ * The signed `state` alone cannot be made single-use: an HMAC proves integrity,
+ * not freshness-of-use, so before #821 a captured `state` could be replayed for
+ * the whole 10-minute window and drive a callback that overwrote the account's
+ * credential with the attacker's. Non-replayability needs a server-side record
+ * to consume, and PKCE needs somewhere to park the `code_verifier` between the
+ * consent redirect and the callback — one document answers both.
+ *
+ * **Fixed doc id `'current'`** (same convention as the `tokenDuravel` store), so
+ * a new connect attempt OVERWRITES the previous record: at most one document per
+ * integração, no TTL policy and no sweep to deploy, and starting a second
+ * connect correctly invalidates the first. `nonce` is what binds a given signed
+ * `state` to this record — without it a stale state would match whatever record
+ * happens to be current.
+ *
+ * A cookie was the alternative and does not work here: `oauth/start` answers an
+ * XHR from `apps/web` on a different origin than the channel backend, so the
+ * cookie would be third-party and subject to browser cookie policy.
+ *
+ * **Admin-only / default-deny** — same posture as `credenciaisIntegracao`: this
+ * doc holds a live `code_verifier`, so the domain is deliberately left OUT of
+ * `ALL_DOMAINS` (see the NOTE below) and Firestore default-denies every client
+ * read/write. Only the Admin SDK (the OAuth start + callback routes) reaches it.
+ */
+export const oauthStateSchema = z
+  .object({
+    /** Random per-attempt id, mirrored in the signed `state` payload. */
+    nonce: z.string().min(1),
+    /**
+     * PKCE `code_verifier` (RFC 7636) — `null` when PKCE is disabled for the
+     * channel's registered app. The callback sends whatever is stored here and
+     * never re-reads the feature flag, so flipping the flag mid-consent cannot
+     * strand an in-flight attempt.
+     */
+    codeVerifier: z.string().nullable().default(null),
+    /** When the attempt was minted, ms since epoch. */
+    criadoEm: millisSinceEpoch(),
+    /**
+     * When the callback consumed the attempt, ms since epoch — `null` while
+     * unused. A non-null value is what makes a second callback a REPLAY and not
+     * a retry, so it is stamped inside the same transaction that reads it.
+     */
+    consumidoEm: millisSinceEpoch().nullable().default(null),
+  })
+  .passthrough();
+export type OauthState = z.infer<typeof oauthStateSchema>;
+
+export const oauthStateMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/oauthState',
+  // No client domain grants these bits — placeholder values. This collection is
+  // deliberately NOT registered in `ALL_DOMAINS`, so the rules generator emits
+  // no match block for it and Firestore default-denies every client read/write.
+  // Only the Admin SDK (the channel's OAuth routes) reaches the code verifier.
+  // Mirrors `credenciaisIntegracaoMeta`.
+  permissions: {
+    read: 0n,
+    write: 0n,
+    delete: 0n,
+  },
+};
+
+// NOTE: intentionally NOT exported as a `{ schema, meta }` DomainSchema and NOT
+// added to `ALL_DOMAINS` — that would make the rules generator grant clients
+// read access to a live PKCE `code_verifier`, which would defeat the point of
+// PKCE entirely. Admin-only = default-deny (see `oauthStateMeta`, mirroring
+// `credenciaisIntegracaoMeta`). The admin collection handle consumes the path +
+// schema directly; the server-side cascade on `integracao` delete frees the
+// subcollection without a rules block.
