@@ -20,14 +20,12 @@ concurrency:
 
 jobs:
   claude:
-    # A comment opening with `@claude review` / `@claude /code-review` belongs to
-    # claude-code-review.yml. Without excluding it here both workflows would fire
-    # — the review prefixes contain `@claude` — and you would pay twice for two
-    # different answers to the same request.
+    # No exclusion rule is needed for the review lane: it triggers on
+    # `@reviewbot`, which does not contain `@claude`, so the two `if:` conditions
+    # are disjoint by construction rather than by a guard someone has to
+    # maintain. That was the point of giving the review lane its own phrase.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
-        && !startsWith(github.event.comment.body, '@claude review')
-        && !startsWith(github.event.comment.body, '@claude /code-review')) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
@@ -114,8 +112,11 @@ jobs:
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+          # `--model` is pinned for the same reason as in claude-code-review.yml:
+          # the runner installs Claude Code fresh, so it never sees your local
+          # `~/.claude/settings.json`, and an unpinned lane can change models on a
+          # Claude Code release with no change here. Exact API id, not a selector
+          # shorthand like `opus[1m]`.
+          claude_args: |
+            --model claude-opus-5
 

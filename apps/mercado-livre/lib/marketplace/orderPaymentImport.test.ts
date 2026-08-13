@@ -15,10 +15,10 @@ import {
   type OccOpKind,
   type OccTransaction,
   type OccWriteKind,
-} from './testing/occTransaction';
+} from '@delfrance/data/testing';
 
 /* ------------------------------ fake Firestore ---------------------------- */
-// `runTransaction` delegates to the SHARED `OccEngine` (`./testing/occTransaction`),
+// `runTransaction` delegates to the SHARED `OccEngine` (`@delfrance/data/testing`),
 // which supplies the read-after-write guard, snapshot reads, buffered writes and
 // retry. Everything below stays this file's own.
 //

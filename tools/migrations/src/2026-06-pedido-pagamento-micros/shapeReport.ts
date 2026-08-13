@@ -44,6 +44,24 @@ export interface ShapeStats {
   maxUs: number | null;
   /** Digit lengths seen for numeric values — the eyeball check: 13 = ms, 16 = µs. */
   digitos: Record<number, number>;
+  /**
+   * Does the microsecond precision actually EXIST, or is it padding?
+   *
+   * A value ending in `000` carries no more information than a millisecond one.
+   * That is the normal case for anything we stamped ourselves — `nowMicros()` is
+   * `Date.now() * 1000`, so its low three digits are structurally zero — and it
+   * was also the case for EVERY provider value until the ISO parser was fixed,
+   * because `Date.parse` truncated to milliseconds and the `× 1000` refilled the
+   * gap with zeros.
+   *
+   * So this split answers the question the migration's own README used to get
+   * wrong: how much real sub-millisecond precision is there at rest? A field that
+   * is 100% padded gains nothing from being stored in microseconds; a field with
+   * a non-zero `reais` count is carrying provider precision that a millisecond
+   * representation would destroy.
+   */
+  microsPadded: number;
+  microsReais: number;
 }
 
 export function emptyStats(): ShapeStats {
@@ -60,6 +78,8 @@ export function emptyStats(): ShapeStats {
     minUs: null,
     maxUs: null,
     digitos: {},
+    microsPadded: 0,
+    microsReais: 0,
   };
 }
 
@@ -94,6 +114,12 @@ export function record(stats: ShapeStats, value: unknown): void {
   if (us == null) return;
   if (stats.minUs == null || us < stats.minUs) stats.minUs = us;
   if (stats.maxUs == null || us > stats.maxUs) stats.maxUs = us;
+
+  // Measured on the CONVERTED value, so it covers every inbound shape — an ISO
+  // string with a `.123456` fraction now counts as real, where before the parser
+  // fix it would have arrived here as `…123000` and counted as padded.
+  if (us % 1000 === 0) stats.microsPadded += 1;
+  else stats.microsReais += 1;
 }
 
 const ORDEM: readonly ShapeBucket[] = [
@@ -124,10 +150,20 @@ export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string 
       .map(([d, n]) => `${d}d×${n}`)
       .join(' ');
     bloqueia += s.counts['timestamp-ou-outro'] + s.counts['zona-morta'];
+    // Precision census — NOT part of the verdict, purely intelligence about
+    // whether this field's microseconds carry information or are padding.
+    const convertidos = s.microsPadded + s.microsReais;
+    const precisao =
+      convertidos === 0
+        ? ''
+        : s.microsReais === 0
+          ? `  µs=PADDING (${s.microsPadded}/${convertidos} end in 000)`
+          : `  µs=REAL (${s.microsReais}/${convertidos} sub-ms)`;
     linhas.push(
       `  ${campo.padEnd(42)} ${partes.join(' ')}` +
         (digitos ? `  [${digitos}]` : '') +
-        `  ${iso(s.minUs)} → ${iso(s.maxUs)}`,
+        `  ${iso(s.minUs)} → ${iso(s.maxUs)}` +
+        precisao,
     );
   }
 

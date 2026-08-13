@@ -11,40 +11,35 @@ backend. See `README.md` and `CONTRIBUTING.md`. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
-`ci.yml` and the three e2e lanes have **no path filter**, so every PR gets all
-four; `ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
-pipelines `ci-{nfe,freight,storage,rules}.yml` own.
+CI — the eight lanes in `.github/workflows/` run **concurrently**, gated on
+nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
+from the workspace dependency graph and reports through one unskippable check;
+`ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
+pipelines `ci-{nfe,freight,storage,rules}.yml` own. **Touching
+`.github/workflows/` → the `ci-lanes` skill**, which carries the whole design.
 
-**"CI green" now means "e2e passed."** Each e2e lane always publishes one
-unskippable check — **`E2E gate (cadastros)` / `(vendas)` / `(emulator)`** — and
-those are the pinnable names. Green means the suite passed, or that nothing the
-lane depends on changed *and the check says which paths and why*. Red means it
-failed, was cancelled, or was skipped for a reason the gate cannot justify
-(a fork PR cannot read staging secrets, so it is **red**, not green).
+Four rules you must not break without reading it first:
 
-⚠️ Never put a top-level `paths:` on an e2e lane, and never pin a check that can
-be skipped. A non-matching `paths:` means GitHub publishes **no check at all** —
-not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
-GitHub counts as **satisfying** a required check. Both are silent passes. Scope
-lives in each lane's `changes` job instead, which derives the answer from the
-**workspace dependency graph** (`.github/scripts/e2e-affected.mjs`) rather than a
-hand-written list — the old list omitted `packages/integrations/{nfe,freight-br}`
-and `packages/storage`, all three of which `apps/web` imports. Everything
-unattributable (root configs, `firestore.rules`, `.github/**`) runs the suite.
-Enforced by `packages/config-eslint/rules/e2e-lane-gates.test.js`.
+1. ⚠️ **Never put a `paths:` on a lane's `pull_request:`, and never pin a check
+   that can be skipped.** A non-matching `paths:` publishes **no check at all** —
+   not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
+   GitHub counts as **satisfying** a required check. Both are silent passes.
+2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
+   unique repo-wide. The pinnable ones are `E2E gate (cadastros|vendas|emulator)`,
+   `CI gate (nfe|freight|storage|rules)` and `lint-typecheck-test`.
+3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
+   downstream job makes it run even after its upstream failed. Let `needs:` carry
+   the skip instead.
+4. ⚠️ The `push:` triggers **keep** their `paths:` deliberately; only
+   `pull_request:` goes without.
 
-⚠️ The domain pipelines `ci-{nfe,freight,storage,rules}.yml` are still
-`paths:`-filtered and still publish nothing when they skip. That is a deliberate
-remaining exception, not a model to copy — their offline suites are covered by
-`ci.yml`'s full-graph lint/typecheck/build.
+Enforced by `packages/config-eslint/rules/ci-lane-gates.test.js` — every workflow
+must be a registered lane or an explicitly excused one.
 
 Every `pull_request` base filter is
-`[master, main, production, 'claude/**', 'feat/**', 'fix/**']` (`ci.yml` and the
-domain pipelines omit `production`; the release PR gets those from the `push:` on
-`main`). That key matches the PR's **base**, so a **stacked PR** must sit on one of
-those prefixes — on anything else (`chore/`, `docs/`, …) it reports zero checks,
-not failures.
+`[master, main, production, 'claude/**', 'feat/**', 'fix/**']`. That key matches
+the PR's **base**, so a **stacked PR** must sit on one of those prefixes — on
+anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 
 ## Critical rules
 

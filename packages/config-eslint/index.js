@@ -5,6 +5,7 @@ import defaultQueryNeedsIndex from './rules/default-query-needs-index.js';
 import noAdHocMoneyRounding from './rules/no-ad-hoc-money-rounding.js';
 import noOptionalWithoutNullable from './rules/no-optional-without-nullable.js';
 import noErrorAsSoleInstanceof from './rules/no-error-as-sole-instanceof.js';
+import noLossyDateParse from './rules/no-lossy-date-parse.js';
 import preferSchemaEnum from './rules/prefer-schema-enum.js';
 import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.js';
 import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
@@ -106,6 +107,7 @@ const config = [
           'prefer-schema-enum': preferSchemaEnum,
           'no-client-estado-history-write': noClientEstadoHistoryWrite,
           'no-env-secrets-access': noEnvSecretsAccess,
+          'no-lossy-date-parse': noLossyDateParse,
         },
       },
     },
@@ -198,6 +200,24 @@ const config = [
       // no-inline-admin-collection. NOTE lint-staged runs `--max-warnings 0`,
       // so editing one of those 51 files means fixing it first.
       'delfrance/no-error-as-sole-instanceof': 'warn',
+
+      // `Date` cannot represent sub-millisecond time, and it reads an
+      // offset-less string in the AMBIENT process timezone. Both cost real
+      // data: `Date.parse` truncated the microseconds Django REST Framework
+      // sends (which `coerceToMicros` then refilled with zeros, hiding the
+      // loss), collapsing two provider updates inside the same millisecond onto
+      // identical stamps so a freshness guard could not order them and the
+      // stale payload won — the Loja Integrada stale-overwrite defect. And
+      // apps/nfe runs TZ=America/Sao_Paulo while every other backend is UTC, so
+      // an offset-less payload resolved three hours apart depending on which
+      // service parsed it. `@delfrance/core/datetime` fixes both.
+      //
+      // Warn, not error: a ratchet over a known pre-existing population
+      // (~24 non-test `Date.parse` sites), mirroring no-error-as-sole-instanceof.
+      // NOTE lint-staged runs `--max-warnings 0`, so editing one of those files
+      // means fixing it first. Tests and e2e helpers are exempt wholesale — an
+      // ISO literal is the readable way to author a microsecond fixture.
+      'delfrance/no-lossy-date-parse': 'warn',
 
       // `pedidos/{id}/historicoEstadoPedido` (the pedido `estado` trail) and
       // `pedidos/{id}/historicoFtIni` (the `freteInicial.estado` trail) have
