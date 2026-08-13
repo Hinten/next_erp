@@ -161,6 +161,18 @@ jobs:
         # fires on 14 of them (it depends on schemas + core, which change
         # constantly) versus 3 for this list — so the closure is useless as a
         # narrowing device here. See decideByPaths() in the script.
+        #
+        # ⚠️ This list must stay a SUPERSET of the NF-e-relevant entries the old
+        # `paths:` filter carried, minus the ones that cannot change the emitted
+        # XML. `packages/schemas/src/pedido/**` in particular is load-bearing: the
+        # XML builder reads those schemas, and a comment in the old filter recorded
+        # that this lane once silently stopped running on exactly them. Adding the
+        # three schema paths back costs nothing measurable — still 3/30 over the
+        # same window — so there is no reason to trade them away.
+        #
+        # Deliberately NOT here (they cannot change what SEFAZ receives):
+        # `packages/config-vitest/**`, `pnpm-lock.yaml`, and this workflow file —
+        # all three still trigger the OFFLINE job through the dependency graph.
         run: |
           node .github/scripts/e2e-affected.mjs \
             --kind CI \
@@ -171,6 +183,9 @@ jobs:
               packages/schemas/src/nfe.ts \
               packages/schemas/src/nfeConfig.ts \
               packages/schemas/src/enviNfeMsg.ts \
+              packages/schemas/src/pedido \
+              packages/schemas/src/shared/frete.ts \
+              packages/schemas/src/integracao.ts \
             --files "${{ steps.collect.outputs.files }}"
 
       - name: Record the live-lane switch
