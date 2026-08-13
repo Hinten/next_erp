@@ -31,7 +31,15 @@ runConfig:
 #                                OAuth redirect_uri (must match the URI registered
 #                                in the Mercado Livre application dashboard)
 #   WEB_APP_URL                  apps/web origin (the callback redirects back here)
-#   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
+#   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS. ⚠️ REQUIRED in prod:
+#                                localhost is no longer implicitly allowed (#821/T5),
+#                                so an unset value allows NO origin at all.
+#   MERCADO_LIVRE_PKCE_ENABLED   OPTIONAL — `1` drives the OAuth connect flow with
+#                                PKCE (#821). ⚠️ Must match the PKCE toggle on the
+#                                registered application: once ML's toggle is on the
+#                                code_challenge/code_verifier parameters are MANDATORY,
+#                                so flip both together. Not a secret — a plain env var
+#                                in the console, not below.
 #   MERCADO_LIVRE_WEBHOOK_LOG_HEADERS
 #                                OPTIONAL — webhook header-inventory diagnostic (#811).
 #                                Unset: log each new header shape once per instance;

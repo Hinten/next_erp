@@ -10,6 +10,7 @@ import {
 import { processStockSendTask } from '../../lib/marketplace/estoqueSend';
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';
+import { readCacheSummary } from '@delfrance/data/admin/cache';
 
 /**
  * Cloud Tasks dispatcher for ML stock sends (Step 10 PR B). The sweeps (PR C)
@@ -75,6 +76,10 @@ export const sendMercadoLivreStock = onTaskDispatched(
       queue: MERCADO_LIVRE_STOCK_SEND_QUEUE,
       outcome: result.outcome,
       retryCount: req.retryCount ?? 0,
+      // CUMULATIVE for this instance — a task has no tick to bracket. This is the
+      // fan-out the sweep drives (up to `maxTasksPerSweep()` per conta), so
+      // consecutive lines from one warm instance are where the win shows up.
+      readCache: readCacheSummary(),
     });
   },
 );

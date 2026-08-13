@@ -368,7 +368,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // The stamps run once the ML item write has SUCCEEDED (the error path above
   // never stamps) — a later failure (e.g. the description step) leaves them in
   // place, same as the old app, which committed this batch before sending the
-  // description. Tracked removal: #431.
+  // description. Tracked removal: #992.
   await produtoCollection.docRef(db, {}, produtoId).update({
     marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: item.id }),
     marketplaceIds: FieldValue.arrayUnion(item.id),
@@ -577,7 +577,7 @@ async function loadTabelaBinding(
  * selecting the produto).
  *
  * ⛔ What remains is DEAD WEIGHT: no query consumers, deleted at the
- * decommission (#431 lock 3 / #961). The read-clean-write below is not a
+ * decommission (#992; audited in #961). The read-clean-write below is not a
  * counter-example — it reads `marketplace` only to compute the next
  * `marketplace`, which is maintenance, not consumption. The canonical note is on
  * `produtoSchema`. Do not extend this to remove entries when a link doc is

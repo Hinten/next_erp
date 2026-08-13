@@ -20,6 +20,7 @@ import {
   clickSaveAndContinue,
   confirmDelete,
   expectErrorText,
+  expectFieldAfterReload,
   expectFieldError,
   expectToast,
   fillField,
@@ -173,9 +174,7 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/clientes$/, { timeout: 15_000 });
 
     await page.goto(`/clientes/${row(5)}`);
-    await expect(page.getByLabel('Observações internas', { exact: true })).toHaveValue(
-      'editado-e2e',
-    );
+    await expectFieldAfterReload(page, 'Observações internas', 'editado-e2e');
   });
 
   test('edits a cliente and continues editing', async ({ page }) => {

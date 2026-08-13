@@ -13,7 +13,7 @@
  *
  * The denorm array is NOT the fix. It is write-only in this app (only the
  * deployed Flutter backend `array-contains`es it, `publish.ts:285-295`), it has
- * no declared index, and it is slated for removal (#431). The link
+ * no declared index, and it is slated for removal (#992). The link
  * subcollections this same app writes carry everything needed, already indexed:
  *
  *   parent/simple  produtos/{parentId}/produtoMercadoLivre/{doc}   id == item.id

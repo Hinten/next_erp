@@ -6,10 +6,12 @@ import type { MlSizeChart } from '@delfrance/schemas';
 import {
   TabelaDeMedidasNotFoundError,
   applyChartResponse,
+  cellAttributeIds,
   chartAttributeToMercadoLivre,
   chartCreatePayload,
   chartRowPayload,
   deepEqual,
+  resolveErrorRowIndex,
   syncSizeCharts,
 } from './sizeChartSync';
 
@@ -134,10 +136,33 @@ function seedDoc(db: FakeDb, tabelas: unknown[]): void {
 /* ------------------------------ pure builders ---------------------------- */
 
 describe('chartAttributeToMercadoLivre', () => {
-  it('folds the unit into the value name (legacy "62 cm")', () => {
+  it('folds the unit into the value name (legacy "62 cm") and adds ML\'s struct', () => {
     expect(chartAttributeToMercadoLivre({ id: 'WAIST', value_name: '62', unit_id: 'cm' })).toEqual({
       id: 'WAIST',
-      values: [{ name: '62 cm' }],
+      values: [{ name: '62 cm', struct: { number: 62, unit: 'cm' } }],
+    });
+  });
+
+  it('parses a pt-BR decimal into the struct', () => {
+    expect(
+      chartAttributeToMercadoLivre({ id: 'WAIST', value_name: '62,5', unit_id: 'cm' }),
+    ).toEqual({
+      id: 'WAIST',
+      values: [{ name: '62,5 cm', struct: { number: 62.5, unit: 'cm' } }],
+    });
+  });
+
+  it('omits the struct when the value is not numeric (a size label keeps only its name)', () => {
+    expect(chartAttributeToMercadoLivre({ id: 'SIZE', value_name: 'M', unit_id: 'BR' })).toEqual({
+      id: 'SIZE',
+      values: [{ name: 'M BR' }],
+    });
+  });
+
+  it('omits the struct when the attribute carries no unit', () => {
+    expect(chartAttributeToMercadoLivre({ id: 'SIZE', value_name: '42' })).toEqual({
+      id: 'SIZE',
+      values: [{ name: '42' }],
     });
   });
 
@@ -157,7 +182,10 @@ describe('chartAttributeToMercadoLivre', () => {
       } as never),
     ).toEqual({
       id: 'FILTRABLE_SIZE',
-      values: [{ name: '38 cm' }, { id: 'x', name: '40 cm' }],
+      values: [
+        { name: '38 cm', struct: { number: 38, unit: 'cm' } },
+        { id: 'x', name: '40 cm', struct: { number: 40, unit: 'cm' } },
+      ],
     });
   });
 });
@@ -187,7 +215,10 @@ describe('chartCreatePayload', () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]!.attributes).toEqual([
       { id: 'SIZE', values: [{ name: 'M' }] },
-      { id: 'CHEST_CIRCUMFERENCE_FROM', values: [{ name: '90 cm' }] },
+      {
+        id: 'CHEST_CIRCUMFERENCE_FROM',
+        values: [{ name: '90 cm', struct: { number: 90, unit: 'cm' } }],
+      },
     ]);
   });
 
@@ -220,6 +251,37 @@ describe('chartCreatePayload', () => {
     const main = payload.main_attribute as { attributes: Array<Record<string, unknown>> };
     expect(main.attributes[0]!.values).toEqual([{ id: 's1', name: '38' }, { name: '40' }]);
   });
+
+  it('an explicit main_attribute_id wins over the SIZE fallback, as a bare {site_id,id}', () => {
+    // A footwear chart: no SIZE column anywhere, so the legacy fallback could
+    // never build a valid body for it.
+    const calcados: MlSizeChart = {
+      ...novaChart,
+      domain_id: 'MLB-SNEAKERS',
+      main_attribute_id: 'EU_SIZE',
+      rows: [
+        {
+          varianteUid: null,
+          id: null,
+          attributes: [{ id: 'EU_SIZE', value_name: '40', unit_id: 'EU' }],
+        },
+      ],
+    };
+    expect(chartCreatePayload(calcados).main_attribute).toEqual({
+      attributes: [{ site_id: 'MLB', id: 'EU_SIZE' }],
+    });
+  });
+
+  it('a VALUED main_attribute still outranks main_attribute_id', () => {
+    const payload = chartCreatePayload({
+      ...novaChart,
+      main_attribute_id: 'EU_SIZE',
+      main_attribute: [{ id: 'MANUFACTURER_SIZE', value_name: '40' }],
+    });
+    expect(payload.main_attribute).toEqual({
+      attributes: [{ site_id: 'MLB', id: 'MANUFACTURER_SIZE', values: [{ name: '40' }] }],
+    });
+  });
 });
 
 describe('chartRowPayload', () => {
@@ -236,7 +298,9 @@ describe('chartRowPayload', () => {
   it('row UPDATE excludes the main attribute (immutable on ML)', () => {
     expect(chartRowPayload(chart, row)).toEqual({
       sites: ['MLB'],
-      attributes: [{ id: 'WAIST', values: [{ name: '62 cm' }] }],
+      attributes: [
+        { id: 'WAIST', values: [{ name: '62 cm', struct: { number: 62, unit: 'cm' } }] },
+      ],
     });
   });
 
@@ -260,6 +324,44 @@ describe('applyChartResponse', () => {
     expect(updated.rows![0]!.id).toBe('X:1');
     expect(updated.rows![1]!.id).toBeNull();
   });
+
+  it("caches ML's COMPUTED row SIZE as sizeCalculado, outside attributes", () => {
+    // A footwear chart: the row was sent with EU_SIZE only, and ML answers with
+    // the SIZE it derived — the value the listing's variation must match.
+    const calcados: MlSizeChart = {
+      ...novaChart,
+      main_attribute_id: 'EU_SIZE',
+      rows: [{ varianteUid: null, id: null, attributes: [{ id: 'EU_SIZE', value_name: '40' }] }],
+    };
+    const updated = applyChartResponse(calcados, {
+      id: '999',
+      main_attribute_id: 'EU_SIZE',
+      rows: [
+        {
+          id: '999:1',
+          attributes: [
+            { id: 'SIZE', name: 'Tamanho', values: [{ name: '8,5 US' }] },
+            { id: 'EU_SIZE', name: 'EU', values: [{ name: '40 EU' }] },
+          ],
+        },
+      ],
+    });
+    expect(updated.rows![0]!.sizeCalculado).toEqual({
+      id: 'SIZE',
+      value_id: null,
+      value_name: '8,5 US',
+    });
+    // ⚠️ It must NOT reach `attributes`: everything valued there is re-sent on
+    // the next row PUT, and ML rejects a computed attribute in a row body.
+    expect(updated.rows![0]!.attributes).toEqual([{ id: 'EU_SIZE', value_name: '40' }]);
+    // No unit_id either, or the next send would append the unit twice.
+    expect(updated.rows![0]!.sizeCalculado).not.toHaveProperty('unit_id');
+  });
+
+  it('leaves sizeCalculado alone when the response row carries no SIZE', () => {
+    const updated = applyChartResponse(novaChart, CHART_RESPONSE);
+    expect(updated.rows![0]!.sizeCalculado).toBeUndefined();
+  });
 });
 
 describe('deepEqual', () => {
@@ -267,6 +369,67 @@ describe('deepEqual', () => {
     expect(deepEqual({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] })).toBe(true);
     expect(deepEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false);
     expect(deepEqual([1, 2], [2, 1])).toBe(false);
+  });
+});
+
+describe('cellAttributeIds', () => {
+  it('splits a combined column id, as the legacy error mapper did', () => {
+    expect(cellAttributeIds('CHEST_CIRCUMFERENCE_FROM - CHEST_CIRCUMFERENCE_TO')).toEqual([
+      'CHEST_CIRCUMFERENCE_FROM',
+      'CHEST_CIRCUMFERENCE_TO',
+    ]);
+  });
+
+  it('a plain id yields one entry, an absent one yields none', () => {
+    expect(cellAttributeIds('WAIST')).toEqual(['WAIST']);
+    expect(cellAttributeIds(null)).toEqual([]);
+    expect(cellAttributeIds(undefined)).toEqual([]);
+  });
+});
+
+describe('resolveErrorRowIndex', () => {
+  const chart: MlSizeChart = {
+    ...novaChart,
+    id: '1594439',
+    main_attribute_id: 'SIZE',
+    rows: [
+      { varianteUid: null, id: '1594439:1', attributes: [{ id: 'SIZE', value_name: 'M' }] },
+      { varianteUid: null, id: '1594439:2', attributes: [{ id: 'SIZE', value_name: 'G' }] },
+    ],
+  };
+
+  it('matches on the main-attribute VALUE — the only key ML gives on a create', () => {
+    expect(
+      resolveErrorRowIndex(chart, {
+        attribute_id: 'WAIST',
+        row: { id: null, main_attribute: { id: 'SIZE', value: 'G' } },
+      }),
+    ).toBe(1);
+  });
+
+  it('matches a list-valued main attribute on value_id too (legacy accepted either)', () => {
+    const porId: MlSizeChart = {
+      ...chart,
+      rows: [{ varianteUid: null, id: 'x:1', attributes: [{ id: 'SIZE', value_id: '3189130' }] }],
+    };
+    expect(
+      resolveErrorRowIndex(porId, {
+        row: { id: null, main_attribute: { id: 'SIZE', value: '3189130' } },
+      }),
+    ).toBe(0);
+  });
+
+  it('prefers a row id, bare or full', () => {
+    expect(resolveErrorRowIndex(chart, { row: { id: '1594439:2' } })).toBe(1);
+    expect(resolveErrorRowIndex(chart, { row: { id: '2' } })).toBe(1);
+  });
+
+  it('is null when nothing matches, so the editor never blames the wrong cell', () => {
+    expect(resolveErrorRowIndex(chart, null)).toBeNull();
+    expect(
+      resolveErrorRowIndex(chart, { row: { main_attribute: { id: 'SIZE', value: 'GG' } } }),
+    ).toBeNull();
+    expect(resolveErrorRowIndex(chart, { attribute_id: 'WAIST' })).toBeNull();
   });
 });
 
@@ -384,7 +547,9 @@ describe('syncSizeCharts', () => {
     // The update payload excludes the SIZE main attribute.
     expect(mocks.updateSizeChartRow!.mock.calls[0]![2]).toEqual({
       sites: ['MLB'],
-      attributes: [{ id: 'WAIST', values: [{ name: '62 cm' }] }],
+      attributes: [
+        { id: 'WAIST', values: [{ name: '62 cm', struct: { number: 62, unit: 'cm' } }] },
+      ],
     });
     expect(mocks.addSizeChartRow).toHaveBeenCalledTimes(1);
   });
@@ -411,12 +576,112 @@ describe('syncSizeCharts', () => {
     );
 
     expect(mocks.createSizeChart).toHaveBeenCalledTimes(2); // continued past the failure
+    // No `cell` → a CHART-level problem: no row, no attribute to point at.
     expect(result.validationErrors).toEqual([
-      { chartIndex: 0, code: 'chart_name_unavailable', message: 'name in use' },
+      {
+        chartIndex: 0,
+        code: 'chart_name_unavailable',
+        message: 'name in use',
+        rowIndex: null,
+        attributeIds: [],
+        rowMainValue: null,
+      },
     ]);
     expect(result.tabelas[0]!.id).toBeNull(); // failed chart kept as-was
     expect(result.tabelas[1]!.id).toBe('777');
     expect(result.updated).toBe(true); // the second chart landed → write happened
+  });
+
+  it('a per-cell rejection on CREATE resolves the row from the main-attribute value', async () => {
+    const db = new FakeDb();
+    seedDoc(db, []);
+    const { api } = makeApi({
+      createSizeChart: vi.fn(async () => {
+        throw new MercadoLivreHttpError('chart validation', 400, {
+          error: 'chart_validation_error',
+          errors: [
+            {
+              code: 'duplicated_measure_value',
+              message: 'Duplicated measure in attribute CHEST_CIRCUMFERENCE_FROM.',
+              cell: {
+                attribute_id: 'CHEST_CIRCUMFERENCE_FROM - CHEST_CIRCUMFERENCE_TO',
+                // ML sends a null row id on a create — the value is the key.
+                row: { id: null, main_attribute: { id: 'SIZE', value: 'G' } },
+              },
+            },
+          ],
+        });
+      }),
+    });
+
+    const result = await syncSizeCharts(
+      { db: db as unknown as Firestore, api, integracaoId: CONTA },
+      TAB,
+      [novaChart],
+    );
+
+    expect(result.validationErrors).toEqual([
+      {
+        chartIndex: 0,
+        code: 'duplicated_measure_value',
+        message: 'Duplicated measure in attribute CHEST_CIRCUMFERENCE_FROM.',
+        rowIndex: 1, // the 'G' row
+        attributeIds: ['CHEST_CIRCUMFERENCE_FROM', 'CHEST_CIRCUMFERENCE_TO'],
+        rowMainValue: 'G',
+      },
+    ]);
+  });
+
+  it('a rejection from a ROW endpoint is pinned to the row being sent', async () => {
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      rows: [
+        { varianteUid: null, id: '1594439:1', attributes: [{ id: 'SIZE', value_name: 'M' }] },
+        { varianteUid: null, id: '1594439:2', attributes: [{ id: 'SIZE', value_name: 'G' }] },
+      ],
+    };
+    const db = new FakeDb();
+    seedDoc(db, [stored]);
+    const { api } = makeApi({
+      updateSizeChartRow: vi.fn(async () => {
+        throw new MercadoLivreHttpError('chart validation', 400, {
+          // No `cell` at all — the endpoint itself identifies the row.
+          errors: [{ code: 'value_out_of_range', message: 'out of range' }],
+        });
+      }),
+    });
+
+    const edited: MlSizeChart = {
+      ...stored,
+      rows: [
+        stored.rows![0]!,
+        {
+          ...stored.rows![1]!,
+          attributes: [
+            { id: 'SIZE', value_name: 'G' },
+            { id: 'WAIST', value_name: '9999', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+    const result = await syncSizeCharts(
+      { db: db as unknown as Firestore, api, integracaoId: CONTA },
+      TAB,
+      [edited],
+    );
+
+    expect(result.validationErrors).toEqual([
+      {
+        chartIndex: 0,
+        code: 'value_out_of_range',
+        message: 'out of range',
+        rowIndex: 1,
+        attributeIds: [],
+        rowMainValue: null,
+      },
+    ]);
   });
 
   it('a rejected rename reverts the nome and skips that chart´s rows', async () => {

@@ -20,6 +20,7 @@ import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/precoSync'
 import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfeUpload';
 import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';
 import { getDb } from './lib/admin';
+import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 import * as notificationHandlers from './processNotification';
 import * as massImportHandlers from './processMassImport';
 import * as stockSendHandlers from './sendStock';
@@ -203,6 +204,7 @@ export const importMercadoLivreOrders = onSchedule(
     timeoutSeconds: 540,
   },
   async () => {
+    const cacheMark = readCacheMark();
     const result = await runOrderBackfillSweep(getDb(), {
       scheduler: createMlTaskScheduler(),
       nowMs: Date.now(),
@@ -220,6 +222,8 @@ export const importMercadoLivreOrders = onSchedule(
       enqueued: result.contas.reduce((sum, c) => sum + c.enqueued, 0),
       truncated: result.contas.filter((c) => c.truncated).length,
       errorCount: errors.length,
+      // Per-tick, not cumulative — see `lib/cacheStats`.
+      readCache: readCacheDelta(cacheMark),
     });
     if (errors.length > 0) {
       logger.warn('[mercado-livre] order-backfill sweep had per-conta failures', {

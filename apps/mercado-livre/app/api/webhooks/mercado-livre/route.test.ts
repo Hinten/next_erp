@@ -170,7 +170,7 @@ describe('POST /api/webhooks/mercado-livre — origin gate', () => {
     expect(h.enqueue).toHaveBeenCalledOnce();
   });
 
-  it('accepts a numeric-STRING application_id — asInt would reject it (see #810)', async () => {
+  it('accepts a numeric-STRING application_id — the gate reads the raw body, not the payload', async () => {
     vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', String(APP_ID));
 
     const res = await POST(req(notification(` ${APP_ID} `)));

@@ -23,9 +23,10 @@
     "@delfrance/schemas": "workspace:*",
     "@delfrance/storage": "workspace:*",
     "@google-cloud/firestore": "^8.6.0",
+    "@google/genai": "^2.16.0",
     "firebase-admin": "catalog:",
     "firebase-functions": "catalog:",
-    "next": "catalog:",
+    "next": "16.2.6",
     "react": "catalog:",
     "react-dom": "catalog:",
     "zod": "catalog:"

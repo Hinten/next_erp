@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   resolveAccessToken: vi.fn(),
   getMe: vi.fn(),
   merge: vi.fn(),
+  invalidate: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -30,6 +31,15 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
 vi.mock('@/lib/payments/mercadoPago', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/payments/mercadoPago')>();
   return { ...actual, loadMercadoPagoContext: h.loadCtx };
+});
+
+// Mock the exported wrapper rather than extending the collections mock: the real
+// `invalidate` resolves the doc path through the handle, and this suite's
+// `metodoPagamentoCollection` stub has no `docPath`. Mocking the wrapper is also
+// what lets the drift test assert that the eviction actually fires.
+vi.mock('@/lib/payments/metodoCache', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/payments/metodoCache')>();
+  return { ...actual, invalidateMercadoPagoMetodo: h.invalidate };
 });
 
 vi.mock('@delfrance/integrations-mercado-pago', async (importActual) => {
@@ -71,6 +81,9 @@ describe('GET /api/payments/mercado-pago/conta', () => {
     const res = await GET(req({ metodoId: 'm1' }));
     expect(res.status).toBe(200);
     expect(h.merge).toHaveBeenCalledWith({}, {}, 'm1', { user_id: 4242 });
+    // The write must evict its own cached document AND the collector queries the
+    // new `user_id` re-keys.
+    expect(h.invalidate).toHaveBeenCalledWith('m1', 4242);
   });
 
   it('does not rewrite user_id when the denorm already matches', async () => {

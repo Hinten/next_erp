@@ -125,3 +125,46 @@ export async function expectToast(page: Page, matcher: string | RegExp): Promise
   const toast = page.getByRole('alert').filter({ hasText: matcher }).first();
   await expect(toast).toBeVisible({ timeout: 5_000 });
 }
+
+/**
+ * Budget for a value that has to survive a save followed by a full page load.
+ *
+ * ## Why the default 5s is not a valid budget here
+ *
+ * `ObjectView` deliberately paints the Firestore snapshot it can get
+ * *immediately* and corrects it afterwards. With `persistentLocalCache`,
+ * `onSnapshot` emits `fromCache: true` FIRST, and `saveRecord` commits in a
+ * transaction — which has no latency compensation — while the screen navigates
+ * away in `onSaved`, tearing the listener down before the server echo lands. So
+ * the local cache still holds the pre-save value when the record is re-opened.
+ * `useServerTruthSeed` re-seeds the form once the authoritative
+ * `fromCache: false` snapshot arrives; on a cold page load that includes
+ * re-establishing the Firestore connection, which 5s does not reliably cover.
+ *
+ * ⚠️ This widens the window, it does NOT weaken the assertion: the same
+ * converged value is still required, so a regression that never converges still
+ * fails. Use it ONLY after a save + `goto`/reload. A same-page assertion must
+ * keep the default, or it stops catching a genuine hang.
+ */
+export const SERVER_TRUTH_TIMEOUT = 15_000;
+
+/** Assert a field's value on a record re-opened after a save. */
+export async function expectFieldAfterReload(
+  page: Page,
+  label: string,
+  value: string | RegExp,
+): Promise<void> {
+  await expect(page.getByLabel(label, { exact: true })).toHaveValue(value, {
+    timeout: SERVER_TRUTH_TIMEOUT,
+  });
+}
+
+/** `expectFieldAfterReload` for a Mantine `Switch` / checkbox. */
+export async function expectSwitchAfterReload(
+  page: Page,
+  label: string,
+  checked = true,
+): Promise<void> {
+  const control = page.getByLabel(label, { exact: true });
+  await expect(control).toBeChecked({ checked, timeout: SERVER_TRUTH_TIMEOUT });
+}

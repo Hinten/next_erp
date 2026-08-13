@@ -25,7 +25,7 @@
  *
  * ---- Plugin bypass (Step-10 precedent): `MarketplaceChannel.pushPrice`
  * exists, but this module calls `MercadoLivreApi.updateItem` directly, exactly
- * like the stock stack bypasses `pushInventory`: the plugin contract's
+ * like the stock stack bypasses `pushStock`: the plugin contract's
  * `MinorUnits` (integer centavos, no floats) does not fit the reais floats the
  * produto price tables store and ML's wire format speaks, and the per-listing
  * GET-before-PUT gates below need the raw `MlItem` anyway. Folding this flow

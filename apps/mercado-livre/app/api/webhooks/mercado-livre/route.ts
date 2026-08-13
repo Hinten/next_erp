@@ -111,19 +111,19 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   // Noise (health ping / missing topic+resource) → ack without enqueuing.
-  const parsed = parseNotificationBody(body);
-  if (!parsed) {
+  const payload = parseNotificationBody(body);
+  if (!payload) {
     return NextResponse.json({ ok: true, accepted: false });
   }
 
   // Enqueue the lean payload; the queue processes it out-of-band at a bounded
   // rate. No Firestore write on this path. Refetch-delay topics get a 10s
   // scheduling delay (see the const above); every other topic is unchanged.
-  const enqueueOpts = REFETCH_DELAY_TOPICS.has(parsed.payload.topic)
+  const enqueueOpts = REFETCH_DELAY_TOPICS.has(payload.topic)
     ? { scheduleDelaySeconds: REFETCH_SCHEDULE_DELAY_SECONDS }
     : undefined;
   try {
-    await createMlTaskScheduler().enqueue(parsed.payload, enqueueOpts);
+    await createMlTaskScheduler().enqueue(payload, enqueueOpts);
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     // The enqueue path failed (IAM not granted / transport / disabled). Persist
@@ -135,7 +135,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     try {
       await persistNotificationFailure(
         getAdminFirestore(),
-        parsed.payload,
+        payload,
         `enqueue falhou: ${err.message}`,
       );
     } catch (persistErr) {
