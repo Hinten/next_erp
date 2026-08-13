@@ -5,16 +5,7 @@ import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
-import {
-  Button,
-  Fieldset,
-  Group,
-  Select,
-  SimpleGrid,
-  Textarea,
-  TextInput,
-  Tooltip,
-} from '@mantine/core';
+import { Fieldset, Select, SimpleGrid, Textarea, TextInput, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
@@ -73,11 +64,21 @@ export interface ListingFormProps {
   /** Reported on every change so the page's leave-guard can see ML edits. */
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   /**
-   * Hands the editor a closure that saves this listing, so the produto's own
-   * "Salvar alterações" commits ML edits too. `null` on unmount.
+   * Hands the editor a closure that saves this listing, so **both** callers can
+   * drive it: the produto's own "Salvar alterações" (`'flush'`) and the
+   * "Salvar anúncio" button the editor now renders next to Publicar
+   * (`'button'`). `null` on unmount.
+   *
+   * ⚠️ The mode is not cosmetic — it decides how a failure is reported. `'flush'`
+   * throws `AfterSaveBlockedError`, which `ObjectView` turns into a form alert and
+   * which stops it navigating away from the conflict modal; `'button'` shows a
+   * notification and swallows, because there is no outer save to block.
    */
-  registerFlush: (linkDocId: string, flush: (() => Promise<void>) | null) => void;
+  registerFlush: (linkDocId: string, save: ListingSaveFn | null) => void;
 }
+
+/** How a registered listing save is invoked — see `registerFlush`. */
+export type ListingSaveFn = (mode: 'button' | 'flush') => Promise<void>;
 
 /**
  * The editable half of a listing.
@@ -306,7 +307,7 @@ export function ListingForm({
     runSaveRef.current = runSave;
   }, [runSave]);
   useEffect(() => {
-    registerFlush(linkDocId, () => runSaveRef.current('flush'));
+    registerFlush(linkDocId, (mode) => runSaveRef.current(mode));
     return () => registerFlush(linkDocId, null);
   }, [linkDocId, registerFlush]);
 
@@ -429,19 +430,13 @@ export function ListingForm({
         />
       </Fieldset>
 
-      <Group justify="flex-end">
-        {/* type="button": ObjectView's <form> wraps this subtree, and a submit
-            button here would fire the produto save instead. */}
-        <Button
-          type="button"
-          variant="light"
-          onClick={() => void runSave('button')}
-          loading={saving}
-          disabled={readOnly || !isDirty}
-        >
-          Salvar anúncio
-        </Button>
-      </Group>
+      {/* ⚠️ "Salvar anúncio" is NOT rendered here any more. It lives in
+          `MercadoLivreEditor`'s action group, beside "Publicar no Mercado Livre",
+          because saving and publishing are the two halves of one decision and
+          having them at opposite ends of a long card read as unrelated.
+          `registerFlush` is what lets the editor drive this form's save, and the
+          editor gates the button on its own `dirtyIds` — which counts ATTRIBUTE
+          edits too, unlike the RHF-only `isDirty` this button used to read. */}
 
       <ListingConflictModal
         opened={conflict !== null}
