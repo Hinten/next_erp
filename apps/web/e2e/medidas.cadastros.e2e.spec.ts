@@ -20,6 +20,7 @@ import {
   clickSave,
   clickSaveAndContinue,
   confirmDelete,
+  expectFieldAfterReload,
   expectFieldError,
   expectToast,
   fillField,
@@ -167,7 +168,7 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/medidas$/, { timeout: 15_000 });
 
     await page.goto(`/medidas/${row(5)}`);
-    await expect(page.getByLabel('Código interno', { exact: true })).toHaveValue('editado-e2e');
+    await expectFieldAfterReload(page, 'Código interno', 'editado-e2e');
   });
 
   test('edits a tabela and continues editing', async ({ page }) => {
