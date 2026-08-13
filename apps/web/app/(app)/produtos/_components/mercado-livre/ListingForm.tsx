@@ -50,6 +50,7 @@ import {
   type ListingFormValues,
 } from '@/lib/mercado-livre/listingForm';
 import { createClientListingPort } from '@/lib/mercado-livre/listingPort';
+import type { ListingSaveOutcome } from '@/lib/mercado-livre/listingSaveOutcome';
 import {
   ListingConflictError,
   ListingMissingError,
@@ -99,8 +100,13 @@ export interface ListingFormProps {
   registerFlush: (linkDocId: string, save: ListingSaveFn | null) => void;
 }
 
-/** How a registered listing save is invoked — see `registerFlush`. */
-export type ListingSaveFn = (mode: 'button' | 'flush') => Promise<void>;
+/**
+ * How a registered listing save is invoked — see `registerFlush`.
+ *
+ * The outcome is what lets the conta-level caller aggregate; see
+ * `ListingSaveOutcome`, which carries the reasoning.
+ */
+export type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
 
 /**
  * Condição, read-only, derived from the parent produto's `ehUsado`.
@@ -370,7 +376,10 @@ export function ListingForm({
   );
 
   const runSave = useCallback(
-    async (mode: 'button' | 'flush', override?: ProdutoMercadoLivreLink): Promise<void> => {
+    async (
+      mode: 'button' | 'flush',
+      override?: ProdutoMercadoLivreLink,
+    ): Promise<ListingSaveOutcome> => {
       const valid = await form.trigger();
       if (!valid) {
         if (mode === 'flush') {
@@ -378,10 +387,13 @@ export function ListingForm({
             'Há campos inválidos no anúncio do Mercado Livre. Corrija-os na aba Mercado Livre.',
           );
         }
-        return;
+        // ⚠️ The one exit that shows NOTHING — the field errors render inline,
+        // above the button. The caller aggregates so a skipped listing cannot
+        // hide behind a sibling's success toast.
+        return 'invalid';
       }
       const parsed = listingFormSchema.safeParse(form.getValues());
-      if (!parsed.success) return;
+      if (!parsed.success) return 'invalid';
 
       const baseline = override ?? baselineRef.current;
       const port = createClientListingPort(db, produtoId, linkDocId);
@@ -424,6 +436,7 @@ export function ListingForm({
         if (mode === 'button') {
           notifications.show({ color: 'green', message: 'Anúncio salvo.' });
         }
+        return 'saved';
       } catch (err) {
         if (err instanceof ListingNothingChangedError) {
           // A round trip that ended where it started. Nothing to write, and
@@ -432,7 +445,8 @@ export function ListingForm({
           if (mode === 'button') {
             notifications.show({ color: 'yellow', message: err.message });
           }
-          return;
+          // Not a shortfall: nothing needed writing and the operator was told.
+          return 'saved';
         }
         if (err instanceof ListingConflictError) {
           setConflict({ fields: err.fields, baseline, current: err.current });
@@ -441,17 +455,17 @@ export function ListingForm({
               'O anúncio do Mercado Livre foi alterado por outra pessoa. Revise as diferenças antes de salvar.',
             );
           }
-          return;
+          return 'conflict';
         }
         if (err instanceof ListingMissingError) {
           notifications.show({ color: 'red', message: err.message });
           if (mode === 'flush') throw new AfterSaveBlockedError(err.message);
-          return;
+          return 'failed';
         }
         if (err instanceof FirebaseError) {
           notifications.show({ color: 'red', message: err.message });
           if (mode === 'flush') throw new AfterSaveBlockedError(err.message);
-          return;
+          return 'failed';
         }
         throw err;
       } finally {

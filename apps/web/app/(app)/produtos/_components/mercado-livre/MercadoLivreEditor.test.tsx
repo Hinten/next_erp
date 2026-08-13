@@ -8,16 +8,22 @@ import { ESTADO_PUBLICACAO_ML, type ProdutoMercadoLivreLink } from '@delfrance/s
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
 
-type ListingSaveFn = (mode: 'button' | 'flush') => Promise<void>;
+type ListingSaveOutcome = 'saved' | 'invalid' | 'conflict' | 'failed';
+type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
 
 const h = vi.hoisted(() => ({
   contas: [] as Array<{ id: string; data: Record<string, unknown> }>,
   links: [] as Array<{ id: string; data: unknown }>,
   /** Every ListingForm stub's registered save, keyed by link doc id. */
   saves: new Map<string, ReturnType<typeof vi.fn>>(),
+  /** What each stubbed save reports back, so a test can force a shortfall. */
+  outcomes: new Map<string, string>(),
   /** Lets a test mark one listing dirty, the way a real edit would. */
   markDirty: null as null | ((linkDocId: string, dirty: boolean) => void),
+  notify: vi.fn(),
 }));
+
+vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
 
 vi.mock('@delfrance/data', () => ({
   buildQuery: () => ({}),
@@ -75,7 +81,7 @@ vi.mock('./ListingForm', () => ({
     if (!h.saves.has(linkDocId))
       h.saves.set(
         linkDocId,
-        vi.fn(async () => {}),
+        vi.fn(async () => h.outcomes.get(linkDocId) ?? 'saved'),
       );
     registerFlush(linkDocId, h.saves.get(linkDocId)! as unknown as ListingSaveFn);
     return <div data-testid={`listing-form-${linkDocId}`} />;
@@ -106,7 +112,9 @@ beforeEach(() => {
   h.contas = [conta('conta-1', 'Loja Principal')];
   h.links = [];
   h.saves = new Map();
+  h.outcomes = new Map();
   h.markDirty = null;
+  h.notify.mockClear();
 });
 
 describe('Enviar estoque is offered only for a PUBLISHED listing', () => {
@@ -130,6 +138,20 @@ describe('Enviar estoque is offered only for a PUBLISHED listing', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Enviar estoque' })).toBeDefined();
     });
+  });
+
+  it('treats an EMPTY id as unpublished, exactly like the backend does', async () => {
+    // ⚠️ `id != null` was one value looser than `bulkEstoquePlan`, which takes
+    // `link.id !== ''` as its test and answers `sem-item-id` otherwise. The
+    // schema permits `''` (`z.string().nullable().default(null)`, no `.min(1)`)
+    // and the Flutter app writes these same docs concurrently, so the dead
+    // button survived at one specific value.
+    h.links = [link('L-EMPTY', { id: '' })];
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-EMPTY')).toBeDefined();
+    });
+    expect(screen.queryByRole('button', { name: 'Enviar estoque' })).toBeNull();
   });
 
   it('is present when only SOME of the conta listings are published', async () => {
@@ -203,6 +225,47 @@ describe('Salvar anúncio sits with the publish action', () => {
       expect(h.saves.get('L-A')).toHaveBeenCalledWith('button');
     });
     expect(h.saves.get('L-B')).toHaveBeenCalledWith('button');
+  });
+
+  it('says so when one listing was silently skipped', async () => {
+    // ⚠️ The partial-failure case a per-listing button could not produce. An
+    // invalid listing returns SILENTLY (its errors render inline, above this
+    // button) while the sibling fires an unqualified green "Anúncio salvo." —
+    // so one click that saved half the work reported unqualified success.
+    h.links = [link('L-A', { id: 'MLB1' }), link('L-B', { id: 'MLB2' })];
+    h.outcomes.set('L-A', 'invalid');
+    renderEditor();
+    await waitFor(() => expect(h.markDirty).not.toBeNull());
+    act(() => {
+      h.markDirty!('L-A', true);
+      h.markDirty!('L-B', true);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Salvar anúncios' }));
+    await waitFor(() => {
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '1 de 2 anúncios salvos. Corrija os campos destacados.',
+        }),
+      );
+    });
+  });
+
+  it('stays quiet when every listing landed', async () => {
+    h.links = [link('L-A', { id: 'MLB1' }), link('L-B', { id: 'MLB2' })];
+    renderEditor();
+    await waitFor(() => expect(h.markDirty).not.toBeNull());
+    act(() => {
+      h.markDirty!('L-A', true);
+      h.markDirty!('L-B', true);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Salvar anúncios' }));
+    await waitFor(() => {
+      expect(h.saves.get('L-B')).toHaveBeenCalled();
+    });
+    // Each save showed its own green notification; a summary would be noise.
+    expect(h.notify).not.toHaveBeenCalled();
   });
 
   it('leaves a clean sibling listing alone', async () => {
