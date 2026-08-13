@@ -115,6 +115,36 @@ export function validTestCnpj(seedDigits: string): string {
 }
 
 /**
+ * The CNPJ every fixture cliente carries — run- AND worker-scoped.
+ *
+ * ⚠️ The worker half is what keeps the quick-create dedup spec honest, and it
+ * is a SEPARATE axis from {@link e2ePrefix}: a doc *id* is prefix-derived, but
+ * an *identity* value is not, so scoping one does not scope the other.
+ *
+ * `seedPedidoFixtures` alone is called by seven specs, and five of those plus
+ * `imp` / `chk` / `anex` all sit in the **vendas** lane, each seeding its own
+ * `<prefix>-cli-001`. Run-scoped only, all of them carry the SAME CNPJ, and
+ * `checkClienteDuplicates` queries `where('cpf_cnpj','==',x)` with **no
+ * `orderBy`** and `CANDIDATE_LIMIT = 5` (`lib/clientes/dedup.ts:158`) — so the
+ * blocking list comes back in **key order** and the modal renders one
+ * "Usar cliente existente" row per candidate. `pedidos.vendas`'s dedup test
+ * takes `.first()` and then asserts its OWN fixture name, so it depends on
+ * winning that ordering, and with enough live copies its cliente falls outside
+ * the 5-row window entirely.
+ *
+ * Worker-scoping makes the spec's own comment true for the first time —
+ * "exactly ONE blocking candidate". Only one spec runs per worker at a time and
+ * its `afterAll` precedes the next spec's `beforeAll` in that same process, so
+ * at most one live cliente can carry any given CNPJ.
+ *
+ * `validTestCnpj` recomputes the check digits, so any 12-digit seed stays
+ * valid; a double-digit worker index just shifts the run half left by one.
+ */
+export function fixtureClienteCnpj(): string {
+  return validTestCnpj(`${runDigits(10)}${workerIndex().padStart(2, '0')}`);
+}
+
+/**
  * Seed `n` cliente docs. `nome` = `<prefix>-NNN`; `tipo`, `cpf_cnpj` and
  * `email` are varied so filter/sort tests have something to bite on.
  *
@@ -1231,7 +1261,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   const clienteNome = `${prefix}-cli-001`;
   // Run-unique valid CNPJ: the quick-create dedup spec fills it expecting
   // exactly ONE blocking candidate (this fixture) in the shared collection.
-  const clienteCpfCnpj = validTestCnpj(runDigits(12));
+  const clienteCpfCnpj = fixtureClienteCnpj();
   const operacaoNome = `${prefix}-op-001`;
   const integracaoNome = `${prefix}-int-001`;
   const produtoNome = `${prefix}-pro-001`;
@@ -1653,7 +1683,7 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteId,
-    cpf_cnpj: validTestCnpj(runDigits(12)),
+    cpf_cnpj: fixtureClienteCnpj(),
     idEstrangeiro: null,
     ie: null,
     imun: null,
@@ -3377,7 +3407,7 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteId,
-    cpf_cnpj: validTestCnpj(runDigits(12)),
+    cpf_cnpj: fixtureClienteCnpj(),
     idEstrangeiro: null,
     ie: null,
     imun: null,
@@ -3692,7 +3722,7 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteId,
-    cpf_cnpj: validTestCnpj(runDigits(12)),
+    cpf_cnpj: fixtureClienteCnpj(),
     idEstrangeiro: null,
     ie: null,
     imun: null,

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { e2ePrefix } from './seed-data';
+import { e2ePrefix, fixtureClienteCnpj } from './seed-data';
 
 /**
  * Backstop for the fixture-namespace shape (`e2e-<runId>-w<worker>-<tag>`).
@@ -30,6 +30,30 @@ function prefixFor(worker: string | undefined, tag: string): string {
   vi.stubEnv('GITHUB_RUN_ID', '999');
   vi.stubEnv('TEST_WORKER_INDEX', worker);
   return e2ePrefix(tag);
+}
+
+function cnpjFor(worker: string | undefined): string {
+  vi.stubEnv('GITHUB_RUN_ID', '999');
+  vi.stubEnv('TEST_WORKER_INDEX', worker);
+  return fixtureClienteCnpj();
+}
+
+/**
+ * Independent mod-11 CNPJ check — deliberately NOT reusing `validTestCnpj`,
+ * which is the function under test.
+ */
+function isValidCnpj(cnpj: string): boolean {
+  if (!/^\d{14}$/.test(cnpj)) return false;
+  const dv = (digits: string, weights: number[]): number => {
+    const sum = weights.reduce((acc, w, k) => acc + Number(digits[k]) * w, 0);
+    const rest = sum % 11;
+    return rest < 2 ? 0 : 11 - rest;
+  };
+  const w1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  const base = cnpj.slice(0, 12);
+  return (
+    String(dv(base, w1)) === cnpj[12] && String(dv(`${base}${cnpj[12]}`, [6, ...w1])) === cnpj[13]
+  );
 }
 
 /**
@@ -120,6 +144,16 @@ describe('e2ePrefix', () => {
     expect(sweepDeletes(short, long)).toBe(false);
   });
 
+  it('has no run-scoped-only cliente CNPJ left in the seeder', () => {
+    // The identity axis does NOT go through `e2ePrefix`, so worker-scoping doc
+    // ids does not worker-scope the CNPJ. Every fixture cliente must go through
+    // `fixtureClienteCnpj()`; a raw `validTestCnpj(runDigits(…))` would hand all
+    // ~8 vendas-lane specs the same CNPJ again.
+    const src = readFileSync(join(E2E_DIR, '_helpers', 'seed-data.ts'), 'utf8');
+    expect(src).toContain('fixtureClienteCnpj');
+    expect(src.match(/validTestCnpj\(runDigits\(/g)).toBeNull();
+  });
+
   it('keeps every real prefix-colliding tag pair apart across workers', () => {
     const tags = readTags();
     // Anti-vacuity: a regex that silently matched nothing would make the loop
@@ -139,6 +173,29 @@ describe('e2ePrefix', () => {
         sweepDeletes(shortPrefix, longPrefix),
         `'${short}' sweep would delete '${long}' fixtures (${shortPrefix} ⊃ ${longPrefix}-pro)`,
       ).toBe(false);
+    }
+  });
+});
+
+describe('fixtureClienteCnpj', () => {
+  it('gives each worker a distinct CNPJ', () => {
+    // `checkClienteDuplicates` matches `cpf_cnpj` exactly, so two live clientes
+    // sharing one CNPJ both land in the blocking list and `.first()` stops
+    // being this spec's own fixture.
+    const seen = ['0', '1', '2', '3', '31'].map(cnpjFor);
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('is stable for a given run + worker', () => {
+    // The spec asserts against the value its own seed wrote; a per-call value
+    // would never match.
+    expect(cnpjFor('2')).toBe(cnpjFor('2'));
+  });
+
+  it('stays a checksum-valid CNPJ, including a double-digit worker', () => {
+    for (const w of ['0', '7', '31', undefined]) {
+      const cnpj = cnpjFor(w);
+      expect(isValidCnpj(cnpj), `${String(w)} -> ${cnpj}`).toBe(true);
     }
   });
 });
