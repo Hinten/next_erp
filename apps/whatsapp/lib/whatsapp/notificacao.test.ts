@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { encodeHorarioMs } from '@delfrance/schemas';
 
 // Isolate the messages pipeline from contact resolution + media storage (both
@@ -164,8 +165,17 @@ const deps = { mediaContext: vi.fn(async () => ({}) as never) };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The `wa_id` lookup and the conta reader are module-scope, and the reader is
+  // keyed by the document PATH — so a fresh `FakeDb` per test does NOT isolate
+  // either, and `PNID1` / `conta-1` recur throughout this file with deliberately
+  // different seeded state (an unlinked account, an ambiguous one, a happy one).
+  __resetAllReadCaches();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 /* ------------------------------- parse ----------------------------------- */
