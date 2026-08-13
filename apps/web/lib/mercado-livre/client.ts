@@ -295,7 +295,7 @@ export interface MercadoLivreChartDomain {
 /**
  * The domain technical-specs tree (`POST size-charts/specs`) — deeply nested,
  * ML-owned and consumed only by the chart editor's walk, so it stays opaque
- * here (`unknown`); `chartForm.ts` reads it defensively.
+ * here (`unknown`); `chartSpec.ts` reads it defensively.
  */
 export type MercadoLivreChartSpecs = Record<string, unknown>;
 
@@ -555,6 +555,40 @@ export interface MercadoLivreClient {
   enviarNfe(input: { pedidoId: string; nfeId: string }): Promise<{ enqueued: boolean }>;
 }
 
+/**
+ * The message for a non-2xx response whose body was NOT our JSON `{error}`
+ * envelope.
+ *
+ * ⚠️ The body is deliberately DISCARDED rather than shown. Every route in
+ * apps/mercado-livre answers JSON, so a non-JSON body means the request never
+ * reached one — a Next.js 404 page, an App Hosting 502, a proxy login redirect.
+ * Those are entire HTML documents, and putting one in `err.message` dumps the
+ * raw page into whatever renders the error. It kept the real cause (the backend
+ * is down / out of date) completely invisible behind a wall of markup.
+ */
+export function mercadoLivreHttpFallbackMessage(status: number): string {
+  // Written for the OPERATOR, who cannot inspect a deployment — so it says what
+  // to do, and carries the status only so support can act on a screenshot.
+  if (status === 401 || status === 403) {
+    return 'Sem permissão para esta operação no Mercado Livre.';
+  }
+  if (status === 404) {
+    return `A integração com o Mercado Livre não respondeu (HTTP ${String(status)}). Atualize a página e, se continuar, avise o suporte.`;
+  }
+  if (status >= 500) {
+    return `A integração com o Mercado Livre falhou (HTTP ${String(status)}). Tente novamente em instantes.`;
+  }
+  return `Falha na comunicação com o Mercado Livre (HTTP ${String(status)}).`;
+}
+
+/** Our JSON error envelope, when the body actually parsed as one. */
+function errorEnvelope(
+  parsed: unknown,
+): { error?: string; code?: string; issues?: string[] } | null {
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as { error?: string; code?: string; issues?: string[] };
+}
+
 /** Pull the filename out of a `Content-Disposition` header, if present. */
 function filenameFromDisposition(header: string | null): string | null {
   if (!header) return null;
@@ -602,20 +636,28 @@ export function createMercadoLivreClient(config: {
     }
 
     let parsed: unknown = null;
+    let nonJsonBody: string | null = null;
     const text = await res.text();
     if (text.length > 0) {
       try {
         parsed = JSON.parse(text);
       } catch (err) {
-        if (err instanceof SyntaxError) parsed = { error: text };
+        if (err instanceof SyntaxError) nonJsonBody = text;
         else throw err;
       }
     }
 
     if (!res.ok) {
-      const errBody = parsed as { error?: string; code?: string; issues?: string[] } | null;
+      const errBody = errorEnvelope(parsed);
+      if (nonJsonBody != null) {
+        // The body never reaches the UI, so keep it reachable for debugging.
+        console.error(
+          `[mercado-livre] resposta não-JSON em ${path} (HTTP ${String(res.status)})`,
+          nonJsonBody.slice(0, 500),
+        );
+      }
       throw new MercadoLivreClientHttpError(
-        errBody?.error ?? `HTTP ${res.status}`,
+        errBody?.error ?? mercadoLivreHttpFallbackMessage(res.status),
         res.status,
         errBody?.code ?? null,
         Array.isArray(errBody?.issues) ? errBody.issues : null,
@@ -644,18 +686,25 @@ export function createMercadoLivreClient(config: {
     }
     if (!res.ok) {
       let parsed: unknown = null;
+      let nonJsonBody: string | null = null;
       const text = await res.text();
       if (text.length > 0) {
         try {
           parsed = JSON.parse(text);
         } catch (err) {
-          if (err instanceof SyntaxError) parsed = { error: text };
+          if (err instanceof SyntaxError) nonJsonBody = text;
           else throw err;
         }
       }
-      const errBody = parsed as { error?: string; code?: string } | null;
+      const errBody = errorEnvelope(parsed);
+      if (nonJsonBody != null) {
+        console.error(
+          `[mercado-livre] resposta não-JSON em ${path} (HTTP ${String(res.status)})`,
+          nonJsonBody.slice(0, 500),
+        );
+      }
       throw new MercadoLivreClientHttpError(
-        errBody?.error ?? `HTTP ${res.status}`,
+        errBody?.error ?? mercadoLivreHttpFallbackMessage(res.status),
         res.status,
         errBody?.code ?? null,
       );
