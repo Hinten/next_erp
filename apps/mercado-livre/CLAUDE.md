@@ -57,6 +57,20 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   derives the required index from it, and compares with `indexSatisfies`, which honours `order`.
   (The hand-rolled block that used to sit in `notificacao.test.ts` compared `fieldPath` only, so
   flipping `user_id` to `DESCENDING` passed it while breaking the query — #823.)
+- `lib/marketplace/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
+  backstop. Everything else in this channel can only re-drive a notification that was
+  RECEIVED; this asks ML what it failed to deliver (`GET /missed_feeds` — filed only
+  after its ~8 retries over ~1h, retained 2 days) and replays each entry onto the same
+  queue a webhook feeds. It is the mitigation that makes `minInstances: 0` defensible
+  (a blown ack is recovered next morning, at up to ~24h latency — the decision and its
+  cost are recorded in `apphosting.yaml`). ⚠️ It keeps **NO cursor**, deliberately: the
+  feed has no time filter, and an entry is filed ~1h AFTER ML gives up, so a `sent`-based
+  cursor advanced at 05:00 would permanently skip one sent at 04:55. Coverage rests on
+  `period × 2 ≤ 48h retention` instead — stretching the cron silently deletes the
+  backstop (`functions/src/index.test.ts` asserts the literal). Unknown topics are
+  skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning
+  (#813); `request`/`response` are stripped from every entry (the callback URL is a leak
+  surface, #811). Flag-gated OFF behind `MERCADO_LIVRE_MISSED_FEEDS_ENABLED`.
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
@@ -77,6 +91,8 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   connect screen, which sends no `code_challenge`; staging has its own application.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
+- `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
+  `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
 
 ## Testing
 
@@ -96,16 +112,20 @@ Two suites, deliberately separated by filename:
   `MERCADO_LIVRE_TASKS_DISABLED` valve, and `exchangeAndPersist`.
 
 ⚠️ **Not covered by either, so do not read a green lane as more than it is:** the Cloud
-Tasks enqueue→dispatch hop (no emulator exists anywhere — only the *outage* path is
-tested), the nested `functions/` triggers, composite **index declaration** (the emulator
+Tasks enqueue→dispatch hop — a `tasks` emulator **does** exist, but it cannot exercise
+this code: `mlTasks.ts` enqueues against `locations/<region>/functions/<queue>` and the
+emulator 404s that format, taking only a bare function name (firebase-admin-node#2725,
+open), while the region qualification is mandatory in production or the task silently
+drops to us-central1; `scheduleDelaySeconds` is ignored there too (firebase-tools#8254,
+open), which is the receiver's 10s refetch delay. Only the *outage* path
+(`MERCADO_LIVRE_TASKS_DISABLED`) is tested. Also uncovered: the nested `functions/`
+triggers, composite **index declaration** (the emulator
 auto-creates them; that is guard C/D in `notificationGuardrails.test.ts`), Firestore
 rules (the Admin SDK bypasses them — `ci-rules.yml` owns those), the Enterprise Pipelines
 API (the emulator is Standard edition and still exposes `db.pipeline()`), and the ML API
 itself. ML has **no sandbox** and its `refresh_token` is single-use and rotating, so no
 lane may ever hold real ML credentials — a CI refresh would invalidate the token the
 deployed backend is holding.
-- `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
-  `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
 
 ## Stock sweep tiers — read ADR 0014 first
 

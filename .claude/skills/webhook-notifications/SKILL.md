@@ -282,9 +282,23 @@ parks on its next re-drive) so retuning the horizon stays a one-constant edit.
 .update` that raises gRPC **5** for an absent doc — a `set`-based stand-in would
 pass a test that upserts a ghost in production.
 
-The **Cloud Tasks hop** still cannot run anywhere — there is no Cloud Tasks
-emulator — so the enqueue→dispatch path is covered by nothing but review, and
-unit tests against the fake remain the contract for the disposition matrix.
+The **Cloud Tasks hop** is still covered by nothing but review, and unit tests
+against the fake remain the contract for the disposition matrix.
+
+⚠️ Not because the emulator is missing — a `tasks` emulator **does** exist
+(`firebase emulators:start --only tasks`); that claim was wrong. It is because
+of two open bugs that land exactly on the shape every channel here uses. The
+`{ml,mp,wa}Tasks.ts` schedulers enqueue against the partial resource name
+`locations/<region>/functions/<queue>`, and the emulator **404s** that format —
+it accepts only a bare function name, building a URL with `locations/<region>`
+duplicated ([firebase-admin-node#2725](https://github.com/firebase/firebase-admin-node/issues/2725)).
+The region qualification is not negotiable: drop it and the Admin SDK targets
+`us-central1` and the task silently disappears, which is the very hazard worth
+a test. And `scheduleDelaySeconds` is ignored
+([firebase-tools#8254](https://github.com/firebase/firebase-tools/issues/8254)),
+which is the ML receiver's 10s refetch delay. Rewriting a test to the bare-name
+form would prove a path production never takes. `retryConfig` and `rateLimits`
+ARE emulated — but those are cheaper to assert statically off `__endpoint`.
 
 What the fake is no longer the only evidence for, **on Mercado Livre only**
 (`ci-mercado-livre.yml`, `*.firestore.test.ts`): the store's Firestore-level

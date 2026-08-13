@@ -67,12 +67,14 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 | `onIntegracaoMercadoLivreChanged`     | `onDocumentWritten` (`integracao/{integracaoId}`, named `default` DB, `retry: true`)        | #782 — mirrors a Mercado Livre conta onto its Mercado Envios `int_frete` doc: created on connect, re-synced when `nome` / `ativo` / filial / `dataCadastro` change, **deactivated** (never deleted) when the conta is deleted or its `tipo` is edited away. Restores what the legacy Flutter conta screen did inline on every save. **Plus #808**: when a write makes a seller RESOLVABLE (a `user_id` stamp, an `ativo` flip), re-drives every notification deferred on that seller back into the hot sweep lane. Every gate runs before the first read, so any non-ML conta write — and any ML token refresh — costs zero reads and zero writes; a `user_id` stamp now pays for one indexed notification query, which is the point. Binds **no secrets** (pure Firestore — see `src/options.ts`).                                                                                                                                                                                                                                                                             |
 | `processMercadoLivreNfeUpload`        | `onTaskDispatched` (Cloud Tasks queue)                                                      | Step 12 (#739) — uploads the raw signed nfeProc XML to ML `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment leaves `invoice_pending`. One task = one NF-e (no self-continuation); 6 attempts over a ≈25–30 min backoff envelope. **Zero writes on the happy path** — idempotency is the live shipment-status gate; the flow's only Firestore write is the failure stamp `freteInicial.estado = 'error'` on the pedido, with the detail in structured Cloud Logging. Single in-flight dispatch. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
-**All 11 exports above are deployed targets** — one `firebase deploy --only functions:mercado-livre`
+| `sweepMercadoLivreMissedFeeds` | `onSchedule('0 5 * * *')` | #812 — the **`missed_feeds` backstop**, 05:00 America/Sao_Paulo: asks ML what it FAILED to deliver to our webhook (`GET /missed_feeds`; an entry is filed only after ML's ~8 retries over ~1h, retained 2 days) and replays each known-topic entry onto the notification queue — the same idempotent path a real webhook takes. It is the only recovery for a notification that was **never received**; everything else here can only re-drive what already landed. ⚠️ The DAILY period is load-bearing: the feed has no time filter, so the sweep keeps **no cursor** and coverage rests entirely on `period × 2 ≤ 48h retention` — stretching the cron silently deletes the backstop for anything filed between runs (`src/index.test.ts` asserts the literal). Unknown topics are skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning (#813). `MERCADO_LIVRE_CLIENT_ID` does double duty: token refresh **and** the `app_id` query param. **No-op until `MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1`.** `timeoutSeconds: 540`; binds both secrets. |
+
+**All 12 exports above are deployed targets** — one `firebase deploy --only functions:mercado-livre`
 creates or updates every one of them, and the table is the complete list. The five
 queue-backed handlers additionally have their name asserted at module load
 (`src/index.ts:53-115`): the deployed function name **is** the queue name the enqueuers
 target, so a rename that updates only one side fails loudly during Firebase's deploy
-codebase-analysis instead of silently enqueuing onto a queue that does not exist. The four
+codebase-analysis instead of silently enqueuing onto a queue that does not exist. The five
 schedules and the two Firestore triggers get no such assertion — Eventarc binds a document
 path, and nothing enqueues against a schedule's name.
 
@@ -86,10 +88,56 @@ Firestore the handler both reads and writes), the final persist also fails. The
 handler then logs the dropped notification and re-throws so the failed final
 attempt is visible in Cloud Tasks' error metrics, but the notification is lost
 (nothing persisted → the sweep can't see it, and ML already got its 200). This
-requires a Firestore outage longer than the queue's backoff window; the deferred
-`missed_feeds` backstop (ML retains 2 days of undelivered/lost notifications) is
-the ultimate recovery for it. Alert on `processMercadoLivreNotification`'s failed
-final attempts.
+requires a Firestore outage longer than the queue's backoff window. Alert on
+`processMercadoLivreNotification`'s failed final attempts.
+
+⚠️ **The `missed_feeds` backstop does NOT cover this window** — an earlier
+revision of this file claimed it did, and that was wrong. ML files an entry only
+when it could not get a 200; in the case above **ML already got its 200**, so the
+notification never appears in `missed_feeds` at all. The Cloud Tasks alert is the
+only signal here.
+
+What `sweepMercadoLivreMissedFeeds` (#812) _does_ cover is the other, much likelier
+loss path: a delivery that never produced a 200 in the first place — a cold start
+past ML's ~500 ms ack window (this backend runs `minInstances: 0`; the decision
+and its cost are recorded in `apps/mercado-livre/apphosting.yaml`), a receiver
+5xx, a Cloud Tasks enqueue outage, or a 403 from a misconfigured origin check.
+Those left no document either, and before #812 they were lost silently.
+
+⚠️ **Manufacturing a miss for a test is deliberately awkward, and
+`MERCADO_LIVRE_TASKS_DISABLED=1` will not do it** — that path still acks 200 (it
+persists a `failed` doc instead). The receiver is _designed_ never to 5xx, since
+ML disables a topic after ~1h of non-200. To force a real miss you must point the
+registered callback URL at a non-2xx path and wait out ML's full ~1h retry
+envelope.
+
+### Warm-path ack latency — how to measure it
+
+The `minInstances: 0` decision assumes the warm path clears ML's ~500 ms budget
+comfortably. Measure it rather than assuming; this is #812's third acceptance
+criterion and needs a deployed revision, so it is a human step.
+
+Cloud Run's `request_latencies` metric carries **no URL-path label**, so it
+cannot separate the webhook route from `/api/health`. Use the request logs:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="<backend>" AND httpRequest.requestUrl:"/api/webhooks/mercado-livre"' --format='value(httpRequest.latency)' --limit=500
+```
+
+Take p50/p95/p99 of that. For the **cold** penalty, read
+`run.googleapis.com/container/startup_latencies` and the `httpRequest.latency` of
+the FIRST request after a new revision goes live (a fresh revision starts at zero
+instances, so deploying and sending exactly one request forces it). The gap
+between that and the warm p50 is the number `apphosting.yaml` should cite.
+
+**Generating warm traffic before the callback cutover** (staging only): this
+backend receives no genuine ML traffic yet, so POST N well-formed bodies carrying
+the correct `application_id` and a `user_id` that maps to **no active
+integração**. That exercises the full warm path _including the real Cloud Tasks
+enqueue RPC_, which is the expensive part. Residue: one `deferred` doc per probe
+in `notificacoesMercadoLivre` — delete them afterwards. Do **not** probe with a
+body missing `topic`: `parseNotificationBody` returns null and the receiver acks
+without enqueuing, understating the number by exactly the component that matters.
 
 ## ⚠️ One-time IAM — the App Hosting backend enqueues Cloud Tasks
 
@@ -444,6 +492,9 @@ wipe. Create `apps/mercado-livre/functions/.env.deploy` (gitignored):
 MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
 MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN=15
 MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
+# The missed_feeds backstop (#812). Safe to enable as soon as the webhook
+# callback points here — it only READS from ML; see the note below.
+MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1
 # The high-stock skip on the incremental tier (ADR 0014). Default 100.
 MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
 # The MONTHLY reconciliation — see "The monthly reconciliation" below. Leave it
@@ -500,6 +551,35 @@ section already does).
 It ships OFF and only the literal `1` enables it; while off `importMercadoLivreOrders`
 ticks, logs one info line and reads nothing. It is named in the repo-root `.env.example`
 (Mercado Livre section) too, so an operator finds it from either file.
+
+⚠️ **Why it is still off, deliberately (#812 asked).** The order backfill pages
+`GET /orders/search` per conta and synthesises `orders_v2` notifications, so
+turning it on starts writing pedidos from live ML data. That belongs in the
+**callback-URL cutover window** (see the section at the end of this file), for the
+same reason the stock flag does: while the legacy Flutter backend is still
+importing the same orders, both would be live writers on the same documents. It
+is not a code decision and no agent may make it — flipping it is an ops action in
+a coordinated window (root `CLAUDE.md`, Critical rule 8).
+
+`MERCADO_LIVRE_MISSED_FEEDS_ENABLED` (the `missed_feeds` backstop, `#812`) rides the
+same mechanism again. It ships OFF; while off `sweepMercadoLivreMissedFeeds` ticks
+at 05:00, logs one info line and reads nothing.
+
+Unlike the two flags above it is **not** a double-write hazard — the sweep only
+reads from ML and enqueues onto a queue that is already live — so it can be
+enabled as soon as the webhook callback points at this backend. Before that point
+it would be pointless rather than harmful: if ML is not delivering here, there is
+nothing for it to have missed, and `missed_feeds` for our application is empty.
+
+On the first enabled run, read two fields of its log line:
+
+- **`httpCodes`** — ML's record of what OUR endpoint answered. A wall of `5xx`
+  means the receiver was failing; timeouts point at the cold-start hypothesis
+  behind `minInstances: 0` (see `apps/mercado-livre/apphosting.yaml`).
+- **`escopoAparente`** — whether ML's response looks `app-wide` or `per-seller`.
+  ML does not document this, and the sweep is written to be correct either way;
+  once this reads `app-wide` for a week, the follow-up that collapses it to a
+  single API call per tick is safe to take.
 
 ### ⚠️ The flag ships OFF — flip it only at the coordinated cutover
 
