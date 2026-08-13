@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 
-import { verifyState } from '@/lib/marketplace/state';
+import { verifyState } from '@delfrance/data/admin/oauth-state';
 
 // Mock the two seams: admin auth (drives verifyCaller) and the ML context loader
 // (sidesteps Firestore + the credential store + the plugin). signState /
@@ -24,9 +24,12 @@ vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
 });
 
 // The attempt record is Firestore-backed; only its inputs matter here.
-vi.mock('@/lib/marketplace/oauthStateStore', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/oauthStateStore')>();
-  return { ...actual, putOauthState: h.putOauthState };
+vi.mock('@/lib/marketplace/oauthState', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/oauthState')>();
+  return {
+    ...actual,
+    mercadoLivreOauthState: { ...actual.mercadoLivreOauthState, put: h.putOauthState },
+  };
 });
 
 const { GET } = await import('./route');
@@ -121,7 +124,7 @@ describe('GET /api/marketplace/mercado-livre/oauth/start', () => {
     const state = url.searchParams.get('state');
     expect(state).toBeTruthy();
     // The signed state must round-trip back to the same integracao id.
-    expect(verifyState(state!, STATE_SECRET).integracaoId).toBe('int-1');
+    expect(verifyState(state!, STATE_SECRET).id).toBe('int-1');
     expect(h.loadCtx).toHaveBeenCalledWith(expect.anything(), 'int-1');
   });
 
