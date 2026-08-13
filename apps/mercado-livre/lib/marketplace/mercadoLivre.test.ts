@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import type { Integracao } from '@delfrance/schemas';
 
 // Mock the seams loadMercadoLivreContext touches so we exercise the resolver
@@ -58,6 +59,9 @@ const db = {} as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The conta cache is module-scope and every test here uses the id `int-1`,
+  // so without this the first test's absent-document entry serves the rest.
+  __resetAllReadCaches();
   h.createTokenDuravelStore.mockReturnValue({ save: vi.fn() });
   h.getOrRefreshAccessToken.mockResolvedValue('AT');
   vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', 'cid');
@@ -66,6 +70,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetAllReadCaches();
   vi.unstubAllEnvs();
 });
 

@@ -6,6 +6,7 @@
  * refresh, re-auth on a dead refresh token).
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { READ_CACHE_TTL, createCachedDocReader } from '@delfrance/data/admin/cache';
 import { intFreteCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 import {
@@ -80,20 +81,67 @@ export interface MelhorEnvioContext {
   exchangeAndPersist(code: string, now?: number): Promise<StoredToken>;
 }
 
+/** Test-only clock indirection; see `__setMelhorEnvioCacheClockForTests`. */
+let cacheClock: () => number = Date.now;
+
+/**
+ * The `int_frete` config document behind every freight call.
+ *
+ * The repeat: `app/api/freight/melhor-envio/calculate/route.ts` re-reads it on
+ * every quote — one per freight recalculation in the pedido form, so an operator
+ * adjusting a package weight issues a burst of identical reads. Seven more
+ * routes read it once each.
+ *
+ * ⚠️ None of the three forbidden cases applies, and this is the cleanest
+ * adoption in the repo. No transactional read. No read-modify-write: nothing in
+ * this app writes `int_frete` at all — every write goes to the `tokenMelEnv`
+ * SUBCOLLECTION or to a pedido. No token: the OAuth credential lives in that
+ * subcollection and still goes through `createFirestoreTokenStore` uncached on
+ * every request.
+ *
+ * The one cross-app writer of `int_frete` is the ML int_frete sync, but it only
+ * ever touches `tipo === mercadoLivre` documents, which the guard below rejects
+ * — so it cannot poison this cache. The operator CRUD screen lives in a browser,
+ * a different process, so there is nothing to evict there and the TTL is the
+ * bound.
+ *
+ * No `isFresh`: the loader reads exactly one field of this document (`tipo`),
+ * and no writer in the repo changes it. A predicate here would be cargo cult.
+ *
+ * `maxEntries: 16` — realistically one melhorEnvios document per tenant; this
+ * is a memory guard with ~10x headroom, not a tuning knob.
+ */
+const intFreteReader = createCachedDocReader(intFreteCollection, {
+  name: 'me:int-frete',
+  ttlMs: READ_CACHE_TTL.config,
+  maxEntries: 16,
+  // Absence means an operator deleted the integration — never the steady state,
+  // so caching it wins nothing and only delays the recovery.
+  negativeTtlMs: 0,
+  now: () => cacheClock(),
+});
+
+/**
+ * Test-only. The cache is module-scope, and `createReadCache` captures `now`
+ * once at construction, so the clock is swapped through this binding rather than
+ * passed per test. Pair it with `__resetAllReadCaches()`.
+ */
+export function __setMelhorEnvioCacheClockForTests(now: () => number = Date.now): void {
+  cacheClock = now;
+}
+
 export async function loadMelhorEnvioContext(
   db: Firestore,
   intFreteId: string,
 ): Promise<MelhorEnvioContext> {
-  const snap = await intFreteCollection.docRef(db, {}, intFreteId).get();
-  if (!snap.exists) {
+  // The cached reader replaces the READ, not the contract — both throws below
+  // are unchanged, and a `null` stands in for `!snap.exists`.
+  const conta = await intFreteReader.get(db, {}, intFreteId);
+  if (conta == null) {
     throw new MelhorEnvioContaNotConfiguredError(
       `Integração de frete ${intFreteId} não encontrada.`,
     );
   }
-  const conta = intFreteCollection.parseRead(
-    snap.data(),
-    intFreteCollection.docPath({}, intFreteId),
-  );
   if (conta.tipo !== INTEGRACAO_FRETE.melhorEnvios) {
     throw new MelhorEnvioContaNotConfiguredError(
       `Integração ${intFreteId} não é do tipo Melhor Envio.`,

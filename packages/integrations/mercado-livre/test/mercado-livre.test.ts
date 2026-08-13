@@ -33,7 +33,9 @@ describe('createMercadoLivreChannel scaffold (extended #288 contract)', () => {
     expect(channel.id).toBe('mercado-livre');
   });
 
-  it('required methods reject with NotConfigured until Phase 5', async () => {
+  // Not "not built yet": these four need Firestore, so the live implementation
+  // is the apps/mercado-livre backend and the contract members stay stubs (#815).
+  it('the four Firestore-bound contract members reject with NotConfigured', async () => {
     await expect(channel.syncProducts(ctx)).rejects.toBeInstanceOf(MercadoLivreNotConfiguredError);
     await expect(channel.pullOrders(ctx)).rejects.toBeInstanceOf(MercadoLivreNotConfiguredError);
     await expect(channel.pushTracking(ctx, 'order-1', 'BR123')).rejects.toBeInstanceOf(
