@@ -176,17 +176,23 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
   const justInvalid = modoValue !== 'none' && (justValue.length < 15 || justValue.length > 255);
 
   const save = useMutation({
-    mutationFn: async ({ force }: { force?: boolean } = {}) => {
+    mutationFn: async () => {
       if (!base) return;
       // ⚠️ `modo` / `justificativa` / `rtc` — the raw local edits, NOT the
       // `*Value` bindings. Those fold in the render-time doc, and the whole
       // point is that the write must not carry it: an untouched field is passed
       // as `null` so `saveNfeConfig` re-derives it from the tx-fresh doc.
-      await saveNfeConfig(
-        createNfeConfigPort(db, filialId),
-        { modo, justificativa, rtc, baseline: base },
-        { force },
-      );
+      //
+      // "Salvar mesmo assim" takes this SAME path — there is no force flag. It
+      // differs only in `base`, which by then is the version the modal showed
+      // (`conflict.current`), so the guard still runs and a third write landing
+      // meanwhile raises the modal again instead of being overwritten.
+      await saveNfeConfig(createNfeConfigPort(db, filialId), {
+        modo,
+        justificativa,
+        rtc,
+        baseline: base,
+      });
     },
     onSuccess: () => {
       notifications.show({ color: 'green', message: 'Configuração de NF-e salva.' });
@@ -326,7 +332,7 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
 
           <Group>
             <Button
-              onClick={() => save.mutate({})}
+              onClick={() => save.mutate()}
               loading={save.isPending}
               disabled={!canWrite || !dirty || justInvalid}
             >
@@ -352,7 +358,7 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
             : []
         }
         saving={save.isPending}
-        onForceSave={() => save.mutate({ force: true })}
+        onForceSave={() => save.mutate()}
         onReloadFromServer={reloadFromServer}
         onCancel={() => setConflict(null)}
       />

@@ -95,14 +95,27 @@ function remotelyChanged(baseline: NFeConfig, current: NFeConfig): PanelOwnedKey
 /**
  * Persist the contingency edits, or refuse and say why.
  *
- * Set `force` to re-apply after the operator has reviewed the remote version in
- * the conflict modal — it skips the comparison, and the caller is expected to
- * have re-baselined on what it showed them.
+ * ⚠️ There is deliberately **no `force` escape**. To re-apply after reviewing a
+ * conflict, the caller passes the version it just showed the operator as
+ * `baseline` — and the comparison below still runs against it. That is what
+ * makes "Salvar mesmo assim" a re-baseline rather than a blind write:
+ *
+ *  - nothing moved since the modal opened ⇒ `baseline === current` ⇒ no
+ *    overlap ⇒ the save proceeds;
+ *  - a THIRD writer landed while the operator was reading the diff ⇒ overlap
+ *    ⇒ the conflict raises again, now showing that newer version.
+ *
+ * It converges (each click re-baselines and retries) and it can never silently
+ * overwrite a version nobody saw. An earlier revision took a `force` flag that
+ * skipped the check outright, which reintroduced exactly the
+ * switch-contingency-off-mid-outage damage this module exists to prevent — one
+ * step later in the flow, and against a write the operator had been told was
+ * safe. Critical rule 7 tier 3: an interactive edit that loses raises a
+ * conflict, never a silent drop.
  */
 export async function saveNfeConfig(
   port: NfeConfigSavePort,
   args: SaveNfeConfigArgs,
-  options: { force?: boolean } = {},
 ): Promise<void> {
   const { modo, justificativa, rtc, baseline } = args;
 
@@ -123,10 +136,10 @@ export async function saveNfeConfig(
   await port.update((current) => {
     if (current === null) throw new NfeConfigMissingError();
 
-    if (!options.force) {
-      const overlap = remotelyChanged(baseline, current).filter((key) => writes.has(key));
-      if (overlap.length > 0) throw new NfeConfigConflictError(current, overlap);
-    }
+    // Always. See the docblock: the re-baseline IS the override, so this must
+    // keep running or a third write is swallowed.
+    const overlap = remotelyChanged(baseline, current).filter((key) => writes.has(key));
+    if (overlap.length > 0) throw new NfeConfigConflictError(current, overlap);
 
     // ⚠️ Every value below is re-derived from `current` — the TX-FRESH doc —
     // never from the `cfg` the panel rendered with. That render-time snapshot

@@ -61,11 +61,9 @@ describe('saveNfeConfig', () => {
     });
     const port = fakePort(fresh);
 
-    await saveNfeConfig(
-      port,
-      { modo: null, justificativa: null, rtc: true, baseline },
-      { force: true },
-    );
+    // No conflict despite the drift: this save writes only
+    // `emitirReformaTributaria`, and the fields that moved are outside it.
+    await saveNfeConfig(port, { modo: null, justificativa: null, rtc: true, baseline });
 
     expect(port.written).toMatchObject({
       // The whole point: contingency stays ON.
@@ -122,17 +120,42 @@ describe('saveNfeConfig', () => {
     expect(port.written).toMatchObject({ emitirReformaTributaria: true, numeracao_atual: 99 });
   });
 
-  it('force skips the comparison (the operator reviewed the remote version)', async () => {
-    const baseline = cfg({ contingencia_modo: CONTINGENCIA_MODO.none });
-    const port = fakePort(cfg({ contingencia_modo: CONTINGENCIA_MODO.svc }));
+  it('re-baselining on the reviewed version lets the override through', async () => {
+    // "Salvar mesmo assim": the panel passes the doc the modal SHOWED as the
+    // baseline. Nothing moved since, so the guard finds no overlap and the
+    // operator's choice is applied.
+    const reviewed = cfg({ contingencia_modo: CONTINGENCIA_MODO.svc });
+    const port = fakePort(reviewed);
 
-    await saveNfeConfig(
-      port,
-      { modo: CONTINGENCIA_MODO.none, justificativa: null, rtc: null, baseline },
-      { force: true },
-    );
+    await saveNfeConfig(port, {
+      modo: CONTINGENCIA_MODO.none,
+      justificativa: null,
+      rtc: null,
+      baseline: reviewed,
+    });
 
     expect(port.written).toMatchObject({ contingencia_modo: CONTINGENCIA_MODO.none });
+  });
+
+  it('a THIRD write landing while the modal is open raises the conflict again', async () => {
+    // The bug this replaced: a `force` flag skipped the check outright, so a
+    // write landing between the modal opening and the operator clicking
+    // "Salvar mesmo assim" was silently overwritten — the same
+    // switch-contingency-off-mid-outage damage, one step later in the flow.
+    const reviewed = cfg({ contingencia_modo: CONTINGENCIA_MODO.svc });
+    // …but someone flipped it to EPEC while the operator was reading the diff.
+    const port = fakePort(cfg({ contingencia_modo: CONTINGENCIA_MODO.epec }));
+
+    await expect(
+      saveNfeConfig(port, {
+        modo: CONTINGENCIA_MODO.none,
+        justificativa: null,
+        rtc: null,
+        baseline: reviewed,
+      }),
+    ).rejects.toBeInstanceOf(NfeConfigConflictError);
+
+    expect(port.written).toBeNull();
   });
 
   it('stamps dhCont when the mode turns on and clears it on the way back', async () => {
@@ -148,16 +171,12 @@ describe('saveNfeConfig', () => {
     const off = fakePort(
       cfg({ contingencia_modo: CONTINGENCIA_MODO.svc, contingencia_dataInicio: 123 }),
     );
-    await saveNfeConfig(
-      off,
-      {
-        modo: CONTINGENCIA_MODO.none,
-        justificativa: null,
-        rtc: null,
-        baseline: cfg({ contingencia_modo: CONTINGENCIA_MODO.svc }),
-      },
-      { force: true },
-    );
+    await saveNfeConfig(off, {
+      modo: CONTINGENCIA_MODO.none,
+      justificativa: null,
+      rtc: null,
+      baseline: cfg({ contingencia_modo: CONTINGENCIA_MODO.svc, contingencia_dataInicio: 123 }),
+    });
     expect(off.written).toMatchObject({
       contingencia_modo: CONTINGENCIA_MODO.none,
       contingencia_dataInicio: null,
@@ -169,16 +188,12 @@ describe('saveNfeConfig', () => {
     const port = fakePort(
       cfg({ contingencia_modo: CONTINGENCIA_MODO.svc, contingencia_dataInicio: 123 }),
     );
-    await saveNfeConfig(
-      port,
-      {
-        modo: CONTINGENCIA_MODO.epec,
-        justificativa: 'mudanca de modo durante a mesma queda',
-        rtc: null,
-        baseline: cfg({ contingencia_modo: CONTINGENCIA_MODO.svc, contingencia_dataInicio: 123 }),
-      },
-      { force: true },
-    );
+    await saveNfeConfig(port, {
+      modo: CONTINGENCIA_MODO.epec,
+      justificativa: 'mudanca de modo durante a mesma queda',
+      rtc: null,
+      baseline: cfg({ contingencia_modo: CONTINGENCIA_MODO.svc, contingencia_dataInicio: 123 }),
+    });
     expect(port.written).toMatchObject({ contingencia_dataInicio: 123 });
   });
 
