@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useState } from 'react';
 import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
@@ -14,6 +13,7 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { mercadoLivreQueryErrorMessage } from './mercadoLivreJobErrors';
+import { useMercadoLivreCallbackToast } from './mercadoLivreOAuthErrors';
 
 /**
  * Mercado Livre account panel on /canais/mercado-livre/[id] — shows the
@@ -36,20 +36,11 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
   // button by the same bit so a viewer isn't offered an action that will 403.
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
   const [connecting, setConnecting] = useState(false);
-  const searchParams = useSearchParams();
 
-  // Toast the OAuth callback outcome (?ml=connected|error&reason=…).
-  useEffect(() => {
-    const ml = searchParams.get('ml');
-    if (ml === 'connected') {
-      notifications.show({ color: 'green', message: 'Conta Mercado Livre conectada.' });
-    } else if (ml === 'error') {
-      notifications.show({
-        color: 'red',
-        message: `Falha ao conectar a conta Mercado Livre (${searchParams.get('reason') ?? 'erro'}).`,
-      });
-    }
-  }, [searchParams]);
+  // Toast the OAuth callback outcome (?ml=connected|error&reason=…). Shared with
+  // the channel list, which the callback redirects to for the three failures that
+  // happen before a trustworthy integração id exists.
+  useMercadoLivreCallbackToast();
 
   const query = useQuery({
     queryKey: ['mercado-livre-conta', integracaoId],

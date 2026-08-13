@@ -37,6 +37,12 @@ export interface ServerTruthSeedArgs {
  * authoritative snapshot lands — but only while the form is pristine, so an
  * in-progress edit is never clobbered.
  *
+ * A correction the pristine check defers is **owed, not forfeited**: it is paid
+ * the moment the form goes pristine again. Dropping it instead is how an
+ * operator ends up staring at pre-write values in every field they did not
+ * touch — for the rest of that mount, since neither the record id nor
+ * `fromCache` ever changes again to trigger a retry.
+ *
  * ⚠️ Whatever a caller derives from the snapshot must be re-seeded HERE, in the
  * same callback, not in a second effect. A form corrected to server truth while
  * some sibling state still holds the cached copy is worse than either alone —
@@ -60,8 +66,21 @@ export function useServerTruthSeed({ id, fromCache, isDirty, onSeed }: ServerTru
     onSeed(serverTruth);
     seededId.current = id;
     if (serverTruth) serverSeededId.current = id;
-    // Deliberately keyed on the snapshot identity ALONE. `isDirty` and `onSeed`
-    // are read at effect time, never depended on: re-running when the user types
-    // is precisely the clobber this exists to prevent.
-  }, [id, fromCache]);
+    // `isDirty` IS a dependency, and that is what makes the correction owed
+    // rather than forfeited. Keyed on `[id, fromCache]` alone, a server
+    // snapshot that landed while the form was dirty was skipped and could
+    // never be retried — neither value changes again — so the operator kept
+    // editing a form whose untouched fields still held the cached, pre-write
+    // values, with nothing on screen saying so.
+    //
+    // Depending on it does NOT reintroduce the clobber: `correctCachePaint`
+    // already requires `!isDirty`, so the extra runs while the user types
+    // return early. What the dependency buys is the run on the dirty→pristine
+    // transition, which pays a correction that was owed. And it cannot loop:
+    // `onSeed` resets the form, which drives `isDirty` false and re-runs this
+    // once more, by which point `serverSeededId.current === id` stops it.
+    //
+    // `onSeed` stays out on purpose — it is a fresh closure every render, and
+    // depending on it would re-seed on any parent re-render.
+  }, [id, fromCache, isDirty]);
 }

@@ -277,7 +277,7 @@ export interface MercadoLivreChartDomain {
 /**
  * The domain technical-specs tree (`POST size-charts/specs`) — deeply nested,
  * ML-owned and consumed only by the chart editor's walk, so it stays opaque
- * here (`unknown`); `chartForm.ts` reads it defensively.
+ * here (`unknown`); `chartSpec.ts` reads it defensively.
  */
 export type MercadoLivreChartSpecs = Record<string, unknown>;
 
@@ -286,6 +286,12 @@ export interface MercadoLivreChartValidationError {
   chartIndex: number;
   code: string | null;
   message: string | null;
+  /** Offending row, or null for a chart-level problem (a rejected name, …). */
+  rowIndex: number | null;
+  /** Attribute ids the cell covers — more than one for a combined column. */
+  attributeIds: string[];
+  /** The row's main-attribute value as ML echoed it, for when `rowIndex` is null. */
+  rowMainValue: string | null;
 }
 
 export interface MercadoLivreSyncChartsResult {
@@ -293,6 +299,22 @@ export interface MercadoLivreSyncChartsResult {
   tabelas: unknown[];
   validationErrors: MercadoLivreChartValidationError[];
   updated: boolean;
+}
+
+/** `POST size-charts/excluir` — ML accepted the REMOVAL REQUEST (see the method doc). */
+export interface MercadoLivreChartDeleteResult {
+  requested: true;
+  message: string | null;
+  tabelas: unknown[];
+}
+
+/** `POST size-charts/verificar-exclusao` — the verdict on a pending removal. */
+export interface MercadoLivreChartDeleteCheckResult {
+  /** True ⇒ ML confirmed the removal and the guia is off the tabMedi doc. */
+  removed: boolean;
+  /** `'ACTIVE'` = still linked to a listing; null once ML stopped serving it. */
+  chartStatus: string | null;
+  tabelas: unknown[];
 }
 
 /** A binary shipment label fetched from the mercado-livre backend (`GET etiqueta`). */
@@ -329,8 +351,11 @@ export interface MercadoLivreClient {
   }): Promise<MercadoLivreReverificarResult>;
   /**
    * Import (or re-sync) an ML listing into an ERP produto (PERM.integracao.write).
-   * A listing with variations / User-Products returns a 422 `MercadoLivreClientHttpError`
-   * with `code: 'ML_IMPORT_BLOCKED'` + `issues` (tracked in #438).
+   * All three listing models import: simple, legacy `variations[]` (#520) and
+   * `family_name` / User-Products (#521). A listing the importer cannot take —
+   * closed, owned by another seller, untitled, or on an integração with no
+   * `user_id` — returns a 422 `MercadoLivreClientHttpError` with
+   * `code: 'ML_IMPORT_BLOCKED'` + `issues`.
    */
   importar(input: {
     integracaoId: string;
@@ -465,6 +490,30 @@ export interface MercadoLivreClient {
     tabelas: unknown[];
   }): Promise<MercadoLivreSyncChartsResult>;
   /**
+   * Ask ML to remove one guia de tamanho (PERM.integracao.write).
+   *
+   * ⚠️ Resolving does NOT mean the guia is gone: ML acks the request and then
+   * checks asynchronously (up to 24h) that no listing still links it, keeping
+   * it silently if one does. The guia stays on the doc flagged
+   * `exclusaoSolicitadaEm`; call `sizeChartVerificarExclusao` for the verdict.
+   */
+  sizeChartExcluir(input: {
+    integracaoId: string;
+    tabMediId: string;
+    chartId: string;
+  }): Promise<MercadoLivreChartDeleteResult>;
+  /**
+   * Settle a pending removal (PERM.integracao.write): reads the chart back from
+   * ML and, once ML confirms it is gone, drops it from the tabMedi doc.
+   * `removed: false` with `chartStatus: 'ACTIVE'` means it is still linked to a
+   * listing and has to be unlinked first.
+   */
+  sizeChartVerificarExclusao(input: {
+    integracaoId: string;
+    tabMediId: string;
+    chartId: string;
+  }): Promise<MercadoLivreChartDeleteCheckResult>;
+  /**
    * Fetch the pedido's marketplace-generated shipment label (PERM.frete.read).
    * Binary success body; error bodies are JSON and surface as a
    * `MercadoLivreClientHttpError` carrying the route's `code` (e.g. a 409
@@ -478,6 +527,40 @@ export interface MercadoLivreClient {
    * 409 `MercadoLivreClientHttpError` with `code: 'NFE_NAO_ELEGIVEL'`.
    */
   enviarNfe(input: { pedidoId: string; nfeId: string }): Promise<{ enqueued: boolean }>;
+}
+
+/**
+ * The message for a non-2xx response whose body was NOT our JSON `{error}`
+ * envelope.
+ *
+ * ⚠️ The body is deliberately DISCARDED rather than shown. Every route in
+ * apps/mercado-livre answers JSON, so a non-JSON body means the request never
+ * reached one — a Next.js 404 page, an App Hosting 502, a proxy login redirect.
+ * Those are entire HTML documents, and putting one in `err.message` dumps the
+ * raw page into whatever renders the error. It kept the real cause (the backend
+ * is down / out of date) completely invisible behind a wall of markup.
+ */
+export function mercadoLivreHttpFallbackMessage(status: number): string {
+  // Written for the OPERATOR, who cannot inspect a deployment — so it says what
+  // to do, and carries the status only so support can act on a screenshot.
+  if (status === 401 || status === 403) {
+    return 'Sem permissão para esta operação no Mercado Livre.';
+  }
+  if (status === 404) {
+    return `A integração com o Mercado Livre não respondeu (HTTP ${String(status)}). Atualize a página e, se continuar, avise o suporte.`;
+  }
+  if (status >= 500) {
+    return `A integração com o Mercado Livre falhou (HTTP ${String(status)}). Tente novamente em instantes.`;
+  }
+  return `Falha na comunicação com o Mercado Livre (HTTP ${String(status)}).`;
+}
+
+/** Our JSON error envelope, when the body actually parsed as one. */
+function errorEnvelope(
+  parsed: unknown,
+): { error?: string; code?: string; issues?: string[] } | null {
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as { error?: string; code?: string; issues?: string[] };
 }
 
 /** Pull the filename out of a `Content-Disposition` header, if present. */
@@ -527,20 +610,28 @@ export function createMercadoLivreClient(config: {
     }
 
     let parsed: unknown = null;
+    let nonJsonBody: string | null = null;
     const text = await res.text();
     if (text.length > 0) {
       try {
         parsed = JSON.parse(text);
       } catch (err) {
-        if (err instanceof SyntaxError) parsed = { error: text };
+        if (err instanceof SyntaxError) nonJsonBody = text;
         else throw err;
       }
     }
 
     if (!res.ok) {
-      const errBody = parsed as { error?: string; code?: string; issues?: string[] } | null;
+      const errBody = errorEnvelope(parsed);
+      if (nonJsonBody != null) {
+        // The body never reaches the UI, so keep it reachable for debugging.
+        console.error(
+          `[mercado-livre] resposta não-JSON em ${path} (HTTP ${String(res.status)})`,
+          nonJsonBody.slice(0, 500),
+        );
+      }
       throw new MercadoLivreClientHttpError(
-        errBody?.error ?? `HTTP ${res.status}`,
+        errBody?.error ?? mercadoLivreHttpFallbackMessage(res.status),
         res.status,
         errBody?.code ?? null,
         Array.isArray(errBody?.issues) ? errBody.issues : null,
@@ -569,18 +660,25 @@ export function createMercadoLivreClient(config: {
     }
     if (!res.ok) {
       let parsed: unknown = null;
+      let nonJsonBody: string | null = null;
       const text = await res.text();
       if (text.length > 0) {
         try {
           parsed = JSON.parse(text);
         } catch (err) {
-          if (err instanceof SyntaxError) parsed = { error: text };
+          if (err instanceof SyntaxError) nonJsonBody = text;
           else throw err;
         }
       }
-      const errBody = parsed as { error?: string; code?: string } | null;
+      const errBody = errorEnvelope(parsed);
+      if (nonJsonBody != null) {
+        console.error(
+          `[mercado-livre] resposta não-JSON em ${path} (HTTP ${String(res.status)})`,
+          nonJsonBody.slice(0, 500),
+        );
+      }
       throw new MercadoLivreClientHttpError(
-        errBody?.error ?? `HTTP ${res.status}`,
+        errBody?.error ?? mercadoLivreHttpFallbackMessage(res.status),
         res.status,
         errBody?.code ?? null,
       );
@@ -677,6 +775,16 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
     sizeChartSync: (input) =>
       call<MercadoLivreSyncChartsResult>('/api/marketplace/mercado-livre/size-charts/sync', input),
+    sizeChartExcluir: (input) =>
+      call<MercadoLivreChartDeleteResult>(
+        '/api/marketplace/mercado-livre/size-charts/excluir',
+        input,
+      ),
+    sizeChartVerificarExclusao: (input) =>
+      call<MercadoLivreChartDeleteCheckResult>(
+        '/api/marketplace/mercado-livre/size-charts/verificar-exclusao',
+        input,
+      ),
     etiqueta: (pedidoId, formato) =>
       fetchArtifact(
         `/api/marketplace/mercado-livre/etiqueta?pedidoId=${encodeURIComponent(pedidoId)}&formato=${formato}`,

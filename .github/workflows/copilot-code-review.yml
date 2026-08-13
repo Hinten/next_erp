@@ -1,0 +1,106 @@
+name: Copilot Code Review Setup Steps
+
+# Copilot code review runs in its own ephemeral environment. When this file is
+# absent it falls back to `copilot-setup-steps.yml` — the CLOUD AGENT lane,
+# which installs a JDK, firebase-tools, Chromium + apt deps, builds the
+# functions bundle and runs a full Next production build. A reviewer reading a
+# diff needs none of that, so this file exists to give code review a lean
+# environment of its own: the workspace installed, and the turbo typecheck cache
+# warmed so `turbo run typecheck` is a cache hit for everything the PR did not
+# touch.
+
+# Validate this setup workflow when it changes, and allow manual reruns from
+# the Actions tab after it lands on the default branch.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/copilot-code-review.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/copilot-code-review.yml'
+
+jobs:
+  # The job name must be exactly `copilot-setup-steps` — the same name the cloud
+  # agent lane uses. It is the FILENAME that routes this workflow to Copilot code
+  # review, not the job name, so renaming the job makes the file inert.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # FUNCTIONS_REGION is in turbo.json's `globalEnv`, so it participates in
+      # every task hash. It is set to the value ci.yml uses so a cache entry
+      # warmed here is the one a later `turbo run` looks up, not a hash mismatch.
+      FUNCTIONS_REGION: us-east1
+      # Skip Next.js telemetry collection + its build-time notice in CI.
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Set up pnpm via Corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      # Shares ci.yml's `pnpm-store-` key namespace on purpose. Every merge to
+      # the default branch refreshes it, and default-branch caches are readable
+      # from any branch — so this lane starts warm instead of cold-downloading
+      # the whole store under a private prefix nothing else populates.
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      # Turborepo 2.x keeps its local cache in `.turbo/cache`. A stale entry is
+      # harmless — turbo keys entries by content hash, so a miss just rebuilds.
+      - name: Cache turbo task outputs
+        uses: actions/cache@v5
+        with:
+          path: .turbo
+          key: turbo-review-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: |
+            turbo-review-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-review-${{ runner.os }}-
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No build step: every library resolves through `main: ./src/index.ts`, so
+      # none of them declares a `build` script and the `dependsOn: ["^build"]` on
+      # `typecheck`/`lint` is inert for them. Only the apps build, and a diff
+      # review never needs an app bundle.
+      #
+      # What IS worth prewarming is the typecheck cache — with it warm, the
+      # `turbo run typecheck` Copilot runs is a cache hit for everything the PR
+      # did not touch. `|| true` is load-bearing: a setup step that exits
+      # non-zero makes Copilot skip every remaining step, and reviews land on
+      # branches that do not typecheck by definition. Turbo still caches the
+      # tasks that passed.
+      - name: Warm the typecheck cache
+        run: pnpm turbo run typecheck || true
+
+      - name: Verify toolchain availability
+        run: |
+          node --version
+          pnpm --version
+          pnpm exec turbo --version

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import type { Integracao } from '@delfrance/schemas';
 
 // Mock the seams loadMercadoLivreContext touches so we exercise the resolver
@@ -49,6 +50,7 @@ vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
 const {
   loadMercadoLivreContext,
   mercadoLivreAccountBag,
+  mercadoLivreRedirectUri,
   MercadoLivreContaNotConfiguredError,
   MercadoLivreConfigError,
 } = await import('./mercadoLivre');
@@ -57,6 +59,9 @@ const db = {} as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The conta cache is module-scope and every test here uses the id `int-1`,
+  // so without this the first test's absent-document entry serves the rest.
+  __resetAllReadCaches();
   h.createTokenDuravelStore.mockReturnValue({ save: vi.fn() });
   h.getOrRefreshAccessToken.mockResolvedValue('AT');
   vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', 'cid');
@@ -65,7 +70,36 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetAllReadCaches();
   vi.unstubAllEnvs();
+});
+
+describe('mercadoLivreRedirectUri', () => {
+  const CAMINHO = '/api/oauth/mercado-livre/callback';
+
+  it('builds the callback URI from MERCADO_LIVRE_PUBLIC_URL', () => {
+    vi.stubEnv('MERCADO_LIVRE_PUBLIC_URL', 'https://ml.example.com');
+    expect(mercadoLivreRedirectUri()).toBe(`https://ml.example.com${CAMINHO}`);
+  });
+
+  it('strips a trailing slash so the URI matches the ML registration exactly', () => {
+    vi.stubEnv('MERCADO_LIVRE_PUBLIC_URL', 'https://ml.example.com/');
+    expect(mercadoLivreRedirectUri()).toBe(`https://ml.example.com${CAMINHO}`);
+  });
+
+  it('falls back to localhost when the origin is unset', () => {
+    vi.stubEnv('MERCADO_LIVRE_PUBLIC_URL', undefined);
+    expect(mercadoLivreRedirectUri()).toBe(`http://localhost:3006${CAMINHO}`);
+  });
+
+  it.each(['', '   '])('treats a blank origin (%j) as unset', (valor) => {
+    // The old `??` guarded only undefined/null, so a blank env var produced
+    // `base === ''` and sent the RELATIVE "/api/oauth/..." to ML as the
+    // redirect_uri — a 400 at the token step that this app could not report.
+    // Same `??`-versus-empty-string hole #887 fixed for *_TASKS_REGION.
+    vi.stubEnv('MERCADO_LIVRE_PUBLIC_URL', valor);
+    expect(mercadoLivreRedirectUri()).toBe(`http://localhost:3006${CAMINHO}`);
+  });
 });
 
 describe('mercadoLivreAccountBag', () => {

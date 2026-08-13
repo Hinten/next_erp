@@ -31,6 +31,10 @@ setGlobalOptions({
   //   - `processMercadoLivrePriceSync` (Step 11 PR-C) — processPriceSync.ts
   //   - `processMercadoLivreNfeUpload` (Step 12 / #739) — processNfeUpload.ts
   //   - `reprocessMercadoLivreNotifications` (the failures-store reprocess sweep) — index.ts (#778)
+  //   - `sweepMercadoLivreMissedFeeds` (the missed_feeds backstop / #812) — index.ts.
+  //     ⚠️ The ONLY function where CLIENT_ID is not just for the token refresh:
+  //     it is also the `app_id` query param `GET /missed_feeds` requires, so
+  //     unbinding it here leaves the backstop inert rather than merely slower.
   // Each declares `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
   // on its own options rather than here, so a function with no ML API call never
   // gets the secrets bound. The two Firestore triggers are exactly that case and

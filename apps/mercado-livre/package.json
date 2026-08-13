@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:firestore": "vitest run --config vitest.firestore.config.ts",
     "backfill:int-frete": "dotenv -e ../../.env.local -- tsx scripts/backfill-int-frete.ts",
     "check:deposito-source": "dotenv -e ../../.env.local -- tsx scripts/check-deposito-source.ts",
     "clean": "rm -rf .next .turbo dist coverage"
@@ -22,9 +23,10 @@
     "@delfrance/schemas": "workspace:*",
     "@delfrance/storage": "workspace:*",
     "@google-cloud/firestore": "^8.6.0",
+    "@google/genai": "^2.16.0",
     "firebase-admin": "catalog:",
     "firebase-functions": "catalog:",
-    "next": "catalog:",
+    "next": "16.2.6",
     "react": "catalog:",
     "react-dom": "catalog:",
     "zod": "catalog:"
