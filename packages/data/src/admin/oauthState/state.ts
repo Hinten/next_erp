@@ -25,8 +25,11 @@
  * satisfy a boundary neither half belongs on the far side of.
  *
  * ⚠️ This replaced three hand-copied per-app copies. The drift that motivated the
- * extraction was real and silent: {@link MAX_FUTURE_SKEW_MS} existed in exactly
- * one of the three for months. Add behaviour HERE, never in a channel.
+ * extraction was real and silent: {@link MAX_FUTURE_SKEW_MS} sat in Mercado
+ * Pago's copy alone for months — Mercado Livre gained one in #998 and Melhor
+ * Envio only in #1034, so for that whole period two channels accepted
+ * forward-dated states that could never expire, and nothing compared the files.
+ * Add behaviour HERE, never in a channel.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 

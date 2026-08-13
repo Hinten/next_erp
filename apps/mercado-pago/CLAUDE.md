@@ -52,8 +52,9 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   attempt overwrites the previous one — no TTL policy, no sweep) and owns the
   `MERCADO_PAGO_PKCE_ENABLED` flag. ⚠️ Do NOT reintroduce logic in these files: three
   hand-copied per-channel copies is exactly what #1034 removed, and the drift was
-  silent (this channel was the only one with the clock-skew guard, and the only one
-  whose `nonce` was minted and then discarded).
+  silent — this channel was the only copy carrying the clock-skew guard for months
+  (Mercado Livre gained one in #998, Melhor Envio only in #1034), while its `nonce`
+  was minted and then discarded exactly like both siblings'.
 - `lib/payments/respond.ts` — the error → HTTP mapper.
 - `lib/signatures/hmac.ts` — constant-time `verifyHmac` + `verifyMpSignature` (MP's
   `ts=…,v1=…` manifest HMAC over `id;request-id;ts`).

@@ -4,10 +4,12 @@
  * ⚠️ The implementation moved to `@delfrance/data/admin/oauth-state` in #1034 —
  * this file is a re-export so the existing import sites keep working. Three
  * hand-copied per-channel copies is what #1034 removed; the drift was silent and
- * real. This channel was the only one that HAD the clock-skew guard, and the
- * only one whose `nonce` was still minted and discarded — leaving every `state`
- * replayable for a full 10 minutes, which on this channel means a stranger's MP
- * collector receiving the customer payments.
+ * real, and this channel sat on both sides of it. It was the ONLY copy to carry
+ * the clock-skew guard for months (Mercado Livre gained one in #998; Melhor
+ * Envio only here) — yet, exactly like both siblings, its `nonce` was minted and
+ * then discarded, leaving every `state` replayable for a full 10 minutes. On
+ * this channel that means a stranger's MP collector receiving the customer
+ * payments.
  *
  * `PaymentStateError` is kept as an alias of the shared `OauthStateError` so the
  * callback's narrow reads naturally in this app's vocabulary. It is the SAME

@@ -5,8 +5,10 @@
  *
  * ⚠️ One implementation for Mercado Livre, Melhor Envio and Mercado Pago. Before
  * this, all three carried hand-copied siblings and the drift was silent and real:
- * `MAX_FUTURE_SKEW_MS` existed in exactly one of them for months, and the missing
- * `nonce` store made every channel's `state` replayable for a full 10 minutes.
+ * `MAX_FUTURE_SKEW_MS` sat in Mercado Pago's copy alone for months (Mercado Livre
+ * gained one in #998, Melhor Envio only in #1034), and the missing `nonce` store
+ * left a captured `state` replayable for a full 10 minutes on all three — #998
+ * closed that for Mercado Livre, #1034 for the other two.
  * Add behaviour HERE, never in a channel.
  */
 export { MAX_AGE_MS, MAX_FUTURE_SKEW_MS, OauthStateError, signState, verifyState } from './state';
