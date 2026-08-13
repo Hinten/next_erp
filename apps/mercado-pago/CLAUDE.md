@@ -12,10 +12,19 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
 - `app/api/health` — uptime check (no auth).
 - `app/api/payments/mercado-pago/oauth/start` — `PERM.metodoPagamento.write`-gated;
   mints a signed `state` and returns the MP consent URL (`ctx.authorizeUrl(state)`).
+  **#1034**: it also RECORDS the attempt before handing out the URL — the state's
+  `nonce` plus, when `MERCADO_PAGO_PKCE_ENABLED=1`, a fresh PKCE `code_verifier`
+  whose S256 challenge rides the consent URL.
 - `app/api/payments/mercado-pago/conta` — `PERM.metodoPagamento.read`-gated connection
   status (`/users/me` identity, or `connected: false` when the credential is dead).
 - `app/api/oauth/mercado-pago/callback` — public browser redirect target; the signed
-  `state` is the only trust anchor → verify → exchange code → persist.
+  `state` is the only trust anchor → verify → **redeem the attempt** → exchange code
+  → persist. ⚠️ **#1034**: verifying the HMAC is not enough — it proves integrity, not
+  freshness-of-use, so a captured `state` used to be replayable for the whole
+  10-minute window and a replay REPOINTED the account at whoever drove the second
+  callback, sending customer payments to a stranger's collector.
+  `mercadoPagoOauthState.consume` is the anchor that makes it single-use; it runs
+  BEFORE the exchange and its failure is `reason=bad_state`, never `exchange`.
 - `app/api/webhooks/mercado-pago` — **#531**: MP payment-notification receiver
   (`x-signature` verified only when `MERCADO_PAGO_WEBHOOK_SECRET` is set; the real
   anchor is the handler's payment refetch). Validates + enqueues onto the
@@ -35,7 +44,16 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   see the `webhook-notifications` skill. Do not re-implement it here.
 - `lib/payments/mpTasks.ts` — the `processMercadoPagoNotification` task-queue scheduler
   (`MERCADO_PAGO_TASKS_DISABLED` valve → persist-for-the-sweep). Mirrors `mlTasks.ts`.
-- `lib/payments/state.ts` — the signed-state HMAC (`MERCADO_PAGO_STATE_SECRET`, 10-min TTL).
+- `lib/payments/{state,oauthState}.ts` — **#1034**, thin bindings to the SHARED OAuth
+  primitives in `@delfrance/data/admin/oauth-state`. `state.ts` re-exports the signed
+  state (`PaymentStateError` is an alias of the shared `OauthStateError`);
+  `oauthState.ts` binds the per-attempt record to
+  `metodo_pgto/{metodoId}/oauthState` (admin-only, FIXED `current` doc id, so a new
+  attempt overwrites the previous one — no TTL policy, no sweep) and owns the
+  `MERCADO_PAGO_PKCE_ENABLED` flag. ⚠️ Do NOT reintroduce logic in these files: three
+  hand-copied per-channel copies is exactly what #1034 removed, and the drift was
+  silent (this channel was the only one with the clock-skew guard, and the only one
+  whose `nonce` was minted and then discarded).
 - `lib/payments/respond.ts` — the error → HTTP mapper.
 - `lib/signatures/hmac.ts` — constant-time `verifyHmac` + `verifyMpSignature` (MP's
   `ts=…,v1=…` manifest HMAC over `id;request-id;ts`).
