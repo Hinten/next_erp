@@ -6,8 +6,16 @@ import {
   MercadoLivreValidationError,
 } from '@delfrance/integrations-mercado-livre';
 
-import { MercadoLivreConfigError, MercadoLivreContaNotConfiguredError } from './mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from './respond';
+import {
+  MercadoLivreConfigError,
+  MercadoLivreContaNotConfiguredError,
+  MercadoLivreNotImplementedError,
+} from './mercadoLivre';
+import {
+  isMercadoLivreError,
+  isMercadoLivreRequestError,
+  mercadoLivreErrorResponse,
+} from './respond';
 
 let error: ReturnType<typeof vi.spyOn>;
 let warn: ReturnType<typeof vi.spyOn>;
@@ -117,5 +125,43 @@ describe('isMercadoLivreError', () => {
   it('rejects an unrelated error so the route rethrows it', () => {
     expect(isMercadoLivreError(new TypeError('bug nosso'))).toBe(false);
     expect(isMercadoLivreError(new MercadoLivreConfigError('x'))).toBe(true);
+  });
+});
+
+describe('isMercadoLivreRequestError', () => {
+  it('accepts the three failures that belong to one request', () => {
+    expect(isMercadoLivreRequestError(new MercadoLivreHttpError('nope', 404, {}))).toBe(true);
+    expect(isMercadoLivreRequestError(new MercadoLivreNetworkError('offline'))).toBe(true);
+    expect(isMercadoLivreRequestError(new MercadoLivreValidationError('shape', []))).toBe(true);
+  });
+
+  // ⚠️ THE reason this predicate exists, and the one case worth breaking a build
+  // over. `api.ts` maps a 401 onto MercadoLivreReauthRequiredError, so a revoked
+  // token arrives looking like an ordinary failure of whichever call ran first.
+  // A caller that degrades on `isMercadoLivreError` would swallow it and never
+  // return the 409 that tells the operator to reconnect.
+  it('REJECTS a dead grant, which must never be degraded away', () => {
+    expect(
+      isMercadoLivreRequestError(new MercadoLivreReauthRequiredError('refresh_failed', 'morto')),
+    ).toBe(false);
+    // …and the broader guard would have accepted it, which is the trap.
+    expect(
+      isMercadoLivreError(new MercadoLivreReauthRequiredError('refresh_failed', 'morto')),
+    ).toBe(true);
+  });
+
+  it('rejects the account/config errors, which hit every call identically', () => {
+    expect(isMercadoLivreRequestError(new MercadoLivreConfigError('sem credenciais'))).toBe(false);
+    expect(isMercadoLivreRequestError(new MercadoLivreContaNotConfiguredError('sem conta'))).toBe(
+      false,
+    );
+    expect(isMercadoLivreRequestError(new MercadoLivreNotImplementedError('nao feito'))).toBe(
+      false,
+    );
+  });
+
+  it('rejects an unrelated error, so a bug of ours is never swallowed', () => {
+    expect(isMercadoLivreRequestError(new TypeError('bug nosso'))).toBe(false);
+    expect(isMercadoLivreRequestError(null)).toBe(false);
   });
 });

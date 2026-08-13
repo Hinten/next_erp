@@ -71,8 +71,16 @@ export function sugestaoPath(sugestao: MercadoLivreCategoriaSugestao): {
   /** Always present — falls back to the category id when ML sends no name. */
   leaf: string;
 } {
-  const leaf = blankToNull(sugestao.categoryName) ?? sugestao.categoryId;
-  const trail = (sugestao.pathFromRoot ?? [])
+  const path = sugestao.pathFromRoot ?? [];
+  // ⚠️ Prefer the resolved path's own entry over the raw id. `category_name` is
+  // `.nullable().optional()` on `domain_discovery/search`, so it legitimately
+  // arrives null — and when it does, the node the route already fetched carries
+  // the real name, in the very entry the filter below drops. Falling straight to
+  // the id would print `MLB31447` at the operator with the answer sitting one
+  // array element away, which is the exact failure this helper exists to remove.
+  const self = path.find((c) => c.id === sugestao.categoryId);
+  const leaf = blankToNull(sugestao.categoryName) ?? blankToNull(self?.name) ?? sugestao.categoryId;
+  const trail = path
     // ML repeats the node itself at the end of the path; the caller renders the
     // leaf separately, so including it here would duplicate it.
     .filter((c) => c.id !== sugestao.categoryId)

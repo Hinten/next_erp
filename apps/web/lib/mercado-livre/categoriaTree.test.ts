@@ -155,7 +155,23 @@ describe('sugestaoPath', () => {
     });
   });
 
+  it('takes the leaf name from the resolved path when ML omits category_name', () => {
+    // ⚠️ `category_name` is `.nullable().optional()` on `domain_discovery/search`,
+    // so it legitimately arrives null — and the node the route already fetched
+    // carries the real name, in the very entry the trail filter drops. Reaching
+    // for the raw id first would print `MLB31447` at the operator with the
+    // answer one array element away: a row with a badge and no name, which is
+    // the exact failure this helper exists to remove.
+    expect(sugestaoPath(sugestao({ categoryName: null }))).toEqual({
+      trail: ['Calçados, Roupas e Bolsas', 'Roupas'],
+      leaf: 'Camisetas e Regatas',
+    });
+    // Blank counts as absent, same as everywhere else in this module.
+    expect(sugestaoPath(sugestao({ categoryName: '   ' })).leaf).toBe('Camisetas e Regatas');
+  });
+
   it('falls back to ids when ML sends no names', () => {
+    // Only when the resolved node has no name EITHER is the id all that is left.
     const out = sugestaoPath(
       sugestao({
         categoryName: null,

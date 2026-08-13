@@ -1,5 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  MercadoLivreHttpError,
+  MercadoLivreReauthRequiredError,
+} from '@delfrance/integrations-mercado-livre';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 const h = vi.hoisted(() => ({
@@ -38,9 +41,16 @@ const { GET } = await import('./route');
 const req = (qs: string) =>
   new Request(`http://localhost:3006/api/marketplace/mercado-livre/categorias/sugestoes${qs}`);
 
+let warn: ReturnType<typeof vi.spyOn>;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   __resetAllReadCaches();
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.resolveChannelContext.mockResolvedValue({ integracaoId: 'i', accessToken: 'AT', account: {} });
   h.loadCtx.mockResolvedValue({ resolveChannelContext: h.resolveChannelContext });
@@ -183,5 +193,56 @@ describe('the ancestor path on each suggestion', () => {
     // happened to be unavailable.
     h.getCategory.mockRejectedValue(new TypeError('cannot read property of undefined'));
     await expect(GET(req('?integracaoId=int-1&q=camiseta'))).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it('LOGS the degrade instead of losing the trail silently', async () => {
+    // A row that lost its trail is indistinguishable from ML genuinely having no
+    // path for that category, so without a log line the only symptom is a picker
+    // that quietly got worse — nothing to grep in Cloud Logging.
+    h.getCategory.mockRejectedValue(new MercadoLivreHttpError('nope', 404, {}));
+    await GET(req('?integracaoId=int-1&q=camiseta'));
+    expect(warn).toHaveBeenCalled();
+    const [line] = warn.mock.calls[0] as [string];
+    expect(line).toContain('[mercado-livre/api]');
+    expect(line).toContain('MLB31447');
+  });
+
+  it('does NOT degrade a dead grant — it must reach the operator as a 409', async () => {
+    // ⚠️ `api.ts` maps a 401 onto MercadoLivreReauthRequiredError, and the
+    // suggestion call can be served from the cache without touching ML, so a
+    // revoked token surfaces on THIS read first. Degrading it would hand back
+    // eight trail-less rows and no reconnect prompt anywhere.
+    h.getCategory.mockRejectedValue(new MercadoLivreReauthRequiredError('refresh_failed', 'morto'));
+    const res = await GET(req('?integracaoId=int-1&q=camiseta'));
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { code: string }).toMatchObject({ code: 'ML_REAUTH_REQUIRED' });
+  });
+});
+
+describe('the per-suggestion fan-out is bounded by US, not by ML', () => {
+  // ⚠️ `limit` shapes the REQUEST only. `domainDiscoverySchema` is an uncapped
+  // `z.array` and nothing re-clamps the response, so an over-long answer used to
+  // cost one longer JSON array and now costs one `GET /categories/{id}` each,
+  // against a per-token rate limit, on a path hit once per product.
+  const many = Array.from({ length: 25 }, (_, i) => ({
+    category_id: `MLB${String(i)}`,
+    category_name: `Categoria ${String(i)}`,
+  }));
+
+  it('resolves at most `limit` paths even when ML ignores the limit', async () => {
+    h.suggestCategories.mockResolvedValue(many);
+    const res = await GET(req('?integracaoId=int-1&q=camiseta&limit=8'));
+
+    expect(h.getCategory.mock.calls.length).toBeLessThanOrEqual(8);
+    const body = (await res.json()) as { sugestoes: unknown[] };
+    expect(body.sugestoes).toHaveLength(8);
+  });
+
+  it('applies the clamped limit, not the raw query param', async () => {
+    // `?limit=999` is clamped to MAX_SUGESTOES before it reaches either ML or
+    // the fan-out, so an over-long response is still bounded at 8.
+    h.suggestCategories.mockResolvedValue(many);
+    await GET(req('?integracaoId=int-1&q=camiseta&limit=999'));
+    expect(h.getCategory.mock.calls.length).toBeLessThanOrEqual(8);
   });
 });

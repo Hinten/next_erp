@@ -45,6 +45,36 @@ export function isMercadoLivreError(err: unknown): err is KnownError {
 }
 
 /**
+ * Narrower than `isMercadoLivreError`: the failures that belong to ONE request
+ * and say nothing about the account behind it — a non-2xx, a transport failure,
+ * or a response whose shape changed.
+ *
+ * Use it where a caller wants to DEGRADE rather than fail: a side read that can
+ * be dropped without costing the operator the whole answer. `isMercadoLivreError`
+ * is the wrong guard there, because it also matches the errors that will hit
+ * every subsequent call identically.
+ *
+ * ⚠️ The exclusion that matters is `MercadoLivreReauthRequiredError`. `api.ts`
+ * maps a **401 onto it**, so a dead grant arrives looking like an ordinary
+ * failure of whichever call happened to run first. Degrading it would replace
+ * the `409 ML_REAUTH_REQUIRED` that tells the operator to reconnect with an
+ * answer that merely got quietly worse — the same class of silent failure
+ * `logErrorResponse` below exists to end.
+ *
+ * ⚠️ POSITIVE list on purpose. Callers use this to decide what may be swallowed,
+ * so an error class added to the package later must default to "surface it".
+ */
+export function isMercadoLivreRequestError(
+  err: unknown,
+): err is MercadoLivreHttpError | MercadoLivreNetworkError | MercadoLivreValidationError {
+  return (
+    err instanceof MercadoLivreHttpError ||
+    err instanceof MercadoLivreNetworkError ||
+    err instanceof MercadoLivreValidationError
+  );
+}
+
+/**
  * Map the error to its response, then LOG the reason before returning it.
  *
  * ⚠️ The logging is the load-bearing half. Every route funnels its known
