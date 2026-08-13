@@ -85,6 +85,11 @@ function exchangeFailureReason(err: unknown): string {
 function validationPaths(issues: unknown): readonly string[] {
   if (!Array.isArray(issues)) return [];
   return issues.map((issue) => {
+    // ⚠️ Guard the ELEMENT, not just the array. `issues` is typed `unknown`, and
+    // destructuring a `null` entry throws a TypeError — from inside the catch
+    // block, where it would replace the redirect with a 500. A helper whose whole
+    // job is to make a failure legible must not be able to cause a worse one.
+    if (typeof issue !== 'object' || issue === null) return '(desconhecido)';
     const { path, code } = issue as { path?: unknown; code?: unknown };
     const caminho = Array.isArray(path) && path.length > 0 ? path.join('.') : '(raiz)';
     return `${caminho}: ${typeof code === 'string' ? code : 'desconhecido'}`;
