@@ -12,6 +12,7 @@ import {
   __setContaCacheClockForTests,
   invalidateConta,
   readConta,
+  readIntFreteOuterRefDaConta,
   resolveContaAtivaPorUserId,
 } from './contaCache';
 
@@ -268,5 +269,52 @@ describe('resolveContaAtivaPorUserId', () => {
     db.seed(CONTA_PATH, contaDoc({ user_id: 55 }));
     const { load: reconnected } = countingResolve('conta-A');
     expect(await resolveContaAtivaPorUserId(asDb(db), 55, reconnected)).toBe('conta-A');
+  });
+});
+
+describe('readIntFreteOuterRefDaConta', () => {
+  it('resolves once across repeated shipments notifications', async () => {
+    const { calls, load } = countingResolve('documents/int_frete/if-1');
+
+    expect(await readIntFreteOuterRefDaConta('conta-A', load)).toBe('documents/int_frete/if-1');
+    expect(await readIntFreteOuterRefDaConta('conta-A', load)).toBe('documents/int_frete/if-1');
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('re-resolves after ttlMs', async () => {
+    const { calls, load } = countingResolve('documents/int_frete/if-1');
+
+    await readIntFreteOuterRefDaConta('conta-A', load);
+    now += READ_CACHE_TTL.config;
+    await readIntFreteOuterRefDaConta('conta-A', load);
+
+    expect(calls).toHaveLength(2);
+  });
+
+  it('never caches a null — it would be PERSISTED onto a first-import pedido', async () => {
+    // `mergeFreteInicial` has no `existing` to fall back on for a first import,
+    // so a stale null lands as `integracaoFreteOuterRef: null` on the pedido and
+    // the etiqueta row action can no longer classify it.
+    const miss = countingResolve(null);
+
+    expect(await readIntFreteOuterRefDaConta('conta-A', miss.load)).toBeNull();
+    expect(await readIntFreteOuterRefDaConta('conta-A', miss.load)).toBeNull();
+    expect(miss.calls).toHaveLength(2);
+
+    // The companion doc the #782 trigger writes is picked up immediately.
+    const hit = countingResolve('documents/int_frete/if-1');
+    expect(await readIntFreteOuterRefDaConta('conta-A', hit.load)).toBe('documents/int_frete/if-1');
+  });
+
+  it('keys per conta — one account never serves another', async () => {
+    const a = countingResolve('documents/int_frete/if-a');
+    const b = countingResolve('documents/int_frete/if-b');
+
+    expect(await readIntFreteOuterRefDaConta('conta-A', a.load)).toBe('documents/int_frete/if-a');
+    expect(await readIntFreteOuterRefDaConta('conta-B', b.load)).toBe('documents/int_frete/if-b');
+
+    expect(a.calls).toHaveLength(1);
+    expect(b.calls).toHaveLength(1);
   });
 });

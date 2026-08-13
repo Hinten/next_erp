@@ -109,7 +109,7 @@ import {
 } from '@delfrance/data/admin/collections';
 import { isAlreadyExists } from '@delfrance/data/admin';
 
-import { readConta } from './contaCache';
+import { readConta, readIntFreteOuterRefDaConta } from './contaCache';
 import { buscarIntFreteDaConta } from './intFreteSync';
 import {
   conferirItensDoEnvio,
@@ -368,8 +368,13 @@ export async function resolveMercadoEnviosIntFreteOuterRef(
   db: Firestore,
   integracaoId: string,
 ): Promise<string | null> {
-  const encontrado = await buscarIntFreteDaConta(db, integracaoId, { apenasAtivo: true });
-  return encontrado != null ? toOuterRef(intFreteCollection.docPath({}, encontrado.id)) : null;
+  // Cached at THIS wrapper, never inside `buscarIntFreteDaConta` — that function
+  // is also called with `{ tx }` by the int_frete sync, and caching a
+  // transactional read would drop the doc from the transaction's read set.
+  return readIntFreteOuterRefDaConta(integracaoId, async () => {
+    const encontrado = await buscarIntFreteDaConta(db, integracaoId, { apenasAtivo: true });
+    return encontrado != null ? toOuterRef(intFreteCollection.docPath({}, encontrado.id)) : null;
+  });
 }
 
 /* -------------------------------------------------------------------------- */
