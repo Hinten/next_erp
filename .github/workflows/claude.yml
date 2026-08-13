@@ -10,14 +10,6 @@ on:
   pull_request_review:
     types: [submitted]
 
-# One Claude at a time per PR or issue. This lane has `contents: write` and can
-# push, so two concurrent runs could both commit to the same branch — a real
-# conflict, not just a doubled bill. `cancel-in-progress: false` queues rather
-# than killing a run that may be mid-push.
-concurrency:
-  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
   claude:
     # A comment opening with `@claude review` / `@claude /code-review` belongs to

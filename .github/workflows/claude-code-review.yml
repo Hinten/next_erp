@@ -16,15 +16,6 @@ on:
   issue_comment:
     types: [created]
 
-# One review at a time per PR. Comment twice, or comment while a review is still
-# running, and GitHub would otherwise start a second runner — two reviews posted
-# on the same diff and double the subscription usage. `cancel-in-progress: false`
-# queues the second request instead of killing a review whose tokens are already
-# spent, which is how Anthropic's managed Code Review behaves.
-concurrency:
-  group: claude-review-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   # A cheap gate job, seconds long and with no checkout. GitHub expressions have
   # no regex, so the `if:` below can only test a prefix — and `@claude reviewers
