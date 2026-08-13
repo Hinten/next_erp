@@ -12,3 +12,28 @@
 # and every line ends in $'\r'. This path is new, so no existing working tree
 # gets re-flagged.
 .github/scripts/*.sh text eol=lf
+
+# Third instance of the same hazard — different mechanism, far quieter symptom.
+# `vite`'s SSR transform finds the end of a shebang with
+#
+#     const hashbangRE = /^#!.*\n/
+#
+# and in JS `.` does not match `\r`. On a CRLF checkout the pattern therefore
+# never matches, `fileStartIndex` falls back to 0, and the hoisted
+# `__vite_ssr_import__` statements get injected BEFORE the `#!` — which is then
+# no longer on line 1, and a `#!` anywhere else is a syntax error. Vitest reports
+# a bare `SyntaxError: Invalid or unexpected token` with no file and no frame,
+# and the suite collects ZERO tests.
+#
+# It was live: `.github/scripts/e2e-affected.mjs` is imported by
+# `packages/config-eslint/rules/e2e-affected.test.js`, so on Windows those 17
+# tests silently did not run, while CI (LF) ran them green. A local red that
+# looks like someone else's broken file is a bad way to learn this.
+#
+# Pinned for EVERY shebang-carrying file, not just the one that is imported
+# today: the shebang is precisely what makes CRLF unsafe — here, and for the
+# exec-format failure the two rules above describe. `shebang-files-lf.test.js`
+# keeps that set total, so a new shebang file cannot quietly skip this.
+.claude/hooks/*.mjs text eol=lf
+.github/scripts/*.mjs text eol=lf
+packages/integrations/nfe/scripts/*.mjs text eol=lf

@@ -150,9 +150,16 @@ const LANES = {
     // library must run this lane") satisfied by the graph rather than by a second
     // entry someone has to remember to keep.
     roots: ['@delfrance/mercado-livre-app'],
-    // Fully offline — no ML credentials, ever (ML has no sandbox), so the one
-    // suite job is required and the lane runs on forks too.
+    // Fully offline — no ML credentials, ever (ML has no sandbox), so both suite
+    // jobs are required and the lane runs on forks too.
+    //
+    // The two jobs partition every ML test: `vitest.config.ts` excludes
+    // `**/*.firestore.test.ts` and `vitest.firestore.config.ts` includes only
+    // those. `ci.yml` excludes both ML workspaces from its `turbo run test`, so
+    // when this lane skips, NO ML test runs anywhere — which is what the gate
+    // exists to say out loud.
     jobs: [
+      { id: 'ml-offline', check: 'ML offline (unit)', class: 'required' },
       {
         id: 'ml-firestore-emulator',
         check: 'ML backend on the Firestore emulator',

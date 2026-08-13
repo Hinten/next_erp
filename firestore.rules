@@ -241,6 +241,12 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /configIa/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /counters/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);

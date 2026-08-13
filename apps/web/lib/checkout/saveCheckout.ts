@@ -319,6 +319,13 @@ export async function salvarCheckoutTransacao(
     await runTransaction(db, async (tx) => {
       const snap = await tx.get(pedidoRef);
       if (!snap.exists()) return; // vanished between phases — nothing to advance
+      // Only advance from the estado phase 1 just wrote. `retirada` was decided
+      // by two NON-transactional reads above, and this write used to be
+      // unconditional — so anything that moved the frete forward in the gap (an
+      // operator marking it delivered, a marketplace shipment handler) was
+      // dragged BACK to `aguardandoRetirada`. Phase 1 re-checks every gate
+      // against its own snapshot; phase 2 has to do the same (ADR 0011 trap 1).
+      if (snap.data().freteInicial?.estado !== ESTADO_CHECK_FINALIZADO) return;
       tx.update(pedidoRef, { 'freteInicial.estado': ESTADO_AGUARDANDO_RETIRADA });
     });
   }

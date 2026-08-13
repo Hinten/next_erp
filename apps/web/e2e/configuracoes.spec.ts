@@ -7,7 +7,7 @@ import {
   deleteUsuarioDoc,
   getUserPermissionsClaim,
 } from './_helpers/admin-cleanup';
-import { getRunId } from './_helpers/run-id';
+import { getRunId, workerIndex } from './_helpers/run-id';
 import { e2ePrefix } from './_helpers/seed-data';
 
 /**
@@ -60,7 +60,13 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
   const cargoNome = `${prefix}-cargo`;
   const userNome = `${prefix}-user`;
   // `e2e-user-` is what `sweepStaleE2EUsers` matches on — keep that shape.
-  const userEmail = `e2e-user-${runId}@delfrance.test`;
+  // ⚠️ Worker-scoped for the same reason `e2ePrefix` is: this group is
+  // `describe.serial`, so a retry runs in a FRESH worker while the previous
+  // one is still draining `afterAll`. Run-scoped only, the retry's create hits
+  // `EMAIL_EXISTS`, or the late `deleteAuthUserByEmail` deletes the account the
+  // retry is about to assert claims on. The Auth email is a separate axis that
+  // does NOT go through `e2ePrefix`.
+  const userEmail = `e2e-user-${runId}-w${workerIndex()}@delfrance.test`;
   const userPassword = 'E2EpasswordTest!1';
 
   // bits we'll grant to the cargo: cliente.read | cliente.write

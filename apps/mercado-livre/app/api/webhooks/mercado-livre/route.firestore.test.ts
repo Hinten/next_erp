@@ -14,8 +14,12 @@
  * fallback-persist branch through the real `getAdminFirestore()`. Nothing here
  * is mocked.
  *
- * ⚠️ This lane cannot cover the Cloud Tasks HAPPY path — Cloud Tasks has no
- * emulator anywhere. It covers the outage path only.
+ * ⚠️ This lane covers the outage path only, NOT the Cloud Tasks happy path. A
+ * `tasks` emulator does exist, but it 404s the partial resource name
+ * `locations/<region>/functions/<queue>` that `mlTasks.ts` enqueues against,
+ * accepting only a bare function name (firebase-admin-node#2725) — and the
+ * region qualification is mandatory in production or the task silently drops to
+ * us-central1. See the workflow header for the full accounting.
  */
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';

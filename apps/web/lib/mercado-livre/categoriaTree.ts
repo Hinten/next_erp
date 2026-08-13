@@ -6,7 +6,11 @@
  * worth stating once, in a testable place, rather than re-deriving it in the
  * component.
  */
-import type { MercadoLivreCategoriaNo, MercadoLivreCategorias } from './client';
+import type {
+  MercadoLivreCategoriaNo,
+  MercadoLivreCategoriaSugestao,
+  MercadoLivreCategorias,
+} from './client';
 
 type CategoriaNode = NonNullable<MercadoLivreCategorias['node']>;
 
@@ -42,6 +46,56 @@ export function formatCategoriaPath(node: CategoriaNode | null): string | null {
     .slice(1)
     .map((c) => c.name);
   return names.length > 0 ? names.join(' › ') : (node.name ?? node.id);
+}
+
+/** The separator between path segments, shared by every caller. */
+export const PATH_SEPARATOR = ' › ';
+
+/**
+ * A suggestion's full path, split into the trail and the leaf so the caller can
+ * emphasise the leaf without re-parsing a joined string.
+ *
+ * ⚠️ **The whole reason this exists.** `domain_discovery/search` returns only
+ * `category_name`, which is the leaf, and ML files the same leaf name under
+ * several different parents — so a suggestion list showed "Camisetas e Regatas"
+ * five times with five different opaque ids and no way to tell them apart. The
+ * ancestors ARE the distinguishing information.
+ *
+ * ML repeats the node itself at the end of `path_from_root`, so the leaf is
+ * dropped from the trail rather than shown twice. When the path could not be
+ * resolved the trail is empty and only the leaf remains — the row stays usable.
+ */
+export function sugestaoPath(sugestao: MercadoLivreCategoriaSugestao): {
+  /** Ancestors, root-first, excluding the leaf. Empty when unknown. */
+  trail: string[];
+  /** Always present — falls back to the category id when ML sends no name. */
+  leaf: string;
+} {
+  const path = sugestao.pathFromRoot ?? [];
+  // ⚠️ Prefer the resolved path's own entry over the raw id. `category_name` is
+  // `.nullable().optional()` on `domain_discovery/search`, so it legitimately
+  // arrives null — and when it does, the node the route already fetched carries
+  // the real name, in the very entry the filter below drops. Falling straight to
+  // the id would print `MLB31447` at the operator with the answer sitting one
+  // array element away, which is the exact failure this helper exists to remove.
+  const self = path.find((c) => c.id === sugestao.categoryId);
+  const leaf = blankToNull(sugestao.categoryName) ?? blankToNull(self?.name) ?? sugestao.categoryId;
+  const trail = path
+    // ML repeats the node itself at the end of the path; the caller renders the
+    // leaf separately, so including it here would duplicate it.
+    .filter((c) => c.id !== sugestao.categoryId)
+    .map((c) => blankToNull(c.name) ?? c.id);
+  return { trail, leaf };
+}
+
+/** `"Roupas › Camisetas e Regatas"` — the one-line form, for a title or a test. */
+export function formatSugestaoPath(sugestao: MercadoLivreCategoriaSugestao): string {
+  const { trail, leaf } = sugestaoPath(sugestao);
+  return [...trail, leaf].join(PATH_SEPARATOR);
+}
+
+function blankToNull(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
 /**
