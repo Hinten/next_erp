@@ -14,6 +14,7 @@ import { integracaoCollection } from '@delfrance/data/admin/collections';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { invalidateWhatsappConta } from '@/lib/whatsapp/contaCache';
 import { loadWhatsappContext } from '@/lib/whatsapp/whatsapp';
 import { isWhatsappError, whatsappErrorResponse } from '@/lib/whatsapp/respond';
 
@@ -61,6 +62,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     // The code checked out — flag the account verified (Admin SDK; the client
     // never sets this field itself).
     await integracaoCollection.merge(db, {}, integracaoId, { verificado: true });
+    invalidateWhatsappConta(integracaoId);
     return NextResponse.json({ ok: true, verificado: true });
   } catch (err) {
     if (isWhatsappError(err)) return whatsappErrorResponse(err);

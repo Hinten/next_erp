@@ -122,7 +122,7 @@ export const produtoSchema = z
 
     /**
      * ⛔ DEAD WEIGHT — no query consumers, deleted at the Flutter decommission
-     * (#431 lock 3). Do not build on these three.
+     * (#992). Do not build on these three.
      *
      * "No query consumers" precisely: nothing in this repo filters, projects or
      * orders by them, and no code reads one to make a decision about anything
@@ -149,7 +149,11 @@ export const produtoSchema = z
      * The only real consumer was ever the deployed Flutter backend, which does
      * not survive the cutover — so as of the owner decision on 2026-08-10 these
      * have no consumer in any window. The writes are kept purely so the
-     * decommission can delete the whole cluster in one piece (#961).
+     * decommission can delete the whole cluster in one piece — tracked in
+     * **#992**, which carries the full removal list. (#431, which used to hold
+     * that job, is closed.) The `statusProdutosMarketplace` write in
+     * `importMigration.applyMarketplaceDeletion` is kept on the same grounds and
+     * for the same window — decided explicitly in #825, not by omission.
      *
      * ⚠️ And they are already unreliable, which is why nobody should try to
      * repair them: an entry is **never removed when a link doc is deleted** (no

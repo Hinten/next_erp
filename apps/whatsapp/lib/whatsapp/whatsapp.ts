@@ -18,6 +18,7 @@ import {
   WhatsAppClient,
 } from '@delfrance/integrations-whatsapp-cloud-api';
 
+import { readWhatsappConta } from './contaCache';
 import { type CredentialStore, createCredentialStore } from './credentialStore';
 
 /** The account doc is missing, not a WhatsApp tipo, or has no phone number id. */
@@ -156,14 +157,13 @@ export async function loadWhatsappContext(
   db: Firestore,
   integracaoId: string,
 ): Promise<WhatsappContext> {
-  const snap = await integracaoCollection.docRef(db, {}, integracaoId).get();
-  if (!snap.exists) {
+  // The cached reader replaces the READ, not the contract — both throws below
+  // are unchanged, and a `null` stands in for `!snap.exists`. See
+  // `contaCache.ts` for why the cache is a separate module.
+  const conta = await readWhatsappConta(db, integracaoId);
+  if (conta == null) {
     throw new WhatsappContaNotConfiguredError(`Integração ${integracaoId} não encontrada.`);
   }
-  const conta = integracaoCollection.parseRead(
-    snap.data(),
-    integracaoCollection.docPath({}, integracaoId),
-  );
   if (conta.tipo !== INTEGRACAO_TIPO.whatsapp) {
     throw new WhatsappContaNotConfiguredError(`Integração ${integracaoId} não é do tipo WhatsApp.`);
   }

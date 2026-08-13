@@ -1,0 +1,11 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "description": "NOT CACHEABLE, deliberately. Most tests in this workspace are repo-wide backstops: they git grep / git ls-files across the WHOLE repo and read files belonging to no workspace (.github/workflows/**, .env.example, pnpm-workspace.yaml, apps/**/functions/package.json, apps/web/playwright.config.ts). Turbo hashes a task's declared inputs, not the repo, so under the root `test` definition this suite replays a cached green after the very files it polices change. An `inputs` list cannot express a whole-repo grep honestly, so cache:false is the only true declaration -- and the suite is a handful of git-shaped tests that finish in seconds. CI is unaffected either way (no workflow restores a .turbo cache or sets a remote-cache token), but the LOCAL green is what a developer trusts before pushing. dependsOn is restated because a Package Configuration overrides the root task per key.",
+      "dependsOn": ["^build"],
+      "cache": false
+    }
+  }
+}
