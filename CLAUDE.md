@@ -14,11 +14,12 @@ checkouts) and is the **parity reference for ports**.
 CI — the nine lanes in `.github/workflows/` run **concurrently**, gated on
 nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
 from the workspace dependency graph and reports through one unskippable check;
-`ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
-pipelines `ci-{nfe,freight,storage,rules}.yml` own. `ci-mercado-livre.yml` is the
-odd one out: `ci.yml` *does* run the ML unit tests, but `vitest.config.ts`
-excludes `*.firestore.test.ts`, so that lane alone runs them. **Touching
-`.github/workflows/` → the `ci-lanes` skill**, which carries the whole design.
+`ci.yml` excludes the nfe/freight/storage/functions/mercado-livre tests, which
+the domain pipelines `ci-{nfe,freight,storage,rules,mercado-livre}.yml` own —
+**an exclusion is a promise that the owning lane runs them, so when that lane
+skips they run nowhere.** `ci.yml` still lints, typechecks and builds the full
+graph unfiltered. **Touching `.github/workflows/` → the `ci-lanes` skill**, which
+carries the whole design.
 
 Four rules you must not break without reading it first:
 
@@ -82,7 +83,13 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 4. **Emulators only in named carve-outs.** Default target is the staging
    Firebase project (`FIREBASE_PROJECT_ID`; the carve-outs point the same var at
    the offline `demo-erp`), with seed/teardown in `tools/test-fixtures`. The
-   carve-outs are `ci-storage.yml`, `ci-rules.yml`, and `e2e-emulator.yml`
+   carve-outs are `ci-storage.yml`, `ci-rules.yml`, `ci-mercado-livre.yml`
+   (**two** configs: `firebase.mercado-livre.json`, firestore only, for every
+   `apps/mercado-livre/**/*.firestore.test.ts` — the lane where the ML backend
+   meets a real Firestore; and `firebase.mercado-livre.tasks.json`,
+   firestore+functions+tasks, which serves the ML functions artifact so
+   `*.tasks.test.ts` can drive receiver → enqueue → the real `onTaskDispatched`
+   → Firestore), and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
    `*.emulator.e2e.spec.ts` — five today. Every other e2e spec hits staging. Do
    **not** add a local-dev emulator mode: `NEXT_PUBLIC_USE_FIREBASE_EMULATOR`
@@ -181,8 +188,18 @@ freight-br and whatsapp-cloud-api are implemented — the other five throw
 
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
 `migrations`. Firebase configs: `firebase.json` (prod), `firebase.staging.json`,
-emulator-only `firebase.{functions,rules,e2e}.json`, and five deploy-isolated
-`firebase.<codebase>.deploy.json`.
+emulator-only `firebase.{functions,rules,e2e}.json` plus
+`firebase.mercado-livre{,.tasks}.json`, and five deploy-isolated
+`firebase.<codebase>.deploy.json`. ⚠️ **Three** `firebase.mercado-livre*.json`
+now sit one dot apart, and only one of them deploys:
+`firebase.mercado-livre.json` (emulator, firestore only) and
+`firebase.mercado-livre.tasks.json` (emulator, firestore+functions+tasks) vs
+`firebase.mercado-livre.deploy.json` (the ML functions codebase). Read the whole
+filename before any deploy. The two emulator ones are safe by construction —
+neither declares a rules or indexes path, and the `.tasks` one's `functions.source`
+points at the **generated** `.deploy/mercado-livre-functions` artifact, which
+exists only after `prepare-deploy.mjs` runs — so a stray deploy against either
+can push nothing.
 
 ## Common commands
 

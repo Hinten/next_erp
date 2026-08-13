@@ -21,15 +21,16 @@ export const PEDIDO_TABS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'link-pgto', label: 'Link Pgto' },
   { value: 'incidentes', label: 'Incidentes' },
   { value: 'devolucao', label: 'Devolução' },
+  { value: 'checkout', label: 'Checkout' },
   { value: 'estado', label: 'Estado/Histórico' },
 ];
 
 /**
  * Saída-only tabs — hidden on an entrada (inbound order): payment links,
- * incidents and returns are sale-side flows the legacy app never showed for
- * an entrada.
+ * incidents, returns and the dispatch checkout are sale-side flows the legacy
+ * app never showed for an entrada.
  */
-const SAIDA_ONLY_TABS: ReadonlyArray<string> = ['link-pgto', 'incidentes', 'devolucao'];
+const SAIDA_ONLY_TABS: ReadonlyArray<string> = ['link-pgto', 'incidentes', 'devolucao', 'checkout'];
 
 /**
  * Visible pedido-form tab values in display order for the given direction.

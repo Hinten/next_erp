@@ -9,6 +9,7 @@
  * `delfrance/no-inline-admin-collection` ESLint rule (warn).
  */
 export { cmunCollection } from './cmunCollection';
+export { configIaCollection } from './configIaCollection';
 export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';
@@ -36,7 +37,11 @@ export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
 export { integracaoCollection } from './integracaoCollection';
 export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
-export { oauthStateCollection } from './oauthStateCollection';
+export {
+  oauthStateCollection,
+  oauthStateIntFreteCollection,
+  oauthStateMetodoPgtoCollection,
+} from './oauthStateCollection';
 export { tokenDuravelCollection } from './tokenDuravelCollection';
 export {
   produtoMercadoLivreLinkCollection,

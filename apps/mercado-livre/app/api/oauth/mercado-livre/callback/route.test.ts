@@ -12,7 +12,7 @@ import {
   MercadoLivreConfigError,
   MercadoLivreContaNotConfiguredError,
 } from '@/lib/marketplace/mercadoLivre';
-import { MarketplaceStateError, signState } from '@/lib/marketplace/state';
+import { OauthStateError, signState } from '@delfrance/data/admin/oauth-state';
 
 // The callback takes NO Bearer token — it's a browser redirect from Mercado
 // Livre — so the signed `state` plus its single-use record are the only trust
@@ -34,9 +34,12 @@ vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/oauthStateStore', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/oauthStateStore')>();
-  return { ...actual, consumeOauthState: h.consumeOauthState };
+vi.mock('@/lib/marketplace/oauthState', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/oauthState')>();
+  return {
+    ...actual,
+    mercadoLivreOauthState: { ...actual.mercadoLivreOauthState, consume: h.consumeOauthState },
+  };
 });
 
 const { GET } = await import('./route');
@@ -99,7 +102,7 @@ describe('GET /api/oauth/mercado-livre/callback', () => {
   it('redirects with reason=bad_state when the attempt was already consumed (replay)', async () => {
     // #821/T3, the whole point: a state that verifies is not thereby unused.
     // Replaying a captured callback used to overwrite the account credential.
-    h.consumeOauthState.mockRejectedValue(new MarketplaceStateError('state já utilizado'));
+    h.consumeOauthState.mockRejectedValue(new OauthStateError('state já utilizado'));
     const { state } = signState('int-1', STATE_SECRET);
     const res = await GET(req({ code: 'auth-code', state }));
 

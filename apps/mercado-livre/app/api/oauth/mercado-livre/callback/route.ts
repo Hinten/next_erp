@@ -33,8 +33,9 @@ import {
   loadMercadoLivreContext,
   mercadoLivreRedirectUri,
 } from '@/lib/marketplace/mercadoLivre';
-import { consumeOauthState } from '@/lib/marketplace/oauthStateStore';
-import { MarketplaceStateError, verifyState } from '@/lib/marketplace/state';
+import { OauthStateError, verifyState } from '@delfrance/data/admin/oauth-state';
+
+import { mercadoLivreOauthState } from '@/lib/marketplace/oauthState';
 import { isMercadoLivreError } from '@/lib/marketplace/respond';
 
 export const dynamic = 'force-dynamic';
@@ -149,13 +150,12 @@ export async function GET(req: Request): Promise<NextResponse> {
   let codeVerifier: string | null;
   try {
     const verified = verifyState(state, secret);
-    integracaoId = verified.integracaoId;
+    integracaoId = verified.id;
     // Single-use: a replay of this same state finds the attempt consumed and
     // lands here as `bad_state`, before anything touches the credential.
-    ({ codeVerifier } = await consumeOauthState(db, integracaoId, verified.nonce));
+    ({ codeVerifier } = await mercadoLivreOauthState.consume(db, integracaoId, verified.nonce));
   } catch (err) {
-    if (err instanceof MarketplaceStateError)
-      return backToList({ ml: 'error', reason: 'bad_state' });
+    if (err instanceof OauthStateError) return backToList({ ml: 'error', reason: 'bad_state' });
     throw err;
   }
 

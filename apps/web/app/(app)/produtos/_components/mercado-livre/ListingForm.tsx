@@ -5,16 +5,7 @@ import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
-import {
-  Button,
-  Fieldset,
-  Group,
-  Select,
-  SimpleGrid,
-  Textarea,
-  TextInput,
-  Tooltip,
-} from '@mantine/core';
+import { Fieldset, Select, SimpleGrid, Textarea, TextInput, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
@@ -43,6 +34,7 @@ import {
   type ListingFormValues,
 } from '@/lib/mercado-livre/listingForm';
 import { createClientListingPort } from '@/lib/mercado-livre/listingPort';
+import type { ListingSaveOutcome } from '@/lib/mercado-livre/listingSaveOutcome';
 import {
   ListingConflictError,
   ListingMissingError,
@@ -73,11 +65,26 @@ export interface ListingFormProps {
   /** Reported on every change so the page's leave-guard can see ML edits. */
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   /**
-   * Hands the editor a closure that saves this listing, so the produto's own
-   * "Salvar alterações" commits ML edits too. `null` on unmount.
+   * Hands the editor a closure that saves this listing, so **both** callers can
+   * drive it: the produto's own "Salvar alterações" (`'flush'`) and the
+   * "Salvar anúncio" button the editor now renders next to Publicar
+   * (`'button'`). `null` on unmount.
+   *
+   * ⚠️ The mode is not cosmetic — it decides how a failure is reported. `'flush'`
+   * throws `AfterSaveBlockedError`, which `ObjectView` turns into a form alert and
+   * which stops it navigating away from the conflict modal; `'button'` shows a
+   * notification and swallows, because there is no outer save to block.
    */
-  registerFlush: (linkDocId: string, flush: (() => Promise<void>) | null) => void;
+  registerFlush: (linkDocId: string, save: ListingSaveFn | null) => void;
 }
+
+/**
+ * How a registered listing save is invoked — see `registerFlush`.
+ *
+ * The outcome is what lets the conta-level caller aggregate; see
+ * `ListingSaveOutcome`, which carries the reasoning.
+ */
+export type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
 
 /**
  * The editable half of a listing.
@@ -197,7 +204,10 @@ export function ListingForm({
   );
 
   const runSave = useCallback(
-    async (mode: 'button' | 'flush', override?: ProdutoMercadoLivreLink): Promise<void> => {
+    async (
+      mode: 'button' | 'flush',
+      override?: ProdutoMercadoLivreLink,
+    ): Promise<ListingSaveOutcome> => {
       const valid = await form.trigger();
       if (!valid) {
         if (mode === 'flush') {
@@ -205,10 +215,13 @@ export function ListingForm({
             'Há campos inválidos no anúncio do Mercado Livre. Corrija-os na aba Mercado Livre.',
           );
         }
-        return;
+        // ⚠️ The one exit that shows NOTHING — the field errors render inline,
+        // above the button. The caller aggregates so a skipped listing cannot
+        // hide behind a sibling's success toast.
+        return 'invalid';
       }
       const parsed = listingFormSchema.safeParse(form.getValues());
-      if (!parsed.success) return;
+      if (!parsed.success) return 'invalid';
 
       const baseline = override ?? baselineRef.current;
       const port = createClientListingPort(db, produtoId, linkDocId);
@@ -251,6 +264,7 @@ export function ListingForm({
         if (mode === 'button') {
           notifications.show({ color: 'green', message: 'Anúncio salvo.' });
         }
+        return 'saved';
       } catch (err) {
         if (err instanceof ListingNothingChangedError) {
           // A round trip that ended where it started. Nothing to write, and
@@ -259,7 +273,8 @@ export function ListingForm({
           if (mode === 'button') {
             notifications.show({ color: 'yellow', message: err.message });
           }
-          return;
+          // Not a shortfall: nothing needed writing and the operator was told.
+          return 'saved';
         }
         if (err instanceof ListingConflictError) {
           setConflict({ fields: err.fields, baseline, current: err.current });
@@ -268,17 +283,17 @@ export function ListingForm({
               'O anúncio do Mercado Livre foi alterado por outra pessoa. Revise as diferenças antes de salvar.',
             );
           }
-          return;
+          return 'conflict';
         }
         if (err instanceof ListingMissingError) {
           notifications.show({ color: 'red', message: err.message });
           if (mode === 'flush') throw new AfterSaveBlockedError(err.message);
-          return;
+          return 'failed';
         }
         if (err instanceof FirebaseError) {
           notifications.show({ color: 'red', message: err.message });
           if (mode === 'flush') throw new AfterSaveBlockedError(err.message);
-          return;
+          return 'failed';
         }
         throw err;
       } finally {
@@ -306,7 +321,7 @@ export function ListingForm({
     runSaveRef.current = runSave;
   }, [runSave]);
   useEffect(() => {
-    registerFlush(linkDocId, () => runSaveRef.current('flush'));
+    registerFlush(linkDocId, (mode) => runSaveRef.current(mode));
     return () => registerFlush(linkDocId, null);
   }, [linkDocId, registerFlush]);
 
@@ -429,19 +444,13 @@ export function ListingForm({
         />
       </Fieldset>
 
-      <Group justify="flex-end">
-        {/* type="button": ObjectView's <form> wraps this subtree, and a submit
-            button here would fire the produto save instead. */}
-        <Button
-          type="button"
-          variant="light"
-          onClick={() => void runSave('button')}
-          loading={saving}
-          disabled={readOnly || !isDirty}
-        >
-          Salvar anúncio
-        </Button>
-      </Group>
+      {/* ⚠️ "Salvar anúncio" is NOT rendered here any more. It lives in
+          `MercadoLivreEditor`'s action group, beside "Publicar no Mercado Livre",
+          because saving and publishing are the two halves of one decision and
+          having them at opposite ends of a long card read as unrelated.
+          `registerFlush` is what lets the editor drive this form's save, and the
+          editor gates the button on its own `dirtyIds` — which counts ATTRIBUTE
+          edits too, unlike the RHF-only `isDirty` this button used to read. */}
 
       <ListingConflictModal
         opened={conflict !== null}

@@ -30,6 +30,7 @@ import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import {
+  CheckoutTab,
   DevolucaoTab,
   EstadoHistoricoTab,
   EstoqueSyncTab,
@@ -528,6 +529,11 @@ export function PedidoForm({
                 Devolução
               </Tabs.Tab>
             )}
+            {visibleTabs.has('checkout') && (
+              // Read-only (checkout is a dispatch audit log): no tabErrorProps —
+              // nothing here validates.
+              <Tabs.Tab value="checkout">Checkout</Tabs.Tab>
+            )}
             <Tabs.Tab value="estado" {...tabErrorProps('estado')}>
               Estado/Histórico
             </Tabs.Tab>
@@ -615,6 +621,12 @@ export function PedidoForm({
                 disabled={dadosGeraisDisabled}
                 pedidoId={pedidoId}
               />
+            </Tabs.Panel>
+          )}
+
+          {visibleTabs.has('checkout') && (
+            <Tabs.Panel value="checkout" pt="md">
+              <CheckoutTab pedidoId={pedidoId} />
             </Tabs.Panel>
           )}
 

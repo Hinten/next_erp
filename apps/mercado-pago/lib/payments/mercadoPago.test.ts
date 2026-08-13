@@ -298,11 +298,12 @@ describe('loadMercadoPagoContext', () => {
       refresh_token: 'RT',
     });
     const ctx = await loadMercadoPagoContext({} as never, 'm1');
-    await ctx.exchangeAndPersist('auth-code', NOW);
+    await ctx.exchangeAndPersist('auth-code', undefined, NOW);
 
     expect(h.exchangeCode).toHaveBeenCalledWith(
       expect.objectContaining({ clientId: 'CID' }),
       'auth-code',
+      undefined,
     );
     expect(h.storeSave).toHaveBeenCalledWith({
       access_token: 'AT',
@@ -321,7 +322,7 @@ describe('loadMercadoPagoContext', () => {
       refresh_token: 'RT',
     });
     const ctx = await loadMercadoPagoContext({} as never, 'm1');
-    await ctx.exchangeAndPersist('auth-code', NOW);
+    await ctx.exchangeAndPersist('auth-code', undefined, NOW);
 
     expect(h.storeSave).toHaveBeenCalledTimes(1);
     expect(h.merge).not.toHaveBeenCalled();

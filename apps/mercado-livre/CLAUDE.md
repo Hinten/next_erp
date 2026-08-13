@@ -51,9 +51,12 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   the hot lane by `redriveDeferredForUserId` the moment `onIntegracaoMercadoLivreChanged` sees
   that seller's `user_id` land on an active integração. As `fail` it parked terminally ~6h in,
   so a seller connecting the next business day lost the whole backlog. ⚠️ The re-drive query
-  needs the `(status, user_id)` composite index — `notificationGuardrails.test.ts` guard C does
-  NOT cover it (it only checks `(status, processedAt)`); the assertion in
-  `notificacao.test.ts` is its only cover.
+  needs the `(status, user_id)` composite index. Guard C in
+  `notificationGuardrails.test.ts` only checks `(status, processedAt)`; **guard D** in the same
+  file covers this one generically — it reads the re-drive query out of this file's source,
+  derives the required index from it, and compares with `indexSatisfies`, which honours `order`.
+  (The hand-rolled block that used to sit in `notificacao.test.ts` compared `fieldPath` only, so
+  flipping `user_id` to `DESCENDING` passed it while breaking the query — #823.)
 - `lib/marketplace/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
   backstop. Everything else in this channel can only re-drive a notification that was
   RECEIVED; this asks ML what it failed to deliver (`GET /missed_feeds` — filed only
@@ -73,15 +76,17 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
   `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
   the still-running Flutter app during the dual-run migration; "one wins" refresh).
-- `lib/marketplace/{state,oauthStateStore,pkce}.ts` — **#821**, the connect flow's two
-  trust anchors. `state.ts` signs/verifies the HMAC state (and now RETURNS its `nonce`);
-  `oauthStateStore.ts` is the per-attempt record over the admin-only
-  `integracao/{id}/oauthState` subcollection — a FIXED `current` doc id, so a new attempt
-  overwrites the previous one and the collection stays at one doc per integração (no TTL
-  policy, no sweep). `consumeOauthState` redeems it inside a transaction, re-deriving
-  every branch from the `tx.get` snapshot (root `CLAUDE.md` rule 7): two callbacks racing
-  one nonce contend on OCC and the loser is REJECTED, which is the intended outcome for a
-  single-use value. `pkce.ts` mints the verifier/challenge behind `MERCADO_LIVRE_PKCE_ENABLED`.
+- `lib/marketplace/oauthState.ts` — **#821**, the connect flow's two trust anchors.
+  The implementation is the SHARED module `@delfrance/data/admin/oauth-state`
+  (extracted in #1034 and now serving all three OAuth channels); this file is a thin
+  binding holding only what is per-channel — the `integracao/{id}/oauthState`
+  subcollection and the `MERCADO_LIVRE_PKCE_ENABLED` flag. The shared module signs and
+  verifies the HMAC state (RETURNING its `nonce`), keeps the per-attempt record at a
+  FIXED `current` doc id so a new attempt overwrites the previous one (one doc per
+  integração — no TTL policy, no sweep), and redeems it inside a transaction,
+  re-deriving every branch from the `tx.get` snapshot (root `CLAUDE.md` rule 7): two
+  callbacks racing one nonce contend on OCC and the loser is REJECTED, which is the
+  intended outcome for a single-use value. ⚠️ Do NOT reintroduce logic here.
   ⚠️ PKCE is a per-application toggle in ML's DevCenter and its docs are explicit that
   once it is on the parameters become MANDATORY — so the flag and the toggle are flipped
   together for a given `client_id`. The prod application is shared with the legacy Flutter
@@ -90,6 +95,49 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
   `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks.
+
+## Testing
+
+Two suites, deliberately separated by filename:
+
+- **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Runs in
+  `ci.yml` on **every** PR; that workflow has no `paths:` filter, so this coverage can
+  never develop a hole.
+- **Firestore integration** — `test:firestore` (`*.firestore.test.ts`), run by
+  `ci-mercado-livre.yml` under
+  `firebase emulators:exec --config firebase.mercado-livre.json --only firestore`.
+  Not a turbo task, so `turbo run test` cannot reach it. It exists because the offline
+  suite mocks Firestore away entirely: it covers the real `createTokenDuravelStore`
+  (including the dual-lineage read across Flutter's auto-id docs and this app's
+  `current`, and the "one wins" refresh under real contention), the notification store's
+  ALREADY_EXISTS/NOT_FOUND semantics, the receiver writing a real failure doc via the
+  `MERCADO_LIVRE_TASKS_DISABLED` valve, and `exchangeAndPersist`.
+
+- **Cloud Tasks round trip** — `test:tasks` (`*.tasks.test.ts`), run by the same workflow
+  under `--config firebase.mercado-livre.tasks.json --only firestore,functions,tasks`.
+  It serves the REAL functions codebase (built first by `prepare-deploy.mjs`, since
+  `predeploy` hooks do not run under `emulators:exec`) and drives
+  receiver → `mlTasks.ts` enqueue → tasks emulator → the real
+  `processMercadoLivreNotification` → a real Firestore write. ⚠️ `FUNCTIONS_REGION`
+  (inlined into the bundle) and `MERCADO_LIVRE_TASKS_REGION` (read by the enqueuer) MUST
+  match — a mismatch is the silent drop `mlTasks.ts` warns about, and it is what this
+  test detects. It uses a seller with no integração so the path needs no ML API call, no
+  token and no real secret, and executes only classic queries (the Pipelines API does not
+  run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
+
+⚠️ **Not covered, so do not read a green lane as more than it is:**
+`scheduleDelaySeconds` — the emulator's dispatch loop is pure FIFO with no `scheduleTime`
+predicate (`firebase-tools#8254`, open, triaged upstream as a feature request), so the
+receiver's 10s order-family refetch delay cannot be observed; `mlTasks.test.ts` pins it
+statically and the round trip uses a no-delay topic. Also uncovered: the nested
+`functions/` **Firestore triggers** (the lane loads them but drives none), composite
+**index declaration** (the emulator
+auto-creates them; that is guard C/D in `notificationGuardrails.test.ts`), Firestore
+rules (the Admin SDK bypasses them — `ci-rules.yml` owns those), the Enterprise Pipelines
+API (the emulator is Standard edition and still exposes `db.pipeline()`), and the ML API
+itself. ML has **no sandbox** and its `refresh_token` is single-use and rotating, so no
+lane may ever hold real ML credentials — a CI refresh would invalidate the token the
+deployed backend is holding.
 
 ## Stock sweep tiers — read ADR 0014 first
 

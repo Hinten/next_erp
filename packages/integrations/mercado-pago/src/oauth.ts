@@ -39,6 +39,17 @@ export interface BuildAuthorizeUrlParams {
   /** Opaque, signed state — verified on callback (CSRF + carries the account id). */
   readonly state: string;
   readonly authBaseUrl?: string;
+  /**
+   * PKCE (RFC 7636) — only when the registered MP application has PKCE enabled.
+   *
+   * ⚠️ MP's docs are explicit that the toggle makes these MANDATORY: *"With the
+   * field enabled, Mercado Pago will require the `code_challenge` and
+   * `code_method` fields in OAuth requests."* So the caller's flag and the
+   * dashboard toggle must be flipped together — sending them to an app that has
+   * PKCE off is ignored, omitting them from one that has it on breaks consent.
+   */
+  readonly codeChallenge?: string;
+  readonly codeChallengeMethod?: 'S256' | 'plain';
 }
 
 /** Build the MP consent URL to redirect the seller to. */
@@ -49,11 +60,25 @@ export function buildAuthorizeUrl(params: BuildAuthorizeUrlParams): string {
   url.searchParams.set('client_id', params.clientId);
   url.searchParams.set('redirect_uri', params.redirectUri);
   url.searchParams.set('state', params.state);
+  if (params.codeChallenge) {
+    url.searchParams.set('code_challenge', params.codeChallenge);
+    url.searchParams.set('code_challenge_method', params.codeChallengeMethod ?? 'S256');
+  }
   return url.toString();
 }
 
-/** Exchange an authorization `code` for the first token pair. */
-export function exchangeCode(config: MercadoPagoOAuthConfig, code: string): Promise<TokenResponse> {
+/**
+ * Exchange an authorization `code` for the first token pair.
+ *
+ * `codeVerifier` is the PKCE proof matching the `code_challenge` sent to
+ * `buildAuthorizeUrl`; omit it when the app has PKCE off. The refresh grant never
+ * carries one.
+ */
+export function exchangeCode(
+  config: MercadoPagoOAuthConfig,
+  code: string,
+  codeVerifier?: string,
+): Promise<TokenResponse> {
   const params = new URLSearchParams({
     grant_type: 'authorization_code',
     client_id: config.clientId,
@@ -61,6 +86,7 @@ export function exchangeCode(config: MercadoPagoOAuthConfig, code: string): Prom
     code,
     redirect_uri: config.redirectUri,
   });
+  if (codeVerifier) params.set('code_verifier', codeVerifier);
   return requestToken(config, params);
 }
 

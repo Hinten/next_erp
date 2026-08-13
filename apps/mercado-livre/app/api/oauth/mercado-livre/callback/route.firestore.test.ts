@@ -22,9 +22,10 @@ import { randomUUID } from 'node:crypto';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { signState } from '@delfrance/data/admin/oauth-state';
+
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { putOauthState } from '@/lib/marketplace/oauthStateStore';
-import { signState } from '@/lib/marketplace/state';
+import { mercadoLivreOauthState } from '@/lib/marketplace/oauthState';
 
 import { GET } from './route';
 
@@ -89,7 +90,7 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
     // RECORDS the attempt and the callback REDEEMS it, so the state is
     // single-use. Seed the record the same way the start route would.
     const { state, nonce } = signState(integracaoId, STATE_SECRET);
-    await putOauthState(db(), integracaoId, { nonce, codeVerifier: null });
+    await mercadoLivreOauthState.put(db(), integracaoId, { nonce, codeVerifier: null });
 
     const url = `https://ml.example.invalid/api/oauth/mercado-livre/callback?code=TG-code-123&state=${encodeURIComponent(state)}`;
 
@@ -152,7 +153,7 @@ describe.skipIf(!EMULATED)('GET /api/oauth/mercado-livre/callback (Firestore emu
     });
 
     const { state, nonce } = signState(integracaoId, STATE_SECRET);
-    await putOauthState(db(), integracaoId, { nonce, codeVerifier: null });
+    await mercadoLivreOauthState.put(db(), integracaoId, { nonce, codeVerifier: null });
 
     const url = `https://ml.example.invalid/api/oauth/mercado-livre/callback?code=TG-code-123&state=${encodeURIComponent(state)}`;
 

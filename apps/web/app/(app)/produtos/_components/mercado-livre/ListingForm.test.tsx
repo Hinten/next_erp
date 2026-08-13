@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -62,6 +62,22 @@ function type(label: string | RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
+/**
+ * Drive the save the way `MercadoLivreEditor` does now.
+ *
+ * "Salvar anúncio" moved out of this component into the editor's action group
+ * (beside Publicar), so the save is reached through the closure this form
+ * registers rather than through a button in its own subtree. The save LOGIC is
+ * unchanged — only its trigger moved — so these tests invoke the closure.
+ */
+async function save(registerFlush: ReturnType<typeof vi.fn>, mode: 'button' | 'flush' = 'button') {
+  const calls = registerFlush.mock.calls.filter((c) => typeof c[1] === 'function');
+  const fn = calls.at(-1)![1] as (m: 'button' | 'flush') => Promise<void>;
+  await act(async () => {
+    await fn(mode);
+  });
+}
+
 beforeEach(() => {
   h.writes = [];
   h.remote = linkFixture();
@@ -101,9 +117,17 @@ describe('ListingForm', () => {
     expect(screen.getByLabelText('Título do anúncio')).toHaveProperty('disabled', false);
   });
 
-  it('keeps "Salvar anúncio" disabled until something is edited', () => {
+  it('renders NO save button of its own — the editor owns it', () => {
+    // "Salvar anúncio" moved beside "Publicar no Mercado Livre" in
+    // `MercadoLivreEditor`, which gates it on `dirtyIds` (attribute edits
+    // included). A second button here would be a second, RHF-only gate.
     renderForm();
-    expect(screen.getByRole('button', { name: 'Salvar anúncio' })).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('button', { name: /Salvar anúncio/ })).toBeNull();
+  });
+
+  it('registers a save the editor can invoke in either mode', () => {
+    const { registerFlush } = renderForm();
+    expect(registerFlush).toHaveBeenCalledWith('ML-DOC-1', expect.any(Function));
   });
 
   it('reports dirtiness upward instead of guarding navigation itself', async () => {
@@ -117,9 +141,9 @@ describe('ListingForm', () => {
   });
 
   it('writes only the edited key', async () => {
-    renderForm({ title: 'Camiseta Básica' });
+    const { registerFlush } = renderForm({ title: 'Camiseta Básica' });
     type('Título do anúncio', 'Camiseta Premium');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(h.writes).toHaveLength(1);
@@ -131,9 +155,9 @@ describe('ListingForm', () => {
   });
 
   it('never writes a server-owned key', async () => {
-    renderForm();
+    const { registerFlush } = renderForm();
     type('Título do anúncio', 'Novo');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(h.writes).toHaveLength(1);
@@ -144,9 +168,9 @@ describe('ListingForm', () => {
   });
 
   it('refuses to save a blank title', async () => {
-    renderForm();
+    const { registerFlush } = renderForm();
     type('Título do anúncio', '   ');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(screen.getByText('Informe o título do anúncio.')).toBeDefined();
@@ -162,9 +186,9 @@ describe('ListingForm', () => {
       title: 'Alterado por outra pessoa',
       ultimaModificacao: (link.ultimaModificacao ?? 0) + 5_000,
     });
-    renderForm({ title: 'Original' });
+    const { registerFlush } = renderForm({ title: 'Original' });
     type('Título do anúncio', 'Meu texto');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(screen.getByText('Anúncio alterado')).toBeDefined();
