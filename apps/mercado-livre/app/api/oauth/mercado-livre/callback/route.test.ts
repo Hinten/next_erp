@@ -209,7 +209,7 @@ describe('GET /api/oauth/mercado-livre/callback', () => {
         { code: 'invalid_type', path: ['refresh_token'], message: 'Required' },
       ]),
     );
-    await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
+    await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET).state }));
 
     expect(spyErro.mock.calls[0]![1]).toMatchObject({
       reason: 'resposta_invalida',
@@ -231,7 +231,7 @@ describe('GET /api/oauth/mercado-livre/callback', () => {
         },
       ]),
     );
-    await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
+    await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET).state }));
 
     expect(JSON.stringify(spyErro.mock.calls[0])).not.toContain('APP_USR-um-token-de-verdade');
   });
