@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "EMULATOR-ONLY config for the Mercado Livre Cloud Tasks round-trip lane (ci-mercado-livre.yml: `firebase emulators:exec --config firebase.mercado-livre.tasks.json --only firestore,functions,tasks`). ⚠️ NOT a deploy config — that is `firebase.mercado-livre.deploy.json`, which is the one carrying `predeploy`. This one points `source` at the SAME generated `.deploy/mercado-livre-functions` artifact, but emulators:exec does NOT run predeploy hooks, so the lane must invoke prepare-deploy.mjs itself first. It declares no rules and no indexes, so a stray `firebase deploy` here can push only the functions codebase — never rules. The tasks port is pinned rather than left to auto-assign: firebase-tools' controller.ts reads `listenForEmulator.eventarc` in the tasks slot on the late-port-assignment path, so an explicit port avoids that. Ports are distinct from firebase.functions.json (8080/5001), firebase.rules.json (8081) and firebase.mercado-livre.json (8082).",
+  "functions": [
+    {
+      "source": ".deploy/mercado-livre-functions",
+      "codebase": "mercado-livre",
+      "runtime": "nodejs22",
+      "ignore": ["node_modules"]
+    }
+  ],
+  "firestore": {},
+  "emulators": {
+    "firestore": { "port": 8083 },
+    "functions": { "port": 5002 },
+    "tasks": { "port": 9499 },
+    "ui": { "enabled": false },
+    "singleProjectMode": true
+  }
+}
