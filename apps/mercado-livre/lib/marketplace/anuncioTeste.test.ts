@@ -102,10 +102,28 @@ describe('isContaDeTeste', () => {
     expect(isContaDeTeste('  test1234  ')).toBe(true);
   });
 
+  it('recognises the TETE… form ML actually mints', () => {
+    // ⚠️ Source: this repo's own captured test-user order, `orderMLWire.test.ts`
+    // — a payload tagged `test_order` whose buyer is `nickname: 'TETE8127263'`.
+    // A `/^TEST/` predicate misses it, and the direction of that failure is the
+    // problem: the operator who does exactly what the alert asks (mint a test
+    // user, connect it as a second conta) would be told their COMPLIANT account
+    // is not a test account. A warning that fires on the correct setup is one
+    // people learn to click past, which costs the single case it exists for.
+    expect(isContaDeTeste('TETE8127263')).toBe(true);
+    expect(isContaDeTeste('  tete8127263 ')).toBe(true);
+  });
+
   it('does not mistake a real seller for one', () => {
     expect(isContaDeTeste('VESTEFRANCE')).toBe(false);
     expect(isContaDeTeste('LOJA_TEST')).toBe(false);
     expect(isContaDeTeste(null)).toBe(false);
     expect(isContaDeTeste(undefined)).toBe(false);
+  });
+
+  it('stays narrow enough to still reject a real seller starting in TE', () => {
+    // The widening is `TE(ST|TE)`, not `TE` — "TECIDOS…" must stay a seller.
+    expect(isContaDeTeste('TECIDOS_BRASIL')).toBe(false);
+    expect(isContaDeTeste('TERRA_MODA')).toBe(false);
   });
 });

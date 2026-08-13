@@ -27,7 +27,7 @@ import {
   attrSku,
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
-import { parseFakePath } from '@delfrance/schemas';
+import { parseFakePath, resolveCondicaoAnuncio } from '@delfrance/schemas';
 
 import type { ResolvedSizeChart } from './sizeChart';
 
@@ -149,17 +149,23 @@ export function resolvePrice(
  * `condicao != 1` stays as the secondary branch: `extraData.condicao` is a
  * three-value field (1 novo, 2 usado, 3 recondicionado) and dropping it would
  * silently start publishing recondicionado stock as new.
+ *
+ * ⚠️ The precedence itself lives in `@delfrance/schemas` because the produto
+ * editor has to SHOW the operator what this will send. A second copy over there
+ * mirrored only `ehUsado`, so a produto marked recondicionado displayed "Novo"
+ * and published `used` — a disagreement nothing could catch, because one side is
+ * a screen and the other a payload.
  */
 export function resolveCondition(
   link: PublishLink | null,
   produto: PublishProduto,
   condicao: number | null,
 ): 'new' | 'used' {
-  if (produto.ehUsado) return 'used';
-  // extraData.condicao: 1 = novo; 2 (usado) and 3 (recondicionado) map to the
-  // only other value the old CONDITION enum supported.
-  if (condicao != null && condicao !== 1) return 'used';
-  return link?.condition ?? 'new';
+  return resolveCondicaoAnuncio({
+    ehUsado: produto.ehUsado === true,
+    condicao,
+    condicaoAnuncio: link?.condition ?? null,
+  }).condition;
 }
 
 /**

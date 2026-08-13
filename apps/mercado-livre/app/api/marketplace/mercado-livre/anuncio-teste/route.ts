@@ -54,17 +54,23 @@ export async function GET(req: Request): Promise<NextResponse> {
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
     const [raizes, me] = await Promise.all([getCategoriasRaizCached(api), api.getMe()]);
-    const categoryId = encontrarCategoriaTeste(raizes);
+    const encontrada = encontrarCategoriaTeste(raizes);
 
     // The listing type is a per-CATEGORY answer, so it can only be resolved once
-    // a category is. No "Outros" ⇒ no type either, and the operator picks both.
+    // a category is. No usable "Outros" ⇒ no type either, and the operator picks both.
+    //
+    // ⚠️ A mid-tree "Outros" is reported as NO category, not as a category with
+    // no types. Only a leaf can be published into, so handing the form a
+    // mid-tree `category_id` would write a value publish must reject while the
+    // UI blamed the listing types — the failure would point at the wrong field.
+    // "Outros" is a leaf on MLB today, but that is ML's to change.
     let listingTypeId: string | null = null;
-    if (categoryId != null) {
-      const node = await getCategoriaCached(api, categoryId);
-      // A mid-tree node has no listing types — same gate the tipos-anuncio route
-      // uses. "Outros" is a leaf on MLB today, but that is ML's to change.
+    let categoryId: string | null = null;
+    if (encontrada != null) {
+      const node = await getCategoriaCached(api, encontrada);
       if (isLeafCategory(node.children_categories)) {
-        listingTypeId = escolherTipoAnuncioTeste(await getListingTypesCached(api, categoryId));
+        categoryId = encontrada;
+        listingTypeId = escolherTipoAnuncioTeste(await getListingTypesCached(api, encontrada));
       }
     }
 

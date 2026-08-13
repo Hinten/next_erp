@@ -86,13 +86,22 @@ export function encontrarCategoriaTeste(
 /**
  * Whether this account is one of ML's test users.
  *
- * ML mints them through `POST /users/test_user` with a `TEST…` nickname and no
- * other marker on `/users/me`, so the nickname is the only signal available.
- * Deliberately a heuristic used ONLY to warn — never to block, and never to
- * decide anything on the publish path.
+ * ML mints them through `POST /users/test_user` and puts no marker on
+ * `/users/me`, so the nickname is the only signal available. Deliberately a
+ * heuristic used ONLY to warn — never to block, and never to decide anything on
+ * the publish path.
+ *
+ * ⚠️ **`TETE…`, not just `TEST…`.** The repo's own captured test-user order
+ * (`orderMLWire.test.ts`, a `tags: ['test_order']` payload) carries
+ * `nickname: 'TETE8127263'`, so a `/^TEST/` predicate misses the format ML
+ * actually mints. The direction of that failure is what matters: the operator
+ * who does exactly what the alert asks — mint a test user, connect it as a
+ * second conta — would be told their compliant account is not a test account,
+ * and a warning that fires on the correct setup is one people learn to click
+ * past, which costs the single case it exists for.
  */
 export function isContaDeTeste(nickname: string | null | undefined): boolean {
-  return typeof nickname === 'string' && /^TEST/i.test(nickname.trim());
+  return typeof nickname === 'string' && /^TE(ST|TE)/i.test(nickname.trim());
 }
 
 function normalizar(s: string): string {

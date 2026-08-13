@@ -22,7 +22,11 @@ import {
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
-import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  resolveCondicaoAnuncio,
+  type FonteCondicaoAnuncio,
+  type ProdutoMercadoLivreLink,
+} from '@delfrance/schemas';
 
 import {
   attributesForSave,
@@ -80,6 +84,8 @@ export interface ListingFormProps {
    * the saved produto and not the pending form values.
    */
   produtoEhUsado: boolean;
+  /** `extraData.condicao` — the second input publish resolves from. */
+  produtoCondicao: number | null;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -108,30 +114,56 @@ export interface ListingFormProps {
  */
 export type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
 
+/** Where the shown condition came from — the caption names it. */
+const FONTE_CONDICAO_LABEL: Record<FonteCondicaoAnuncio, string> = {
+  produto: 'Definido pelo campo "Produto usado" na aba Configurações do produto.',
+  extraData: 'Definido pelo campo "Condição" na aba Dados extras do produto.',
+  anuncio: 'Definido pelo campo "Produto usado" na aba Configurações do produto.',
+};
+
 /**
- * Condição, read-only, derived from the parent produto's `ehUsado`.
+ * Condição, read-only, derived exactly the way publish derives it.
  *
  * It stopped being editable here because it was a second place to say something
  * the produto already says, and the two could disagree — the produto is the
  * product, and whether a product is used is a fact about the product, not about
  * one of its listings.
  *
- * ⚠️ The note on a published listing is the load-bearing part. ML accepts
+ * ⚠️ It must run `resolveCondicaoAnuncio`, not mirror one input. Showing only
+ * `ehUsado` reproduced the very defect this replaced a Select to remove: a
+ * produto with `ehUsado: false` and **Recondicionado** in Dados extras rendered
+ * "Novo" here while the first publish sent `used`. Same two-copies-that-disagree
+ * problem, moved from link↔produto to display↔payload — and harder to notice,
+ * because one side is a screen and the other a wire value. The caption names
+ * whichever field actually decided, so the operator knows where to go.
+ *
+ * ⚠️ The note on a published listing is the other load-bearing part. ML accepts
  * `condition` **only on create** (`itemPayload.ts`, inside `if (!input.isUpdate)`),
  * so flipping "Produto usado" on a listing that already exists changes what the
  * ERP would publish NEXT time and nothing at Mercado Livre. Without saying so,
  * the operator flips the switch, sees this field change, and reasonably believes
  * it propagated.
  */
-function CondicaoField({ ehUsado, published }: { ehUsado: boolean; published: boolean }) {
+function CondicaoField({
+  ehUsado,
+  condicao,
+  condicaoAnuncio,
+  published,
+}: {
+  ehUsado: boolean;
+  condicao: number | null;
+  condicaoAnuncio: 'new' | 'used' | null;
+  published: boolean;
+}) {
+  const { condition, fonte } = resolveCondicaoAnuncio({ ehUsado, condicao, condicaoAnuncio });
   return (
     <ListingField label="Condição">
       <Stack gap={2}>
-        <Text size="sm">{ehUsado ? 'Usado' : 'Novo'}</Text>
+        <Text size="sm">{condition === 'used' ? 'Usado' : 'Novo'}</Text>
         <Text size="xs" c="dimmed">
           {published
             ? 'Definido pelo produto. O Mercado Livre fixa a condição na criação do anúncio — alterá-la agora não altera este anúncio.'
-            : 'Definido pelo campo "Produto usado" na aba Configurações do produto.'}
+            : FONTE_CONDICAO_LABEL[fonte]}
         </Text>
       </Stack>
     </ListingField>
@@ -164,6 +196,7 @@ export function ListingForm({
   integracaoId,
   produtoNome,
   produtoEhUsado,
+  produtoCondicao,
   link,
   db,
   canWrite,
@@ -294,13 +327,21 @@ export function ListingForm({
               conta em Canais &gt; Mercado Livre.
             </Text>
           )}
+          {/* Covers both ways the route can decline it: "Outros" absent from the
+              catalogue, and "Outros" present but mid-tree — only a leaf can be
+              published into, so neither yields a usable category. */}
           {!testeConta.categoriaResolvida && (
             <Text size="sm">
-              A categoria “Outros” não foi encontrada no Mercado Livre — escolha uma categoria antes
-              de publicar.
+              Não foi possível usar a categoria “Outros” automaticamente — escolha uma categoria
+              antes de publicar.
             </Text>
           )}
-          {!testeConta.tipoResolvido && (
+          {/* ⚠️ Only meaningful once a category actually resolved. The route
+              never queries listing types without one, so an unresolved category
+              leaves `listingTypeId` null too — and saying "nenhum tipo nesta
+              categoria" about a category that was never found blames the wrong
+              thing, right beside the message that names the real one. */}
+          {testeConta.categoriaResolvida && !testeConta.tipoResolvido && (
             <Text size="sm">
               Nenhum tipo de anúncio de baixa exposição está disponível nesta categoria — escolha um
               manualmente e evite Premium.
@@ -363,6 +404,22 @@ export function ListingForm({
     baselineRef.current = link;
     form.reset(toFormValues(link));
   }, [link, isDirty, form]);
+
+  // ⚠️ The disclosure has to follow that re-seed. `descricaoOpen` is seeded once,
+  // but the effect above refills the whole form from the live snapshot whenever
+  // nothing is pending — so a descrição written by a second tab, a colleague, or
+  // an import lands in a textarea that stays `display: none`. No data is lost
+  // (`buildListingPatch` only writes dirty keys), but "a hidden non-empty field
+  // is one nobody remembers to check" is exactly the invariant the disclosure
+  // exists for, and this app is never the only writer (root CLAUDE.md rule 7).
+  //
+  // Open-ONLY, and gated on the same `isDirty` edge, so it can never collapse
+  // the field under someone mid-edit — which is why the seed is a `useState` and
+  // not a derivation in the first place.
+  useEffect(() => {
+    if (isDirty) return;
+    if ((link.descricao ?? '').trim() !== '') setDescricaoOpen(true);
+  }, [link.descricao, isDirty]);
 
   useEffect(() => {
     onDirtyChange(linkDocId, isDirty || attrDirty);
@@ -540,7 +597,12 @@ export function ListingForm({
               NOT a labelled control: the e2e proves the first-publish Select is
               gone by counting labelled elements on a published card, and a second
               labelled input in this grid would break that count. */}
-          <CondicaoField ehUsado={produtoEhUsado} published={isPublished} />
+          <CondicaoField
+            ehUsado={produtoEhUsado}
+            condicao={produtoCondicao}
+            condicaoAnuncio={link.condition ?? null}
+            published={isPublished}
+          />
           <Controller
             control={form.control}
             name="category_id"

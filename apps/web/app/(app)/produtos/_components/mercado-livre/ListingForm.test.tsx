@@ -50,23 +50,27 @@ function renderForm(
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
     </MantineProvider>
   );
-  render(
+  const node = (l: ProdutoMercadoLivreLink) => (
     <ListingForm
       produtoId="prod-1"
       linkDocId="ML-DOC-1"
       integracaoId="conta-1"
       produtoNome="Camiseta Básica"
       produtoEhUsado={false}
-      link={link}
+      produtoCondicao={null}
+      link={l}
       db={{} as Firestore}
       canWrite
       onDirtyChange={onDirtyChange}
       registerFlush={registerFlush}
       {...props}
-    />,
-    { wrapper },
+    />
   );
-  return { onDirtyChange, registerFlush, link };
+  const { rerender } = render(node(link), { wrapper });
+  /** Re-render with a NEW link, the way a live snapshot update arrives. */
+  const update = (next: Partial<ProdutoMercadoLivreLink>) =>
+    rerender(node(linkFixture({ ...over, ...next })));
+  return { onDirtyChange, registerFlush, link, update };
 }
 
 function type(label: string | RegExp, value: string) {
@@ -249,6 +253,30 @@ describe('Condição comes from the produto', () => {
     expect(screen.getByText(/Produto usado/)).toBeDefined();
   });
 
+  // ⚠️ THE display↔payload bug. `resolveCondicaoAnuncio` reads THREE inputs and
+  // this field used to mirror only `ehUsado`, so a produto marked
+  // **Recondicionado** in Dados extras rendered "Novo" here while the first
+  // publish sent `used`. Same two-copies-that-disagree failure this field was
+  // introduced to remove, just moved to where one side is a screen.
+  it('shows Usado for a produto marked recondicionado in Dados extras', () => {
+    renderForm({ id: null }, { produtoEhUsado: false, produtoCondicao: 3 });
+    expect(screen.getByText('Usado')).toBeDefined();
+  });
+
+  it('names Dados extras when that is the field that decided', () => {
+    // Pointing at "Produto usado" would send the operator to a switch that is
+    // already off and cannot explain what they see.
+    renderForm({ id: null }, { produtoEhUsado: false, produtoCondicao: 2 });
+    expect(screen.getByText(/Dados extras/)).toBeDefined();
+  });
+
+  it('leaves novo to the next tier rather than deciding', () => {
+    // 1 is the schema DEFAULT — treating it as an answer would make the stored
+    // listing condition unreachable for every produto that never set it.
+    renderForm({ id: null, condition: 'used' }, { produtoEhUsado: false, produtoCondicao: 1 });
+    expect(screen.getByText('Usado')).toBeDefined();
+  });
+
   it('never writes condition, even though the doc still holds one', async () => {
     const { registerFlush } = renderForm({ title: 'Antigo', condition: 'used' });
     type('Título do anúncio', 'Novo título');
@@ -278,6 +306,39 @@ describe('Descrição is collapsed until it has something to show', () => {
     fireEvent.click(screen.getByRole('button', { name: /Descrição do anúncio/ }));
     await waitFor(() => {
       expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+    });
+  });
+
+  it('OPENS when a descrição arrives from the snapshot on a clean form', async () => {
+    // ⚠️ The hole a once-only seed left. The reset effect re-seeds the whole
+    // form from the live snapshot whenever nothing is pending, so a descrição
+    // written by a second tab, a colleague, or an import filled a textarea that
+    // stayed `display: none`. Nothing is lost (`buildListingPatch` writes only
+    // dirty keys) but "a hidden non-empty field is one nobody remembers to
+    // check" is the whole point of the disclosure — and this app is never the
+    // only writer (root CLAUDE.md rule 7).
+    const { update } = renderForm({ descricao: null });
+    expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
+
+    update({ descricao: 'Texto que chegou do servidor' });
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+    });
+  });
+
+  it('does NOT re-open under someone who collapsed it mid-edit', async () => {
+    // The re-open is gated on the same `isDirty` edge as the reset effect, so a
+    // snapshot cannot yank the disclosure open while the operator is typing.
+    const { update } = renderForm({ descricao: 'Texto existente' });
+    fireEvent.click(screen.getByRole('button', { name: /Ocultar descrição/ }));
+    type('Título do anúncio', 'Editando agora');
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
+    });
+
+    update({ descricao: 'Outro texto remoto' });
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
     });
   });
 
@@ -389,9 +450,33 @@ describe('Preencher com dados de teste', () => {
     fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/categoria “Outros” não foi encontrada/i)).toBeDefined();
+      expect(screen.getByText(/categoria “Outros” automaticamente/i)).toBeDefined();
     });
-    expect(screen.getByText(/evite Premium/i)).toBeDefined();
+    // ⚠️ And NOT the listing-type message. The route never queries types without
+    // a category, so `listingTypeId` is null here for a reason that has nothing
+    // to do with the types available — telling the operator "nenhum tipo nesta
+    // categoria" about a category that was never resolved blames the wrong
+    // field, right beside the message naming the real one.
+    expect(screen.queryByText(/evite Premium/i)).toBeNull();
+  });
+
+  it('warns about the listing type only once a category DID resolve', async () => {
+    setClient({
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        listingTypeId: null,
+        conta: { nickname: 'TEST1', ehContaDeTeste: true },
+      })),
+    });
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/evite Premium/i)).toBeDefined();
+    });
+    expect(screen.queryByText(/categoria “Outros” automaticamente/i)).toBeNull();
   });
 
   it('is not offered on a listing that is already published', async () => {
