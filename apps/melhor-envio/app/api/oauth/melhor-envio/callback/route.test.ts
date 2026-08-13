@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MelhorEnvioHttpError } from '@delfrance/integrations-freight-br';
 
-import { signState } from '@/lib/freight/state';
+import { FreightStateError, signState } from '@/lib/freight/state';
 
 // The callback takes NO Bearer token — it's a browser redirect from Melhor
 // Envio — so the signed `state` is the only trust anchor. signState /
@@ -9,6 +9,7 @@ import { signState } from '@/lib/freight/state';
 const h = vi.hoisted(() => ({
   loadCtx: vi.fn(),
   exchangeAndPersist: vi.fn(),
+  consumeOauthState: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -18,6 +19,14 @@ vi.mock('@/lib/firebase/admin', () => ({
 vi.mock('@/lib/freight/melhorEnvio', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/freight/melhorEnvio')>();
   return { ...actual, loadMelhorEnvioContext: h.loadCtx };
+});
+
+vi.mock('@/lib/freight/oauthState', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/freight/oauthState')>();
+  return {
+    ...actual,
+    melhorEnvioOauthState: { ...actual.melhorEnvioOauthState, consume: h.consumeOauthState },
+  };
 });
 
 const { GET } = await import('./route');
@@ -47,6 +56,7 @@ beforeEach(() => {
     expirationDate: 1,
   });
   h.loadCtx.mockResolvedValue({ intFreteId: 'int-1', exchangeAndPersist: h.exchangeAndPersist });
+  h.consumeOauthState.mockResolvedValue({ codeVerifier: null });
 });
 
 afterEach(() => {
@@ -55,17 +65,36 @@ afterEach(() => {
 
 describe('GET /api/oauth/melhor-envio/callback', () => {
   it('exchanges the code and redirects with me=connected on a valid signed state', async () => {
-    const state = signState('int-1', STATE_SECRET);
+    const { state, nonce } = signState('int-1', STATE_SECRET);
     const res = await GET(req({ code: 'auth-code', state }));
 
     const url = location(res);
     expect(url.pathname).toBe('/logistica/melhor-envios/int-1');
     expect(url.searchParams.get('me')).toBe('connected');
     expect(h.exchangeAndPersist).toHaveBeenCalledWith('auth-code');
+    // The attempt named by THIS state is what gets redeemed.
+    expect(h.consumeOauthState).toHaveBeenCalledWith(expect.anything(), 'int-1', nonce);
+  });
+
+  it('redirects with reason=bad_state when the attempt was already consumed (replay)', async () => {
+    // #1034, the whole point: a state that verifies is not thereby unused.
+    // Replaying a captured callback used to overwrite the account's ME token —
+    // after which every label is bought against, and billed to, a stranger's
+    // Melhor Envio account.
+    h.consumeOauthState.mockRejectedValue(new FreightStateError('state já utilizado'));
+    const { state } = signState('int-1', STATE_SECRET);
+    const res = await GET(req({ code: 'auth-code', state }));
+
+    const url = location(res);
+    expect(url.searchParams.get('me')).toBe('error');
+    expect(url.searchParams.get('reason')).toBe('bad_state');
+    // Nothing touched the credential — the replay is rejected before the exchange.
+    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.exchangeAndPersist).not.toHaveBeenCalled();
   });
 
   it('redirects with reason=missing_params when code or state is absent', async () => {
-    const res = await GET(req({ state: signState('int-1', STATE_SECRET) }));
+    const res = await GET(req({ state: signState('int-1', STATE_SECRET).state }));
     const url = location(res);
     expect(url.searchParams.get('me')).toBe('error');
     expect(url.searchParams.get('reason')).toBe('missing_params');
@@ -81,19 +110,21 @@ describe('GET /api/oauth/melhor-envio/callback', () => {
   });
 
   it('redirects with reason=bad_state when the state signature does not verify', async () => {
-    const forged = signState('int-1', 'a-different-secret');
+    const { state: forged } = signState('int-1', 'a-different-secret');
     const res = await GET(req({ code: 'c', state: forged }));
     const url = location(res);
     expect(url.searchParams.get('me')).toBe('error');
     expect(url.searchParams.get('reason')).toBe('bad_state');
     expect(h.loadCtx).not.toHaveBeenCalled();
+    // A forged signature never reaches the store.
+    expect(h.consumeOauthState).not.toHaveBeenCalled();
   });
 
   it('redirects with reason=exchange when the token exchange fails', async () => {
     h.exchangeAndPersist.mockRejectedValue(
       new MelhorEnvioHttpError('Melhor Envio /oauth/token: HTTP 400', 400, {}),
     );
-    const state = signState('int-1', STATE_SECRET);
+    const { state } = signState('int-1', STATE_SECRET);
     const res = await GET(req({ code: 'auth-code', state }));
 
     const url = location(res);

@@ -280,12 +280,6 @@ export {
   // ALL_DOMAINS; only its schema/meta/type are public.
   credenciaisWhatsappSchema,
   credenciaisWhatsappMeta,
-  // `oauthState` mirrors `credenciaisIntegracao` too: the admin-only,
-  // default-deny per-attempt OAuth connect record (#821) that makes a signed
-  // `state` single-use and parks the PKCE `code_verifier` — not a DomainSchema,
-  // not in ALL_DOMAINS; only its schema/meta/type are public.
-  oauthStateSchema,
-  oauthStateMeta,
   type Integracao,
   type IntegracaoTipo,
   type BrandShopee,
@@ -295,8 +289,20 @@ export {
   type Token6h,
   type TokenDuravel,
   type CredenciaisWhatsapp,
-  type OauthState,
 } from './integracao';
+
+// The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
+// Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
+// `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
+// schema, the three metas and the types are public.
+export {
+  oauthStateSchema,
+  oauthStateIntegracaoMeta,
+  oauthStateIntFreteMeta,
+  oauthStateMetodoPgtoMeta,
+  type OauthState,
+  type OauthStateSchema,
+} from './oauthState';
 
 export {
   // ⚠️ The inbound webhook log. Unlike its Mercado Pago / WhatsApp siblings this
