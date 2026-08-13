@@ -31,6 +31,9 @@ type KnownError =
   | MercadoLivreNotConfiguredError
   | MercadoLivreError;
 
+/** An ML error body is unbounded; a log line is not. Enough to identify it. */
+const MAX_LOGGED_BODY = 500;
+
 export function isMercadoLivreError(err: unknown): err is KnownError {
   return (
     err instanceof MercadoLivreConfigError ||
@@ -41,7 +44,71 @@ export function isMercadoLivreError(err: unknown): err is KnownError {
   );
 }
 
+/**
+ * Map the error to its response, then LOG the reason before returning it.
+ *
+ * ⚠️ The logging is the load-bearing half. Every route funnels its known
+ * failures through here and returns a JSON body the browser sees — but the
+ * server terminal saw nothing at all, so an operator watching the dev server
+ * (or Cloud Logging) read a bare `GET … 500` with no cause anywhere. The worst
+ * case is the one that actually happened: `MERCADO_LIVRE_CLIENT_SECRET` missing
+ * from the environment turns EVERY marketplace route into a silent 500, and the
+ * only place naming the reason was a response body nobody was looking at.
+ *
+ * `verifyCaller` already logs its own two failure branches with a
+ * `[mercado-livre/…]` prefix; this closes the other half of the same surface.
+ */
 export function mercadoLivreErrorResponse(err: KnownError): NextResponse {
+  const res = toResponse(err);
+  logErrorResponse(err, res.status);
+  return res;
+}
+
+/**
+ * One line per failed request, at a level matching whose fault it is: a 5xx is
+ * ours (or ML's) and carries the error object so the stack survives; a 4xx is
+ * the caller's and stays a warning.
+ *
+ * The extras are the fields that would otherwise be lost: an ML HTTP failure's
+ * upstream status and body (the body is where ML explains itself), and a
+ * validation failure's Zod issues (which field of the response changed shape).
+ */
+function logErrorResponse(err: KnownError, status: number): void {
+  const detail =
+    err instanceof MercadoLivreHttpError
+      ? ` upstream=${String(err.status)} body=${safeJson(err.body)}`
+      : err instanceof MercadoLivreValidationError
+        ? ` issues=${safeJson(err.issues)}`
+        : '';
+  const line = `[mercado-livre/api] ${err.name} -> HTTP ${String(status)}: ${err.message}${detail}`;
+  if (status >= 500) {
+    console.error(line, err);
+    return;
+  }
+  console.warn(line);
+}
+
+/**
+ * Never let the logger itself throw, and never let it dump an unbounded ML body
+ * into the log stream.
+ *
+ * `JSON.stringify` has exactly two failure modes and both are `TypeError` — a
+ * circular structure and a `BigInt` — so the narrowing is complete rather than
+ * merely convenient. Anything else rethrows (root CLAUDE.md rule 6).
+ */
+function safeJson(value: unknown): string {
+  try {
+    const json = JSON.stringify(value);
+    // `undefined` in, `undefined` out — stringify returns no string at all.
+    if (json == null) return String(value);
+    return json.length > MAX_LOGGED_BODY ? `${json.slice(0, MAX_LOGGED_BODY)}…` : json;
+  } catch (err) {
+    if (err instanceof TypeError) return '[unserializable]';
+    throw err;
+  }
+}
+
+function toResponse(err: KnownError): NextResponse {
   if (err instanceof MercadoLivreConfigError) {
     // Server misconfig (missing app credentials) — not the caller's fault.
     return NextResponse.json({ error: err.message }, { status: 500 });
