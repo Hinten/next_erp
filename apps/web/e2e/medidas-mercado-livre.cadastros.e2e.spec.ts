@@ -53,16 +53,40 @@ test.describe.serial('Medidas Mercado Livre tab e2e — chart manager', () => {
     await expect(card.getByText('MLB-T_SHIRTS · 2 tamanhos')).toBeVisible();
   });
 
-  test('offers the create + send actions on the card', async ({ page }) => {
+  test('offers the create + edit actions on the card', async ({ page }) => {
     await page.goto(`/medidas/${tabMediId}`);
     await page.getByRole('tab', { name: 'Mercado Livre' }).click();
 
     const card = page.getByTestId(`ml-medida-conta-${conta}`);
     await expect(card).toBeVisible({ timeout: 30_000 });
-    // "Enviar" is enabled (there is a stored guia to send); "Nova guia" needs
-    // a size group to exist, so it may be disabled — assert it is at least
-    // present, without requiring a group fixture in this suite.
-    await expect(card.getByRole('button', { name: 'Enviar ao Mercado Livre' })).toBeVisible();
+    // Each stored guia opens the editor; sending happens inside it, against the
+    // whole conta's list. "Nova guia" needs a size group to exist, so it may be
+    // disabled — assert it is present, without requiring a group fixture here.
+    await expect(card.getByRole('button', { name: 'Editar' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Nova guia' })).toBeVisible();
+  });
+
+  test('locks the definition of a sent guia and offers to duplicate it', async ({ page }) => {
+    await page.goto(`/medidas/${tabMediId}`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    const card = page.getByTestId(`ml-medida-conta-${conta}`);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await card.getByRole('button', { name: 'Editar' }).click();
+
+    const editor = page.getByTestId('ml-size-chart-editor');
+    await expect(editor).toBeVisible({ timeout: 30_000 });
+    // Mercado Livre freezes everything but the name and the measurement cells
+    // once a guia exists, so the editor says so and offers the only way out.
+    await expect(editor.getByText('O que ainda dá para mudar')).toBeVisible();
+    await expect(editor.getByRole('button', { name: 'Duplicar em nova guia' })).toBeVisible();
+    // The name stays editable — it is the one field ML lets you PUT.
+    await expect(editor.getByLabel('Nome da guia')).toBeEnabled();
+    await expect(editor.getByLabel('Nome da guia')).toHaveValue(chartNome);
+
+    // A sent guia opens with Definição collapsed (the frozen half); Mantine
+    // unmounts collapsed content, so expand it before asserting on the fields.
+    await editor.getByRole('button', { name: 'Mostrar' }).click();
+    await expect(editor.getByLabel('Domínio')).toBeDisabled();
   });
 });
