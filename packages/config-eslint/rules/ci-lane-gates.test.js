@@ -317,7 +317,10 @@ describe('CI lanes always report', () => {
   // 1. Anti-vacuity: the partition must be total.
   // ------------------------------------------------------------------
   it('every workflow is either a gated lane or an explicitly excused one', () => {
-    const found = findByPathspec(':(glob).github/workflows/*.yml').sort();
+    // `*.y*ml`, not `*.yml`: GitHub accepts `.yaml` for workflows too, and a lane
+    // added as `new-lane.yaml` would otherwise land in neither table and escape
+    // the very partition this assertion exists to make unfakeable.
+    const found = findByPathspec(':(glob).github/workflows/*.y*ml').sort();
     const classified = [...Object.keys(LANES), ...Object.keys(UNGATED)].sort();
 
     expect(
@@ -758,14 +761,48 @@ describe('CI lanes always report', () => {
         if (!body.includes('needs.changes.outputs.run_e2e') && !dependsOnGatedSibling) {
           offenders.push(`${file} → \`${job.id}\` does not gate on the scope verdict`);
         }
-        if (!job.class.startsWith('optional:')) continue;
-        for (const g of job.class.slice('optional:'.length).split('+')) {
+        const claimed = job.class.startsWith('optional:')
+          ? job.class.slice('optional:'.length).split('+')
+          : [];
+
+        // Direction 1 — every guard the job CLAIMS must actually be read.
+        for (const g of claimed) {
           const backing = BACKING[g];
           if (!backing) {
             offenders.push(`${file} → \`${job.id}\` claims unknown guard \`${g}\``);
           } else if (!body.includes(backing)) {
             offenders.push(
               `${file} → \`${job.id}\` claims guard \`${g}\` but never reads \`${backing}\``,
+            );
+          }
+        }
+
+        // Direction 2 — and nothing the `if:` READS may be un-declared.
+        //
+        // Without this the check is one-way: appending
+        // `&& github.actor != 'dependabot[bot]'` to a suite job would pass here and
+        // only surface at runtime, as an "unexplained skip" red. That failure is
+        // safe but late, and the message below promises commit-time detection.
+        //
+        // Extract the job's own `if:` (block or inline) and require every
+        // `needs.changes.outputs.*` / `github.*` operand in it to be either the
+        // scope verdict, the dispatch escape, or the backing of a DECLARED guard.
+        const ifBlock =
+          body.match(/^\s{4}if\s*:\s*>-?\s*\n((?:\s{6}.*\n)+)/m)?.[1] ??
+          body.match(/^\s{4}if\s*:\s*(.+)$/m)?.[1] ??
+          '';
+        const ALWAYS_ALLOWED = [
+          'needs.changes.outputs.run_e2e', // the scope verdict
+          'github.event_name', // the workflow_dispatch escape hatch
+        ];
+        const allowed = [...ALWAYS_ALLOWED, ...claimed.map((g) => BACKING[g]).filter(Boolean)];
+        const operands = [
+          ...ifBlock.matchAll(/needs\.changes\.outputs\.[A-Za-z0-9_]+|github\.[A-Za-z0-9_.]+/g),
+        ].map((m) => m[0]);
+        for (const op of new Set(operands)) {
+          if (!allowed.some((a) => op === a || op.endsWith(a) || a.endsWith(op))) {
+            offenders.push(
+              `${file} → \`${job.id}\` reads \`${op}\` in its \`if:\`, which no declared guard covers`,
             );
           }
         }

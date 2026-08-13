@@ -495,12 +495,9 @@ jobs:
             fi
           done < "$CERTIFY"
 
-          # (5) Advisory outcomes never red the gate — that is the designed PR
-          #     posture — but they must not be invisible in it either.
-          if [ -n "${ADVISORY_LIVE:-}" ]; then
-            note "**Advisory (non-fatal on PR/push) step failures inside the live suite:** $ADVISORY_LIVE Re-run via \`workflow_dispatch\`, where they are FATAL, to confirm."
-            echo "::warning title=$LANE::advisory step failure(s) in nfe-live: $ADVISORY_LIVE"
-          fi
+          # (5) No advisory step to surface here: unlike ci-nfe.yml, this lane has
+          #     no `continue-on-error` steps, so every failure inside it is already
+          #     fatal and shows up through the normal result path above.
 
           [ -z "$RED" ] || fail "$RED"
 

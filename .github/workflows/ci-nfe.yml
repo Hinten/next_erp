@@ -82,8 +82,12 @@ jobs:
       # e2e-affected.mjs, shared with the three e2e lanes. Read it as "run this lane".
       run_e2e: ${{ steps.decide.outputs.run_e2e || steps.collect.outputs.run_e2e }}
       reason: ${{ steps.decide.outputs.reason || steps.collect.outputs.reason }}
-      run_live: ${{ steps.decide-live.outputs.run_e2e || steps.collect.outputs.run_e2e }}
-      live_reason: ${{ steps.decide-live.outputs.reason || steps.collect.outputs.reason }}
+      # ⚠️ These fall back to `collect`'s OWN live outputs, never to `run_e2e`.
+      # `run_e2e` is `true` in every short-circuit path — including the two PR
+      # fail-safes — so reusing it here would emit at SEFAZ on a transient API
+      # error. See the note on `decided()` below.
+      run_live: ${{ steps.decide-live.outputs.run_e2e || steps.collect.outputs.run_live }}
+      live_reason: ${{ steps.decide-live.outputs.reason || steps.collect.outputs.live_reason }}
       live_enabled: ${{ steps.live.outputs.live_enabled }}
     steps:
       - uses: actions/checkout@v6
@@ -104,18 +108,35 @@ jobs:
           : > "$FILES"
           echo "files=$FILES" >> "$GITHUB_OUTPUT"
 
+          # decided <reason> <force_live>
+          #
+          # ⚠️ The two arguments must not be collapsed. The LANE fails safe by
+          # running (a wrong skip ships unverified code); the LIVE suite fails safe
+          # by NOT running (the offline suite already ran and the gate names the
+          # skip, while an unnecessary emission spends SEFAZ quota against an API
+          # that rate-limits). So `run_live` gets its own value here rather than
+          # falling back to `run_e2e` — otherwise a transient `gh api` hiccup or a
+          # 3000-path truncation on an unrelated PR would emit at SEFAZ.
+          #
+          # `workflow_dispatch` / `push` genuinely should force live: a human asked,
+          # or main moved. Those pass `true`; the two fail-safes pass `false`.
           decided() {
             {
               echo "decided=true"
               echo "run_e2e=true"
               echo "reason=$1"
+              echo "run_live=$2"
+              echo "live_reason=$3"
             } >> "$GITHUB_OUTPUT"
-            echo "run_e2e=true :: $1"
+            echo "run_e2e=true run_live=$2 :: $1"
           }
 
-          # A human asked for this run; there is no diff to narrow it with.
+          # A human asked for this run, or main moved; there is no diff to narrow
+          # it with, so the live suite runs too.
           if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
-            decided "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the lane."
+            decided "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the lane." \
+                    true \
+                    "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the live suite."
             exit 0
           fi
 
@@ -124,7 +145,9 @@ jobs:
           if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
                  --jq '.[] | .filename, (.previous_filename // empty)' > "$FILES"
           then
-            decided "could not list the PR's files — running the lane (fail safe)."
+            decided "could not list the PR's files — running the lane (fail safe)." \
+                    false \
+                    "the PR's file list could not be read, so the live suite was NOT run — a transient API failure must never cost SEFAZ quota. Re-run this workflow to retry."
             exit 0
           fi
 
@@ -132,7 +155,9 @@ jobs:
           # That endpoint caps at 3000 entries. At the cap we cannot know what was
           # truncated, so we refuse to classify rather than guess.
           if [ "$n" -ge 3000 ]; then
-            decided "the API returned $n path(s) — truncated. Running the lane (fail safe)."
+            decided "the API returned $n path(s) — truncated. Running the lane (fail safe)." \
+                    false \
+                    "the PR's file list was truncated at $n paths, so the live suite was NOT run — an unclassifiable diff must never cost SEFAZ quota. Re-run via \`workflow_dispatch\` if the live suite is needed."
             exit 0
           fi
           echo "Collected $n changed path(s)."
