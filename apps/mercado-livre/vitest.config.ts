@@ -23,7 +23,16 @@ export default defineConfig({
     // entry for the same reason.
     // ⚠️ `exclude` REPLACES vitest's defaults rather than merging, so the
     // standard entries have to be re-listed.
-    exclude: ['**/node_modules/**', '**/dist/**', '**/.next/**', '**/*.firestore.test.ts'],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/.next/**',
+      '**/*.firestore.test.ts',
+      // Same trap, second suite: `*.tasks.test.ts` also matches the include and
+      // would skip here for lack of an emulator. It belongs to
+      // vitest.tasks.config.ts / `test:tasks`.
+      '**/*.tasks.test.ts',
+    ],
   },
   resolve: {
     alias: {
