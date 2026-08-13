@@ -203,6 +203,18 @@ export {
 export { counter, counterSchema, counterMeta, type Counter } from './counter';
 
 export {
+  configIa,
+  configIaSchema,
+  configIaMeta,
+  provedorIaSchema,
+  PROVEDOR_IA,
+  CONFIG_IA_MODELO_PADRAO,
+  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  type ConfigIa,
+  type ProvedorIa,
+} from './configIa';
+
+export {
   conversa,
   conversaSchema,
   conversaMeta,
