@@ -24,7 +24,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import type { Produto, ProdutoExtraData } from '@delfrance/schemas';
 
-import type { GenerateFn } from './provider';
+import type { GenerateFn } from '@delfrance/ai/admin';
 
 export interface SuggestAttributesDeps {
   db: Firestore;

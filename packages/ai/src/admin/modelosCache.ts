@@ -20,7 +20,7 @@ import {
   type AiModelo,
   type AiModelosResult,
   type ProviderModelRow,
-} from './models';
+} from '../models';
 
 const modelosCache = createReadCache<readonly ['base'], AiModelosResult>({
   name: 'ai:modelos',

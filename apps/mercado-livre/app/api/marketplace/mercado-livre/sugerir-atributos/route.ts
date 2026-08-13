@@ -18,17 +18,18 @@ import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { CONFIG_IA_MODELO_PADRAO, PROVEDOR_IA } from '@delfrance/schemas';
 
-import { loadConfigIa } from '@/lib/ai/configIa';
-import { resolveModelo } from '@/lib/ai/models';
-import { getAiModelosCached, modelosParaValidacao } from '@/lib/ai/modelosCache';
+import { AlreadyRunningError, resolveModelo, runSingleFlight } from '@delfrance/ai';
 import {
   AiNotConfiguredError,
   AiUnparseableAnswerError,
   createVertexGenerateFn,
   createVertexListModelsFn,
-} from '@/lib/ai/provider';
-import { loadProdutoImage } from '@/lib/ai/produtoImage';
-import { AlreadyRunningError, runSingleFlight } from '@/lib/ai/singleFlight';
+  getAiModelosCached,
+  loadConfigIa,
+  loadFotoImage,
+  modelosParaValidacao,
+} from '@delfrance/ai/admin';
+
 import { ProdutoNotFoundError, suggestAttributes } from '@/lib/ai/suggestAttributes';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminBucket, getAdminFirestore } from '@/lib/firebase/admin';
@@ -126,7 +127,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           db,
           generate: createVertexGenerateFn(),
           loadImage: (fotos) =>
-            loadProdutoImage(
+            loadFotoImage(
               {
                 db,
                 download: async (path) => {

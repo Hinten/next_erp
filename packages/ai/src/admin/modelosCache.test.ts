@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AI_MODELOS_FALLBACK, resolveModelo } from './models';
+import { AI_MODELOS_FALLBACK, resolveModelo } from '../models';
 import { __resetAiModelosCache, getAiModelosCached, modelosParaValidacao } from './modelosCache';
 
 beforeEach(() => {

@@ -20,10 +20,14 @@ import { NextResponse } from 'next/server';
 import { DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION } from '@delfrance/integrations-mercado-livre';
 import { CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
 
-import { loadConfigIa } from '@/lib/ai/configIa';
-import { getAiModelosCached, modelosParaValidacao } from '@/lib/ai/modelosCache';
-import { resolveModelo } from '@/lib/ai/models';
-import { createVertexListModelsFn } from '@/lib/ai/provider';
+import { resolveModelo } from '@delfrance/ai';
+import {
+  createVertexListModelsFn,
+  getAiModelosCached,
+  loadConfigIa,
+  modelosParaValidacao,
+} from '@delfrance/ai/admin';
+
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 

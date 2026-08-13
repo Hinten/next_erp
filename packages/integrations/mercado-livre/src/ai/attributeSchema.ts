@@ -29,6 +29,7 @@
  * a prompt that says to omit what cannot be determined. `attributeSchema.test.ts`
  * asserts all three, on every build, and that assertion is the point of the file.
  */
+import type { JsonSchemaNode } from '@delfrance/ai';
 
 /** The subset of ML's attribute metadata the schema builder needs. */
 export interface AiAttributeSpec {
@@ -43,17 +44,15 @@ export interface AiAttributeSpec {
   required: boolean;
 }
 
-/** A minimal JSON Schema node — only the keywords this builder ever emits. */
-export interface JsonSchemaNode {
-  type: 'object' | 'string';
-  description?: string;
-  enum?: string[];
-  maxLength?: number;
-  properties?: Record<string, JsonSchemaNode>;
-  /** Always ABSENT on purpose — declared so tests can assert it is not set. */
-  required?: string[];
-  additionalProperties?: false;
-}
+/**
+ * A minimal JSON Schema node — only the keywords our builders ever emit.
+ *
+ * ⚠️ Moved to `@delfrance/ai` alongside `AiPromptRequest`, and re-exported here
+ * so no call site changed. The three prohibitions this type encodes (no
+ * `required` ever set, no `nullable`, no `anyOf`) are the reason it is a
+ * hand-rolled type rather than a general JSON Schema one — see below.
+ */
+export type { JsonSchemaNode };
 
 export interface BuildAttributeSchemaOptions {
   /**

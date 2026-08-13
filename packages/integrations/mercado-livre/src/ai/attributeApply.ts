@@ -8,6 +8,8 @@
  * modal, never written straight to a listing (#799's own criterion, and what
  * the newer legacy flow already did with its Cancelar/Aplicar dialog).
  */
+import { coerceText, normalizeLoose } from '@delfrance/ai';
+
 import type { AiAttributeSpec } from './attributeSchema';
 
 /** One suggested value, in the shape the listing editor's rows use. */
@@ -46,10 +48,10 @@ export function applyAiAttributes(
 
     const text = coerceText(raw);
     if (text == null) continue;
-    if (NA_TEXTS.has(normalize(text))) continue;
+    if (NA_TEXTS.has(normalizeLoose(text))) continue;
 
     const match = attr.values.find(
-      (v) => typeof v.name === 'string' && normalize(v.name) === normalize(text),
+      (v) => typeof v.name === 'string' && normalizeLoose(v.name) === normalizeLoose(text),
     );
     if (match) {
       // ⚠️ The text guard above cannot be the only one. `NA_TEXTS` is a fixed
@@ -78,31 +80,6 @@ export function applyAiAttributes(
   }
 
   return out;
-}
-
-/**
- * Models emit `55`, `"55"` and `true` interchangeably however the schema is
- * written, so the boundary normalises rather than rejects. Objects and arrays
- * are dropped: an attribute value is a scalar, and anything else is the model
- * ignoring the schema.
- */
-function coerceText(raw: unknown): string | null {
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    return trimmed === '' ? null : trimmed;
-  }
-  if (typeof raw === 'number') return Number.isFinite(raw) ? String(raw) : null;
-  if (typeof raw === 'boolean') return raw ? 'Sim' : 'Não';
-  return null;
-}
-
-/** Accent- and case-insensitive, matching the editor's own value resolution. */
-function normalize(s: string): string {
-  return s
-    .trim()
-    .toLocaleLowerCase('pt-BR')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '');
 }
 
 /**

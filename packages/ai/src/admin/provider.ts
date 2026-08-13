@@ -31,9 +31,9 @@
  * `firebase-admin` already does here.
  */
 import { GoogleGenAI, type Part } from '@google/genai';
-import type { AiPromptRequest } from '@delfrance/integrations-mercado-livre';
+import type { AiPromptRequest } from '../prompt';
 
-import type { ProviderModelRow } from './models';
+import type { ProviderModelRow } from '../models';
 
 export interface GenerateArgs {
   model: string;
