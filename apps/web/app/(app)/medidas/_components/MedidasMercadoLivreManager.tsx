@@ -15,6 +15,7 @@ import {
 import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
+import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
@@ -22,6 +23,8 @@ import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection'
 import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
 import { sameChart } from '@/lib/mercado-livre/chartRows';
 import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
   type MercadoLivreChartValidationError,
   type MercadoLivreClient,
   useMercadoLivreClient,
@@ -123,6 +126,17 @@ export function MedidasMercadoLivreManager({
   );
 
   const [target, setTarget] = useState<EditorTarget | null>(null);
+  /**
+   * `'<contaId>#<index>'` while that guia's delete/verify call is in flight —
+   * it says which row shows the spinner.
+   *
+   * ⚠️ The DISABLING it drives is deliberately global, not per row. Every one of
+   * these operations rewrites the conta's whole `tabelas` array from the live
+   * snapshot, so two running at once would race: the second read would miss the
+   * first's write and clobber it. One at a time is the guard.
+   */
+  const [busyChart, setBusyChart] = useState<string | null>(null);
+  const { confirm, element: confirmElement } = useConfirmDialog();
   const sessionRef = useRef(0);
 
   function openEditor(next: Omit<EditorTarget, 'session'>): void {
@@ -191,6 +205,119 @@ export function MedidasMercadoLivreManager({
     return { validationErrors: result.validationErrors, chartIndex: index };
   }
 
+  /**
+   * Remove one guia.
+   *
+   * A draft (no ML id) is dropped locally — there is nothing on ML to remove.
+   *
+   * A sent guia goes through `DELETE /catalog/charts/{id}`, which is a REQUEST:
+   * ML acks it and only then checks, over as much as 24h, that no listing still
+   * links the chart, silently keeping it if one does. So the guia STAYS in the
+   * list flagged "Exclusão solicitada" until **Verificar** confirms — the
+   * confirmation copy says exactly that, because an operator who expects the row
+   * to vanish would otherwise read the unchanged list as a failure.
+   */
+  async function removeChart(
+    integracaoId: string,
+    index: number,
+    chart: MlSizeChart,
+  ): Promise<void> {
+    if (!client) return;
+    const chartId = chart.id ?? '';
+    const nome = chart.nome ?? 'esta guia';
+
+    if (chartId === '') {
+      const ok = await confirm({
+        title: 'Excluir rascunho',
+        message: `O rascunho "${nome}" nunca foi enviado ao Mercado Livre e será removido desta tabela.`,
+        confirmLabel: 'Excluir',
+      });
+      if (!ok) return;
+      setBusyChart(`${integracaoId}#${String(index)}`);
+      try {
+        const stored = mlSizeChartsForConta(chartsMap, integracaoId);
+        // An index is not an identity: the Flutter app or a completed sync may
+        // have inserted or reordered guias since this list rendered, and
+        // deleting position N blindly would remove somebody else's guia.
+        if (!sameChart(stored[index], chart)) throw new SizeChartConflictError();
+        await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
+          tabelasDeMedidasMercadoLivre: {
+            [integracaoId]: { tabelas: stored.filter((_, i) => i !== index) },
+          },
+          ultimaModificacao: Date.now(),
+        });
+        notifications.show({ color: 'green', message: 'Rascunho excluído.' });
+      } catch (err) {
+        const shown = describeChartError(err);
+        if (shown == null) throw err;
+        notifications.show(shown);
+      } finally {
+        setBusyChart(null);
+      }
+      return;
+    }
+
+    const ok = await confirm({
+      title: 'Excluir guia no Mercado Livre',
+      message:
+        `A guia "${nome}" só será excluída se não estiver vinculada a nenhum anúncio. ` +
+        'O Mercado Livre leva até 24 horas para confirmar, e até lá ela continua nesta lista ' +
+        'marcada como "Exclusão solicitada" — use "Verificar" para saber o resultado.',
+      confirmLabel: 'Solicitar exclusão',
+    });
+    if (!ok) return;
+
+    setBusyChart(`${integracaoId}#${String(index)}`);
+    try {
+      // A sent guia is keyed by its ML chart id server-side, so the backend
+      // resolves it by identity rather than position — no index guard needed.
+      await client.sizeChartExcluir({ integracaoId, tabMediId, chartId });
+      notifications.show({
+        color: 'blue',
+        message: 'Exclusão solicitada. Use "Verificar" mais tarde para confirmar.',
+      });
+    } catch (err) {
+      const shown = describeChartError(err);
+      if (shown == null) throw err;
+      notifications.show(shown);
+    } finally {
+      setBusyChart(null);
+    }
+  }
+
+  /** Ask ML whether a requested deletion actually happened. */
+  async function verifyDeletion(
+    integracaoId: string,
+    index: number,
+    chart: MlSizeChart,
+  ): Promise<void> {
+    if (!client || chart.id == null || chart.id === '') return;
+    setBusyChart(`${integracaoId}#${String(index)}`);
+    try {
+      const result = await client.sizeChartVerificarExclusao({
+        integracaoId,
+        tabMediId,
+        chartId: chart.id,
+      });
+      notifications.show(
+        result.removed
+          ? { color: 'green', message: 'Guia excluída no Mercado Livre.' }
+          : {
+              color: 'yellow',
+              message:
+                'A guia ainda está vinculada a pelo menos um anúncio. Desvincule-a nos anúncios para que o Mercado Livre possa excluí-la.',
+              autoClose: false,
+            },
+      );
+    } catch (err) {
+      const shown = describeChartError(err);
+      if (shown == null) throw err;
+      notifications.show(shown);
+    } finally {
+      setBusyChart(null);
+    }
+  }
+
   // No integração.read → the contas query is idle (never issued). Say so
   // instead of falling through to the misleading "no account" empty state.
   if (!canRead) {
@@ -256,41 +383,72 @@ export function MedidasMercadoLivreManager({
                 </Text>
               )}
 
-              {stored.map((chart, index) => (
-                <Group
-                  key={chart.id ?? `rascunho-${String(index)}`}
-                  justify="space-between"
-                  wrap="nowrap"
-                >
-                  <div>
-                    <Text size="sm">{chart.nome ?? '(sem nome)'}</Text>
-                    <Text size="xs" c="dimmed">
-                      {chart.domain_id ?? '—'} · {(chart.rows ?? []).length} tamanhos
-                    </Text>
-                  </div>
-                  <Group gap="xs" wrap="nowrap">
-                    {chart.id != null && chart.id !== '' ? (
-                      <Badge color="green" variant="light">
-                        Enviada
-                      </Badge>
-                    ) : (
-                      <Badge color="yellow" variant="light">
-                        Rascunho
-                      </Badge>
-                    )}
-                    <Button
-                      size="compact-xs"
-                      variant="light"
-                      disabled={disabled || !client}
-                      onClick={() => {
-                        openEditor({ integracaoId: conta.id, chart, chartIndex: index });
-                      }}
-                    >
-                      Editar
-                    </Button>
+              {stored.map((chart, index) => {
+                const chartSent = chart.id != null && chart.id !== '';
+                const pendingDeletion = chart.exclusaoSolicitadaEm != null;
+                const rowBusy = busyChart === `${conta.id}#${String(index)}`;
+                return (
+                  <Group
+                    key={chart.id ?? `rascunho-${String(index)}`}
+                    justify="space-between"
+                    wrap="nowrap"
+                    data-testid={`ml-guia-${conta.id}-${String(index)}`}
+                  >
+                    <div>
+                      <Text size="sm">{chart.nome ?? '(sem nome)'}</Text>
+                      <Text size="xs" c="dimmed">
+                        {chart.domain_id ?? '—'} · {(chart.rows ?? []).length} tamanhos
+                      </Text>
+                    </div>
+                    <Group gap="xs" wrap="nowrap">
+                      {pendingDeletion ? (
+                        <Badge color="orange" variant="light">
+                          Exclusão solicitada
+                        </Badge>
+                      ) : chartSent ? (
+                        <Badge color="green" variant="light">
+                          Enviada
+                        </Badge>
+                      ) : (
+                        <Badge color="yellow" variant="light">
+                          Rascunho
+                        </Badge>
+                      )}
+                      {pendingDeletion && (
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          loading={rowBusy}
+                          disabled={disabled || !client || !canWrite || busyChart !== null}
+                          onClick={() => void verifyDeletion(conta.id, index, chart)}
+                        >
+                          Verificar
+                        </Button>
+                      )}
+                      <Button
+                        size="compact-xs"
+                        variant="light"
+                        disabled={disabled || !client || busyChart !== null}
+                        onClick={() => {
+                          openEditor({ integracaoId: conta.id, chart, chartIndex: index });
+                        }}
+                      >
+                        Editar
+                      </Button>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color="red"
+                        loading={rowBusy}
+                        disabled={disabled || !client || !canWrite || busyChart !== null}
+                        onClick={() => void removeChart(conta.id, index, chart)}
+                      >
+                        Excluir
+                      </Button>
+                    </Group>
                   </Group>
-                </Group>
-              ))}
+                );
+              })}
 
               <Group>
                 <Button
@@ -348,6 +506,34 @@ export function MedidasMercadoLivreManager({
           }}
         />
       )}
+
+      {confirmElement}
     </Stack>
   );
+}
+
+/**
+ * How to render a failure the guia list owns — a Mercado Livre client error or
+ * the lost-update conflict — or **null** for anything else, which the caller
+ * rethrows (root `CLAUDE.md` rule 6; same shape as `describeMassImportStartError`).
+ */
+function describeChartError(
+  err: unknown,
+): { color: string; message: string; autoClose?: false } | null {
+  if (err instanceof SizeChartConflictError) {
+    return { color: 'red', message: err.message, autoClose: false };
+  }
+  if (err instanceof MercadoLivreClientHttpError) {
+    return {
+      color: 'red',
+      message:
+        err.status === 409
+          ? 'Conta Mercado Livre não conectada — reconecte em Canais de venda.'
+          : err.message,
+    };
+  }
+  if (err instanceof MercadoLivreClientNetworkError) {
+    return { color: 'red', message: 'Não foi possível contatar o Mercado Livre.' };
+  }
+  return null;
 }
