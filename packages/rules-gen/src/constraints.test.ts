@@ -83,3 +83,7 @@ describe('clausesForSchema', () => {
     expect(() => clausesForSchema(z.string())).toThrow(/object schemas/);
   });
 });
+
+// DELIBERATE FAILURE — proving CI gate (rules) goes red. Revert before merging.
+import { expect as _e, it as _i } from 'vitest';
+_i('deliberate failure to prove the gate reds', () => { _e(1).toBe(2); });
