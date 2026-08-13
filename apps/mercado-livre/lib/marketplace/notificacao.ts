@@ -85,6 +85,7 @@ import {
   syncItemStatus,
 } from './itemsStatusSync';
 import { type ClaimImportResult, importClaimMercadoLivre } from './claimImport';
+import { resolveContaAtivaPorUserId } from './contaCache';
 import { handleUptinMigration } from './importMigration';
 import { lastSegment, parseItemIdFromResource } from './linkRefs';
 import { loadMercadoLivreContext } from './mercadoLivre';
@@ -730,7 +731,15 @@ export async function processNotificationPayload(
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
   const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
 
-  const integracaoId = await resolveIntegracaoByUserId(db, payload.user_id ?? null);
+  // The query above stays uncached and directly unit-tested;
+  // `resolveContaAtivaPorUserId` wraps it with the shared conta cache and the
+  // reconnect-drift cross-check (see `contaCache.ts`). It also PRE-WARMS the
+  // conta entry that every runner below reads microseconds later.
+  const userId = payload.user_id ?? null;
+  const integracaoId =
+    userId == null
+      ? null
+      : await resolveContaAtivaPorUserId(db, userId, () => resolveIntegracaoByUserId(db, userId));
   if (!integracaoId) return { kind: 'no-account' };
   if (!isKnownTopic(payload.topic)) return { kind: 'unknown-topic', integracaoId };
 

@@ -17,6 +17,7 @@ import { metodoPagamentoCollection } from '@delfrance/data/admin/collections';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoPagoContext } from '@/lib/payments/mercadoPago';
+import { invalidateMercadoPagoMetodo } from '@/lib/payments/metodoCache';
 import { isMercadoPagoError, mercadoPagoErrorResponse } from '@/lib/payments/respond';
 
 export const dynamic = 'force-dynamic';
@@ -40,8 +41,12 @@ export async function GET(req: Request): Promise<NextResponse> {
     // Heal the denormalized collector id if it drifted (e.g. the OAuth
     // callback's merge failed after the credential was already persisted) —
     // the webhook receiver resolves accounts by this field.
+    // Note this is NOT a cached read-modify-write: the value written comes from
+    // the live `api.getMe()`, never from `ctx.conta`. A stale cached `user_id`
+    // can only cause a redundant idempotent merge, never a wrong one.
     if (me.id != null && ctx.conta.user_id !== me.id) {
       await metodoPagamentoCollection.merge(db, {}, metodoId, { user_id: me.id });
+      invalidateMercadoPagoMetodo(metodoId, me.id);
     }
     return NextResponse.json({
       connected: true,

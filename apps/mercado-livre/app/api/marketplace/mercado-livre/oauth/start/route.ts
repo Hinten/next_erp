@@ -5,12 +5,19 @@
  * account and returns it as JSON. The browser then navigates there. The
  * Bearer token (PERM.integracao.write) authorizes minting the state; the state
  * itself is the integrity guarantee the public callback verifies.
+ *
+ * #821: the state's `nonce` and (when PKCE is on) the `code_verifier` are also
+ * recorded server-side, which is what lets the callback redeem the attempt
+ * exactly once. Persist BEFORE handing out the URL — a consent completed
+ * against a record that was never written is a connect that fails closed.
  */
 import { NextResponse } from 'next/server';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
+import { putOauthState } from '@/lib/marketplace/oauthStateStore';
+import { codeChallengeS256, createCodeVerifier, pkceEnabled } from '@/lib/marketplace/pkce';
 import { signState } from '@/lib/marketplace/state';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
 
@@ -37,8 +44,15 @@ export async function GET(req: Request): Promise<NextResponse> {
   const db = getAdminFirestore();
   try {
     const ctx = await loadMercadoLivreContext(db, integracaoId);
-    const state = signState(integracaoId, secret);
-    const authorizeUrl = ctx.channel.oauthFlow.start(state);
+    const { state, nonce } = signState(integracaoId, secret);
+    const codeVerifier = pkceEnabled() ? createCodeVerifier() : null;
+    await putOauthState(db, integracaoId, { nonce, codeVerifier });
+    const authorizeUrl = ctx.channel.oauthFlow.start(
+      state,
+      codeVerifier
+        ? { codeChallenge: codeChallengeS256(codeVerifier), codeChallengeMethod: 'S256' }
+        : undefined,
+    );
     return NextResponse.json({ authorizeUrl });
   } catch (err) {
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);

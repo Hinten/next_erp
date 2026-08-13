@@ -10,6 +10,7 @@ import {
   reprocessNotifications,
 } from '../../lib/whatsapp/notificacao';
 import { sweepStaleOutbound } from '../../lib/whatsapp/outbound';
+import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 import { getDb } from './lib/admin';
 import * as notificationHandlers from './processNotification';
 
@@ -66,11 +67,15 @@ export { sendOutbound } from './sendOutbound';
 export const reprocessWhatsappNotifications = onSchedule(
   { schedule: 'every 30 minutes', timeZone: 'America/Sao_Paulo' },
   async () => {
+    const cacheMark = readCacheMark();
     const result = await reprocessNotifications(getDb());
     logger.info('[whatsapp] reprocess sweep', {
       processed: result.processed,
       outcomes: result.outcomes,
       errorCount: result.errors.length,
+      // Read-cache hits/misses accrued by THIS tick. Reports the SWEEP process's
+      // caches, not the task consumer's — they are separate deployments.
+      readCache: readCacheDelta(cacheMark),
     });
     if (result.errors.length > 0) {
       logger.warn('[whatsapp] reprocess sweep had per-doc failures', {
@@ -92,11 +97,15 @@ export const reprocessWhatsappNotifications = onSchedule(
 export const reprocessStaleOutbound = onSchedule(
   { schedule: 'every 15 minutes', timeZone: 'America/Sao_Paulo' },
   async () => {
+    const cacheMark = readCacheMark();
     const result = await sweepStaleOutbound(getDb());
     logger.info('[whatsapp] reprocessStaleOutbound sweep', {
       processed: result.processed,
       outcomes: result.outcomes,
       errorCount: result.errors.length,
+      // Read-cache hits/misses accrued by THIS tick. Reports the SWEEP process's
+      // caches, not the task consumer's — they are separate deployments.
+      readCache: readCacheDelta(cacheMark),
     });
     if (result.errors.length > 0) {
       logger.warn('[whatsapp] reprocessStaleOutbound had per-doc failures', {
