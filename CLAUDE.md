@@ -14,11 +14,12 @@ checkouts) and is the **parity reference for ports**.
 CI — the nine lanes in `.github/workflows/` run **concurrently**, gated on
 nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
 from the workspace dependency graph and reports through one unskippable check;
-`ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
-pipelines `ci-{nfe,freight,storage,rules}.yml` own. `ci-mercado-livre.yml` is the
-odd one out: `ci.yml` *does* run the ML unit tests, but `vitest.config.ts`
-excludes `*.firestore.test.ts`, so that lane alone runs them. **Touching
-`.github/workflows/` → the `ci-lanes` skill**, which carries the whole design.
+`ci.yml` excludes the nfe/freight/storage/functions/mercado-livre tests, which
+the domain pipelines `ci-{nfe,freight,storage,rules,mercado-livre}.yml` own —
+**an exclusion is a promise that the owning lane runs them, so when that lane
+skips they run nowhere.** `ci.yml` still lints, typechecks and builds the full
+graph unfiltered. **Touching `.github/workflows/` → the `ci-lanes` skill**, which
+carries the whole design.
 
 Four rules you must not break without reading it first:
 

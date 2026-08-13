@@ -16,18 +16,29 @@ name: CI — Mercado Livre (Firestore emulator)
 # vitest.firestore.setup.ts installs a fetch kill-switch that throws on any
 # non-localhost host so "offline" is a property of the lane, not of the author.
 #
-# Unlike ci-storage.yml this has NO offline sibling job: `ci.yml` does not
-# exclude the ML workspaces from `turbo run test`, so the unit suite already
-# runs there on every PR (ci.yml has no `paths:` filter at all).
+# THIS LANE OWNS EVERY MERCADO LIVRE TEST, in two parallel jobs:
+#   - `ML offline (unit)`      — the ~111 `*.test.ts` files across both ML
+#                                workspaces, via `turbo run test`.
+#   - `ML backend on the …`    — the `*.firestore.test.ts` files, via
+#                                `test:firestore` against a real emulator.
+# `ci.yml` excludes both workspaces from its `turbo run test`, so when this lane
+# does not run, NONE of them run. Scope is therefore derived from the
+# `workspace:*` dependency graph in `changes`, never from a hand-written list,
+# and the verdict is published by an unskippable `gate`.
 #
-# What this lane uniquely owns is `test:firestore`. `vitest.config.ts` EXCLUDES
-# `**/*.firestore.test.ts` from the unit run on purpose, so those tests run in
-# NO other workflow — when this lane does not run, they run nowhere. That is the
-# same defect class ci-storage.yml's header describes, narrower but real, and it
-# is why this lane is gated like every other one: scope derived from the
-# `workspace:*` dependency graph in `changes`, verdict published by an
-# unskippable `gate`. It arrived ungated (#999) and `main` went red the moment
-# the lane guard learned to demand a total partition (#1031).
+# History, because both halves were once wrong. The lane arrived ungated (#999)
+# with a `pull_request: paths:` list; `main` went red the moment the guard
+# demanded a total partition (#1031), and #1045 gave it the `changes`/`gate`
+# pair. Until then `ci.yml` ran the unit suite, and #999's header argued that was
+# deliberate insurance against a stale `paths:` list. Graph-derived scope retired
+# that argument, so the tests moved here where the domain owns them.
+#
+# ⚠️ Splitting these two jobs is not cosmetic. `vitest.config.ts` EXCLUDES
+# `**/*.firestore.test.ts` from the unit run and `vitest.firestore.config.ts`
+# includes only those, so the two suites are disjoint by construction — a file
+# that matches neither glob runs in NO job at all. Both configs carry a
+# mirror-image root-level entry for exactly that reason; read their comments
+# before touching either `include`.
 #
 # ⚠️ What this lane does NOT prove, so nobody reads its green as more than it is:
 #   - Composite INDEX DECLARATION. The emulator auto-creates every composite, and
@@ -168,6 +179,95 @@ jobs:
             --self .github/workflows/ci-mercado-livre.yml \
             --files "${{ steps.collect.outputs.files }}"
 
+  # The unit half. `ci.yml` used to run this; it now excludes both ML workspaces,
+  # so this job is the only place these ~111 files execute.
+  #
+  # ⚠️ Named `ML offline (unit)` and NOT `... (lint + typecheck + unit + build)`
+  # like its siblings in ci-{nfe,freight,storage}.yml, because it genuinely runs
+  # only tests. `ci.yml` still runs `turbo run typecheck`, `lint` and `build`
+  # across the FULL graph with no filter and no `if:`, so repeating them here
+  # would be pure re-execution — turbo's `test` task declares `dependsOn:
+  # ["^build"]`, not `^test`, and no remote cache is configured (ci-storage.yml's
+  # unit step records the same trap). A check-run name is a claim about coverage;
+  # this one must not overclaim.
+  #
+  # Runs in PARALLEL with the emulator job — both `needs: [changes]` only — so the
+  # lane's wall time is unchanged at ~80s. No JDK and no firebase-tools here: this
+  # job must never touch the emulator.
+  ml-offline:
+    name: ML offline (unit)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    # Observed: 74.8s (app) + 9.2s (package) of vitest, plus install.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Skip Next.js telemetry collection + its build-time notice in CI.
+      NEXT_TELEMETRY_DISABLED: '1'
+      # ⚠️ Deliberately NO `REQUIRE_EMULATOR` and no `FIRESTORE_EMULATOR_HOST`.
+      # `vitest.config.ts` excludes `**/*.firestore.test.ts`, so this job is
+      # emulator-free by construction; setting either would be a lie about what
+      # ran, and REQUIRE_EMULATOR would fail the job outright.
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from `packageManager`
+          # in package.json — the single source of truth — and overrides any
+          # `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # ⚠️ Mandatory, not decoration. VERIFIED: `pnpm turbo run test --filter
+      # '@delfrance/does-not-exist'` prints "x No package found with name ... in
+      # workspace" and exits ZERO. A typo in either name below would therefore
+      # produce a fully green job that ran no tests — and since `ci.yml` no longer
+      # runs them either, that is total silent loss of ML unit coverage.
+      # Near-misses are real: the two package names differ only by prefix, and the
+      # `mercado-livre` functions codebase and the apps/ directory name are both
+      # plausible typos.
+      - name: Assert both test filters resolve to real packages
+        run: |
+          set -euo pipefail
+          matched=$(pnpm ls \
+            --filter @delfrance/mercado-livre-app \
+            --filter @delfrance/integrations-mercado-livre \
+            --depth -1 --parseable | grep -c . || true)
+          echo "packages matched by the filters: $matched"
+          if [ "$matched" != "2" ]; then
+            echo "::error::filters matched $matched packages, expected 2 — the test step would exit 0 without running anything."
+            exit 1
+          fi
+
+      - name: Unit tests (offline — excludes *.firestore.test.ts)
+        run: |
+          pnpm turbo run test \
+            --filter @delfrance/mercado-livre-app \
+            --filter @delfrance/integrations-mercado-livre
+
   ml-firestore-emulator:
     name: ML backend on the Firestore emulator
     needs: [changes]
@@ -266,7 +366,7 @@ jobs:
     # Renamed off `Post failure note on PR`: a check-run name carries no workflow
     # prefix, so that string was one indistinguishable check across several lanes.
     name: Mercado Livre failure note
-    needs: [changes, ml-firestore-emulator]
+    needs: [changes, ml-offline, ml-firestore-emulator]
     # Fork guard: this job holds `pull-requests: write`, which a fork run's
     # read-only token cannot exercise — it would 403 and mask the real failure.
     if: >-
@@ -305,7 +405,7 @@ jobs:
   # every green run, so needing them would make this gate permanently red.
   gate:
     name: CI gate (mercado-livre)
-    needs: [changes, ml-firestore-emulator]
+    needs: [changes, ml-offline, ml-firestore-emulator]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -331,6 +431,7 @@ jobs:
           GUARD_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
 
           # --- per-job results -------------------------------------------------
+          RESULT_OFFLINE: ${{ needs.ml-offline.result }}
           RESULT_EMULATOR: ${{ needs.ml-firestore-emulator.result }}
 
           # --- the manifest. One row per certified job:
@@ -338,6 +439,7 @@ jobs:
           #     The check-run name must match the job's `name:` byte for byte — it
           #     is how the anti-vacuity lock finds the job in the jobs API.
           JOBS: |
+            RESULT_OFFLINE|required|ML offline (unit)
             RESULT_EMULATOR|required|ML backend on the Firestore emulator
         run: |
           set -uo pipefail

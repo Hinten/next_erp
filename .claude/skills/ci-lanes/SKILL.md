@@ -251,18 +251,44 @@ mitigates the staleness it leaves.
   asserts `'2'`; `NFE_AMBIENTE` (accepts `'producao'`, defaults `'homologacao'`)
   is set in no workflow and is neither a repo variable nor a secret; the offline
   job excludes the live suites so it never opens a socket.
-- **`ci.yml` excludes six workspaces** from `turbo run test` —
-  `@delfrance/{nfe-app,integrations-nfe,melhor-envio-app,integrations-freight-br,storage,functions}`
+- **`ci.yml` excludes eight workspaces** from `turbo run test` —
+  `@delfrance/{nfe-app,integrations-nfe,melhor-envio-app,integrations-freight-br,storage,functions,mercado-livre-app,integrations-mercado-livre}`
   — each owned by exactly one domain lane. If that lane skips, those tests run
   nowhere. That is why the domain lanes matter and why their scope must be derived.
-- **`ci-mercado-livre` is excluded from nothing, and still owns tests alone.** The
-  ML workspaces are *not* in that exclusion list, so `ci.yml` runs their unit
-  suite on every PR. But `apps/mercado-livre/vitest.config.ts` excludes
-  `**/*.firestore.test.ts` from that run by design — those live under
-  `test:firestore` / `vitest.firestore.config.ts` and are invoked by this lane
-  only. So the "tests run nowhere" hazard applies here too, just narrower
-  (integration coverage, not total coverage). Do not reason about ownership from
-  the `ci.yml` exclusion list alone; check the workspace's `test` script too.
+  An exclusion is a **promise** that the owning lane runs them; never add a filter
+  without an owner on the other side.
+- **A lane's `test` script is not always `test`.** `ci-mercado-livre` needs two
+  jobs because `apps/mercado-livre` splits its suite across two vitest configs:
+  `vitest.config.ts` excludes `**/*.firestore.test.ts`, `vitest.firestore.config.ts`
+  includes only those. A file matching neither glob runs in NO job. When adding a
+  lane, read the workspace's scripts — do not assume `turbo run test` covers it.
+
+### Moving tests into a lane is not a latency win — measured
+
+Before assuming an exclusion speeds `ci.yml` up, note what was measured on
+2026-08-13 when the ML tests moved:
+
+| | |
+| --- | --- |
+| `ci.yml` Test step, wall | 166 s |
+| `@delfrance/web` alone | **138 s** ← critical path |
+| `@delfrance/mercado-livre-app` | 74.8 s |
+| `@delfrance/integrations-mercado-livre` | 9.2 s |
+| ML share of total CPU | 84 s / 487 s = 17 % |
+
+turbo runs these in parallel and `web` is 83 % of the step's wall time, so
+removing 17 % of the CPU saved ~0 s. The reason to move tests into a lane is
+**ownership and failure attribution** — the failure lands on `CI gate (<lane>)`
+instead of the catch-all `lint-typecheck-test`. Anything that shortens `ci.yml`
+has to shorten `@delfrance/web`.
+
+### ⚠️ `turbo run test --filter <typo>` exits 0
+
+Verified: `pnpm turbo run test --filter '@delfrance/does-not-exist'` prints
+`x No package found with name ... in workspace` and exits **zero** — same trap as
+`pnpm --filter`. In a lane job whose tests `ci.yml` no longer runs, a typo is
+total silent loss of coverage. Every such step needs a resolution assertion
+before it; `ci-mercado-livre.yml` carries one per job, asserting an exact count.
 
 ## ⚠️ Assertion 1 can go red on `main` after passing on every PR
 
