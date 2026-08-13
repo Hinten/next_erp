@@ -20,14 +20,12 @@ concurrency:
 
 jobs:
   claude:
-    # A comment opening with `@claude review` / `@claude /code-review` belongs to
-    # claude-code-review.yml. Without excluding it here both workflows would fire
-    # — the review prefixes contain `@claude` — and you would pay twice for two
-    # different answers to the same request.
+    # No exclusion rule is needed for the review lane: it triggers on
+    # `@reviewbot`, which does not contain `@claude`, so the two `if:` conditions
+    # are disjoint by construction rather than by a guard someone has to
+    # maintain. That was the point of giving the review lane its own phrase.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
-        && !startsWith(github.event.comment.body, '@claude review')
-        && !startsWith(github.event.comment.body, '@claude /code-review')) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
