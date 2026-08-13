@@ -80,6 +80,7 @@ import {
   type IncomingMessage,
 } from '@delfrance/integrations-whatsapp-cloud-api';
 
+import { type ContaIdLookup, readContaIdByWaId, readWhatsappConta } from './contaCache';
 import { conversaDocId, mensagemDocId, senderId } from './ids';
 import { discoverUserByPhoneNumber, fixConversaAnonima, usuarioOuterRef } from './discoverUser';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
@@ -148,30 +149,38 @@ function tipoForMessage(message: IncomingMessage): TipoMensagem {
  * more than one (ambiguous) → `failed` PARK.
  */
 export async function resolveConta(db: Firestore, phoneNumberId: string): Promise<ContaResolution> {
+  // `phoneNumberId` is the only variable predicate — `tipo == whatsapp` is
+  // constant — so it alone keys the entry. The lookup caches the account ID and
+  // the document comes from the shared reader, so one document is one entry with
+  // one clock (and a self-write can actually reach it). A `none`/`many` outcome
+  // is never cached; see `contaCache.ts`.
+  const found = await readContaIdByWaId(phoneNumberId, () => queryContaId(db, phoneNumberId));
+  if (found.kind === 'many') {
+    return { kind: 'failed', reason: `múltiplas contas WhatsApp com wa_id ${phoneNumberId}` };
+  }
+  if (found.kind === 'none') {
+    return { kind: 'failed', reason: `conta WhatsApp com wa_id ${phoneNumberId} não encontrada` };
+  }
+
+  // Splitting the query into id-then-document opens a window the single query did
+  // not have: the account can be deleted, or have its tipo changed, between the
+  // two. Guard it rather than hand a caller a half-resolved account.
+  const conta = await readWhatsappConta(db, found.contaId);
+  if (conta == null || conta.tipo !== INTEGRACAO_TIPO.whatsapp) {
+    return { kind: 'failed', reason: `conta WhatsApp com wa_id ${phoneNumberId} não encontrada` };
+  }
+  return { kind: 'resolved', contaId: found.contaId, conta };
+}
+
+async function queryContaId(db: Firestore, phoneNumberId: string): Promise<ContaIdLookup> {
   const snap = await integracaoCollection
     .ref(db, {})
     .where('tipo', '==', INTEGRACAO_TIPO.whatsapp)
     .where('wa_id', '==', phoneNumberId)
     .limit(2)
     .get();
-  if (snap.docs.length === 1) {
-    const doc = snap.docs[0]!;
-    return {
-      kind: 'resolved',
-      contaId: doc.id,
-      conta: integracaoCollection.parseRead(doc.data(), integracaoCollection.docPath({}, doc.id)),
-    };
-  }
-  if (snap.docs.length > 1) {
-    return {
-      kind: 'failed',
-      reason: `múltiplas contas WhatsApp com wa_id ${phoneNumberId}`,
-    };
-  }
-  return {
-    kind: 'failed',
-    reason: `conta WhatsApp com wa_id ${phoneNumberId} não encontrada`,
-  };
+  if (snap.docs.length === 1) return { kind: 'one', contaId: snap.docs[0]!.id };
+  return snap.docs.length > 1 ? { kind: 'many' } : { kind: 'none' };
 }
 
 /* --------------------------- messages dispatcher -------------------------- */

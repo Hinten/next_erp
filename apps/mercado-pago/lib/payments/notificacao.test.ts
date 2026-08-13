@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { READ_CACHE_TTL, __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { __setMercadoPagoCacheClockForTests } from './metodoCache';
 import type { Firestore } from 'firebase-admin/firestore';
 import { PedidoReconcileNotFoundError } from '@delfrance/data/admin';
 import {
@@ -42,6 +44,8 @@ class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly failMetodoUserIds = new Set<number>();
   readonly failCreateIds = new Set<string>();
+  /** Queries executed. On Enterprise this is the read whose scanned bytes bill. */
+  queryCount = 0;
   private autoN = 0;
 
   private col(path: string): Map<string, DocData> {
@@ -68,6 +72,7 @@ class FakeDb {
       orderBy: (field: string) => query(clauses, field, lim),
       limit: (n: number) => query(clauses, orderField, n),
       get: async () => {
+        self.queryCount += 1;
         if (path === 'metodo_pgto') {
           const uid = clauses.find((c) => c.field === 'user_id' && c.op === '==');
           if (uid && self.failMetodoUserIds.has(uid.value as number)) {
@@ -178,9 +183,23 @@ function fakeDeps(over: Partial<ProcessDeps> = {}): ProcessDeps {
   };
 }
 
+let now = 1_700_000_000_000;
+
 beforeEach(() => {
+  // The collector cache and the metodo reader are module-scope, and the reader
+  // is keyed by the document PATH — so a fresh `FakeDb` per test does NOT
+  // isolate either, and `metodo-A` / collector 55 recur throughout this file
+  // with deliberately different seeded state.
+  __resetAllReadCaches();
+  now = 1_700_000_000_000;
+  __setMercadoPagoCacheClockForTests(() => now);
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
+  __setMercadoPagoCacheClockForTests();
 });
 
 /* ------------------------------ parse + topics --------------------------- */
@@ -291,14 +310,73 @@ describe('resolveMetodoByCollector', () => {
     });
   });
 
-  it('v1 parks when zero or multiple MP accounts are connected', async () => {
+  // ⚠️ Split from one `it` into two. Both halves used the SAME input-independent
+  // v1 key against different FakeDbs, so as a single test it only passed because
+  // `negativeTtlMs: 0` refuses to cache either failure — a latent false pass that
+  // would have started lying the moment that setting changed.
+  it('v1 parks when ZERO MP accounts are connected', async () => {
     const empty = new FakeDb();
     expect((await resolveMetodoByCollector(asDb(empty), null)).kind).toBe('failed');
+  });
 
+  it('v1 parks when MULTIPLE MP accounts are connected', async () => {
     const many = new FakeDb();
     seedMetodo(many, 'metodo-A', 55);
     seedMetodo(many, 'metodo-B', 66);
     expect((await resolveMetodoByCollector(asDb(many), null)).kind).toBe('failed');
+  });
+});
+
+describe('resolveMetodoByCollector — the collector read cache', () => {
+  it('resolves a repeated collector from cache', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+
+    await resolveMetodoByCollector(asDb(db), 55);
+    const before = db.queryCount;
+    await resolveMetodoByCollector(asDb(db), 55);
+
+    expect(before).toBeGreaterThan(0);
+    expect(db.queryCount).toBe(before);
+  });
+
+  it('re-queries after ttlMs — the staleness contract, not just the hit', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+
+    await resolveMetodoByCollector(asDb(db), 55);
+    const before = db.queryCount;
+    now += READ_CACHE_TTL.volatile;
+    await resolveMetodoByCollector(asDb(db), 55);
+
+    expect(db.queryCount).toBeGreaterThan(before);
+  });
+
+  it('never caches a park — a seller who connects moments later resolves at once', async () => {
+    // A `failed` outcome PERSISTS a notificacoesMercadoPago doc that only the
+    // 30-minute sweep re-drives, past its own staleness window. Caching it would
+    // cost a write plus well over an hour of delay.
+    const db = new FakeDb();
+    expect((await resolveMetodoByCollector(asDb(db), 55)).kind).toBe('failed');
+
+    seedMetodo(db, 'metodo-A', 55);
+    expect(await resolveMetodoByCollector(asDb(db), 55)).toMatchObject({
+      kind: 'resolved',
+      metodoId: 'metodo-A',
+    });
+  });
+
+  it('namespaces the v1 branch apart from a keyed collector', async () => {
+    // The v1 key is input-independent, so it must not be satisfiable by — or
+    // satisfy — a collector-keyed lookup.
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+
+    expect(await resolveMetodoByCollector(asDb(db), 55)).toMatchObject({ metodoId: 'metodo-A' });
+    seedMetodo(db, 'metodo-B', 66);
+    // Two connected accounts now ⇒ the v1 branch is ambiguous, and it must see
+    // that rather than reusing the collector-55 entry.
+    expect((await resolveMetodoByCollector(asDb(db), null)).kind).toBe('failed');
   });
 });
 

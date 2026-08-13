@@ -9,6 +9,7 @@ import {
   MERCADO_PAGO_NOTIFICATION_QUEUE,
   reprocessNotifications,
 } from '../../lib/payments/notificacao';
+import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 import { getDb } from './lib/admin';
 import * as notificationHandlers from './processNotification';
 
@@ -51,11 +52,17 @@ export { processMercadoPagoNotification } from './processNotification';
 export const reprocessMercadoPagoNotifications = onSchedule(
   { schedule: 'every 30 minutes', timeZone: 'America/Sao_Paulo' },
   async () => {
+    const cacheMark = readCacheMark();
     const result = await reprocessNotifications(getDb());
     logger.info('[mercado-pago] reprocess sweep', {
       processed: result.processed,
+
       outcomes: result.outcomes,
+
       errorCount: result.errors.length,
+      // Read-cache hits/misses accrued by THIS tick. Reports the SWEEP process's
+      // caches, not the task consumer's — they are separate deployments.
+      readCache: readCacheDelta(cacheMark),
     });
     if (result.errors.length > 0) {
       logger.warn('[mercado-pago] reprocess sweep had per-doc failures', {

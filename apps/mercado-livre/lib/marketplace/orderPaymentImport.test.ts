@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import {
   MercadoLivreHttpError,
   type MercadoLivreApi,
@@ -289,6 +290,17 @@ function baseDeps(
 ): PaymentImportDeps {
   return { db: asDb(db), api, contaId: CONTA_ID, nowUs: NOW_US, ...over };
 }
+
+// `loadContaBag` now shares a module-scope cache keyed by the document PATH, so
+// a fresh `FakeDb` per test does NOT isolate it and every test here uses the
+// same `CONTA_ID`.
+beforeEach(() => {
+  __resetAllReadCaches();
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
+});
 
 /* --------------------------------- tests ----------------------------------- */
 

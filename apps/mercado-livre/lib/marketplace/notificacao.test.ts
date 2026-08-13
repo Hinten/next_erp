@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import {
   MAX_TENTATIVAS,
@@ -274,6 +275,10 @@ function seedFailed(db: FakeDb, id: string, over: DocData = {}): void {
 }
 
 beforeEach(() => {
+  // The conta cache is module-scope and keyed by the document PATH, so a fresh
+  // `FakeDb` per test does NOT isolate it — `conta-A` and seller 55 recur
+  // throughout this file with deliberately different seeded state.
+  __resetAllReadCaches();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   h.handleUptinMigration.mockClear();
@@ -283,6 +288,10 @@ beforeEach(() => {
   h.importPagamentoMercadoLivre.mockClear();
   h.importShipmentMercadoLivre.mockClear();
   h.importClaimMercadoLivre.mockClear();
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 /* ------------------------------ parse + topics --------------------------- */
