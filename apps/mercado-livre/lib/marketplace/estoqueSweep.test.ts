@@ -27,16 +27,19 @@ import {
 } from './bulkEstoquePlan';
 
 const h = vi.hoisted(() => ({
-  loadCtx: vi.fn(),
+  buildCtx: vi.fn(),
   createApi: vi.fn(),
 }));
 
 // The sweep builds its ML API via the exact runner chain
-// (loadMercadoLivreContext → resolveChannelContext → createMercadoLivreApi);
+// (buildMercadoLivreContext → resolveChannelContext → createMercadoLivreApi);
 // both seams are mocked partially so the error classes stay real.
+//
+// The seam is `buildMercadoLivreContext`, NOT `loadMercadoLivreContext`: the
+// enumeration query already fetched the conta, so the sweep never re-reads it.
 vi.mock('./mercadoLivre', async (importActual) => {
   const actual = await importActual<typeof import('./mercadoLivre')>();
-  return { ...actual, loadMercadoLivreContext: h.loadCtx };
+  return { ...actual, buildMercadoLivreContext: h.buildCtx };
 });
 vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
   const actual = await importActual<typeof import('@delfrance/integrations-mercado-livre')>();
@@ -189,20 +192,26 @@ function makeScheduler() {
   return { scheduler, enqueue };
 }
 
-/** Wire the mocked context→api chain; `getMe` feeds the DEFAULT guard seam. */
+/**
+ * Wire the mocked context→api chain; `getMe` feeds the DEFAULT guard seam. The
+ * implementation is SYNC and takes a third `conta` argument — the enumerated
+ * document the sweep threads down instead of re-reading.
+ */
 function wireCtx(getMe: () => Promise<MlUser> = async () => ({ id: 1, tags: [] })) {
-  h.loadCtx.mockImplementation(async (_db: Firestore, integracaoId: string) => ({
-    integracaoId,
-    conta: {},
-    channel: {},
-    store: {},
-    resolveChannelContext: async () => ({
+  h.buildCtx.mockImplementation(
+    (_db: Firestore, integracaoId: string, conta: Record<string, unknown>) => ({
       integracaoId,
-      accessToken: `tok-${integracaoId}`,
-      account: {},
+      conta,
+      channel: {},
+      store: {},
+      resolveChannelContext: async () => ({
+        integracaoId,
+        accessToken: `tok-${integracaoId}`,
+        account: {},
+      }),
+      exchangeAndPersist: async () => {},
     }),
-    exchangeAndPersist: async () => {},
-  }));
+  );
   const getMeMock = vi.fn(getMe);
   h.createApi.mockReturnValue({ getMe: getMeMock } as unknown as MercadoLivreApi);
   return { getMeMock };
@@ -334,7 +343,7 @@ function expectedDraft(mode: StockSweepMode, integracaoId: string): Record<strin
 
 beforeEach(() => {
   process.env[STOCK_SYNC_FLAG_ENV] = '1';
-  h.loadCtx.mockReset();
+  h.buildCtx.mockReset();
   h.createApi.mockReset();
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -429,7 +438,7 @@ describe('runStockSweep — flag gate', () => {
 
     expect(result).toEqual({ enabled: false, contas: [] });
     expect(db.opLog).toHaveLength(0);
-    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.buildCtx).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
     expect(enqueue).not.toHaveBeenCalled();
   });
@@ -469,7 +478,7 @@ describe('runStockSweep — conta enumeration', () => {
     const result = await run(db, 'incremental', { scheduler, fetchFamilies });
 
     expect(result).toEqual({ enabled: true, contas: [] });
-    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.buildCtx).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
   });
 
@@ -494,7 +503,7 @@ describe('runStockSweep — conta enumeration', () => {
         error: 'integração sem depósito — configure o depósito da conta',
       },
     ]);
-    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.buildCtx).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
     expect(enqueue).not.toHaveBeenCalled();
     // lastError + lastErrorAtUs stamped; cursorUs NOT created.
@@ -689,6 +698,32 @@ describe('runStockSweep — happy path', () => {
     expect(calls[0]!.changedSinceMs).toBe(cursorMs - 20_000);
     const stateGets = db.opLog.filter((o) => o.op === 'get' && o.path === `${SYNC_PATH}/INT-A`);
     expect(stateGets).toHaveLength(1);
+  });
+
+  it('never point-reads a conta the enumeration query already fetched', async () => {
+    // Same shape as the state-doc assertion above: the enumeration downloads
+    // each conta's full document, so re-reading it per conta was one redundant
+    // read per conta per tick. A TTL cache could not have fixed it — the tick
+    // period (15 min) equals `READ_CACHE_TTL.config`, so every tick would have
+    // been a cold miss.
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    seedConta(db, 'INT-B');
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [], nextAfterAnchorId: null }]);
+    const { scheduler } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    expect(db.opLog.filter((o) => o.path.startsWith(`${INTEGRACAO_PATH}/`))).toEqual([]);
+    // …and the context was still built for both, from the enumerated document.
+    expect(h.buildCtx).toHaveBeenCalledTimes(2);
+    expect(h.buildCtx).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      'INT-A',
+      expect.objectContaining({ depositoOuterRef: DEP_REF }),
+    );
   });
 
   it('daily: flat window, NO sold-ids pass, lastDailyAtUs stamped, cursor untouched', async () => {

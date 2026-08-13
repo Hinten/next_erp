@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Badge, Button } from '@mantine/core';
@@ -16,6 +16,7 @@ import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { MassImportDialog } from './_components/MassImportDialog';
+import { MercadoLivreCallbackToast } from './_components/MercadoLivreCallbackToast';
 import { MercadoLivreJobsPanel } from './_components/MercadoLivreJobsPanel';
 import { PriceSyncDialog } from './_components/PriceSyncDialog';
 import { type ContaRef, contaRefFromRow } from './_components/startJobsForContas';
@@ -40,6 +41,13 @@ export default function CanalMercadoLivrePage() {
   // + `nome` ordering; `queryParams` binds the slice. Mirrors /canais/balcao.
   return (
     <>
+      {/* The OAuth callback redirects HERE for the failures that happen before a
+          trustworthy integração id exists (config / missing_params / bad_state).
+          Behind Suspense because the hook reads useSearchParams. */}
+      <Suspense fallback={null}>
+        <MercadoLivreCallbackToast />
+      </Suspense>
+
       <TableView<typeof integracaoSchema>
         title="Mercado Livre"
         description="Contas conectadas da integração com o Mercado Livre."

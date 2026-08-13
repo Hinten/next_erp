@@ -20,7 +20,7 @@
     "@delfrance/schemas": "workspace:*",
     "firebase-admin": "catalog:",
     "firebase-functions": "catalog:",
-    "next": "catalog:",
+    "next": "16.2.6",
     "react": "catalog:",
     "react-dom": "catalog:",
     "zod": "catalog:"

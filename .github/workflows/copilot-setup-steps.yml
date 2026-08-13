@@ -52,13 +52,19 @@ jobs:
         id: pnpm-store
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
+      # Shares ci.yml's `pnpm-store-` key namespace on purpose. Under a private
+      # `copilot-` prefix this lane was the only writer, so it started cold on
+      # almost every run; the shared namespace is refreshed by every merge to the
+      # default branch, and default-branch caches are readable from any branch.
+      # The Playwright and Next.js caches below stay on `copilot-` prefixes —
+      # their contents genuinely differ from what the CI lanes store.
       - name: Cache pnpm store
         uses: actions/cache@v5
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
-          key: copilot-pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
-            copilot-pnpm-store-${{ runner.os }}-
+            pnpm-store-${{ runner.os }}-
 
       - name: Cache Playwright browsers
         uses: actions/cache@v5
