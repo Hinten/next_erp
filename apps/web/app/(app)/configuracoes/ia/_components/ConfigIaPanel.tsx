@@ -28,12 +28,14 @@
 import { useState } from 'react';
 import {
   Alert,
+  Anchor,
   Badge,
   Button,
   Code,
   Group,
   Loader,
   NumberInput,
+  Paper,
   Select,
   Stack,
   Switch,
@@ -239,17 +241,25 @@ export function ConfigIaPanel() {
         disabled={!canWrite}
       />
 
-      <Textarea
-        label="Instrução do sistema"
-        description="Vazio = usar a instrução que acompanha o sistema, incluindo a regra de omitir o que não for possível determinar."
-        placeholder="Instrução padrão do sistema"
-        value={promptValue}
-        onChange={(e) => setPrompt(e.currentTarget.value)}
-        autosize
-        minRows={4}
-        maxRows={14}
-        disabled={!canWrite}
-      />
+      <Stack gap={6}>
+        <Textarea
+          label="Instrução do sistema"
+          description="Vazio = usar a instrução padrão abaixo, incluindo a regra de omitir o que não for possível determinar."
+          placeholder="Instrução padrão do sistema"
+          value={promptValue}
+          onChange={(e) => setPrompt(e.currentTarget.value)}
+          autosize
+          minRows={4}
+          maxRows={14}
+          disabled={!canWrite}
+        />
+        <PromptPadrao
+          texto={lista?.promptPadrao ?? null}
+          emUso={promptValue.trim() === ''}
+          podeCopiar={canWrite && promptValue.trim() === ''}
+          onCopiar={() => setPrompt(lista?.promptPadrao ?? '')}
+        />
+      </Stack>
 
       <Group grow align="flex-start">
         <NumberInput
@@ -296,6 +306,64 @@ export function ConfigIaPanel() {
           Salvar
         </Button>
       </Group>
+    </Stack>
+  );
+}
+
+/**
+ * The shipped system instruction, shown in full.
+ *
+ * An instruction you cannot read is one you cannot decide to change — and this
+ * text carries the anti-hallucination rule ("OMITA a chave de qualquer atributo
+ * que você não conseguir determinar"), which is the single most consequential
+ * sentence in the whole AI surface.
+ *
+ * ⚠️ It is NOT auto-filled into the textarea, and that is deliberate rather than
+ * lazy. An empty `promptSistema` is stored as `null`, meaning "use whatever the
+ * system ships today"; pre-filling would make the first save store a *copy*, and
+ * that copy would then be frozen — a later improvement to the shipped wording
+ * would silently never reach this tenant. The button makes taking the copy an
+ * explicit choice, which is the same click's worth of effort with none of the
+ * silent consequence.
+ */
+function PromptPadrao({
+  texto,
+  emUso,
+  podeCopiar,
+  onCopiar,
+}: {
+  texto: string | null;
+  emUso: boolean;
+  podeCopiar: boolean;
+  onCopiar: () => void;
+}) {
+  const [aberto, setAberto] = useState(false);
+  if (texto == null) return null;
+
+  return (
+    <Stack gap={4}>
+      <Group gap="sm">
+        <Anchor component="button" type="button" size="xs" onClick={() => setAberto((v) => !v)}>
+          {aberto ? 'Ocultar instrução padrão' : 'Ver instrução padrão do sistema'}
+        </Anchor>
+        {emUso && (
+          <Badge size="xs" variant="light" color="green">
+            em uso
+          </Badge>
+        )}
+        {podeCopiar && (
+          <Anchor component="button" type="button" size="xs" c="dimmed" onClick={onCopiar}>
+            copiar para o campo e editar
+          </Anchor>
+        )}
+      </Group>
+      {aberto && (
+        <Paper withBorder p="xs" bg="var(--mantine-color-default-hover)">
+          <Text size="xs" style={{ whiteSpace: 'pre-wrap' }}>
+            {texto}
+          </Text>
+        </Paper>
+      )}
     </Stack>
   );
 }

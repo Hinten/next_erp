@@ -17,6 +17,7 @@
  * fallback lives in `getAiModelosCached`.
  */
 import { NextResponse } from 'next/server';
+import { DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION } from '@delfrance/integrations-mercado-livre';
 import { CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
 
 import { loadConfigIa } from '@/lib/ai/configIa';
@@ -50,6 +51,18 @@ export async function GET(req: Request): Promise<NextResponse> {
     modelos: lista.modelos,
     fonte: lista.fonte,
     ...(lista.erro != null ? { erro: lista.erro } : {}),
+    /**
+     * The shipped system instruction, verbatim, so the settings page can SHOW
+     * what runs when the field is left empty — an instruction you cannot read is
+     * one you cannot decide to change.
+     *
+     * ⚠️ It travels over the wire rather than being imported by `apps/web`
+     * because this package's root is **server-side only** (its OAuth core holds
+     * the app clientSecret and must never reach a browser bundle). Copying the
+     * text into `apps/web` would be the other way to show it, and the copy would
+     * drift from the one the model is actually given.
+     */
+    promptPadrao: DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
     /**
      * What a call would use, and why. `origem` is the honest answer to "the page
      * shows model X, is that what runs?" — an env var set on the backend

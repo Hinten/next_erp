@@ -68,6 +68,7 @@ function liveModelos(over: Partial<MercadoLivreIaModelos> = {}): MercadoLivreIaM
       { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
     ],
     fonte: 'live',
+    promptPadrao: 'Você preenche atributos. OMITA a chave de qualquer atributo que não determinar.',
     efetivo: {
       modelo: 'gemini-3.5-flash-lite',
       substituido: false,
@@ -251,3 +252,56 @@ function defaults(): ConfigIa {
     ultimaModificacao: null,
   };
 }
+
+describe('the shipped system instruction is visible', () => {
+  it('can be revealed in full, so it can be judged before being changed', async () => {
+    // The default carries the anti-hallucination rule — the single most
+    // consequential sentence in the AI surface. An instruction nobody can read
+    // is one nobody can decide to change.
+    renderPanel();
+    await waitFor(() => screen.getByRole('button', { name: /Ver instrução padrão/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Ver instrução padrão/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/OMITA a chave/)).toBeDefined();
+    });
+  });
+
+  it('marks the default as in use while the field is empty', async () => {
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText('em uso')).toBeDefined();
+    });
+  });
+
+  it('does NOT pre-fill the textarea with it', async () => {
+    // ⚠️ Pre-filling would make the first save store a COPY, and the copy would
+    // be frozen — a later improvement to the shipped wording would silently
+    // never reach this tenant. `null` means "use whatever ships today".
+    renderPanel();
+    await waitFor(() => screen.getByRole('button', { name: /Ver instrução padrão/i }));
+    expect(screen.getByLabelText('Instrução do sistema')).toHaveProperty('value', '');
+  });
+
+  it('copies it into the field on request, as an explicit choice', async () => {
+    renderPanel();
+    await waitFor(() => screen.getByRole('button', { name: /copiar para o campo/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /copiar para o campo/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText('Instrução do sistema')).toHaveProperty(
+        'value',
+        'Você preenche atributos. OMITA a chave de qualquer atributo que não determinar.',
+      );
+    });
+  });
+
+  it('stops offering the copy once the field holds something', async () => {
+    // Copying over an operator's own wording would discard it.
+    h.stored = { ...defaults(), promptSistema: 'Minha instrução' };
+    renderPanel();
+    await waitFor(() => screen.getByRole('button', { name: /Ver instrução padrão/i }));
+    expect(screen.queryByRole('button', { name: /copiar para o campo/i })).toBeNull();
+    expect(screen.queryByText('em uso')).toBeNull();
+  });
+});

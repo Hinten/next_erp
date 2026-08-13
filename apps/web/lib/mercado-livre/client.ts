@@ -285,6 +285,16 @@ export interface MercadoLivreIaModelos {
   fonte: 'live' | 'fallback';
   /** Why the list is a fallback. Present only when `fonte === 'fallback'`. */
   erro?: string;
+  /**
+   * The shipped system instruction, verbatim — what runs when `promptSistema` is
+   * left empty.
+   *
+   * ⚠️ It arrives over the wire rather than being imported: the ML integrations
+   * package root is **server-only** (its OAuth core holds the app clientSecret),
+   * and a copy kept in `apps/web` would drift from the text the model is
+   * actually given.
+   */
+  promptPadrao: string;
   efetivo: {
     /** What a suggestion would use right now. */
     modelo: string;
