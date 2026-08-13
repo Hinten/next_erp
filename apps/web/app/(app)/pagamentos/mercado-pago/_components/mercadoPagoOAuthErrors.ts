@@ -1,6 +1,6 @@
 'use client';
 
-import { oauthCallbackMessage, useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
+import { useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
 
 /**
  * The Mercado Pago OAuth callback outcome (`?mp=connected|error&reason=…`), turned
@@ -20,8 +20,14 @@ const MENSAGENS: Readonly<Record<string, string>> = {
   server_config:
     'O backend do Mercado Pago está sem as credenciais da aplicação (client id / secret). Avise quem cuida do deploy.',
   conta: 'Este método de pagamento não está configurado como uma conta Mercado Pago.',
+  // ⚠️ Do NOT narrow this to "the code expired". `MercadoPagoReauthRequiredError`
+  // is raised for EVERY `invalid_grant`, and a `redirect_uri` mismatch is one of
+  // them — the slug cannot tell the two apart, which is exactly why `status`/`body`
+  // were added to the error. Naming only the expiry would tell an operator whose
+  // MERCADO_PAGO_PUBLIC_URL disagrees with the registered URI to click Conectar
+  // again, forever, while the real cause sits in the log's `body.cause`.
   codigo_invalido:
-    'O código de autorização expirou ou já foi usado. Clique em Conectar para recomeçar.',
+    'O Mercado Pago recusou o código de autorização: ele expirou / já foi usado, ou a URL de redirect deste backend não confere com a cadastrada na aplicação. Tente conectar de novo; se repetir, confira a URL de redirect e veja o motivo exato nos logs do backend.',
   mp_recusou:
     'O Mercado Pago recusou a conexão. Confira o client id / secret da aplicação e se a URL de redirect cadastrada bate com a deste backend.',
   // The 200-but-unparseable arm. MP's consent URL sends NO `scope` parameter, so
@@ -37,10 +43,6 @@ const MENSAGENS: Readonly<Record<string, string>> = {
   missing_params: 'O Mercado Pago não devolveu o código de autorização.',
   bad_state: 'A assinatura do state não confere. Recomece a conexão a partir da tela da conta.',
 };
-
-export function mercadoPagoCallbackMessage(reason: string | null): string {
-  return oauthCallbackMessage(reason, MENSAGENS);
-}
 
 /**
  * Toast the callback outcome once per navigation. Shared by the account panel and

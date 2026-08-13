@@ -43,8 +43,7 @@ export class MercadoPagoValidationError extends MercadoPagoError {
  * token is expired, revoked, or already used), or a `401` from the REST API
  * (the access token was rejected), or no credential at all. The account must
  * complete the OAuth consent flow again; a plain retry won't fix it.
- */
-/**
+ *
  * ⚠️ `reason` is about the CREDENTIAL, not the grant type: `requestToken` raises
  * `'refresh_failed'` for an `invalid_grant` on a **code exchange** too, so it does
  * not tell you whether an authorization code or a refresh token died. The caller
