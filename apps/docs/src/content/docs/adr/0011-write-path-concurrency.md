@@ -44,6 +44,15 @@ There is no generic mechanism. The state of play at the time of this ADR:
   `FieldValue.increment` with `FieldValue.maximum` on the watermark.
 - **Zero** uses of `DocumentReference.update(data, { lastUpdateTime })`,
   Firestore's own compare-and-swap precondition.
+
+> **Update (2026-08, issue #824).** The last point is no longer true, and that
+> is the ADR working: tier 1 is now used **twice**, both in Mercado Livre —
+> `publish.ts` (the listing write-back) and `import.ts` (the produto price
+> import) — and both are pinned by test fakes that *enforce* the precondition
+> rather than merely recording it, so a stale `lastUpdateTime` throws in the
+> test the way it would in Firestore. Copy those when reaching for tier 1. The
+> repo-wide audit that established this also found the other counts still
+> accurate, and reclassified all ~79 transaction sites; see #824.
 - An explicit acknowledgement in `apps/web/lib/produtos/revert.ts`: *"there is no
   optimistic locking anywhere in this app (last-write-wins)"*.
 

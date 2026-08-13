@@ -1,17 +1,28 @@
 name: Claude Code Review
 
-# On-demand code review by Claude, requested with a top-level PR comment:
+# On-demand code review, requested with a top-level PR comment:
 #
-#   @claude review              -> medium effort (the default)
-#   @claude review high         -> broader coverage
-#   @claude /code-review max    -> same thing; both spellings are accepted
+#   !reviewbot              -> medium effort (the default)
+#   !reviewbot high         -> broader coverage
+#   !reviewbot review max   -> the word `review` is optional, for muscle memory
 #
 # Nothing here runs automatically. Reviewing every push is what exhausted the
 # Copilot quota, and this lane bills your Claude subscription via
 # CLAUDE_CODE_OAUTH_TOKEN, so asking for a review stays a deliberate act.
 #
-# Plain `@claude ...` mentions are handled by claude.yml instead; its `if:`
-# excludes the review prefixes so exactly one of the two workflows fires.
+# ⚠️ The `!` prefix is load-bearing — do not "tidy" this into `@reviewbot`.
+# In a GitHub comment `@word` is a USER MENTION: github.com/ReviewBot is a real
+# account, so `@reviewbot` rendered as a link to that stranger's profile and
+# notified them on every request. Any `@name` trigger has this problem, because
+# the name can be registered by someone at any time — the fix is to leave the
+# mention namespace entirely, not to hunt for a free handle.
+#
+# It is also deliberately not `@claude`, which is claude-code-action's default
+# phrase and Agent HQ's documented one: keying this lane on it means a second
+# Claude workflow — or Agent HQ, if it is ever enabled here — answers the same
+# comment and you pay twice for two different reviews. Having its own phrase
+# also decouples the lanes: claude.yml needs no exclusion rule, because
+# `!reviewbot` does not contain `@claude`.
 on:
   issue_comment:
     types: [created]
@@ -27,10 +38,10 @@ concurrency:
 
 jobs:
   # A cheap gate job, seconds long and with no checkout. GitHub expressions have
-  # no regex, so the `if:` below can only test a prefix — and `@claude reviewers
-  # should look at this` satisfies a prefix test, which would start a paid
-  # review. The strict match is a regex here, and the expensive job depends on
-  # its verdict, so a near-miss costs a few runner-seconds instead of a review.
+  # no regex, so the `if:` below can only test a prefix — and `!reviewbots should
+  # look at this` satisfies a prefix test, which would start a paid review. The
+  # strict match is a regex here, and the expensive job depends on its verdict,
+  # so a near-miss costs a few runner-seconds instead of a review.
   gate:
     # `issue_comment` fires for issues too, so the pull_request key is what
     # narrows it to PRs. `startsWith` (not `contains`) mirrors the rule
@@ -38,8 +49,7 @@ jobs:
     if: >-
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
-      (startsWith(github.event.comment.body, '@claude review') ||
-       startsWith(github.event.comment.body, '@claude /code-review'))
+      startsWith(github.event.comment.body, '!reviewbot')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -55,15 +65,17 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           first=$(printf '%s' "$COMMENT_BODY" | head -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')
-          if printf '%s' "$first" | grep -qE '^@claude (/code-)?review([[:space:]]|$)'; then
+          if printf '%s' "$first" | grep -qE '^!reviewbot([[:space:]]|$)'; then
             match=true
           else
             match=false
           fi
           # The effort must be the token right after the command, not merely
-          # present somewhere on the line — otherwise "@claude review please,
-          # low risk change" silently downgrades the review to low.
-          effort=$(printf '%s' "$first" | sed -nE 's#^@claude (/code-)?review[[:space:]]+(low|medium|high|max)([[:space:]].*)?$#\2#p')
+          # present somewhere on the line — otherwise "!reviewbot please, low
+          # risk change" silently downgrades the review to low. The optional
+          # `review` word is tolerated so that the habit left over from the
+          # earlier `... review high` spellings still lands on the right effort.
+          effort=$(printf '%s' "$first" | sed -nE 's#^!reviewbot([[:space:]]+review)?[[:space:]]+(low|medium|high|max)([[:space:]].*)?$#\2#p')
           {
             echo "match=$match"
             echo "effort=${effort:-medium}"
@@ -83,8 +95,9 @@ jobs:
       actions: read # Lets Claude read this PR's CI results
     env:
       # FUNCTIONS_REGION is in turbo.json's `globalEnv`, so it participates in
-      # every task hash. It is set to the value ci.yml uses so a cache entry
-      # warmed here is the one a later `turbo run` looks up, not a hash mismatch.
+      # every task hash. Set to ci.yml's value so a scoped `turbo run` the
+      # reviewer fires can hit the restored cache rather than miss on a hash
+      # mismatch.
       FUNCTIONS_REGION: us-east1
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
@@ -135,15 +148,15 @@ jobs:
             turbo-review-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-review-${{ runner.os }}-
 
+      # `node_modules` is what a scratch verification needs — a `node -e` that
+      # imports a real module, a targeted vitest run. There is deliberately no
+      # typecheck-warming step after it: that existed to make a full
+      # `turbo run typecheck` cheap for the reviewer, and the reviewer no longer
+      # runs one (ci.yml already did, on this commit). Warming a cache nothing
+      # reads costs minutes of Actions time on every review. A scoped
+      # `--filter <pkg>` typecheck is fast enough cold.
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
-
-      # Warms the cache so the typecheck Claude runs to verify a finding is a
-      # cache hit for everything the PR did not touch. `|| true` because a PR
-      # under review may legitimately fail typecheck — that is a finding, not a
-      # reason to abort the review.
-      - name: Warm the typecheck cache
-        run: pnpm turbo run typecheck || true
 
       - name: Run Claude Code Review
         uses: anthropics/claude-code-action@v1
@@ -173,9 +186,26 @@ jobs:
             ones that cover the paths this PR touches. Violations of those rules
             are findings.
 
-            Verify before you report. You can run `pnpm turbo run typecheck`,
-            `pnpm turbo run lint` and the workspace vitest suites — a finding you
+            Do not re-run the repo's gates. CI already ran `turbo run lint
+            typecheck`, `turbo run test`, `format:check` and `build` on this
+            exact commit, and you can read the results — so a red gate is
+            something to look up, never something to reproduce.
+
+            Run things CI cannot. CI answers "do the existing tests pass"; you
+            answer "is this correct", and the findings worth having are the ones
+            no test covers. When a specific finding turns on behaviour you are
+            inferring, build the smallest experiment that settles it — a `node
+            -e` against the real module, a scratch vitest on a case you invent,
+            a scoped `turbo run typecheck --filter <pkg>` after a type argument.
+            Dependencies are installed, so all of that works. A finding you
             confirmed by running something is worth ten you inferred from naming.
+
+            Two cautions. Turbo hashes its declared inputs, not the repo, so a
+            turbo task can replay a cached green for a test that greps the
+            filesystem; when a result decides whether you report a finding, run
+            vitest directly in the workspace instead. And if a command you need
+            is not permitted, say so plainly in the review rather than reporting
+            findings as if you had verified them.
 
             House style for the review itself:
             - Inline comments for specific issues; one top-level comment for the
@@ -185,6 +215,22 @@ jobs:
             - Lead the summary with the shape of the work — how many real issues,
               or "no blocking issues" when that is the case.
             - Write in English.
+          # ⚠️ Every Bash rule needs the trailing `:*`. `Bash(cmd)` matches that
+          # EXACT command string and nothing else, so `Bash(pnpm turbo run
+          # typecheck)` did not match `pnpm turbo run lint typecheck` (the form
+          # CLAUDE.md documents) or any invocation carrying a `--filter`. An
+          # unmatched Bash command does not fail — it asks for approval, and in a
+          # workflow nobody answers, so the review silently proceeds without
+          # having run anything. Prefixes, not exact commands.
+          #
+          # `--model` is pinned on purpose. Without it the action uses whatever
+          # Claude Code defaults to on a fresh install, which is NOT your local
+          # `~/.claude/settings.json` — that file never reaches the runner — and
+          # which can change with a Claude Code release without anything here
+          # changing. A review lane that reads fiscal code and race guards should
+          # not silently switch models. Use the exact API id, not a selector
+          # shorthand like `opus[1m]`.
           claude_args: |
+            --model claude-opus-5
             --max-turns 60
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(pnpm turbo run typecheck),Bash(pnpm turbo run lint),Bash(pnpm exec vitest run:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(pnpm turbo run:*),Bash(pnpm exec:*),Bash(pnpm --filter:*),Bash(pnpm format:check),Bash(npx vitest:*),Bash(node:*)"
