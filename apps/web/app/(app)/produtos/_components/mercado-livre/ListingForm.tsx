@@ -6,8 +6,11 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import {
+  Alert,
   Anchor,
+  Button,
   Fieldset,
+  Group,
   Select,
   SimpleGrid,
   Stack,
@@ -27,7 +30,11 @@ import {
   validateAttr,
   type AttrRow,
 } from '@/lib/mercado-livre/attributeForm';
-import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
+  useMercadoLivreClient,
+} from '@/lib/mercado-livre/client';
 
 import {
   LISTING_TYPE_OPTIONS,
@@ -184,6 +191,121 @@ export function ListingForm({
   // Computed ONCE, from the seed. Deriving it on every render would collapse the
   // field the instant the operator cleared the text they were editing.
   const [descricaoOpen, setDescricaoOpen] = useState(() => (link.descricao ?? '').trim() !== '');
+
+  /**
+   * Fill the form with the data ML requires a **test listing** to carry.
+   *
+   * Pre-fill only — nothing is saved and nothing is published. `shouldDirty`
+   * marks the form so "Salvar anúncio" lights up and the operator commits
+   * deliberately, exactly as for a hand-typed edit.
+   */
+  const aplicarDadosTeste = useCallback(
+    (dados: {
+      title: string;
+      descricao: string;
+      categoryId: string | null;
+      listingTypeId: string | null;
+    }) => {
+      const opts = { shouldDirty: true, shouldValidate: true } as const;
+      form.setValue('title', dados.title, opts);
+      form.setValue('descricao', dados.descricao, opts);
+      // ⚠️ Only when resolved. Writing '' would clear a category the operator had
+      // already chosen and re-block Publicar, and writing a guessed id would file
+      // a test listing into a real category.
+      if (dados.categoryId != null) form.setValue('category_id', dados.categoryId, opts);
+      if (dados.listingTypeId != null) {
+        form.setValue('listing_type_id', dados.listingTypeId, opts);
+      }
+      setDescricaoOpen(true);
+    },
+    [form],
+  );
+
+  const [carregandoTeste, setCarregandoTeste] = useState(false);
+  const [testeConta, setTesteConta] = useState<{
+    nickname: string | null;
+    ehContaDeTeste: boolean;
+    categoriaResolvida: boolean;
+    tipoResolvido: boolean;
+  } | null>(null);
+
+  const preencherTeste = useCallback(async () => {
+    if (!client) return;
+    setCarregandoTeste(true);
+    try {
+      const dados = await client.anuncioTeste(integracaoId);
+      aplicarDadosTeste(dados);
+      setTesteConta({
+        nickname: dados.conta.nickname,
+        ehContaDeTeste: dados.conta.ehContaDeTeste,
+        categoriaResolvida: dados.categoryId != null,
+        tipoResolvido: dados.listingTypeId != null,
+      });
+    } catch (err) {
+      // The client narrows to its own two classes; anything else is a bug and
+      // must not be reported as "could not reach Mercado Livre".
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        notifications.show({ color: 'red', title: 'Dados de teste', message: err.message });
+        return;
+      }
+      throw err;
+    } finally {
+      setCarregandoTeste(false);
+    }
+  }, [client, integracaoId, aplicarDadosTeste]);
+
+  /**
+   * ⚠️ The warning is the point of this feature, not decoration.
+   *
+   * Mercado Livre has **no sandbox** — «O Mercado Livre não tem um ambiente para
+   * teste ou sandbox» — so publishing this fills a real listing on the real
+   * marketplace. And ML's rule is that it must not be a real seller account:
+   * «contas pessoais ou de familiares não devem ser, em hipótese alguma,
+   * utilizadas para testes». The compliant path is a test user connected as a
+   * second conta, which this ERP already supports, so the warning names it.
+   */
+  const avisoTeste =
+    testeConta == null ? null : (
+      <Alert
+        color={testeConta.ehContaDeTeste ? 'blue' : 'yellow'}
+        variant="light"
+        mb="xs"
+        title={
+          testeConta.ehContaDeTeste
+            ? 'Dados de teste preenchidos'
+            : 'Esta não é uma conta de teste do Mercado Livre'
+        }
+      >
+        <Stack gap={4}>
+          {!testeConta.ehContaDeTeste && (
+            <Text size="sm">
+              O Mercado Livre não tem ambiente de testes: publicar aqui cria um anúncio real em{' '}
+              <strong>{testeConta.nickname ?? 'nesta conta'}</strong>. A documentação pede que
+              anúncios de teste fiquem em um usuário de teste — crie um e conecte-o como uma segunda
+              conta em Canais &gt; Mercado Livre.
+            </Text>
+          )}
+          {!testeConta.categoriaResolvida && (
+            <Text size="sm">
+              A categoria “Outros” não foi encontrada no Mercado Livre — escolha uma categoria antes
+              de publicar.
+            </Text>
+          )}
+          {!testeConta.tipoResolvido && (
+            <Text size="sm">
+              Nenhum tipo de anúncio de baixa exposição está disponível nesta categoria — escolha um
+              manualmente e evite Premium.
+            </Text>
+          )}
+          <Text size="xs" c="dimmed">
+            Nada foi salvo nem publicado: os campos foram apenas preenchidos.
+          </Text>
+        </Stack>
+      </Alert>
+    );
 
   // ---- Attributes ---------------------------------------------------------
   // Deliberately NOT a react-hook-form field. The set of attributes is decided
@@ -366,6 +488,21 @@ export function ListingForm({
   return (
     <>
       <Fieldset legend="Dados do anúncio" variant="unstyled">
+        {!isPublished && !readOnly && (
+          <Group justify="flex-end" mb="xs">
+            <Button
+              type="button"
+              variant="subtle"
+              size="compact-xs"
+              onClick={() => void preencherTeste()}
+              loading={carregandoTeste}
+              disabled={client == null}
+            >
+              Preencher com dados de teste
+            </Button>
+          </Group>
+        )}
+        {avisoTeste}
         <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="sm" verticalSpacing="xs">
           <Controller
             control={form.control}

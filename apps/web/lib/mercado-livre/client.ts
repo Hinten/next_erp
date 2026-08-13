@@ -268,6 +268,24 @@ export interface MercadoLivreTiposAnuncio {
   tipos: MercadoLivreCategoriaNo[];
 }
 
+/**
+ * `GET /anuncio-teste` — the data ML requires a test listing to carry, resolved
+ * against the live catalogue, plus whether the target account is a test user.
+ */
+export interface MercadoLivreAnuncioTeste {
+  title: string;
+  descricao: string;
+  /** ML's "Outros" category, or null when the site has no such root. */
+  categoryId: string | null;
+  /** Lowest-exposure type the category offers; null ⇒ the operator picks. */
+  listingTypeId: string | null;
+  conta: {
+    nickname: string | null;
+    /** False ⇒ warn: ML forbids test listings on a real seller account. */
+    ehContaDeTeste: boolean;
+  };
+}
+
 /** One chart-enabled ML domain (`GET size-charts/domains`). */
 export interface MercadoLivreChartDomain {
   domain_id: string;
@@ -466,6 +484,14 @@ export interface MercadoLivreClient {
     integracaoId: string;
     categoryId: string;
   }): Promise<MercadoLivreTiposAnuncio>;
+  /**
+   * The documented test-listing data for this account (PERM.integracao.read).
+   *
+   * ⚠️ Read-only — it resolves what a test listing must look like and reports
+   * whether the account is a test user. Publishing remains a separate,
+   * deliberate click.
+   */
+  anuncioTeste(integracaoId: string): Promise<MercadoLivreAnuncioTeste>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
   sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
   /**
@@ -717,6 +743,10 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreTiposAnuncio>(
         `/api/marketplace/mercado-livre/tipos-anuncio?integracaoId=${encodeURIComponent(input.integracaoId)}` +
           `&categoryId=${encodeURIComponent(input.categoryId)}`,
+      ),
+    anuncioTeste: (integracaoId) =>
+      call<MercadoLivreAnuncioTeste>(
+        `/api/marketplace/mercado-livre/anuncio-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
       ),
     sizeChartDomains: (integracaoId) =>
       call<{ domains: MercadoLivreChartDomain[] }>(

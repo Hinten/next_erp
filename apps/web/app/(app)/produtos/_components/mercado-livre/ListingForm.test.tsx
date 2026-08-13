@@ -13,7 +13,17 @@ const h = vi.hoisted(() => ({
   writes: [] as Array<Record<string, unknown>>,
   /** What the transaction re-read sees; swap per test to simulate a racer. */
   remote: null as ProdutoMercadoLivreLink | null,
+  /**
+   * The ML client. `null` by default so the existing tests keep running without
+   * a backend (the attributes query is gated on it) — the test-data tests set it.
+   */
+  client: null as Record<string, unknown> | null,
 }));
+
+vi.mock('@/lib/mercado-livre/client', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
+  return { ...actual, useMercadoLivreClient: () => h.client };
+});
 
 vi.mock('@/lib/mercado-livre/listingPort', () => ({
   createClientListingPort: () => ({
@@ -80,6 +90,7 @@ async function save(registerFlush: ReturnType<typeof vi.fn>, mode: 'button' | 'f
 }
 
 beforeEach(() => {
+  h.client = null;
   h.writes = [];
   h.remote = linkFixture();
 });
@@ -294,5 +305,106 @@ describe('Descrição is collapsed until it has something to show', () => {
       expect(h.writes).toHaveLength(1);
     });
     expect(h.writes[0]).toMatchObject({ descricao: 'Texto novo' });
+  });
+});
+
+describe('Preencher com dados de teste', () => {
+  function setClient(over: Partial<Record<string, unknown>> = {}) {
+    h.client = {
+      categoriaAtributos: vi.fn(async () => ({ leaf: true, atributos: [], omitidos: [] })),
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        listingTypeId: 'free',
+        conta: { nickname: 'TEST0548', ehContaDeTeste: true },
+      })),
+      ...over,
+    };
+  }
+
+  it('fills the form with ML’s documented test data without saving anything', async () => {
+    // Pre-fill only. #799's rule is that things are OFFERED, not applied, and a
+    // button that published straight to a live marketplace would be the sharpest
+    // possible violation of it.
+    setClient();
+    renderForm({ id: null, title: 'Camiseta' });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Título do anúncio')).toHaveProperty(
+        'value',
+        'Item de Teste – Por favor, NÃO OFERTAR!',
+      );
+    });
+    expect(h.writes).toHaveLength(0);
+  });
+
+  it('WARNS when the target is not a test account', async () => {
+    // ⚠️ The point of the feature. ML has no sandbox, so this creates a real
+    // listing on a real marketplace, and ML's docs forbid test listings on a
+    // real seller account.
+    setClient({
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        listingTypeId: 'free',
+        conta: { nickname: 'VESTEFRANCE', ehContaDeTeste: false },
+      })),
+    });
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/não é uma conta de teste/i)).toBeDefined();
+    });
+    expect(screen.getByText(/VESTEFRANCE/)).toBeDefined();
+    expect(screen.getByText(/usuário de teste/i)).toBeDefined();
+  });
+
+  it('stays quiet about the account when it IS a test user', async () => {
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+    expect(screen.queryByText(/não é uma conta de teste/i)).toBeNull();
+  });
+
+  it('says so when the category could not be resolved, instead of guessing one', async () => {
+    // A hardcoded "Outros" id would file a test listing into a real category.
+    setClient({
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: null,
+        listingTypeId: null,
+        conta: { nickname: 'TEST1', ehContaDeTeste: true },
+      })),
+    });
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/categoria “Outros” não foi encontrada/i)).toBeDefined();
+    });
+    expect(screen.getByText(/evite Premium/i)).toBeDefined();
+  });
+
+  it('is not offered on a listing that is already published', async () => {
+    // Nothing to pre-fill: the listing exists at ML, and title/condition are
+    // already fixed there.
+    setClient();
+    renderForm({ id: 'MLB777' });
+    expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('is not offered without write permission', async () => {
+    setClient();
+    renderForm({ id: null }, { canWrite: false });
+    expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
   });
 });
