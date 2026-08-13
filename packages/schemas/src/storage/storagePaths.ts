@@ -57,9 +57,30 @@ export function productOriginalPath(produtoId: string, hash: string, ext?: strin
   return withExt(`${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.originals}/${hash}`, ext);
 }
 
-/** `produtos/<produtoId>/derivatives/<hash>_<variantKey>.jpeg`. */
+/**
+ * `<produtos|tabMedi>/<ownerId>/derivatives/<hash>_<variantKey>.jpeg`.
+ *
+ * Owner-aware because the resize function now covers tabela-de-medidas photos
+ * too: a size chart is a photo of a *table*, and the measurement agent reads
+ * digits off it, which the full-size `jpeg` variant makes possible and the
+ * original (HEIC, unrotated, tens of MB) does not.
+ */
+export function ownedDerivativePath(
+  ownerCollection: MediaOwnerCollection,
+  ownerId: string,
+  hash: string,
+  variantKey: string,
+): string {
+  return `${STORAGE_ROOT[ownerCollection]}/${ownerId}/${PRODUTO_SUBDIR.derivatives}/${hash}_${variantKey}.${DERIVATIVE_EXT}`;
+}
+
+/**
+ * Produto-only view of {@link ownedDerivativePath}. Kept because most callers
+ * and their tests are produto-scoped and must stay byte-identical — the same
+ * shape `parseProductMediaDir` has over `parseOwnedMediaDir`.
+ */
 export function productDerivativePath(produtoId: string, hash: string, variantKey: string): string {
-  return `${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.derivatives}/${hash}_${variantKey}.${DERIVATIVE_EXT}`;
+  return ownedDerivativePath('produtos', produtoId, hash, variantKey);
 }
 
 /** `produtos/<produtoId>/videos/<hash>[.<ext>]` — NOT watched, NOT resized. */
@@ -92,19 +113,36 @@ export function tabMediOriginalPath(tabMediId: string, hash: string, ext?: strin
   return withExt(`${STORAGE_ROOT.tabMedi}/${tabMediId}/${PRODUTO_SUBDIR.originals}/${hash}`, ext);
 }
 
+/**
+ * Owner-scoped `Arquivo` doc id for an original — `<ownerId>_<hash>`.
+ *
+ * The id shape carries no owner *collection*, only the owner id, which is why
+ * produtos and tabelas de medidas can share one derivative-id scheme. The
+ * collection is recovered from the storage path, not from the id.
+ */
+export function ownedArquivoId(ownerId: string, hash: string): string {
+  return `${ownerId}_${hash}`;
+}
+
 /** Owner-scoped `Arquivo` doc id for a tabela-de-medidas original. */
 export function tabMediArquivoId(tabMediId: string, hash: string): string {
-  return `${tabMediId}_${hash}`;
+  return ownedArquivoId(tabMediId, hash);
 }
 
 /** Product-scoped `Arquivo` doc id for an original. */
 export function productArquivoId(produtoId: string, hash: string): string {
-  return `${produtoId}_${hash}`;
+  return ownedArquivoId(produtoId, hash);
 }
 
-/** Product-scoped `Arquivo` doc id for a derivative. */
-export function derivativeArquivoId(produtoId: string, hash: string, variantKey: string): string {
-  return `${productArquivoId(produtoId, hash)}_${variantKey}`;
+/**
+ * `Arquivo` doc id for a derivative — `<ownerId>_<hash>_<variantKey>`.
+ *
+ * Owner-agnostic: pass a produto id or a tabela-de-medidas id. It reads
+ * "product-scoped" historically because produtos were the only owner with
+ * derivatives; the arithmetic never depended on that.
+ */
+export function derivativeArquivoId(ownerId: string, hash: string, variantKey: string): string {
+  return `${ownedArquivoId(ownerId, hash)}_${variantKey}`;
 }
 
 export interface ParsedOriginalPath {
@@ -114,33 +152,58 @@ export interface ParsedOriginalPath {
   ext: string | null;
 }
 
+export interface ParsedOwnedOriginalPath {
+  ownerCollection: MediaOwnerCollection;
+  ownerId: string;
+  hash: string;
+  /** Lowercased extension without the dot, or `null` when absent. */
+  ext: string | null;
+}
+
 /**
- * Parse a watched-original object name back into its parts, or `null` if the
- * name is not a `produtos/<produtoId>/originals/<file>` path. Used by the
- * resize function to recover `{produtoId, hash}` from the finalized object.
+ * Parse a watched-original object name into its owning collection, owner id and
+ * hash — `<produtos|tabMedi>/<ownerId>/originals/<file>` — or `null` when the
+ * name is not one. The resize function uses it to recover where to write the
+ * derivatives back to.
+ *
+ * ⚠️ **Both roots are watched.** `tabMedi` joined when the measurement agent
+ * needed to read digits off a supplier's size table: 400 px cannot resolve them,
+ * so the agent wants the full-size `jpeg` variant, and nothing was producing it.
+ * Widening the predicate is what makes the trigger fire on those uploads at all.
  */
-export function parseProductOriginalPath(name: string): ParsedOriginalPath | null {
+export function parseOwnedOriginalPath(name: string): ParsedOwnedOriginalPath | null {
   const parts = name.split('/');
-  if (
-    parts.length !== 4 ||
-    parts[0] !== STORAGE_ROOT.produtos ||
-    parts[2] !== PRODUTO_SUBDIR.originals
-  ) {
-    return null;
-  }
-  const produtoId = parts[1];
-  const file = parts[3];
-  if (!produtoId || !file) return null;
+  if (parts.length !== 4 || parts[2] !== PRODUTO_SUBDIR.originals) return null;
+  const [root, ownerId, , file] = parts;
+  const ownerCollection: MediaOwnerCollection | null =
+    root === STORAGE_ROOT.produtos ? 'produtos' : root === STORAGE_ROOT.tabMedi ? 'tabMedi' : null;
+  if (!ownerCollection || !ownerId || !file) return null;
   const dot = file.lastIndexOf('.');
   const hash = dot > 0 ? file.slice(0, dot) : file;
   const ext = dot > 0 ? file.slice(dot + 1).toLowerCase() : null;
   if (!hash) return null;
-  return { produtoId, hash, ext };
+  return { ownerCollection, ownerId, hash, ext };
 }
 
-/** True when `name` is a watched product original (resize candidate). */
-export function isWatchedProductOriginal(name: string): boolean {
-  return parseProductOriginalPath(name) !== null;
+/**
+ * Produto-only view of {@link parseOwnedOriginalPath} — returns `null` for any
+ * `tabMedi/…` path. Kept byte-identical for the produto-scoped callers and their
+ * tests, mirroring how `parseProductMediaDir` sits over `parseOwnedMediaDir`.
+ */
+export function parseProductOriginalPath(name: string): ParsedOriginalPath | null {
+  const parsed = parseOwnedOriginalPath(name);
+  return parsed && parsed.ownerCollection === 'produtos'
+    ? { produtoId: parsed.ownerId, hash: parsed.hash, ext: parsed.ext }
+    : null;
+}
+
+/**
+ * True when `name` is a watched original of ANY media owner — i.e. a resize
+ * candidate. This is the predicate `shouldResize` gates on, so widening it is
+ * what brings a new owner's photos into the resize pipeline.
+ */
+export function isWatchedOriginal(name: string): boolean {
+  return parseOwnedOriginalPath(name) !== null;
 }
 
 /** A product-media subdir the orphan sweep is allowed to reclaim. */

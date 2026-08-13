@@ -8,8 +8,8 @@ import {
   ARQUIVOS_COLLECTION,
   PRODUCT_IMAGE_VARIANTS,
   derivativeArquivoId,
-  parseProductOriginalPath,
-  productDerivativePath,
+  ownedDerivativePath,
+  parseOwnedOriginalPath,
 } from '@delfrance/schemas';
 
 import { getAdminApp, getDb } from '../lib/admin';
@@ -61,14 +61,22 @@ export async function processArquivoDeletion(
 
   // Cascade for an original: drop its 3 derivative objects + docs. Deleting the
   // derivative docs re-fires the trigger for them, but a derivative path is not
-  // an "original" (`parseProductOriginalPath` → null), so it never recurses; the
+  // an "original" (`parseOwnedOriginalPath` → null), so it never recurses; the
   // object deletes here also make those re-fires no-ops.
-  const parsed = parseProductOriginalPath(objectName);
+  //
+  // ⚠️ Owner-aware, and it has to be. The resize function now covers tabela de
+  // medidas too, so a size-chart photo has three derivatives — and a reaper that
+  // still only recognised `produtos/…` would delete the original and silently
+  // leave them behind. That leaks bytes without failing anything.
+  const parsed = parseOwnedOriginalPath(objectName);
   if (parsed) {
     for (const v of PRODUCT_IMAGE_VARIANTS) {
-      await deleteObject(bucket, productDerivativePath(parsed.produtoId, parsed.hash, v.key));
+      await deleteObject(
+        bucket,
+        ownedDerivativePath(parsed.ownerCollection, parsed.ownerId, parsed.hash, v.key),
+      );
       await arquivoCollection
-        .docRef(db, {}, derivativeArquivoId(parsed.produtoId, parsed.hash, v.key))
+        .docRef(db, {}, derivativeArquivoId(parsed.ownerId, parsed.hash, v.key))
         .delete();
     }
   }

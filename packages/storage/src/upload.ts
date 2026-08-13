@@ -200,12 +200,21 @@ export interface UploadTabMediImageArgs {
 /**
  * Upload a tabela-de-medidas photo original to
  * `tabMedi/<tabMediId>/originals/<hash>.ext` with the owner-scoped doc id
- * `<tabMediId>_<hash>`. Unlike product images this is **original-only**:
- * `resizeState` is left null so the resize Cloud Function (which watches only
- * `produtos/<id>/originals`) never picks it up — there are no derivatives, and the
- * gallery thumbnail falls back to the original. The owner-scoped `tabMedi/` path
- * keeps these out of the produto namespace, so the produto orphan-sweep never
- * reaps them; the `tabMedi`-aware reaper/sweep handle their lifecycle instead.
+ * `<tabMediId>_<hash>`.
+ *
+ * These **are** resized, exactly like product images: `shouldResize` watches
+ * both owner roots, so the trigger generates the 200/400/jpeg derivatives here
+ * too. Two things wanted that — a gallery thumbnail was loading the full
+ * original, and the size-chart AI agent needs the full-size `jpeg` variant to
+ * read measurements off a supplier's table (400 px cannot resolve digits).
+ *
+ * ⚠️ `resizeState: 'pending'` is what the 48-hour reconcile sweep queries, so it
+ * is also the backfill lever: stamping it on a photo uploaded before this change
+ * is enough to make the sweep generate its missing derivatives.
+ *
+ * The owner-scoped `tabMedi/` path keeps these out of the produto namespace, so
+ * the produto orphan-sweep never reaps them; the `tabMedi`-aware reaper/sweep
+ * handle their lifecycle instead.
  */
 export async function uploadTabMediImage(args: UploadTabMediImageArgs): Promise<UploadResult> {
   if (!args.contentType.startsWith('image/')) {
@@ -225,7 +234,12 @@ export async function uploadTabMediImage(args: UploadTabMediImageArgs): Promise<
     storagePath: tabMediOriginalPath(args.tabMediId, hash, ext),
     filetype: FILETYPE.image,
     originalFilename: args.originalFilename,
-    // resizeState omitted (→ null): tabMedi photos are not resized.
+    // Same marker product images use: the resize flips it to 'done', and the
+    // reconcile sweep queries only `resizeState == 'pending'`, so a dropped
+    // trigger delivery heals within 48h instead of leaving a photo the AI agent
+    // can never see. Only written when this CREATES the doc — a dedup hit keeps
+    // the existing marker, which is correct.
+    resizeState: 'pending',
   });
 }
 

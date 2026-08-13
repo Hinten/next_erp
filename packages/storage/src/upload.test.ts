@@ -139,7 +139,7 @@ describe('uploadProductImage', () => {
 });
 
 describe('uploadTabMediImage', () => {
-  it('uploads to the tabMedi-scoped path + id with NO resize marker', async () => {
+  it('uploads to the tabMedi-scoped path + id, marked for resize', async () => {
     const hash = await sha512Hex(bytes);
     const result = await uploadTabMediImage({
       storage,
@@ -155,8 +155,10 @@ describe('uploadTabMediImage', () => {
     expect(result.arquivo.filename).toBe(`${hash}.png`);
     expect(result.arquivo.filetype).toBe('image');
     expect(result.arquivo.url).toBe(`https://dl/${tabMediOriginalPath('tm1', hash, 'png')}`);
-    // Headline diff vs uploadProductImage: tabMedi photos are NOT resized.
-    expect(result.arquivo.resizeState).toBeNull();
+    // tabMedi photos ARE resized now, exactly like product images — the marker
+    // is what the 48h reconcile sweep queries, so a dropped trigger delivery
+    // heals instead of leaving a size chart the AI agent can never read.
+    expect(result.arquivo.resizeState).toBe('pending');
     // Still create-first + tracked for the phantom-doc sweep + finalize trigger.
     expect(result.arquivo.uploadState).toBe('pending');
 

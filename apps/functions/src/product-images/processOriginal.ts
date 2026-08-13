@@ -8,9 +8,9 @@ import {
   derivativeArquivoId,
   firebaseDownloadUrl,
   nowMicros,
-  parseProductOriginalPath,
-  productArquivoId,
-  productDerivativePath,
+  ownedArquivoId,
+  ownedDerivativePath,
+  parseOwnedOriginalPath,
 } from '@delfrance/schemas';
 
 import { renderAllVariants } from './variants';
@@ -18,8 +18,14 @@ import { renderAllVariants } from './variants';
 type Bucket = ReturnType<Storage['bucket']>;
 
 /**
- * Resize one product-image ORIGINAL into its missing 200/400/jpeg derivatives.
+ * Resize one media ORIGINAL into its missing 200/400/jpeg derivatives.
  * Shared by the `onObjectFinalized` trigger and the scheduled reconcile sweep.
+ *
+ * ⚠️ Covers **produtos and tabelas de medidas**. The owner comes from the object
+ * path, and every id and path below is derived from it, so the two owners share
+ * one pipeline rather than growing a parallel one — a size-chart photo lands in
+ * `tabMedi/<id>/derivatives/…` with doc id `<tabMediId>_<hash>_<key>`, the exact
+ * shape produtos already use.
  *
  * Idempotent and cheap to re-run: it first checks which derivative `arquivos`
  * docs already exist and skips the download entirely when none are missing.
@@ -29,28 +35,28 @@ type Bucket = ReturnType<Storage['bucket']>;
  * matching it.
  *
  * Writes ONLY to the `arquivos` collection (the derivative docs + the original's
- * marker), never to `produtos`. Returns the number of derivatives written.
+ * marker), never to the owner doc. Returns the number of derivatives written.
  */
 export async function processProductOriginal(
   bucket: Bucket,
   db: Firestore,
   name: string,
 ): Promise<number> {
-  const parsed = parseProductOriginalPath(name);
+  const parsed = parseOwnedOriginalPath(name);
   if (!parsed) return 0;
-  const { produtoId, hash } = parsed;
+  const { ownerCollection, ownerId, hash } = parsed;
 
   // Which derivatives already exist? Lets us skip the download when complete.
   const snaps = await Promise.all(
     PRODUCT_IMAGE_VARIANTS.map((v) =>
-      arquivoCollection.docRef(db, {}, derivativeArquivoId(produtoId, hash, v.key)).get(),
+      arquivoCollection.docRef(db, {}, derivativeArquivoId(ownerId, hash, v.key)).get(),
     ),
   );
   const present = new Set(
     PRODUCT_IMAGE_VARIANTS.filter((_, i) => snaps[i]!.exists).map((v) => v.key),
   );
   if (present.size === PRODUCT_IMAGE_VARIANTS.length) {
-    await markDone(db, produtoId, hash);
+    await markDone(db, ownerId, hash);
     return 0;
   }
 
@@ -60,7 +66,7 @@ export async function processProductOriginal(
   let written = 0;
   for (const v of variants) {
     if (present.has(v.spec.key)) continue; // idempotent: skip already-written derivatives
-    const path = productDerivativePath(produtoId, hash, v.spec.key);
+    const path = ownedDerivativePath(ownerCollection, ownerId, hash, v.spec.key);
     const token = randomUUID();
     await bucket.file(path).save(v.buffer, {
       contentType: v.contentType,
@@ -70,7 +76,7 @@ export async function processProductOriginal(
     });
     const url = firebaseDownloadUrl(bucket.name, path, token);
     const slash = path.lastIndexOf('/');
-    await arquivoCollection.set(db, {}, derivativeArquivoId(produtoId, hash, v.spec.key), {
+    await arquivoCollection.set(db, {}, derivativeArquivoId(ownerId, hash, v.spec.key), {
       filetype: 'image',
       filepath: path.slice(0, slash),
       filename: path.slice(slash + 1),
@@ -82,7 +88,7 @@ export async function processProductOriginal(
     written += 1;
   }
 
-  await markDone(db, produtoId, hash);
+  await markDone(db, ownerId, hash);
   logger.info(`processProductOriginal: ${name} → ${written}/${variants.length} derivatives`);
   return written;
 }
@@ -95,8 +101,8 @@ export async function processProductOriginal(
  * the Console). In both cases we skip rather than leave a partial Arquivo doc;
  * the sweep flips it to `'done'` once the real `'pending'` doc exists.
  */
-async function markDone(db: Firestore, produtoId: string, hash: string): Promise<void> {
-  const ref = arquivoCollection.docRef(db, {}, productArquivoId(produtoId, hash));
+async function markDone(db: Firestore, ownerId: string, hash: string): Promise<void> {
+  const ref = arquivoCollection.docRef(db, {}, ownedArquivoId(ownerId, hash));
   const snap = await ref.get();
   if (snap.exists) {
     await ref.update({ resizeState: 'done' });
