@@ -72,16 +72,18 @@ const config = [
     },
   },
   {
-    // The Firestore emulator suite (ci-mercado-livre.yml) needs RAW refs, and
-    // for the same reason the rule exists: the handles validate against the Zod
-    // schema, and these tests must reach around that validation on purpose.
-    // They seed shapes a handle would reject — notably the auto-id docs the
-    // legacy Flutter app writes, and a token doc missing `expires_in` — and
-    // they read back the PHYSICAL document to check what the handle actually
-    // stored. Reading through the handle instead would apply `parseRead`, whose
-    // soft-parse is precisely the layer under test. Scoped to the suffix, so
-    // production code and the offline unit tests stay covered.
-    files: ['**/*.firestore.test.ts'],
+    // The emulator suites (ci-mercado-livre.yml) need RAW refs, and for the same
+    // reason the rule exists: the handles validate against the Zod schema, and
+    // these tests must reach around that validation on purpose. They seed shapes
+    // a handle would reject — notably the auto-id docs the legacy Flutter app
+    // writes, and a token doc missing `expires_in` — and they read back the
+    // PHYSICAL document to check what the handle actually stored. Reading
+    // through the handle instead would apply `parseRead`, whose soft-parse is
+    // precisely the layer under test. In `*.tasks.test.ts` the document being
+    // read back was written by a DIFFERENT process (the function running inside
+    // the emulator), which is exactly when you want the raw bytes. Scoped to the
+    // two suffixes, so production code and the offline unit tests stay covered.
+    files: ['**/*.firestore.test.ts', '**/*.tasks.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],
     },

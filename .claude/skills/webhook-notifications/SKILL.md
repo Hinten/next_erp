@@ -282,23 +282,35 @@ parks on its next re-drive) so retuning the horizon stays a one-constant edit.
 .update` that raises gRPC **5** for an absent doc — a `set`-based stand-in would
 pass a test that upserts a ghost in production.
 
-The **Cloud Tasks hop** is still covered by nothing but review, and unit tests
-against the fake remain the contract for the disposition matrix.
+The **Cloud Tasks hop IS emulatable**, and Mercado Livre now covers it end to end
+(`ci-mercado-livre.yml`, `*.tasks.test.ts`): receiver → `enqueue()` → tasks
+emulator → the real `onTaskDispatched` → a real Firestore write.
 
-⚠️ Not because the emulator is missing — a `tasks` emulator **does** exist
-(`firebase emulators:start --only tasks`); that claim was wrong. It is because
-of two open bugs that land exactly on the shape every channel here uses. The
-`{ml,mp,wa}Tasks.ts` schedulers enqueue against the partial resource name
-`locations/<region>/functions/<queue>`, and the emulator **404s** that format —
-it accepts only a bare function name, building a URL with `locations/<region>`
-duplicated ([firebase-admin-node#2725](https://github.com/firebase/firebase-admin-node/issues/2725)).
-The region qualification is not negotiable: drop it and the Admin SDK targets
-`us-central1` and the task silently disappears, which is the very hazard worth
-a test. And `scheduleDelaySeconds` is ignored
-([firebase-tools#8254](https://github.com/firebase/firebase-tools/issues/8254)),
-which is the ML receiver's 10s refetch delay. Rewriting a test to the bare-name
-form would prove a path production never takes. `retryConfig` and `rateLimits`
-ARE emulated — but those are cheaper to assert statically off `__endpoint`.
+⚠️ Two earlier claims here were wrong, so do not re-derive them: there IS a
+`tasks` emulator (`firebase emulators:start --only tasks`), and the URI-format
+bug that would have blocked us —
+[firebase-admin-node#2725](https://github.com/firebase/firebase-admin-node/issues/2725),
+where the emulator 404'd `locations/<region>/functions/<name>` — was **closed
+2024-10-11 and fixed in firebase-admin 12.7.0**. This repo pins 14.2.0. So the
+region-qualified name every `{ml,mp,wa}Tasks.ts` uses is **both** the
+production-correct and the emulator-correct form; no seam or bare-name variant
+is needed.
+
+To emulate it: the **functions** emulator must run alongside `tasks` (it is what
+registers the queues from the trigger definitions), the enqueuer's region must
+match the region inlined into the functions bundle, and you must **not** pass
+`opts.uri` — under the emulator the Admin SDK deliberately sends an empty URL
+that the emulator back-fills, so a supplied uri ships the task to production.
+
+The one genuine residue is
+[firebase-tools#8254](https://github.com/firebase/firebase-tools/issues/8254)
+(**open**, triaged upstream as a feature request): the dispatch loop is pure
+FIFO with no `scheduleTime` predicate, so `scheduleDelaySeconds` is ignored.
+Assert that option statically off `__endpoint` and keep round-trip tests on a
+no-delay topic. `retryConfig` and `rateLimits` ARE emulated.
+
+⚠️ **Mercado Pago and WhatsApp have no such lane** — their schedulers are
+byte-identical copies of ML's, so the pattern ports directly.
 
 What the fake is no longer the only evidence for, **on Mercado Livre only**
 (`ci-mercado-livre.yml`, `*.firestore.test.ts`): the store's Firestore-level

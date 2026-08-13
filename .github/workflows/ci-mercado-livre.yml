@@ -16,11 +16,16 @@ name: CI — Mercado Livre (Firestore emulator)
 # vitest.firestore.setup.ts installs a fetch kill-switch that throws on any
 # non-localhost host so "offline" is a property of the lane, not of the author.
 #
-# THIS LANE OWNS EVERY MERCADO LIVRE TEST, in two parallel jobs:
+# THIS LANE OWNS EVERY MERCADO LIVRE TEST, in three parallel jobs:
 #   - `ML offline (unit)`      — the ~111 `*.test.ts` files across both ML
 #                                workspaces, via `turbo run test`.
 #   - `ML backend on the …`    — the `*.firestore.test.ts` files, via
 #                                `test:firestore` against a real emulator.
+#   - `ML Cloud Tasks round …` — the `*.tasks.test.ts` files, via `test:tasks`,
+#                                which additionally boots the functions + tasks
+#                                emulators and serves the real ML functions
+#                                artifact. It pays a bundle build and a slower
+#                                start, which is why it is its own job.
 # `ci.yml` excludes both workspaces from its `turbo run test`, so when this lane
 # does not run, NONE of them run. Scope is therefore derived from the
 # `workspace:*` dependency graph in `changes`, never from a hand-written list,
@@ -33,33 +38,35 @@ name: CI — Mercado Livre (Firestore emulator)
 # deliberate insurance against a stale `paths:` list. Graph-derived scope retired
 # that argument, so the tests moved here where the domain owns them.
 #
-# ⚠️ Splitting these two jobs is not cosmetic. `vitest.config.ts` EXCLUDES
-# `**/*.firestore.test.ts` from the unit run and `vitest.firestore.config.ts`
-# includes only those, so the two suites are disjoint by construction — a file
-# that matches neither glob runs in NO job at all. Both configs carry a
-# mirror-image root-level entry for exactly that reason; read their comments
-# before touching either `include`.
+# ⚠️ Splitting these jobs is not cosmetic. The three suites are disjoint BY
+# GLOB: `vitest.config.ts` EXCLUDES both `**/*.firestore.test.ts` and
+# `**/*.tasks.test.ts` from the unit run, and each dedicated config includes only
+# its own suffix — so a file matching NO glob runs in NO job at all. All three
+# configs carry a mirror-image root-level entry for exactly that reason; read
+# their comments before touching any `include`.
+#
+# ⚠️ An earlier revision of this header claimed Cloud Tasks could not be emulated
+# at all, then that the emulator rejected our region-qualified queue name
+# (firebase-admin-node#2725). BOTH were wrong: a `tasks` emulator exists, and
+# that issue was closed 2024-10-11 and fixed in firebase-admin 12.7.0 — this repo
+# pins 14.2.0. `locations/<region>/functions/<queue>` is therefore both the
+# production-correct and the emulator-correct form, and NO production code
+# changed to make the round trip testable.
 #
 # ⚠️ What this lane does NOT prove, so nobody reads its green as more than it is:
 #   - Composite INDEX DECLARATION. The emulator auto-creates every composite, and
 #     on Enterprise a missing index does not throw — it silently full-scans and
 #     bills the scan. That is guard C/D in
 #     packages/data/src/admin/notifications/notificationGuardrails.test.ts.
-#   - The Cloud Tasks enqueue. A `tasks` emulator DOES exist
-#     (`firebase emulators:start --only tasks`) — but it cannot exercise THIS
-#     code. `mlTasks.ts` enqueues against the partial resource name
-#     `locations/<region>/functions/<queue>`, and the emulator 404s that format,
-#     accepting only a bare function name (firebase-admin-node#2725, open — it
-#     builds a URL with `locations/<region>` duplicated). The region
-#     qualification is not optional here: without it the Admin SDK targets
-#     us-central1 and the task silently drops, which is the exact hazard worth
-#     testing. Its `scheduleDelaySeconds` is ignored too (firebase-tools#8254,
-#     open), which is the receiver's 10s refetch delay. Testing the bare-name
-#     form instead would only prove a path production never takes. `retryConfig`
-#     and `rateLimits` ARE emulated, but those are asserted statically in
-#     processNotification.test.ts. So the receiver test drives the
-#     MERCADO_LIVRE_TASKS_DISABLED outage path only.
-#   - The nested apps/mercado-livre/functions triggers (a deploy-artifact sub-build).
+#   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
+#     emulator — dispatch is pure FIFO with no `scheduleTime` predicate
+#     (firebase-tools#8254, open, triaged upstream as a feature request and
+#     unchanged through 15.26.0). That is the receiver's 10s refetch delay for
+#     the order family; `mlTasks.test.ts` pins it statically instead.
+#     `retryConfig` and `rateLimits` ARE emulated, but they are likewise cheaper
+#     to assert off `__endpoint` in processNotification.test.ts.
+#   - The nested apps/mercado-livre/functions FIRESTORE TRIGGERS. The tasks job
+#     loads the whole codebase, so they are registered, but nothing drives them.
 #   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
 #     exposes db.pipeline(), so feature-probing answers yes then fails at execution.
@@ -89,6 +96,7 @@ on:
       - 'packages/schemas/src/shared/notificationResilience.ts'
       - 'firestore.indexes.json'
       - 'firebase.mercado-livre.json'
+      - 'firebase.mercado-livre.tasks.json'
       - 'pnpm-lock.yaml'
       # Self-reference: without it, a PR that only edits this workflow never
       # exercises it.
@@ -395,11 +403,106 @@ jobs:
             --only firestore \
             "pnpm --filter @delfrance/mercado-livre-app test:firestore"
 
+  ml-tasks-roundtrip:
+    name: ML Cloud Tasks round trip
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      # ⚠️ These two MUST match. FUNCTIONS_REGION is inlined into the functions
+      # bundle at build time; MERCADO_LIVRE_TASKS_REGION is read by the enqueuer
+      # at run time. A mismatch is exactly the silent drop mlTasks.ts warns about
+      # — and it is what the round-trip test detects (verified: with the enqueuer
+      # on us-central1 and the bundle on us-east5, the emulator answers
+      # "Tried to queue a task from a non-existent queue" and the doc lands
+      # `failed` instead of `deferred`).
+      FUNCTIONS_REGION: us-east5
+      MERCADO_LIVRE_TASKS_REGION: us-east5
+      FIREBASE_PROJECT_ID: demo-erp
+      FIREBASE_DATABASE_ID: default
+      REQUIRE_EMULATOR: '1'
+      # 8 of the 15 ML functions declare these as `secrets:`, and demo-erp has no
+      # Secret Manager. Dummy values are safe AND sufficient: the exercised path
+      # (a seller with no integração) never refreshes a token, and the lane's
+      # fetch kill-switch throws on any non-localhost host regardless.
+      MERCADO_LIVRE_CLIENT_ID: '1111111111111111'
+      MERCADO_LIVRE_CLIENT_SECRET: dummy-secret-not-a-credential
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      # `predeploy` hooks do NOT run under emulators:exec, so the artifact has to
+      # be built explicitly. ⚠️ `build.mjs` alone emits only dist/index.js —
+      # prepare-deploy.mjs is the ONLY path that produces a servable folder
+      # (bundle + package.json with main/type + the node_modules junction that
+      # firebase-tools' trigger analysis needs). Mirrors ci-storage.yml, which
+      # likewise builds immediately before its emulators:exec.
+      - name: Build the ML functions deploy artifact
+        run: node apps/mercado-livre/functions/scripts/prepare-deploy.mjs
+
+      - name: Assert the test filter resolves to a real package
+        run: |
+          set -euo pipefail
+          matched=$(pnpm ls --filter @delfrance/mercado-livre-app --depth -1 --parseable | grep -c . || true)
+          echo "packages matched by the filter: $matched"
+          if [ "$matched" != "1" ]; then
+            echo "::error::pnpm --filter matched $matched packages — the emulator step would exit 0 without running anything."
+            exit 1
+          fi
+
+      # firestore + functions + tasks. The tasks emulator only has queues because
+      # the FUNCTIONS emulator registers them from the trigger definitions, so
+      # both are required; emulators:exec exports CLOUD_TASKS_EMULATOR_HOST into
+      # the child, which is what the Admin SDK reroutes on.
+      - name: Run the Cloud Tasks round trip
+        run: |
+          firebase emulators:exec \
+            --config firebase.mercado-livre.tasks.json \
+            --project demo-erp \
+            --only firestore,functions,tasks \
+            "pnpm --filter @delfrance/mercado-livre-app test:tasks"
+
   report-failure:
     # Renamed off `Post failure note on PR`: a check-run name carries no workflow
     # prefix, so that string was one indistinguishable check across several lanes.
     name: Mercado Livre failure note
-    needs: [changes, ml-offline, ml-firestore-emulator]
+    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip]
     # Fork guard: this job holds `pull-requests: write`, which a fork run's
     # read-only token cannot exercise — it would 403 and mask the real failure.
     if: >-
@@ -438,7 +541,7 @@ jobs:
   # every green run, so needing them would make this gate permanently red.
   gate:
     name: CI gate (mercado-livre)
-    needs: [changes, ml-offline, ml-firestore-emulator]
+    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -466,6 +569,7 @@ jobs:
           # --- per-job results -------------------------------------------------
           RESULT_OFFLINE: ${{ needs.ml-offline.result }}
           RESULT_EMULATOR: ${{ needs.ml-firestore-emulator.result }}
+          RESULT_TASKS: ${{ needs.ml-tasks-roundtrip.result }}
 
           # --- the manifest. One row per certified job:
           #       <result env var>|required|optional:<guard>[+<guard>]|<published check-run name>
@@ -474,6 +578,7 @@ jobs:
           JOBS: |
             RESULT_OFFLINE|required|ML offline (unit)
             RESULT_EMULATOR|required|ML backend on the Firestore emulator
+            RESULT_TASKS|required|ML Cloud Tasks round trip
         run: |
           set -uo pipefail
           ROWS="$RUNNER_TEMP/gate-rows.md";        : > "$ROWS"
