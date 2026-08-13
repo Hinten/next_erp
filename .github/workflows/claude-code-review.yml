@@ -1,17 +1,21 @@
 name: Claude Code Review
 
-# On-demand code review by Claude, requested with a top-level PR comment:
+# On-demand code review, requested with a top-level PR comment:
 #
-#   @claude review              -> medium effort (the default)
-#   @claude review high         -> broader coverage
-#   @claude /code-review max    -> same thing; both spellings are accepted
+#   @reviewbot              -> medium effort (the default)
+#   @reviewbot high         -> broader coverage
+#   @reviewbot review max   -> the word `review` is optional, for muscle memory
 #
 # Nothing here runs automatically. Reviewing every push is what exhausted the
 # Copilot quota, and this lane bills your Claude subscription via
 # CLAUDE_CODE_OAUTH_TOKEN, so asking for a review stays a deliberate act.
 #
-# Plain `@claude ...` mentions are handled by claude.yml instead; its `if:`
-# excludes the review prefixes so exactly one of the two workflows fires.
+# The trigger is deliberately NOT `@claude`. That is claude-code-action's
+# default phrase and Agent HQ's documented one, so keying this lane on it means
+# a second Claude workflow — or Agent HQ, if it is ever enabled here — answers
+# the same comment and you pay twice for two different reviews. A distinct
+# phrase also decouples the two lanes: claude.yml needs no exclusion rule,
+# because `@reviewbot` simply does not contain `@claude`.
 on:
   issue_comment:
     types: [created]
@@ -27,10 +31,10 @@ concurrency:
 
 jobs:
   # A cheap gate job, seconds long and with no checkout. GitHub expressions have
-  # no regex, so the `if:` below can only test a prefix — and `@claude reviewers
-  # should look at this` satisfies a prefix test, which would start a paid
-  # review. The strict match is a regex here, and the expensive job depends on
-  # its verdict, so a near-miss costs a few runner-seconds instead of a review.
+  # no regex, so the `if:` below can only test a prefix — and `@reviewbots should
+  # look at this` satisfies a prefix test, which would start a paid review. The
+  # strict match is a regex here, and the expensive job depends on its verdict,
+  # so a near-miss costs a few runner-seconds instead of a review.
   gate:
     # `issue_comment` fires for issues too, so the pull_request key is what
     # narrows it to PRs. `startsWith` (not `contains`) mirrors the rule
@@ -38,8 +42,7 @@ jobs:
     if: >-
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
-      (startsWith(github.event.comment.body, '@claude review') ||
-       startsWith(github.event.comment.body, '@claude /code-review'))
+      startsWith(github.event.comment.body, '@reviewbot')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -55,15 +58,17 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           first=$(printf '%s' "$COMMENT_BODY" | head -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')
-          if printf '%s' "$first" | grep -qE '^@claude (/code-)?review([[:space:]]|$)'; then
+          if printf '%s' "$first" | grep -qE '^@reviewbot([[:space:]]|$)'; then
             match=true
           else
             match=false
           fi
           # The effort must be the token right after the command, not merely
-          # present somewhere on the line — otherwise "@claude review please,
-          # low risk change" silently downgrades the review to low.
-          effort=$(printf '%s' "$first" | sed -nE 's#^@claude (/code-)?review[[:space:]]+(low|medium|high|max)([[:space:]].*)?$#\2#p')
+          # present somewhere on the line — otherwise "@reviewbot please, low
+          # risk change" silently downgrades the review to low. The optional
+          # `review` word is tolerated so the older `@claude review high` habit
+          # still lands on the right effort.
+          effort=$(printf '%s' "$first" | sed -nE 's#^@reviewbot([[:space:]]+review)?[[:space:]]+(low|medium|high|max)([[:space:]].*)?$#\2#p')
           {
             echo "match=$match"
             echo "effort=${effort:-medium}"
