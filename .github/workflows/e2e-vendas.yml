@@ -110,6 +110,7 @@ jobs:
           node .github/scripts/e2e-affected.mjs \
             --lane vendas \
             --roots @delfrance/web @delfrance/integrations-app \
+            --self .github/workflows/e2e-vendas.yml .github/workflows/e2e-reusable.yml \
             --files "${{ steps.collect.outputs.files }}"
 
   vendas:

@@ -145,7 +145,31 @@ export function attributeFile(workspaces, file) {
  * The verdict. `rows` is the per-path attribution table that gets printed into the
  * job summary — it is what makes a skip auditable instead of invisible.
  */
-export function decide({ workspaces, closure, files }) {
+/**
+ * Is `file` some OTHER lane's workflow definition?
+ *
+ * `.github/**` is deliberately not inert, so a lane re-runs when its own
+ * definition changes and self-tests on the PR that edits it. But that was
+ * originally implemented as "unattributable therefore run", which fired EVERY
+ * lane for ANY workflow file: PR #1030 touched only `claude.yml` and
+ * `claude-code-review.yml` — an on-demand review bot — and ran all three e2e
+ * lanes. `.github/**` was the single biggest trigger in a 30-PR sample, hitting 17.
+ *
+ * So a lane's own workflow, plus shared machinery under `.github/scripts/` and
+ * `.github/actions/`, still triggers it; another lane's workflow does not.
+ * Everything else unattributable stays fail-safe and runs.
+ */
+function isOtherLaneWorkflow(file, selfPaths) {
+  if (!file.startsWith('.github/workflows/')) return false;
+  // No declaration, no narrowing. An empty `selfPaths` falls back to the
+  // conservative "unattributable therefore run", NOT to "every workflow belongs to
+  // somebody else" — otherwise a lane that forgets `--self` silently stops
+  // re-running on edits to its own definition, which is a skip-direction failure.
+  if (selfPaths.length === 0) return false;
+  return !selfPaths.some((p) => file === p);
+}
+
+export function decide({ workspaces, closure, files, selfPaths = [] }) {
   const rows = [];
   let trigger = null;
 
@@ -153,6 +177,8 @@ export function decide({ workspaces, closure, files }) {
     let verdict;
     if (isInert(file)) {
       verdict = { kind: 'inert', detail: 'documentation / tooling' };
+    } else if (isOtherLaneWorkflow(file, selfPaths)) {
+      verdict = { kind: 'outside', detail: "another lane's workflow definition" };
     } else {
       const owner = attributeFile(workspaces, file);
       if (!owner) {
@@ -181,32 +207,98 @@ export function decide({ workspaces, closure, files }) {
   };
 }
 
+/**
+ * The inverse mode: run only when a changed path sits under one of `prefixes`.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT A RETURN TO THE OLD `paths:` LIST.
+ * `decide()` answers "could this change possibly affect the lane?", and its safe
+ * direction is RUN — a wrong answer there ships unverified code. Exactly one job
+ * has the opposite economics: `nfe-live` emits real documents at SEFAZ
+ * homologacao, which rate-limits (cStat=656). There, running unnecessarily is the
+ * expensive mistake and skipping is cheap, because the offline NF-e suite has
+ * already run and the gate states out loud that the live suite did not.
+ *
+ * Measured over 30 merged PRs: the dependency closure of
+ * `@delfrance/integrations-nfe` fires on 14 of them, because that package depends
+ * on `@delfrance/schemas` and `@delfrance/core`, which change constantly. It is
+ * therefore useless as a narrowing device — hence this literal-prefix mode, which
+ * fires on 3.
+ *
+ * Use this for NOTHING ELSE. Every other decision goes through `decide()`. A
+ * hand-written list is tolerable here only because being wrong means "we did not
+ * call SEFAZ", never "we shipped untested code".
+ */
+export function decideByPaths({ files, prefixes }) {
+  const rows = [];
+  let trigger = null;
+
+  for (const file of files) {
+    if (isInert(file)) {
+      rows.push({ file, kind: 'inert', detail: 'documentation / tooling' });
+      continue;
+    }
+    const hit = prefixes.find((p) => file === p || file.startsWith(p.endsWith('/') ? p : p + '/'));
+    if (hit) {
+      rows.push({ file, kind: 'run', detail: 'matches ' + hit });
+      if (!trigger) trigger = { file, detail: hit };
+    } else {
+      rows.push({ file, kind: 'outside', detail: "outside this job's declared paths" });
+    }
+  }
+
+  if (trigger) {
+    return {
+      runE2e: true,
+      reason:
+        files.length + ' changed path(s); `' + trigger.file + '` is under `' + trigger.detail + '`.',
+      rows,
+    };
+  }
+  return {
+    runE2e: false,
+    reason:
+      'none of the ' +
+      files.length +
+      " changed path(s) are under this job's declared paths (" +
+      prefixes.join(', ') +
+      ').',
+    rows,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { roots: [], files: null, lane: 'e2e' };
+  // `kind` only labels the job-summary heading. It defaults to E2E so the three
+  // e2e lanes keep their output byte-for-byte; the domain lanes pass `--kind CI`
+  // so their summaries do not announce themselves as e2e.
+  const args = { roots: [], onlyPaths: [], self: [], files: null, lane: 'e2e', kind: 'E2E' };
+  const FLAGS = new Set(['--roots', '--only-paths', '--self', '--files', '--lane', '--kind']);
   let current = null;
   for (const token of argv) {
-    if (token === '--roots' || token === '--files' || token === '--lane') {
+    if (FLAGS.has(token)) {
       current = token.slice(2);
       continue;
     }
     if (current === 'roots') args.roots.push(token);
+    else if (current === 'only-paths') args.onlyPaths.push(token);
+    else if (current === 'self') args.self.push(token);
     else if (current === 'files') args.files = token;
     else if (current === 'lane') args.lane = token;
+    else if (current === 'kind') args.kind = token;
   }
   return args;
 }
 
-function emit({ runE2e, reason, rows, lane }) {
+function emit({ runE2e, reason, rows, lane, kind = 'E2E' }) {
   const value = runE2e ? 'true' : 'false';
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, `run_e2e=${value}\nreason=${reason}\n`);
   }
   if (process.env.GITHUB_STEP_SUMMARY) {
-    const lines = [`### E2E scope — ${lane}`, '', `\`run_e2e = ${value}\` — ${reason}`, ''];
+    const lines = [`### ${kind} scope — ${lane}`, '', `\`run_e2e = ${value}\` — ${reason}`, ''];
     if (rows?.length) {
       // The attribution table is the audit trail. A lane that skipped must be able
       // to show WHY, path by path, or "green without running" is unverifiable again.
@@ -226,9 +318,16 @@ function emit({ runE2e, reason, rows, lane }) {
 }
 
 export function main(argv, repoRoot) {
-  const { roots, files: filesPath, lane } = parseArgs(argv);
+  const { roots, onlyPaths, self: selfPaths, files: filesPath, lane, kind } = parseArgs(argv);
 
-  if (roots.length === 0) throw new Error('--roots is required');
+  // Exactly one mode. Passing both would silently favour one and make the other
+  // look like it had been honoured.
+  if (roots.length > 0 && onlyPaths.length > 0) {
+    throw new Error('--roots and --only-paths are mutually exclusive');
+  }
+  if (roots.length === 0 && onlyPaths.length === 0) {
+    throw new Error('one of --roots or --only-paths is required');
+  }
   if (!filesPath) throw new Error('--files is required');
 
   const raw = readFileSync(filesPath, 'utf8');
@@ -236,16 +335,27 @@ export function main(argv, repoRoot) {
 
   // No paths means we could not learn what changed — never a reason to skip.
   if (files.length === 0) {
-    emit({ runE2e: true, reason: 'the changed-file list was empty — running the suite (fail safe).', rows: [], lane });
+    emit({ runE2e: true, reason: 'the changed-file list was empty — running the suite (fail safe).', rows: [], lane, kind });
+    return;
+  }
+
+  if (onlyPaths.length > 0) {
+    emit({ ...decideByPaths({ files, prefixes: onlyPaths }), lane, kind });
     return;
   }
 
   const workspaces = loadWorkspaces(repoRoot);
   const closure = closureOf(workspaces, roots);
-  emit({ ...decide({ workspaces, closure, files }), lane });
+  emit({ ...decide({ workspaces, closure, files, selfPaths }), lane, kind });
 }
 
-if (pathToFileURL(process.argv[1]).href === import.meta.url) {
+// `process.argv[1]` is undefined when this module is imported from a context with
+// no script path (`node -e`, a REPL, some runners), and `pathToFileURL(undefined)`
+// THROWS — which made the module unimportable there. CI always passes a path, so
+// this was latent rather than breaking, but the guard costs nothing. (`pathToFileURL`
+// rather than a file:// template literal is itself deliberate: the naive form
+// silently never matches on Windows.)
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(here, '..', '..');
   try {
