@@ -45,6 +45,10 @@ import {
 import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
 import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
+import {
+  resumoSalvarAnuncios,
+  type ListingSaveOutcome,
+} from '@/lib/mercado-livre/listingSaveOutcome';
 import { ListingForm, type ListingSaveFn } from './ListingForm';
 import { ListingStatusStrip } from './ListingStatusStrip';
 
@@ -207,13 +211,25 @@ export function MercadoLivreEditor({
    *
    * `'button'` mode: each form reports its own failure (notification or conflict
    * modal) and does not throw, so one conflict cannot abandon a sibling's save.
+   *
+   * ⚠️ …with ONE exception, and it is why the outcomes are collected. A listing
+   * whose fields are invalid returns silently — its errors render inline, above
+   * this button. Driving N listings from one click means listing A can be skipped
+   * that way while listing B fires an unqualified green "Anúncio salvo." for the
+   * same click, so the operator reads success for a save that did half the job.
+   * A per-listing button could not produce that; a conta-level one can, so the
+   * shortfall has to be said out loud.
    */
   const handleSalvarAnuncios = useCallback(async (contaId: string, linkIds: readonly string[]) => {
     setSavingConta(contaId);
     try {
+      const outcomes: ListingSaveOutcome[] = [];
       for (const linkId of linkIds) {
-        await flushesRef.current.get(linkId)?.('button');
+        const save = flushesRef.current.get(linkId);
+        if (save) outcomes.push(await save('button'));
       }
+      const resumo = resumoSalvarAnuncios(outcomes);
+      if (resumo) notifications.show({ color: resumo.color, message: resumo.message });
     } finally {
       setSavingConta(null);
     }
@@ -448,7 +464,14 @@ export function MercadoLivreEditor({
             // não foi publicado no Mercado Livre". Offering the button there is a
             // guaranteed no-op dressed as an action. `some`, not `every`, so a conta
             // holding one published listing and one draft keeps the button.
-            const hasPublished = contaLinks.some((l) => l.data.id != null);
+            //
+            // ⚠️ Empty string counts as NOT published, matching the backend
+            // exactly: `bulkEstoquePlan` takes `link.id !== ''` as its test and
+            // answers `sem-item-id` otherwise. The schema permits `''` —
+            // `id: z.string().nullable().default(null)` carries no `.min(1)` — and
+            // the Flutter app is a live concurrent writer to these same docs, so
+            // a `!= null` check leaves the same dead button one value narrower.
+            const hasPublished = contaLinks.some((l) => (l.data.id ?? '') !== '');
             const issues = blockedIssues[conta.id] ?? [];
             const dirtyLinkIds = contaLinks.filter((l) => dirtyIds.has(l.id)).map((l) => l.id);
             const contaDirty = dirtyLinkIds.length > 0;
