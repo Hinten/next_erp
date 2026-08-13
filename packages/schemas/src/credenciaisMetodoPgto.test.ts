@@ -68,11 +68,22 @@ describe('credenciaisMetodoPgtoSchema', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('metodo_pgto metas', () => {
-  it('metodoPagamentoMeta targets metodo_pgto and cascades credenciais', () => {
+  it('metodoPagamentoMeta targets metodo_pgto and cascades its credential subcollections', () => {
     expect(metodoPagamentoMeta.collectionPath).toBe('metodo_pgto');
     expect(metodoPagamentoMeta.cascade).toEqual([
       { path: 'metodo_pgto/{metodoId}/credenciais', onDelete: 'cascade' },
+      // #1034 — the per-attempt OAuth connect record, holding a live PKCE
+      // `code_verifier`; it frees on delete alongside the credential.
+      { path: 'metodo_pgto/{metodoId}/oauthState', onDelete: 'cascade' },
     ]);
+  });
+
+  it('makes user_id server-owned — it is the MP webhook routing key (#1034)', () => {
+    // An inbound payment notification resolves its collector by this field, so a
+    // client able to write it could repoint another seller's payment stream at
+    // its own account. Its only legitimate writer is the OAuth exchange, via the
+    // Admin SDK. Sibling of `integracaoMeta.serverOwnedFields` (#821/T4).
+    expect(metodoPagamentoMeta.serverOwnedFields).toEqual(['user_id']);
   });
 
   it('credenciaisMetodoPgtoMeta targets the subcollection', () => {

@@ -283,9 +283,12 @@ describe('tokenMelEnvSchema', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('metas', () => {
-  it('intFreteMeta targets int_frete and cascades tokenMelEnv', () => {
+  it('intFreteMeta targets int_frete and cascades its credential subcollections', () => {
     expect(intFreteMeta.collectionPath).toBe('int_frete');
     expect(intFreteMeta.cascade).toEqual([
+      // #1034 — the per-attempt OAuth connect record; credential material, so it
+      // frees on delete for the same reason the token does.
+      { path: 'int_frete/{intFreteId}/oauthState', onDelete: 'cascade' },
       { path: 'int_frete/{intFreteId}/tokenMelEnv', onDelete: 'cascade' },
     ]);
   });
