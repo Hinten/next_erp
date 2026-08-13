@@ -21,7 +21,12 @@ export default defineConfig({
     // project/database, and the non-localhost fetch kill-switch. The last one
     // matters more here, not less — this lane boots the real ML functions, and
     // 8 of them declare the ML app secrets.
-    setupFiles: ['./vitest.firestore.setup.ts'],
+    // NOT vitest.firestore.setup.ts directly — this one imports it and adds the
+    // symmetric CLOUD_TASKS_EMULATOR_HOST gate. Without that second throw the
+    // suite's `!TASKS` skip predicate is unguarded, so a missing tasks emulator
+    // skips everything and this REQUIRED check goes green having asserted
+    // nothing.
+    setupFiles: ['./vitest.tasks.setup.ts'],
     // Generous: a task dispatch has a cold-start floor of ~1.5-2s on top of the
     // enqueue, and `getServiceAccount()` attempts a real token endpoint before
     // falling back to the emulated service account.
