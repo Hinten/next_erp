@@ -241,6 +241,12 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /configIa/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /counters/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
@@ -328,8 +334,8 @@ service cloud.firestore {
 
     match /metodo_pgto/{docId} {
       allow read: if isSuperUser() || p('d_metodoPagamento', 1);
-      allow create: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.keys());
-      allow update: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
+      allow create: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['user_id']) || request.resource.data.get('user_id', null) == null);
+      allow update: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['user_id']);
       allow delete: if isSuperUser() || p('d_metodoPagamento', 4);
     }
 

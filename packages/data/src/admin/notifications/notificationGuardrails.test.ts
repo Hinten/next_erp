@@ -201,6 +201,42 @@ function sweepIndexFor(path: string): RequiredIndex {
   };
 }
 
+/**
+ * The second equality field of a channel's CONNECT RE-DRIVE query, or null when
+ * the channel has none.
+ *
+ * Guard C covers the sweep's `(status, processedAt)`. A channel with a
+ * `defer` arm also needs a second, differently-shaped query: the re-drive that
+ * pulls a seller's deferred backlog back into the hot lane the moment their
+ * account lands (`redriveDeferredForUserId`, #808). That one is
+ * `where('status','==').where('<field>','==')` and needs its own composite —
+ * which nothing generic guarded.
+ *
+ * Detected from source rather than required of every channel, because it is
+ * genuinely optional: Mercado Pago and WhatsApp have no `defer` arm and no
+ * connect-observing trigger, so demanding the index of them would be noise.
+ * The sweep's own lane query cannot match — its second predicate is `'<'`, not
+ * `'=='` — and `resolveIntegracaoByUserId`'s three-equality query cannot
+ * either, since it does not lead with `status`.
+ */
+export function redriveEqualityField(source: string): string | null {
+  const m = /\.where\(\s*'status'\s*,\s*'=='[\s\S]{0,300}?\.where\(\s*'(\w+)'\s*,\s*'=='/.exec(
+    source,
+  );
+  return m?.[1] ?? null;
+}
+
+function redriveIndexFor(path: string, field: string): RequiredIndex {
+  return {
+    collectionGroup: path,
+    queryScope: 'COLLECTION',
+    fields: [
+      { fieldPath: 'status', order: 'ASCENDING' },
+      { fieldPath: field, order: 'ASCENDING' },
+    ],
+  };
+}
+
 // ── discovery (once per file load) ──────────────────────────────────────────
 
 const handles = discoverNotificacoesHandles();
@@ -303,6 +339,86 @@ describe('notification sweep indexes (C)', () => {
         `creates no indexes automatically — add these to the "indexes" array of ` +
         `firestore.indexes.json and run \`firebase deploy --only firestore:indexes\`:\n` +
         missing.map(formatIndexJson).join(',\n'),
+    );
+  });
+});
+
+// ── D: a channel with a connect re-drive has ITS composite index too ─────────
+
+describe('notification connect re-drive indexes (D)', () => {
+  const handlePaths = new Map(handles.map((h) => [h.handleName, h.path]));
+
+  /** Consumers whose source contains a `status` + second-equality re-drive query. */
+  const redrivers = consumers
+    .map((c) => ({ ...c, field: redriveEqualityField(readFileSync(c.file, 'utf8')) }))
+    .filter((c): c is typeof c & { field: string } => c.field !== null);
+
+  it('every connect re-drive query has its (status ASC, <field> ASC) composite', () => {
+    const missing: RequiredIndex[] = [];
+    for (const r of redrivers) {
+      const path = handlePaths.get(r.handleName);
+      if (!path) continue; // guard B already fails on an unknown handle
+      const required = redriveIndexFor(path, r.field);
+      if (!indexes.some((idx) => indexSatisfies(idx, required))) missing.push(required);
+    }
+    if (missing.length === 0) return;
+    expect.fail(
+      `Missing Firestore index(es) for a notification connect re-drive query. On Enterprise a ` +
+        `missing index does NOT throw — it silently full-scans and bills the scan, so this is the ` +
+        `only place it surfaces (the emulator auto-creates composites, so ci-mercado-livre.yml ` +
+        `cannot catch it either). Add these to firestore.indexes.json:\n` +
+        missing.map(formatIndexJson).join(',\n'),
+    );
+  });
+
+  describe('the re-drive detector itself', () => {
+    // A regex that silently matches nothing manufactures a green guard — the
+    // same failure mode guard B pins `pipelineCollectionRefs` against.
+    it('captures the second equality field', () => {
+      const src = `
+        collection.ref(db, {})
+          .where('status', '==', NOTIFICACAO_RESILIENCIA_STATUS.deferred)
+          .where('user_id', '==', userId)
+          .limit(limit);
+      `;
+      expect(redriveEqualityField(src)).toBe('user_id');
+    });
+
+    it('ignores the sweep lane query, whose second predicate is a range', () => {
+      const src = `
+        collection.ref(db, {})
+          .where('status', '==', status)
+          .where('processedAt', '<', cutoff)
+          .orderBy('processedAt')
+          .limit(limit);
+      `;
+      expect(redriveEqualityField(src)).toBeNull();
+    });
+
+    it('ignores an equality pair that does not lead with status', () => {
+      // resolveIntegracaoByUserId's tipo/user_id/ativo query lives in the same
+      // file as the re-drive; it must not be mistaken for one.
+      const src = `
+        integracaoCollection.ref(db, {})
+          .where('tipo', '==', INTEGRACAO_TIPO.mercadoLivre)
+          .where('user_id', '==', userId)
+          .where('ativo', '==', true);
+      `;
+      expect(redriveEqualityField(src)).toBeNull();
+    });
+
+    it('returns null when there is no query at all', () => {
+      expect(redriveEqualityField('const status = "failed";')).toBeNull();
+    });
+  });
+
+  it('detects the Mercado Livre re-drive, so this guard is not vacuously empty', () => {
+    // Without this, deleting redriveDeferredForUserId (or breaking the regex)
+    // would leave `redrivers` empty and the guard above passing over nothing.
+    // ⚠️ If ML ever legitimately loses its connect re-drive, delete this `it`
+    // deliberately rather than letting the suite quietly stop checking anything.
+    expect(redrivers.map((r) => `${handlePaths.get(r.handleName)}:${r.field}`)).toContain(
+      'notificacoesMercadoLivre:user_id',
     );
   });
 });

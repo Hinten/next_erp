@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
@@ -1724,30 +1723,9 @@ describe('#808 acceptance — a notification survives a connect-after-the-fact',
   });
 });
 
-describe('firestore.indexes.json', () => {
-  // Guard C in `notificationGuardrails.test.ts` only checks the sweep's
-  // (status, processedAt) composite, so the connect re-drive's own index has no
-  // cover but this. On Enterprise a missing index does not throw — it silently
-  // full-scans and bills the scan.
-  it('declares the (status, user_id) composite the connect re-drive queries on', async () => {
-    const raw = await readFile(
-      new URL('../../../../firestore.indexes.json', import.meta.url),
-      'utf8',
-    );
-    const { indexes } = JSON.parse(raw) as {
-      indexes: Array<{
-        collectionGroup: string;
-        fields: Array<{ fieldPath: string; order?: string }>;
-      }>;
-    };
-
-    const found = indexes.some(
-      (i) =>
-        i.collectionGroup === NOTIF &&
-        i.fields.length === 2 &&
-        i.fields[0]?.fieldPath === 'status' &&
-        i.fields[1]?.fieldPath === 'user_id',
-    );
-    expect(found).toBe(true);
-  });
-});
+// The connect re-drive's (status, user_id) composite is now covered generically
+// by guard D in packages/data/src/admin/notifications/notificationGuardrails.test.ts,
+// which derives the required index from THIS file's query source and compares it
+// with `indexSatisfies`. The hand-rolled block that used to live here compared
+// `fieldPath` only and ignored `order`, so flipping user_id to DESCENDING passed
+// it while breaking the query — verified before deleting it (#823).

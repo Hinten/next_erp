@@ -4,22 +4,58 @@
  * them out by `nome` prefix afterwards.
  *
  * Every test doc — seeded here OR created through the UI during a test —
- * has its `nome` start with the run-scoped prefix from `e2ePrefix()`, so a
- * single prefix sweep cleans the whole suite without tracking ids.
+ * has its `nome` start with the run- and worker-scoped prefix from
+ * `e2ePrefix()`, so a single prefix sweep cleans the whole suite without
+ * tracking ids.
  */
 import { millisToMicros } from '@delfrance/core/datetime';
 import { db } from '@delfrance/test-fixtures';
-import { getRunId } from './run-id';
+import { getRunId, workerIndex } from './run-id';
 
 /** High Unicode code point — upper bound for a Firestore prefix range query. */
 const PREFIX_MAX = String.fromCharCode(0xffff);
 
 /**
- * Run-scoped, tag-scoped `nome` prefix. The run id keeps parallel CI runs
- * from clobbering each other; the tag separates suites (cli / cat).
+ * Run-scoped, worker-scoped, tag-scoped `nome` prefix. The run id keeps
+ * parallel CI runs from clobbering each other; the worker index keeps a RETRY
+ * from being clobbered by the attempt it replaces; the tag separates suites
+ * (cli / cat).
+ *
+ * ⚠️ Both the worker segment and its POSITION are load-bearing.
+ *
+ * The worker segment exists because Playwright runs each retry of a
+ * `describe.serial` group in a fresh worker while the previous worker is still
+ * draining its `afterAll` — and it does NOT serialize the two. With a prefix
+ * that was only run-scoped, the dying worker's prefix sweep deleted the
+ * fixtures the retry had just re-seeded, so the retry loaded a pedido whose
+ * produto no longer existed and every expected row came up "Produto não
+ * encontrado". Observed on run 31718522686: two of the three attempts of
+ * `despacho-checkout.vendas` died that way, ~7.5s apart, each missing a
+ * DIFFERENT seeded doc. `TEST_WORKER_INDEX` changes on every retry, so the
+ * namespaces are now disjoint and a late sweep can only reach its own.
+ *
+ * The segment goes BEFORE the tag because the sweep is a `>= p && < p+￿`
+ * range, i.e. a plain startsWith, and the worker index is not fixed-width.
+ * Tag-last, worker 3's `e2e-<run>-chk-w3` is a string prefix of worker 31's
+ * `e2e-<run>-chk-w31`, so w3's cleanup deletes w31's fixtures — the same bug
+ * one level down. Worker-first, the `-` before the tag bounds the range and
+ * they stay disjoint. Double digits are reachable: the index counts up across
+ * retries, not just to `workers: 4` (run 31718522686 reached w6).
+ *
+ * It also fixes a second, pre-existing hazard: several tags are string prefixes
+ * of another (`ped` ⊂ `pedpag` / `peddev` / `ped-estoque`, `ml` ⊂ `mlpub`,
+ * `nfe` ⊂ `nfelock`, …), so `pedidos.vendas`'s cleanup used to delete
+ * `pedidos-pagamento.vendas`'s produtos whenever the two ran concurrently.
+ * Distinct workers now keep them apart; two specs sharing a worker still share
+ * that hazard, but they run strictly sequentially, so their hooks cannot
+ * interleave.
+ *
+ * Still `e2e-<runId>-`-prefixed, so the run-level sweeps in `stale-sweep.ts`
+ * (`sweepCurrentRunFixtures`, `reclaimPredecessorRun`) keep matching and a
+ * worker that dies before `afterAll` is still reclaimed at end of run.
  */
 export function e2ePrefix(tag: string): string {
-  return `e2e-${getRunId()}-${tag}`;
+  return `e2e-${getRunId()}-w${workerIndex()}-${tag}`;
 }
 
 const pad = (n: number): string => String(n).padStart(3, '0');
@@ -76,6 +112,36 @@ export function validTestCnpj(seedDigits: string): string {
   const dv1 = dv(base, dv1Weights);
   const dv2 = dv(`${base}${dv1}`, [6, ...dv1Weights]);
   return `${base}${dv1}${dv2}`;
+}
+
+/**
+ * The CNPJ every fixture cliente carries — run- AND worker-scoped.
+ *
+ * ⚠️ The worker half is what keeps the quick-create dedup spec honest, and it
+ * is a SEPARATE axis from {@link e2ePrefix}: a doc *id* is prefix-derived, but
+ * an *identity* value is not, so scoping one does not scope the other.
+ *
+ * `seedPedidoFixtures` alone is called by seven specs, and five of those plus
+ * `imp` / `chk` / `anex` all sit in the **vendas** lane, each seeding its own
+ * `<prefix>-cli-001`. Run-scoped only, all of them carry the SAME CNPJ, and
+ * `checkClienteDuplicates` queries `where('cpf_cnpj','==',x)` with **no
+ * `orderBy`** and `CANDIDATE_LIMIT = 5` (`lib/clientes/dedup.ts:158`) — so the
+ * blocking list comes back in **key order** and the modal renders one
+ * "Usar cliente existente" row per candidate. `pedidos.vendas`'s dedup test
+ * takes `.first()` and then asserts its OWN fixture name, so it depends on
+ * winning that ordering, and with enough live copies its cliente falls outside
+ * the 5-row window entirely.
+ *
+ * Worker-scoping makes the spec's own comment true for the first time —
+ * "exactly ONE blocking candidate". Only one spec runs per worker at a time and
+ * its `afterAll` precedes the next spec's `beforeAll` in that same process, so
+ * at most one live cliente can carry any given CNPJ.
+ *
+ * `validTestCnpj` recomputes the check digits, so any 12-digit seed stays
+ * valid; a double-digit worker index just shifts the run half left by one.
+ */
+export function fixtureClienteCnpj(): string {
+  return validTestCnpj(`${runDigits(10)}${workerIndex().padStart(2, '0')}`);
 }
 
 /**
@@ -1195,7 +1261,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   const clienteNome = `${prefix}-cli-001`;
   // Run-unique valid CNPJ: the quick-create dedup spec fills it expecting
   // exactly ONE blocking candidate (this fixture) in the shared collection.
-  const clienteCpfCnpj = validTestCnpj(runDigits(12));
+  const clienteCpfCnpj = fixtureClienteCnpj();
   const operacaoNome = `${prefix}-op-001`;
   const integracaoNome = `${prefix}-int-001`;
   const produtoNome = `${prefix}-pro-001`;
@@ -1617,7 +1683,7 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteId,
-    cpf_cnpj: validTestCnpj(runDigits(12)),
+    cpf_cnpj: fixtureClienteCnpj(),
     idEstrangeiro: null,
     ie: null,
     imun: null,
@@ -3341,7 +3407,7 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteId,
-    cpf_cnpj: validTestCnpj(runDigits(12)),
+    cpf_cnpj: fixtureClienteCnpj(),
     idEstrangeiro: null,
     ie: null,
     imun: null,
@@ -3656,7 +3722,7 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteId,
-    cpf_cnpj: validTestCnpj(runDigits(12)),
+    cpf_cnpj: fixtureClienteCnpj(),
     idEstrangeiro: null,
     ie: null,
     imun: null,

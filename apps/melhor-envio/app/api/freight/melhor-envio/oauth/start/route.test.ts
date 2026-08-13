@@ -9,6 +9,7 @@ import { verifyState } from '@/lib/freight/state';
 const h = vi.hoisted(() => ({
   verifyIdToken: vi.fn(),
   loadCtx: vi.fn(),
+  putOauthState: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -19,6 +20,15 @@ vi.mock('@/lib/firebase/admin', () => ({
 vi.mock('@/lib/freight/melhorEnvio', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/freight/melhorEnvio')>();
   return { ...actual, loadMelhorEnvioContext: h.loadCtx };
+});
+
+// The attempt record is Firestore-backed; only its inputs matter here.
+vi.mock('@/lib/freight/oauthState', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/freight/oauthState')>();
+  return {
+    ...actual,
+    melhorEnvioOauthState: { ...actual.melhorEnvioOauthState, put: h.putOauthState },
+  };
 });
 
 const { GET } = await import('./route');
@@ -90,8 +100,37 @@ describe('GET /api/freight/melhor-envio/oauth/start', () => {
     const state = url.searchParams.get('state');
     expect(state).toBeTruthy();
     // The signed state must round-trip back to the same int_frete id.
-    expect(verifyState(state!, STATE_SECRET).intFreteId).toBe('int-1');
+    expect(verifyState(state!, STATE_SECRET).id).toBe('int-1');
 
     expect(h.loadCtx).toHaveBeenCalledWith(expect.anything(), 'int-1');
+  });
+
+  it('records the attempt under the SAME nonce the state carries', async () => {
+    // The binding that makes the state single-use: if the persisted nonce and
+    // the one inside the state ever diverge, the callback can never redeem a
+    // legitimate attempt.
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+
+    const { authorizeUrl } = (await res.json()) as { authorizeUrl: string };
+    const state = new URL(authorizeUrl).searchParams.get('state')!;
+
+    expect(h.putOauthState).toHaveBeenCalledTimes(1);
+    expect(h.putOauthState).toHaveBeenCalledWith(expect.anything(), 'int-1', {
+      nonce: verifyState(state, STATE_SECRET).nonce,
+      // Melhor Envio documents no PKCE — nothing secret is parked for a flow
+      // that will never present a verifier.
+      codeVerifier: null,
+    });
+  });
+
+  it('sends no PKCE parameters — Melhor Envio does not support them', async () => {
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+
+    const { authorizeUrl } = (await res.json()) as { authorizeUrl: string };
+    const url = new URL(authorizeUrl);
+    expect(url.searchParams.get('code_challenge')).toBeNull();
+    expect(url.searchParams.get('code_challenge_method')).toBeNull();
   });
 });
