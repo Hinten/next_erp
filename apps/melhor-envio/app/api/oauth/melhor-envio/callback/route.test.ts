@@ -190,6 +190,25 @@ describe('GET /api/oauth/melhor-envio/callback', () => {
     });
   });
 
+  it('survives a malformed issues array instead of turning the log into a 500', async () => {
+    // `issues` is typed `unknown`. Destructuring a null entry throws a TypeError,
+    // and it would throw INSIDE the catch block — replacing the redirect that names
+    // the cause with an unhandled 500.
+    h.exchangeAndPersist.mockRejectedValue(
+      new MelhorEnvioSchemaError(
+        'formato inesperado',
+        [null, 'nem um objeto', { code: 'invalid_type', path: ['refresh_token'] }],
+        {},
+      ),
+    );
+    const res = await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
+
+    expect(location(res).searchParams.get('reason')).toBe('resposta_invalida');
+    expect(spyErro.mock.calls[0]![1]).toMatchObject({
+      camposInvalidos: ['(desconhecido)', '(desconhecido)', 'refresh_token: invalid_type'],
+    });
+  });
+
   it('never logs the token response body of a schema failure', async () => {
     // ⚠️ On a schema error the body IS the token response — a 200 that merely
     // lacked a required field still carries a live access_token. Only the FIELD

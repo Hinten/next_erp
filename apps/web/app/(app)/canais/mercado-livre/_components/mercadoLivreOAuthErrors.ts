@@ -32,7 +32,7 @@ const MENSAGENS: Readonly<Record<string, string>> = {
   // and ML omits it when the aplicação does not grant `offline_access` — so the
   // credentials are fine and the scope is not.
   resposta_invalida:
-    'O Mercado Livre aceitou a conexão mas devolveu uma resposta incompleta — falta o refresh_token. Marque a opção de refresh token (escopo offline_access) na aplicação, no painel de desenvolvedor do Mercado Livre, e conecte de novo.',
+    'O Mercado Livre aceitou a conexão mas devolveu uma resposta que não pôde ser lida — normalmente falta o refresh_token. Marque a opção de refresh token (escopo offline_access) na aplicação, no painel de desenvolvedor do Mercado Livre, e conecte de novo. Se o problema continuar, os campos exatos que vieram fora do formato estão nos logs do backend.',
   exchange: 'Falha ao trocar o código de autorização por um token de acesso.',
   // --- list page (no trustworthy id) ---
   config: 'O backend está sem a chave de assinatura do state. Avise quem cuida do deploy.',
@@ -47,7 +47,8 @@ export function mercadoLivreCallbackMessage(reason: string | null): string {
 /**
  * Toast the callback outcome once per navigation. Shared by the account panel and
  * the channel list so the two screens cannot drift apart — the list is reachable
- * by three of the failure slugs and the detail page by the other six.
+ * by three of the failure slugs (`config`, `missing_params`, `bad_state`) and the
+ * detail page by the other seven.
  *
  * The mechanism (and the untrusted-slug sanitizer) lives in `@/lib/oauth`, shared
  * with Melhor Envio and Mercado Pago; only this channel's wording is local.
