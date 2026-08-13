@@ -331,7 +331,16 @@ export interface MarketplaceChannel {
   pullOrders(ctx: ChannelContext): Promise<void>;
   pushTracking(ctx: ChannelContext, orderId: string, trackingCode: string): Promise<void>;
   oauthFlow: {
-    start(state: string): string; // returns redirect URL
+    /**
+     * Returns the consent redirect URL. `pkce` is OPTIONAL because PKCE
+     * (RFC 7636) is a per-registered-application toggle on most channels — a
+     * channel whose app has it off must not receive a challenge, and a channel
+     * that ignores the argument entirely stays assignable to this type.
+     */
+    start(
+      state: string,
+      pkce?: { codeChallenge: string; codeChallengeMethod?: 'S256' | 'plain' },
+    ): string;
     callback(code: string, state: string): Promise<void>;
   };
 

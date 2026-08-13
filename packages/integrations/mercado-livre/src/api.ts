@@ -39,6 +39,7 @@ import {
   type MlShipmentSla,
   type MlSiteCategory,
   type MlSizeChartApi,
+  type MlSizeChartDeleteResponse,
   type MlTechnicalSpecs,
   type MlUser,
   type MlUserProductFamily,
@@ -73,6 +74,7 @@ import {
   sellerItemsScanSchema,
   siteCategoriesSchema,
   sizeChartApiSchema,
+  sizeChartDeleteResponseSchema,
   technicalSpecsSchema,
   tokenErrorSchema,
   userProductFamilySchema,
@@ -294,6 +296,14 @@ export interface MercadoLivreApi {
   ): Promise<MlTechnicalSpecs>;
   /** `POST /catalog/charts` — create a seller size chart (full chart back). */
   createSizeChart(payload: Record<string, unknown>): Promise<MlSizeChartApi>;
+  /** `GET /catalog/charts/{id}` — one chart, incl. `chart_status` while a deletion is pending. */
+  getSizeChart(chartId: string): Promise<MlSizeChartApi>;
+  /**
+   * `DELETE /catalog/charts/{id}` — REQUEST the chart's removal. ML acks 200 and
+   * then checks asynchronously (up to 24h) that no listing still links it;
+   * a chart still in use is silently kept. Poll `getSizeChart` for the verdict.
+   */
+  deleteSizeChart(chartId: string): Promise<MlSizeChartDeleteResponse>;
   /** `PUT /catalog/charts/{id}` — rename (`{names: {MLB: nome}}`). */
   updateSizeChartName(chartId: string, names: Record<string, string>): Promise<MlSizeChartApi>;
   /** `POST /catalog/charts/{id}/rows` — add a row (full chart back). */
@@ -388,7 +398,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
   }
 
   async function requestWithStatus<T>(
-    method: 'GET' | 'POST' | 'PUT',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     schema: z.ZodType<T>,
     opts: RequestOpts = {},
@@ -422,7 +432,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
    * ever need the body. Reach for `requestWithStatus` when 200-vs-206 changes
    * what the caller does — today only the order mirror, see `getOrderResponse`. */
   async function request<T>(
-    method: 'GET' | 'POST' | 'PUT',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     schema: z.ZodType<T>,
     opts: RequestOpts = {},
@@ -683,6 +693,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       }),
     createSizeChart: (payload) =>
       request('POST', '/catalog/charts', sizeChartApiSchema, { body: payload }),
+    getSizeChart: (chartId) => request('GET', `/catalog/charts/${chartId}`, sizeChartApiSchema),
+    deleteSizeChart: (chartId) =>
+      request('DELETE', `/catalog/charts/${chartId}`, sizeChartDeleteResponseSchema),
     updateSizeChartName: (chartId, names) =>
       request('PUT', `/catalog/charts/${chartId}`, sizeChartApiSchema, { body: { names } }),
     addSizeChartRow: (chartId, row) =>

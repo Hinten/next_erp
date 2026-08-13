@@ -26,6 +26,11 @@ vi.mock('@/lib/firebase/admin', () => ({
 
 vi.mock('@delfrance/data/admin/collections', () => ({
   pedidoCollection: { docRef: () => ({ get: h.pedidoGet, update: h.pedidoUpdate }) },
+  // `lib/freight/melhorEnvio` builds its module-scope `int_frete` read cache at
+  // import time, and this suite imports the real module (only
+  // `loadMelhorEnvioContext` is overridden). The handle is never exercised here
+  // — the cached reader touches it lazily, inside `get`.
+  intFreteCollection: {},
 }));
 
 vi.mock('@/lib/freight/melhorEnvio', async (importActual) => {

@@ -48,6 +48,7 @@ import {
 } from '@delfrance/data/admin/collections';
 import { PedidoReconcileNotFoundError, reconcilePedidoFromPagamento } from '@delfrance/data/admin';
 import {
+  asInt,
   asMillis,
   defineNotificationPipeline,
   MAX_TENTATIVAS,
@@ -65,6 +66,7 @@ import {
 } from '@delfrance/integrations-mercado-pago';
 
 import { loadMercadoPagoContext } from './mercadoPago';
+import { type MetodoResolution, readMetodoByCollector } from './metodoCache';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -118,21 +120,16 @@ function asString(v: unknown): string | null {
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
   return null;
 }
-function asInt(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
-  if (typeof v === 'string') {
-    const n = Number(v.trim());
-    return Number.isFinite(n) && v.trim() !== '' ? Math.trunc(n) : null;
-  }
-  return null;
-}
 function asBool(v: unknown): boolean | null {
   return typeof v === 'boolean' ? v : null;
 }
-// `asMillis` (MP's `date_created`, ISO-8601 or epoch millis) is the shared
-// receiver coercer from `@delfrance/data/admin/notifications` — normalized at the
-// source so a persisted failure doc can never be rejected by the strict write
-// validator. (Informational only; the sweep gates on the local `processedAt`.)
+// `asInt` (MP's `user_id`, and the refetched `collector_id` below) and
+// `asMillis` (MP's `date_created`, ISO-8601 or epoch millis) are the shared
+// receiver coercers from `@delfrance/data/admin/notifications` — normalized at
+// the source so a persisted failure doc can never be rejected by the strict
+// write validator. (Informational only; the sweep gates on the local
+// `processedAt`.) `asInt` used to be a private copy here; #810 collapsed it,
+// because the ML channel's separate copy had silently drifted strict.
 
 /**
  * Normalize a raw MP POST body (+ its query string) into the lean task payload.
@@ -203,10 +200,12 @@ function readMetodoUserId(data: unknown): number | null {
   return null;
 }
 
-/** Outcome of resolving the owning `metodo_pgto` account for a notification. */
-export type MetodoResolution =
-  | { kind: 'resolved'; metodoId: string; userId: number | null }
-  | { kind: 'failed'; reason: string };
+/**
+ * Outcome of resolving the owning `metodo_pgto` account for a notification.
+ * Declared in `metodoCache.ts` (the cache stores it) and re-exported here, where
+ * every consumer already looks for it.
+ */
+export type { MetodoResolution };
 
 /**
  * Resolve the owning `metodo_pgto` account for an inbound notification. Two
@@ -229,7 +228,18 @@ export type MetodoResolution =
  * (never reconcile a payment whose real `collector_id` differs). A transient
  * Firestore failure here propagates (throws) so the caller treats it as retryable.
  */
-export async function resolveMetodoByCollector(
+export function resolveMetodoByCollector(
+  db: Firestore,
+  collectorUserId: number | null,
+): Promise<MetodoResolution> {
+  // `collectorUserId` is the only variable predicate — `tipo == mercadoPago` is
+  // constant on both branches and the v1 cap is a module constant — so it alone
+  // keys the entry. A `failed` outcome is never cached (see `metodoCache.ts`),
+  // so both reason strings below stay exact on every call.
+  return readMetodoByCollector(collectorUserId, () => queryMetodoByCollector(db, collectorUserId));
+}
+
+async function queryMetodoByCollector(
   db: Firestore,
   collectorUserId: number | null,
 ): Promise<MetodoResolution> {

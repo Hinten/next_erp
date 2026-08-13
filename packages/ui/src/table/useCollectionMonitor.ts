@@ -63,12 +63,17 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
 
   useEffect(() => {
     if (signature === null) return;
+    // Wait for SERVER truth before pinning the baseline. The IndexedDB cache
+    // emits first, so pinning that emission made the cache→server correction
+    // itself look like "someone added a record" and raised the banner on a
+    // table nobody had touched.
     if (baselineRef.current === null) {
+      if (snap.fromCache !== false) return;
       baselineRef.current = signature;
       return;
     }
     if (signature !== baselineRef.current) setStale(true);
-  }, [signature]);
+  }, [signature, snap.fromCache]);
 
   function acknowledge() {
     baselineRef.current = signature;

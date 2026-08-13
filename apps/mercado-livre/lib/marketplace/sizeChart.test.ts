@@ -94,4 +94,29 @@ describe('findChartRow', () => {
   it('null when nothing matches', () => {
     expect(findChartRow(c, ['documents/grupoDeVariacoes/g-tam/variacoes/v-gg'])).toBeNull();
   });
+
+  it("prefers ML's computed sizeCalculado — the only size a footwear chart has", () => {
+    // A footwear chart's main attribute is EU_SIZE, so the row carries no SIZE
+    // of its own; ML derives one and `applyChartResponse` caches it.
+    const calcados = chart({
+      main_attribute_id: 'EU_SIZE',
+      rows: [
+        {
+          varianteUid: 'documents/grupoDeVariacoes/g-tam/variacoes/v-40',
+          id: '100:1',
+          attributes: [{ id: 'EU_SIZE', value_name: '40 EU' }],
+          sizeCalculado: { id: 'SIZE', value_name: '8,5 US' },
+        },
+      ],
+    });
+    expect(findChartRow(calcados, ['documents/grupoDeVariacoes/g-tam/variacoes/v-40'])).toEqual({
+      rowId: '100:1',
+      size: { id: 'SIZE', value_name: '8,5 US' },
+    });
+  });
+
+  it('falls back to the row own SIZE when there is no cache (every pre-existing chart)', () => {
+    const row = findChartRow(c, ['documents/grupoDeVariacoes/g-tam/variacoes/v-m']);
+    expect(row?.size).toEqual({ id: 'SIZE', value_name: 'M (38-40)' });
+  });
 });

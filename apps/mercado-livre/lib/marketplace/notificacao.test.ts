@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import {
   MAX_TENTATIVAS,
@@ -274,6 +275,10 @@ function seedFailed(db: FakeDb, id: string, over: DocData = {}): void {
 }
 
 beforeEach(() => {
+  // The conta cache is module-scope and keyed by the document PATH, so a fresh
+  // `FakeDb` per test does NOT isolate it — `conta-A` and seller 55 recur
+  // throughout this file with deliberately different seeded state.
+  __resetAllReadCaches();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   h.handleUptinMigration.mockClear();
@@ -283,6 +288,10 @@ beforeEach(() => {
   h.importPagamentoMercadoLivre.mockClear();
   h.importShipmentMercadoLivre.mockClear();
   h.importClaimMercadoLivre.mockClear();
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 /* ------------------------------ parse + topics --------------------------- */
@@ -299,20 +308,21 @@ describe('parseNotificationBody', () => {
       sent: '2025-03-05T20:27:20.218Z',
       received: 1_741_196_520_060,
     });
-    expect(a?.id).toBe('N1');
-    expect(a?.payload).toMatchObject({
+    expect(a).toMatchObject({
       id: 'N1',
       resource: '/orders/123',
       topic: 'orders_v2',
       user_id: 55,
     });
     // sent/received are normalized to epoch millis at the source
-    expect(a?.payload.sent).toBe(Date.parse('2025-03-05T20:27:20.218Z'));
-    expect(a?.payload.received).toBe(1_741_196_520_060);
+    expect(a?.sent).toBe(Date.parse('2025-03-05T20:27:20.218Z'));
+    expect(a?.received).toBe(1_741_196_520_060);
     // the lean payload carries NO local resilience fields (those belong only to
     // a persisted failure doc)
-    expect(a?.payload).not.toHaveProperty('status');
-    expect(a?.payload).not.toHaveProperty('tentativas');
+    expect(a).not.toHaveProperty('status');
+    expect(a).not.toHaveProperty('tentativas');
+    // `_id` is folded into `id`, not carried twice
+    expect(a).not.toHaveProperty('_id');
     expect(parseNotificationBody({ id: 'N2', resource: '/items/MLB1', topic: 'items' })?.id).toBe(
       'N2',
     );
@@ -325,10 +335,10 @@ describe('parseNotificationBody', () => {
       sent: '',
       received: 'not-a-date',
     });
-    expect(p?.payload.sent).toBeNull();
-    expect(p?.payload.received).toBeNull();
+    expect(p?.sent).toBeNull();
+    expect(p?.received).toBeNull();
     const n = parseNotificationBody({ resource: '/orders/1', topic: 'orders_v2', sent: 42 });
-    expect(n?.payload.sent).toBe(42);
+    expect(n?.sent).toBe(42);
   });
 
   it('rejects noise: non-object, arrays, missing topic/resource', () => {
@@ -337,6 +347,86 @@ describe('parseNotificationBody', () => {
     expect(parseNotificationBody([1, 2])).toBeNull();
     expect(parseNotificationBody({ topic: 'orders_v2' })).toBeNull();
     expect(parseNotificationBody({ resource: '/orders/1' })).toBeNull();
+  });
+
+  /* ------------------------------- #810 ---------------------------------- */
+
+  it('KEEPS a field ML adds without telling us (the payload is the schema output)', () => {
+    const p = parseNotificationBody({
+      _id: 'N1',
+      resource: '/orders/123',
+      topic: 'orders_v2',
+      user_id: 55,
+      // hypothetical future ML fields
+      site_id: 'MLB',
+      seller_nickname: 'LOJA',
+      priority: 3,
+    });
+    expect(p).toMatchObject({ site_id: 'MLB', seller_nickname: 'LOJA', priority: 3 });
+  });
+
+  it('accepts a numeric-STRING user_id — the old asInt nulled it and stopped ingestion', () => {
+    const p = parseNotificationBody({
+      resource: '/orders/123',
+      topic: 'orders_v2',
+      user_id: '55',
+      application_id: ' 7 ',
+      attempts: '2',
+    });
+    expect(p).toMatchObject({ user_id: 55, application_id: 7, attempts: 2 });
+  });
+
+  it('never lets a provider-supplied resilience field into the payload', () => {
+    const p = parseNotificationBody({
+      resource: '/orders/1',
+      topic: 'orders_v2',
+      status: 'parked',
+      tentativas: 999,
+      erro: 'injected',
+      processedAt: 1,
+    });
+    for (const key of ['status', 'tentativas', 'erro', 'processedAt']) {
+      expect(p).not.toHaveProperty(key);
+    }
+  });
+
+  it('refuses an `_id` that is a PATH rather than a name (auto-id instead)', () => {
+    // `docIdOf` feeds this straight into docRef(...).create(): "a/b/c" would
+    // land in a nested subcollection the sweep can never see, and "a/b" throws
+    // a non-ZodError the receiver rethrows as 5xx.
+    for (const _id of ['a/b/c', 'a/b', '.', '..', '__x__', 'z'.repeat(2000)]) {
+      const p = parseNotificationBody({ _id, resource: '/orders/1', topic: 'orders_v2' });
+      expect(p?.id).toBeNull();
+    }
+    expect(parseNotificationBody({ _id: 'N-1_ok', resource: '/o/1', topic: 'orders_v2' })?.id).toBe(
+      'N-1_ok',
+    );
+  });
+
+  it('bounds the remainder so it can never break the enqueue or the persist', () => {
+    const p = parseNotificationBody({
+      resource: '/orders/1',
+      topic: 'orders_v2',
+      nested: [[1, 2]], // Firestore refuses a nested array outright
+      obj: { a: 1 },
+      __reserved__: 'x', // Firestore refuses this field NAME
+      '': 'x', // ...and this one
+      long: 'x'.repeat(5_000),
+      huge: 'y'.repeat(200_000),
+    });
+    expect(p?.nested).toBe('[[1,2]]');
+    expect(p?.obj).toBe('{"a":1}');
+    expect(Object.keys(p!)).not.toContain('__reserved__');
+    expect(Object.keys(p!)).not.toContain('');
+    expect(String(p?.long).length).toBeLessThanOrEqual(513);
+    expect(JSON.stringify(p).length).toBeLessThan(20_000);
+  });
+
+  it('keeps a sent/received the persisted-doc validator would reject out of the payload', () => {
+    // 5e13 sits in coerceToMillis' undeterminable gap → NaN → a ZodError thrown
+    // from inside persistFailure, which is OUTSIDE handleTask's try/catch.
+    const p = parseNotificationBody({ resource: '/orders/1', topic: 'orders_v2', sent: 5e13 });
+    expect(p?.sent).toBeNull();
   });
 });
 
@@ -408,6 +498,35 @@ describe('handleNotificationTask', () => {
     // `user_id`, and no seller owns a notification that names none.
     expect(r.outcome).toBe('parked');
     expect(db.docs(NOTIF).get('N1')!.status).toBe('parked');
+  });
+
+  /**
+   * #810 acceptance. This goes through the REAL `collection.parse` — the suite
+   * mocks the import runners, never `@delfrance/data` — so it exercises
+   * `parseForWrite` against the `.passthrough()` collection schema, which is
+   * what actually decides whether an unknown field survives the write.
+   */
+  it('carries an unknown ML field onto the persisted doc', async () => {
+    const db = new FakeDb();
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ user_id: 999, site_id: 'MLB', priority: 3 }),
+      0,
+    );
+    expect(r.outcome).toBe('deferred'); // no conta yet — the #808 slow lane
+    const doc = db.docs(NOTIF).get('N1')!;
+    expect(doc.site_id).toBe('MLB');
+    expect(doc.priority).toBe(3);
+    // ...without letting the wire payload dictate the local resilience state.
+    expect(doc.status).toBe('deferred');
+  });
+
+  it('resolves the conta when user_id arrives as a numeric string (nothing persisted)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const r = await handleNotificationTask(asDb(db), payloadOf({ user_id: '55' }), 0);
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A' });
+    expect(db.docs(NOTIF).size).toBe(0);
   });
 
   it('transient failure re-throws while under the attempt cap (queue retries)', async () => {
@@ -1362,6 +1481,62 @@ describe('reprocessNotifications', () => {
     const n2 = db.docs(NOTIF).get('N2')!; // N2 bumped, not aborted
     expect(n2.status).toBe('failed');
     expect(n2.tentativas).toBe(1);
+  });
+
+  /**
+   * The GHOST document (N6). `store.mark`'s merge is an UPSERT, so a doc deleted
+   * concurrently with a sweep is recreated carrying ONLY
+   * `{status, tentativas, erro, processedAt}` — no `resource`, no `topic`. It
+   * still matches the sweep query, so it comes back around every run.
+   *
+   * The contract is that rehydration REFUSES it with a legible reason rather
+   * than letting `undefined` reach the dispatcher, where `lastSegment` would
+   * `ref.split('/')` into a `TypeError`. These tests are deliberately written
+   * against BEHAVIOUR (not the exact wording) so they hold across the #810
+   * rewrite of `fromDoc` from a hand-rolled guard to a schema parse.
+   */
+  it('refuses a ghost document (no resource/topic) with a legible error, never a TypeError', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    // Exactly what a merge-upsert over a deleted doc leaves behind.
+    db.seed(NOTIF, 'N9', {
+      status: 'failed',
+      tentativas: 0,
+      erro: 'falha anterior',
+      processedAt: 1_000,
+    });
+
+    const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(res.processed).toBe(0);
+    expect(res.errors).toHaveLength(1);
+    expect(res.errors[0]!.docId).toBe('N9');
+    // Names the field that is missing, and is a DELIBERATE refusal rather than
+    // a `ref.split is not a function` that escaped from the dispatcher.
+    expect(res.errors[0]!.message).toMatch(/resource/i);
+    expect(res.errors[0]!.message).not.toMatch(/TypeError|is not a function/i);
+
+    const n9 = db.docs(NOTIF).get('N9')!; // kept as an audit row, tentativas bumped
+    expect(n9.status).toBe('failed');
+    expect(n9.tentativas).toBe(1);
+    expect(n9.processedAt).toBe(10_000);
+  });
+
+  it('parks a ghost document once it reaches the retry cap', async () => {
+    const db = new FakeDb();
+    db.seed(NOTIF, 'N9', {
+      status: 'failed',
+      tentativas: MAX_TENTATIVAS - 1,
+      erro: 'falha anterior',
+      processedAt: 1_000,
+    });
+
+    const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
+
+    expect(res.errors).toHaveLength(1);
+    const n9 = db.docs(NOTIF).get('N9')!;
+    expect(n9.status).toBe('parked');
+    expect(n9.tentativas).toBe(MAX_TENTATIVAS);
   });
 });
 

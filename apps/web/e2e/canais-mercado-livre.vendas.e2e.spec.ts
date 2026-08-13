@@ -13,7 +13,13 @@ import {
   expectRowVisible,
   selectRowByText,
 } from './helpers/table-view';
-import { clickSave, confirmDelete, fillField, selectFieldWithSearch } from './helpers/object-view';
+import {
+  clickSave,
+  confirmDelete,
+  expectFieldAfterReload,
+  fillField,
+  selectFieldWithSearch,
+} from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -117,7 +123,7 @@ test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () =
     await page.waitForURL(/\/canais\/mercado-livre$/, { timeout: 15_000 });
 
     await page.goto(`/canais/mercado-livre/${row(4)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-004-editada`);
+    await expectFieldAfterReload(page, 'Nome', `${prefix}-004-editada`);
   });
 
   test('job actions accept exactly one conta and report its outcome', async ({ page }) => {

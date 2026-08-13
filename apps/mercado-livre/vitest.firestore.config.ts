@@ -20,7 +20,10 @@ export default defineConfig({
     environment: 'node',
     // Anchored to the three source roots (same shape as vitest.config.ts) rather
     // than a bare `**/` — an unanchored include walks apps/mercado-livre/node_modules.
-    include: ['{app,lib,functions}/**/*.firestore.test.ts'],
+    // The second entry mirrors the root-level `proxy.test.ts` in vitest.config.ts:
+    // the app root really does host tests, and a root-level firestore test that
+    // matched neither config would silently never run.
+    include: ['{app,lib,functions}/**/*.firestore.test.ts', '*.firestore.test.ts'],
     setupFiles: ['./vitest.firestore.setup.ts'],
     testTimeout: 30_000,
     hookTimeout: 30_000,

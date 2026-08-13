@@ -12,19 +12,39 @@ repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
 CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
-`ci.yml` and `e2e-emulator.yml` are the two workflows with no path filter, so
-every PR gets both; `ci.yml` excludes the nfe/freight/storage/functions tests,
-which the domain pipelines `ci-{nfe,freight,storage,rules}.yml` own.
+`ci.yml` and the three e2e lanes have **no path filter**, so every PR gets all
+four; `ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
+pipelines `ci-{nfe,freight,storage,rules}.yml` own.
 
-⚠️ Every other workflow is **`paths:`-filtered**, the staging e2e lanes included
-(apps/web, packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR
-touching only `packages/integrations/**` or `apps/nfe/**` runs **no e2e** —
-those checks show *skipped*, not failed. "CI green" ≠ "e2e passed".
+**"CI green" now means "e2e passed."** Each e2e lane always publishes one
+unskippable check — **`E2E gate (cadastros)` / `(vendas)` / `(emulator)`** — and
+those are the pinnable names. Green means the suite passed, or that nothing the
+lane depends on changed *and the check says which paths and why*. Red means it
+failed, was cancelled, or was skipped for a reason the gate cannot justify
+(a fork PR cannot read staging secrets, so it is **red**, not green).
+
+⚠️ Never put a top-level `paths:` on an e2e lane, and never pin a check that can
+be skipped. A non-matching `paths:` means GitHub publishes **no check at all** —
+not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
+GitHub counts as **satisfying** a required check. Both are silent passes. Scope
+lives in each lane's `changes` job instead, which derives the answer from the
+**workspace dependency graph** (`.github/scripts/e2e-affected.mjs`) rather than a
+hand-written list — the old list omitted `packages/integrations/{nfe,freight-br}`
+and `packages/storage`, all three of which `apps/web` imports. Everything
+unattributable (root configs, `firestore.rules`, `.github/**`) runs the suite.
+Enforced by `packages/config-eslint/rules/e2e-lane-gates.test.js`.
+
+⚠️ The domain pipelines `ci-{nfe,freight,storage,rules}.yml` are still
+`paths:`-filtered and still publish nothing when they skip. That is a deliberate
+remaining exception, not a model to copy — their offline suites are covered by
+`ci.yml`'s full-graph lint/typecheck/build.
 
 Every `pull_request` base filter is
-`[master, main, 'claude/**', 'feat/**', 'fix/**']`. That key matches the PR's
-**base**, so a **stacked PR** must sit on one of those prefixes — on anything
-else (`chore/`, `docs/`, …) it reports zero checks, not failures.
+`[master, main, production, 'claude/**', 'feat/**', 'fix/**']` (`ci.yml` and the
+domain pipelines omit `production`; the release PR gets those from the `push:` on
+`main`). That key matches the PR's **base**, so a **stacked PR** must sit on one of
+those prefixes — on anything else (`chore/`, `docs/`, …) it reports zero checks,
+not failures.
 
 ## Critical rules
 
@@ -311,24 +331,55 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   type — never by the member set, which is not an identity: `'1' | '2'` is both
   `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
   rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
-- Firebase App Hosting deploys every Next app; heavy work goes to Cloud
-  Functions. `apps/portal/` does NOT exist — public pages are deferred.
+- Firebase App Hosting deploys every Next app **except `webchat`** (static
+  export served by `firebase.json` hosting — 7 `apphosting.yaml` files, 8 Next
+  apps); heavy work goes to Cloud Functions. `apps/portal/` does NOT exist —
+  public pages are deferred. ⚠️ An `apphosting.yaml` carries only `runConfig` +
+  `env` — no build-root and no build command — so anything the **buildpack**
+  gets wrong has to be fixed in the manifest itself (see the `next` pin under
+  the catalog bullet below).
 - **Shared dependency versions live in the pnpm `catalog:`**
   (`pnpm-workspace.yaml`): a dep declared by 2+ workspace manifests is
   cataloged and referenced as `catalog:`; single-consumer deps stay literal.
-  `catalogMode: strict` routes `pnpm add` through the catalog. Four things
-  NEVER use `catalog:`: the 4 nested `apps/*/functions` manifests (not
-  workspace members), `apps/functions`' runtime `dependencies` (every
-  `prepare-deploy.mjs` copies `dependencies` verbatim into an artifact that
-  plain cloud `npm install` must resolve), all `peerDependencies` (libraries
-  keep broad ranges), and `workspace:*` specs. ⚠️ Those five artifact
+  `catalogMode: strict` routes `pnpm add` through the catalog. **Five** things
+  NEVER use `catalog:`, and all five are ONE rule — an **external resolver
+  reads the manifest without our lockfile or workspace context**: the 4 nested
+  `apps/*/functions` manifests (not workspace members), `apps/functions`'
+  runtime `dependencies` (every `prepare-deploy.mjs` copies `dependencies`
+  verbatim into an artifact that plain cloud `npm install` must resolve), all
+  `peerDependencies` (libraries keep broad ranges), `workspace:*` specs, and
+  **`next` in the 7 `apps/*/package.json` that have an `apphosting.yaml`** —
+  an exact literal there, never `catalog:` and never a `^` range. The App
+  Hosting buildpack `google.nodejs.firebasenextjs` derives `FRAMEWORK_VERSION`
+  from a lockfile it cannot read (`pnpm-lock.yaml`), silently falls back to the
+  RAW manifest string, and `@apphosting/adapter-nextjs` hands that to
+  `semver.satisfies(spec, SAFE_NEXTJS_VERSIONS)` — which rejects anything
+  unparseable as a *version*, killing the build with `CVE-2025-55182:
+  Vulnerable Next version catalog: detected. Deployment blocked.` A **false
+  positive** (16.2.6 is patched, `>=16.1.0`), and unfixable from outside the
+  manifest: the buildpack `Override`s `FRAMEWORK_VERSION` *after* computing it,
+  so setting the var in `apphosting.yaml` does nothing, and `apphosting.yaml`
+  has no build-root knob to aim at a `pnpm deploy` artifact. ⚠️ PR #410 already
+  fixed this once (with `^16.2.6`); the catalog migration silently undid it and
+  nothing failed until a human tried to deploy months later —
+  `packages/config-eslint/rules/apphosting-next-pinned.test.js` is that missing
+  signal. ⚠️ Those five artifact
   `dependencies` blocks are literal **and**, for `firebase-admin` +
   `firebase-functions`, **exact** — no lockfile reaches the cloud, so a range
   there ships an untested version (see the firebase pins above);
   `packages/config-eslint/rules/runtime-deps-pinned.test.js` enforces it.
   Three high-blast-radius deps stay pinned **exact** in the catalog for the same
   "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
-  and `firebase-functions` (`7.3.2`). **`packageManager` is the sole authority for pnpm** — corepack
+  and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
+  reference: the catalog is still where a bump *starts*, but it is **8
+  deliberate edits** — the catalog plus the 7 App Hosting app manifests — and
+  the guard above fails on drift. Its only remaining `catalog:` consumers are
+  `apps/webchat` (static export, no buildpack) and `packages/ui`'s
+  devDependency, which makes them load-bearing: literalise BOTH and
+  `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
+  next install. Do not bump it with `pnpm add` — under `catalogMode: strict`
+  that rewrites the spec back to `catalog:`, the exact string that blocks the
+  deploy. **`packageManager` is the sole authority for pnpm** — corepack
   honours it over any activated default, so CI runs only `corepack enable`
   and never pins a version. Do not re-add a `corepack prepare pnpm@x.y.z`:
   it is silently overridden, which is exactly how the workflows drifted to

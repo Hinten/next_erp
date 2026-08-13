@@ -61,7 +61,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { coerceToMicros, millisToMicros } from '@delfrance/core/datetime';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 import { MercadoLivreError, createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import {
   backfillPedidosMercadoLivreCollection,
@@ -69,7 +69,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import { type MlTaskScheduler, MlTasksDisabledError } from './mlTasks';
-import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';
+import { MercadoLivreContaNotConfiguredError, buildMercadoLivreContext } from './mercadoLivre';
 import type { MlNotificationPayload } from './notificacao';
 
 /** The env flag gating the sweep — runs ONLY when it is exactly `'1'`. */
@@ -209,6 +209,7 @@ async function sweepConta(
   scheduler: MlTaskScheduler,
   integracaoId: string,
   userId: number,
+  conta: Integracao,
   nowMs: number,
   nowUs: number,
 ): Promise<Omit<BackfillContaResult, 'error'>> {
@@ -220,8 +221,9 @@ async function sweepConta(
   // µs → ISO only at the ML API boundary (project standard keeps µs elsewhere).
   const isoFrom = new Date(Math.floor(fromUs / 1000)).toISOString();
 
-  // (b) Account context → live ML API (exact chain from `runOrderImport`).
-  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  // (b) Account context → live ML API (exact chain from `runOrderImport`), built
+  // from the conta the enumeration already fetched rather than re-reading it.
+  const ctx = buildMercadoLivreContext(db, integracaoId, conta);
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
@@ -339,7 +341,26 @@ export async function runOrderBackfillSweep(
     }
 
     try {
-      const result = await sweepConta(db, deps.scheduler, integracaoId, userId, nowMs, nowUs);
+      // The enumeration already fetched this document, and it satisfies both
+      // guards `loadMercadoLivreContext` performs — the doc EXISTS (the query
+      // returned it) and `tipo === mercadoLivre` (a query predicate) — so
+      // `sweepConta` builds its context from the snapshot instead of
+      // point-reading the same doc again. Parsed here, past the `user_id` guard,
+      // for the same reason that guard reads raw: a soft parseRead of every
+      // enumerated conta would warn-spam each tick on legacy partial docs.
+      const conta = integracaoCollection.parseRead(
+        doc.data(),
+        integracaoCollection.docPath({}, integracaoId),
+      );
+      const result = await sweepConta(
+        db,
+        deps.scheduler,
+        integracaoId,
+        userId,
+        conta,
+        nowMs,
+        nowUs,
+      );
       contas.push({ ...result, error: null });
     } catch (err) {
       // The deliberate per-conta containment boundary (module doc): expected

@@ -19,6 +19,7 @@ import {
   clickSave,
   clickSaveAndContinue,
   confirmDelete,
+  expectFieldAfterReload,
   expectFieldError,
   expectToast,
   fillField,
@@ -149,7 +150,7 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/depositos$/, { timeout: 15_000 });
 
     await page.goto(`/depositos/${row(5)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-005-editado`);
+    await expectFieldAfterReload(page, 'Nome', `${prefix}-005-editado`);
   });
 
   test('edits a deposito and continues editing', async ({ page }) => {
