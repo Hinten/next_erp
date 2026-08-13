@@ -78,9 +78,22 @@ export interface ResolveAccessTokenOpts {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-/** The OAuth redirect URI — must match what's registered in the MP app. */
+/**
+ * The OAuth redirect URI — must match what's registered in the MP app.
+ *
+ * ⚠️ A BLANK `MERCADO_PAGO_PUBLIC_URL=` must fall back like an unset one. The old
+ * `??` guarded only `undefined`/`null`, so a blank value produced `base === ''` and
+ * sent the relative `"/api/oauth/mercado-pago/callback"` to MP as the `redirect_uri`
+ * — which MP rejects at the token step with a 400 this app could not report.
+ * Same `??`-versus-empty-string hole #887 fixed for `*_TASKS_REGION`.
+ *
+ * The localhost default stays: local dev has no public origin. It is also why a
+ * misconfigured deployed backend fails at MP rather than at boot — hence the value
+ * being echoed in the callback's failure log.
+ */
 export function mercadoPagoRedirectUri(): string {
-  const base = (process.env.MERCADO_PAGO_PUBLIC_URL ?? 'http://localhost:3007').replace(/\/$/, '');
+  const raw = process.env.MERCADO_PAGO_PUBLIC_URL?.trim();
+  const base = (raw && raw.length > 0 ? raw : 'http://localhost:3007').replace(/\/$/, '');
   return `${base}/api/oauth/mercado-pago/callback`;
 }
 
