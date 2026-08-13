@@ -7,7 +7,15 @@ on:
     # `branches:` matches the PR's BASE, not its head — so the prefix entries
     # are what give a stacked PR (B -> A -> main) CI. Stack onto one of them; a
     # child based on any other prefix reports zero checks, not a failure.
-    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
+    #
+    # `production` is the release base (main → production). It used to be omitted
+    # on the grounds that the release PR is covered by the `push:` on `main`, but
+    # that stopped being enough: `lint-typecheck-test` is now a pinned required
+    # check, and a required check that never reports leaves the PR unmergeable.
+    # It also closes a real coverage gap — ci-storage.yml no longer re-runs the
+    # @delfrance/schemas and @delfrance/data suites, so on a main → production PR
+    # this job is the only thing that runs them.
+    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,7 +33,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # The `|| github.sha` fallback is explicit rather than implicit: on a
+          # push or dispatch the PR context is unset, and `actions/checkout` only
+          # does the right thing there because it treats the empty string as
+          # unset. Same form as every other lane.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v6
         with:

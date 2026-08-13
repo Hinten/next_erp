@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
@@ -61,7 +62,7 @@ import {
   type OccOpKind,
   type OccTransaction,
   type OccWriteKind,
-} from './testing/occTransaction';
+} from '@delfrance/data/testing';
 import { makeItemEnsureUniqueId } from './orderIds';
 import type { MappedFreteInicialFields } from './orderShipmentMapping';
 import {
@@ -109,7 +110,7 @@ const ENDERECO_SP: EnderecoForcado = {
 // and a chained where/limit/get query).
 //
 // `runTransaction` delegates to the SHARED `OccEngine`
-// (`./testing/occTransaction`), which replaces the non-isolated stand-in this
+// (`@delfrance/data/testing`), which replaces the non-isolated stand-in this
 // file used to carry. That brings three things this file never had: a
 // reads-before-writes guard (the other three FakeDbs in this folder already had
 // one), an `opLog`, and `lastPatch` — plus the snapshot-read/retry semantics the
@@ -349,6 +350,10 @@ function stubViaCep(resposta: EnderecoViaCep | null): ViaCepClient {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // `loadContaBag` now shares a module-scope cache keyed by the document PATH,
+  // so a fresh `FakeDb` per test does not isolate it and every test here seeds
+  // the same `conta-A`.
+  __resetAllReadCaches();
   vi.mocked(resolveOrderLineProduto).mockResolvedValue(null);
   vi.mocked(resolvePrazoDespacho).mockResolvedValue(null);
   // The double CREATES the doc it reports having created. Every step after
@@ -398,6 +403,10 @@ beforeEach(() => {
   // doesn't leak into whichever test runs next.
   vi.mocked(billingInfoToEnderecoFields).mockReturnValue(SEM_CEP);
   vi.mocked(shipmentToEnderecoFields).mockReturnValue(SEM_CEP);
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 /* ----------------------------------- tests --------------------------------- */

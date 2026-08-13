@@ -31,11 +31,16 @@ process.env.FUNCTIONS_REGION = 'us-east5';
 // while a top-level `await import` is module evaluation and carries no such
 // budget. This mirrors `apps/whatsapp/functions/src/sendOutbound.test.ts` and
 // the sibling `on*Changed` tests here, which all import at the top level.
-const { reprocessMercadoLivreNotifications } = await import('./index');
+const { reprocessMercadoLivreNotifications, sweepMercadoLivreMissedFeeds } =
+  await import('./index');
 
 afterAll(() => {
   process.env.FUNCTIONS_REGION = originalFunctionsRegion;
 });
+
+function endpointOf(fn: unknown): Record<string, unknown> {
+  return (fn as { __endpoint: Record<string, unknown> }).__endpoint;
+}
 
 describe('reprocessMercadoLivreNotifications (#778)', () => {
   it('binds both ML app secrets and sets timeoutSeconds to 540 (matches the other ML-API-bound sweeps)', () => {
@@ -48,5 +53,38 @@ describe('reprocessMercadoLivreNotifications (#778)', () => {
     expect(serialized).toContain('MERCADO_LIVRE_CLIENT_ID');
     expect(serialized).toContain('MERCADO_LIVRE_CLIENT_SECRET');
     expect(endpoint.timeoutSeconds).toBe(540);
+  });
+});
+
+describe('sweepMercadoLivreMissedFeeds (#812)', () => {
+  it('binds both ML app secrets and sets timeoutSeconds to 540', () => {
+    // CLIENT_ID does double duty here: the per-conta token refresh AND the
+    // `app_id` query param `GET /missed_feeds` requires. Without the secrets
+    // bound, every conta throws `MercadoLivreConfigError` and the backstop is
+    // silently inert.
+    const endpoint = endpointOf(sweepMercadoLivreMissedFeeds);
+    const serialized = JSON.stringify(endpoint);
+    expect(serialized).toContain('MERCADO_LIVRE_CLIENT_ID');
+    expect(serialized).toContain('MERCADO_LIVRE_CLIENT_SECRET');
+    expect(endpoint.timeoutSeconds).toBe(540);
+  });
+
+  it('runs DAILY at 05:00 America/Sao_Paulo — the period is load-bearing', () => {
+    // ⚠️ Asserted on the parsed trigger fields, not via `toContain` on the JSON
+    // blob: every other schedule in this module already uses America/Sao_Paulo,
+    // so a substring match would pass no matter what THIS function declares.
+    //
+    // The literal matters beyond style. `GET /missed_feeds` has no time filter
+    // and ML retains an entry for 48h, so the sweep keeps no cursor and coverage
+    // rests entirely on `period × 2 ≤ retention`. Lengthening this cron past 24h
+    // silently deletes the backstop for anything filed between runs — which is
+    // exactly the failure #812 exists to close. If you are changing it, re-read
+    // the module doc on `missedFeedsSweep.ts` first.
+    const trigger = endpointOf(sweepMercadoLivreMissedFeeds).scheduleTrigger as {
+      schedule?: string;
+      timeZone?: string;
+    };
+    expect(trigger.schedule).toBe('0 5 * * *');
+    expect(trigger.timeZone).toBe('America/Sao_Paulo');
   });
 });

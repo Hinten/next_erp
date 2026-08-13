@@ -472,12 +472,21 @@ describe('integracao metas', () => {
     expect(integracaoMeta.cascade).toEqual([
       { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
       { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
+      // #821 — holds a live PKCE code_verifier.
+      { path: 'integracao/{integracaoId}/oauthState', onDelete: 'cascade' },
       // Dual-run ML pair (#829) — they hold a live refresh_token, and the legacy
       // Flutter `deleteCascade` on a conta already removed both, so leaving them
       // out would orphan a working credential.
       { path: 'integracao/{integracaoId}/token6h', onDelete: 'cascade' },
       { path: 'integracao/{integracaoId}/tokenDuravel', onDelete: 'cascade' },
     ]);
+  });
+
+  it('makes user_id server-owned — it is the webhook routing key (#821/T4)', () => {
+    // `resolveIntegracaoByUserId` finds an account by this field, so a client
+    // able to write it could repoint another seller's notification stream. Its
+    // only legitimate writer is the OAuth exchange, via the Admin SDK.
+    expect(integracaoMeta.serverOwnedFields).toEqual(['user_id']);
   });
 
   it('credenciaisIntegracaoMeta targets the subcollection', () => {
