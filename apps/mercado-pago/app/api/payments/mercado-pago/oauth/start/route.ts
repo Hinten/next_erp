@@ -8,9 +8,12 @@
  */
 import { NextResponse } from 'next/server';
 
+import { codeChallengeS256, createCodeVerifier } from '@delfrance/data/admin/oauth-state';
+
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoPagoContext } from '@/lib/payments/mercadoPago';
+import { mercadoPagoOauthState, pkceEnabled } from '@/lib/payments/oauthState';
 import { signState } from '@/lib/payments/state';
 import { isMercadoPagoError, mercadoPagoErrorResponse } from '@/lib/payments/respond';
 
@@ -37,8 +40,17 @@ export async function GET(req: Request): Promise<NextResponse> {
   const db = getAdminFirestore();
   try {
     const ctx = await loadMercadoPagoContext(db, metodoId);
-    const state = signState(metodoId, secret);
-    const authorizeUrl = ctx.authorizeUrl(state);
+    const { state, nonce } = signState(metodoId, secret);
+    const codeVerifier = pkceEnabled() ? createCodeVerifier() : null;
+    // Persist BEFORE handing out the URL — a consent completed against a record
+    // that was never written is a connect that fails closed.
+    await mercadoPagoOauthState.put(db, metodoId, { nonce, codeVerifier });
+    const authorizeUrl = ctx.authorizeUrl(
+      state,
+      codeVerifier
+        ? { codeChallenge: codeChallengeS256(codeVerifier), codeChallengeMethod: 'S256' }
+        : undefined,
+    );
     return NextResponse.json({ authorizeUrl });
   } catch (err) {
     if (isMercadoPagoError(err)) return mercadoPagoErrorResponse(err);

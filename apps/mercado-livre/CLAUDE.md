@@ -73,15 +73,17 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
   `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
   the still-running Flutter app during the dual-run migration; "one wins" refresh).
-- `lib/marketplace/{state,oauthStateStore,pkce}.ts` — **#821**, the connect flow's two
-  trust anchors. `state.ts` signs/verifies the HMAC state (and now RETURNS its `nonce`);
-  `oauthStateStore.ts` is the per-attempt record over the admin-only
-  `integracao/{id}/oauthState` subcollection — a FIXED `current` doc id, so a new attempt
-  overwrites the previous one and the collection stays at one doc per integração (no TTL
-  policy, no sweep). `consumeOauthState` redeems it inside a transaction, re-deriving
-  every branch from the `tx.get` snapshot (root `CLAUDE.md` rule 7): two callbacks racing
-  one nonce contend on OCC and the loser is REJECTED, which is the intended outcome for a
-  single-use value. `pkce.ts` mints the verifier/challenge behind `MERCADO_LIVRE_PKCE_ENABLED`.
+- `lib/marketplace/oauthState.ts` — **#821**, the connect flow's two trust anchors.
+  The implementation is the SHARED module `@delfrance/data/admin/oauth-state`
+  (extracted in #1034 and now serving all three OAuth channels); this file is a thin
+  binding holding only what is per-channel — the `integracao/{id}/oauthState`
+  subcollection and the `MERCADO_LIVRE_PKCE_ENABLED` flag. The shared module signs and
+  verifies the HMAC state (RETURNING its `nonce`), keeps the per-attempt record at a
+  FIXED `current` doc id so a new attempt overwrites the previous one (one doc per
+  integração — no TTL policy, no sweep), and redeems it inside a transaction,
+  re-deriving every branch from the `tx.get` snapshot (root `CLAUDE.md` rule 7): two
+  callbacks racing one nonce contend on OCC and the loser is REJECTED, which is the
+  intended outcome for a single-use value. ⚠️ Do NOT reintroduce logic here.
   ⚠️ PKCE is a per-application toggle in ML's DevCenter and its docs are explicit that
   once it is on the parameters become MANDATORY — so the flag and the toggle are flipped
   together for a given `client_id`. The prod application is shared with the legacy Flutter
