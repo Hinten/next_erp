@@ -44,6 +44,21 @@ const git = (...args) => execFileSync('git', args, { cwd: REPO_ROOT, encoding: '
  * quietly — and skipping it silently would shrink the set this guard checks.
  * Verified there is nothing legitimate to tolerate: the repo has no submodules
  * and every `git ls-files -s` entry is a regular blob (100644/100755).
+ *
+ * ⚠️ TRACKED-ONLY, and deliberately unlike its four neighbours. The other
+ * repo-scanning guards here (`env-example-location`, `ci-lane-gates`,
+ * `runtime-deps-pinned`, `apphosting-next-pinned`) union `ls-files` with
+ * `ls-files --others --exclude-standard` to catch a new file before it is
+ * committed. They can afford it because each scopes by a narrow pathspec — the
+ * `.env.example` glob, the per-app `apphosting.yaml` glob — while this one scans
+ * the whole tree, so `--others` would turn any untracked scratch `foo.sh` in
+ * someone's working directory into a red build.
+ *
+ * The trade is small in the direction that matters: `.gitattributes` governs
+ * checkout, and an untracked file has never been checked out — the invariant is
+ * meaningless until git manages it. The moment it is staged it appears in
+ * `ls-files`, and CI always checks out a commit, so nothing can reach `main`
+ * unpinned. The only gap is a local `pnpm test` run before `git add`.
  */
 function shebangFiles() {
   // ⚠️ `-z`, not a newline split. Without it `git ls-files` C-quotes any path
@@ -131,10 +146,22 @@ describe('shebang files check out with LF', () => {
         '',
         ...offenders.map((o) => `  - ${o} → eol is \`${attrs[o] ?? '<none>'}\``),
         '',
-        'Add a rule to `.gitattributes`, then re-checkout the file so the working',
-        'copy is actually rewritten: `git rm --cached <f> && git checkout -- <f>`,',
-        'or `git add --renormalize .`. Adding the attribute alone does NOT rewrite',
-        'an existing working copy, so the bug survives until you do.',
+        'Add a rule to `.gitattributes`, then RE-MATERIALISE the working copy —',
+        'adding the attribute alone does not rewrite an existing checkout, so the',
+        'bug survives until you do.',
+        '',
+        '  per file:    rm <f> && git checkout -- <f>',
+        '  whole tree:  git rm --cached -r . && git reset --hard',
+        '',
+        '⚠️ Two things that look like they would work and do not, both measured:',
+        '`git add --renormalize .` re-applies the clean filter into the INDEX only',
+        'and never touches the disk (and is a strict no-op here, since the blobs',
+        'are already LF). `git rm --cached <f> && git checkout -- <f>` cannot work',
+        'in either order: `checkout` reads FROM the index, which `rm --cached` just',
+        'emptied, so it fails with "pathspec did not match any file(s) known to',
+        'git". A bare `git reset --hard` is not dependable either — it rewrites the',
+        'file only when git currently considers it modified, which after the',
+        'attribute lands it may not.',
       ].join('\n'),
     ).toEqual([]);
   });
