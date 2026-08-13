@@ -15,11 +15,13 @@ import {
   ORDER_BACKFILL_FLAG_ENV,
   runOrderBackfillSweep,
 } from '../../lib/marketplace/orderBackfill';
+import { MISSED_FEEDS_FLAG_ENV, runMissedFeedsSweep } from '../../lib/marketplace/missedFeedsSweep';
 import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/bulkEstoquePlan';
 import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/precoSync';
 import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfeUpload';
 import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';
 import { getDb } from './lib/admin';
+import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 import * as notificationHandlers from './processNotification';
 import * as massImportHandlers from './processMassImport';
 import * as stockSendHandlers from './sendStock';
@@ -203,6 +205,7 @@ export const importMercadoLivreOrders = onSchedule(
     timeoutSeconds: 540,
   },
   async () => {
+    const cacheMark = readCacheMark();
     const result = await runOrderBackfillSweep(getDb(), {
       scheduler: createMlTaskScheduler(),
       nowMs: Date.now(),
@@ -220,6 +223,8 @@ export const importMercadoLivreOrders = onSchedule(
       enqueued: result.contas.reduce((sum, c) => sum + c.enqueued, 0),
       truncated: result.contas.filter((c) => c.truncated).length,
       errorCount: errors.length,
+      // Per-tick, not cumulative — see `lib/cacheStats`.
+      readCache: readCacheDelta(cacheMark),
     });
     if (errors.length > 0) {
       logger.warn('[mercado-livre] order-backfill sweep had per-conta failures', {
@@ -292,6 +297,92 @@ export const reprocessMercadoLivreNotifications = onSchedule(
     if (deferred.errors.length > 0) {
       logger.warn('[mercado-livre] deferred lane sweep had per-doc failures', {
         errors: deferred.errors.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The `missed_feeds` backstop (#812) — the LAST-RESORT recovery for a
+ * notification that was never successfully received. Everything above can only
+ * re-drive events that reached us; this one asks Mercado Livre what it failed to
+ * deliver and replays each entry through the same queue a real webhook feeds.
+ *
+ * Before it, a blown ack — a cold start past ML's ~500 ms window (this backend
+ * runs `minInstances: 0`; see apphosting.yaml), a receiver 5xx, an enqueue
+ * outage — lost the payment/shipment/item/claim event permanently and silently.
+ *
+ * ⚠️ **Daily at 05:00 America/Sao_Paulo, and the period is load-bearing.** ML
+ * retains a missed feed for 2 days and the feed has NO time-filter parameter, so
+ * the sweep keeps no cursor: coverage rests entirely on
+ *
+ *     SCHEDULE_PERIOD (24h) × 2 ≤ MISSED_FEEDS_RETENTION_HOURS (48h)
+ *
+ * Lengthening this cron past 24h silently deletes the backstop for anything
+ * filed between runs. `index.test.ts` asserts the literal for exactly that
+ * reason. 05:00 also sits clear of the 02:00 daily and 03:00 monthly stock
+ * tiers; it needs no `isSlotDo…` skip against the 15-minute incremental sweep,
+ * which shares no state doc, no queue and no cursor with it.
+ *
+ * **Flag-gated OFF**: until `MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1` is set the
+ * function deploys, ticks, logs one info line and reads nothing.
+ *
+ * Secrets: `MERCADO_LIVRE_CLIENT_ID` does DOUBLE duty here — the per-conta token
+ * refresh via `mercadoLivreOAuthConfig()`, and the `app_id` query param the
+ * endpoint requires.
+ */
+export const sweepMercadoLivreMissedFeeds = onSchedule(
+  {
+    schedule: '0 5 * * *',
+    timeZone: 'America/Sao_Paulo',
+    secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
+    // Worst case per tick is N contas × (MAX_PAGES_PER_TICK reads + up to 1000
+    // sequential Cloud Tasks enqueues) — the 60s onSchedule default can't
+    // absorb that; 540s matches the other ML-API-bound sweeps.
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const result = await runMissedFeedsSweep(getDb(), {
+      scheduler: createMlTaskScheduler(),
+      nowMs: Date.now(),
+    });
+    if (!result.enabled) {
+      logger.info(
+        `[mercado-livre] missed-feeds sweep disabled (${MISSED_FEEDS_FLAG_ENV} != '1') — no-op`,
+      );
+      return;
+    }
+    if (!result.configured) {
+      logger.error(
+        '[mercado-livre] missed-feeds sweep: MERCADO_LIVRE_CLIENT_ID ausente ou inválido — o backstop NÃO rodou',
+      );
+      return;
+    }
+    const errors = result.contas.filter((c) => c.error != null);
+    logger.info('[mercado-livre] missed-feeds sweep', {
+      contas: result.contas.length,
+      found: result.contas.reduce((sum, c) => sum + c.found, 0),
+      novos: result.contas.reduce((sum, c) => sum + c.novos, 0),
+      enqueued: result.contas.reduce((sum, c) => sum + c.enqueued, 0),
+      skippedTopic: result.contas.reduce((sum, c) => sum + c.skippedTopic, 0),
+      skippedInvalid: result.contas.reduce((sum, c) => sum + c.skippedInvalid, 0),
+      // #813's evidence: the topics ML still delivers that nothing here handles.
+      topicosPulados: result.topicosPulados,
+      // ML's record of what OUR endpoint answered. A wall of 5xx says the
+      // receiver was failing; a wall of timeouts says the ack window was blown,
+      // which is the cold-start hypothesis this issue opens with.
+      httpCodes: result.httpCodes,
+      // Diagnostic only (see MissedFeedsEscopo): whether ML's response looks
+      // app-wide or per-seller. Reads 'app-wide' for a week ⇒ the follow-up to
+      // collapse to a single call is safe.
+      escopoAparente: result.escopoAparente,
+      pages: result.contas.reduce((sum, c) => sum + c.pages, 0),
+      truncated: result.contas.filter((c) => c.truncated).length,
+      errorCount: errors.length,
+    });
+    if (errors.length > 0) {
+      logger.warn('[mercado-livre] missed-feeds sweep had per-conta failures', {
+        errors: errors.slice(0, 10).map((c) => ({ integracaoId: c.integracaoId, error: c.error })),
       });
     }
   },

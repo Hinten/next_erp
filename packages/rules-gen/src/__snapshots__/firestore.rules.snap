@@ -297,7 +297,8 @@ service cloud.firestore {
 
     match /integracao/{docId} {
       allow read: if isSuperUser() || p('d_integracao', 1);
-      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow create: if (isSuperUser() || p('d_integracao', 2)) && (!request.resource.data.keys().hasAny(['user_id']) || request.resource.data.get('user_id', null) == null);
+      allow update: if (isSuperUser() || p('d_integracao', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['user_id']);
       allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 

@@ -7,6 +7,34 @@ runConfig:
   cpu: 1
   memoryMiB: 512
   maxInstances: 20
+  # ⚠️ DECISION (#812) — deliberately kept at 0. Read this before changing it.
+  #
+  # The hazard is real and documented: Mercado Livre wants a 200 within roughly
+  # 500 ms and disables a topic after repeated failures, while a cold instance
+  # must boot Next.js, load the route module, initialise firebase-admin, mint an
+  # ADC/metadata token and issue an HTTPS enqueue RPC to cloudtasks.googleapis.com
+  # before it can ack. Low traffic makes this WORSE, not better: an account with
+  # sparse notifications guarantees a cold instance for most deliveries.
+  #
+  # What was rejected: `minInstances: 1`, i.e. one always-on Cloud Run instance
+  # at the `cpu: 1` / `memoryMiB: 512` configured below, billed at the idle
+  # vCPU-second + GiB-second rates × ~730 h/month in the deploy region, for every
+  # channel backend that adopts the same reasoning.
+  #   ⚠️ Fill in the current figure from Cloud Run pricing for THIS region before
+  #   citing it in a review — do not carry over a number from another doc.
+  #
+  # What is accepted instead: `sweepMercadoLivreMissedFeeds` (functions/src/index.ts),
+  # the daily 05:00 `missed_feeds` backstop, recovers exactly this failure —
+  # anything ML could not deliver a 200 to, which a blown ack window is. The cost
+  # of the trade is LATENCY, not loss: a notification dropped at 05:01 is
+  # recovered on the next morning's run, up to ~24 h later. That is acceptable
+  # for payments/shipments/items reconciliation and would NOT be for anything
+  # user-facing in real time.
+  #
+  # Revisit if: warm-path p99 approaches 500 ms, ML actually disables a topic, or
+  # the daily-recovery latency starts showing up in operations. The measurement
+  # runbook (which Cloud Logging query, how to force a cold start) is in
+  # functions/DEPLOY.md → "Warm-path ack latency".
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
   # Set EXPLICITLY rather than inheriting the platform default, because one
@@ -31,7 +59,15 @@ runConfig:
 #                                OAuth redirect_uri (must match the URI registered
 #                                in the Mercado Livre application dashboard)
 #   WEB_APP_URL                  apps/web origin (the callback redirects back here)
-#   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
+#   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS. ⚠️ REQUIRED in prod:
+#                                localhost is no longer implicitly allowed (#821/T5),
+#                                so an unset value allows NO origin at all.
+#   MERCADO_LIVRE_PKCE_ENABLED   OPTIONAL — `1` drives the OAuth connect flow with
+#                                PKCE (#821). ⚠️ Must match the PKCE toggle on the
+#                                registered application: once ML's toggle is on the
+#                                code_challenge/code_verifier parameters are MANDATORY,
+#                                so flip both together. Not a secret — a plain env var
+#                                in the console, not below.
 #   MERCADO_LIVRE_WEBHOOK_LOG_HEADERS
 #                                OPTIONAL — webhook header-inventory diagnostic (#811).
 #                                Unset: log each new header shape once per instance;

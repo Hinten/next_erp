@@ -88,13 +88,20 @@ export function createMercadoLivreChannel(config: MercadoLivreConfig): Marketpla
         externalIncidentId,
       ),
     oauthFlow: {
-      start(state: string): string {
+      start(
+        state: string,
+        pkce?: { codeChallenge: string; codeChallengeMethod?: 'S256' | 'plain' },
+      ): string {
         // The consent URL the /canais "Conectar" button redirects to. The token
-        // exchange runs on the OAuth callback route in apps/mercado-livre.
+        // exchange runs on the OAuth callback route in apps/mercado-livre, which
+        // is also where the matching `code_verifier` is held — deciding whether
+        // PKCE is in play belongs there, next to the flag and the store, not here.
         return buildAuthorizeUrl({
           clientId: config.clientId,
           redirectUri: config.redirectUri,
           state,
+          codeChallenge: pkce?.codeChallenge,
+          codeChallengeMethod: pkce?.codeChallengeMethod,
         });
       },
       callback: async () => {

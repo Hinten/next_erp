@@ -8,7 +8,9 @@ export default defineConfig({
     // `functions/` holds the deploy-artifact-only Cloud Functions codebase (not a
     // pnpm workspace package). The parent app's tasks (tsconfig `**/*.ts`, `eslint .`,
     // this vitest config) cover it, so include its tests here too.
-    include: ['{app,lib,functions}/**/*.test.ts'],
+    // `proxy.ts` (the CORS middleware) sits at the app root, outside every
+    // directory glob above — name its test explicitly or it never runs.
+    include: ['{app,lib,functions}/**/*.test.ts', 'proxy.test.ts'],
   },
   resolve: {
     alias: {

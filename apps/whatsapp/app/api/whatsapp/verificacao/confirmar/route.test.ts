@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   buildClient: vi.fn(),
   verifyCode: vi.fn(async () => undefined),
   merge: vi.fn(async () => undefined),
+  invalidate: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
@@ -17,6 +18,14 @@ vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
 vi.mock('@delfrance/data/admin/collections', () => ({
   integracaoCollection: { merge: h.merge },
 }));
+
+// Mock the exported wrapper rather than extending the collections mock above:
+// the real `invalidate` resolves the doc path through the handle, and this
+// stub has no `docPath`. It is also what lets the test assert the eviction fires.
+vi.mock('@/lib/whatsapp/contaCache', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/whatsapp/contaCache')>();
+  return { ...actual, invalidateWhatsappConta: h.invalidate };
+});
 
 vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/auth/verifyCaller')>();
@@ -52,6 +61,8 @@ describe('POST /api/whatsapp/verificacao/confirmar', () => {
     expect(await res.json()).toEqual({ ok: true, verificado: true });
     expect(h.verifyCode).toHaveBeenCalledWith({ code: '123456' });
     expect(h.merge).toHaveBeenCalledWith(expect.anything(), {}, 'i1', { verificado: true });
+    // The write must evict its own cached document.
+    expect(h.invalidate).toHaveBeenCalledWith('i1');
   });
 
   it('400s without integracaoId or codigo', async () => {
