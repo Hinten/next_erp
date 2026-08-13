@@ -15,7 +15,7 @@ import { AfterSaveBlockedError } from '@delfrance/ui';
  * listing form already narrows the errors it expects, so an escape at this
  * level is a bug and must not be swallowed.
  */
-export async function flushListings(flushes: Iterable<() => Promise<void>>): Promise<void> {
+export async function flushListings(flushes: Iterable<() => Promise<unknown>>): Promise<void> {
   let blocked: AfterSaveBlockedError | null = null;
   for (const flush of [...flushes]) {
     try {

@@ -150,19 +150,28 @@ const LANES = {
     // library must run this lane") satisfied by the graph rather than by a second
     // entry someone has to remember to keep.
     roots: ['@delfrance/mercado-livre-app'],
-    // Fully offline — no ML credentials, ever (ML has no sandbox), so both suite
-    // jobs are required and the lane runs on forks too.
+    // Fully offline — no ML credentials, ever (ML has no sandbox), so all three
+    // suite jobs are required and the lane runs on forks too.
     //
-    // The two jobs partition every ML test: `vitest.config.ts` excludes
-    // `**/*.firestore.test.ts` and `vitest.firestore.config.ts` includes only
-    // those. `ci.yml` excludes both ML workspaces from its `turbo run test`, so
-    // when this lane skips, NO ML test runs anywhere — which is what the gate
-    // exists to say out loud.
+    // The three jobs partition every ML test BY GLOB: `vitest.config.ts`
+    // excludes both `**/*.firestore.test.ts` and `**/*.tasks.test.ts`, and each
+    // dedicated config includes only its own suffix. `ci.yml` excludes both ML
+    // workspaces from its `turbo run test`, so when this lane skips, NO ML test
+    // runs anywhere — which is what the gate exists to say out loud.
     jobs: [
       { id: 'ml-offline', check: 'ML offline (unit)', class: 'required' },
       {
         id: 'ml-firestore-emulator',
         check: 'ML backend on the Firestore emulator',
+        class: 'required',
+      },
+      {
+        // #823's last uncovered hop: receiver → real enqueue → tasks emulator →
+        // the real `onTaskDispatched` → a real Firestore doc. Split from the
+        // job above because it additionally boots the functions + tasks
+        // emulators and builds the ML functions artifact, so it starts slower.
+        id: 'ml-tasks-roundtrip',
+        check: 'ML Cloud Tasks round trip',
         class: 'required',
       },
     ],

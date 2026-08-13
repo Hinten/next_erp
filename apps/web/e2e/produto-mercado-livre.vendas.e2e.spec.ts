@@ -140,6 +140,25 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
 
     const unlinked = page.getByTestId(`ml-conta-${contaUnlinked}`);
     await expect(unlinked.getByRole('button', { name: 'Enviar estoque' })).toHaveCount(0);
+
+    // ⚠️ A DRAFT is the case the old gate got wrong, and it needs the draft to
+    // actually EXIST to mean anything: with no link doc the button is absent for
+    // the boring reason, which is the same assertion passing for the wrong cause.
+    // So prepare one (tolerating a draft left by another test — the draft doc id
+    // is the integração id, so preparing twice is a no-op) and prove the listing
+    // is there before asserting the button is not.
+    const draft = page.getByTestId(`ml-conta-${contaDraft}`);
+    await expect(draft).toBeVisible({ timeout: 30_000 });
+    const preparar = draft.getByRole('button', { name: 'Preparar anúncio' });
+    if ((await preparar.count()) > 0) await preparar.click();
+    await expect(draft.getByText('Rascunho — ainda não publicado')).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // The listing exists; it simply has no ML id, so the push has nothing to
+    // send and the backend answers `sem-id-externo`. The button must be absent,
+    // not enabled-and-useless.
+    await expect(draft.getByRole('button', { name: 'Enviar estoque' })).toHaveCount(0);
   });
 
   test('reports a stock push it could not deliver', async ({ page }) => {
