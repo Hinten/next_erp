@@ -106,6 +106,25 @@ describe('exchangeCode', () => {
       MercadoLivreReauthRequiredError,
     );
   });
+
+  it('keeps the ML status and body on the invalid_grant path', async () => {
+    // `invalid_grant` is the most likely failure of a code exchange, and this
+    // branch used to drop `status` + `body` before any caller saw them — leaving
+    // an expired code indistinguishable from a `redirect_uri` mismatch, which ML
+    // only explains inside `cause[]`.
+    const corpo = {
+      error: 'invalid_grant',
+      error_description: 'invalid redirect_uri',
+      cause: [{ code: 'redirect_uri_mismatch' }],
+    };
+    const fetchMock = vi.fn(async () => jsonResponse(corpo, 400));
+
+    await expect(exchangeCode({ ...config, fetch: fetchMock }, 'DEAD-CODE')).rejects.toMatchObject({
+      constructor: MercadoLivreReauthRequiredError,
+      status: 400,
+      body: corpo,
+    });
+  });
 });
 
 describe('refreshAccessToken', () => {

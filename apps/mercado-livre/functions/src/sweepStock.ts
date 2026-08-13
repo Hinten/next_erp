@@ -127,8 +127,9 @@ export const sweepMercadoLivreStock = onSchedule(
 );
 
 /**
- * The 02:00 daily full stock sweep (flag-gated — module doc). Owns its slot:
- * the incremental wrapper above skips exactly this tick.
+ * The 02:00 daily stock sweep — a flat 24h window, NOT a force-all (flag-gated;
+ * see the module doc). Owns its slot: the incremental wrapper above skips
+ * exactly this tick.
  */
 export const sweepMercadoLivreStockDaily = onSchedule(
   sweepScheduleOptions('0 2 * * *'),

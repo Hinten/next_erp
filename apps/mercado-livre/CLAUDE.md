@@ -76,13 +76,32 @@ the rejected alternatives. Check any change in this area against it.
 
 ## Status
 
-OAuth connect is **live**: code exchange + persistence (tokenDuravel) + the
-concurrency-safe refresh + the conta status route all work; apps/web's
-`/canais/mercado-livre` UI drives them. The webhook receiver enqueues onto the
-`processMercadoLivreNotification` Cloud Tasks queue (Step 6 resilience
-foundation) + an `onSchedule` reprocess sweep; the per-topic handlers (order /
-payment / shipment / stock / price / claim) are no-ops until their import/order
-milestones of the ML port plan.
+The channel is **code-complete** against the ML port master plan (Steps 1-14).
+OAuth connect is live — code exchange + persistence (tokenDuravel) + the
+concurrency-safe refresh + the conta status route, driven by apps/web's
+`/canais/mercado-livre` UI. The webhook receiver enqueues onto the
+`processMercadoLivreNotification` Cloud Tasks queue and acks fast, with an
+`onSchedule` reprocess sweep behind it.
+
+Per-topic handlers, as of the `processNotificationPayload` dispatch in
+`lib/marketplace/notificacao.ts` — check that function, not this list, when it
+matters:
+
+| Topic | Handler |
+|---|---|
+| `items` | listing status-sync + the UP-migration takeover (#440/#441) |
+| `orders_v2`, `orders` | order → pedido import (Step 9) |
+| `payments` | payment sync onto the pedido's embedded pagamento (Step 9) |
+| `shipments` | shipment/`freteInicial` sync (Step 9) |
+| `claims` | claim → incidente/conversa/mensagens import (Step 14) |
+| `items_prices` | **permanent no-op**, ack-only |
+| `orders_feedback`, `questions`, `messages`, `stock-location` | not handled yet |
+
+⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
+both price tables, so a price notification has nothing to do. It stays in
+`KNOWN_TOPICS` only so it acks instead of parking a document per delivery. **Do
+not attach a handler to it.** The four genuinely-unhandled topics also ack
+without persisting; #813 tracks that cost.
 
 ## Env
 
