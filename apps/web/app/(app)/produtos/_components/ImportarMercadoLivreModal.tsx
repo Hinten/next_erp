@@ -22,8 +22,11 @@ import {
  * "Importar do Mercado Livre" modal on the produtos LIST page — import CREATES
  * a produto, so it belongs here (not the editor tab). Pick an ML account + an
  * MLB id, choose the stock/price options (the ported `PreferenciasProdutoMercadoLivre`,
- * NOT persisted), import, and jump to the created/updated produto. A listing
- * with variations / User-Products comes back 422 (`ML_IMPORT_BLOCKED`, #438).
+ * NOT persisted), import, and jump to the created/updated produto. All three
+ * listing models import (simple, legacy `variations[]`, User-Products); a
+ * listing the importer cannot take — closed, another seller's, untitled, or on
+ * an integração with no `user_id` — comes back 422 (`ML_IMPORT_BLOCKED`), and
+ * the `issues` list below renders the reason.
  */
 const MAX_CONTAS = 50;
 

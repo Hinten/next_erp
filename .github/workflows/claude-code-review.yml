@@ -1,0 +1,181 @@
+name: Claude Code Review
+
+# On-demand code review by Claude, requested with a top-level PR comment:
+#
+#   @claude review              -> medium effort (the default)
+#   @claude review high         -> broader coverage
+#   @claude /code-review max    -> same thing; both spellings are accepted
+#
+# Nothing here runs automatically. Reviewing every push is what exhausted the
+# Copilot quota, and this lane bills your Claude subscription via
+# CLAUDE_CODE_OAUTH_TOKEN, so asking for a review stays a deliberate act.
+#
+# Plain `@claude ...` mentions are handled by claude.yml instead; its `if:`
+# excludes the review prefixes so exactly one of the two workflows fires.
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  # A cheap gate job, seconds long and with no checkout. GitHub expressions have
+  # no regex, so the `if:` below can only test a prefix — and `@claude reviewers
+  # should look at this` satisfies a prefix test, which would start a paid
+  # review. The strict match is a regex here, and the expensive job depends on
+  # its verdict, so a near-miss costs a few runner-seconds instead of a review.
+  gate:
+    # `issue_comment` fires for issues too, so the pull_request key is what
+    # narrows it to PRs. `startsWith` (not `contains`) mirrors the rule
+    # Anthropic's managed Code Review uses: the command leads the comment.
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      (startsWith(github.event.comment.body, '@claude review') ||
+       startsWith(github.event.comment.body, '@claude /code-review'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      match: ${{ steps.req.outputs.match }}
+      effort: ${{ steps.req.outputs.effort }}
+    steps:
+      # The comment body is untrusted input, so it is read from the environment
+      # rather than interpolated into the script with `${{ }}` — that would be a
+      # shell-injection hole on a public repo.
+      - name: Parse the review request
+        id: req
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          first=$(printf '%s' "$COMMENT_BODY" | head -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')
+          if printf '%s' "$first" | grep -qE '^@claude (/code-)?review([[:space:]]|$)'; then
+            match=true
+          else
+            match=false
+          fi
+          # The effort must be the token right after the command, not merely
+          # present somewhere on the line — otherwise "@claude review please,
+          # low risk change" silently downgrades the review to low.
+          effort=$(printf '%s' "$first" | sed -nE 's#^@claude (/code-)?review[[:space:]]+(low|medium|high|max)([[:space:]].*)?$#\2#p')
+          {
+            echo "match=$match"
+            echo "effort=${effort:-medium}"
+          } >> "$GITHUB_OUTPUT"
+          echo "match=$match effort=${effort:-medium}"
+
+  review:
+    needs: gate
+    if: needs.gate.outputs.match == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read # Lets Claude read this PR's CI results
+    env:
+      # FUNCTIONS_REGION is in turbo.json's `globalEnv`, so it participates in
+      # every task hash. It is set to the value ci.yml uses so a cache entry
+      # warmed here is the one a later `turbo run` looks up, not a hash mismatch.
+      FUNCTIONS_REGION: us-east1
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      # An issue_comment event carries no PR ref, so a bare checkout would hand
+      # Claude the default branch and it would review main. `fetch-depth: 0` is
+      # what gives `git diff <base>...HEAD` a merge base to work from.
+      - name: Checkout the pull request head
+        uses: actions/checkout@v6
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Set up pnpm via Corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      # Shares ci.yml's `pnpm-store-` key namespace so this lane starts warm off
+      # the cache every merge to the default branch refreshes.
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      # Turborepo 2.x keeps its local cache in `.turbo/cache`. A stale entry is
+      # harmless — turbo keys entries by content hash, so a miss just rebuilds.
+      - name: Cache turbo task outputs
+        uses: actions/cache@v5
+        with:
+          path: .turbo
+          key: turbo-review-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.issue.number }}
+          restore-keys: |
+            turbo-review-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-review-${{ runner.os }}-
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Warms the cache so the typecheck Claude runs to verify a finding is a
+      # cache hit for everything the PR did not touch. `|| true` because a PR
+      # under review may legitimately fail typecheck — that is a finding, not a
+      # reason to abort the review.
+      - name: Warm the typecheck cache
+        run: pnpm turbo run typecheck || true
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          # Posts a tracking comment with progress checkboxes and keeps the full
+          # PR context (comments, prior reviews) available to the review.
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.issue.number }}
+            REVIEW EFFORT: ${{ needs.gate.outputs.effort }}
+
+            Review this pull request. The working tree is already checked out at
+            the PR head with full history and dependencies installed.
+
+            Effort level — this governs how much you report, not how hard you look:
+            - low / medium: report only findings you are confident are real.
+              Prefer silence over a maybe.
+            - high / max: broaden coverage. You may include findings you are less
+              sure of, but say so explicitly in the comment.
+
+            The engineering contract is `CLAUDE.md` at the repo root, plus the
+            per-app `CLAUDE.md` files and the ADRs under `apps/docs/`. Read the
+            ones that cover the paths this PR touches. Violations of those rules
+            are findings.
+
+            Verify before you report. You can run `pnpm turbo run typecheck`,
+            `pnpm turbo run lint` and the workspace vitest suites — a finding you
+            confirmed by running something is worth ten you inferred from naming.
+
+            House style for the review itself:
+            - Inline comments for specific issues; one top-level comment for the
+              summary and anything general.
+            - Do NOT raise formatting or style nits. Prettier and ESLint own
+              those and are already CI gates.
+            - Lead the summary with the shape of the work — how many real issues,
+              or "no blocking issues" when that is the case.
+            - Write in English.
+          claude_args: |
+            --max-turns 60
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(pnpm turbo run typecheck),Bash(pnpm turbo run lint),Bash(pnpm exec vitest run:*)"
