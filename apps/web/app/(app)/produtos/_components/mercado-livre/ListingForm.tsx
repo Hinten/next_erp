@@ -5,7 +5,17 @@ import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
-import { Fieldset, Select, SimpleGrid, Textarea, TextInput, Tooltip } from '@mantine/core';
+import {
+  Anchor,
+  Fieldset,
+  Select,
+  SimpleGrid,
+  Stack,
+  Text,
+  Textarea,
+  TextInput,
+  Tooltip,
+} from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
@@ -20,7 +30,6 @@ import {
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 
 import {
-  CONDITION_OPTIONS,
   LISTING_TYPE_OPTIONS,
   listingTypeLabel,
   titleEditability,
@@ -57,6 +66,12 @@ export interface ListingFormProps {
   integracaoId: string;
   /** Seeds the category suggestion request. */
   produtoNome: string;
+  /**
+   * The parent produto's `ehUsado`, which is what decides the listing's
+   * condition — read from the SAVED produto doc, matching publish, which sends
+   * the saved produto and not the pending form values.
+   */
+  produtoEhUsado: boolean;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -79,6 +94,36 @@ export interface ListingFormProps {
 
 /** How a registered listing save is invoked — see `registerFlush`. */
 export type ListingSaveFn = (mode: 'button' | 'flush') => Promise<void>;
+
+/**
+ * Condição, read-only, derived from the parent produto's `ehUsado`.
+ *
+ * It stopped being editable here because it was a second place to say something
+ * the produto already says, and the two could disagree — the produto is the
+ * product, and whether a product is used is a fact about the product, not about
+ * one of its listings.
+ *
+ * ⚠️ The note on a published listing is the load-bearing part. ML accepts
+ * `condition` **only on create** (`itemPayload.ts`, inside `if (!input.isUpdate)`),
+ * so flipping "Produto usado" on a listing that already exists changes what the
+ * ERP would publish NEXT time and nothing at Mercado Livre. Without saying so,
+ * the operator flips the switch, sees this field change, and reasonably believes
+ * it propagated.
+ */
+function CondicaoField({ ehUsado, published }: { ehUsado: boolean; published: boolean }) {
+  return (
+    <ListingField label="Condição">
+      <Stack gap={2}>
+        <Text size="sm">{ehUsado ? 'Usado' : 'Novo'}</Text>
+        <Text size="xs" c="dimmed">
+          {published
+            ? 'Definido pelo produto. O Mercado Livre fixa a condição na criação do anúncio — alterá-la agora não altera este anúncio.'
+            : 'Definido pelo campo "Produto usado" na aba Configurações do produto.'}
+        </Text>
+      </Stack>
+    </ListingField>
+  );
+}
 
 /**
  * The editable half of a listing.
@@ -105,6 +150,7 @@ export function ListingForm({
   linkDocId,
   integracaoId,
   produtoNome,
+  produtoEhUsado,
   link,
   db,
   canWrite,
@@ -134,6 +180,10 @@ export function ListingForm({
 
   const titleRule = useMemo(() => titleEditability(link), [link]);
   const isPublished = link.id != null;
+
+  // Computed ONCE, from the seed. Deriving it on every render would collapse the
+  // field the instant the operator cleared the text they were editing.
+  const [descricaoOpen, setDescricaoOpen] = useState(() => (link.descricao ?? '').trim() !== '');
 
   // ---- Attributes ---------------------------------------------------------
   // Deliberately NOT a react-hook-form field. The set of attributes is decided
@@ -334,22 +384,12 @@ export function ListingForm({
               </Tooltip>
             )}
           />
-          <Controller
-            control={form.control}
-            name="condition"
-            render={({ field, fieldState }) => (
-              <Select
-                label="Condição"
-                data={[...CONDITION_OPTIONS]}
-                value={field.value}
-                onChange={(v) => field.onChange(v ?? 'new')}
-                onBlur={field.onBlur}
-                allowDeselect={false}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
+          {/* ⚠️ Condição is DERIVED from the produto's `ehUsado`, not edited
+              here — see `CondicaoField`. It is deliberately a read-only pair and
+              NOT a labelled control: the e2e proves the first-publish Select is
+              gone by counting labelled elements on a published card, and a second
+              labelled input in this grid would break that count. */}
+          <CondicaoField ehUsado={produtoEhUsado} published={isPublished} />
           <Controller
             control={form.control}
             name="category_id"
@@ -364,24 +404,50 @@ export function ListingForm({
               />
             )}
           />
-          <Controller
-            control={form.control}
-            name="descricao"
-            render={({ field, fieldState }) => (
-              <Textarea
-                {...field}
-                value={field.value ?? ''}
-                label="Descrição"
-                description="Em branco, a publicação usa a descrição do produto."
-                autosize
-                minRows={3}
-                maxRows={10}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-                style={{ gridColumn: '1 / -1' }}
+          <Stack gap={4} style={{ gridColumn: '1 / -1' }}>
+            {/* Collapsed by default on a listing that has none: the ML
+                description is optional (publish falls back to the produto's),
+                so an always-open 3-row textarea spent the most vertical space
+                in the section on the field least often used. Anything already
+                written opens expanded, because a hidden non-empty field is a
+                field nobody remembers to check. */}
+            <Anchor
+              component="button"
+              type="button"
+              size="xs"
+              onClick={() => setDescricaoOpen((v) => !v)}
+            >
+              {descricaoOpen ? 'Ocultar descrição' : 'Descrição do anúncio (opcional)'}
+            </Anchor>
+            {/* ⚠️ Rendered ALWAYS and hidden with CSS, never unmounted. Mantine's
+                <Collapse> unmounts its children, and an unmounted `Controller`
+                is one RHF `shouldUnregister` default away from silently dropping
+                the operator's text on save. Hiding costs nothing here — it is one
+                textarea, not a subtree. */}
+            <div
+              data-testid="ml-descricao-wrapper"
+              data-open={descricaoOpen ? 'true' : 'false'}
+              style={{ display: descricaoOpen ? undefined : 'none' }}
+            >
+              <Controller
+                control={form.control}
+                name="descricao"
+                render={({ field, fieldState }) => (
+                  <Textarea
+                    {...field}
+                    value={field.value ?? ''}
+                    label="Descrição"
+                    description="Em branco, a publicação usa a descrição do produto."
+                    autosize
+                    minRows={3}
+                    maxRows={10}
+                    disabled={readOnly}
+                    error={fieldState.error?.message}
+                  />
+                )}
               />
-            )}
-          />
+            </div>
+          </Stack>
         </SimpleGrid>
       </Fieldset>
 

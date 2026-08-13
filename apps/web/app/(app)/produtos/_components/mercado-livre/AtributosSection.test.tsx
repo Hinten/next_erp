@@ -102,3 +102,35 @@ describe('AtributosSection', () => {
     expect(screen.getByText('Esta categoria não exige atributos.')).toBeDefined();
   });
 });
+
+describe('the attribute cells alternate background', () => {
+  it('stripes every other cell', () => {
+    // A rich category runs to 30+ fields of near-identical shape; the stripe is
+    // the only edge the eye can track along.
+    renderSection({
+      attrs: [
+        attr({ id: 'A', name: 'Um' }),
+        attr({ id: 'B', name: 'Dois' }),
+        attr({ id: 'C', name: 'Três' }),
+      ],
+      rows: [],
+    });
+    const cells = [...document.querySelectorAll('.mantine-Paper-root')];
+    expect(cells).toHaveLength(3);
+    // Mantine renders `bg` as a `background:` declaration on the style
+    // attribute; the undefined case emits nothing, which is what tells them
+    // apart.
+    const painted = cells.map((c) => c.getAttribute('style')?.includes('background:') ?? false);
+    expect(painted).toEqual([false, true, false]);
+  });
+
+  it('uses a theme token, not a fixed grey, so dark mode survives', () => {
+    // `gray.0` would be invisible-to-wrong on a dark background.
+    renderSection({
+      attrs: [attr({ id: 'A', name: 'Um' }), attr({ id: 'B', name: 'Dois' })],
+      rows: [],
+    });
+    const striped = [...document.querySelectorAll('.mantine-Paper-root')][1]!;
+    expect(striped.getAttribute('style')).toContain('var(--mantine-color-default-hover)');
+  });
+});

@@ -128,6 +128,11 @@ export function MercadoLivreEditor({
   // schema requires a non-empty `title`, so a draft built from '' would fail
   // its write-side parse rather than save something blank.
   const produtoNome = produtoSnap.data?.data.nome ?? '';
+  // The listing's condição is derived from this, not edited per listing. Read
+  // from the SAVED doc deliberately: publish sends the saved produto, so showing
+  // an unsaved toggle would promise a value publish would not use — the same
+  // reason the card already warns "a publicação envia os dados salvos".
+  const produtoEhUsado = produtoSnap.data?.data.ehUsado ?? false;
 
   const [publishing, setPublishing] = useState<string | null>(null);
   /** The conta whose draft is being created, if any. */
@@ -505,6 +510,7 @@ export function MercadoLivreEditor({
                         linkDocId={l.id}
                         integracaoId={conta.id}
                         produtoNome={produtoNome}
+                        produtoEhUsado={produtoEhUsado}
                         link={l.data}
                         db={db}
                         canWrite={canPublish}

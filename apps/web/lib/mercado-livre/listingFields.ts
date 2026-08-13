@@ -19,7 +19,6 @@ import type { OperatorOwnedKey } from './listingPatch';
 export const LISTING_FIELD_LABELS: Record<OperatorOwnedKey, string> = {
   title: 'Título do anúncio',
   descricao: 'Descrição',
-  condition: 'Condição',
   category_id: 'Categoria',
   listing_type_id: 'Tipo de anúncio',
   attributes: 'Atributos',
@@ -33,11 +32,6 @@ export const LISTING_FIELD_LABELS: Record<OperatorOwnedKey, string> = {
  * remove the only screen where it can be fixed.
  */
 export const TITLE_MAX_LENGTH = 60;
-
-export const CONDITION_OPTIONS = [
-  { value: 'new', label: 'Novo' },
-  { value: 'used', label: 'Usado' },
-] as const;
 
 /**
  * MLB listing types offered on a FIRST publish. After publishing, ML changes a

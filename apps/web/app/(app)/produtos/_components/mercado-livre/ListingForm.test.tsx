@@ -46,6 +46,7 @@ function renderForm(
       linkDocId="ML-DOC-1"
       integracaoId="conta-1"
       produtoNome="Camiseta Básica"
+      produtoEhUsado={false}
       link={link}
       db={{} as Firestore}
       canWrite
@@ -206,5 +207,92 @@ describe('ListingForm', () => {
     renderForm({}, { canWrite: false });
     expect(screen.getByLabelText('Título do anúncio')).toHaveProperty('disabled', true);
     expect(screen.getByLabelText('Descrição')).toHaveProperty('disabled', true);
+  });
+});
+
+describe('Condição comes from the produto', () => {
+  it('renders the produto value read-only, with no editable control', () => {
+    // Whether a product is used is a fact about the PRODUCT, not about one of
+    // its listings — two editable copies could only disagree.
+    renderForm({}, { produtoEhUsado: true });
+    expect(screen.getByText('Usado')).toBeDefined();
+    expect(screen.queryByRole('combobox', { name: 'Condição' })).toBeNull();
+  });
+
+  it('follows the produto flag', () => {
+    renderForm({}, { produtoEhUsado: false });
+    expect(screen.getByText('Novo')).toBeDefined();
+  });
+
+  it('warns on a PUBLISHED listing that ML fixes condition at creation', async () => {
+    // ⚠️ The honest part. `condition` is create-only in `buildItemPayload`, so
+    // flipping "Produto usado" now changes what a FUTURE publish would send and
+    // nothing at Mercado Livre. Without this note the operator flips the switch,
+    // watches this field change, and reasonably assumes it propagated.
+    renderForm({ id: 'MLB777' }, { produtoEhUsado: true });
+    expect(screen.getByText(/fixa a condição na criação/i)).toBeDefined();
+  });
+
+  it('says where to change it on a listing that is not published yet', () => {
+    renderForm({ id: null }, { produtoEhUsado: false });
+    expect(screen.getByText(/Produto usado/)).toBeDefined();
+  });
+
+  it('never writes condition, even though the doc still holds one', async () => {
+    const { registerFlush } = renderForm({ title: 'Antigo', condition: 'used' });
+    type('Título do anúncio', 'Novo título');
+    await save(registerFlush);
+
+    await waitFor(() => {
+      expect(h.writes).toHaveLength(1);
+    });
+    expect(h.writes[0]).not.toHaveProperty('condition');
+  });
+});
+
+describe('Descrição is collapsed until it has something to show', () => {
+  it('starts collapsed when the listing has no descrição', () => {
+    renderForm({ descricao: null });
+    expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
+  });
+
+  it('starts OPEN when the listing already has one', () => {
+    // A hidden non-empty field is a field nobody remembers to check.
+    renderForm({ descricao: 'Texto existente' });
+    expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+  });
+
+  it('opens on click', async () => {
+    renderForm({ descricao: null });
+    fireEvent.click(screen.getByRole('button', { name: /Descrição do anúncio/ }));
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+    });
+  });
+
+  it('stays open while the operator clears the text they are editing', async () => {
+    // The open state is seeded ONCE. Deriving it from the current value would
+    // collapse the field the instant it was emptied — mid-edit.
+    renderForm({ descricao: 'Texto existente' });
+    type('Descrição', '');
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+    });
+  });
+
+  it('KEEPS the typed text when collapsed again, and still saves it', async () => {
+    // ⚠️ The reason the field is hidden with CSS rather than unmounted: an
+    // unmounted `Controller` is one RHF `shouldUnregister` default away from
+    // silently discarding what the operator wrote.
+    const { registerFlush } = renderForm({ descricao: null });
+    fireEvent.click(screen.getByRole('button', { name: /Descrição do anúncio/ }));
+    type('Descrição', 'Texto novo');
+    fireEvent.click(screen.getByRole('button', { name: /Ocultar descrição/ }));
+    await save(registerFlush);
+
+    await waitFor(() => {
+      expect(h.writes).toHaveLength(1);
+    });
+    expect(h.writes[0]).toMatchObject({ descricao: 'Texto novo' });
   });
 });
