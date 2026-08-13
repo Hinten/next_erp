@@ -1,0 +1,140 @@
+/**
+ * Turning a model's raw JSON answer into size-chart cell suggestions.
+ *
+ * Everything a model returns is untrusted input: row keys for sizes that are not
+ * in the grid, values outside a closed list, numbers where strings were
+ * specified, nested objects where a scalar was. This module is the boundary that
+ * makes the answer safe to *show* — and only to show. Suggestions are staged in
+ * a review modal and applied cell by cell by the operator; nothing here writes.
+ */
+import { coerceText, normalizeLoose } from '@delfrance/ai';
+
+import type { MedidaColumnSpec, MedidaRowSpec } from './medidasSchema';
+
+/** One suggested cell, in the shape the editor's grid state uses. */
+export interface AiMedidaSuggestion {
+  /** The editor's stable row key — resolved back from the size label. */
+  rowKey: string;
+  attributeId: string;
+  /** Set only when the value matched a closed-list option. */
+  value_id: string | null;
+  value_name: string;
+}
+
+/** Reads as "does not apply" in any of the spellings a model reaches for. */
+const NA_TEXTS = new Set([
+  'n/a',
+  'na',
+  'não se aplica',
+  'nao se aplica',
+  '-1',
+  'null',
+  'none',
+  '-',
+]);
+
+/**
+ * Map a model answer onto suggestions the grid can stage.
+ *
+ * Dropped, in order: size labels the grid does not have (the model inventing a
+ * row, or answering for a chart the operator has since changed), attribute ids
+ * outside the requested columns, non-object row values, blanks, and anything
+ * reading as "does not apply".
+ *
+ * An enumerated column whose value matches no option is kept as free text —
+ * Mercado Livre rejects it and says which cell, which is more useful to the
+ * operator than a silent omission.
+ */
+export function applyAiMedidas(
+  rows: MedidaRowSpec[],
+  columns: MedidaColumnSpec[],
+  answer: unknown,
+): AiMedidaSuggestion[] {
+  if (!isRecord(answer)) return [];
+
+  // Size label → row key. Normalised so "p" and "P" land on the same row: the
+  // model reads the label off a photo, and casing there is not meaningful.
+  const rowBySize = new Map<string, string>();
+  for (const row of rows) {
+    const size = normalizeLoose(row.size);
+    if (size !== '' && !rowBySize.has(size)) rowBySize.set(size, row.key);
+  }
+  const columnById = new Map(columns.map((c) => [c.attributeId, c]));
+
+  const out: AiMedidaSuggestion[] = [];
+  for (const [size, cells] of Object.entries(answer)) {
+    const rowKey = rowBySize.get(normalizeLoose(size));
+    if (rowKey == null || !isRecord(cells)) continue;
+
+    for (const [attributeId, raw] of Object.entries(cells)) {
+      const column = columnById.get(attributeId);
+      if (!column) continue;
+
+      const text = coerceText(raw);
+      if (text == null) continue;
+      if (NA_TEXTS.has(normalizeLoose(text))) continue;
+
+      const match = column.values.find(
+        (v) => typeof v.name === 'string' && normalizeLoose(v.name) === normalizeLoose(text),
+      );
+      if (match) {
+        out.push({ rowKey, attributeId, value_id: match.id, value_name: match.name });
+        continue;
+      }
+
+      out.push({
+        rowKey,
+        attributeId,
+        value_id: null,
+        value_name: column.kind === 'number' ? normalizeDecimal(text) : text,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * `"10,5"` → `"10.5"`.
+ *
+ * ⚠️ Not cosmetic. `measureStruct` in the sync path parses this with `Number()`
+ * after a single comma→dot replace to build ML's `struct: {number, unit}`, and a
+ * value ML cannot parse is rejected at send time with a per-cell error the
+ * operator then has to fix by hand. Brazilian size tables print commas, so the
+ * model reading one back verbatim is the *expected* case, not the odd one.
+ *
+ * A thousands separator (`1.234,5`) is left alone deliberately: no garment
+ * measurement reaches four digits, so a string shaped like that is not a
+ * measurement and guessing at it would invent data.
+ */
+function normalizeDecimal(text: string): string {
+  const commas = (text.match(/,/g) ?? []).length;
+  if (commas !== 1 || text.includes('.')) return text;
+  return text.replace(',', '.');
+}
+
+/**
+ * Which suggestions the review modal should pre-check.
+ *
+ * Only those landing on a cell that is currently EMPTY. A suggestion that would
+ * overwrite a measurement an operator typed starts unchecked — visible, so it
+ * can be accepted deliberately, but never applied by default. Same rule as
+ * `preCheckedSuggestionIds` for attributes.
+ */
+export function preCheckedMedidaCells(
+  suggestions: AiMedidaSuggestion[],
+  isFilled: (rowKey: string, attributeId: string) => boolean,
+): string[] {
+  return suggestions
+    .filter((s) => !isFilled(s.rowKey, s.attributeId))
+    .map((s) => medidaCellKey(s.rowKey, s.attributeId));
+}
+
+/** Stable identity for one suggested cell — the review modal's checkbox key. */
+export function medidaCellKey(rowKey: string, attributeId: string): string {
+  return `${rowKey}::${attributeId}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}

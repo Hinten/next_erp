@@ -1,13 +1,18 @@
 'use client';
 
 /**
- * Settings for the Mercado Livre attribute agent — the `configIa/ml-atributos`
- * document.
+ * Settings for ONE AI agent — the `configIa/{agenteId}` document.
+ *
+ * The panel is agent-agnostic: `agenteId` picks the document, and the heading
+ * and blurb come from props. Two agents render it today (attributes and size
+ * charts) and they deliberately do NOT share a document — see
+ * `CONFIG_IA_ML_MEDIDAS_DOC_ID` for why (different instructions, independent
+ * kill switches).
  *
  * ⚠️ **Hand-written, NOT an `ObjectView`.** Every `recordId` in this app is a
  * route param; ObjectView has never been bound to a fixed known id, and its
  * `saveRecord` takes a `tx.update` path that throws when the document does not
- * exist — which is precisely the state of a fresh `configIa/ml-atributos`. The
+ * exist — which is precisely the state of a fresh `configIa/{agenteId}`. The
  * precedent for editing a known-id config doc is `NfeConfigPanel.tsx`, and this
  * follows it: `useQuery` + `getDoc`, save through `runTransaction` re-reading
  * inside the transaction, an explicit "does not exist yet" state, and a
@@ -60,7 +65,7 @@ import {
 } from '@delfrance/schemas';
 
 import { usePermission } from '@/lib/auth';
-import { CONFIG_IA_ML_ATRIBUTOS_DOC_ID, configIaCollection } from '@/lib/data/configIaCollection';
+import { configIaCollection } from '@/lib/data/configIaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 
@@ -102,16 +107,23 @@ const ORIGEM_LABEL: Record<'config' | 'env' | 'padrao', string> = {
   padrao: 'padrão do sistema',
 };
 
-export function ConfigIaPanel() {
+export interface ConfigIaPanelProps {
+  /** Which `configIa/{agenteId}` document this panel edits. */
+  agenteId: string;
+  titulo: string;
+  descricao: string;
+}
+
+export function ConfigIaPanel({ agenteId, titulo, descricao }: ConfigIaPanelProps) {
   const db = getFirebaseFirestore();
   const queryClient = useQueryClient();
   const client = useMercadoLivreClient();
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
 
   const cfgQuery = useQuery({
-    queryKey: ['configIa', CONFIG_IA_ML_ATRIBUTOS_DOC_ID],
+    queryKey: ['configIa', agenteId],
     queryFn: async () => {
-      const snap = await getDoc(configIaCollection.docRef(db, {}, CONFIG_IA_ML_ATRIBUTOS_DOC_ID));
+      const snap = await getDoc(configIaCollection.docRef(db, {}, agenteId));
       // `null` is a first-class answer, not an error: no tenant has this doc
       // until someone saves this page for the first time.
       return snap.exists() ? snap.data() : null;
@@ -119,12 +131,15 @@ export function ConfigIaPanel() {
   });
 
   const modelosQuery = useQuery({
-    queryKey: ['ia', 'modelos'],
+    // ⚠️ Keyed by agent. The model list is shared, but `efetivo` and
+    // `promptPadrao` are per-agent — a shared key would show one agent's
+    // effective model and default instruction under the other's heading.
+    queryKey: ['ia', 'modelos', agenteId],
     enabled: client != null,
     // The catalogue moves when Google ships a model. The backend caches it too;
     // this only avoids re-asking on every tab focus.
     staleTime: 30 * 60 * 1000,
-    queryFn: () => client!.iaModelos(),
+    queryFn: () => client!.iaModelos(agenteId),
   });
 
   const cfg = cfgQuery.data ?? null;
@@ -156,7 +171,7 @@ export function ConfigIaPanel() {
 
   const save = useMutation({
     mutationFn: async () => {
-      const ref = configIaCollection.docRef(db, {}, CONFIG_IA_ML_ATRIBUTOS_DOC_ID);
+      const ref = configIaCollection.docRef(db, {}, agenteId);
       const next = {
         // '' means "no explicit choice" and must be stored as null, or the
         // resolution chain can never reach the env step and the shipped default
@@ -241,18 +256,16 @@ export function ConfigIaPanel() {
   return (
     <Stack gap="lg" maw={760}>
       <Stack gap={4}>
-        <Title order={4}>Sugestão de atributos (Mercado Livre)</Title>
+        <Title order={4}>{titulo}</Title>
         <Text size="sm" c="dimmed">
-          Preenche os atributos da categoria a partir do nome, marca, descrição e uma foto do
-          produto. As sugestões sempre passam por revisão — nada é gravado no anúncio
-          automaticamente.
+          {descricao}
         </Text>
       </Stack>
 
       {cfg == null && (
         <Alert color="blue" title="Ainda usando os padrões do sistema">
-          O documento <Code>configIa/{CONFIG_IA_ML_ATRIBUTOS_DOC_ID}</Code> ainda não existe. Os
-          valores abaixo são os padrões; salvar cria o documento.
+          O documento <Code>configIa/{agenteId}</Code> ainda não existe. Os valores abaixo são os
+          padrões; salvar cria o documento.
         </Alert>
       )}
 

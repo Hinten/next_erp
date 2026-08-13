@@ -134,6 +134,28 @@ export type ConfigIa = z.infer<typeof configIaSchema>;
  */
 export const CONFIG_IA_ML_ATRIBUTOS_DOC_ID = 'ml-atributos';
 
+/**
+ * Document id of the Mercado Livre size-chart agent, which reads measurements
+ * off a photo of the supplier's table and fills the guia's grid.
+ *
+ * ⚠️ **A separate document, not a second use of `ml-atributos`.** The two agents
+ * want genuinely different settings: attribute filling is inference from a
+ * product photo, measurement extraction is transcription from a table, and the
+ * system instruction that makes one work makes the other worse. Separate
+ * documents also mean separate kill switches — turning off a misbehaving agent
+ * must not disable the other, since `ativo: false` is the only control that
+ * stops spend without a deploy.
+ */
+export const CONFIG_IA_ML_MEDIDAS_DOC_ID = 'ml-medidas';
+
+/** Every agent id, so a UI can enumerate them without hardcoding the list. */
+export const CONFIG_IA_AGENTES = [
+  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  CONFIG_IA_ML_MEDIDAS_DOC_ID,
+] as const;
+
+export type ConfigIaAgenteId = (typeof CONFIG_IA_AGENTES)[number];
+
 export const configIaMeta: CollectionMetadata = {
   collectionPath: 'configIa',
   permissions: {

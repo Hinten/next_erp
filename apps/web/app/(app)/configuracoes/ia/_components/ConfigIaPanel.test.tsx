@@ -17,6 +17,10 @@ const h = vi.hoisted(() => ({
   canWrite: true,
   /** What the transaction re-read sees; null = same as `stored`. */
   remote: null as ConfigIa | null,
+  /** Every `configIa` document id the panel reached for, in order. */
+  docIds: [] as string[],
+  /** Every agent id passed to `GET /ia/modelos`, in order. */
+  agentesPedidos: [] as Array<string | null>,
   notify: vi.fn(),
 }));
 
@@ -53,7 +57,15 @@ vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 
 vi.mock('@/lib/data/configIaCollection', () => ({
   CONFIG_IA_ML_ATRIBUTOS_DOC_ID: 'ml-atributos',
-  configIaCollection: { docRef: () => ({}) },
+  configIaCollection: {
+    // Records which document the panel actually reached for: this component is
+    // rendered twice on one page, one instance per agent, so a hardcoded id
+    // would silently make both edit the same settings.
+    docRef: (_db: unknown, _ctx: unknown, id: string) => {
+      h.docIds.push(id);
+      return { id };
+    },
+  },
 }));
 
 vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: h.canWrite }) }));
@@ -63,7 +75,8 @@ vi.mock('@/lib/mercado-livre/client', async (importActual) => {
   return {
     ...actual,
     useMercadoLivreClient: () => ({
-      iaModelos: async () => {
+      iaModelos: async (agenteId?: string) => {
+        h.agentesPedidos.push(agenteId ?? null);
         if (h.modelos == null) throw new Error('backend indisponível');
         return h.modelos;
       },
@@ -91,14 +104,17 @@ function liveModelos(over: Partial<MercadoLivreIaModelos> = {}): MercadoLivreIaM
   };
 }
 
-function renderPanel() {
+function renderPanel(agenteId = 'ml-atributos') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MantineProvider env="test">
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
     </MantineProvider>
   );
-  render(<ConfigIaPanel />, { wrapper });
+  render(
+    <ConfigIaPanel agenteId={agenteId} titulo="Agente de teste" descricao="Descrição de teste." />,
+    { wrapper },
+  );
 }
 
 beforeEach(() => {
@@ -107,7 +123,53 @@ beforeEach(() => {
   h.modelos = liveModelos();
   h.canWrite = true;
   h.remote = null;
+  h.docIds = [];
+  h.agentesPedidos = [];
   h.notify.mockClear();
+});
+
+describe('ConfigIaPanel — one panel per agent', () => {
+  // The page renders this component twice, once per `configIa/{agenteId}`
+  // document. A hardcoded id here would make both instances read and write the
+  // same settings, and the second agent's kill switch would silently be the
+  // first one's — with both panels still looking correct.
+  it('reads the document it was handed, not a hardcoded one', async () => {
+    renderPanel('ml-medidas');
+    await waitFor(() => screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+    expect(h.docIds).toContain('ml-medidas');
+    expect(h.docIds).not.toContain('ml-atributos');
+  });
+
+  it('writes back to that same document', async () => {
+    renderPanel('ml-medidas');
+    await waitFor(() => screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+
+    fireEvent.click(screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+
+    await waitFor(() => {
+      expect(h.writes).toHaveLength(1);
+    });
+    expect(h.docIds).not.toContain('ml-atributos');
+  });
+
+  it('asks the backend for THAT agent, so it reports the right default instruction', async () => {
+    // `promptPadrao` and `efetivo` are per-agent. Fetching without the id would
+    // show the attribute agent's instruction under the size-chart heading —
+    // wrong in the one place the operator goes to read what actually runs.
+    renderPanel('ml-medidas');
+    await waitFor(() => {
+      expect(h.agentesPedidos).toContain('ml-medidas');
+    });
+  });
+
+  it('renders the heading and blurb it was given', async () => {
+    renderPanel('ml-medidas');
+    await waitFor(() => {
+      expect(screen.getByText('Agente de teste')).toBeDefined();
+    });
+    expect(screen.getByText('Descrição de teste.')).toBeDefined();
+  });
 });
 
 describe('ConfigIaPanel — the document may not exist yet', () => {
