@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Alert, Badge, Card, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { IconCheck } from '@tabler/icons-react';
 import { type Firestore } from 'firebase/firestore';
@@ -11,6 +12,7 @@ import {
   type CheckoutFretePedido,
   type FreteDoPedido,
   type ItemCheckoutPedido,
+  type Produto,
 } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -18,6 +20,7 @@ import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { checkoutCollection } from '@/lib/data/checkoutCollection';
 import { usuarioCollection } from '@/lib/data/usuarioCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { getDocsByIds } from '@/lib/data/getDocsByIds';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { usePermission } from '@/lib/auth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -104,7 +107,9 @@ function CheckoutViewer({ pedidoId }: { pedidoId: string }) {
           <Text fw={500} mb="xs">
             Observações
           </Text>
-          <Text size="sm">{checkout.obs}</Text>
+          <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+            {checkout.obs}
+          </Text>
         </Card>
       )}
     </Stack>
@@ -141,23 +146,57 @@ function ResponsavelCard({ outerRef, db }: { outerRef: string; db: Firestore }) 
   );
 }
 
+/** The produto doc id embedded in an item's outer ref, or null if unparseable. */
+function produtoIdOf(db: Firestore, item: ItemCheckoutPedido): string | null {
+  return dereferenceOuterRef(db, item.produtoCheckoutPedidoOuterRef)?.id ?? null;
+}
+
+/**
+ * `itensCheckout` is EVERY scan-log row (active + soft-deleted + error), so
+ * its length tracks scans, not distinct produtos — a 1000-item pedido can
+ * repeat the same produto hundreds of times. Resolving each row with its own
+ * `onSnapshot` would mount that many concurrent live listeners on a doc that
+ * can never change while the tab is open; batch-fetch the DISTINCT produto
+ * ids once instead (mirrors the despacho checkout screen's own two-wave
+ * `getDocsByIds` fetch over the same collection).
+ */
 function ItensCheckoutCard({ itens, db }: { itens: ItemCheckoutPedido[] | null; db: Firestore }) {
+  const rows = useMemo(
+    () => (itens ?? []).map((item) => ({ item, produtoId: produtoIdOf(db, item) })),
+    [db, itens],
+  );
+  const produtoIds = useMemo(
+    () => [...new Set(rows.map((r) => r.produtoId).filter((id) => id != null))],
+    [rows],
+  );
+  const { data: produtos, isLoading } = useQuery({
+    queryKey: ['checkout-tab-produtos', produtoIds],
+    queryFn: () => getDocsByIds(db, produtoCollection, produtoIds),
+    enabled: produtoIds.length > 0,
+  });
+
   return (
     <Card withBorder>
       <Text fw={500} mb="xs">
         Itens
       </Text>
-      {(!itens || itens.length === 0) && (
+      {rows.length === 0 && (
         <Text size="sm" c="dimmed">
           Nenhum item lançado.
         </Text>
       )}
-      {itens && itens.length > 0 && (
+      {rows.length > 0 && (
         <Stack gap="xs">
-          {itens.map((item, i) => (
+          {rows.map(({ item, produtoId }, i) => (
             // Checkout items have no stable id of their own (a plain embedded
             // array, no doc ids) — index is the only key available.
-            <ItemCheckoutRow key={i} item={item} db={db} />
+            <ItemCheckoutRow
+              key={i}
+              item={item}
+              produtoId={produtoId}
+              produto={produtoId ? produtos?.get(produtoId) : undefined}
+              loading={isLoading}
+            />
           ))}
         </Stack>
       )}
@@ -165,13 +204,17 @@ function ItensCheckoutCard({ itens, db }: { itens: ItemCheckoutPedido[] | null; 
   );
 }
 
-function ItemCheckoutRow({ item, db }: { item: ItemCheckoutPedido; db: Firestore }) {
-  const ref = useMemo(
-    () => dereferenceOuterRef(db, item.produtoCheckoutPedidoOuterRef),
-    [db, item.produtoCheckoutPedidoOuterRef],
-  );
-  const docRef = useMemo(() => (ref ? produtoCollection.docRef(db, {}, ref.id) : null), [db, ref]);
-  const { data: produtoDoc, loading } = useDocSnapshot(docRef);
+function ItemCheckoutRow({
+  item,
+  produtoId,
+  produto,
+  loading,
+}: {
+  item: ItemCheckoutPedido;
+  produtoId: string | null;
+  produto: Produto | undefined;
+  loading: boolean;
+}) {
   const isExcluded = item.dataExclusao != null;
   const hasError = !!item.error;
 
@@ -180,11 +223,11 @@ function ItemCheckoutRow({ item, db }: { item: ItemCheckoutPedido; db: Firestore
       <Stack gap={0}>
         <Group gap="xs">
           <Text size="sm" c={hasError ? 'red' : undefined}>
-            {loading ? '…' : (produtoDoc?.data.nome ?? ref?.id ?? '—')}
+            {loading ? '…' : (produto?.nome ?? produtoId ?? '—')}
           </Text>
-          {produtoDoc?.data.sku && (
+          {produto?.sku && (
             <Text size="xs" c="dimmed">
-              {produtoDoc.data.sku}
+              {produto.sku}
             </Text>
           )}
         </Group>
@@ -207,7 +250,28 @@ function ItemCheckoutRow({ item, db }: { item: ItemCheckoutPedido; db: Firestore
   );
 }
 
-function FreteSnapshotCard({ frete }: { frete: FreteDoPedido }) {
+/**
+ * `frete` comes through `parseSoftRead`, which returns the raw document (not
+ * a validated one) on a schema mismatch — so despite the collection handle's
+ * `FreteDoPedido` type, a checkout doc that ever lands without
+ * `freteNoMomentoDoCheckout` hands this component `undefined` at runtime.
+ * `apps/web` has no `error.tsx`, so an unguarded `frete.modalidade` would take
+ * down the whole pedido editor rather than just this card.
+ */
+function FreteSnapshotCard({ frete }: { frete: FreteDoPedido | null | undefined }) {
+  if (!frete) {
+    return (
+      <Card withBorder>
+        <Text fw={500} mb="xs">
+          Frete no momento do checkout
+        </Text>
+        <Text size="sm" c="dimmed">
+          Sem frete registrado.
+        </Text>
+      </Card>
+    );
+  }
+
   return (
     <Card withBorder>
       <Text fw={500} mb="xs">
