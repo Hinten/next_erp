@@ -282,13 +282,36 @@ removing 17 % of the CPU saved ~0 s. The reason to move tests into a lane is
 instead of the catch-all `lint-typecheck-test`. Anything that shortens `ci.yml`
 has to shorten `@delfrance/web`.
 
-### ⚠️ `turbo run test --filter <typo>` exits 0
+### ⚠️ `turbo run <task>` has TWO ways to exit 0 having run nothing
 
-Verified: `pnpm turbo run test --filter '@delfrance/does-not-exist'` prints
-`x No package found with name ... in workspace` and exits **zero** — same trap as
-`pnpm --filter`. In a lane job whose tests `ci.yml` no longer runs, a typo is
-total silent loss of coverage. Every such step needs a resolution assertion
-before it; `ci-mercado-livre.yml` carries one per job, asserting an exact count.
+Both verified in this repo:
+
+| | command | output | exit |
+| --- | --- | --- | --- |
+| bad package **name** | `turbo run test --filter '@delfrance/nope'` | `x No package found with name …` | **0** |
+| missing **script** | `turbo run test --filter <pkg with no "test">` | `Tasks: 0 successful, 0 total` | **0** |
+
+⚠️ **The second one is not shared with pnpm, and that asymmetry has already bitten
+a review.** `pnpm --filter X run <script>` exits **1** when the script is missing —
+only a bad *name* is unsafe there. So a `pnpm ls` name-check is a sufficient guard
+in front of a `pnpm --filter` step and an **insufficient** one in front of a
+`turbo run` step. Do not copy a guard across the two tools without re-deriving
+which failure modes it covers.
+
+⚠️ **Counting `task == "test"` in `--dry=json` is also not enough** — turbo still
+emits an entry for a package with no script, tagged `"command": "<NONEXISTENT>"`.
+The guard must exclude those:
+
+```bash
+n=$(pnpm turbo run test --dry=json --filter A --filter B \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s).tasks;console.log(t.filter(x=>x.task==="test"&&x.command&&x.command!=="<NONEXISTENT>").length)})')
+[ "$n" = "2" ] || { echo "::error::resolved $n runnable test tasks, expected 2"; exit 1; }
+```
+
+A bad name makes turbo emit no JSON at all, so `JSON.parse` throws and `pipefail`
+fails the step — one check, both modes. `ci-mercado-livre.yml`'s `ml-offline` job
+is the reference implementation. This matters most in a lane whose tests `ci.yml`
+no longer runs: there, either mode is **total** silent loss of coverage.
 
 ## ⚠️ Assertion 1 can go red on `main` after passing on every PR
 

@@ -241,24 +241,41 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # ⚠️ Mandatory, not decoration. VERIFIED: `pnpm turbo run test --filter
-      # '@delfrance/does-not-exist'` prints "x No package found with name ... in
-      # workspace" and exits ZERO. A typo in either name below would therefore
-      # produce a fully green job that ran no tests — and since `ci.yml` no longer
-      # runs them either, that is total silent loss of ML unit coverage.
-      # Near-misses are real: the two package names differ only by prefix, and the
-      # `mercado-livre` functions codebase and the apps/ directory name are both
-      # plausible typos.
-      - name: Assert both test filters resolve to real packages
+      # ⚠️ Mandatory, not decoration. `turbo run test` has TWO independent ways to
+      # exit ZERO having run nothing, both verified in this repo:
+      #
+      #   1. A mistyped package NAME —
+      #      `turbo run test --filter '@delfrance/does-not-exist'`
+      #      → "x No package found with name ... in workspace", exit 0.
+      #      Near-misses are real: the two names below differ only by prefix, and
+      #      the `mercado-livre` functions codebase and the apps/ directory name
+      #      are both plausible slips.
+      #   2. A missing test SCRIPT — `turbo run test` against a package with no
+      #      `test` in `scripts` → "Tasks: 0 successful, 0 total", exit 0.
+      #
+      # ⚠️ (2) is the one a `pnpm ls` name-check CANNOT see, and the difference is
+      # the TOOL, not the threat: `pnpm --filter X run <script>` exits 1 when the
+      # script is missing (which is why the emulator job's guard below can get away
+      # with a name check), while `turbo run <task>` exits 0. Renaming
+      # apps/mercado-livre's `"test"` script — entirely plausible if the suite is
+      # ever split — would otherwise leave this job green having run 97 fewer
+      # files, with `ci.yml` no longer running them either.
+      #
+      # ⚠️ Counting `task == "test"` alone is ALSO not enough: turbo's dry-run still
+      # emits an entry for a package with no script, tagged
+      # `"command": "<NONEXISTENT>"`. Excluding those is the part that catches (2).
+      # A bad name makes turbo emit no JSON at all, so `JSON.parse` throws, node
+      # exits non-zero and `pipefail` fails the step — that is how (1) is caught.
+      - name: Assert both test tasks exist and are runnable
         run: |
           set -euo pipefail
-          matched=$(pnpm ls \
-            --filter @delfrance/mercado-livre-app \
-            --filter @delfrance/integrations-mercado-livre \
-            --depth -1 --parseable | grep -c . || true)
-          echo "packages matched by the filters: $matched"
-          if [ "$matched" != "2" ]; then
-            echo "::error::filters matched $matched packages, expected 2 — the test step would exit 0 without running anything."
+          n=$(pnpm turbo run test --dry=json \
+                --filter @delfrance/mercado-livre-app \
+                --filter @delfrance/integrations-mercado-livre \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s).tasks;console.log(t.filter(x=>x.task==="test"&&x.command&&x.command!=="<NONEXISTENT>").length)})')
+          echo "runnable \`test\` tasks resolved: $n"
+          if [ "$n" != "2" ]; then
+            echo "::error::turbo resolved $n runnable \`test\` tasks, expected 2 — the test step below would exit 0 without running anything."
             exit 1
           fi
 
@@ -339,6 +356,11 @@ jobs:
       # and three near-misses exist (@delfrance/integrations-mercado-livre, the
       # `mercado-livre` functions codebase name, the apps/ directory name).
       # A missing *script* is safe (pnpm exits 1); only a bad package name is not.
+      #
+      # ⚠️ That last sentence is a property of **pnpm**, not of this repo — do NOT
+      # carry it over to a `turbo run <task>` step. turbo exits 0 on a missing
+      # script too, so a name-only check there is insufficient; see the stronger
+      # dry-run guard in `ml-offline` above, which asserts runnable TASKS.
       - name: Assert the test filter resolves to a real package
         run: |
           set -euo pipefail
