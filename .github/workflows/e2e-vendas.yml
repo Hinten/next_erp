@@ -189,6 +189,10 @@ jobs:
               echo
               echo "$1"
             } >> "$GITHUB_STEP_SUMMARY"
+            # Mirror the verdict into the log and the run UI. Without this a PASS is
+            # only visible in the step summary, so a green gate cannot be audited
+            # from the logs the failure reporters already collect.
+            echo "::notice title=$LANE::$1"
             exit 0
           }
 
