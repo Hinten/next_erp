@@ -8,7 +8,7 @@ description: >-
   `protect-main` ruleset, or when deciding what should trigger a lane. Covers
   the `changes` scope job and `.github/scripts/e2e-affected.mjs` (--roots,
   --self, --only-paths, --kind), the unskippable `gate` job and its
-  required/optional guard manifest, the eight pinnable check names, the
+  required/optional guard manifest, the nine pinnable check names, the
   `ci-lane-gates.test.js` backstop, and the three GitHub behaviours that make
   naive CI silently green — a non-matching `paths:` publishing no check at all,
   a `skipped` job satisfying a required check, and check-run names carrying no
@@ -46,14 +46,19 @@ Everything here exists because of these. None is obvious, all three bite.
    repo-wide — three lanes once published an identical
    `Lint / typecheck / unit / build (offline)`.
 
-## The eight pinnable checks
+## The nine pinnable checks
 
-| lane | gate | lane | gate |
-| --- | --- | --- | --- |
-| e2e-cadastros | `E2E gate (cadastros)` | ci-nfe | `CI gate (nfe)` |
-| e2e-vendas | `E2E gate (vendas)` | ci-freight | `CI gate (freight)` |
-| e2e-emulator | `E2E gate (emulator)` | ci-storage | `CI gate (storage)` |
-| ci.yml | `lint-typecheck-test` | ci-rules | `CI gate (rules)` |
+| lane | gate | roots |
+| --- | --- | --- |
+| e2e-cadastros | `E2E gate (cadastros)` | `web` |
+| e2e-vendas | `E2E gate (vendas)` | `web`, `integrations-app` |
+| e2e-emulator | `E2E gate (emulator)` | `web`, `functions` |
+| ci-nfe | `CI gate (nfe)` | `nfe-app`, `integrations-nfe` |
+| ci-freight | `CI gate (freight)` | `melhor-envio-app`, `integrations-freight-br` |
+| ci-mercado-livre | `CI gate (mercado-livre)` | `mercado-livre-app` |
+| ci-storage | `CI gate (storage)` | `storage`, `functions` |
+| ci-rules | `CI gate (rules)` | `rules-gen` |
+| ci.yml | `lint-typecheck-test` | — (full graph) |
 
 `ci.yml` needs no gate: it has no `paths:` and its job carries no `if:`, so it is
 already unskippable and directly pinnable.
@@ -192,8 +197,11 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 
 ## Adding a lane
 
-1. Copy the `changes` + `gate` pair from `ci-storage.yml` (the simplest — two
-   required jobs, no guards).
+1. Copy the `changes` + `gate` pair from `ci-mercado-livre.yml` (the simplest —
+   one required job, no guards) or `ci-storage.yml` (two required jobs, no
+   guards). The `run:` body of every gate is **byte-identical**; only the `env:`
+   block and the `JOBS:` manifest differ. Copy it from a real file rather than
+   retyping 142 lines of shell, then `diff` the two bodies to prove you did.
 2. Give it `--roots`, `--self`, and a unique ASCII gate name.
 3. Add it to `LANES` in `packages/config-eslint/rules/ci-lane-gates.test.js`.
    Every workflow must be in `LANES` **or** `UNGATED` with a written reason — the
@@ -206,7 +214,7 @@ Order matters. Merge first, let the gates publish, **then** pin.
 
 Read the names back from the merged PR's **head SHA**, not from `main` — the e2e
 lanes have no `push:` trigger and the domain lanes' `push:` keeps a narrow
-`paths:`, so a merge commit may carry only some of the eight.
+`paths:`, so a merge commit may carry only some of the nine.
 
 ```bash
 gh api "repos/Hinten/next_erp/commits/<head-sha>/check-runs?per_page=100" \
@@ -247,3 +255,28 @@ mitigates the staleness it leaves.
   `@delfrance/{nfe-app,integrations-nfe,melhor-envio-app,integrations-freight-br,storage,functions}`
   — each owned by exactly one domain lane. If that lane skips, those tests run
   nowhere. That is why the domain lanes matter and why their scope must be derived.
+- **`ci-mercado-livre` is excluded from nothing, and still owns tests alone.** The
+  ML workspaces are *not* in that exclusion list, so `ci.yml` runs their unit
+  suite on every PR. But `apps/mercado-livre/vitest.config.ts` excludes
+  `**/*.firestore.test.ts` from that run by design — those live under
+  `test:firestore` / `vitest.firestore.config.ts` and are invoked by this lane
+  only. So the "tests run nowhere" hazard applies here too, just narrower
+  (integration coverage, not total coverage). Do not reason about ownership from
+  the `ci.yml` exclusion list alone; check the workspace's `test` script too.
+
+## ⚠️ Assertion 1 can go red on `main` after passing on every PR
+
+Every lane checks out `github.event.pull_request.head.sha` — the PR **head**, not
+GitHub's merge ref. A repo-state assertion (the `LANES`/`UNGATED` partition, the
+`.env.example` locator, the pinned-deps scanners) therefore only ever sees its own
+branch, and two PRs that are individually honest can produce a red merge result.
+
+It has happened once: **#999** added `ci-mercado-livre.yml` to `main` at 15:11;
+**#1031** added the total-partition assertion at 16:34 from a branch that never
+contained that file. Both green, `main` red — 15 workflows against 14 classified.
+
+When you hit it, the fix is to classify the lane someone added concurrently, never
+to weaken the partition. Closing the skew itself means turning on **"Require
+branches to be up to date before merging"** on `protect-main` — a ruleset setting
+with real cost (a rebase on every PR, including stacked ones), not a code change.
+Deliberately not done as of 2026-08-13.
