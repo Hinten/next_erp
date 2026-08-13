@@ -138,13 +138,26 @@ jobs:
       - name: Decide whether this lane must run
         id: decide
         if: steps.collect.outputs.decided != 'true'
+        # ⚠️ The `if !` fallback is load-bearing, not defensive noise. This YAML comes
+        # from the merge ref while the checkout above is the PR head, so on a branch
+        # older than the script node exits 1 (`Cannot find module`) before the
+        # script's own fail-safe can fire — killing `changes` and reddening a gate
+        # that only a rebase could clear. Degrade to RUNNING the lane. See the
+        # VERSION SKEW note in e2e-affected.mjs; enforced by ci-lane-gates.test.js.
         run: |
-          node .github/scripts/e2e-affected.mjs \
-            --kind CI \
-            --lane storage \
-            --roots @delfrance/storage @delfrance/functions \
-            --self .github/workflows/ci-storage.yml \
-            --files "${{ steps.collect.outputs.files }}"
+          if ! node .github/scripts/e2e-affected.mjs \
+                 --kind CI \
+                 --lane storage \
+                 --roots @delfrance/storage @delfrance/functions \
+                 --self .github/workflows/ci-storage.yml \
+                 --files "${{ steps.collect.outputs.files }}"
+          then
+            {
+              echo "run_e2e=true"
+              echo "reason=the scope script could not run at this PR's head commit — it is older than the workflow invoking it. Running the lane (fail safe). Merge \`main\` into this branch for a real scope decision."
+            } >> "$GITHUB_OUTPUT"
+            echo "::warning title=CI scope (storage)::the scope script is missing from this PR's head commit — running the lane (fail safe). Merge main into the branch."
+          fi
 
   storage-build-test:
     name: Storage offline (lint + typecheck + unit + build)
