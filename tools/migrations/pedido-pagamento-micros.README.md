@@ -8,11 +8,33 @@ document is the runbook and the reference for the future Flutter import.
 
 ## Why
 
+> **⚠️ Corrected 2026-08-12 — read this before running anything.**
+>
+> This document used to justify the migration as a move to "the higher-precision
+> microseconds". **That justification was wrong at the time it was written**, and
+> is only partly right now.
+>
+> `nowMicros()` is `Date.now() * 1000` — microsecond _units_ at millisecond
+> _precision_, low three digits structurally zero. And until the ISO parser was
+> fixed, `coerceToMicros` truncated provider strings with `Date.parse` and then
+> refilled the lost digits with zeros. So at the time this migration was written,
+> **every** value it produced was padding: multiplying integers by 1000 bought
+> nothing, on a corpus that costs a coordinated migration-window slot to rewrite.
+>
+> What changed: the parser now preserves the sub-millisecond digits providers
+> actually send (Django REST Framework emits up to 6). So microseconds are now
+> genuinely justified — **but only for the fields whose value comes from a
+> provider.** For fields we stamp ourselves, the precision is still padding.
+>
+> The field-by-field split is below. Run `--report-only` first: the shape report
+> now prints `µs=REAL` or `µs=PADDING` per field, which is the empirical version
+> of that table.
+
 Datetime fields were standardized onto a **plain integer epoch** (never a
 Firebase `Timestamp`, which each SDK deserializes differently). `pedido`,
-`pagamento` and the embedded `frete` converged on the higher-precision
-**microseconds since epoch** via `microsSinceEpoch()` from
-`@delfrance/schemas`. Their previous wire formats were:
+`pagamento` and the embedded `frete` converged on **microseconds since epoch**
+via `microsSinceEpoch()` from `@delfrance/schemas`. Their previous wire formats
+were:
 
 | Collection / path                                            | Field(s)                                                                                                                                        | Old format                              |
 | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
@@ -29,6 +51,42 @@ Firebase `Timestamp`, which each SDK deserializes differently). `pedido`,
 > constant). The earlier note claimed singular was "the path the app actually
 > reads/writes" — it is not, and as built the migration would have scanned
 > **zero** of this app's pagamento documents and still reported success.
+
+## Does each field actually need microseconds?
+
+Classified by reading the **writers**, not the field names. "Provider" means the
+value is parsed from a provider payload, so it can carry real sub-millisecond
+precision; "self" means we stamp it from our own clock, where µs is padding;
+"human" means an operator or a calendar supplies it, where sub-second precision
+is meaningless.
+
+| Field                                           | Source         | Evidence                                                                                    | µs justified?                                                |
+| ----------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `pedido.ultimaModificacao`                      | **provider**   | `avancarWatermark(coerceToMicros(raw.ultimaModificacao), nowUs)` — `orderImport.ts:653,751` | **yes** — it is a watermark compared against provider clocks |
+| `pedido.lastMarketplaceUpdate`                  | **provider**   | `relogioFinal = relogioOrdemUs ?? core.ultimaModificacao` — `orderPedidoTx.ts:586,605`      | **yes**                                                      |
+| `freteInicial.dataPrevisaoEntrega`              | **provider**   | `coerceToMicros(leadTime?.estimated_delivery_time?.date)` — `orderShipmentMapping.ts:134`   | **yes**                                                      |
+| `freteInicial.prazoDespacho`                    | **provider**   | `resolvePrazoDespacho(...)` off ML `estimated_delivery_limit.date` — `orderImport.ts:982`   | **yes**                                                      |
+| `pagamento.dataAprovacao`                       | **provider**   | `coerceToMicros(payment.date_approved)` — `orderPaymentMapping.ts:227`                      | **yes**                                                      |
+| `pagamento.ultimaModificacao`                   | mixed          | mapper value, else our clock                                                                | yes (compared against provider stamps)                       |
+| `pedido.timestamp`                              | **self**       | `timestamp: nowUs` — `orderImport.ts:574,895`, `orderPedidoTx.ts:666`                       | no — padding                                                 |
+| `pedido.dtImpressao`                            | **self**       | `dtImpressao: nowMicros` — `apps/web/lib/pedido-print/batch.ts:77`                          | no — padding                                                 |
+| `pedido.dataIndisponivelEstoque`                | **self**       | `agoraUs` — `sincronizarEstoquePedido.ts:946`                                               | no — padding                                                 |
+| `pedido.dataRemocaoEstoque`                     | **self**       | `agoraUs` — `sincronizarEstoquePedido.ts:949`                                               | no — padding                                                 |
+| `pagamento.dataCadastro`                        | **self**       | `nowMicros()` — `pedidoReconcile.ts:221`                                                    | no — padding                                                 |
+| `pagamento.vencimento`                          | **human**      | payment form — `PagamentoForm.ts`                                                           | no — a due _date_                                            |
+| `pagamento.dataCancelamento`                    | human/provider | `mapping/payment.ts:190` writes null; otherwise operator-set                                | no                                                           |
+| `pedido.dataFinalExpedicao`                     | **human**      | form field                                                                                  | no                                                           |
+| `freteInicial.dataEntrega`                      | **human**      | form field ("Data de entrega")                                                              | no                                                           |
+| `freteInicial.externalOptionSelectionDate`      | **self**       | stamped when the option is chosen                                                           | no — padding                                                 |
+| `freteInicial.timestamp` / `ultimaModificacao`  | mixed          | follows the parent pedido                                                                   | yes, by association                                          |
+| `itens[].timestamp`, `metodo_pgto.dataCadastro` | **self**       | creation stamps                                                                             | no — padding                                                 |
+
+**What this means for the run.** The direction (ms → µs) stays correct: the
+fields that _are_ provider-sourced need microseconds, and a single unit across
+the document is worth more than shaving padding off the others — a mixed-unit
+document is exactly the "cross-unit comparison is a guard that never fires"
+hazard Critical rule 7 warns about. So **the scope does not change**; only the
+justification does. Do not split the corpus into µs and ms fields.
 
 ## Why a backfill is not urgent (tolerant reads)
 
