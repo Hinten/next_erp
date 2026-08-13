@@ -391,7 +391,7 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Dual-run denorm (DEAD WEIGHT; #431 lock 3 / #961 — no query consumers in
+  // Dual-run denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
   // this repo, deleted at the decommission. Canonical note on `produtoSchema`;
   // do not repair, do not add a reader).
   //

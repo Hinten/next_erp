@@ -31,8 +31,12 @@
  * Scope (7a): SIMPLE listings. User-Products links and a listing still
  * mid-migration (`estado === 'am'`) are DEFERRED — a UP link or an
  * awaiting-migration listing is driven by the Flutter app during dual-run;
- * syncing `estado` here would fight it. The variation-children denorm sweep on
- * cancel is deferred to #438 (7a produtos are childless).
+ * syncing `estado` here would fight it. A cancel removes the PARENT produto's
+ * denorm entry (`removeMarketplaceEntry` below) but does not walk down to the
+ * variation-children produtos. That sweep was once deferred to #438; it is now
+ * moot rather than pending — the whole denorm cluster is deleted at the cutover
+ * (#992), and leaving stale entries behind is already the norm everywhere else
+ * (canonical note on `produtoSchema`).
  *
  * #441 (UP migration takeover): a `variations_migration_source`-tagged listing
  * that has gone `closed` is the ML-side signal that a legacy `variations[]`
@@ -259,10 +263,16 @@ export interface ApplyItemStatusOpts {
  * removeMarketplaceEntry returns null once the entry is gone), and the link only
  * advances once the denorm has succeeded.
  *
- * The denormalized arrays are DEPRECATED (Pipelines resolve linkage now, #431)
- * but kept in the exact shape publish/import stamp during dual-run. The legacy
- * `statusProdutosMarketplace` inactive-map is intentionally NOT written (neither
- * publish nor import writes it). Variation-children sweep on cancel → #438.
+ * The denormalized arrays are DEPRECATED (the link subcollections resolve
+ * linkage now) but kept in the exact shape publish/import stamp during dual-run
+ * — see the canonical cluster note on `produtoSchema` and #992, which tracks
+ * deleting all three fields in one piece after the cutover.
+ *
+ * This path does not write the third cluster member, the legacy
+ * `statusProdutosMarketplace` inactive-map — and neither does publish. It is
+ * NOT unwritten repo-wide, though: `importMigration.applyMarketplaceDeletion`
+ * stamps a `deleted: true` entry when it prunes a fully-migrated legacy source
+ * listing. Adding a write here would be a new divergence, not parity with it.
  */
 export async function applyItemStatusToLink(
   db: Firestore,
@@ -374,7 +384,7 @@ async function resolveLink(
  * on a cancel (a dead listing must stop being advertised).
  *
  * ⛔ Both arrays are DEAD WEIGHT — no query consumers, deleted at the
- * decommission (#431 lock 3 / #961). Canonical note on `produtoSchema`.
+ * decommission (#992; audited in #961). Canonical note on `produtoSchema`.
  * `removeMarketplaceEntry` below does read them, but only to compute their own
  * next value — maintenance, not consumption. This cancel branch is the ONLY
  * thing that ever shrinks them; a link doc deleted any other way leaves them

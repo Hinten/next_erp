@@ -6,7 +6,13 @@ import {
   seedBalcaoFixtures,
 } from './_helpers/seed-data';
 import { applyTextFilter, expectRowHidden, expectRowVisible } from './helpers/table-view';
-import { clickSave, confirmDelete, fillField, selectFieldWithSearch } from './helpers/object-view';
+import {
+  clickSave,
+  confirmDelete,
+  expectFieldAfterReload,
+  fillField,
+  selectFieldWithSearch,
+} from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -100,7 +106,7 @@ test.describe.serial('Canais Balcão e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/canais\/balcao$/, { timeout: 15_000 });
 
     await page.goto(`/canais/balcao/${row(4)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-004-editado`);
+    await expectFieldAfterReload(page, 'Nome', `${prefix}-004-editado`);
   });
 
   test('deletes a balcao through the typed-confirm modal', async ({ page }) => {
