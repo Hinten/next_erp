@@ -76,6 +76,17 @@ const DEFAULT_MAX_ENUM_VALUES = 60;
 const NA_VALUE_ID = '-1';
 
 /**
+ * The single spelling of "does not apply" the model is offered and the applier
+ * recognises.
+ *
+ * ⚠️ Fixed on our side rather than taken from ML's own localised value name. ML
+ * spells it differently per attribute and per site ("N/A", "Não se aplica",
+ * "No aplica"), and an enum member the applier has to guess at is a member it
+ * will eventually fail to map — silently, as a free-text value ML then rejects.
+ */
+export const NA_ENUM_LABEL = 'N/A';
+
+/**
  * Build the response schema for a category's attributes.
  *
  * Every property is a **string** even for `number`/`number_unit`: models emit
@@ -133,19 +144,25 @@ function buildProperty(attr: AiAttributeSpec, maxEnumValues: number): JsonSchema
 function enumMembers(attr: AiAttributeSpec, maxEnumValues: number): string[] | null {
   if (attr.valueType !== 'list' && attr.valueType !== 'boolean') return null;
   const names = attr.values
-    // ⚠️ The N/A sentinel is identified by its value **id**. Its NAME is
-    // whatever ML localised it to — "N/A", "Não se aplica" — so comparing a
-    // name against '-1' matches nothing and duly offers the sentinel to the
-    // model, which is the one choice it must never make.
+    // ⚠️ The N/A sentinel is dropped HERE and re-added below under a fixed
+    // spelling. Two reasons it cannot simply be left in place: it is identified
+    // by its value **id** (`-1`) while its NAME is whatever ML localised it to,
+    // so the enum would carry an unpredictable string the applier then has to
+    // recognise; and a category that does NOT list it would offer no way to say
+    // "não se aplica" at all.
     .filter((v) => v.id !== NA_VALUE_ID)
     .map((v) => v.name)
     .filter((n): n is string => typeof n === 'string' && n.trim() !== '');
-  // Counted AFTER the sentinel is removed, so a list holding nothing else
-  // falls back to free text rather than emitting `enum: []` — a schema no
-  // answer can satisfy, which turns "I cannot determine this" into a hard
-  // validation failure.
+  // Counted BEFORE the sentinel is appended: the cap is about how many real
+  // choices are worth inlining, and "N/A" is not one of them. Zero real values
+  // falls back to free text rather than emitting an enum of nothing but N/A.
   if (names.length === 0 || names.length > maxEnumValues) return null;
-  return names;
+  // Every closed list gets "N/A", whether or not ML enumerated it. `value_id:
+  // '-1'` is ML's platform-wide "does not apply" marker (`attrNA` writes it for
+  // any attribute id), and a closed list without it forces the model to choose
+  // between inventing a value and omitting an attribute that genuinely does not
+  // apply to the product — which is the situation this exists to fix.
+  return [...names, NA_ENUM_LABEL];
 }
 
 function describe(attr: AiAttributeSpec): string {

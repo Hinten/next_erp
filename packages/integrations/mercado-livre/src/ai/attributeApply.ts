@@ -18,19 +18,54 @@ export interface AiAttributeSuggestion {
   unit_id: string | null;
 }
 
-/** ML's "does not apply" marker — a human-only choice. */
+/** ML's platform-wide "does not apply" marker. */
 const NA_VALUE_ID = '-1';
 
-const NA_TEXTS = new Set(['n/a', 'na', 'não se aplica', 'nao se aplica', '-1', 'null', 'none']);
+/**
+ * Spellings that mean "this attribute does not apply to this product".
+ *
+ * ⚠️ These are now MAPPED to ML's sentinel rather than dropped. The model is
+ * explicitly allowed to declare an attribute inapplicable — many genuinely are
+ * (voltage on a t-shirt, sole material on a notebook) — and refusing to carry
+ * that answer forced it to choose between inventing a value and omitting an
+ * attribute it had correctly judged.
+ *
+ * `null` and `none` are deliberately NOT here any more. A model that emits
+ * `null` is expressing absence, not inapplicability, and turning that into a
+ * positive "does not apply" claim on a live listing is exactly the kind of
+ * confident wrong answer the prompt separates omission from.
+ */
+const NA_TEXTS = new Set([
+  'n/a',
+  'na',
+  'n.a.',
+  'não se aplica',
+  'nao se aplica',
+  'não aplicável',
+  'nao aplicavel',
+  'no aplica',
+  'not applicable',
+  '-1',
+]);
+
+/** The suggestion that declares an attribute inapplicable, in ML's own shape. */
+function naSuggestion(id: string): AiAttributeSuggestion {
+  return { id, value_id: NA_VALUE_ID, value_name: 'N/A', unit_id: null };
+}
 
 /**
  * Map a model answer onto suggestions the editor can stage.
  *
- * Dropped, in order: keys the category does not define (a stale answer for a
- * category the operator has since changed), blank values, and anything that
- * reads as "does not apply". An enumerated attribute whose value matches no
- * option is kept as free text — ML rejects it and says which one, which is more
- * useful than a silent omission.
+ * Dropped: keys the category does not define (a stale answer for a category the
+ * operator has since changed) and blank values. An enumerated attribute whose
+ * value matches no option is kept as free text — ML rejects it and says which
+ * one, which is more useful than a silent omission.
+ *
+ * ⚠️ "Does not apply" is a RESULT, not a drop. It maps to ML's `-1` sentinel and
+ * is staged like any other suggestion, so the operator still confirms it before
+ * it reaches a listing. An OMITTED key remains the model's way of saying "I do
+ * not know" — the prompt draws that line explicitly, and this function is what
+ * makes both halves reachable.
  */
 export function applyAiAttributes(
   attrs: AiAttributeSpec[],
@@ -46,18 +81,23 @@ export function applyAiAttributes(
 
     const text = coerceText(raw);
     if (text == null) continue;
-    if (NA_TEXTS.has(normalize(text))) continue;
+    if (NA_TEXTS.has(normalize(text))) {
+      out.push(naSuggestion(id));
+      continue;
+    }
 
     const match = attr.values.find(
       (v) => typeof v.name === 'string' && normalize(v.name) === normalize(text),
     );
     if (match) {
-      // ⚠️ The text guard above cannot be the only one. `NA_TEXTS` is a fixed
-      // list, and ML localises the sentinel's NAME freely ("Não aplicável",
-      // "Sem especificar", …), so an unlisted spelling matches a real option
-      // and pushes `match.id` — the sentinel — straight through. The id is the
-      // identity; drop it whatever ML calls it.
-      if (match.id === NA_VALUE_ID) continue;
+      // The id is the identity: ML localises the sentinel's NAME freely, so a
+      // spelling `NA_TEXTS` does not know can still match a real option whose
+      // id is `-1`. Normalise it to the same shape rather than shipping ML's
+      // localised label as if it were a chosen value.
+      if (match.id === NA_VALUE_ID) {
+        out.push(naSuggestion(id));
+        continue;
+      }
       out.push({
         id,
         value_id: match.id ?? null,

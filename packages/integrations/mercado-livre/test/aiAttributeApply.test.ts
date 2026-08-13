@@ -51,28 +51,47 @@ describe('applyAiAttributes', () => {
     expect(applyAiAttributes(ATTRS, { NOT_A_REAL_ATTRIBUTE: 'x' })).toEqual([]);
   });
 
-  it('never produces the N/A sentinel, however the model spells it', () => {
-    // Deciding an attribute genuinely does not apply is the operator's call.
-    for (const value of ['-1', 'N/A', 'n/a', 'não se aplica', 'nao se aplica', 'none', 'null']) {
-      expect(applyAiAttributes(ATTRS, { BRAND: value })).toEqual([]);
+  it('carries "does not apply" through as ML’s sentinel, however it is spelled', () => {
+    // Many attributes genuinely do not apply — voltage on a t-shirt, sole
+    // material on a notebook. Dropping the answer forced the model to choose
+    // between inventing a value and omitting an attribute it had judged right.
+    for (const value of ['-1', 'N/A', 'n/a', 'não se aplica', 'nao se aplica', 'No aplica']) {
+      expect(applyAiAttributes(ATTRS, { BRAND: value })).toEqual([
+        { id: 'BRAND', value_id: '-1', value_name: 'N/A', unit_id: null },
+      ]);
     }
   });
 
-  it('drops a sentinel it matched by NAME, whatever ML localised it to', () => {
-    // The text guard is a fixed list and ML names the sentinel freely, so an
-    // unlisted spelling matches a real option and would push its id — '-1' —
-    // through as if it were a genuine choice. The id is the identity.
+  it('does NOT read `null`/`none` as a claim that the attribute is inapplicable', () => {
+    // ⚠️ These used to be treated as N/A. A model emitting `null` is expressing
+    // ABSENCE, not inapplicability, and turning that into a positive "does not
+    // apply" claim on a live listing is exactly the confident-wrong-answer the
+    // prompt separates omission from. `null` is dropped by `coerceText`;
+    // "none"/"nenhum" survive as free text ML can reject and name.
+    expect(applyAiAttributes(ATTRS, { BRAND: null })).toEqual([]);
+    expect(applyAiAttributes(ATTRS, { BRAND: 'none' })).toEqual([
+      { id: 'BRAND', value_id: null, value_name: 'none', unit_id: null },
+    ]);
+  });
+
+  it('normalises a sentinel matched by NAME to the same shape', () => {
+    // ML localises the sentinel's name freely, so a spelling `NA_TEXTS` does
+    // not know can still match a real option whose id is '-1'. It must land as
+    // the canonical sentinel, not as ML's localised label masquerading as a
+    // chosen value.
     const attrs = [
       spec({
         id: 'FIT',
         valueType: 'list',
         values: [
-          { id: '-1', name: 'Não aplicável' },
+          { id: '-1', name: 'Sem especificar' },
           { id: 'F1', name: 'Slim' },
         ],
       }),
     ];
-    expect(applyAiAttributes(attrs, { FIT: 'Não aplicável' })).toEqual([]);
+    expect(applyAiAttributes(attrs, { FIT: 'Sem especificar' })).toEqual([
+      { id: 'FIT', value_id: '-1', value_name: 'N/A', unit_id: null },
+    ]);
     // The real option beside it still resolves normally.
     expect(applyAiAttributes(attrs, { FIT: 'slim' })).toEqual([
       { id: 'FIT', value_id: 'F1', value_name: 'Slim', unit_id: null },
