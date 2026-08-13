@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import type { Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
@@ -276,7 +277,15 @@ function deps(db: FakeDb, api: MercadoLivreApi): ShipmentImportDeps {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // This suite runs the REAL `loadContaBag`, which now shares a module-scope
+  // cache keyed by the document PATH — so a fresh `FakeDb` per test does NOT
+  // isolate it, and every test here seeds `conta-A` with different overrides.
+  __resetAllReadCaches();
   vi.mocked(resolvePrazoDespacho).mockResolvedValue(null);
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 /* ----------------------------------- tests --------------------------------- */
@@ -555,6 +564,38 @@ describe('importShipmentMercadoLivre — happy path write', () => {
 
     const freteInicial = db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData;
     expect(freteInicial.integracaoFreteOuterRef).toBe('documents/int_frete/if-canon');
+  });
+
+  it('reads the conta document ONCE across repeated shipments notifications', async () => {
+    // ML emits a `shipments` notification on every substatus transition, and
+    // `loadContaBag` used to point-read `integracao/{id}` on each one. The
+    // account now shares one cached entry with `loadMercadoLivreContext`.
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFreteCanonico(db, 'if-canon');
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000,
+      },
+    });
+    const api = makeApi({
+      getShipment: vi.fn(async () =>
+        makeShipment({ id: 777, orderId: 1, lastUpdated: '2026-01-15T00:00:00.000-03:00' }),
+      ),
+    });
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+    await importShipmentMercadoLivre(deps(db, api), 777);
+
+    const contaGets = db.opLog.filter(
+      (e) => e.op === 'get' && e.path === `integracao/${INTEGRACAO_ID}`,
+    );
+    expect(contaGets).toHaveLength(1);
   });
 
   it('calls resolvePrazoDespacho with fallbackUs null and the account sellerId', async () => {
