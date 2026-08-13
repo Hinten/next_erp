@@ -98,12 +98,58 @@ A lane's own workflow still triggers it; another lane's does not. **An empty
 `--self` falls back to running**, so forgetting the flag can only cost an extra
 run, never a silent skip.
 
+### ⚠️ The caller and this script are permanently version-skewed
+
+Same root cause as the assertion-1 note at the bottom of this file, different
+victim. GitHub runs a `pull_request`'s workflow **YAML from the merge ref**, while
+every lane checks out `github.event.pull_request.head.sha`. So the YAML is always
+**at least as new** as the script it invokes and never older. Two consequences:
+
+1. On a branch predating the script, `node` exits 1 with `Cannot find module`
+   **before** the script's own `catch` can emit anything. That kills `changes`, and
+   the gate turns it into a red required check nothing but a rebase clears. It
+   happened on runs `31719660542` and `31704153529`.
+2. A flag added to the YAML reaches an **older** copy of the script. `parseArgs`
+   therefore throws on an unrecognised `--flag` instead of absorbing it as a value
+   for whichever flag preceded it.
+
+So **every invocation is wrapped, and the wrapper is not optional**:
+
+```bash
+if ! node .github/scripts/e2e-affected.mjs --roots … --files "…"
+then
+  { echo "run_e2e=true"; echo "reason=…(fail safe)…"; } >> "$GITHUB_OUTPUT"
+fi
+```
+
+⚠️ **The fallback direction is the MODE's, not the lane's** — `--roots` emits
+`true`, `--only-paths` emits `false`. Copying an e2e lane's fallback into
+`ci-nfe.yml`'s live step would spend SEFAZ quota on a bug. Assertion 13 in
+`ci-lane-gates.test.js` rejects a bare invocation and checks the direction against
+the mode; the script's `catch` applies the same rule.
+
 ### `--only-paths`: one job, inverted economics
 
 `nfe-live` emits test documents at SEFAZ **homologação**, which rate-limits
 (`cStat=656` — the `Detect Consumo Indevido Shield` job exists for it). There,
 running unnecessarily is the expensive mistake and skipping is cheap, because
 the offline NF-e suite already ran and the gate states out loud that live did not.
+
+⚠️ **This is a real emission path, not a hypothetical one: `NFE_CI_LIVE_ENABLED`
+is `true` on this repo.** Which is why every fail-safe on this branch of the code
+inverts — `decided()` in `ci-nfe.yml` takes the lane verdict and the live verdict
+as two separate arguments, the `decide-live` step's `if !` fallback emits
+`run_e2e=false`, and the script's `catch` keys off `--only-paths`. A crash must
+never be the thing that decides to call SEFAZ.
+
+**Produção is unreachable from CI, and now enforced rather than merely
+conventional.** `assertSafeTpAmbForTransport` guards both SOAP POST sites and
+honours `NFE_ALLOW_PRODUCAO=true` and nothing else. The older `assertSafeTpAmb`
+still lets `NODE_ENV='test'` through — fine at the generator boundary, where XML is
+built but no socket opens, and **exactly wrong at transport**, because `nfe-live` is
+itself Vitest, so that passthrough disabled the guard for the whole live suite.
+`NFE_ALLOW_PRODUCAO` and `NFE_AMBIENTE` are set in no workflow and are not repo
+variables.
 
 Use it for nothing else. Measured over 30 merged PRs: the dependency closure of
 `@delfrance/integrations-nfe` fires on 14 (it depends on `schemas` and `core`),
@@ -319,6 +365,12 @@ Every lane checks out `github.event.pull_request.head.sha` — the PR **head**, 
 GitHub's merge ref. A repo-state assertion (the `LANES`/`UNGATED` partition, the
 `.env.example` locator, the pinned-deps scanners) therefore only ever sees its own
 branch, and two PRs that are individually honest can produce a red merge result.
+
+⚠️ **Head-vs-merge-ref skew has a second victim**, in the opposite direction: the
+workflow YAML is read from the merge ref while the *script it invokes* comes from
+the head, so the caller can be newer than the callee. See "The caller and this
+script are permanently version-skewed" above — that one is a red lane on the PR
+itself, not on `main`.
 
 It has happened once: **#999** added `ci-mercado-livre.yml` to `main` at 15:11;
 **#1031** added the total-partition assertion at 16:34 from a branch that never
