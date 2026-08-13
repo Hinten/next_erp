@@ -105,6 +105,7 @@ jobs:
           node .github/scripts/e2e-affected.mjs \
             --lane emulator \
             --roots @delfrance/web @delfrance/functions \
+            --self .github/workflows/e2e-emulator.yml \
             --files "${{ steps.collect.outputs.files }}"
 
   e2e-emulator:
@@ -232,9 +233,15 @@ jobs:
   # Downstream job (not a step) so it starts AFTER e2e-emulator concludes and can
   # fetch its logs. Mirrors e2e-reusable.yml's report-failure.
   report-failure:
+    # Named explicitly: without a `name:` this job published as bare
+    # `report-failure`, byte-identical to e2e-reusable.yml's reporter. A check-run
+    # name carries no workflow prefix, so the two were indistinguishable in the PR
+    # checks list — the same collision this PR removes across the domain lanes.
+    name: Emulator failure note
     needs: [e2e-emulator]
     if: ${{ always() && needs.e2e-emulator.result == 'failure' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write

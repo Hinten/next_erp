@@ -156,6 +156,15 @@ jobs:
             ${{ inputs.integrations
             && 'pnpm --filter @delfrance/integrations-app exec next start --port 3001'
             || '' }}
+          # `next start` runs with NODE_ENV=production, and since #821/T5 the
+          # backends' CORS allow-list is EXACTLY this variable in production —
+          # localhost is only implicit outside it. Unset, the :3001 admin routes
+          # would allow no origin at all and every browser call from :3000 would
+          # fail CORS (configuracoes.spec.ts hangs to a 60s timeout, which is
+          # precisely how this was found). CI serves a production build to a
+          # localhost browser, so like any real deploy it must declare its
+          # origins. Harmless on the lanes that start no :3001 server.
+          ALLOWED_ADMIN_ORIGINS: http://localhost:3000
         run: |
           args=""
           for p in ${{ inputs.projects }}; do args="$args --project=$p"; done

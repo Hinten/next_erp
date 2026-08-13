@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { READ_CACHE_TTL, __resetAllReadCaches } from '@delfrance/data/admin/cache';
+
+import { __setWhatsappCacheClockForTests } from './contaCache';
 import {
   DEFAULT_GRAPH_API_VERSION,
   GRAPH_BASE,
@@ -63,9 +66,21 @@ function storedCred(over: Record<string, unknown> = {}) {
   return { permanent_token: 'TKN', phoneNumberId: 'PID', wa_id: 'PID', createdAt: NOW, ...over };
 }
 
+let now = 1_700_000_000_000;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // The conta reader is module-scope and every test here uses `i1`, so without
+  // this the first test's absent-document entry serves the rest.
+  __resetAllReadCaches();
+  now = 1_700_000_000_000;
+  __setWhatsappCacheClockForTests(() => now);
   h.storeSave.mockImplementation(async (c: unknown) => c);
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
+  __setWhatsappCacheClockForTests();
 });
 
 describe('loadWhatsappContext', () => {
@@ -193,5 +208,69 @@ describe('fetchWhatsappPhoneNumber', () => {
     await expect(
       fetchWhatsappPhoneNumber('PID', 'TKN', { fetch: fetchFn as unknown as typeof fetch }),
     ).rejects.toBeInstanceOf(WhatsappGraphError);
+  });
+});
+
+describe('loadWhatsappContext — the integracao read cache', () => {
+  /** Counts the underlying `.get()`s rather than `docRef` calls. */
+  function countingConta(): { reads: number } {
+    const counter = { reads: 0 };
+    h.docRef.mockReturnValue({
+      get: async () => {
+        counter.reads += 1;
+        return { exists: true, data: () => ({}) };
+      },
+    });
+    h.parseRead.mockReturnValue({ tipo: 6, nome: 'Loja WA', phoneNumberId: 'PID', wa_id: 'PID' });
+    return counter;
+  }
+
+  it('serves a repeated load from cache', async () => {
+    const c = countingConta();
+
+    await loadWhatsappContext({} as never, 'i1');
+    await loadWhatsappContext({} as never, 'i1');
+
+    expect(c.reads).toBe(1);
+  });
+
+  it('re-reads after ttlMs — the staleness contract, not just the hit', async () => {
+    const c = countingConta();
+
+    await loadWhatsappContext({} as never, 'i1');
+    now += READ_CACHE_TTL.config - 1;
+    await loadWhatsappContext({} as never, 'i1');
+    expect(c.reads).toBe(1);
+
+    // The boundary is EXCLUSIVE: at exactly `ttlMs` the entry is expired.
+    now += 1;
+    await loadWhatsappContext({} as never, 'i1');
+    expect(c.reads).toBe(2);
+  });
+
+  it('never caches an absent document — a cached one turns an outbound TERMINAL', async () => {
+    // `WhatsappContaNotConfiguredError` reaches the outbound dispatcher and marks
+    // the message `estadoEnvio = erro`, which the stale-outbound sweep does not
+    // re-drive. An operator would have to resend by hand.
+    h.docRef.mockReturnValue({ get: async () => ({ exists: false }) });
+    await expect(loadWhatsappContext({} as never, 'i1')).rejects.toBeInstanceOf(
+      WhatsappContaNotConfiguredError,
+    );
+
+    countingConta();
+    await expect(loadWhatsappContext({} as never, 'i1')).resolves.toBeDefined();
+  });
+
+  it('still throws on a wrong tipo when the value came from cache', async () => {
+    const c = countingConta();
+    h.parseRead.mockReturnValue({ tipo: 1, nome: 'ML' });
+
+    await expect(loadWhatsappContext({} as never, 'i1')).rejects.toBeInstanceOf(
+      WhatsappContaNotConfiguredError,
+    );
+    await expect(loadWhatsappContext({} as never, 'i1')).rejects.toBeInstanceOf(
+      WhatsappContaNotConfiguredError,
+    );
+    expect(c.reads).toBe(1);
   });
 });
