@@ -21,7 +21,7 @@ import { DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION } from '@delfrance/integrations-me
 import { CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
 
 import { loadConfigIa } from '@/lib/ai/configIa';
-import { getAiModelosCached } from '@/lib/ai/modelosCache';
+import { getAiModelosCached, modelosParaValidacao } from '@/lib/ai/modelosCache';
 import { resolveModelo } from '@/lib/ai/models';
 import { createVertexListModelsFn } from '@/lib/ai/provider';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
@@ -44,7 +44,11 @@ export async function GET(req: Request): Promise<NextResponse> {
     stored: config.modelo,
     env: envModelo,
     padrao: CONFIG_IA_MODELO_PADRAO,
-    disponiveis: lista.modelos,
+    // ⚠️ Validated against the LIVE list only. The fallback list is fine to
+    // offer in the Select, but using it here would report a perfectly good
+    // stored model as `substituido` purely because the list call failed — and
+    // the page would tell the operator to fix a setting that is not broken.
+    disponiveis: modelosParaValidacao(lista),
   });
 
   return NextResponse.json({

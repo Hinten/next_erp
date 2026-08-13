@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AI_MODELOS_FALLBACK } from './models';
-import { __resetAiModelosCache, getAiModelosCached } from './modelosCache';
+import { AI_MODELOS_FALLBACK, resolveModelo } from './models';
+import { __resetAiModelosCache, getAiModelosCached, modelosParaValidacao } from './modelosCache';
 
 beforeEach(() => {
   __resetAiModelosCache();
@@ -77,5 +77,55 @@ describe('getAiModelosCached', () => {
     const out = await getAiModelosCached(async () => []);
     expect(out.modelos.length).toBeGreaterThan(0);
     expect(out.fonte).toBe('fallback');
+  });
+});
+
+describe('modelosParaValidacao', () => {
+  it('is the live list when the provider answered', async () => {
+    const lista = await getAiModelosCached(async () => [{ name: 'models/gemini-3.6-flash' }]);
+    expect(modelosParaValidacao(lista)).toEqual(lista.modelos);
+  });
+
+  it('is EMPTY when the list is the shipped fallback', async () => {
+    // ⚠️ The bug this closes. `getAiModelosCached` never answers empty — both
+    // `projectModelos` and the catch substitute the fallback — so validating
+    // against `.modelos` made `resolveModelo`'s "empty means we could not find
+    // out" escape hatch unreachable, and INVERTED it: a transient `models.list`
+    // blip shrank the known universe to three shipped ids and any stored model
+    // outside them was declared retired and silently replaced.
+    const lista = await getAiModelosCached(async () => {
+      throw new Error('transient 503');
+    });
+    expect(lista.modelos.length).toBeGreaterThan(0);
+    expect(modelosParaValidacao(lista)).toEqual([]);
+  });
+
+  it('leaves a stored model alone when only the LIST call failed', async () => {
+    // Failing to list models is not evidence that generateContent would reject
+    // the stored one. End-to-end through the real resolver.
+    const lista = await getAiModelosCached(async () => {
+      throw new Error('transient 503');
+    });
+    expect(
+      resolveModelo({
+        stored: 'gemini-3.7-pro',
+        env: null,
+        padrao: 'gemini-3.5-flash-lite',
+        disponiveis: modelosParaValidacao(lista),
+      }),
+    ).toEqual({ modelo: 'gemini-3.7-pro', substituido: false });
+  });
+
+  it('still substitutes a retired model when the list IS live', async () => {
+    // The guard must not disable the real validation it was built for.
+    const lista = await getAiModelosCached(async () => [{ name: 'models/gemini-3.5-flash-lite' }]);
+    expect(
+      resolveModelo({
+        stored: 'gemini-2.0-retired',
+        env: null,
+        padrao: 'gemini-3.5-flash-lite',
+        disponiveis: modelosParaValidacao(lista),
+      }),
+    ).toEqual({ modelo: 'gemini-3.5-flash-lite', substituido: true });
   });
 });

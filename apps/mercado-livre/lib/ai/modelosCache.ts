@@ -17,6 +17,7 @@ import { READ_CACHE_TTL, createReadCache } from '@delfrance/data/admin/cache';
 import {
   AI_MODELOS_FALLBACK,
   projectModelos,
+  type AiModelo,
   type AiModelosResult,
   type ProviderModelRow,
 } from './models';
@@ -54,6 +55,25 @@ export async function getAiModelosCached(
     if (err instanceof DOMException && err.name === 'AbortError') throw err;
     return { modelos: [...AI_MODELOS_FALLBACK], fonte: 'fallback', erro: messageOf(err) };
   }
+}
+
+/**
+ * The list `resolveModelo` may VALIDATE against — empty unless it came live.
+ *
+ * ⚠️ Deliberately NOT the same list the UI offers, and the difference closes a
+ * real bug. `getAiModelosCached` can never answer empty: both `projectModelos`
+ * and the `catch` substitute the shipped fallback. So handing `.modelos`
+ * straight to `resolveModelo` made its documented escape hatch — "empty means we
+ * could not find out, so skip validation" — unreachable, and inverted the
+ * intent: a transient `models.list` blip shrank the known universe to the three
+ * shipped ids, and any stored model outside them was declared RETIRED and
+ * silently replaced.
+ *
+ * Failing to LIST models is not evidence that `generateContent` would reject the
+ * stored one. Only a live answer is.
+ */
+export function modelosParaValidacao(lista: AiModelosResult): AiModelo[] {
+  return lista.fonte === 'live' ? lista.modelos : [];
 }
 
 /** Test seam — the cache memoizes across calls within a process. */

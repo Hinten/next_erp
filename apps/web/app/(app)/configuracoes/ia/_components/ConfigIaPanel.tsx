@@ -64,9 +64,33 @@ import { CONFIG_IA_ML_ATRIBUTOS_DOC_ID, configIaCollection } from '@/lib/data/co
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 
+/**
+ * Raised when someone else saved this page while this form was open.
+ *
+ * Tier 3 of the lost-update ladder: the browser SDK cannot express a
+ * `lastUpdateTime` precondition, so an interactive edit that loses a race has to
+ * be shown to the human rather than dropped (root `CLAUDE.md` rule 7).
+ */
+class ConfigIaConflictError extends Error {
+  constructor() {
+    super(
+      'Outra pessoa alterou estas configurações enquanto esta página estava aberta. Recarregue para ver os valores atuais antes de salvar.',
+    );
+    this.name = 'ConfigIaConflictError';
+  }
+}
+
 const PROVEDOR_OPTIONS = [
   { value: PROVEDOR_IA.vertex, label: 'Vertex AI (recomendado)' },
-  { value: PROVEDOR_IA.googleai, label: 'Google AI (Gemini API)' },
+  // Disabled until it is actually wired: the suggestion route calls
+  // `createVertexGenerateFn()` unconditionally and now declines outright for any
+  // other provider. Offering a selectable option that only produces a 409 is
+  // worse than not offering it.
+  {
+    value: PROVEDOR_IA.googleai,
+    label: 'Google AI (Gemini API) — não implementado',
+    disabled: true,
+  },
 ] as const;
 
 /** How long a saved change can take to reach a warm backend instance. */
@@ -146,14 +170,27 @@ export function ConfigIaPanel() {
         ultimaModificacao: nowMillis(),
       } satisfies ConfigIa;
 
-      // Transactional read-modify-write like NfeConfigPanel, and `tx.set` rather
-      // than `tx.update` because the document legitimately may not exist yet —
-      // this page is the thing that creates it. Re-reading inside the
-      // transaction keeps a concurrent editor's unrelated fields, and every
-      // field this form owns comes from the form.
+      // `tx.set`, not `tx.update`: the document legitimately may not exist yet —
+      // this page is the thing that creates it.
+      //
+      // ⚠️ The re-read is NOT here to preserve sibling fields. `next` covers
+      // every field in `configIaSchema`, so `{ ...fresh, ...next }` IS `next` —
+      // that is what makes this different from `NfeConfigPanel`, whose doc holds
+      // counters the panel does not own. What the re-read buys here is the
+      // CONFLICT check below, which root `CLAUDE.md` rule 7 tier 3 asks for: the
+      // browser SDK has no `lastUpdateTime` precondition, so without it two
+      // operators on this page silently overwrite each other — A opens it, B
+      // saves a new model, A saves a stale form and B's change is gone with no
+      // signal on either side.
       await runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
         const fresh = snap.exists() ? snap.data() : configIaSchema.parse({});
+        // Compared against the doc the FORM was seeded from, re-derived inside
+        // the transaction — comparing against a value captured outside it would
+        // be a guard that never fires (rule 7).
+        if (snap.exists() && fresh.ultimaModificacao !== base.ultimaModificacao) {
+          throw new ConfigIaConflictError();
+        }
         tx.set(ref, { ...fresh, ...next });
       });
     },
@@ -169,6 +206,15 @@ export function ConfigIaPanel() {
       void queryClient.invalidateQueries({ queryKey: ['ia', 'modelos'] });
     },
     onError: (err) => {
+      if (err instanceof ConfigIaConflictError) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Configuração alterada',
+          message: err.message,
+        });
+        void queryClient.invalidateQueries({ queryKey: ['configIa'] });
+        return;
+      }
       if (err instanceof FirebaseError || err instanceof z.ZodError) {
         notifications.show({ color: 'red', title: 'Falha ao salvar', message: err.message });
         return;

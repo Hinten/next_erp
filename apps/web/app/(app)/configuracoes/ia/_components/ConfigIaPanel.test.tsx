@@ -15,6 +15,9 @@ const h = vi.hoisted(() => ({
   /** What `GET /ia/modelos` answers; `null` = the backend is unreachable. */
   modelos: null as MercadoLivreIaModelos | null,
   canWrite: true,
+  /** What the transaction re-read sees; null = same as `stored`. */
+  remote: null as ConfigIa | null,
+  notify: vi.fn(),
 }));
 
 vi.mock('firebase/firestore', () => ({
@@ -29,12 +32,21 @@ vi.mock('firebase/firestore', () => ({
       set: (ref: unknown, value: Record<string, unknown>) => void;
     }) => Promise<void>,
   ) =>
+    // `remote` is what the transaction re-read sees — swap it to simulate
+    // someone else having saved while this form was open.
     fn({
-      get: async () => ({ exists: () => h.stored != null, data: () => h.stored }),
+      get: async () => {
+        const seen = h.remote ?? h.stored;
+        return { exists: () => seen != null, data: () => seen };
+      },
       set: (_ref, value) => {
         h.writes.push(value);
       },
     }),
+}));
+
+vi.mock('@mantine/notifications', () => ({
+  notifications: { show: h.notify },
 }));
 
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
@@ -94,6 +106,8 @@ beforeEach(() => {
   h.writes = [];
   h.modelos = liveModelos();
   h.canWrite = true;
+  h.remote = null;
+  h.notify.mockClear();
 });
 
 describe('ConfigIaPanel — the document may not exist yet', () => {
@@ -303,5 +317,57 @@ describe('the shipped system instruction is visible', () => {
     await waitFor(() => screen.getByRole('button', { name: /Ver instrução padrão/i }));
     expect(screen.queryByRole('button', { name: /copiar para o campo/i })).toBeNull();
     expect(screen.queryByText('em uso')).toBeNull();
+  });
+});
+
+describe('two operators editing the same singleton', () => {
+  it('refuses to overwrite a change made while the form was open', async () => {
+    // ⚠️ Rule 7 tier 3. The browser SDK has no `lastUpdateTime` precondition, so
+    // without this the loser of the race silently wins: A opens the page, B
+    // saves a new model, A saves a stale form and B's change is gone with no
+    // signal on either side.
+    h.stored = { ...defaults(), ultimaModificacao: 1_000 };
+    h.remote = { ...defaults(), modelo: 'gemini-3.6-flash', ultimaModificacao: 2_000 };
+    renderPanel();
+    await waitFor(() => screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+
+    fireEvent.click(screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+
+    await waitFor(() => {
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringMatching(/Outra pessoa alterou/i) }),
+      );
+    });
+    expect(h.writes).toHaveLength(0);
+  });
+
+  it('saves normally when nobody else touched it', async () => {
+    h.stored = { ...defaults(), ultimaModificacao: 1_000 };
+    h.remote = { ...defaults(), ultimaModificacao: 1_000 };
+    renderPanel();
+    await waitFor(() => screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+
+    fireEvent.click(screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+
+    await waitFor(() => {
+      expect(h.writes).toHaveLength(1);
+    });
+  });
+
+  it('creates the doc without a conflict when none exists yet', async () => {
+    // A fresh tenant has no document; there is nothing to have lost a race to.
+    h.stored = null;
+    h.remote = null;
+    renderPanel();
+    await waitFor(() => screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+
+    fireEvent.click(screen.getByRole('switch', { name: /sugestão por ia ativa/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+
+    await waitFor(() => {
+      expect(h.writes).toHaveLength(1);
+    });
   });
 });

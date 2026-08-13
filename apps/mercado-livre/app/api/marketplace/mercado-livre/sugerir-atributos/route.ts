@@ -16,11 +16,11 @@
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
-import { CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
+import { CONFIG_IA_MODELO_PADRAO, PROVEDOR_IA } from '@delfrance/schemas';
 
 import { loadConfigIa } from '@/lib/ai/configIa';
 import { resolveModelo } from '@/lib/ai/models';
-import { getAiModelosCached } from '@/lib/ai/modelosCache';
+import { getAiModelosCached, modelosParaValidacao } from '@/lib/ai/modelosCache';
 import {
   AiNotConfiguredError,
   AiUnparseableAnswerError,
@@ -99,6 +99,21 @@ export async function POST(req: Request): Promise<NextResponse> {
       { status: 409 },
     );
   }
+  // ⚠️ Only Vertex is wired — `createVertexGenerateFn()` below runs
+  // unconditionally. Without this check `provedor` was a WRITE-ONLY field: an
+  // operator could select "Google AI", save, get a green confirmation, and every
+  // suggestion would still run on Vertex with nothing anywhere saying so.
+  // Declining turns a silent no-op into a diagnosable one, and gives a future
+  // second provider a place that fails loudly until it is actually wired.
+  if (config.provedor !== PROVEDOR_IA.vertex) {
+    return NextResponse.json(
+      {
+        error: `O provedor "${config.provedor}" ainda não está implementado. Selecione Vertex AI nas configurações de IA.`,
+        code: 'AI_PROVEDOR_NAO_SUPORTADO',
+      },
+      { status: 409 },
+    );
+  }
 
   try {
     return await runSingleFlight(auth.caller.uid, async () => {
@@ -133,9 +148,11 @@ export async function POST(req: Request): Promise<NextResponse> {
             stored: config.modelo,
             env: process.env.MERCADO_LIVRE_AI_MODEL ?? null,
             padrao: CONFIG_IA_MODELO_PADRAO,
-            // Cached and fallback-backed, so this never fails the suggestion —
-            // an unknown list skips validation rather than rejecting the model.
-            disponiveis: (await getAiModelosCached(createVertexListModelsFn())).modelos,
+            // ⚠️ `modelosParaValidacao`, NOT `.modelos`. The cached result is
+            // never empty (it falls back to the shipped list), so validating
+            // against it would treat a `models.list` outage as proof that the
+            // stored model is retired — and silently swap it.
+            disponiveis: modelosParaValidacao(await getAiModelosCached(createVertexListModelsFn())),
           }).modelo,
           systemInstruction: config.promptSistema,
           temperature: config.temperatura,
