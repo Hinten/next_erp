@@ -185,6 +185,14 @@ jobs:
             - Lead the summary with the shape of the work — how many real issues,
               or "no blocking issues" when that is the case.
             - Write in English.
+          # `--model` is pinned on purpose. Without it the action uses whatever
+          # Claude Code defaults to on a fresh install, which is NOT your local
+          # `~/.claude/settings.json` — that file never reaches the runner — and
+          # which can change with a Claude Code release without anything here
+          # changing. A review lane that reads fiscal code and race guards should
+          # not silently switch models. Use the exact API id, not a selector
+          # shorthand like `opus[1m]`.
           claude_args: |
+            --model claude-opus-5
             --max-turns 60
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(pnpm turbo run typecheck),Bash(pnpm turbo run lint),Bash(pnpm exec vitest run:*)"
