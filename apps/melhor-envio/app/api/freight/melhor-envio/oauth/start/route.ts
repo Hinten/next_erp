@@ -5,6 +5,11 @@
  * account and returns it as JSON. The browser then navigates there. The
  * Bearer token (PERM.frete.write) authorizes minting the state; the state
  * itself is the integrity guarantee the public callback verifies.
+ *
+ * #1034: it also RECORDS the attempt before handing out the URL — the state's
+ * `nonce` — which is what lets the callback redeem it exactly once. Persist
+ * BEFORE returning the URL: a consent completed against a record that was never
+ * written is a connect that fails closed.
  */
 import { NextResponse } from 'next/server';
 import { buildAuthorizeUrl } from '@delfrance/integrations-freight-br';
@@ -12,6 +17,7 @@ import { buildAuthorizeUrl } from '@delfrance/integrations-freight-br';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMelhorEnvioContext } from '@/lib/freight/melhorEnvio';
+import { melhorEnvioOauthState } from '@/lib/freight/oauthState';
 import { signState } from '@/lib/freight/state';
 import { isMelhorEnvioError, melhorEnvioErrorResponse } from '@/lib/freight/respond';
 
@@ -38,7 +44,9 @@ export async function GET(req: Request): Promise<NextResponse> {
   const db = getAdminFirestore();
   try {
     const ctx = await loadMelhorEnvioContext(db, intFreteId);
-    const state = signState(intFreteId, secret);
+    const { state, nonce } = signState(intFreteId, secret);
+    // Melhor Envio documents no PKCE, so the verifier is always null here.
+    await melhorEnvioOauthState.put(db, intFreteId, { nonce, codeVerifier: null });
     const authorizeUrl = buildAuthorizeUrl({
       baseUrl: ctx.oauthConfig.baseUrl,
       clientId: ctx.oauthConfig.clientId,

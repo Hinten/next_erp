@@ -11,11 +11,13 @@ backend. See `README.md` and `CONTRIBUTING.md`. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — the eight lanes in `.github/workflows/` run **concurrently**, gated on
+CI — the nine lanes in `.github/workflows/` run **concurrently**, gated on
 nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
 from the workspace dependency graph and reports through one unskippable check;
 `ci.yml` excludes the nfe/freight/storage/functions tests, which the domain
-pipelines `ci-{nfe,freight,storage,rules}.yml` own. **Touching
+pipelines `ci-{nfe,freight,storage,rules}.yml` own. `ci-mercado-livre.yml` is the
+odd one out: `ci.yml` *does* run the ML unit tests, but `vitest.config.ts`
+excludes `*.firestore.test.ts`, so that lane alone runs them. **Touching
 `.github/workflows/` → the `ci-lanes` skill**, which carries the whole design.
 
 Four rules you must not break without reading it first:
@@ -26,7 +28,7 @@ Four rules you must not break without reading it first:
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
    unique repo-wide. The pinnable ones are `E2E gate (cadastros|vendas|emulator)`,
-   `CI gate (nfe|freight|storage|rules)` and `lint-typecheck-test`.
+   `CI gate (nfe|freight|mercado-livre|storage|rules)` and `lint-typecheck-test`.
 3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
    downstream job makes it run even after its upstream failed. Let `needs:` carry
    the skip instead.

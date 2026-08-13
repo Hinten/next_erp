@@ -15,10 +15,14 @@ import { NextResponse } from 'next/server';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import {
+  codeChallengeS256,
+  createCodeVerifier,
+  signState,
+} from '@delfrance/data/admin/oauth-state';
+
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { putOauthState } from '@/lib/marketplace/oauthStateStore';
-import { codeChallengeS256, createCodeVerifier, pkceEnabled } from '@/lib/marketplace/pkce';
-import { signState } from '@/lib/marketplace/state';
+import { mercadoLivreOauthState, pkceEnabled } from '@/lib/marketplace/oauthState';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
 
 export const dynamic = 'force-dynamic';
@@ -46,7 +50,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const ctx = await loadMercadoLivreContext(db, integracaoId);
     const { state, nonce } = signState(integracaoId, secret);
     const codeVerifier = pkceEnabled() ? createCodeVerifier() : null;
-    await putOauthState(db, integracaoId, { nonce, codeVerifier });
+    await mercadoLivreOauthState.put(db, integracaoId, { nonce, codeVerifier });
     const authorizeUrl = ctx.channel.oauthFlow.start(
       state,
       codeVerifier

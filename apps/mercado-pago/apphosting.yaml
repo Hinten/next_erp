@@ -27,6 +27,12 @@ runConfig:
 #   MERCADO_PAGO_PUBLIC_URL      this backend's public origin — used to build the
 #                                OAuth redirect_uri (must match the URI registered
 #                                in the Mercado Pago application dashboard)
+#   MERCADO_PAGO_PKCE_ENABLED    OPTIONAL — "1" drives the OAuth connect flow with
+#                                PKCE (#1034). ⚠️ Must match the PKCE toggle on the
+#                                registered application: once MP's toggle is on the
+#                                code_challenge/code_verifier parameters are
+#                                MANDATORY, so flip both together. Not a secret — a
+#                                plain env var in the console, not below.
 #   MERCADO_PAGO_TASKS_DISABLED  OPTIONAL — set to "1" to disable the Cloud Tasks
 #                                enqueue (persist-for-the-sweep fallback); use before
 #                                the notification-function IAM is granted
