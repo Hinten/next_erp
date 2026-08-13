@@ -169,6 +169,10 @@ describe('CategoriaField', () => {
           categoryName: 'Camisetas',
           domainId: 'MLB-T_SHIRTS',
           domainName: 'Camisetas',
+          pathFromRoot: [
+            { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+            { id: 'MLB31447', name: 'Camisetas' },
+          ],
         },
       ],
     });
@@ -176,6 +180,78 @@ describe('CategoriaField', () => {
     await waitFor(() => {
       expect(h.sugerirCategorias).toHaveBeenCalledOnce();
     });
+    fireEvent.click(await screen.findByText('MLB31447'));
+    expect(onChange).toHaveBeenCalledWith('MLB31447');
+  });
+
+  it('shows each suggestion with its full path, not just the leaf name', async () => {
+    // ⚠️ ML files the same leaf name under several different parents, and
+    // `domain_discovery/search` returns only that leaf — so a leaf-only label
+    // rendered the SAME text on every row and the list read as one category
+    // suggested five times, distinguishable only by an opaque MLB id.
+    renderField(null);
+    fireEvent.click(screen.getByRole('button', { name: 'Escolher categoria' }));
+    await waitFor(() => {
+      expect(screen.getByText('Roupas')).toBeDefined();
+    });
+
+    h.sugerirCategorias.mockResolvedValue({
+      sugestoes: [
+        {
+          categoryId: 'MLB31447',
+          categoryName: 'Camisetas e Regatas',
+          domainId: 'MLB-T_SHIRTS',
+          domainName: 'Camisetas',
+          pathFromRoot: [
+            { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+            { id: 'MLB108704', name: 'Roupas Masculinas' },
+            { id: 'MLB31447', name: 'Camisetas e Regatas' },
+          ],
+        },
+        {
+          categoryId: 'MLB439327',
+          categoryName: 'Camisetas e Regatas',
+          domainId: 'MLB-T_SHIRTS',
+          domainName: 'Camisetas',
+          pathFromRoot: [
+            { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+            { id: 'MLB108705', name: 'Roupas Femininas' },
+            { id: 'MLB439327', name: 'Camisetas e Regatas' },
+          ],
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Sugerir categoria/ }));
+
+    // The two rows are now told apart by their trail, which is the point.
+    await waitFor(() => {
+      expect(screen.getByText(/Roupas Masculinas/)).toBeDefined();
+    });
+    expect(screen.getByText(/Roupas Femininas/)).toBeDefined();
+  });
+
+  it('still renders a suggestion whose path could not be resolved', async () => {
+    // The route sends `pathFromRoot: null` rather than failing the whole list
+    // over one unresolvable category read; the row must stay selectable.
+    const onChange = renderField(null);
+    fireEvent.click(screen.getByRole('button', { name: 'Escolher categoria' }));
+    await waitFor(() => {
+      expect(screen.getByText('Roupas')).toBeDefined();
+    });
+
+    h.sugerirCategorias.mockResolvedValue({
+      sugestoes: [
+        {
+          categoryId: 'MLB31447',
+          categoryName: 'Camisetas e Regatas',
+          domainId: null,
+          domainName: null,
+          pathFromRoot: null,
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Sugerir categoria/ }));
+
     fireEvent.click(await screen.findByText('MLB31447'));
     expect(onChange).toHaveBeenCalledWith('MLB31447');
   });
