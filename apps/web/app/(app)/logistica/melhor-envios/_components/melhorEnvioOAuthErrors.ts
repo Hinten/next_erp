@@ -1,6 +1,6 @@
 'use client';
 
-import { oauthCallbackMessage, useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
+import { useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
 
 /**
  * The Melhor Envio OAuth callback outcome (`?me=connected|error&reason=…`), turned
@@ -38,10 +38,6 @@ const MENSAGENS: Readonly<Record<string, string>> = {
   missing_params: 'O Melhor Envio não devolveu o código de autorização.',
   bad_state: 'A assinatura do state não confere. Recomece a conexão a partir da tela da conta.',
 };
-
-export function melhorEnvioCallbackMessage(reason: string | null): string {
-  return oauthCallbackMessage(reason, MENSAGENS);
-}
 
 /**
  * Toast the callback outcome once per navigation. Shared by the account panel and

@@ -88,15 +88,21 @@ export class MelhorEnvioReauthRequiredError extends MelhorEnvioError {
  * `issues` holds the Zod issues. ⚠️ Callers logging them must take PATHS and CODES
  * only: an issue can carry the inspected input, and on the token path that input is
  * a token response.
+ *
+ * ⚠️ It deliberately does **not** carry the offending `body`, unlike its HTTP
+ * sibling. On this path the body IS the token response — a 200 that merely lacked a
+ * required field still holds a live `access_token` — and no caller ever needs it:
+ * the failing field names in `issues` are the whole diagnostic. Attaching it would
+ * park a credential on an object that propagates, waiting for the first structured
+ * logger that serializes own properties. (`MelhorEnvioHttpError.body` is safe by
+ * contrast: it is built only from a non-2xx ERROR response.)
  */
 export class MelhorEnvioSchemaError extends MelhorEnvioError {
   public readonly issues: unknown;
-  public readonly body: unknown;
-  constructor(message: string, issues: unknown, body: unknown) {
+  constructor(message: string, issues: unknown) {
     super(message);
     this.name = 'MelhorEnvioSchemaError';
     this.issues = issues;
-    this.body = body;
   }
 }
 
