@@ -133,7 +133,7 @@ describe('GET /api/oauth/melhor-envio/callback', () => {
         }),
     ],
     ['me_recusou', () => new MelhorEnvioHttpError('Melhor Envio /oauth/token: HTTP 401', 401, {})],
-    ['resposta_invalida', () => new MelhorEnvioSchemaError('formato inesperado', [], {})],
+    ['resposta_invalida', () => new MelhorEnvioSchemaError('formato inesperado', [])],
     ['rede', () => new MelhorEnvioNetworkError('fetch falhou')],
     // Matched by the guard (the base class) but deliberately unmapped.
     ['exchange', () => new MelhorEnvioError('algo novo')],
@@ -176,11 +176,9 @@ describe('GET /api/oauth/melhor-envio/callback', () => {
 
   it('names the failing fields when ME returns 200 with an unparseable body', async () => {
     h.exchangeAndPersist.mockRejectedValue(
-      new MelhorEnvioSchemaError(
-        'formato inesperado',
-        [{ code: 'invalid_type', path: ['refresh_token'], message: 'Required' }],
-        { token_type: 'Bearer' },
-      ),
+      new MelhorEnvioSchemaError('formato inesperado', [
+        { code: 'invalid_type', path: ['refresh_token'], message: 'Required' },
+      ]),
     );
     await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
 
@@ -195,11 +193,11 @@ describe('GET /api/oauth/melhor-envio/callback', () => {
     // and it would throw INSIDE the catch block — replacing the redirect that names
     // the cause with an unhandled 500.
     h.exchangeAndPersist.mockRejectedValue(
-      new MelhorEnvioSchemaError(
-        'formato inesperado',
-        [null, 'nem um objeto', { code: 'invalid_type', path: ['refresh_token'] }],
-        {},
-      ),
+      new MelhorEnvioSchemaError('formato inesperado', [
+        null,
+        'nem um objeto',
+        { code: 'invalid_type', path: ['refresh_token'] },
+      ]),
     );
     const res = await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
 
@@ -215,11 +213,9 @@ describe('GET /api/oauth/melhor-envio/callback', () => {
     // NAMES may be logged. (An HTTP error's body is safe by contrast: it is a
     // non-2xx error body, and the test above asserts it IS logged.)
     h.exchangeAndPersist.mockRejectedValue(
-      new MelhorEnvioSchemaError(
-        'formato inesperado',
-        [{ code: 'invalid_type', path: ['refresh_token'], input: 'tok-do-corpo' }],
-        { access_token: 'tok-do-corpo', token_type: 'Bearer' },
-      ),
+      new MelhorEnvioSchemaError('formato inesperado', [
+        { code: 'invalid_type', path: ['refresh_token'], input: 'tok-do-corpo' },
+      ]),
     );
     await GET(req({ code: 'auth-code', state: signState('int-1', STATE_SECRET) }));
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { oauthCallbackMessage, useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
+import { useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
 
 /**
  * The OAuth callback outcome (`?ml=connected|error&reason=…`), turned into
@@ -39,10 +39,6 @@ const MENSAGENS: Readonly<Record<string, string>> = {
   missing_params: 'O Mercado Livre não devolveu o código de autorização.',
   bad_state: 'A assinatura do state não confere. Recomece a conexão a partir da tela da conta.',
 };
-
-export function mercadoLivreCallbackMessage(reason: string | null): string {
-  return oauthCallbackMessage(reason, MENSAGENS);
-}
 
 /**
  * Toast the callback outcome once per navigation. Shared by the account panel and

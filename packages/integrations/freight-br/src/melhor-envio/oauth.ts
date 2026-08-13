@@ -123,10 +123,10 @@ async function postToken(
     // `refresh_token` is required here, so this arm is genuinely reachable.
     const result = tokenResponseSchema.safeParse(parsed);
     if (!result.success) {
+      // `parsed` is deliberately NOT attached — it is the token response.
       throw new MelhorEnvioSchemaError(
         'Resposta do /oauth/token do Melhor Envio em formato inesperado.',
         result.error.issues,
-        parsed,
       );
     }
     return result.data;
