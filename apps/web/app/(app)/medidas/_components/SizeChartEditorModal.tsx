@@ -53,7 +53,9 @@ import {
   MercadoLivreClientNetworkError,
   type MercadoLivreChartValidationError,
   type MercadoLivreClient,
+  type MercadoLivreMedidasSugestao,
 } from '@/lib/mercado-livre/client';
+import { SizeChartAiModal } from './SizeChartAiModal';
 import { SizeChartGrid } from './SizeChartGrid';
 
 /** A size variation group (tipo 1) the chart's rows bind to. */
@@ -73,6 +75,8 @@ export interface SizeChartEditorModalProps {
   onClose: () => void;
   client: MercadoLivreClient;
   integracaoId: string;
+  /** The tabela this guia belongs to — the AI agent reads its photo and descrição. */
+  tabMediId: string;
   /** The guia being edited, or null to create one. */
   chart: MlSizeChart | null;
   /** Its index in the conta's stored list, or null for a new one. */
@@ -115,6 +119,7 @@ export function SizeChartEditorModal({
   onClose,
   client,
   integracaoId,
+  tabMediId,
   chart,
   chartIndex,
   grupos,
@@ -147,6 +152,15 @@ export function SizeChartEditorModal({
   const [errorChartIndex, setErrorChartIndex] = useState(0);
   const [busy, setBusy] = useState<'draft' | 'send' | null>(null);
   const [definicaoOpen, setDefinicaoOpen] = useState(!sent);
+
+  /**
+   * AI fill. `aiOpen` with a null `aiResult` is the loading state — the modal
+   * opens immediately so the operator sees the call is running, and fills in
+   * when it answers.
+   */
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiResult, setAiResult] = useState<MercadoLivreMedidasSugestao | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
 
   /* -------------------------------- specs -------------------------------- */
 
@@ -289,6 +303,98 @@ export function SizeChartEditorModal({
     [validationErrors, errorChartIndex],
   );
   const nameError = nome.trim().length === 0 ? null : validateChartName(nome);
+
+  /* ---------------------------------- IA --------------------------------- */
+
+  /**
+   * The grid, in the wire shape the suggestion route understands.
+   *
+   * A `LINKED_BY_CONNECTOR_INPUT` column contributes TWO entries — one per part
+   * — because the model answers per attribute id, and a range whose `_FROM` and
+   * `_TO` were folded into one entry could not be filled at all.
+   */
+  function aiPayload() {
+    return {
+      tabMediId,
+      rows: rows
+        .filter((r) => !r.deleted)
+        .map((r) => ({
+          key: r.key,
+          size: r.cells[effectiveMainId]?.value_name ?? '',
+        })),
+      columns: columns.flatMap((column) =>
+        column.parts.map((part) => ({
+          attributeId: part.attributeId,
+          label: column.parts.length > 1 ? `${column.label} — ${part.label}` : column.label,
+          kind: part.kind,
+          values: part.values,
+          unitId: units[column.key] ?? column.unit.default,
+          required: column.required,
+        })),
+      ),
+      measureType: effectiveMeasureType,
+    };
+  }
+
+  async function runAi() {
+    setAiBusy(true);
+    setAiResult(null);
+    setAiOpen(true);
+    try {
+      setAiResult(await client.sugerirMedidas(aiPayload()));
+    } catch (err) {
+      // Close rather than leave the modal spinning forever; the message carries
+      // the backend's own wording, including the kill-switch and timeout cases.
+      setAiOpen(false);
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        notifications.show({
+          color: 'red',
+          title: 'Não foi possível preencher com IA',
+          message: reportableMessage(err, 'Falha ao chamar a IA.'),
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  /** Write the accepted cells in, reusing the same path a typed edit takes. */
+  function applyAi(aceitas: MercadoLivreMedidasSugestao['sugestoes']) {
+    const byRow = new Map<string, typeof aceitas>();
+    for (const s of aceitas) {
+      byRow.set(s.rowKey, [...(byRow.get(s.rowKey) ?? []), s]);
+    }
+    setRows((prev) =>
+      prev.map((row) => {
+        const mine = byRow.get(row.key);
+        if (!mine) return row;
+        const cells = { ...row.cells };
+        for (const s of mine) {
+          cells[s.attributeId] = {
+            value_id: s.value_id,
+            value_name: s.value_name,
+            valueList: null,
+          };
+        }
+        return { ...row, cells };
+      }),
+    );
+    // Clear any ML error on a cell we just changed — same rule as a typed edit,
+    // where a stale red message on a corrected cell is worse than none.
+    const touched = new Set(aceitas.map((s) => `${s.rowKey}::${s.attributeId}`));
+    setValidationErrors((prev) =>
+      prev.filter((e) => {
+        const row = e.rowIndex == null ? null : rows[e.rowIndex];
+        if (row == null) return true;
+        return !e.attributeIds.some((id) => touched.has(`${row.key}::${id}`));
+      }),
+    );
+  }
 
   /* ------------------------------- assembly ------------------------------ */
 
@@ -615,6 +721,25 @@ export function SizeChartEditorModal({
 
         {allColumns.length > 0 && (
           <>
+            <Group justify="space-between" align="flex-end">
+              <Text size="sm" c="dimmed">
+                Preencha a grade a partir da foto da tabela do fornecedor.
+              </Text>
+              <Button
+                size="compact-sm"
+                variant="light"
+                onClick={() => void runAi()}
+                loading={aiBusy}
+                // Nothing to fill without a grid, and the route rejects an empty
+                // one anyway — better to disable than to spend a round trip on a
+                // guaranteed 422.
+                disabled={!canWrite || busy !== null || rows.length === 0 || columns.length === 0}
+                data-testid="ml-size-chart-ai-fill"
+              >
+                Preencher com IA
+              </Button>
+            </Group>
+
             <div>
               <Text size="sm" fw={500} mb={4}>
                 Colunas
@@ -732,6 +857,16 @@ export function SizeChartEditorModal({
           </Group>
         </Group>
       </Stack>
+
+      <SizeChartAiModal
+        opened={aiOpen}
+        onClose={() => setAiOpen(false)}
+        resultado={aiResult}
+        rows={rows}
+        columns={columns}
+        mainAttributeId={effectiveMainId}
+        onApply={applyAi}
+      />
     </Modal>
   );
 }

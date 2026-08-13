@@ -127,4 +127,27 @@ test.describe.serial('Medidas Mercado Livre tab e2e — chart manager', () => {
     await editor.getByRole('button', { name: 'Mostrar' }).click();
     await expect(editor.getByLabel('Domínio')).toBeDisabled();
   });
+
+  test('offers to fill the grid from the size-table photo', async ({ page }) => {
+    await page.goto(`/medidas/${tabMediId}`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    const guia = page.getByTestId(`ml-guia-${conta}-0`);
+    await expect(guia).toBeVisible({ timeout: 30_000 });
+    await guia.getByRole('button', { name: 'Editar' }).click();
+
+    const editor = page.getByTestId('ml-size-chart-editor');
+    await expect(editor).toBeVisible({ timeout: 30_000 });
+
+    // The control is enabled once the grid exists — filling a chart that has no
+    // rows or columns would be a guaranteed 422, so it stays disabled until
+    // there is something to fill.
+    const fill = editor.getByTestId('ml-size-chart-ai-fill');
+    await expect(fill).toBeVisible();
+    await expect(fill).toBeEnabled();
+
+    // Deliberately NOT clicked: the suggestion backend does not run in this
+    // lane, so the assertion stops at the affordance. The suggestion itself is
+    // covered by the route's own unit tests and by the manual staging pass.
+  });
 });

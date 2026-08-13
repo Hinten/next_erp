@@ -486,6 +486,7 @@ export function MedidasMercadoLivreManager({
           }}
           client={client}
           integracaoId={target.integracaoId}
+          tabMediId={tabMediId}
           chart={target.chart}
           chartIndex={target.chartIndex}
           grupos={grupos}
