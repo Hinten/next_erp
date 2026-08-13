@@ -109,6 +109,31 @@ describe('buildAttributeSchema', () => {
     expect(buildAttributeSchema(withNa).properties!.X!.enum).toEqual(['Valor', 'N/A']);
   });
 
+  it('does not offer "N/A" twice when the category already lists that spelling', () => {
+    // ⚠️ The sentinel filter drops the option whose ID is `-1`. A category that
+    // names an option "N/A" under a REAL id survives it, so appending the fixed
+    // label would emit a duplicate enum member — which JSON Schema requires to
+    // be unique, and which constrained decoding has no reason to handle kindly.
+    const attrs = [
+      spec({
+        id: 'X',
+        valueType: 'list',
+        values: [
+          { id: 'V1', name: 'N/A' },
+          { id: 'V2', name: 'Azul' },
+        ],
+      }),
+    ];
+    const members = buildAttributeSchema(attrs).properties!.X!.enum!;
+    expect(members).toEqual(['N/A', 'Azul']);
+    expect(new Set(members).size).toBe(members.length);
+  });
+
+  it('matches that spelling case-insensitively before appending', () => {
+    const attrs = [spec({ id: 'X', valueType: 'list', values: [{ id: 'V1', name: 'n/a' }] })];
+    expect(buildAttributeSchema(attrs).properties!.X!.enum).toEqual(['n/a']);
+  });
+
   it('falls back to free text when the sentinel is the only listed value', () => {
     // Nothing real to choose from, so an enum of just "N/A" would be a closed
     // list that can only say "does not apply" — worse than free text.

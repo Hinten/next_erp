@@ -69,9 +69,17 @@ const DEFAULT_MAX_PROPERTIES = 40;
 const DEFAULT_MAX_ENUM_VALUES = 60;
 
 /**
- * ML's "does not apply" marker. The model must never produce it: choosing that
- * a required attribute genuinely has no value is a human judgement about the
- * product, not something to infer from a title and a photo.
+ * ML's platform-wide "does not apply" marker.
+ *
+ * ⚠️ The model IS allowed to produce it, under the fixed spelling below. It used
+ * to be forbidden, on the reasoning that declaring an attribute inapplicable was
+ * a human judgement — but a closed list without it leaves the model choosing
+ * between inventing a value and omitting an attribute it correctly judged, and
+ * plenty genuinely do not apply (voltage on a t-shirt, sole material on a
+ * notebook). What stays reserved for the human is ACCEPTING it: an N/A
+ * suggestion is staged unchecked (`preCheckedSuggestionIds`), because `-1`
+ * satisfies ML's required check and would otherwise silence the validation that
+ * exists to catch a missing value.
  */
 const NA_VALUE_ID = '-1';
 
@@ -162,6 +170,15 @@ function enumMembers(attr: AiAttributeSpec, maxEnumValues: number): string[] | n
   // any attribute id), and a closed list without it forces the model to choose
   // between inventing a value and omitting an attribute that genuinely does not
   // apply to the product — which is the situation this exists to fix.
+  //
+  // ⚠️ …unless the category already offers that spelling under some OTHER id.
+  // The filter above only drops the option whose id is `-1`, so a category
+  // listing "N/A" under a real id survives it, and appending would emit
+  // `['N/A', 'Azul', 'N/A']` — a duplicate member, which JSON Schema requires to
+  // be unique.
+  if (names.some((n) => n.trim().toLocaleLowerCase() === NA_ENUM_LABEL.toLocaleLowerCase())) {
+    return names;
+  }
   return [...names, NA_ENUM_LABEL];
 }
 

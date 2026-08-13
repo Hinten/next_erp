@@ -2,13 +2,13 @@
  * Turning a model's raw JSON answer into Mercado Livre attribute values.
  *
  * Everything a model returns is untrusted input: keys we never asked for,
- * values outside a closed list, numbers where strings were specified, the `-1`
- * sentinel it was told not to use. This module is the boundary that makes the
- * answer safe to *show* — and only to show. Suggestions are staged in a review
- * modal, never written straight to a listing (#799's own criterion, and what
- * the newer legacy flow already did with its Cancelar/Aplicar dialog).
+ * values outside a closed list, numbers where strings were specified, a
+ * "does not apply" spelled a dozen ways. This module is the boundary that makes
+ * the answer safe to *show* — and only to show. Suggestions are staged in a
+ * review modal, never written straight to a listing (#799's own criterion, and
+ * what the newer legacy flow already did with its Cancelar/Aplicar dialog).
  */
-import type { AiAttributeSpec } from './attributeSchema';
+import { NA_ENUM_LABEL, type AiAttributeSpec } from './attributeSchema';
 
 /** One suggested value, in the shape the listing editor's rows use. */
 export interface AiAttributeSuggestion {
@@ -48,9 +48,34 @@ const NA_TEXTS = new Set([
   '-1',
 ]);
 
-/** The suggestion that declares an attribute inapplicable, in ML's own shape. */
+/**
+ * The suggestion that declares an attribute inapplicable, in ML's own shape.
+ *
+ * `NA_ENUM_LABEL` rather than a second `'N/A'` literal: it is the spelling the
+ * schema offers the model, and two constants that must agree are one rename away
+ * from disagreeing silently.
+ */
 function naSuggestion(id: string): AiAttributeSuggestion {
-  return { id, value_id: NA_VALUE_ID, value_name: 'N/A', unit_id: null };
+  return { id, value_id: NA_VALUE_ID, value_name: NA_ENUM_LABEL, unit_id: null };
+}
+
+/**
+ * Whether this text means "does not apply" FOR THIS ATTRIBUTE.
+ *
+ * ⚠️ `-1` is attribute-dependent, and that is the whole reason this is a
+ * function. It is ML's sentinel, but it is also a perfectly ordinary value for a
+ * numeric attribute — lens power, minimum operating temperature. The model was
+ * told to answer `"N/A"` in words, so a bare `-1` arriving on a `number` /
+ * `number_unit` attribute is far more likely to be the measurement than the
+ * marker, and reading it as "does not apply" would publish a false disclaimer
+ * instead of a real value.
+ */
+function meansNotApplicable(attr: AiAttributeSpec, text: string): boolean {
+  const normalized = normalize(text);
+  if (normalized === NA_VALUE_ID) {
+    return attr.valueType !== 'number' && attr.valueType !== 'number_unit';
+  }
+  return NA_TEXTS.has(normalized);
 }
 
 /**
@@ -81,11 +106,14 @@ export function applyAiAttributes(
 
     const text = coerceText(raw);
     if (text == null) continue;
-    if (NA_TEXTS.has(normalize(text))) {
-      out.push(naSuggestion(id));
-      continue;
-    }
 
+    // ⚠️ A REAL option beats the spelling heuristic, so this match runs FIRST.
+    // `NA_TEXTS` is a fixed list of ways to write "does not apply", and some of
+    // them are also legitimate closed-list values — an `ORIGIN` attribute really
+    // can offer an option named "NA". While a false hit merely DROPPED the
+    // answer that was invisible and harmless; now it emits `value_id: '-1'`, a
+    // positive claim staged for one click, so the cost of being wrong went from
+    // "nothing shown" to "a false disclaimer on a live listing".
     const match = attr.values.find(
       (v) => typeof v.name === 'string' && normalize(v.name) === normalize(text),
     );
@@ -104,6 +132,11 @@ export function applyAiAttributes(
         value_name: match.name!,
         unit_id: null,
       });
+      continue;
+    }
+
+    if (meansNotApplicable(attr, text)) {
+      out.push(naSuggestion(id));
       continue;
     }
 
@@ -151,6 +184,15 @@ function normalize(s: string): string {
  * Only those landing on an attribute that is currently EMPTY. A suggestion that
  * would overwrite a value an operator typed starts unchecked — visible, so it
  * can be accepted deliberately, but never applied by default.
+ *
+ * ⚠️ An N/A suggestion is NEVER pre-checked, even though the attribute it lands
+ * on is by definition empty. `-1` **satisfies ML's required check**
+ * (`apps/web/lib/mercado-livre/attributeForm.ts`), so pre-checking it would make
+ * the default path for a required attribute the model judged inapplicable:
+ * checked → applied on one bulk "Aplicar" → published as a positive disclaimer
+ * that also silences the very validation meant to catch the missing value.
+ * Allowing the model to SAY "does not apply" and requiring a human to ACCEPT it
+ * are separate decisions; this is where the second one is kept real.
  */
 export function preCheckedSuggestionIds(
   suggestions: AiAttributeSuggestion[],
@@ -165,7 +207,9 @@ export function preCheckedSuggestionIds(
       )
       .map((row) => row.id),
   );
-  return suggestions.filter((s) => !filled.has(s.id)).map((s) => s.id);
+  return suggestions
+    .filter((s) => !filled.has(s.id) && s.value_id !== NA_VALUE_ID)
+    .map((s) => s.id);
 }
 
 export { NA_VALUE_ID };

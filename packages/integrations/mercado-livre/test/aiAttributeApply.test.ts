@@ -134,6 +134,48 @@ describe('applyAiAttributes', () => {
     expect(applyAiAttributes(ATTRS, { LENGTH: Number.NaN })).toEqual([]);
     expect(applyAiAttributes(ATTRS, { LENGTH: Number.POSITIVE_INFINITY })).toEqual([]);
   });
+
+  // ⚠️ A REAL option beats the spelling heuristic. `NA_TEXTS` holds a fixed list
+  // of ways to write "does not apply" and some of them are legitimate values —
+  // an origin attribute really can offer an option named "NA". While a false hit
+  // merely DROPPED the answer it was invisible and harmless; now it emits
+  // `value_id: '-1'`, a positive claim, so a wrong hit publishes a false
+  // disclaimer instead of the value the model actually picked.
+  it('resolves a real option named "NA" to its own id, not to the sentinel', () => {
+    const attrs = [
+      spec({
+        id: 'ORIGIN',
+        valueType: 'list',
+        values: [
+          { id: 'V1', name: 'NA' },
+          { id: 'V2', name: 'BR' },
+        ],
+      }),
+    ];
+    expect(applyAiAttributes(attrs, { ORIGIN: 'NA' })).toEqual([
+      { id: 'ORIGIN', value_id: 'V1', value_name: 'NA', unit_id: null },
+    ]);
+  });
+
+  it('reads -1 on a NUMBER attribute as the value, not as "does not apply"', () => {
+    // Lens power, minimum operating temperature… `-1` is an ordinary reading.
+    // The model was told to answer "N/A" in words, so a bare -1 here is far more
+    // likely to be the measurement than the marker.
+    expect(applyAiAttributes([spec({ id: 'GRAU', valueType: 'number' })], { GRAU: -1 })).toEqual([
+      { id: 'GRAU', value_id: null, value_name: '-1', unit_id: null },
+    ]);
+    expect(
+      applyAiAttributes([spec({ id: 'TEMP', valueType: 'number_unit', defaultUnit: 'C' })], {
+        TEMP: '-1',
+      }),
+    ).toEqual([{ id: 'TEMP', value_id: null, value_name: '-1', unit_id: 'C' }]);
+  });
+
+  it('still reads -1 as the sentinel on a non-numeric attribute', () => {
+    expect(applyAiAttributes(ATTRS, { BRAND: '-1' })).toEqual([
+      { id: 'BRAND', value_id: '-1', value_name: 'N/A', unit_id: null },
+    ]);
+  });
 });
 
 describe('preCheckedSuggestionIds', () => {
@@ -164,5 +206,28 @@ describe('preCheckedSuggestionIds', () => {
 
   it('pre-checks everything when the listing has no attributes yet', () => {
     expect(preCheckedSuggestionIds(suggestions, [])).toEqual(['BRAND', 'MATERIAL']);
+  });
+
+  // ⚠️ THE guard that makes "a human still confirms" true. The attribute an N/A
+  // lands on is empty BY DEFINITION, so the empty-means-pre-check rule would
+  // check every one of them. And `-1` satisfies ML's required check
+  // (`apps/web/lib/mercado-livre/attributeForm.ts`), so the default path for a
+  // required attribute the model judged inapplicable would be: checked → applied
+  // on one bulk "Aplicar" → published as a positive disclaimer that also
+  // silences the validation meant to catch the missing value.
+  it('never pre-checks an N/A, even on an empty attribute', () => {
+    const withNa = [
+      { id: 'MODEL', value_id: '-1', value_name: 'N/A', unit_id: null },
+      { id: 'BRAND', value_id: null, value_name: 'Hering', unit_id: null },
+    ];
+    expect(preCheckedSuggestionIds(withNa, [])).toEqual(['BRAND']);
+  });
+
+  it('still SHOWS the N/A — unchecked is not hidden', () => {
+    // The operator has to be able to accept it deliberately; dropping it would
+    // remove the answer instead of the automatic acceptance.
+    const withNa = [{ id: 'MODEL', value_id: '-1', value_name: 'N/A', unit_id: null }];
+    expect(preCheckedSuggestionIds(withNa, [])).toEqual([]);
+    expect(withNa).toHaveLength(1);
   });
 });
