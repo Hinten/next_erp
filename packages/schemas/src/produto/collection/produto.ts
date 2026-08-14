@@ -84,14 +84,29 @@ export const produtoSchema = z
      * stamp a sale writes (ADR 0014) — because the channels that DO support
      * this upload shape consume that signal.
      *
-     * Mercado Livre has no proper support for it, which is why the ML sweep
-     * alone declines to send a quantity for a virtual kit
-     * (`quantidadeParaEnvio` → null). That is a per-channel limitation, **not**
-     * a property of virtual kits, and it must not be generalized into one.
+     * Mercado Livre is why both the ML sweep AND ML publish decline to send a
+     * quantity for a virtual kit (`quantidadeParaEnvio` → null): its own Virtual
+     * Kits feature computes a kit's stock from the components and refuses a
+     * manually set `available_quantity` outright, so the components' listings
+     * carrying it IS the mechanism there. This port does not create ML kits —
+     * they are User-Products-only (`POST /items/kits`, `bundle.components[]` of
+     * `user_product_id`s), immutable once published, and, because a component is
+     * already variation-level, cannot represent a produto that has variations.
+     * That is a per-channel limitation, **not** a property of virtual kits, and
+     * it must not be generalized into one.
      */
     ehKitVirtual: z.boolean().default(false),
     publicado: z.boolean().default(false),
     ofereceFreteGratis: z.boolean().default(false),
+    /**
+     * ⚠️ **Slated for removal** — do not build on it.
+     *
+     * The legacy ML publish used it as a backorder floor: a produto at zero
+     * stock went out with `available_quantity: 1` instead of 0
+     * (`.old/.../models.dart:1487-1497`). That floor is deliberately NOT ported
+     * (#797 E5) precisely because the field is going away; ML publish reads the
+     * real availability and nothing else.
+     */
     permiteVendaSemEstoque: z.boolean().default(false),
     // "Produto usado" — Flutter reads `as bool?`, but we default to false like
     // the other flags so the ObjectView switch can't be left in an unclearable

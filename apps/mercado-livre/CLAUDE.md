@@ -180,6 +180,33 @@ matters:
 | `items_prices` | **permanent no-op**, ack-only |
 | `orders_feedback`, `questions`, `messages`, `stock-location` | not handled yet |
 
+### Publishing: two models coexist, and one of them cannot order variations
+
+Once a seller carries the `user_product_seller` tag, **new** items must go out in
+the User-Products shape (`family_name`, no `variations` array); items already
+published under the legacy model and not yet migrated stay editable with the
+legacy payload. Both paths are live for the whole migration, which is why
+`isUserProductModel` is per-link and flips only via the UPtin takeover.
+
+Three facts from the ML docs that the payload builder now encodes (#797) — check
+these before "fixing" what looks wrong in `publishCore.ts`:
+
+- **Variation display order does not exist under User Products.** No ordering
+  field appears anywhere in that surface, so `produto.ordem` is legacy-only and
+  is lost the moment a listing migrates. The full note is the ⚠️ in
+  `packages/integrations/mercado-livre/src/mapping/itemPayload.ts`.
+- **A grupo outside ML's taxonomy is a *custom characteristic*** — sent as
+  `name` + `value_name` with **no `id`**, and ML allows exactly ONE per product
+  (`assemblePublishInput` raises a validation issue on a second). The old port
+  uppercased the group name into an invented id (`'Sabor'` → `{id:'SABOR'}`).
+- **Virtual kits are ML's to compute, and this port does not create them.** ML's
+  Virtual Kits are User-Products-only (`POST /items/kits`, `bundle.components[]`
+  of `user_product_id`s), immutable once published, and derive their stock from
+  the components — `available_quantity` is explicitly not settable by the seller.
+  Because a component is already variation-level, a produto **with variations
+  cannot be an ML kit at all**. Hence publish omits the quantity for
+  `ehKitVirtual` and sends the component-min for an ordinary kit.
+
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
 both price tables, so a price notification has nothing to do. It stays in
 `KNOWN_TOPICS` only so it acks instead of parking a document per delivery. **Do

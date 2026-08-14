@@ -30,6 +30,17 @@
  *    (`models.dart:1392-1395`). So we sort and omit — previously we leaked the
  *    ERP's `produto.ordem` into an ML-internal field AND skipped the sort it
  *    existed for.
+ *
+ * ⚠️ **Variation order has NO equivalent under User Products, and is lost at
+ * migration.** In the legacy model the `variations` array is the display order,
+ * which is what `order` exists to control. Under UP that array ceases to exist:
+ * each variation becomes its own item, items are grouped into an auto-computed
+ * family (`family_id`), and the family renders as pickers on the UPP. ML exposes
+ * no ordering field anywhere in that surface — not `POST /items`, not
+ * `POST /user-products-families/{family_id}/user-products`, not
+ * `POST /user-products/{up_id}/items`, not the family-editor task — so the seller
+ * cannot control picker order at all and `produto.ordem` has nowhere to go.
+ * Do not look for one; do not invent a proxy for it.
  */
 import { type MlAttribute, attributeToMercadoLivre, attributesWithValue } from './attributes';
 
@@ -49,7 +60,13 @@ export interface ItemVariationInput {
    * orders sort as 0 (first), matching `models.dart:1392`'s `?? 0`.
    */
   order?: number | null;
-  availableQuantity: number;
+  /**
+   * `null` = send NO `available_quantity` for this variation. That is the
+   * virtual-kit case: ML derives a kit's stock from its components and refuses
+   * to have it set by hand, so the components' own listings carry it instead
+   * (`quantidadeParaEnvio` returns null; legacy `models.dart:1787-1795`).
+   */
+  availableQuantity: number | null;
   /** ML picture ids; when empty the parent's pictures are inherited. */
   pictureIds?: ReadonlyArray<string>;
   /** Combination attributes (SIZE/COLOR…) that define this variation. */
@@ -110,11 +127,13 @@ export function buildItemPayload(input: BuildItemPayloadInput): Record<string, u
   // carries its own SKU in `attributes`, never in `attributeCombinations`, so
   // the parent's would survive alongside them. The legacy removes it by id
   // (models.dart:1508-1515) and only re-adds it on the no-variations branch.
+  // An id-less combination is a custom characteristic (identified by `name`),
+  // which by definition has no counterpart in the parent's attribute list.
   const combinationIds = new Set(
-    variations.flatMap((v) => v.attributeCombinations.map((a) => a.id)),
+    variations.flatMap((v) => v.attributeCombinations.flatMap((a) => (a.id != null ? [a.id] : []))),
   );
   const parentAttributes = attributesWithValue(input.attributes ?? []).filter(
-    (a) => !combinationIds.has(a.id) && !(hasVariations && a.id === 'SELLER_SKU'),
+    (a) => !(a.id != null && combinationIds.has(a.id)) && !(hasVariations && a.id === 'SELLER_SKU'),
   );
   data.attributes = parentAttributes.map(attributeToMercadoLivre);
 
@@ -156,7 +175,7 @@ function buildVariationPayload(
   const pictureIds = v.pictureIds && v.pictureIds.length > 0 ? v.pictureIds : ctx.parentPictureIds;
   out.picture_ids = [...pictureIds];
   out.attribute_combinations = v.attributeCombinations.map(attributeToMercadoLivre);
-  out.available_quantity = v.availableQuantity;
+  if (v.availableQuantity != null) out.available_quantity = v.availableQuantity;
   if (ctx.price != null) out.price = ctx.price;
   return out;
 }

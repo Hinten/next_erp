@@ -16,12 +16,18 @@ import {
   type MercadoLivreApi,
   MercadoLivreError,
   MercadoLivreHttpError,
+  type MlAttribute,
   buildItemPayload,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
 import type { Arquivo, Foto, ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import type { ComponentesKit } from '@delfrance/schemas';
 import {
+  INTEGRACAO_TIPO,
+  type Variante,
+  componentesKitEntries,
   estoqueDisponivel,
+  fotosForVariacao,
   idFromRef,
   mlSizeChartsForConta,
   parseFakePath,
@@ -49,6 +55,7 @@ import {
   assemblePublishInput,
   resolveCondition,
 } from './publishCore';
+import { quantidadeParaEnvio } from './bulkEstoquePlan';
 import {
   type ResolvedSizeChart,
   type SizeChartRowBinding,
@@ -58,6 +65,13 @@ import {
 
 /** ML caps listings at 10 pictures (the old app enforced the same). */
 const MAX_PICTURES = 10;
+
+/**
+ * Per-publish memo of `arquivo` doc id → its resolved ML picture (`null` = the
+ * doc is missing or has no downloadable url, so it is skipped). See
+ * {@link resolveOnePicture}.
+ */
+type PictureMemo = Map<string, { id: string; arquivoId: string } | null>;
 
 /** Compare-and-set retries for the child denorm stamp (see stampChildMarketplace). */
 const MAX_STAMP_ATTEMPTS = 3;
@@ -134,11 +148,37 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const linkDocId = linkDoc?.docId ?? produtoMercadoLivreLinkCollection.newDocId(db, { produtoId });
 
   // ---- Stock (integração's depósito when set; else every depósito) -------
+  // Kit-aware, via the stock sweep's own `quantidadeParaEnvio` (#797 E5): a kit
+  // publishes what its components can assemble, not its own — usually zero —
+  // stock, and a VIRTUAL kit publishes no quantity at all. ML computes a virtual
+  // kit's stock from its components and refuses a manual value, so the
+  // components' own listings carrying it is the whole mechanism.
+  //
+  // ⚠️ No `permiteVendaSemEstoque` floor: the legacy lifted a backorder produto
+  // at zero to 1 (models.dart:1487-1497), but that field is being retired — see
+  // the note on `produtoSchema`.
   const depositoId = deps.depositoOuterRef ? idFromRef(deps.depositoOuterRef) : null;
-  const availableQuantity = await loadDisponivel(db, produtoId, depositoId);
+  const componentDisponivel = await loadComponentDisponivel(
+    db,
+    [produto, ...children.map((c) => c.data)],
+    depositoId,
+  );
+  const availableQuantity = quantidadeParaEnvio({
+    ehKit: produto.ehKit,
+    ehKitVirtual: produto.ehKitVirtual,
+    componentesKit: produto.componentesKit,
+    ownDisponivel: await loadDisponivel(db, produtoId, depositoId),
+    disponivelByProdutoId: componentDisponivel,
+  });
   const variations: PublishVariationChild[] = [];
   for (const child of children) {
-    const childAvailable = await loadDisponivel(db, child.id, depositoId);
+    const childAvailable = quantidadeParaEnvio({
+      ehKit: child.data.ehKit,
+      ehKitVirtual: child.data.ehKitVirtual,
+      componentesKit: child.data.componentesKit,
+      ownDisponivel: await loadDisponivel(db, child.id, depositoId),
+      disponivelByProdutoId: componentDisponivel,
+    });
     // No parent link for THIS integração yet ⇒ the child cannot have a
     // legitimate existing variation on this listing (any variacao docs it
     // holds belong to other accounts).
@@ -148,6 +188,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       variacoesUid: child.data.variacoesUid ?? [],
       availableQuantity: childAvailable,
       mlVariationId: existingVar?.mlId ?? null,
+      storedCombinations: storedCombinationsOf(existingVar?.raw),
     });
   }
 
@@ -171,7 +212,11 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       grupoId,
       nome: g.nome,
       tipo: g.tipo ?? null,
-      variacoes: (g.variacoes ?? []).map((v) => ({ id: v.id, nome: v.nome })),
+      variacoes: (g.variacoes ?? []).map((v) => ({
+        id: v.id,
+        nome: v.nome,
+        mlValueId: resolveMlValueId(v, integracaoId),
+      })),
     });
   }
 
@@ -262,11 +307,39 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // ---- Pictures (upload once per integração; cached on the Arquivo) ------
   // The tabela's chart photo rides as one EXTRA listing picture appended
   // after the produto fotos (legacy `getTabelaDeMedidasPicture`).
+  const pictureMemo: PictureMemo = new Map();
   const { pictures, pictureSources } = await resolvePictures(
     deps,
     produto.fotos ?? [],
     tabela.foto,
+    pictureMemo,
   );
+
+  // ---- Per-variation pictures (#797 E7) ----------------------------------
+  // `pictureIds` was declared and forwarded but never POPULATED, so every
+  // variation fell through to the parent set — and a republish of a
+  // Flutter-published listing overwrote the correct per-variation `picture_ids`
+  // ML already held. `fotosForVariacao` is the legacy three-rung resolution
+  // (own fotos → parent photos tagged for this variante → all parent photos);
+  // the last rung is why an untagged catalogue still publishes something, which
+  // ML requires ("todas as variações devem ter uma imagem associada").
+  //
+  // ⚠️ The resolved ids are deliberately NOT unioned into the item-level
+  // `pictures`. ML's "Modificar imagens" section says to send a picture in both
+  // lists, but that instruction is about introducing a NEW image — these are
+  // already uploaded ML resources referenced by id, the legacy shipped exactly
+  // this shape for years, and unioning would push a 6-colour produto past the
+  // ~12-picture gallery cap and turn working listings into rejections.
+  for (let i = 0; i < variations.length; i++) {
+    const child = children[i]!;
+    const fotos = fotosForVariacao(child.data.fotos, produto.fotos, child.data.variacoesUid);
+    const resolved = await resolvePictures(deps, fotos, null, pictureMemo);
+    if (resolved.pictures.length === 0) continue; // mapper inherits the parent set
+    variations[i]!.pictureIds = resolved.pictures.map((p) => p.id);
+    // Feed the dead-picture self-heal: a purged child picture id must be
+    // strippable from its Arquivo cache too, or every retry fails identically.
+    for (const [mlId, arquivoId] of resolved.pictureSources) pictureSources.set(mlId, arquivoId);
+  }
 
   // ---- Assemble + call ML -------------------------------------------------
   const input = assemblePublishInput({
@@ -324,7 +397,12 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     // the produto on every publish (appending those back would duplicate
     // them). Without this a produto never touched by Flutter keeps
     // `attributes: null` forever and the editor has nothing to load.
-    attributes: (input.attributes ?? []).filter((a) => !ML_DERIVED_ATTRIBUTE_IDS.has(a.id)),
+    // `id` is optional on MlAttribute for ML's id-less custom characteristic,
+    // which only ever appears in a variation's combinations — never here. The
+    // link doc's wire schema requires an id, so drop any that lacks one.
+    attributes: (input.attributes ?? []).filter(
+      (a): a is MlAttribute & { id: string } => a.id != null && !ML_DERIVED_ATTRIBUTE_IDS.has(a.id),
+    ),
     errors: [],
     ultimaModificacao: now,
   });
@@ -650,6 +728,76 @@ function refMatchesIntegracao(ref: string | undefined, integracaoId: string): bo
   return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
 }
 
+/**
+ * This variante's Mercado Livre `value_id`, or null.
+ *
+ * `externalVariacaoLinks[].externalId` holds `value_id ?? value_name`
+ * (`taxonomiaCore.ts:246`) — so it is an ID only when ML actually sent one, and
+ * in exactly that case the importer also used it as the variante's own doc id
+ * (`taxonomiaCore.ts:284`). That equality is the test. Anything else is a value
+ * NAME wearing the same field, and shipping it as `value_id` would fabricate a
+ * taxonomy reference ML never issued.
+ */
+function resolveMlValueId(variante: Variante, integracaoId: string): string | null {
+  for (const link of variante.externalVariacaoLinks ?? []) {
+    if (link.tipo !== INTEGRACAO_TIPO.mercadoLivre) continue;
+    if (link.integracaoId !== integracaoId) continue;
+    if (link.externalId === variante.id) return link.externalId;
+  }
+  return null;
+}
+
+/**
+ * The `attribute_combinations` the importer stored on a variation link doc, for
+ * the republish merge (#797 E8). `findVariacaoLink` hands back RAW Firestore
+ * data, so this soft-reads: a malformed or valueless entry is skipped, never
+ * thrown on, and an id-less one cannot occur (`comboToWireAttribute` drops
+ * those on the way in — `importCore.ts:456`).
+ */
+function storedCombinationsOf(raw: Record<string, unknown> | undefined): MlAttribute[] {
+  if (!raw || !Array.isArray(raw.attributes)) return [];
+  const out: MlAttribute[] = [];
+  for (const entry of raw.attributes) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const a = entry as Record<string, unknown>;
+    if (typeof a.id !== 'string' || a.id === '') continue;
+    const attr: MlAttribute = { id: a.id };
+    if (typeof a.name === 'string') attr.name = a.name;
+    if (typeof a.value_id === 'string') attr.value_id = a.value_id;
+    if (typeof a.value_name === 'string') attr.value_name = a.value_name;
+    if (attr.value_id == null && attr.value_name == null) continue;
+    out.push(attr);
+  }
+  return out;
+}
+
+/**
+ * `disponivel` for every produto named as a kit component by the parent or by
+ * one of its variation children, at the same depósito — the map
+ * `quantidadeParaEnvio` needs to take a kit's component-min.
+ *
+ * Virtual kits are skipped: `quantidadeParaEnvio` short-circuits on them before
+ * looking at any component, so loading theirs would be pure reads for nothing.
+ */
+async function loadComponentDisponivel(
+  db: Firestore,
+  produtos: ReadonlyArray<{
+    ehKit: boolean;
+    ehKitVirtual: boolean;
+    componentesKit: ComponentesKit | null;
+  }>,
+  depositoId: string | null,
+): Promise<Record<string, number>> {
+  const ids = new Set<string>();
+  for (const p of produtos) {
+    if (!p.ehKit || p.ehKitVirtual) continue;
+    for (const [componenteId] of componentesKitEntries(p.componentesKit)) ids.add(componenteId);
+  }
+  const out: Record<string, number> = {};
+  for (const id of ids) out[id] = await loadDisponivel(db, id, depositoId);
+  return out;
+}
+
 /** Available stock: the integração's depósito when set, else every depósito. */
 async function loadDisponivel(
   db: Firestore,
@@ -703,20 +851,21 @@ async function resolvePictures(
   deps: PublishDeps,
   fotos: ReadonlyArray<Foto>,
   tabelaFoto: Foto | null = null,
+  memo: PictureMemo = new Map(),
 ): Promise<{ pictures: Array<{ id: string }>; pictureSources: Map<string, string> }> {
   const pictures: Array<{ id: string }> = [];
   /** ML picture id → owning arquivo doc id (feeds the dead-picture self-heal). */
   const pictureSources = new Map<string, string>();
 
   for (const foto of fotos.slice(0, MAX_PICTURES)) {
-    const resolved = await resolveOnePicture(deps, foto);
+    const resolved = await resolveOnePicture(deps, foto, memo);
     if (!resolved) continue;
     pictures.push({ id: resolved.id });
     pictureSources.set(resolved.id, resolved.arquivoId);
   }
 
   if (tabelaFoto) {
-    const chartPic = await resolveOnePicture(deps, tabelaFoto);
+    const chartPic = await resolveOnePicture(deps, tabelaFoto, memo);
     if (chartPic) {
       pictures.push({ id: chartPic.id });
       pictureSources.set(chartPic.id, chartPic.arquivoId);
@@ -726,8 +875,32 @@ async function resolvePictures(
   return { pictures, pictureSources };
 }
 
-/** Resolve ONE foto to its ML picture id (per-integração cache, else upload). */
+/**
+ * Resolve ONE foto to its ML picture id, at most once per publish.
+ *
+ * The memo is not just a saving: every variation child falls back to the
+ * parent's gallery when it has no photos of its own (#797 E7), so without it a
+ * 6-colour produto re-reads each Arquivo seven times. Worse, the miss path
+ * appends to `externalIds` with `arrayUnion` — a later read in the SAME publish
+ * would have to see that write land to reuse the id, which is exactly the
+ * read-your-own-write the memo makes unnecessary.
+ *
+ * A thrown download/upload failure is deliberately NOT memoized; it aborts the
+ * publish anyway.
+ */
 async function resolveOnePicture(
+  deps: PublishDeps,
+  foto: Foto,
+  memo: PictureMemo,
+): Promise<{ id: string; arquivoId: string } | null> {
+  const key = foto.arquivoOuterRef.replace(/^arquivos\//, '');
+  if (memo.has(key)) return memo.get(key)!;
+  const resolved = await loadOnePicture(deps, foto);
+  memo.set(key, resolved);
+  return resolved;
+}
+
+async function loadOnePicture(
   deps: PublishDeps,
   foto: Foto,
 ): Promise<{ id: string; arquivoId: string } | null> {

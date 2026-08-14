@@ -9,7 +9,15 @@
 
 /** One attribute as stored on the link doc (old `AttributesMLNew` wire shape). */
 export interface MlAttribute {
-  id: string;
+  /**
+   * The ML attribute id. Optional for exactly ONE case: a **custom
+   * characteristic** in `attribute_combinations`, which ML identifies by `name`
+   * because the id does not exist in its taxonomy ("Característica
+   * personalizada" — the docs' example sends `name` + `value_name` and no id).
+   * Every attribute the link doc stores has one (`mlAttributeWireSchema`
+   * requires it), so treat an absent id as "combination-only".
+   */
+  id?: string;
   value_id?: string | null;
   name?: string | null;
   value_name?: string | null;
@@ -73,9 +81,16 @@ export function attrPackageDimensions(input: {
  *  - otherwise `value_name` gets the unit appended (`"55 cm"`) and `unit_id`
  *    rides along when set;
  *  - null/undefined optional keys are omitted entirely.
+ *
+ * An attribute is identified by `id`, or — when it has none — by `name`, which
+ * is ML's custom-characteristic shape. `name` is emitted ONLY in that case: an
+ * id-bearing attribute carries `name` purely as a local label (`attrWeightKg`'s
+ * `'Peso'`), and the legacy transform never sent it.
  */
 export function attributeToMercadoLivre(attr: MlAttribute): Record<string, unknown> {
-  const out: Record<string, unknown> = { id: attr.id };
+  const out: Record<string, unknown> = {};
+  if (attr.id != null) out.id = attr.id;
+  else if (attr.name != null) out.name = attr.name;
   const isNA = attr.value_id === '-1';
   if (attr.value_id != null) out.value_id = attr.value_id;
   if (isNA) {
