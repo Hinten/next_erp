@@ -1,5 +1,4 @@
-export { db, getApp, namespace } from './admin';
-export { seed } from './seed';
+export { db, getApp, e2eRunId, E2E_PROBE_COLLECTION } from './admin';
 export {
   seedClientesComEnderecos,
   cleanupClientesComEnderecos,

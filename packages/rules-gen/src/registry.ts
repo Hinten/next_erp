@@ -39,13 +39,19 @@ export const EXTRA_MATCH_BLOCKS: ReadonlyArray<{ path: string; body: ReadonlyArr
 /**
  * STAGING-ONLY match block, appended only when generating with `--e2e`
  * (`firestore.e2e.rules`, deployed via `firebase.staging.json`). The Playwright
- * fixtures isolate each run in top-level collections named
- * `e2e_<runId>_<collection>` (`tools/test-fixtures/src/admin.ts` → `namespace()`),
- * which the fixed-path production rules default-deny — that is exactly what broke
- * e2e when the generated ruleset was deployed to staging (#160). This grants the
- * authenticated ephemeral test user full access to any `e2e_`-prefixed namespace
- * and everything under it. It is inert for real collections (the regex only
- * matches the `e2e_` prefix) and is NEVER emitted into the production ruleset.
+ * fixtures write one `e2e_`-prefixed top-level collection — the rules probe
+ * `e2e_probe`, keyed by run id (`tools/test-fixtures/src/admin.ts` →
+ * `E2E_PROBE_COLLECTION` / `e2eRunId()`) — which the fixed-path production rules
+ * default-deny, and that is exactly what broke e2e when the generated ruleset was
+ * deployed to staging (#160). This grants the authenticated ephemeral test user
+ * full access to any `e2e_`-prefixed namespace and everything under it. It is
+ * inert for real collections (the regex only matches the `e2e_` prefix) and is
+ * NEVER emitted into the production ruleset.
+ *
+ * ⚠️ The regex is on the collection NAME, so it covers both the old
+ * `e2e_<runId>_<collection>` shape and today's fixed `e2e_probe`. Moving the run
+ * id from the name into the document key therefore needed no ruleset change and
+ * no rules deploy.
  */
 export const E2E_NAMESPACE_BLOCK: { path: string; body: ReadonlyArray<string> } = {
   path: '{nsColl}/{document=**}',
