@@ -30,7 +30,12 @@
  * `"52"` interchangeably, and normalising one type downstream is simpler than
  * making the schema police it.
  */
-import type { JsonSchemaNode } from '@delfrance/ai';
+import { normalizeLoose, type JsonSchemaNode } from '@delfrance/ai';
+
+// ⚠️ Imported, not re-declared. `-1` is a Mercado Livre PLATFORM constant, not
+// an attribute-agent one, and two copies of a sentinel that must agree are one
+// edit away from disagreeing silently.
+import { NA_VALUE_ID } from './attributeApply';
 
 /**
  * One grid column, reduced to what the schema and prompt need.
@@ -109,12 +114,23 @@ export function buildMedidasSchema(
   // the answer could not be attributed to either. Dropping the later one is the
   // only safe read — writing a measurement to the wrong row is worse than not
   // writing it. `truncated` reports it; the UI says so.
+  //
+  // ⚠️ The key is `normalizeLoose`, NOT `trim()`. `applyAiMedidas` resolves the
+  // answer with `normalizeLoose` (case-folded, diacritics stripped), so a
+  // stricter key here does not prevent the collision — it hides it. `Único` and
+  // `unico` would survive as two distinct schema properties, every answer for
+  // either would resolve to the FIRST row, the second row would get nothing, and
+  // `truncated` would stay false. Silent mis-attribution, which is the one
+  // outcome this block exists to rule out. The two keys must be the same key.
   const seenSize = new Set<string>();
   const keptRows: MedidaRowSpec[] = [];
   let truncated = false;
   for (const row of rows) {
     const size = row.size.trim();
-    if (size === '' || seenSize.has(size)) {
+    // The property name keeps the ORIGINAL spelling — that is what the model
+    // reads off the photo — while the dedupe key is the normalised form.
+    const key = normalizeLoose(size);
+    if (key === '' || seenSize.has(key)) {
       truncated = true;
       continue;
     }
@@ -122,7 +138,7 @@ export function buildMedidasSchema(
       truncated = true;
       break;
     }
-    seenSize.add(size);
+    seenSize.add(key);
     keptRows.push({ ...row, size });
   }
 
@@ -130,20 +146,21 @@ export function buildMedidasSchema(
   const keptColumns = usable.slice(0, maxColumns);
   if (keptColumns.length < usable.length) truncated = true;
 
-  const columnProperties: Record<string, JsonSchemaNode> = {};
-  for (const column of keptColumns) {
-    columnProperties[column.attributeId] = buildCell(column, maxEnumValues);
-  }
-
   const properties: Record<string, JsonSchemaNode> = {};
   for (const row of keptRows) {
+    // ⚠️ The cell nodes are BUILT per row, not shared and spread. A spread copies
+    // the record but leaves every value — and every `enum` array inside it — one
+    // object shared across all 75 rows, so a provider that edits
+    // `properties.P.properties.FIT` edits every row at once. That is the exact
+    // scenario this guards against, and the shallow version did not guard it.
+    const cells: Record<string, JsonSchemaNode> = {};
+    for (const column of keptColumns) {
+      cells[column.attributeId] = buildCell(column, maxEnumValues);
+    }
     properties[row.size] = {
       type: 'object',
       description: `Medidas do tamanho ${row.size}.`,
-      // A fresh copy per row: the tree is handed to a provider that may mutate
-      // or serialise it, and sharing one object across 75 rows makes any such
-      // edit apply to all of them at once.
-      properties: { ...columnProperties },
+      properties: cells,
       additionalProperties: false,
     };
   }
@@ -181,8 +198,20 @@ function buildCell(column: MedidaColumnSpec, maxEnumValues: number): JsonSchemaN
 function enumMembers(column: MedidaColumnSpec, maxEnumValues: number): string[] | null {
   if (column.kind !== 'select' && column.kind !== 'multiselect') return null;
   const names = column.values
+    // ⚠️ Dropped by value **id**, not by name. `-1` is Mercado Livre's
+    // platform-wide "does not apply" marker, and its NAME is whatever ML
+    // localised it to — "N/A", "Não se aplica", "No aplica" — so a name-based
+    // filter matches nothing and duly offers the sentinel as a legal enum
+    // member. Unlike the attribute agent, this one does not re-offer it under a
+    // fixed label: a size-chart cell reading "does not apply" is not a
+    // measurement, and `-1` satisfies ML's required check, so accepting one
+    // would silence the validation meant to catch a missing measurement.
+    .filter((v) => v.id !== NA_VALUE_ID)
     .map((v) => v.name)
     .filter((n) => typeof n === 'string' && n.trim() !== '');
+  // Counted AFTER the sentinel is removed, so a list holding nothing else falls
+  // back to free text rather than emitting `enum: []` — a schema no answer can
+  // satisfy, which turns "I cannot read this" into a hard validation failure.
   if (names.length === 0 || names.length > maxEnumValues) return null;
   return names;
 }

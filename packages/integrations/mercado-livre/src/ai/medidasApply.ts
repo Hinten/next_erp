@@ -9,6 +9,7 @@
  */
 import { coerceText, normalizeLoose } from '@delfrance/ai';
 
+import { NA_VALUE_ID } from './attributeApply';
 import type { MedidaColumnSpec, MedidaRowSpec } from './medidasSchema';
 
 /** One suggested cell, in the shape the editor's grid state uses. */
@@ -78,6 +79,12 @@ export function applyAiMedidas(
         (v) => typeof v.name === 'string' && normalizeLoose(v.name) === normalizeLoose(text),
       );
       if (match) {
+        // ⚠️ The `NA_TEXTS` check above cannot be the only guard. It is a fixed
+        // list of spellings, and ML localises the sentinel's NAME freely, so an
+        // unlisted spelling matches a real option whose id is `-1` and pushes
+        // the sentinel straight through as a staged measurement. The id is the
+        // identity — drop it whatever ML calls it.
+        if (match.id === NA_VALUE_ID) continue;
         out.push({ rowKey, attributeId, value_id: match.id, value_name: match.name });
         continue;
       }
