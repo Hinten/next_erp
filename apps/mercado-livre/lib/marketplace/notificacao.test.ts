@@ -483,6 +483,35 @@ describe('TOPIC_DISPOSITION', () => {
     expect(shouldEnqueueTopic('nonsense')).toBe(true);
   });
 
+  it('every `handled` topic really reaches its dispatch branch', async () => {
+    // `handled` used to be pure documentation: the final fallback caught every
+    // known non-`park` topic, so deleting or renaming a branch made its topic
+    // silently return `done` — no failure doc, no parked doc, no warn line, i.e.
+    // #813 reintroduced through the table meant to prevent it.
+    //
+    // The discriminator is an UNPARSEABLE resource. Every handled branch parses
+    // the resource id first, so it must answer `dropped` (malformed-resource).
+    // A branch that has gone missing cannot: it falls through to the fallback,
+    // which now parks (`handler-pendente`). So `dropped` proves the branch ran,
+    // and both failure modes — `parked` from the fallback, `done` from the old
+    // silent ack — fail this assertion.
+    const handled = Object.entries(TOPIC_DISPOSITION)
+      .filter(([, d]) => d === 'handled')
+      .map(([t]) => t);
+    expect(handled.length).toBeGreaterThan(0);
+
+    for (const topic of handled) {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ topic, resource: '/nao-parseavel' }),
+        0,
+      );
+      expect(r.outcome, `topic '${topic}' did not reach its dispatch branch`).toBe('dropped');
+    }
+  });
+
   it('pins the inert fixture topic — it must stay recognised and do nothing', () => {
     // ~20 tests in this file lean on INERT_TOPIC being a no-op. If it ever
     // gains a handler (or joins the ignore list) they start asserting something

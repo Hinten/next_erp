@@ -124,10 +124,21 @@ export interface MissedFeedsContaResult {
   found: number;
   /** Of those, the ones whose dedup key was first seen in this tick. */
   novos: number;
-  /** Known-topic, newly-seen, parseable entries actually enqueued. */
+  /** Enqueueable, newly-seen, parseable entries actually enqueued. */
   enqueued: number;
-  /** Rejected by `isKnownTopic` (per-topic detail is in the tick summary). */
+  /**
+   * Rejected by `isKnownTopic` — a topic absent from `TOPIC_DISPOSITION`.
+   *
+   * ⚠️ Kept SEPARATE from {@link skippedIgnorado} on purpose. This one rising
+   * means **a new ML topic appeared** and someone should classify it; the other
+   * means the ignore list did its job and is pure noise. Summed into one
+   * counter, an operator cannot tell which, and the number that should prompt
+   * action gets buried under the number that never should. (Per-topic detail is
+   * in the tick summary either way.)
+   */
   skippedTopic: number;
+  /** Recognised but `ignore` — never enqueued, by design (#813). */
+  skippedIgnorado: number;
   /** `parseNotificationBody` returned null (no usable `resource`/`topic`). */
   skippedInvalid: number;
   /** Entries whose `user_id` differs from this conta's — the scope probe. */
@@ -229,6 +240,7 @@ async function recordContaError(
     novos: 0,
     enqueued: 0,
     skippedTopic: 0,
+    skippedIgnorado: 0,
     skippedInvalid: 0,
     userIdEstranhos: 0,
     pages: 0,
@@ -331,6 +343,7 @@ async function sweepConta(
   let novos = 0;
   let enqueued = 0;
   let skippedTopic = 0;
+  let skippedIgnorado = 0;
   let skippedInvalid = 0;
   let userIdEstranhos = 0;
   let truncated = false;
@@ -366,15 +379,29 @@ async function sweepConta(
       tick.vistos.add(key);
       novos += 1;
 
-      // Two reasons to skip, counted the same way. UNKNOWN: enqueuing it would
-      // park a fresh document every morning (#813). IGNORED: the receiver already
-      // refuses these, and replaying them here would reintroduce exactly the
-      // per-delivery cost the ignore list removes — this is the second producer
-      // the `shouldEnqueueTopic` gate exists for.
+      // Two reasons to skip, counted SEPARATELY because they mean opposite
+      // things to an operator.
+      //
+      // UNKNOWN — a topic absent from TOPIC_DISPOSITION. Enqueuing it would park
+      // a fresh document every morning (#813), and the count is the signal that
+      // a new ML topic needs classifying.
+      //
+      // IGNORED — the receiver already refuses these; replaying them here would
+      // reintroduce exactly the per-delivery cost the ignore list removes. This
+      // sweep is the SECOND producer the `shouldEnqueueTopic` gate exists for.
+      //
+      // Both clauses are load-bearing and neither implies the other: an unknown
+      // topic is not ignored (`shouldEnqueueTopic` returns true for it), and an
+      // ignored topic IS known.
       const topic = typeof entry.topic === 'string' ? entry.topic : null;
-      if (topic == null || !isKnownTopic(topic) || !shouldEnqueueTopic(topic)) {
+      if (topic == null || !isKnownTopic(topic)) {
         bump(tick.topicosPulados, topic ?? '(sem topic)');
         skippedTopic += 1;
+        continue;
+      }
+      if (!shouldEnqueueTopic(topic)) {
+        bump(tick.topicosPulados, topic);
+        skippedIgnorado += 1;
         continue;
       }
 
@@ -411,7 +438,7 @@ async function sweepConta(
     lastError: null,
     lastFoundCount: found,
     lastEnqueuedCount: enqueued,
-    lastSkippedCount: skippedTopic + skippedInvalid,
+    lastSkippedCount: skippedTopic + skippedIgnorado + skippedInvalid,
     lastTruncated: truncated,
   });
 
@@ -421,6 +448,7 @@ async function sweepConta(
     novos,
     enqueued,
     skippedTopic,
+    skippedIgnorado,
     skippedInvalid,
     userIdEstranhos,
     pages,

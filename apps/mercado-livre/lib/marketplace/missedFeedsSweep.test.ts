@@ -428,7 +428,11 @@ describe('runMissedFeedsSweep — topic filtering', () => {
     const res = await run(db, scheduler);
 
     expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(res.contas[0]!.skippedTopic).toBe(1);
+    // Counted apart from `skippedTopic`: an unknown topic means a new ML topic
+    // needs classifying (act on it), an ignored one means the list worked
+    // (noise). Summed, the number that should prompt action is buried.
+    expect(res.contas[0]!.skippedIgnorado).toBe(1);
+    expect(res.contas[0]!.skippedTopic).toBe(0);
   });
 
   it('a topic outside KNOWN_TOPICS is SKIPPED, COUNTED and never enqueued', async () => {

@@ -364,7 +364,11 @@ export const sweepMercadoLivreMissedFeeds = onSchedule(
       found: result.contas.reduce((sum, c) => sum + c.found, 0),
       novos: result.contas.reduce((sum, c) => sum + c.novos, 0),
       enqueued: result.contas.reduce((sum, c) => sum + c.enqueued, 0),
+      // Two counters, never summed: `skippedTopic` rising means a topic absent
+      // from TOPIC_DISPOSITION appeared and needs classifying — act on it.
+      // `skippedIgnorado` rising means the ignore list did its job — noise.
       skippedTopic: result.contas.reduce((sum, c) => sum + c.skippedTopic, 0),
+      skippedIgnorado: result.contas.reduce((sum, c) => sum + c.skippedIgnorado, 0),
       skippedInvalid: result.contas.reduce((sum, c) => sum + c.skippedInvalid, 0),
       // #813's evidence: the topics ML still delivers that nothing here handles.
       topicosPulados: result.topicosPulados,

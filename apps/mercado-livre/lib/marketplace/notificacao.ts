@@ -18,17 +18,10 @@
  *      same daily over the ones waiting on a seller to connect.
  *
  * Disposition (`handleNotificationTask`):
- *  - `done`     — a known topic was processed: NOTHING is persisted. The `items`
- *                 topic runs the status-sync (#440); `orders_v2`/`orders` run the
- *                 Step 9 order→pedido import (see `runOrderImport` below);
- *                 `payments`/`shipments` run the Step 9 PR 3 payment/shipment
- *                 sync onto an already-imported pedido (see `runPaymentImport`/
- *                 `runShipmentImport` below); `claims` runs the Step 14 claim →
- *                 incidente/conversa import (see `runClaimImport` below); the
- *                 remaining topics (items_prices/orders_feedback/questions/
- *                 messages/stock-location) are no-ops — `items_prices`
- *                 PERMANENTLY so (#803, see `KNOWN_TOPICS`), the rest until
- *                 their per-topic handlers land in later steps;
+ *  - `done`     — the work was performed (or the topic is `ack`): NOTHING is
+ *                 persisted. **Which topic does what is stated ONCE, in
+ *                 {@link TOPIC_DISPOSITION}** — restating it here is how this
+ *                 header and that table drifted apart in the first place;
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
@@ -44,10 +37,16 @@
  *                 `user_id` lands on an active integração. It used to be `failed`,
  *                 which parked it ~6h in and lost every notification a
  *                 next-business-day connect would have imported;
- *  - `parked`   — an unsupported topic, or a notification with no `user_id` at all
- *                 (nothing can ever make it resolvable) — terminal, never re-driven;
- *  - `dropped`  — a malformed task payload (a coding/enqueue bug — logged, no
- *                 persist, no retry).
+ *  - `parked`   — terminal, never re-driven. Three causes: a topic absent from
+ *                 {@link TOPIC_DISPOSITION}; a `park` topic (data-bearing, importer
+ *                 pending); or a notification with no `user_id` at all, which
+ *                 nothing can ever make resolvable;
+ *  - `dropped`  — two very different things, told apart by the outcome LABEL.
+ *                 Unlabelled: a malformed task payload — a coding/enqueue bug,
+ *                 logged, no persist, no retry. Labelled `ignorado`: an `ignore`
+ *                 topic, which is neither a bug nor logged. Reading a bare
+ *                 `dropped` as "coding bug" is exactly the misreading the
+ *                 `ack`/`ignore` split exists to prevent.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
@@ -159,8 +158,20 @@ export const TOPIC_DISPOSITION = {
   claims: 'handled',
 
   // Recognised, nothing to do.
-  items_prices: 'ack', // #803 — the ERP owns both price tables
+  //
+  // ⚠️ The line between `ack` and `park` is NOT "does a handler exist yet" — it
+  // is **does the notification carry content that is lost if we drop it**.
+  // A question or a buyer message is a one-time payload: miss the delivery and
+  // the text is gone from our side forever, which is why they `park`. The three
+  // below announce STATE we can re-read from ML at any time, so a dropped
+  // delivery costs nothing but freshness.
+  items_prices: 'ack', // #803 — the ERP owns both price tables; nothing to read back
   orders_feedback: 'ack', // legacy's handler was `return;` before any work — dead code
+  // Announces that a user_product's stock moved. The quantity is always
+  // re-readable at `/user-products/{id}/stock`, and the ERP is the source of
+  // truth that PUSHES stock to ML in the first place — so this is a hint about
+  // state, not an event carrying content. If a stock feature ever consumes it,
+  // it becomes `handled`; it never needs to become `park`.
   'stock-location': 'ack',
 
   // Data-bearing, handler pending (#532/#533). NOT `ack`: acking these is the
@@ -991,12 +1002,17 @@ export async function processNotificationPayload(
   // flips to `handled` in TOPIC_DISPOSITION. That handler MUST THROW on a
   // transient failure (so the queue and sweep retry) and be idempotent keyed by
   // the ML resource id — it must never fall through to a silent success.
-  if (TOPIC_DISPOSITION[payload.topic as keyof typeof TOPIC_DISPOSITION] === 'park') {
+  // Only `ack` may reach the end of this function. A `handled` topic that gets
+  // here has LOST ITS BRANCH — renamed, deleted, or never written — and acking
+  // it would reintroduce #813 through the very table meant to prevent it: no
+  // failure doc, no parked doc, no warn line, and an outcome indistinguishable
+  // from the import having run. Park instead, so the delivery survives.
+  const disposition = TOPIC_DISPOSITION[payload.topic as keyof typeof TOPIC_DISPOSITION];
+  if (disposition !== 'ack') {
     return { kind: 'handler-pendente', integracaoId };
   }
 
   // `ack` — recognised, and there is genuinely nothing to do. Persists nothing.
-  // See TOPIC_DISPOSITION for why each of the three is here.
   return { kind: 'done', integracaoId };
 }
 
@@ -1102,9 +1118,17 @@ function pipelineFor(runners: NotificationRunners = {}) {
         return { kind: 'drop', label: 'ignorado' };
       }
       if (outcome.kind === 'handler-pendente') {
+        // Two causes, and the reason has to distinguish them for an operator:
+        // a `park` topic is waiting on work we know is unwritten, while a
+        // `handled` topic reaching here means a dispatch branch went missing —
+        // a regression, not a plan.
+        const disposition = TOPIC_DISPOSITION[payload.topic as keyof typeof TOPIC_DISPOSITION];
         return {
           kind: 'park',
-          reason: `tópico com dados e sem importador ainda: ${payload.topic} (#532)`,
+          reason:
+            disposition === 'handled'
+              ? `tópico marcado como 'handled' mas sem branch de dispatch: ${payload.topic}`
+              : `tópico com dados e sem importador ainda: ${payload.topic} (#532)`,
         };
       }
       if (outcome.kind === 'malformed-resource') {
