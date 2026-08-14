@@ -209,6 +209,25 @@ export const clienteSchema = z.object({
   // userCliente outer reference: stored as a Firestore document path string
   // (`users/<uid>`) on writes from this app. Phase 1 keeps it pass-through.
   userCliente: z.string().nullable().default(null),
+  /*
+   * Mercado Livre buyer id — the contact key for people who reach us through ML
+   * before they are customers.
+   *
+   * A pre-sale ML question carries NO cpf_cnpj, telefone or email, so the four
+   * legs of `findOrCreateCliente`'s cascade all skip and it falls through to a
+   * blind create: one junk cliente per question notification, whose rows then
+   * poison the telefone/email legs for real order imports. This field is the
+   * fifth leg that makes an ML buyer resolvable from their very first question.
+   *
+   * A STRING holding a decimal id, not a number: ML's own user docs warn that
+   * new ids exceed Int32 and are now Int64, and a string sidesteps the JS
+   * 53-bit precision question permanently.
+   *
+   * System-managed, so no `.describe()` — same reason as `userCliente` above:
+   * the generated form is built from described fields, and this is not one an
+   * operator types.
+   */
+  idMercadoLivre: z.string().max(32).nullable().default(null),
 });
 
 export type Cliente = z.infer<typeof clienteSchema>;

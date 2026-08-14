@@ -53,16 +53,25 @@ export { normalizeDocumento };
 export const CLIENTE_MATCH_KEY = {
   cpfCnpj: 'cpf_cnpj',
   idEstrangeiro: 'idEstrangeiro',
+  idMercadoLivre: 'idMercadoLivre',
   telefone: 'telefone',
   email: 'email',
 } as const satisfies Record<string, string>;
 
 export type ClienteMatchKey = (typeof CLIENTE_MATCH_KEY)[keyof typeof CLIENTE_MATCH_KEY];
 
-/** Keys that constitute identity — a contradiction here means a different person. */
+/**
+ * Keys that constitute identity — a contradiction here means a different person.
+ *
+ * `idMercadoLivre` is STRONG: it is a marketplace account, not a recycled phone
+ * number or a shared household mailbox. Two rows carrying different ML buyer ids
+ * are two different accounts, and merging them would attribute one buyer's
+ * questions and orders to another.
+ */
 export const CLIENTE_STRONG_KEYS: readonly ClienteMatchKey[] = [
   CLIENTE_MATCH_KEY.cpfCnpj,
   CLIENTE_MATCH_KEY.idEstrangeiro,
+  CLIENTE_MATCH_KEY.idMercadoLivre,
 ];
 
 /** Keys that only suggest identity — recycled mobile numbers and shared
@@ -82,6 +91,7 @@ export const CLIENTE_WEAK_KEYS: readonly ClienteMatchKey[] = [
 export interface ClienteIdentityKeys {
   readonly cpf_cnpj?: string | null;
   readonly idEstrangeiro?: string | null;
+  readonly idMercadoLivre?: string | null;
 }
 
 /**
@@ -134,8 +144,27 @@ export function isSameCliente(
 ): boolean {
   return (
     idCompatible(candidate.cpf_cnpj, incoming.cpf_cnpj) &&
-    idCompatible(candidate.idEstrangeiro, incoming.idEstrangeiro)
+    idCompatible(candidate.idEstrangeiro, incoming.idEstrangeiro) &&
+    idMercadoLivreCompatible(candidate.idMercadoLivre, incoming.idMercadoLivre)
   );
+}
+
+/**
+ * Same "absence is no evidence" rule as {@link idCompatible}, but compared as an
+ * exact trimmed string rather than through `normalizeDocumento`.
+ *
+ * An ML buyer id is an opaque account number, not a Brazilian fiscal document.
+ * `normalizeDocumento` happens to be the identity function on a digit string
+ * today, so routing this through {@link idCompatible} would pass every test —
+ * and would silently start folding two distinct ML accounts together the day
+ * that normalizer learns a new rule. Comparing what ML actually gave us keeps
+ * that coupling from ever existing.
+ */
+export function idMercadoLivreCompatible(a: unknown, b: unknown): boolean {
+  const left = identityValue(a);
+  const right = identityValue(b);
+  if (left == null || right == null) return true;
+  return left === right;
 }
 
 /**
@@ -262,4 +291,16 @@ export interface ClienteResolveFields {
   readonly ie: string | null;
   readonly telefone: string | null;
   readonly email: string | null;
+  /**
+   * The ML buyer id, when the caller knows it.
+   *
+   * OPTIONAL, unlike every field above, and that is the point: most callers
+   * genuinely do not know it. `billingInfoToClienteFields` sees only ML's
+   * billing block, which carries no buyer id; the WhatsApp discovery path knows
+   * a phone number and nothing else. Omitting the key says "no evidence", which
+   * is what the cascade already does with a null leg — whereas making it
+   * required would force those callers to write `idMercadoLivre: null`, an
+   * assertion they are in no position to make.
+   */
+  readonly idMercadoLivre?: string | null;
 }

@@ -16,6 +16,14 @@
  *   identity was rewritten with the buyer's. The NF-e would then be emitted
  *   against a cliente carrying the wrong CPF.
  *
+ * A fifth leg, `idMercadoLivre`, was added for the ML chat import. A pre-sale
+ * question carries none of the original four — no CPF, no phone, no e-mail — so
+ * every leg skipped and the cascade fell through to the blind create below,
+ * producing one junk cliente per question notification whose telefone/email
+ * legs then poisoned later order imports. The ML buyer id is the only identity
+ * such a contact has, and it is a STRONG key: a marketplace account, not a
+ * recycled phone number.
+ *
  * The cascade order is unchanged. What changed is that **every candidate must
  * pass `isSameCliente`** (`@delfrance/schemas`) before it may be merged into:
  * telefone and e-mail are signals, cpf_cnpj and idEstrangeiro are identity, and
@@ -180,6 +188,15 @@ export function buildClienteUpdatePatch(
     patch.idEstrangeiro = fields.idEstrangeiro;
   }
 
+  // Fill-only-when-absent, like the two above. `isSameCliente` has already
+  // established the stored value is either absent or exactly equal, so the only
+  // write left to make is the one that ADDS the id — which is how a cliente
+  // first created from an order (cpf_cnpj, no ML id) gains one the next time
+  // that buyer asks a question.
+  if (fields.idMercadoLivre != null && identityValue(old.idMercadoLivre) == null) {
+    patch.idMercadoLivre = fields.idMercadoLivre;
+  }
+
   // `isSameTelefone` treats the legacy raw 10/11-digit BR shape and the
   // normalized `55…` shape as ONE number, so a match never triggers a rewrite.
   const telefone = sanitizeTelefone(fields.telefone);
@@ -222,11 +239,11 @@ interface CascadeLeg {
 /**
  * Resolve the incoming record to an existing cliente, or create one.
  *
- * Dedup order — `cpf_cnpj` → `idEstrangeiro` → `telefone` (both wire shapes) →
- * `email` (typed and lowercased) — with `isSameCliente` gating EVERY leg, strong
- * ones included: one code path, one truth table. A candidate found by
- * `cpf_cnpj` is compatible on that key by construction, so the uniform gate
- * costs nothing.
+ * Dedup order — `cpf_cnpj` → `idEstrangeiro` → `idMercadoLivre` → `telefone`
+ * (both wire shapes) → `email` (typed and lowercased) — with `isSameCliente`
+ * gating EVERY leg, strong ones included: one code path, one truth table. A
+ * candidate found by `cpf_cnpj` is compatible on that key by construction, so
+ * the uniform gate costs nothing.
  *
  * `nowMs` stamps `timestamp` + `ultimaModificacao` on create, and
  * `ultimaModificacao` only on an update that actually changes a field.
@@ -262,6 +279,18 @@ export async function findOrCreateCliente(
       // Queried RAW: the field has no schema regex, so there is no stored
       // canonical form to query. Normalizing here would miss every existing row.
       value: identityValue(fields.idEstrangeiro),
+    },
+    {
+      key: CLIENTE_MATCH_KEY.idMercadoLivre,
+      op: '==',
+      // Also raw — an opaque marketplace account number, stored verbatim.
+      //
+      // Placed AFTER the two fiscal identifiers on purpose. For a pre-sale
+      // question this is the only leg with a value, so the order is moot; for an
+      // ML order both are present, and `cpf_cnpj` is the identity the NF-e is
+      // emitted against, so it stays the first thing we trust. Sitting here also
+      // means callers that never pass an ML id see byte-identical behaviour.
+      value: identityValue(fields.idMercadoLivre),
     },
     // The legacy `userPath` dedup step is intentionally skipped — see
     // apps/mercado-livre/lib/marketplace/orderCliente.ts's header doc.
@@ -323,6 +352,10 @@ export async function findOrCreateCliente(
     // value would not round-trip clienteSchema's `^[0-9A-Z]*$` at all.
     cpf_cnpj: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
     idEstrangeiro: fields.idEstrangeiro,
+    // `?? null` because the field is optional on ClienteResolveFields — an
+    // `undefined` here would be rejected by the Firebase SDK, which refuses
+    // undefined in addDoc/setDoc.
+    idMercadoLivre: fields.idMercadoLivre ?? null,
     ie: fields.ie,
     // `sanitizeTelefone`, not `normalizeTelefone`: a masked value (`11*****8888`)
     // would otherwise be stripped to 6 digits and throw a ZodError inside
