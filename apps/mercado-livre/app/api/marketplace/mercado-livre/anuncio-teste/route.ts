@@ -74,6 +74,13 @@ export async function GET(req: Request): Promise<NextResponse> {
     let listingTypeId: string | null = null;
     let categoryId: string | null = null;
     let categoriaPath: string[] | null = null;
+    // ⚠️ WHY there is no category, not just that there isn't one. The two causes
+    // need different actions from the operator — "ML has no Outros root on this
+    // site" is nothing they can fix, while "no leaf beneath it" means picking a
+    // subcategory — and a single "não foi possível" message sent them hunting.
+    let categoriaMotivo: 'sem-raiz' | 'sem-folha' | null = null;
+
+    if (raiz == null) categoriaMotivo = 'sem-raiz';
 
     if (raiz != null) {
       const trilha: string[] = [];
@@ -91,6 +98,7 @@ export async function GET(req: Request): Promise<NextResponse> {
         }
         atual = escolherDescendenteTeste(node.children_categories ?? []);
       }
+      if (categoryId == null) categoriaMotivo = 'sem-folha';
     }
 
     return NextResponse.json({
@@ -98,6 +106,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       descricao: DESCRICAO_ANUNCIO_TESTE,
       categoryId,
       categoriaPath,
+      categoriaMotivo,
       listingTypeId,
       conta: {
         nickname: me.nickname ?? null,
