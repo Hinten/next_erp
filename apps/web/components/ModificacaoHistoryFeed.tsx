@@ -64,6 +64,15 @@ export interface ListEntry {
   usuarioOuterRef: string | null | undefined;
   /** Present on live + load-more rows that still hold a cursor for pagination. */
   snap?: SnapshotRow<HistoricoModificacao>['snap'];
+  /**
+   * INJECTED rows only. The id of the history entry that would make this row
+   * redundant; the feed hides it when that entry is actually loaded.
+   *
+   * Deduping against what is PRESENT rather than against a proxy for "the
+   * trigger must have covered this" is what keeps the pre-deploy window
+   * honest — see `ModificacoesTab.legacyEstadoEntries`.
+   */
+  supersededByEntryId?: string | null;
 }
 
 const KIND_LABELS: Record<Kind, string> = {
@@ -148,11 +157,15 @@ export interface ModificacaoHistoryFeedProps {
    * Rows from ANOTHER source to interleave into the same timeline, sorted with
    * the rest by `timestamp`.
    *
-   * The pedido tab uses this for the pre-trigger `historicoEstadoPedido` rows:
-   * once the trigger ships, an estado change is recorded HERE as an ordinary
-   * field, so replaying the whole legacy trail would double every post-deploy
-   * transition. The caller is responsible for passing only rows this collection
-   * does not already cover — see `ModificacoesTab`, which keys on `eventId`.
+   * The pedido tab uses this for the `historicoEstadoPedido` rows: once the
+   * trigger ships, an estado change is recorded HERE as an ordinary field, so
+   * replaying the trail unconditionally would double every covered transition.
+   * A row states its own redundancy via `supersededByEntryId` and is hidden only
+   * when that entry is actually loaded — the caller does not have to predict
+   * what this collection covers.
+   *
+   * ⚠️ They carry no snapshot cursor and are typically the OLDEST rows, so they
+   * are excluded from `ownEntries` and take no part in pagination.
    */
   extraEntries?: ReadonlyArray<ListEntry>;
 }
@@ -229,18 +242,37 @@ export function ModificacaoHistoryFeed({
 
   // Live page first (authoritative + fresh), then the one-shot tail with any
   // id already surfaced live dropped.
-  const entries = useMemo(() => {
+  /**
+   * Rows that came from THIS collection — the only ones that can be paginated.
+   *
+   * ⚠️ Kept separate from the rendered list on purpose. `extraEntries` carry no
+   * snapshot cursor and are, by construction, the OLDEST rows in the feed (the
+   * pedido tab injects exactly the pre-trigger estado rows), so they always sort
+   * last. Deriving the cursor or `hasMore` from the merged list would take a
+   * cursor-less row as the anchor and silently disable "Carregar mais" on every
+   * pedido that has any legacy history.
+   */
+  const ownEntries = useMemo(() => {
     const liveRows = (live.data ?? []).map(rowToEntry);
     const seen = new Set(liveRows.map((r) => r.id));
     const tail = extraRows.filter((r) => !seen.has(r.id)).map(rowToEntry);
-    const own = [...liveRows, ...tail];
-    if (!extraEntries || extraEntries.length === 0) return own;
+    return [...liveRows, ...tail];
+  }, [live.data, extraRows]);
+
+  const entries = useMemo(() => {
+    if (!extraEntries || extraEntries.length === 0) return ownEntries;
+    // Hide an injected row only when the entry it duplicates is really here.
+    const ownIds = new Set(ownEntries.map((e) => e.id));
+    const kept = extraEntries.filter(
+      (e) => e.supersededByEntryId == null || !ownIds.has(e.supersededByEntryId),
+    );
+    if (kept.length === 0) return ownEntries;
     // Interleave the injected rows by time. Both inputs are already
     // newest-first, so this only has to merge them; a missing timestamp sorts
     // last rather than jumping to the top.
     const at = (e: ListEntry) => e.timestamp ?? Number.NEGATIVE_INFINITY;
-    return [...own, ...extraEntries].sort((a, b) => at(b) - at(a));
-  }, [live.data, extraRows, extraEntries]);
+    return [...ownEntries, ...kept].sort((a, b) => at(b) - at(a));
+  }, [ownEntries, extraEntries]);
 
   // One batched resolution wave for every actor on screen.
   const nomes = useUsuarioNomes(
@@ -251,7 +283,9 @@ export function ModificacaoHistoryFeed({
     ),
   );
 
-  const hasMore = !exhausted && entries.length >= pageSize;
+  // Both keyed on OWN rows: the injected ones can neither be paged nor anchor a
+  // cursor, so counting them here offered a button that could do nothing.
+  const hasMore = !exhausted && ownEntries.length >= pageSize;
   const loading = live.loading;
   const listError = live.error ? `Falha ao carregar o histórico: ${live.error.code}` : null;
 
@@ -259,7 +293,7 @@ export function ModificacaoHistoryFeed({
     if (loadingMore || exhausted) return;
     // Capture cursor at click time so a concurrent live update can't shift
     // the pagination anchor mid-request.
-    const cursor = entries[entries.length - 1]?.snap;
+    const cursor = ownEntries[ownEntries.length - 1]?.snap;
     if (!cursor) return;
 
     const gen = loadGenRef.current;
@@ -296,7 +330,7 @@ export function ModificacaoHistoryFeed({
     } finally {
       if (gen === loadGenRef.current) setLoadingMore(false);
     }
-  }, [loadingMore, exhausted, entries, db, collection, ctx, pageSize]);
+  }, [loadingMore, exhausted, ownEntries, db, collection, ctx, pageSize]);
 
   return (
     <Stack gap="md">

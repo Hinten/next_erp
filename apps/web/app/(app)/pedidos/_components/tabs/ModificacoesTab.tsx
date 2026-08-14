@@ -98,15 +98,25 @@ function ModificacoesFeed({ pedidoId }: { pedidoId: string }) {
 }
 
 /**
- * Map the LEGACY `historicoEstadoPedido` rows into feed entries.
+ * Map the `historicoEstadoPedido` rows into feed entries, so a pedido's estado
+ * transitions appear in the same chronology as everything else.
  *
- * ⚠️ Only rows with no `eventId` are taken, and that filter is the whole point.
- * Since the modification trigger shipped, an estado change is recorded as an
- * ordinary field of the pedido document, and BOTH rows are keyed on the same
- * CloudEvent id — so replaying the full trail would show every post-deploy
- * transition twice. A `null` `eventId` means "written before the trigger
- * existed" (the schema says so explicitly), which is exactly the set the
- * modification history cannot cover and the only set worth interleaving.
+ * ⚠️ Every row is mapped; the DEDUPE is delegated to the feed via
+ * `supersededByEntryId`, and that indirection is the correctness point.
+ *
+ * Once this PR's functions deploy, an estado change is also recorded as an
+ * ordinary field of the pedido document, and both rows are keyed on the SAME
+ * CloudEvent id — the history entry's doc id IS that event id. So the row to
+ * hide is exactly the one whose counterpart is present.
+ *
+ * Filtering here on `eventId != null` instead would assume the counterpart
+ * exists. It does not always: `eventId` predates this PR, so every transition
+ * `onPedidoEstadoChanged` has recorded since it shipped carries an `eventId`
+ * AND has no history row — those would be filtered out of the tab and never
+ * replaced. (At the cutover the imported production rows all carry
+ * `eventId: null` and both triggers are live from day one, so that window is
+ * staging-only — but "hide it only if the replacement is really there" costs
+ * nothing and cannot be wrong.)
  *
  * These are display-only projections: `old` is unknown (the legacy row stored
  * only the new state), so the change renders as `— → <estado>` rather than
@@ -116,23 +126,23 @@ export function legacyEstadoEntries(
   rows: ReadonlyArray<{ id: string; data: HistoricoEstadoPedido }>,
   pedidoId: string,
 ): ListEntry[] {
-  return rows
-    .filter((row) => row.data.eventId == null)
-    .map((row) => ({
-      id: `estado-legado:${row.id}`,
-      path: `pedidos/${pedidoId}`,
-      subcolecao: null,
-      docId: pedidoId,
-      kind: 'update' as const,
-      campos: ['estado'],
-      timestamp: row.data.data ?? null,
-      changes: {
-        estado: {
-          old: null,
-          new: ESTADO_PEDIDO_LABELS[row.data.estado] ?? row.data.estado,
-        },
+  return rows.map((row) => ({
+    id: `estado-legado:${row.id}`,
+    path: `pedidos/${pedidoId}`,
+    subcolecao: null,
+    docId: pedidoId,
+    kind: 'update' as const,
+    campos: ['estado'],
+    timestamp: row.data.data ?? null,
+    changes: {
+      estado: {
+        old: null,
+        new: ESTADO_PEDIDO_LABELS[row.data.estado] ?? row.data.estado,
       },
-      // The legacy trail DID record an actor, under its own field name.
-      usuarioOuterRef: row.data.usuarioHistoricoEstadosPedidoOuterRef,
-    }));
+    },
+    // The legacy trail DID record an actor, under its own field name.
+    usuarioOuterRef: row.data.usuarioHistoricoEstadosPedidoOuterRef,
+    // The history entry keyed on the same CloudEvent, if one was ever written.
+    supersededByEntryId: row.data.eventId,
+  }));
 }

@@ -185,8 +185,8 @@ describe.skipIf(!EMULATED)('pedido modification history (emulator, end-to-end)',
     expect(updateRow).toBeDefined();
     // The fine key names the LINE, and the coarse name stays for array-contains.
     expect(updateRow?.campos).toContain('itens');
-    expect(updateRow?.campos).toContain('itens.#1.quantidade');
-    expect(updateRow?.changes['itens.#1.quantidade']).toEqual({ old: 2, new: 5 });
+    expect(updateRow?.campos).toContain('itens.prod1#1.quantidade');
+    expect(updateRow?.changes['itens.prod1#1.quantidade']).toEqual({ old: 2, new: 5 });
     // The whole-map value is NOT stored once the field is expanded.
     expect(updateRow?.changes.itens).toBeUndefined();
   });

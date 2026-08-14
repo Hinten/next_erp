@@ -36,16 +36,35 @@ export const PEDIDO_ITEM_POSITIONAL_PREFIX = '#';
  * Stable-ish key for one RAW stored line item. `null` hands the decision back to
  * the diff engine, which falls back to a group+index positional key.
  *
- * Takes only the item: position is deliberately not part of the identity, so a
- * pure reorder inside a group produces no diff at all.
+ * Array POSITION is deliberately not part of the identity, so a pure reorder
+ * inside a group produces no diff at all.
+ *
+ * ⚠️ The `#<ordem>` fallback is scoped to the GROUP (`<produtoUid>#<ordem>`),
+ * and that scoping is a correctness fix, not tidiness. `#<ordem>` alone is not
+ * unique across produtos — the schema default is `ordem: 1`, `devolucaoForm`
+ * hardcodes `ordem: 1`, and the legacy Flutter writer is outside our control —
+ * and the diff engine assigns its duplicate-occurrence suffix in SORTED
+ * GROUP-KEY order. So with an unscoped key, merely adding an unrelated produto
+ * renumbers the occurrences after it and the engine pairs lines belonging to
+ * different produtos: an untouched line reports as `added` while a quantity
+ * change nobody made is attributed to another. In an audit trail that is worse
+ * than a coarse whole-map entry, because it reads as a specific, credible edit.
+ *
+ * Mercado Livre lines are unaffected — they key on `ensureUniqueId` and stay
+ * group-independent, so a produto rebind still reads as one `produtoUid`
+ * change. A rebind of an ID-LESS line now reads as remove + add, which is the
+ * accepted cost of never mispairing.
+ *
+ * The map key is used ONLY to namespace the synthesized key; nothing derived is
+ * written into the stored diff (see the note above about `produtoUid`).
  */
-export function pedidoItemKey(item: Record<string, unknown>): string | null {
+export function pedidoItemKey(item: Record<string, unknown>, mapKey: string): string | null {
   const ensureUniqueId = item.ensureUniqueId;
   if (typeof ensureUniqueId === 'string' && ensureUniqueId !== '') return ensureUniqueId;
 
   const ordem = item.ordem;
   if (typeof ordem === 'number' && Number.isFinite(ordem)) {
-    return `${PEDIDO_ITEM_POSITIONAL_PREFIX}${ordem}`;
+    return `${mapKey}${PEDIDO_ITEM_POSITIONAL_PREFIX}${ordem}`;
   }
   return null;
 }

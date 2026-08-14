@@ -17,23 +17,28 @@ function row(id: string, data: Partial<HistoricoEstadoPedido> = {}) {
 }
 
 describe('legacyEstadoEntries', () => {
-  it('takes rows with NO eventId — the ones the modification history cannot cover', () => {
-    const entries = legacyEstadoEntries([row('a', { eventId: null })], 'ped1');
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.campos).toEqual(['estado']);
-  });
-
-  it('DROPS rows the trigger wrote, so a post-deploy transition is not shown twice', () => {
-    // Since the modification trigger shipped, an estado change is recorded as an
-    // ordinary field of the pedido document. Both rows are keyed on the same
-    // CloudEvent, so replaying the whole trail would duplicate every one of
-    // them. A non-null eventId is exactly the "already covered" marker.
+  it('maps EVERY row — deduping belongs to the feed, not to a filter here', () => {
     const entries = legacyEstadoEntries(
       [row('a', { eventId: 'evt-1' }), row('b', { eventId: null })],
       'ped1',
     );
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.id).toContain('b');
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.campos).toEqual(['estado']);
+  });
+
+  it('marks the history entry that would supersede each row, by CloudEvent id', () => {
+    // The history entry's doc id IS the event id, so the feed can hide a row
+    // exactly when its replacement is loaded. Filtering on `eventId != null`
+    // here instead would ASSUME the replacement exists — and it does not for
+    // transitions `onPedidoEstadoChanged` recorded before this PR's functions
+    // deploy, which would then be dropped from the tab and never replaced.
+    const entries = legacyEstadoEntries(
+      [row('a', { eventId: 'evt-1' }), row('b', { eventId: null })],
+      'ped1',
+    );
+    expect(entries[0]?.supersededByEntryId).toBe('evt-1');
+    // No event id ⇒ nothing can supersede it; it always shows.
+    expect(entries[1]?.supersededByEntryId).toBeNull();
   });
 
   it('renders the estado LABEL, and never invents a previous value', () => {
