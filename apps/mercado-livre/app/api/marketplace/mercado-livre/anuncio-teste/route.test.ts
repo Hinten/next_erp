@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
@@ -46,13 +46,22 @@ interface Body {
   title: string;
   descricao: string;
   categoryId: string | null;
+  categoriaPath: string[] | null;
+  categoriaMotivo: string | null;
   listingTypeId: string | null;
   conta: { nickname: string | null; ehContaDeTeste: boolean };
 }
 
+let erro: ReturnType<typeof vi.spyOn>;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   __resetAllReadCaches();
+  erro = vi.spyOn(console, 'error').mockImplementation(() => {});
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.resolveChannelContext.mockResolvedValue({ integracaoId: 'i', accessToken: 'AT', account: {} });
   h.loadCtx.mockResolvedValue({ resolveChannelContext: h.resolveChannelContext });
@@ -102,20 +111,76 @@ describe('GET /api/marketplace/mercado-livre/anuncio-teste', () => {
     expect(body.listingTypeId).toBeNull();
   });
 
-  // ⚠️ The defect this pins. A mid-tree "Outros" used to come back as a real
-  // `categoryId` with only `listingTypeId` null — so the form was handed a
-  // category publish cannot accept, while the UI blamed the listing types. Only
-  // a leaf can be published into, so a non-leaf is NO category.
-  it('reports NO category when "Outros" is not a leaf', async () => {
-    h.getCategory.mockResolvedValue({
-      id: 'MLB5672',
+  // ⚠️ **The defect that made the whole feature look broken.** ML's "Outros" is a
+  // root WITH children, and only a leaf can be published into — so demanding the
+  // root itself be a leaf meant `categoryId` came back null on EVERY call, the
+  // form's null-guard skipped the write, and the operator watched the título
+  // change while the category and the whole attribute grid sat still.
+  it('descends into a non-leaf "Outros" and resolves the leaf beneath it', async () => {
+    h.getCategory.mockImplementation(async (id: string) =>
+      id === 'MLB5672'
+        ? {
+            id,
+            name: 'Outros',
+            children_categories: [
+              { id: 'MLB1000', name: 'Antiguidades' },
+              { id: 'MLB5673', name: 'Outros' },
+            ],
+          }
+        : { id, name: 'Outros', children_categories: [] },
+    );
+    const body = (await (await GET(req())).json()) as Body;
+    // The homonym wins over the first child.
+    expect(body.categoryId).toBe('MLB5673');
+    expect(body.categoriaPath).toEqual(['Outros', 'Outros']);
+    // And the listing type is queried for the LEAF, never the mid-tree node.
+    expect(h.getCategoryListingTypes).toHaveBeenCalledWith('MLB5673');
+    expect(body.listingTypeId).toBe('free');
+  });
+
+  // ⚠️ The log line IS the early-warning system, so it gets a test of its own.
+  // ML has no sandbox and its refresh_token is single-use and rotating, so no CI
+  // lane may hold real ML credentials — nothing automated can ever see the live
+  // tree. If ML renames the catch-all again (it is "Mais Categorias" today, not
+  // the "Outros" its docs name), this `console.error` in Cloud Logging is the
+  // only thing standing between that and another round of manual testing.
+  it('LOGS what it expected and what ML answered when no root matches', async () => {
+    h.listSiteCategories.mockResolvedValue([
+      { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+      { id: 'MLB1000', name: 'Eletrônicos' },
+    ]);
+    const body = (await (await GET(req())).json()) as Body;
+    expect(body.categoriaMotivo).toBe('sem-raiz');
+
+    expect(erro).toHaveBeenCalledTimes(1);
+    const [linha] = erro.mock.calls[0] as [string];
+    expect(linha).toContain('[mercado-livre/api]');
+    expect(linha).toContain('sem-raiz');
+    // What we expected…
+    expect(linha).toContain('Mais Categorias');
+    // …and what ML actually said, which is what makes a rename diagnosable.
+    expect(linha).toContain('Eletrônicos');
+  });
+
+  it('stays quiet when the category DID resolve', async () => {
+    await GET(req());
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  it('gives up rather than crawling a pathological tree', async () => {
+    // Every level costs one `GET /categories/{id}`, so the depth cap is the only
+    // thing bounding the call count.
+    h.getCategory.mockImplementation(async (id: string) => ({
+      id,
       name: 'Outros',
-      children_categories: [{ id: 'MLB5673', name: 'Outros Acessórios' }],
-    });
+      children_categories: [{ id: `${id}-x`, name: 'Outros' }],
+    }));
     const body = (await (await GET(req())).json()) as Body;
     expect(body.categoryId).toBeNull();
+    expect(body.categoriaPath).toBeNull();
     expect(body.listingTypeId).toBeNull();
-    // And it must not have gone asking for types it cannot use.
+    expect(h.getCategory.mock.calls.length).toBeLessThanOrEqual(6);
+    // It must not go asking for types it cannot use.
     expect(h.getCategoryListingTypes).not.toHaveBeenCalled();
   });
 
