@@ -558,7 +558,8 @@ export interface MercadoLivreClient {
    * anyway because the route is hosted by the ML backend, which is where the
    * Vertex credential and the IAM grant are.
    */
-  iaModelos(): Promise<MercadoLivreIaModelos>;
+  /** `agenteId` picks whose settings and whose default instruction to report. */
+  iaModelos(agenteId?: string): Promise<MercadoLivreIaModelos>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
   sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
   /**
@@ -864,7 +865,11 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreAnuncioTeste>(
         `/api/marketplace/mercado-livre/anuncio-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
       ),
-    iaModelos: () => call<MercadoLivreIaModelos>('/api/marketplace/mercado-livre/ia/modelos'),
+    iaModelos: (agenteId) =>
+      call<MercadoLivreIaModelos>(
+        '/api/marketplace/mercado-livre/ia/modelos' +
+          (agenteId != null ? `?agente=${encodeURIComponent(agenteId)}` : ''),
+      ),
     sizeChartDomains: (integracaoId) =>
       call<{ domains: MercadoLivreChartDomain[] }>(
         `/api/marketplace/mercado-livre/size-charts/domains?integracaoId=${encodeURIComponent(integracaoId)}`,

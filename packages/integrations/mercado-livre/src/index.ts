@@ -22,6 +22,9 @@ export * from './zplDanfeFilter';
 export * from './ai/attributeSchema';
 export * from './ai/attributePrompt';
 export * from './ai/attributeApply';
+export * from './ai/medidasSchema';
+export * from './ai/medidasPrompt';
+export * from './ai/medidasApply';
 
 /**
  * Mercado Livre plugin (MarketplaceChannel).

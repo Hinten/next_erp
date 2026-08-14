@@ -210,7 +210,10 @@ export {
   PROVEDOR_IA,
   CONFIG_IA_MODELO_PADRAO,
   CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  CONFIG_IA_ML_MEDIDAS_DOC_ID,
+  CONFIG_IA_AGENTES,
   type ConfigIa,
+  type ConfigIaAgenteId,
   type ProvedorIa,
 } from './configIa';
 

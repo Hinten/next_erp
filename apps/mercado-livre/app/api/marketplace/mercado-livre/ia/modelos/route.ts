@@ -17,8 +17,15 @@
  * fallback lives in `getAiModelosCached`.
  */
 import { NextResponse } from 'next/server';
-import { DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION } from '@delfrance/integrations-mercado-livre';
-import { CONFIG_IA_ML_ATRIBUTOS_DOC_ID, CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
+import {
+  DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
+  DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION,
+} from '@delfrance/integrations-mercado-livre';
+import {
+  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  CONFIG_IA_ML_MEDIDAS_DOC_ID,
+  CONFIG_IA_MODELO_PADRAO,
+} from '@delfrance/schemas';
 
 import { resolveModelo } from '@delfrance/ai';
 import {
@@ -34,13 +41,31 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+/**
+ * Which agent's settings to report on. Unknown values fall back to the attribute
+ * agent rather than 404: this endpoint exists to *diagnose* a broken setting, so
+ * answering with something usable beats failing on a typo in a query string.
+ *
+ * ⚠️ Each agent ships its OWN default instruction, and reporting the wrong one
+ * would be worse than reporting none — the page shows it as "what runs when the
+ * field is empty", so a mismatched text is an actively misleading answer.
+ */
+const PROMPT_PADRAO: Record<string, string> = {
+  [CONFIG_IA_ML_ATRIBUTOS_DOC_ID]: DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
+  [CONFIG_IA_ML_MEDIDAS_DOC_ID]: DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION,
+};
+
 export async function GET(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.integracao.read);
   if ('error' in auth) return auth.error;
 
+  const pedido = new URL(req.url).searchParams.get('agente');
+  const agenteId =
+    pedido != null && Object.hasOwn(PROMPT_PADRAO, pedido) ? pedido : CONFIG_IA_ML_ATRIBUTOS_DOC_ID;
+
   const [lista, config] = await Promise.all([
     getAiModelosCached(createVertexListModelsFn()),
-    loadConfigIa(getAdminFirestore(), CONFIG_IA_ML_ATRIBUTOS_DOC_ID),
+    loadConfigIa(getAdminFirestore(), agenteId),
   ]);
 
   const envModelo = process.env.MERCADO_LIVRE_AI_MODEL ?? null;
@@ -70,7 +95,8 @@ export async function GET(req: Request): Promise<NextResponse> {
      * text into `apps/web` would be the other way to show it, and the copy would
      * drift from the one the model is actually given.
      */
-    promptPadrao: DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
+    agente: agenteId,
+    promptPadrao: PROMPT_PADRAO[agenteId] ?? DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
     /**
      * What a call would use, and why. `origem` is the honest answer to "the page
      * shows model X, is that what runs?" — an env var set on the backend
