@@ -37,9 +37,26 @@ describe('DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION', () => {
     expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(/OMITA a chave/);
   });
 
-  it('forbids the N/A sentinel, which is the operator’s call', () => {
-    expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(/-1/);
+  it('ALLOWS "N/A" for an attribute that genuinely does not apply', () => {
+    // Many attributes truly do not apply — voltage on a t-shirt, sole material
+    // on a notebook. Forbidding the answer forced the model to choose between
+    // inventing a value and omitting an attribute it had judged correctly.
     expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(/N\/A/);
+    expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(/NÃO SE APLICA/);
+  });
+
+  it('separates "does not apply" from "I do not know", with an example of each', () => {
+    // ⚠️ The load-bearing distinction. The two look alike to a model and must
+    // produce OPPOSITE outputs: N/A is a positive claim that goes onto a live
+    // listing, omission is an admission of ignorance. Naming the rule once is
+    // not enough — each branch carries a concrete example.
+    expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(/NÃO SEI/);
+    expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(/OMITA a chave/);
+    expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(
+      /Nunca use "N\/A" para dizer que não sabe/,
+    );
+    // And a tie-break, because the ambiguous case is common.
+    expect(DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION).toMatch(/Na dúvida.*omita a chave/i);
   });
 
   it('forbids inventing measurements and codes', () => {

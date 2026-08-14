@@ -8,7 +8,11 @@ import {
   type OAuthConfig,
   refreshAccessToken,
 } from '../../src/melhor-envio/oauth';
-import { MelhorEnvioHttpError } from '../../src/melhor-envio/errors';
+import {
+  MelhorEnvioHttpError,
+  MelhorEnvioNetworkError,
+  MelhorEnvioSchemaError,
+} from '../../src/melhor-envio/errors';
 import { mockFetch } from '../_helpers/mockFetch';
 
 const TOKEN_OK = {
@@ -100,6 +104,41 @@ describe('exchangeCode', () => {
       status: 401,
     });
     await expect(exchangeCode(config(fetchMock), 'x')).rejects.toBeInstanceOf(MelhorEnvioHttpError);
+  });
+
+  it('preserves the error body so the caller can tell invalid_grant apart', async () => {
+    // The callback derives `reason=codigo_invalido` from this body — ME never
+    // special-cases `invalid_grant` into its own class the way Mercado Livre does,
+    // so the body is the ONLY way to distinguish an expired code from bad creds.
+    const corpo = { error: 'invalid_grant', error_description: 'bad code' };
+    const fetchMock = mockFetch(() => new Response(JSON.stringify(corpo), { status: 401 }));
+    await expect(exchangeCode(config(fetchMock), 'x')).rejects.toMatchObject({ body: corpo });
+  });
+
+  it('maps a 200 with an unparseable body to MelhorEnvioSchemaError, not a raw ZodError', async () => {
+    // `refresh_token` is required. This used to be `tokenResponseSchema.parse()`,
+    // so a malformed 200 escaped as a bare ZodError — which `isMelhorEnvioError`
+    // rejects, turning it into an unhandled 500 at the OAuth callback instead of a
+    // redirect that could name the cause.
+    const semRefresh = { token_type: 'Bearer', expires_in: 100, access_token: 'access-123' };
+    const fetchMock = mockFetch(() => new Response(JSON.stringify(semRefresh), { status: 200 }));
+
+    const err = await exchangeCode(config(fetchMock), 'x').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MelhorEnvioSchemaError);
+    expect((err as MelhorEnvioSchemaError).issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: ['refresh_token'] })]),
+    );
+  });
+
+  it('maps a fetch throw to MelhorEnvioNetworkError, not the bare base class', async () => {
+    // As the base class it was indistinguishable from an unmapped failure, since
+    // the base is also the callback's `exchange` fallback arm.
+    const fetchMock = mockFetch(() => {
+      throw new TypeError('ECONNRESET');
+    });
+    await expect(exchangeCode(config(fetchMock), 'x')).rejects.toBeInstanceOf(
+      MelhorEnvioNetworkError,
+    );
   });
 });
 

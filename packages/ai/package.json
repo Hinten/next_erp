@@ -24,10 +24,16 @@
   "peerDependencies": {
     "firebase-admin": "^14"
   },
+  "peerDependenciesMeta": {
+    "firebase-admin": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
     "eslint": "catalog:",
+    "firebase-admin": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -87,17 +87,15 @@ describe('buildAttributeSchema', () => {
     // The model reasons about "Algodão", not about "M1" — and the applier
     // resolves the name back to the id accent-insensitively.
     const material = buildAttributeSchema(CATEGORY).properties!.MATERIAL!;
-    expect(material.enum).toEqual(['Algodão', 'Poliéster']);
+    expect(material.enum).toEqual(['Algodão', 'Poliéster', 'N/A']);
   });
 
-  it('never offers the N/A sentinel as a choice', () => {
-    // Deciding a required attribute genuinely has no value is a judgement about
-    // the product, not something to infer from a title and a photo.
-    //
-    // ⚠️ The name here is deliberately NOT '-1'. ML identifies the sentinel by
-    // its value **id** and localises the name freely, so a fixture spelling the
-    // name '-1' passes against a builder that (wrongly) filters by name — which
-    // is exactly the bug this fixture used to hide.
+  it('offers "N/A" under ONE fixed spelling, not ML’s localised label', () => {
+    // ⚠️ ML spells its own sentinel differently per attribute and per site
+    // ("N/A", "Não se aplica", "No aplica"). Passing that through would put an
+    // unpredictable string in the enum that the applier then has to guess at —
+    // and a guess it gets wrong ships as free text ML rejects. So ML's own
+    // sentinel value is dropped and one fixed label is appended instead.
     const withNa = [
       spec({
         id: 'X',
@@ -108,13 +106,37 @@ describe('buildAttributeSchema', () => {
         ],
       }),
     ];
-    expect(buildAttributeSchema(withNa).properties!.X!.enum).toEqual(['Valor']);
+    expect(buildAttributeSchema(withNa).properties!.X!.enum).toEqual(['Valor', 'N/A']);
   });
 
-  it('falls back to free text rather than emitting an impossible empty enum', () => {
-    // A list whose only option is the sentinel leaves nothing to offer. An
-    // `enum: []` is a schema no answer can satisfy, so constrained decoding
-    // would turn "I cannot determine this" into a hard failure.
+  it('does not offer "N/A" twice when the category already lists that spelling', () => {
+    // ⚠️ The sentinel filter drops the option whose ID is `-1`. A category that
+    // names an option "N/A" under a REAL id survives it, so appending the fixed
+    // label would emit a duplicate enum member — which JSON Schema requires to
+    // be unique, and which constrained decoding has no reason to handle kindly.
+    const attrs = [
+      spec({
+        id: 'X',
+        valueType: 'list',
+        values: [
+          { id: 'V1', name: 'N/A' },
+          { id: 'V2', name: 'Azul' },
+        ],
+      }),
+    ];
+    const members = buildAttributeSchema(attrs).properties!.X!.enum!;
+    expect(members).toEqual(['N/A', 'Azul']);
+    expect(new Set(members).size).toBe(members.length);
+  });
+
+  it('matches that spelling case-insensitively before appending', () => {
+    const attrs = [spec({ id: 'X', valueType: 'list', values: [{ id: 'V1', name: 'n/a' }] })];
+    expect(buildAttributeSchema(attrs).properties!.X!.enum).toEqual(['n/a']);
+  });
+
+  it('falls back to free text when the sentinel is the only listed value', () => {
+    // Nothing real to choose from, so an enum of just "N/A" would be a closed
+    // list that can only say "does not apply" — worse than free text.
     const onlyNa = [
       spec({ id: 'X', valueType: 'list', values: [{ id: '-1', name: 'Não se aplica' }] }),
     ];
@@ -123,9 +145,10 @@ describe('buildAttributeSchema', () => {
     expect(prop.type).toBe('string');
   });
 
-  it('counts the enum cap AFTER dropping the sentinel', () => {
-    // Otherwise a list sitting exactly one over the cap is discarded even
-    // though what would actually be offered fits.
+  it('counts the enum cap over the REAL values only', () => {
+    // The cap is about how many genuine choices are worth inlining; ML's own
+    // sentinel is dropped before counting and "N/A" is appended after, so
+    // neither one pushes a usable list over the limit.
     const values = [
       { id: '-1', name: 'Não se aplica' },
       { id: 'A', name: 'Um' },
@@ -134,7 +157,7 @@ describe('buildAttributeSchema', () => {
     const prop = buildAttributeSchema([spec({ id: 'X', valueType: 'list', values })], {
       maxEnumValues: 2,
     }).properties!.X!;
-    expect(prop.enum).toEqual(['Um', 'Dois']);
+    expect(prop.enum).toEqual(['Um', 'Dois', 'N/A']);
   });
 
   it('falls back to free text when the list is too long to inline', () => {

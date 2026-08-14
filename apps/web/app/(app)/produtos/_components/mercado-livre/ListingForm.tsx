@@ -5,11 +5,28 @@ import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
-import { Fieldset, Select, SimpleGrid, Textarea, TextInput, Tooltip } from '@mantine/core';
+import {
+  Alert,
+  Anchor,
+  Button,
+  Fieldset,
+  Group,
+  Select,
+  SimpleGrid,
+  Stack,
+  Text,
+  Textarea,
+  TextInput,
+  Tooltip,
+} from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
-import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  resolveCondicaoAnuncio,
+  type FonteCondicaoAnuncio,
+  type ProdutoMercadoLivreLink,
+} from '@delfrance/schemas';
 
 import {
   attributesForSave,
@@ -17,10 +34,13 @@ import {
   validateAttr,
   type AttrRow,
 } from '@/lib/mercado-livre/attributeForm';
-import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
+  useMercadoLivreClient,
+} from '@/lib/mercado-livre/client';
 
 import {
-  CONDITION_OPTIONS,
   LISTING_TYPE_OPTIONS,
   listingTypeLabel,
   titleEditability,
@@ -58,6 +78,14 @@ export interface ListingFormProps {
   integracaoId: string;
   /** Seeds the category suggestion request. */
   produtoNome: string;
+  /**
+   * The parent produto's `ehUsado`, which is what decides the listing's
+   * condition — read from the SAVED produto doc, matching publish, which sends
+   * the saved produto and not the pending form values.
+   */
+  produtoEhUsado: boolean;
+  /** `extraData.condicao` — the second input publish resolves from. */
+  produtoCondicao: number | null;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -86,6 +114,62 @@ export interface ListingFormProps {
  */
 export type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
 
+/** Where the shown condition came from — the caption names it. */
+const FONTE_CONDICAO_LABEL: Record<FonteCondicaoAnuncio, string> = {
+  produto: 'Definido pelo campo "Produto usado" na aba Configurações do produto.',
+  extraData: 'Definido pelo campo "Condição" na aba Dados extras do produto.',
+  anuncio: 'Definido pelo campo "Produto usado" na aba Configurações do produto.',
+};
+
+/**
+ * Condição, read-only, derived exactly the way publish derives it.
+ *
+ * It stopped being editable here because it was a second place to say something
+ * the produto already says, and the two could disagree — the produto is the
+ * product, and whether a product is used is a fact about the product, not about
+ * one of its listings.
+ *
+ * ⚠️ It must run `resolveCondicaoAnuncio`, not mirror one input. Showing only
+ * `ehUsado` reproduced the very defect this replaced a Select to remove: a
+ * produto with `ehUsado: false` and **Recondicionado** in Dados extras rendered
+ * "Novo" here while the first publish sent `used`. Same two-copies-that-disagree
+ * problem, moved from link↔produto to display↔payload — and harder to notice,
+ * because one side is a screen and the other a wire value. The caption names
+ * whichever field actually decided, so the operator knows where to go.
+ *
+ * ⚠️ The note on a published listing is the other load-bearing part. ML accepts
+ * `condition` **only on create** (`itemPayload.ts`, inside `if (!input.isUpdate)`),
+ * so flipping "Produto usado" on a listing that already exists changes what the
+ * ERP would publish NEXT time and nothing at Mercado Livre. Without saying so,
+ * the operator flips the switch, sees this field change, and reasonably believes
+ * it propagated.
+ */
+function CondicaoField({
+  ehUsado,
+  condicao,
+  condicaoAnuncio,
+  published,
+}: {
+  ehUsado: boolean;
+  condicao: number | null;
+  condicaoAnuncio: 'new' | 'used' | null;
+  published: boolean;
+}) {
+  const { condition, fonte } = resolveCondicaoAnuncio({ ehUsado, condicao, condicaoAnuncio });
+  return (
+    <ListingField label="Condição">
+      <Stack gap={2}>
+        <Text size="sm">{condition === 'used' ? 'Usado' : 'Novo'}</Text>
+        <Text size="xs" c="dimmed">
+          {published
+            ? 'Definido pelo produto. O Mercado Livre fixa a condição na criação do anúncio — alterá-la agora não altera este anúncio.'
+            : FONTE_CONDICAO_LABEL[fonte]}
+        </Text>
+      </Stack>
+    </ListingField>
+  );
+}
+
 /**
  * The editable half of a listing.
  *
@@ -111,6 +195,8 @@ export function ListingForm({
   linkDocId,
   integracaoId,
   produtoNome,
+  produtoEhUsado,
+  produtoCondicao,
   link,
   db,
   canWrite,
@@ -140,6 +226,133 @@ export function ListingForm({
 
   const titleRule = useMemo(() => titleEditability(link), [link]);
   const isPublished = link.id != null;
+
+  // Computed ONCE, from the seed. Deriving it on every render would collapse the
+  // field the instant the operator cleared the text they were editing.
+  const [descricaoOpen, setDescricaoOpen] = useState(() => (link.descricao ?? '').trim() !== '');
+
+  /**
+   * Fill the form with the data ML requires a **test listing** to carry.
+   *
+   * Pre-fill only — nothing is saved and nothing is published. `shouldDirty`
+   * marks the form so "Salvar anúncio" lights up and the operator commits
+   * deliberately, exactly as for a hand-typed edit.
+   */
+  const aplicarDadosTeste = useCallback(
+    (dados: {
+      title: string;
+      descricao: string;
+      categoryId: string | null;
+      listingTypeId: string | null;
+    }) => {
+      const opts = { shouldDirty: true, shouldValidate: true } as const;
+      form.setValue('title', dados.title, opts);
+      form.setValue('descricao', dados.descricao, opts);
+      // ⚠️ Only when resolved. Writing '' would clear a category the operator had
+      // already chosen and re-block Publicar, and writing a guessed id would file
+      // a test listing into a real category.
+      if (dados.categoryId != null) form.setValue('category_id', dados.categoryId, opts);
+      if (dados.listingTypeId != null) {
+        form.setValue('listing_type_id', dados.listingTypeId, opts);
+      }
+      setDescricaoOpen(true);
+    },
+    [form],
+  );
+
+  const [carregandoTeste, setCarregandoTeste] = useState(false);
+  const [testeConta, setTesteConta] = useState<{
+    nickname: string | null;
+    ehContaDeTeste: boolean;
+    categoriaResolvida: boolean;
+    tipoResolvido: boolean;
+  } | null>(null);
+
+  const preencherTeste = useCallback(async () => {
+    if (!client) return;
+    setCarregandoTeste(true);
+    try {
+      const dados = await client.anuncioTeste(integracaoId);
+      aplicarDadosTeste(dados);
+      setTesteConta({
+        nickname: dados.conta.nickname,
+        ehContaDeTeste: dados.conta.ehContaDeTeste,
+        categoriaResolvida: dados.categoryId != null,
+        tipoResolvido: dados.listingTypeId != null,
+      });
+    } catch (err) {
+      // The client narrows to its own two classes; anything else is a bug and
+      // must not be reported as "could not reach Mercado Livre".
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        notifications.show({ color: 'red', title: 'Dados de teste', message: err.message });
+        return;
+      }
+      throw err;
+    } finally {
+      setCarregandoTeste(false);
+    }
+  }, [client, integracaoId, aplicarDadosTeste]);
+
+  /**
+   * ⚠️ The warning is the point of this feature, not decoration.
+   *
+   * Mercado Livre has **no sandbox** — «O Mercado Livre não tem um ambiente para
+   * teste ou sandbox» — so publishing this fills a real listing on the real
+   * marketplace. And ML's rule is that it must not be a real seller account:
+   * «contas pessoais ou de familiares não devem ser, em hipótese alguma,
+   * utilizadas para testes». The compliant path is a test user connected as a
+   * second conta, which this ERP already supports, so the warning names it.
+   */
+  const avisoTeste =
+    testeConta == null ? null : (
+      <Alert
+        color={testeConta.ehContaDeTeste ? 'blue' : 'yellow'}
+        variant="light"
+        mb="xs"
+        title={
+          testeConta.ehContaDeTeste
+            ? 'Dados de teste preenchidos'
+            : 'Esta não é uma conta de teste do Mercado Livre'
+        }
+      >
+        <Stack gap={4}>
+          {!testeConta.ehContaDeTeste && (
+            <Text size="sm">
+              O Mercado Livre não tem ambiente de testes: publicar aqui cria um anúncio real em{' '}
+              <strong>{testeConta.nickname ?? 'nesta conta'}</strong>. A documentação pede que
+              anúncios de teste fiquem em um usuário de teste — crie um e conecte-o como uma segunda
+              conta em Canais &gt; Mercado Livre.
+            </Text>
+          )}
+          {/* Covers both ways the route can decline it: "Outros" absent from the
+              catalogue, and "Outros" present but mid-tree — only a leaf can be
+              published into, so neither yields a usable category. */}
+          {!testeConta.categoriaResolvida && (
+            <Text size="sm">
+              Não foi possível usar a categoria “Outros” automaticamente — escolha uma categoria
+              antes de publicar.
+            </Text>
+          )}
+          {/* ⚠️ Only meaningful once a category actually resolved. The route
+              never queries listing types without one, so an unresolved category
+              leaves `listingTypeId` null too — and saying "nenhum tipo nesta
+              categoria" about a category that was never found blames the wrong
+              thing, right beside the message that names the real one. */}
+          {testeConta.categoriaResolvida && !testeConta.tipoResolvido && (
+            <Text size="sm">
+              Nenhum tipo de anúncio de baixa exposição está disponível nesta categoria — escolha um
+              manualmente e evite Premium.
+            </Text>
+          )}
+          <Text size="xs" c="dimmed">
+            Nada foi salvo nem publicado: os campos foram apenas preenchidos.
+          </Text>
+        </Stack>
+      </Alert>
+    );
 
   // ---- Attributes ---------------------------------------------------------
   // Deliberately NOT a react-hook-form field. The set of attributes is decided
@@ -191,6 +404,22 @@ export function ListingForm({
     baselineRef.current = link;
     form.reset(toFormValues(link));
   }, [link, isDirty, form]);
+
+  // ⚠️ The disclosure has to follow that re-seed. `descricaoOpen` is seeded once,
+  // but the effect above refills the whole form from the live snapshot whenever
+  // nothing is pending — so a descrição written by a second tab, a colleague, or
+  // an import lands in a textarea that stays `display: none`. No data is lost
+  // (`buildListingPatch` only writes dirty keys), but "a hidden non-empty field
+  // is one nobody remembers to check" is exactly the invariant the disclosure
+  // exists for, and this app is never the only writer (root CLAUDE.md rule 7).
+  //
+  // Open-ONLY, and gated on the same `isDirty` edge, so it can never collapse
+  // the field under someone mid-edit — which is why the seed is a `useState` and
+  // not a derivation in the first place.
+  useEffect(() => {
+    if (isDirty) return;
+    if ((link.descricao ?? '').trim() !== '') setDescricaoOpen(true);
+  }, [link.descricao, isDirty]);
 
   useEffect(() => {
     onDirtyChange(linkDocId, isDirty || attrDirty);
@@ -330,6 +559,21 @@ export function ListingForm({
   return (
     <>
       <Fieldset legend="Dados do anúncio" variant="unstyled">
+        {!isPublished && !readOnly && (
+          <Group justify="flex-end" mb="xs">
+            <Button
+              type="button"
+              variant="subtle"
+              size="compact-xs"
+              onClick={() => void preencherTeste()}
+              loading={carregandoTeste}
+              disabled={client == null}
+            >
+              Preencher com dados de teste
+            </Button>
+          </Group>
+        )}
+        {avisoTeste}
         <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="sm" verticalSpacing="xs">
           <Controller
             control={form.control}
@@ -348,21 +592,16 @@ export function ListingForm({
               </Tooltip>
             )}
           />
-          <Controller
-            control={form.control}
-            name="condition"
-            render={({ field, fieldState }) => (
-              <Select
-                label="Condição"
-                data={[...CONDITION_OPTIONS]}
-                value={field.value}
-                onChange={(v) => field.onChange(v ?? 'new')}
-                onBlur={field.onBlur}
-                allowDeselect={false}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-              />
-            )}
+          {/* ⚠️ Condição is DERIVED from the produto's `ehUsado`, not edited
+              here — see `CondicaoField`. It is deliberately a read-only pair and
+              NOT a labelled control: the e2e proves the first-publish Select is
+              gone by counting labelled elements on a published card, and a second
+              labelled input in this grid would break that count. */}
+          <CondicaoField
+            ehUsado={produtoEhUsado}
+            condicao={produtoCondicao}
+            condicaoAnuncio={link.condition ?? null}
+            published={isPublished}
           />
           <Controller
             control={form.control}
@@ -378,24 +617,50 @@ export function ListingForm({
               />
             )}
           />
-          <Controller
-            control={form.control}
-            name="descricao"
-            render={({ field, fieldState }) => (
-              <Textarea
-                {...field}
-                value={field.value ?? ''}
-                label="Descrição"
-                description="Em branco, a publicação usa a descrição do produto."
-                autosize
-                minRows={3}
-                maxRows={10}
-                disabled={readOnly}
-                error={fieldState.error?.message}
-                style={{ gridColumn: '1 / -1' }}
+          <Stack gap={4} style={{ gridColumn: '1 / -1' }}>
+            {/* Collapsed by default on a listing that has none: the ML
+                description is optional (publish falls back to the produto's),
+                so an always-open 3-row textarea spent the most vertical space
+                in the section on the field least often used. Anything already
+                written opens expanded, because a hidden non-empty field is a
+                field nobody remembers to check. */}
+            <Anchor
+              component="button"
+              type="button"
+              size="xs"
+              onClick={() => setDescricaoOpen((v) => !v)}
+            >
+              {descricaoOpen ? 'Ocultar descrição' : 'Descrição do anúncio (opcional)'}
+            </Anchor>
+            {/* ⚠️ Rendered ALWAYS and hidden with CSS, never unmounted. Mantine's
+                <Collapse> unmounts its children, and an unmounted `Controller`
+                is one RHF `shouldUnregister` default away from silently dropping
+                the operator's text on save. Hiding costs nothing here — it is one
+                textarea, not a subtree. */}
+            <div
+              data-testid="ml-descricao-wrapper"
+              data-open={descricaoOpen ? 'true' : 'false'}
+              style={{ display: descricaoOpen ? undefined : 'none' }}
+            >
+              <Controller
+                control={form.control}
+                name="descricao"
+                render={({ field, fieldState }) => (
+                  <Textarea
+                    {...field}
+                    value={field.value ?? ''}
+                    label="Descrição"
+                    description="Em branco, a publicação usa a descrição do produto."
+                    autosize
+                    minRows={3}
+                    maxRows={10}
+                    disabled={readOnly}
+                    error={fieldState.error?.message}
+                  />
+                )}
               />
-            )}
-          />
+            </div>
+          </Stack>
         </SimpleGrid>
       </Fieldset>
 

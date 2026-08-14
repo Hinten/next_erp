@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useState } from 'react';
 import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
@@ -12,6 +11,7 @@ import {
 } from '@delfrance/integrations-freight-br/http-client';
 
 import { useFreightClient } from '@/lib/freight/client';
+import { useMelhorEnvioCallbackToast } from './melhorEnvioOAuthErrors';
 
 /**
  * Melhor Envio account panel on /logistica/melhor-envios/[id] — shows the
@@ -23,20 +23,11 @@ import { useFreightClient } from '@/lib/freight/client';
 export function ContaPanel({ intFreteId }: { intFreteId: string }) {
   const client = useFreightClient();
   const [connecting, setConnecting] = useState(false);
-  const searchParams = useSearchParams();
 
-  // Toast the OAuth callback outcome (?me=connected|error&reason=…).
-  useEffect(() => {
-    const me = searchParams.get('me');
-    if (me === 'connected') {
-      notifications.show({ color: 'green', message: 'Conta Melhor Envio conectada.' });
-    } else if (me === 'error') {
-      notifications.show({
-        color: 'red',
-        message: `Falha ao conectar a conta Melhor Envio (${searchParams.get('reason') ?? 'erro'}).`,
-      });
-    }
-  }, [searchParams]);
+  // Toast the OAuth callback outcome (?me=connected|error&reason=…). Shared with
+  // the Melhor Envio list wrapper, which the callback redirects to for the three
+  // failures that happen before a trustworthy int_frete id exists.
+  useMelhorEnvioCallbackToast();
 
   const query = useQuery({
     queryKey: ['melhor-envio-conta', intFreteId],
