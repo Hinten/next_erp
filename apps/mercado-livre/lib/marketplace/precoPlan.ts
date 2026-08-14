@@ -273,6 +273,9 @@ export type FetchPrecoFamiliasByIds = (
  * is simply absent from the result; the caller diffs against `anchorIds` and
  * reports `FAMILIA_NAO_ENCONTRADA` rather than dropping it.
  */
+/** Families joined per round of the by-ids read — see the loop's ⚠️ below. */
+const FAMILIA_JOIN_CHUNK = 10;
+
 export const fetchPrecoFamiliasByIds: FetchPrecoFamiliasByIds = async (db, args) => {
   const anchorIds = [...new Set(args.anchorIds)];
   if (anchorIds.length === 0) return [];
@@ -282,12 +285,23 @@ export const fetchPrecoFamiliasByIds: FetchPrecoFamiliasByIds = async (db, args)
     fieldMask: ['precos', 'propagatePriceToChildren', 'publicado', 'paiId'],
   });
 
+  // ⚠️ CHUNKED-parallel, unlike `fetchPrecoPage`'s serial loop. Same read count,
+  // same shape — but this one sits in front of a HUMAN on a request capped at 50
+  // produtos, and `readFamilia` costs at least one round trip plus one more per
+  // variation child. Serially that is 50-150 round trips before the first `PUT`
+  // goes out. Chunked rather than one unbounded `Promise.all` because the cap
+  // belongs to the caller, not to this function.
+  const presentes = snaps.filter((snap) => snap.exists);
   const rows: PrecoFamilyRow[] = [];
-  for (const snap of snaps) {
-    if (!snap.exists) continue;
-    rows.push(
-      await readFamilia(db, snap.id, (snap.data() ?? {}) as Record<string, unknown>, contaRefForms),
+  for (let i = 0; i < presentes.length; i += FAMILIA_JOIN_CHUNK) {
+    const lote = await Promise.all(
+      presentes
+        .slice(i, i + FAMILIA_JOIN_CHUNK)
+        .map((snap) =>
+          readFamilia(db, snap.id, (snap.data() ?? {}) as Record<string, unknown>, contaRefForms),
+        ),
     );
+    rows.push(...lote);
   }
   return rows;
 };
