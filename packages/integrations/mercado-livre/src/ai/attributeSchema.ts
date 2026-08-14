@@ -69,11 +69,30 @@ const DEFAULT_MAX_PROPERTIES = 40;
 const DEFAULT_MAX_ENUM_VALUES = 60;
 
 /**
- * ML's "does not apply" marker. The model must never produce it: choosing that
- * a required attribute genuinely has no value is a human judgement about the
- * product, not something to infer from a title and a photo.
+ * ML's platform-wide "does not apply" marker.
+ *
+ * ⚠️ The model IS allowed to produce it, under the fixed spelling below. It used
+ * to be forbidden, on the reasoning that declaring an attribute inapplicable was
+ * a human judgement — but a closed list without it leaves the model choosing
+ * between inventing a value and omitting an attribute it correctly judged, and
+ * plenty genuinely do not apply (voltage on a t-shirt, sole material on a
+ * notebook). What stays reserved for the human is ACCEPTING it: an N/A
+ * suggestion is staged unchecked (`preCheckedSuggestionIds`), because `-1`
+ * satisfies ML's required check and would otherwise silence the validation that
+ * exists to catch a missing value.
  */
 const NA_VALUE_ID = '-1';
+
+/**
+ * The single spelling of "does not apply" the model is offered and the applier
+ * recognises.
+ *
+ * ⚠️ Fixed on our side rather than taken from ML's own localised value name. ML
+ * spells it differently per attribute and per site ("N/A", "Não se aplica",
+ * "No aplica"), and an enum member the applier has to guess at is a member it
+ * will eventually fail to map — silently, as a free-text value ML then rejects.
+ */
+export const NA_ENUM_LABEL = 'N/A';
 
 /**
  * Build the response schema for a category's attributes.
@@ -133,19 +152,34 @@ function buildProperty(attr: AiAttributeSpec, maxEnumValues: number): JsonSchema
 function enumMembers(attr: AiAttributeSpec, maxEnumValues: number): string[] | null {
   if (attr.valueType !== 'list' && attr.valueType !== 'boolean') return null;
   const names = attr.values
-    // ⚠️ The N/A sentinel is identified by its value **id**. Its NAME is
-    // whatever ML localised it to — "N/A", "Não se aplica" — so comparing a
-    // name against '-1' matches nothing and duly offers the sentinel to the
-    // model, which is the one choice it must never make.
+    // ⚠️ The N/A sentinel is dropped HERE and re-added below under a fixed
+    // spelling. Two reasons it cannot simply be left in place: it is identified
+    // by its value **id** (`-1`) while its NAME is whatever ML localised it to,
+    // so the enum would carry an unpredictable string the applier then has to
+    // recognise; and a category that does NOT list it would offer no way to say
+    // "não se aplica" at all.
     .filter((v) => v.id !== NA_VALUE_ID)
     .map((v) => v.name)
     .filter((n): n is string => typeof n === 'string' && n.trim() !== '');
-  // Counted AFTER the sentinel is removed, so a list holding nothing else
-  // falls back to free text rather than emitting `enum: []` — a schema no
-  // answer can satisfy, which turns "I cannot determine this" into a hard
-  // validation failure.
+  // Counted BEFORE the sentinel is appended: the cap is about how many real
+  // choices are worth inlining, and "N/A" is not one of them. Zero real values
+  // falls back to free text rather than emitting an enum of nothing but N/A.
   if (names.length === 0 || names.length > maxEnumValues) return null;
-  return names;
+  // Every closed list gets "N/A", whether or not ML enumerated it. `value_id:
+  // '-1'` is ML's platform-wide "does not apply" marker (`attrNA` writes it for
+  // any attribute id), and a closed list without it forces the model to choose
+  // between inventing a value and omitting an attribute that genuinely does not
+  // apply to the product — which is the situation this exists to fix.
+  //
+  // ⚠️ …unless the category already offers that spelling under some OTHER id.
+  // The filter above only drops the option whose id is `-1`, so a category
+  // listing "N/A" under a real id survives it, and appending would emit
+  // `['N/A', 'Azul', 'N/A']` — a duplicate member, which JSON Schema requires to
+  // be unique.
+  if (names.some((n) => n.trim().toLocaleLowerCase() === NA_ENUM_LABEL.toLocaleLowerCase())) {
+    return names;
+  }
+  return [...names, NA_ENUM_LABEL];
 }
 
 function describe(attr: AiAttributeSpec): string {
