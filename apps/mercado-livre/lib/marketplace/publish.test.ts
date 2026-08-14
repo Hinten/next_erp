@@ -1567,9 +1567,12 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     expect(mocks.uploadPicture).not.toHaveBeenCalled();
   });
 
-  it('a getMe failure surfaces as itself, not as a blocked publish', async () => {
-    // A dead credential must reach the route's 409/502 mapping. Swallowing it
-    // into a `legacy` guess would publish the wrong payload shape.
+  it('a getMe failure surfaces as itself AND lands on the link doc', async () => {
+    // Two separate contracts. (1) A dead credential must reach the route's
+    // 409/502 mapping — swallowing it into a `legacy` guess would publish the
+    // wrong payload shape. (2) The module header: every ML failure leaves its
+    // reason ON THE DOC, so the ML tab shows why the last attempt failed. The
+    // probe is an ML call like any other, so it owes the same stamp.
     const db = new FakeDb();
     seedBase(db);
     const { api, mocks } = makeApi({
@@ -1580,5 +1583,25 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
 
     await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivreHttpError);
     expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      estado: 'E',
+      errors: ['unauthorized'],
+      // Untouched: the probe never learned the model, so the persisted value
+      // must survive rather than be guessed at.
+      isUserProductModel: false,
+    });
+  });
+
+  it('a PRE-FLIGHT refusal still writes nothing — it is not an ML failure', async () => {
+    // The distinction the stamp above must not blur: `estado: 'am'` is a
+    // validation block raised before any ML call, so the doc keeps its state.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, estado: 'am' });
+    const { api } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(/UPtin/);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ estado: 'am', errors: null });
   });
 });

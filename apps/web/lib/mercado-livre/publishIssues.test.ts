@@ -56,6 +56,16 @@ describe('mapPublishIssue', () => {
     ).toMatchObject({ scope: 'listing', field: null });
   });
 
+  it('does NOT claim an unrelated "não está implementada" string', () => {
+    // The rule is anchored on its User-Products context: a future "not
+    // implemented" issue from anywhere else in publishCore must fall through to
+    // the generic banner, not be scoped by a rule that knows nothing about it.
+    expect(mapPublishIssue('exportação de kits ainda não está implementada')).toMatchObject({
+      scope: 'listing',
+      field: null,
+    });
+  });
+
   it('a genuine account-capability issue still routes to the integração', () => {
     expect(mapPublishIssue('a conta não está habilitada para user_product_seller')).toMatchObject({
       scope: 'integracao',
