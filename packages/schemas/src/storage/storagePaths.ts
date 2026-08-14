@@ -102,12 +102,20 @@ export function mediaPath(hash: string, ext?: string | null): string {
   return withExt(`${STORAGE_ROOT.media}/${hash}`, ext);
 }
 
-// ── Tabela de medidas media (owner-scoped like produtos, but NOT resized) ──
+// ── Tabela de medidas media (owner-scoped like produtos, and resized alike) ──
 
 /**
  * `tabMedi/<tabMediId>/originals/<hash>[.<ext>]` — a tabela-de-medidas photo.
- * Owner-scoped like product originals, but NO resize function watches this
- * prefix, so it stays original-only (no derivatives).
+ *
+ * Owner-scoped like product originals **and watched by the same resize
+ * function**: `isWatchedOriginal` matches both roots, so this prefix gets the
+ * 200/400/jpeg derivatives too. It did not used to — the size-chart AI agent
+ * needs the full-size `jpeg` variant to read measurements off a supplier's
+ * table, and a 400 px thumbnail cannot resolve the digits.
+ *
+ * ⚠️ Photos uploaded BEFORE that change carry no `resizeState` and no
+ * derivative refs; readers must keep tolerating null derivative refs until the
+ * backfill runs.
  */
 export function tabMediOriginalPath(tabMediId: string, hash: string, ext?: string | null): string {
   return withExt(`${STORAGE_ROOT.tabMedi}/${tabMediId}/${PRODUTO_SUBDIR.originals}/${hash}`, ext);
@@ -145,13 +153,6 @@ export function derivativeArquivoId(ownerId: string, hash: string, variantKey: s
   return `${ownedArquivoId(ownerId, hash)}_${variantKey}`;
 }
 
-export interface ParsedOriginalPath {
-  produtoId: string;
-  hash: string;
-  /** Lowercased extension without the dot, or `null` when absent. */
-  ext: string | null;
-}
-
 export interface ParsedOwnedOriginalPath {
   ownerCollection: MediaOwnerCollection;
   ownerId: string;
@@ -183,18 +184,6 @@ export function parseOwnedOriginalPath(name: string): ParsedOwnedOriginalPath | 
   const ext = dot > 0 ? file.slice(dot + 1).toLowerCase() : null;
   if (!hash) return null;
   return { ownerCollection, ownerId, hash, ext };
-}
-
-/**
- * Produto-only view of {@link parseOwnedOriginalPath} — returns `null` for any
- * `tabMedi/…` path. Kept byte-identical for the produto-scoped callers and their
- * tests, mirroring how `parseProductMediaDir` sits over `parseOwnedMediaDir`.
- */
-export function parseProductOriginalPath(name: string): ParsedOriginalPath | null {
-  const parsed = parseOwnedOriginalPath(name);
-  return parsed && parsed.ownerCollection === 'produtos'
-    ? { produtoId: parsed.ownerId, hash: parsed.hash, ext: parsed.ext }
-    : null;
 }
 
 /**

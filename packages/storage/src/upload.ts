@@ -68,7 +68,27 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
 
   const existing = await getDoc(docRef);
   if (existing.exists()) {
-    return { id: args.docId, arquivo: existing.data() };
+    const stored = existing.data();
+    // ⚠️ Self-heal the resize marker on a dedup hit.
+    //
+    // Uploads are content-addressed, so re-adding the same bytes returns here
+    // without writing anything. That was harmless while the marker only ever
+    // arrived with the first upload — but it stops being harmless the moment an
+    // owner STARTS being resized: a size-chart photo stored before that change
+    // has `resizeState: null` and no derivative docs, while the caller now
+    // writes optimistic derivative refs from the returned id. Re-adding such a
+    // photo (the natural reflex when a thumbnail looks wrong) would leave the
+    // foto pointing at three `arquivos` docs that never come into existence.
+    //
+    // Stamping `'pending'` hands it to the 48h reconcile sweep, which is the
+    // same mechanism the backfill uses. `'done'` is never reset — only a null
+    // marker is healed — so a produto whose derivatives already exist is
+    // untouched, and legacy Flutter-written originals heal on re-upload too.
+    if (args.resizeState === 'pending' && stored.resizeState == null) {
+      await updateDoc(docRef, { resizeState: 'pending' });
+      return { id: args.docId, arquivo: { ...stored, resizeState: 'pending' } };
+    }
+    return { id: args.docId, arquivo: stored };
   }
 
   const slash = args.storagePath.lastIndexOf('/');
