@@ -160,13 +160,26 @@ export interface FetchPrecoPageArgs {
    * Plan ONE anchor produto instead of the conta's whole catalogue (#804 S6) —
    * the produto-scoped push behind the produto screen's price action.
    *
-   * ⚠️ It reads the anchor DIRECTLY, so it deliberately does not apply the bulk
-   * query's `publicado == true` / `integracoesComProduto array-contains`
-   * filters. The operator named this produto; a stale `integracoesComProduto`
-   * denorm or an unpublished produto with a live listing — two of the classes
-   * #804 S7 reports the bulk job silently dropping — must not make their
-   * explicit request a no-op. The link-level filtering downstream is unchanged,
-   * so a produto with no link for this conta still yields a `SEM_LINK` skip.
+   * ⚠️ It reads the produto DIRECTLY, so it applies **none** of the bulk query's
+   * three filters — `publicado == true`, `integracoesComProduto array-contains`
+   * and `paiId == null`. The first two are the point: the operator named this
+   * produto, and a stale denorm or an unpublished produto with a live listing —
+   * two of the classes #804 S7 reports the bulk job silently dropping — must not
+   * make an explicit request a no-op.
+   *
+   * Dropping `paiId == null` means a `produtoId` naming a variation CHILD is
+   * planned as if it were an anchor: `readFamilia` joins that child's own
+   * `produtoMercadoLivre` links and finds no children of its own. That is
+   * reachable (the ML tab renders for any produto) and the outcome is the right
+   * one — the child's own listing, priced from the child's own `precos`, or a
+   * `SEM_LINK` skip when it has none. It is called out here because "what does
+   * scoping change?" must be answerable from this doc alone.
+   *
+   * ⚠️ No field mask, unlike the bulk page's `.select('precos',
+   * 'propagatePriceToChildren')` — a doc read cannot carry one, and the mask
+   * exists to keep a page of 25 produtos light (they carry heavy media arrays,
+   * and Enterprise bills data scanned). One doc is negligible against that; if
+   * this ever grows to a list of produtos, it needs `getAll(..., { fieldMask })`.
    */
   produtoId?: string | null;
 }

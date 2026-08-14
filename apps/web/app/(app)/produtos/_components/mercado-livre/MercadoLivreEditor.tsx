@@ -159,7 +159,16 @@ export function MercadoLivreEditor({
   // than asserting "novo" for a beat and flipping.
   const produtoCondicao = extraDataSnap.data?.data.condicao ?? null;
 
-  const [publishing, setPublishing] = useState<string | null>(null);
+  /**
+   * The publish in flight, if any. Carries `withPrices` so only the button that
+   * was actually clicked spins — the two publish actions share one handler, and
+   * a bare conta id would light both up and leave the operator unable to tell
+   * which one is running.
+   */
+  const [publishing, setPublishing] = useState<{
+    contaId: string;
+    withPrices: boolean;
+  } | null>(null);
   /** The conta whose draft is being created, if any. */
   const [preparing, setPreparing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
@@ -280,7 +289,13 @@ export function MercadoLivreEditor({
       await client.startPriceSync({ integracaoId, produtoId });
       notifications.show({
         color: 'green',
-        message: 'Atualização de preços iniciada para este produto.',
+        // ⚠️ Says "inclui reduções" on purpose. The conta-wide flow makes the
+        // operator tick "Permitir baixar preços" first; a produto-scoped run
+        // allows decreases by default (#804 S6, legacy parity — they named this
+        // produto). That asymmetry is defensible but must not be invisible:
+        // otherwise republishing to fix a photo can drop a price as a side
+        // effect with nothing on screen having said so.
+        message: 'Atualização de preços iniciada para este produto (inclui reduções).',
       });
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {
@@ -289,7 +304,11 @@ export function MercadoLivreEditor({
           title: 'Anúncio publicado, preços não',
           message:
             err.code === 'ML_PRICE_SYNC_RUNNING'
-              ? 'Já existe uma atualização de preços em andamento nesta conta — tente de novo quando terminar.'
+              ? // One price job per conta, so this is usually the PREVIOUS produto's
+                // push (seconds), not the account-wide job. Naming both is what
+                // makes "try again" actionable instead of an open-ended wait.
+                'Já existe uma atualização de preços em andamento nesta conta — ' +
+                'a de outro produto ou a da conta inteira. Tente de novo em alguns segundos.'
               : err.message,
         });
         return;
@@ -349,7 +368,7 @@ export function MercadoLivreEditor({
     withPrices = false,
   ) {
     if (!client) return;
-    setPublishing(integracaoId);
+    setPublishing({ contaId: integracaoId, withPrices });
     setBlockedIssues((prev) => ({ ...prev, [integracaoId]: [] }));
     try {
       const result = await client.publicar({
@@ -561,6 +580,21 @@ export function MercadoLivreEditor({
             // Livre não definida"). Saying so here beats a round trip that comes
             // back as a 422 the operator has to read.
             const missingCategoria = primary != null && (primary.category_id ?? '') === '';
+            /**
+             * Shared by BOTH publish buttons — they are the same action with and
+             * without a price push, so a guard that applies to one applies to
+             * the other by definition. Written once so it cannot drift.
+             */
+            const publishDisabled =
+              disabled ||
+              !client ||
+              !canPublish ||
+              publishing !== null ||
+              // The backend publishes the SAVED produto and the SAVED link doc,
+              // so publishing over pending edits ships the previous version and
+              // reports success.
+              publishBlocked ||
+              missingCategoria;
 
             return (
               <Card key={conta.id} withBorder padding="md" data-testid={`ml-conta-${conta.id}`}>
@@ -724,49 +758,42 @@ export function MercadoLivreEditor({
                         </Button>
                       </>
                     ) : (
-                      <Button
-                        type="button"
-                        variant={isFirstPublish ? 'filled' : 'light'}
-                        onClick={() => handlePublish(conta.id, false)}
-                        loading={publishing === conta.id}
-                        disabled={
-                          disabled ||
-                          !client ||
-                          !canPublish ||
-                          publishing !== null ||
-                          // The backend publishes the SAVED produto and the SAVED
-                          // link doc, so publishing over pending edits ships the
-                          // previous version and reports success.
-                          publishBlocked ||
-                          missingCategoria
-                        }
-                      >
-                        {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
-                      </Button>
-                    )}
-                    {/* Absent while the listing is still a rascunho: with no link
-                        doc there is no category_id, so publish 422s before it
-                        writes anything and a price push would have nothing to
-                        price. "Preparar anúncio" above is the only action then. */}
-                    {!needsListingType && (
-                      <Button
-                        type="button"
-                        variant="light"
-                        onClick={() => handlePublish(conta.id, false, true)}
-                        loading={publishing === conta.id}
-                        disabled={
-                          disabled ||
-                          !client ||
-                          !canPublish ||
-                          publishing !== null ||
-                          publishBlocked ||
-                          missingCategoria
-                        }
-                      >
-                        {isFirstPublish
-                          ? 'Publicar e atualizar preços'
-                          : 'Republicar e atualizar preços'}
-                      </Button>
+                      /* Both publish actions live in THIS branch, under one
+                         `disabled` expression. They used to be two sibling
+                         blocks gated on the same condition with the clause list
+                         written out twice — identical, and therefore one future
+                         guard away from silently diverging, since the tests
+                         assert each button's presence and not its disabled set.
+
+                         The branch itself is the gate the comment used to get
+                         wrong: `needsListingType` is `contaLinks.length === 0`,
+                         i.e. NO LINK DOC AT ALL — not "rascunho". Without a link
+                         doc there is no `category_id`, so publish 422s before it
+                         writes anything and a price push would have nothing to
+                         price. A rascunho (link doc, `id == null`) DOES get both
+                         buttons: its first publish is worth pairing with prices. */
+                      <>
+                        <Button
+                          type="button"
+                          variant={isFirstPublish ? 'filled' : 'light'}
+                          onClick={() => handlePublish(conta.id, false)}
+                          loading={publishing?.contaId === conta.id && !publishing.withPrices}
+                          disabled={publishDisabled}
+                        >
+                          {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="light"
+                          onClick={() => handlePublish(conta.id, false, true)}
+                          loading={publishing?.contaId === conta.id && publishing.withPrices}
+                          disabled={publishDisabled}
+                        >
+                          {isFirstPublish
+                            ? 'Publicar e atualizar preços'
+                            : 'Republicar e atualizar preços'}
+                        </Button>
+                      </>
                     )}
                     {publishBlocked && (
                       <Text size="xs" c="dimmed">

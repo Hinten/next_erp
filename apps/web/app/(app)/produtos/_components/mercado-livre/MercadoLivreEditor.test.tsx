@@ -379,6 +379,32 @@ describe('Republicar e atualizar preços', () => {
     expect(startPriceSync).not.toHaveBeenCalled();
   });
 
+  it('spins ONLY the button that was clicked', async () => {
+    // Both actions share one handler, so a bare conta id in the loading state
+    // lit up both and the operator could not tell which one was running.
+    // Mantine renders a loading Button as `data-loading` + `disabled`.
+    h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+    let release!: () => void;
+    wireClient({
+      publicar: vi.fn(async () => {
+        await new Promise<void>((r) => (release = r));
+        return PUBLISHED;
+      }),
+    });
+    renderEditor();
+
+    const paired = screen.getByRole('button', { name: 'Republicar e atualizar preços' });
+    const plain = screen.getByRole('button', { name: 'Republicar' });
+    fireEvent.click(paired);
+
+    await waitFor(() => expect(paired.getAttribute('data-loading')).toBe('true'));
+    expect(plain.getAttribute('data-loading')).not.toBe('true');
+
+    await act(async () => {
+      release();
+    });
+  });
+
   it('is absent until the conta has a link doc at all', async () => {
     // With NO link doc there is no `category_id`, so publish 422s before
     // writing anything and there would be nothing to price — "Preparar anúncio"
