@@ -1345,3 +1345,85 @@ describe('createMercadoLivreApi — listing metadata (#799)', () => {
     expect(attr!.tags).toEqual(['required', 'hidden']);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*                        criarUsuarioTeste — #1085                           */
+/* -------------------------------------------------------------------------- */
+
+describe('criarUsuarioTeste', () => {
+  const MINTED = {
+    id: 120506781,
+    nickname: 'TEST0548',
+    password: 'qatest328',
+    site_status: 'active',
+  };
+
+  it('POSTs /users/test_user with the site_id in the body', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(MINTED));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const user = await api.criarUsuarioTeste('MLB');
+
+    expect(user).toMatchObject(MINTED);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/users/test_user');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ site_id: 'MLB' });
+  });
+
+  it('rejects a blank password instead of persisting an unusable credential', async () => {
+    // ML never reissues one, so a blank password that parses "successfully"
+    // would be stored and would have burned one of ten permanent slots.
+    const fetchMock = vi.fn(async () => jsonResponse({ ...MINTED, password: '' }));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await expect(api.criarUsuarioTeste('MLB')).rejects.toBeInstanceOf(MercadoLivreValidationError);
+  });
+
+  it('reports FIELD NAMES only on a shape mismatch', async () => {
+    // Note what this does and does not claim. Zod 4 was measured: its serialized
+    // issues carry no input value for a wrong type, a missing key, a too_small
+    // or a non-object root, and `.passthrough()` stops `unrecognized_keys`
+    // firing — so passing `issues` here would not leak today. This asserts the
+    // narrower, stable contract instead: the error names the drifted field and
+    // nothing else, so a future change to Zod's issue payload cannot widen it.
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ ...MINTED, id: 'not-a-number', password: 'sup3r-s3cr3t' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const err = await api.criarUsuarioTeste('MLB').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoLivreValidationError);
+    expect((err as MercadoLivreValidationError).issues).toEqual(['id']);
+    expect((err as Error).message).toContain('id');
+  });
+
+  it('never puts the body into the error raised by a NON-JSON response', async () => {
+    // ⚠️ THE leak vector, and the reason this endpoint bypasses `parseOk`: that
+    // helper passes the raw body straight into the error. An ML error page — or
+    // a 200 whose body drifts — would carry a password ML never reissues into
+    // whatever logs the throw (#1015).
+    const secret = 'qatest-leaked-999';
+    const fetchMock = vi.fn(async () => new Response(`<html>${secret}</html>`, { status: 200 }));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const err = await api.criarUsuarioTeste('MLB').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoLivreValidationError);
+    const dump = JSON.stringify({
+      message: (err as Error).message,
+      issues: (err as MercadoLivreValidationError).issues,
+    });
+    expect(dump).not.toContain(secret);
+  });
+
+  it('maps a failed mint through the shared HTTP error path', async () => {
+    // A FAILED mint carries no password, so the normal error mapping applies —
+    // and losing ML's reason (e.g. the 10-user cap) would be the worse trade.
+    const fetchMock = vi.fn(async () => jsonResponse({ message: 'max test users reached' }, 400));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await expect(api.criarUsuarioTeste('MLB')).rejects.toBeInstanceOf(MercadoLivreHttpError);
+  });
+});

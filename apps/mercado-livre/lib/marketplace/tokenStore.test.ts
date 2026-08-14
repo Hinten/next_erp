@@ -69,6 +69,13 @@ function fakeStore(opts: {
       persisted.push(fresh);
       return fresh;
     },
+    // Not exercised here — `deleteAll` is a real-Firestore behaviour (it must
+    // span both doc lineages), so it is proven in `tokenStore.firestore.test.ts`
+    // and would only be mocked into agreement here.
+    async deleteAll() {
+      persisted.length = 0;
+      return 0;
+    },
   };
 }
 

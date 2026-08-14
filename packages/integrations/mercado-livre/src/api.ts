@@ -42,6 +42,7 @@ import {
   type MlSizeChartApi,
   type MlSizeChartDeleteResponse,
   type MlTechnicalSpecs,
+  type MlTestUser,
   type MlUser,
   type MlUserProductFamily,
   type MlUserProductItemsSearch,
@@ -78,6 +79,7 @@ import {
   sizeChartApiSchema,
   sizeChartDeleteResponseSchema,
   technicalSpecsSchema,
+  testUserSchema,
   tokenErrorSchema,
   userProductFamilySchema,
   userProductItemsSearchSchema,
@@ -141,6 +143,18 @@ export interface MlOrderResponse {
 export interface MercadoLivreApi {
   getMe(): Promise<MlUser>;
   getUser(id: number | string): Promise<MlUser>;
+  /**
+   * `POST /users/test_user` — mint a Mercado Livre **test user** on `siteId`.
+   *
+   * ML has no sandbox; this is the substitute. The caller's token must belong to
+   * the real account that owns the ML application, and that account is capped at
+   * **10 test users** with no endpoint that lists them and no password recovery.
+   *
+   * ⚠️ The response contains a **password shown exactly once**. This method
+   * deliberately bypasses the shared `parseOk` so no failure path can echo it —
+   * see {@link testUserSchema}. Persist the result before doing anything else.
+   */
+  criarUsuarioTeste(siteId: string): Promise<MlTestUser>;
   getItem(id: string): Promise<MlItem>;
   /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
   getPrices(itemId: string): Promise<MlItemPrices>;
@@ -606,6 +620,29 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
 
   return {
     getMe: () => request('GET', '/users/me', userSchema),
+    criarUsuarioTeste: async (siteId: string) => {
+      // Same auth + network-retry policy as `request`, but the success branch
+      // never reaches `parseOk`: see `parseTestUser` below.
+      const token = await config.getAccessToken();
+      const res = await fetchWithNetworkRetry(
+        buildUrl('/users/test_user'),
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${token}`,
+            'User-Agent': userAgent,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ site_id: siteId }),
+        },
+        'Falha de rede ao criar usuário de teste no Mercado Livre',
+      );
+      // A FAILED mint carries no password, so the shared error mapping is safe
+      // here — it is only the 2xx body that must never be echoed.
+      if (!res.ok) throw await toHttpError(res);
+      return parseTestUser(await res.text());
+    },
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
     getItem: (id) =>
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
@@ -750,6 +787,46 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         query: { app_id: appId, topic, limit, offset },
       }),
   };
+}
+
+/**
+ * `parseOk` for the ONE response that carries a password.
+ *
+ * ⚠️ The vector this closes is the **non-JSON branch**: `parseOk` puts the RAW
+ * BODY into `MercadoLivreValidationError`, so an ML error page — or a 200 whose
+ * body drifted — hands the credential to whatever logs the throw. That is the
+ * shape of #1015, where a Zod failure on the OAuth exchange turned out to be
+ * carrying the token response.
+ *
+ * The schema-mismatch branch was **measured, not assumed**: Zod 4 serializes
+ * `code`/`path`/`expected`/`message` and no input value, for a wrong type, a
+ * missing key, a `too_small`, or a non-object root — and `.passthrough()` keeps
+ * `unrecognized_keys` (which would name keys, never values) from firing at all.
+ * So `result.error.issues` is not itself a leak today. Reporting field names
+ * instead is defence-in-depth — Zod's issue contents are not a stability
+ * contract, and the message reads better — not a fix for a live bug.
+ */
+function parseTestUser(text: string): MlTestUser {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+    throw new MercadoLivreValidationError(
+      'Resposta não-JSON do Mercado Livre ao criar usuário de teste.',
+      // Deliberately NOT `text`: that is the whole point of this function.
+      null,
+    );
+  }
+  const result = testUserSchema.safeParse(body);
+  if (!result.success) {
+    const campos = [...new Set(result.error.issues.map((i) => i.path.join('.') || '(raiz)'))];
+    throw new MercadoLivreValidationError(
+      `Resposta inesperada do Mercado Livre ao criar usuário de teste. Campos inválidos: ${campos.join(', ')}.`,
+      campos,
+    );
+  }
+  return result.data;
 }
 
 async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {

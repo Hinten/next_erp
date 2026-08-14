@@ -43,6 +43,7 @@ export {
   oauthStateMetodoPgtoCollection,
 } from './oauthStateCollection';
 export { tokenDuravelCollection } from './tokenDuravelCollection';
+export { usuariosTesteCollection } from './usuariosTesteCollection';
 export {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,

@@ -61,6 +61,32 @@ export const userSchema = z
 export type MlUser = z.infer<typeof userSchema>;
 
 /**
+ * `POST /users/test_user` — a throwaway production account ML hands out in place
+ * of the sandbox it does not have.
+ *
+ * ⚠️ **This is the only response in this file that contains a password**, and ML
+ * never shows it again («Se você perder a senha da conta de teste, não é possível
+ * recuperar»). `criarUsuarioTeste` therefore does NOT route it through `parseOk`:
+ * that helper puts the raw body into `MercadoLivreValidationError` on a non-JSON
+ * response and the Zod issues on a shape mismatch, and #1015 is the worked
+ * example of a credential response reaching Cloud Logging exactly that way.
+ *
+ * `password` is `.min(1)` on purpose: a blank one parses as success while being
+ * unusable, and the caller would persist it and burn one of ten permanent slots.
+ */
+export const testUserSchema = z
+  .object({
+    id: z.number().int(),
+    nickname: z.string().min(1),
+    password: z.string().min(1),
+    site_status: z.string().nullable().optional(),
+    site_id: z.string().nullable().optional(),
+    email: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlTestUser = z.infer<typeof testUserSchema>;
+
+/**
  * One embedded item/variation attribute (`attributes[]` /
  * `attribute_combinations[]`). Every field is optional so a single odd entry
  * (or ML drift) never fails the whole item parse; the import mapper filters by
