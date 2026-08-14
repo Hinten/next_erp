@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-five exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -210,6 +210,44 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-five exports:
   emulator suite covers the write/idempotency and the resolver is unit-tested.
   No self-retrigger (the write lands in a subcollection). Targets the named
   `default` database (gotcha #8).
+- **`onPagamentoChanged`** / **`onIncidenteChanged`**
+  (`onDocumentWrittenWithAuthContext`, both built from
+  `makeModificationHistoryTrigger`) — the two covered subcollections of the
+  pedido modification history. The pedido DOCUMENT's own entry rides
+  `onPedidoEstadoChanged` above rather than getting a fourth trigger: that
+  function already observes every pedido write, so a separate one would double
+  the event cost to record the same thing.
+  ⚠️ **All three write ONE collection**, `pedidos/{id}/historicoDeModificacoes`,
+  with child rows tagged `subcolecao: 'pagamentos' | 'incidentes'` — the same
+  shape produto uses for `extraData`/`imposto`. That is what makes a pedido's
+  edit history one chronological feed, and it supersedes the legacy Flutter
+  `histpgto` (which recorded only `status_pagamento`, and only on saves made
+  through one Dart method).
+  ⚠️ **A pedido DELETE writes a tombstone, where produto returns early.** The
+  difference is caused, not chosen: `onProdutoDeleted` sweeps a produto's
+  subtree so the row would be swept or orphaned anyway, while `pedidos`
+  deliberately has NO delete trigger — nothing sweeps here, so the row survives
+  and is then the only record that the order existed and who removed it. For the
+  same reason `requireParentExists` is left **OFF** on both subdoc sources: it
+  would drop a pagamento delete arriving after its pedido is gone, i.e. exactly
+  the event that most needs auditing.
+  ⚠️ `PEDIDO_HISTORY_IGNORE_FIELDS` **imports** `CAMPOS_ESTOQUE_SYNC` rather
+  than retyping it — `sincronizarEstoquePedido` writes those three fields back
+  seconds after the save that caused them and does not stamp
+  `ultimaModificacao`, so omitting any of them means every stock-moving save
+  leaves a second, "Sistema"-attributed phantom row (#972's failure, one trail
+  later).
+  ⚠️ **TTL is not available on this collection** (#651): a Firestore TTL policy
+  needs a native `timestamp`-typed field, and `historicoModificacaoSchema.timestamp`
+  is an **int** (`microsSinceEpoch`). Retention needs a sweep, not a policy.
+- ⚠️ **The whole modification-history family uses
+  `onDocumentWrittenWithAuthContext`**, including the three produto triggers,
+  which were plain `onDocumentWritten` before. `resolveUsuarioOuterRef`
+  (`src/lib/authContext.ts`) is shared by it and the pedido estado trails. That
+  variant registers a **different Eventarc event type**
+  (`…document.v1.written.withAuthContext`), so a redeploy of an existing
+  function may need a delete + redeploy — see gotcha #7 — with a short window in
+  which those writes record no history.
 - **`aplicarEstoque`** (`onCall` — the repo's FIRST HTTPS callable) — server-owned
   estoque write path for the web client (replaces the direct client `writeBatch`
   from PR #217). Enforces auth + `PERM.estoque.write` itself (the `su` super-user
