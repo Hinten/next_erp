@@ -84,6 +84,40 @@ export function encontrarCategoriaTeste(
 }
 
 /**
+ * How deep the descent below "Outros" may go.
+ *
+ * Each level costs one `GET /categories/{id}`, so this is the only thing bounding
+ * the call count. Six is far past MLB's real depth and still cheap; a tree that
+ * needs more is one this feature should decline rather than crawl.
+ */
+export const PROFUNDIDADE_MAX_CATEGORIA_TESTE = 6;
+
+/**
+ * Pick which child to descend into on the way to a leaf.
+ *
+ * ⚠️ **This is why the whole feature was silently doing nothing.** ML's "Outros"
+ * is a ROOT with children, and only a leaf can be published into — so requiring
+ * the root itself to be a leaf meant `categoryId` came back `null` on every
+ * single call, the form's (correct) null-guard skipped the write, and the
+ * operator saw the title change while the category and the whole attribute grid
+ * sat still.
+ *
+ * Prefer a child that is itself named "Outros" — ML nests it that way, and it is
+ * the most neutral place a test listing can land. Otherwise take the first child:
+ * still inside "Outros", which is the category ML's own documentation asks test
+ * listings to use, and the operator sees the resolved path and can change it.
+ * Never a hardcoded id.
+ */
+export function escolherDescendenteTeste(
+  filhos: ReadonlyArray<{ id: string; name?: string | null }>,
+): string | null {
+  if (filhos.length === 0) return null;
+  const alvo = normalizar(CATEGORIA_TESTE_NOME);
+  const homonimo = filhos.find((c) => normalizar(c.name ?? '') === alvo);
+  return (homonimo ?? filhos[0])?.id ?? null;
+}
+
+/**
  * Whether this account is one of ML's test users.
  *
  * ML mints them through `POST /users/test_user` and puts no marker on

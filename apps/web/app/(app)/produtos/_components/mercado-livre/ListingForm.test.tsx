@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -370,6 +370,18 @@ describe('Descrição is collapsed until it has something to show', () => {
 });
 
 describe('Preencher com dados de teste', () => {
+  // ⚠️ The button ships in DEVELOPMENT builds only — publishing a test listing
+  // creates a real listing on the real marketplace. Under vitest `NODE_ENV` is
+  // `'test'`, so without this every assertion below would fail on a button that
+  // is correctly absent. `vi.stubEnv` works only because the component reads
+  // `process.env.NODE_ENV` inline rather than into a module-level const.
+  beforeEach(() => {
+    vi.stubEnv('NODE_ENV', 'development');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   function setClient(over: Partial<Record<string, unknown>> = {}) {
     h.client = {
       categoriaAtributos: vi.fn(async () => ({ leaf: true, atributos: [], omitidos: [] })),
@@ -377,6 +389,7 @@ describe('Preencher com dados de teste', () => {
         title: 'Item de Teste – Por favor, NÃO OFERTAR!',
         descricao: 'Anúncio de teste.',
         categoryId: 'MLB5672',
+        categoriaPath: ['Outros', 'Outros'],
         listingTypeId: 'free',
         conta: { nickname: 'TEST0548', ehContaDeTeste: true },
       })),
@@ -491,5 +504,46 @@ describe('Preencher com dados de teste', () => {
     setClient();
     renderForm({ id: null }, { canWrite: false });
     expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('does NOT ship in a production build', async () => {
+    // ⚠️ The gate that matters. ML has no sandbox, so publishing a test listing
+    // creates a REAL listing on the real marketplace — the affordance has no
+    // business existing in a deployed app. `NODE_ENV` is a build-time constant,
+    // so the branch is stripped rather than merely hidden.
+    vi.stubEnv('NODE_ENV', 'production');
+    setClient();
+    renderForm({ id: null });
+    expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('names the category it actually chose', async () => {
+    // The field shows a bare `MLB…` id until the path resolves, and which leaf
+    // under "Outros" the route landed on is not guessable from it.
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Categoria definida/)).toBeDefined();
+    });
+    expect(screen.getByText('Outros › Outros')).toBeDefined();
+  });
+
+  it('can be dismissed, and stays dismissed', async () => {
+    // ⚠️ `setTesteConta` was only ever called on success and never reset, so the
+    // alert outlived even a later FAILED click — leaving a stale "preenchidos"
+    // banner above a fill that did not happen.
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar aviso' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
+    });
   });
 });

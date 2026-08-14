@@ -5,6 +5,7 @@ import {
   DESCRICAO_ANUNCIO_TESTE,
   TITULO_ANUNCIO_TESTE,
   encontrarCategoriaTeste,
+  escolherDescendenteTeste,
   escolherTipoAnuncioTeste,
   isContaDeTeste,
 } from './anuncioTeste';
@@ -125,5 +126,46 @@ describe('isContaDeTeste', () => {
     // The widening is `TE(ST|TE)`, not `TE` — "TECIDOS…" must stay a seller.
     expect(isContaDeTeste('TECIDOS_BRASIL')).toBe(false);
     expect(isContaDeTeste('TERRA_MODA')).toBe(false);
+  });
+});
+
+describe('escolherDescendenteTeste', () => {
+  // ⚠️ This is the fix for the defect that made the whole test-fill look broken.
+  // ML's "Outros" is a ROOT WITH CHILDREN, and only a leaf can be published into
+  // — so requiring the root itself to be a leaf meant the route answered
+  // `categoryId: null` on EVERY call, the form's null-guard skipped the write,
+  // and the operator watched the título change while the category and the entire
+  // attribute grid sat still.
+  it('prefers a child that is also named "Outros"', () => {
+    expect(
+      escolherDescendenteTeste([
+        { id: 'MLB1', name: 'Antiguidades' },
+        { id: 'MLB2', name: 'Outros' },
+      ]),
+    ).toBe('MLB2');
+  });
+
+  it('matches that child accent- and case-insensitively', () => {
+    expect(escolherDescendenteTeste([{ id: 'MLB9', name: 'OUTROS' }])).toBe('MLB9');
+  });
+
+  it('falls back to the first child, still inside "Outros"', () => {
+    // No homonym: anything under "Outros" is the category ML's documentation
+    // asks test listings to use, and the resolved path is shown so the operator
+    // can change it. Never a hardcoded id.
+    expect(
+      escolherDescendenteTeste([
+        { id: 'MLB1', name: 'Antiguidades' },
+        { id: 'MLB2', name: 'Coleções' },
+      ]),
+    ).toBe('MLB1');
+  });
+
+  it('reports nothing to descend into when there are no children', () => {
+    expect(escolherDescendenteTeste([])).toBeNull();
+  });
+
+  it('tolerates a child with no name', () => {
+    expect(escolherDescendenteTeste([{ id: 'MLB1' }])).toBe('MLB1');
   });
 });

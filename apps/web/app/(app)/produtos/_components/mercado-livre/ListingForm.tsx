@@ -7,7 +7,6 @@ import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import {
   Alert,
-  Anchor,
   Button,
   Fieldset,
   Group,
@@ -20,6 +19,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { IconChevronDown, IconChevronUp } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
@@ -265,6 +265,7 @@ export function ListingForm({
     nickname: string | null;
     ehContaDeTeste: boolean;
     categoriaResolvida: boolean;
+    categoriaPath: string[] | null;
     tipoResolvido: boolean;
   } | null>(null);
 
@@ -278,6 +279,7 @@ export function ListingForm({
         nickname: dados.conta.nickname,
         ehContaDeTeste: dados.conta.ehContaDeTeste,
         categoriaResolvida: dados.categoryId != null,
+        categoriaPath: dados.categoriaPath ?? null,
         tipoResolvido: dados.listingTypeId != null,
       });
     } catch (err) {
@@ -312,6 +314,13 @@ export function ListingForm({
         color={testeConta.ehContaDeTeste ? 'blue' : 'yellow'}
         variant="light"
         mb="xs"
+        // Without this it never goes away: `setTesteConta` is only ever called
+        // on a successful fill and never reset, so the alert outlived even a
+        // later FAILED click — which reports itself as a toast and leaves a
+        // stale success banner sitting above the form.
+        withCloseButton
+        closeButtonLabel="Fechar aviso"
+        onClose={() => setTesteConta(null)}
         title={
           testeConta.ehContaDeTeste
             ? 'Dados de teste preenchidos'
@@ -327,8 +336,16 @@ export function ListingForm({
               conta em Canais &gt; Mercado Livre.
             </Text>
           )}
+          {/* Name the category that was actually chosen. The route resolves a
+              LEAF under "Outros" (ML files test listings there), and which leaf
+              it landed on is not guessable from the id the field now shows. */}
+          {testeConta.categoriaResolvida && testeConta.categoriaPath != null && (
+            <Text size="sm">
+              Categoria definida: <strong>{testeConta.categoriaPath.join(' › ')}</strong>.
+            </Text>
+          )}
           {/* Covers both ways the route can decline it: "Outros" absent from the
-              catalogue, and "Outros" present but mid-tree — only a leaf can be
+              catalogue, and no leaf reachable beneath it — only a leaf can be
               published into, so neither yields a usable category. */}
           {!testeConta.categoriaResolvida && (
             <Text size="sm">
@@ -559,12 +576,20 @@ export function ListingForm({
   return (
     <>
       <Fieldset legend="Dados do anúncio" variant="unstyled">
-        {!isPublished && !readOnly && (
+        {/* ⚠️ Development builds only. Publishing a test listing creates a REAL
+            listing on the real marketplace (ML has no sandbox), so the affordance
+            has no business existing in a deployed app — and `NODE_ENV` is a
+            build-time constant, so the branch is stripped entirely rather than
+            merely hidden. Same shape as the checkout harness and the print
+            preview.
+            ⚠️ Read INLINE, never into a module-level const: a const is captured
+            at import time and `vi.stubEnv` can no longer move it, which would
+            make this untestable. */}
+        {process.env.NODE_ENV === 'development' && !isPublished && !readOnly && (
           <Group justify="flex-end" mb="xs">
             <Button
               type="button"
-              variant="subtle"
-              size="compact-xs"
+              variant="light"
               onClick={() => void preencherTeste()}
               loading={carregandoTeste}
               disabled={client == null}
@@ -624,14 +649,23 @@ export function ListingForm({
                 in the section on the field least often used. Anything already
                 written opens expanded, because a hidden non-empty field is a
                 field nobody remembers to check. */}
-            <Anchor
-              component="button"
+            {/* A bare `Anchor` read as body text here — no variant, no colour,
+                nothing marking it as the control that reveals a whole field. A
+                subtle Button with a chevron says "this opens something". */}
+            <Button
               type="button"
-              size="xs"
+              variant="subtle"
+              size="compact-sm"
+              justify="flex-start"
+              w="fit-content"
+              px={4}
+              leftSection={
+                descricaoOpen ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />
+              }
               onClick={() => setDescricaoOpen((v) => !v)}
             >
               {descricaoOpen ? 'Ocultar descrição' : 'Descrição do anúncio (opcional)'}
-            </Anchor>
+            </Button>
             {/* ⚠️ Rendered ALWAYS and hidden with CSS, never unmounted. Mantine's
                 <Collapse> unmounts its children, and an unmounted `Controller`
                 is one RHF `shouldUnregister` default away from silently dropping

@@ -20,8 +20,10 @@ import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import {
   DESCRICAO_ANUNCIO_TESTE,
+  PROFUNDIDADE_MAX_CATEGORIA_TESTE,
   TITULO_ANUNCIO_TESTE,
   encontrarCategoriaTeste,
+  escolherDescendenteTeste,
   escolherTipoAnuncioTeste,
   isContaDeTeste,
 } from '@/lib/marketplace/anuncioTeste';
@@ -54,23 +56,40 @@ export async function GET(req: Request): Promise<NextResponse> {
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
     const [raizes, me] = await Promise.all([getCategoriasRaizCached(api), api.getMe()]);
-    const encontrada = encontrarCategoriaTeste(raizes);
+    const raiz = encontrarCategoriaTeste(raizes);
 
-    // The listing type is a per-CATEGORY answer, so it can only be resolved once
-    // a category is. No usable "Outros" ⇒ no type either, and the operator picks both.
+    // ⚠️ **Descend to a LEAF.** Only a leaf can be published into, and ML's
+    // "Outros" is a root WITH children — so the previous "root must itself be a
+    // leaf" test failed every time, the route always answered `categoryId: null`,
+    // and the form's null-guard skipped the write. The operator watched the title
+    // change while the category and the whole attribute grid sat still.
     //
-    // ⚠️ A mid-tree "Outros" is reported as NO category, not as a category with
-    // no types. Only a leaf can be published into, so handing the form a
-    // mid-tree `category_id` would write a value publish must reject while the
-    // UI blamed the listing types — the failure would point at the wrong field.
-    // "Outros" is a leaf on MLB today, but that is ML's to change.
+    // Walking is the fix, not a hardcoded id: `escolherDescendenteTeste` prefers a
+    // child also named "Outros" and otherwise takes the first, so the listing
+    // lands inside the category ML's own documentation asks test listings to use.
+    // The resolved path rides back so the operator can see the choice and change it.
+    //
+    // The listing type is a per-CATEGORY answer, so it is only queried once a leaf
+    // is in hand. No leaf ⇒ no type either, and the operator picks both.
     let listingTypeId: string | null = null;
     let categoryId: string | null = null;
-    if (encontrada != null) {
-      const node = await getCategoriaCached(api, encontrada);
-      if (isLeafCategory(node.children_categories)) {
-        categoryId = encontrada;
-        listingTypeId = escolherTipoAnuncioTeste(await getListingTypesCached(api, encontrada));
+    let categoriaPath: string[] | null = null;
+
+    if (raiz != null) {
+      const trilha: string[] = [];
+      let atual: string | null = raiz;
+      // Bounded: each hop is one `GET /categories/{id}`. The cache is global —
+      // ML category metadata is not per-seller — so repeat clicks are free.
+      for (let i = 0; atual != null && i < PROFUNDIDADE_MAX_CATEGORIA_TESTE; i += 1) {
+        const node = await getCategoriaCached(api, atual);
+        trilha.push(node.name ?? atual);
+        if (isLeafCategory(node.children_categories)) {
+          categoryId = atual;
+          categoriaPath = trilha;
+          listingTypeId = escolherTipoAnuncioTeste(await getListingTypesCached(api, atual));
+          break;
+        }
+        atual = escolherDescendenteTeste(node.children_categories ?? []);
       }
     }
 
@@ -78,6 +97,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       title: TITULO_ANUNCIO_TESTE,
       descricao: DESCRICAO_ANUNCIO_TESTE,
       categoryId,
+      categoriaPath,
       listingTypeId,
       conta: {
         nickname: me.nickname ?? null,

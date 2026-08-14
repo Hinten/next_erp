@@ -287,11 +287,16 @@ export interface MercadoLivreAnuncioTeste {
   title: string;
   descricao: string;
   /**
-   * ML's "Outros" category. Null when the site has no such root **or** when it
-   * is not a leaf — only a leaf can be published into, so a mid-tree match is
-   * no category rather than one the form would write and publish must reject.
+   * A **leaf** under ML's "Outros", which the route descends to — only a leaf can
+   * be published into. Null when the site has no such root, or when no leaf is
+   * reachable beneath it within the depth cap; the operator then picks.
    */
   categoryId: string | null;
+  /**
+   * Names from the "Outros" root down to `categoryId`, so the alert can say which
+   * category was chosen. Null whenever `categoryId` is.
+   */
+  categoriaPath: string[] | null;
   /** Lowest-exposure type the category offers; null ⇒ the operator picks. */
   listingTypeId: string | null;
   conta: {
