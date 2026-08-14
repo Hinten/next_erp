@@ -8,25 +8,18 @@
  * accept a trivial adaptation of it, which is what lets the runtime decision
  * stay open until it is actually made.
  */
+import type { AiInlineImage, AiPromptRequest } from '@delfrance/ai';
+
 import type { AiAttributeSpec, JsonSchemaNode } from './attributeSchema';
 
-/** An image sent to the model as bytes, never as a URL. */
-export interface AiInlineImage {
-  /** Raw bytes, base64-encoded. */
-  base64: string;
-  /** e.g. `image/jpeg`. */
-  mimeType: string;
-}
-
-export interface AiPromptRequest {
-  systemInstruction: string;
-  /** The user turn: the product facts the model reasons from. */
-  text: string;
-  /** At most one product photo. Absent when the produto has none. */
-  image?: AiInlineImage;
-  /** What the answer must look like — see `buildAttributeSchema`. */
-  responseSchema: JsonSchemaNode;
-}
+/**
+ * ⚠️ `AiPromptRequest` and `AiInlineImage` moved to `@delfrance/ai` when a
+ * second agent needed them: `provider.ts` is the only module that talks to a
+ * model, and having it import its own vocabulary from a *channel* package meant
+ * every future agent would drag Mercado Livre in behind it. They are re-exported
+ * here so no call site in this package changed.
+ */
+export type { AiInlineImage, AiPromptRequest };
 
 export interface AttributePromptInput {
   produtoNome: string;

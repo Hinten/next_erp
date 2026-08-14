@@ -16,7 +16,6 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { configIaCollection } from '@delfrance/data/admin/collections';
 import { READ_CACHE_TTL, createCachedDocReader } from '@delfrance/data/admin/cache';
 import {
-  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
   CONFIG_IA_MODELO_PADRAO,
   PROVEDOR_IA,
   configIaSchema,
@@ -40,11 +39,18 @@ const configIaReader = createCachedDocReader(configIaCollection, {
  * Returns the schema defaults when the document does not exist — which is the
  * state of every tenant that has never opened the settings page, so it must be
  * a first-class answer and not an error.
+ *
+ * ⚠️ **`docId` is required, deliberately.** It used to default to
+ * `'ml-atributos'`, which was self-evidently right while this lived in
+ * `apps/mercado-livre` — one app, one agent — and became a trap the moment it
+ * moved into an agent-neutral package. A second agent calling `loadConfigIa(db)`
+ * and forgetting the id would silently read the FIRST agent's document and
+ * inherit its model, its sampling parameters and its `ativo` kill switch, with
+ * no type error and no runtime error: the two would look independent on the
+ * settings page and behave as one. Requiring the argument turns that into a
+ * compile error at every call site.
  */
-export async function loadConfigIa(
-  db: Firestore,
-  docId: string = CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
-): Promise<ConfigIa> {
+export async function loadConfigIa(db: Firestore, docId: string): Promise<ConfigIa> {
   const stored = await configIaReader.get(db, {}, docId);
   // `parse({})` rather than a hand-written literal: the defaults then live in
   // exactly one place (the schema), so a new field cannot be forgotten here.
@@ -56,4 +62,9 @@ export function __resetConfigIaCache(): void {
   configIaReader.clear();
 }
 
-export { CONFIG_IA_ML_ATRIBUTOS_DOC_ID, CONFIG_IA_MODELO_PADRAO, PROVEDOR_IA };
+// ⚠️ `CONFIG_IA_ML_ATRIBUTOS_DOC_ID` is deliberately NOT re-exported. It names a
+// Mercado Livre agent, and a package that knows nothing about anything should
+// not be the place other code reaches for it — `@delfrance/schemas` owns every
+// agent id. The two constants below are agent-neutral: the shipped default model
+// and the provider enum.
+export { CONFIG_IA_MODELO_PADRAO, PROVEDOR_IA };

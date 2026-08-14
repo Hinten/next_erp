@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { AiAttributeSpec, AiInlineImage } from '@delfrance/integrations-mercado-livre';
 
-import type { GenerateArgs } from './provider';
+import type { GenerateArgs } from '@delfrance/ai/admin';
 
 const h = vi.hoisted(() => ({
   produto: null as Record<string, unknown> | null,

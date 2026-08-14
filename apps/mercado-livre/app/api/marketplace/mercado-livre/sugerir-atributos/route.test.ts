@@ -17,9 +17,14 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/ai/configIa', () => ({
-  loadConfigIa: async () => h.config,
-}));
+// Spread the real module: the route imports the provider factories, the model
+// cache and the image loader from here too, and a bare object would leave those
+// undefined — the route would then fail on the import rather than on the gate
+// this test is actually about.
+vi.mock('@delfrance/ai/admin', async (importActual) => {
+  const actual = await importActual<typeof import('@delfrance/ai/admin')>();
+  return { ...actual, loadConfigIa: async () => h.config };
+});
 
 // Guard: reaching any of these means the gate under test did NOT decline.
 vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {

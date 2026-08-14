@@ -17,6 +17,7 @@
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {
+    "@delfrance/ai": "workspace:*",
     "@delfrance/auth": "workspace:*",
     "@delfrance/core": "workspace:*",
     "@delfrance/data": "workspace:*",
@@ -24,7 +25,6 @@
     "@delfrance/schemas": "workspace:*",
     "@delfrance/storage": "workspace:*",
     "@google-cloud/firestore": "^8.6.0",
-    "@google/genai": "^2.16.0",
     "firebase-admin": "catalog:",
     "firebase-functions": "catalog:",
     "next": "16.2.6",

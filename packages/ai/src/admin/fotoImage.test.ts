@@ -17,7 +17,7 @@ vi.mock('@delfrance/data/admin/collections', () => ({
   },
 }));
 
-const { loadProdutoImage } = await import('./produtoImage');
+const { loadFotoImage } = await import('./fotoImage');
 
 function foto(over: Partial<Foto> = {}): Foto {
   return {
@@ -37,12 +37,12 @@ beforeEach(() => {
   h.docs.clear();
 });
 
-describe('loadProdutoImage', () => {
+describe('loadFotoImage', () => {
   it('prefers the 400 px derivative', () => {
     h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
     h.docs.set('prod_hash_200', { filepath: 'produtos/p/derivatives', filename: 'hash_200.jpeg' });
     const d = deps();
-    return loadProdutoImage(d, [foto()]).then((image) => {
+    return loadFotoImage(d, [foto()]).then((image) => {
       expect(d.download).toHaveBeenCalledWith('produtos/p/derivatives/hash_400.jpeg');
       expect(image).toEqual({ base64: 'AQID', mimeType: 'image/jpeg' });
     });
@@ -53,7 +53,7 @@ describe('loadProdutoImage', () => {
     // one derivative and not the other.
     h.docs.set('prod_hash_200', { filepath: 'produtos/p/derivatives', filename: 'hash_200.jpeg' });
     const d = deps();
-    await loadProdutoImage(d, [foto()]);
+    await loadFotoImage(d, [foto()]);
     expect(d.download).toHaveBeenCalledWith('produtos/p/derivatives/hash_200.jpeg');
   });
 
@@ -62,13 +62,13 @@ describe('loadProdutoImage', () => {
     // here; a text-only suggestion beats shipping one.
     h.docs.set('prod_hash', { filepath: 'produtos/p/originals', filename: 'hash.jpg' });
     const d = deps();
-    await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
+    await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
     expect(d.download).not.toHaveBeenCalled();
   });
 
   it('runs without an image when the produto has no photos', async () => {
-    await expect(loadProdutoImage(deps(), [])).resolves.toBeNull();
-    await expect(loadProdutoImage(deps(), null)).resolves.toBeNull();
+    await expect(loadFotoImage(deps(), [])).resolves.toBeNull();
+    await expect(loadFotoImage(deps(), null)).resolves.toBeNull();
   });
 
   it('joins the DIRECTORY and the FILENAME to reach the object', async () => {
@@ -80,7 +80,7 @@ describe('loadProdutoImage', () => {
     // green against the broken join.
     h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
     const d = deps();
-    await loadProdutoImage(d, [foto()]);
+    await loadFotoImage(d, [foto()]);
     expect(d.download).toHaveBeenCalledWith('produtos/p/derivatives/hash_400.jpeg');
   });
 
@@ -89,7 +89,7 @@ describe('loadProdutoImage', () => {
     // directory is not a missing object.
     h.docs.set('prod_hash_400', { filepath: null, filename: 'solto.jpeg' });
     const d = deps();
-    await loadProdutoImage(d, [foto()]);
+    await loadFotoImage(d, [foto()]);
     expect(d.download).toHaveBeenCalledWith('solto.jpeg');
   });
 
@@ -99,7 +99,7 @@ describe('loadProdutoImage', () => {
     h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: null });
     h.docs.set('prod_hash_200', { filepath: null, filename: null });
     const d = deps();
-    await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
+    await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
     expect(d.download).not.toHaveBeenCalled();
   });
 
@@ -108,13 +108,13 @@ describe('loadProdutoImage', () => {
     // somewhere unexpected.
     h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
     const d = deps(vi.fn(async () => new Uint8Array(3 * 1024 * 1024)));
-    await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
+    await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
   });
 
   it('skips an empty download rather than sending zero bytes', async () => {
     h.docs.set('prod_hash_400', { filepath: 'produtos/p/derivatives', filename: 'hash_400.jpeg' });
     const d = deps(vi.fn(async () => new Uint8Array()));
-    await expect(loadProdutoImage(d, [foto()])).resolves.toBeNull();
+    await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
   });
 
   it('honours the arquivo content type', async () => {
@@ -123,13 +123,63 @@ describe('loadProdutoImage', () => {
       filename: 'hash_400.jpeg',
       contentType: 'image/png',
     });
-    const image = await loadProdutoImage(deps(), [foto()]);
+    const image = await loadFotoImage(deps(), [foto()]);
     expect(image?.mimeType).toBe('image/png');
   });
 
   it('tolerates a foto whose derivative refs are null (non-produto owner)', async () => {
     await expect(
-      loadProdutoImage(deps(), [foto({ arquivo200pxOuterRef: null, arquivo400pxOuterRef: null })]),
+      loadFotoImage(deps(), [foto({ arquivo200pxOuterRef: null, arquivo400pxOuterRef: null })]),
     ).resolves.toBeNull();
+  });
+});
+
+/**
+ * The measurement agent reads digits off a supplier's size table, where 400 px
+ * resolves nothing. It asks for the full-size `jpeg` variant instead — which is
+ * why the preference order is a parameter and the ceiling is per-variant.
+ */
+describe('loadFotoImage — variant preference', () => {
+  const jpegDoc = { filepath: 'tabMedi/t/derivatives', filename: 'hash_jpeg.jpeg' };
+
+  it('reads the full-size jpeg derivative when asked for it', async () => {
+    h.docs.set('prod_hash_jpeg', jpegDoc);
+    h.docs.set('prod_hash_400', { filepath: 'tabMedi/t/derivatives', filename: 'hash_400.jpeg' });
+    const d = deps();
+    await loadFotoImage(d, [foto()], { prefer: ['jpeg', '400'] });
+    expect(d.download).toHaveBeenCalledWith('tabMedi/t/derivatives/hash_jpeg.jpeg');
+  });
+
+  it('falls through the requested order when the best variant is missing', async () => {
+    h.docs.set('prod_hash_400', { filepath: 'tabMedi/t/derivatives', filename: 'hash_400.jpeg' });
+    const d = deps();
+    await loadFotoImage(d, [foto()], { prefer: ['jpeg', '400'] });
+    expect(d.download).toHaveBeenCalledWith('tabMedi/t/derivatives/hash_400.jpeg');
+  });
+
+  it('allows a full-size jpeg past the thumbnail ceiling', async () => {
+    // The same 3 MB payload the 400 px case rejects above: a full-resolution
+    // re-encode legitimately reaches a few MB, so the ceiling rides on the
+    // variant rather than on the loader.
+    h.docs.set('prod_hash_jpeg', jpegDoc);
+    const d = deps(vi.fn(async () => new Uint8Array(3 * 1024 * 1024)));
+    await expect(loadFotoImage(d, [foto()], { prefer: ['jpeg'] })).resolves.not.toBeNull();
+  });
+
+  it('still refuses a jpeg past its own, larger ceiling', async () => {
+    h.docs.set('prod_hash_jpeg', jpegDoc);
+    const d = deps(vi.fn(async () => new Uint8Array(8 * 1024 * 1024)));
+    await expect(loadFotoImage(d, [foto()], { prefer: ['jpeg'] })).resolves.toBeNull();
+  });
+
+  it('does NOT reach the jpeg variant by default', async () => {
+    // Guards the attribute agent's token bill: this module moved packages and
+    // gained the jpeg option in the same change, and quietly appending it to the
+    // default order would multiply the cost of every attribute suggestion
+    // without anything failing.
+    h.docs.set('prod_hash_jpeg', jpegDoc);
+    const d = deps();
+    await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
+    expect(d.download).not.toHaveBeenCalled();
   });
 });

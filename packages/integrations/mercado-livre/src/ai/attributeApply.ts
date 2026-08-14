@@ -8,6 +8,8 @@
  * review modal, never written straight to a listing (#799's own criterion, and
  * what the newer legacy flow already did with its Cancelar/Aplicar dialog).
  */
+import { coerceText, normalizeLoose } from '@delfrance/ai';
+
 import { NA_ENUM_LABEL, type AiAttributeSpec } from './attributeSchema';
 
 /** One suggested value, in the shape the listing editor's rows use. */
@@ -71,7 +73,7 @@ function naSuggestion(id: string): AiAttributeSuggestion {
  * instead of a real value.
  */
 function meansNotApplicable(attr: AiAttributeSpec, text: string): boolean {
-  const normalized = normalize(text);
+  const normalized = normalizeLoose(text);
   if (normalized === NA_VALUE_ID) {
     return attr.valueType !== 'number' && attr.valueType !== 'number_unit';
   }
@@ -115,7 +117,7 @@ export function applyAiAttributes(
     // positive claim staged for one click, so the cost of being wrong went from
     // "nothing shown" to "a false disclaimer on a live listing".
     const match = attr.values.find(
-      (v) => typeof v.name === 'string' && normalize(v.name) === normalize(text),
+      (v) => typeof v.name === 'string' && normalizeLoose(v.name) === normalizeLoose(text),
     );
     if (match) {
       // The id is the identity: ML localises the sentinel's NAME freely, so a
@@ -151,31 +153,6 @@ export function applyAiAttributes(
   }
 
   return out;
-}
-
-/**
- * Models emit `55`, `"55"` and `true` interchangeably however the schema is
- * written, so the boundary normalises rather than rejects. Objects and arrays
- * are dropped: an attribute value is a scalar, and anything else is the model
- * ignoring the schema.
- */
-function coerceText(raw: unknown): string | null {
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    return trimmed === '' ? null : trimmed;
-  }
-  if (typeof raw === 'number') return Number.isFinite(raw) ? String(raw) : null;
-  if (typeof raw === 'boolean') return raw ? 'Sim' : 'Não';
-  return null;
-}
-
-/** Accent- and case-insensitive, matching the editor's own value resolution. */
-function normalize(s: string): string {
-  return s
-    .trim()
-    .toLocaleLowerCase('pt-BR')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '');
 }
 
 /**
