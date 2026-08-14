@@ -313,6 +313,51 @@ export function jobBlocks(source) {
   return Object.fromEntries(Object.entries(jobs).map(([k, v]) => [k, v.join('\n')]));
 }
 
+/**
+ * Every `e2e-affected.mjs` invocation in a workflow, with the shell around it.
+ *
+ * `command` is the invocation plus its backslash continuations; `fallback` is what
+ * sits between the command and the closing `fi`. Both are needed by assertion 13,
+ * which checks that a scope step degrades instead of dying.
+ */
+export function scopeInvocations(source) {
+  const lines = source.split('\n');
+  const found = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes('node .github/scripts/e2e-affected.mjs')) continue;
+    // Skip prose: these files carry comments that quote the invocation.
+    if (lines[i].trim().startsWith('#')) continue;
+
+    const command = [];
+    let end = i;
+    while (end < lines.length) {
+      command.push(lines[end]);
+      if (!lines[end].trimEnd().endsWith('\\')) break;
+      end++;
+    }
+
+    // The fallback runs from just after the command to the closing `fi`. Stop at
+    // the next step header so an unguarded invocation cannot borrow a later `fi`.
+    let close = -1;
+    for (let k = end + 1; k < lines.length; k++) {
+      if (lines[k].trim() === 'fi') {
+        close = k;
+        break;
+      }
+      if (/^\s+-\s+(name|uses)\s*:/.test(lines[k])) break;
+    }
+
+    found.push({
+      line: i + 1,
+      guarded: /^\s*if ! node \.github\/scripts\/e2e-affected\.mjs/.test(lines[i]),
+      command: command.join('\n'),
+      fallback: close === -1 ? '' : lines.slice(end + 1, close).join('\n'),
+    });
+  }
+  return found;
+}
+
 /** The check-run name GitHub publishes for a job: its `name:`, else its id. */
 function checkName(jobId, jobBody) {
   const m = jobBody.match(/^\s{4}name\s*:\s*(.+?)\s*$/m);
@@ -958,6 +1003,96 @@ describe('CI lanes always report', () => {
         '',
         'A `report-*` job is `skipped` on every green run. Needing it makes the gate',
         'either certify a skipped job or go permanently red — both useless.',
+        '',
+        ...offenders.map((o) => `  - ${o}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 13. A scope step can never kill its own lane.
+  // ------------------------------------------------------------------
+  it('every scope invocation degrades to a verdict instead of failing the job', () => {
+    const all = [];
+    for (const file of findByPathspec(':(glob).github/workflows/*.y*ml').sort()) {
+      for (const inv of scopeInvocations(read(file))) all.push({ file, ...inv });
+    }
+
+    // Anti-vacuity. Eight lanes, nine invocations (ci-nfe.yml runs the decider
+    // twice: once for the lane, once for the live suite). A scanner that silently
+    // matched nothing would make every check below pass over an empty list.
+    expect(
+      all.length,
+      'Parsed no `e2e-affected.mjs` invocations out of .github/workflows — the ' +
+        'scanner has rotted and this assertion now checks nothing.',
+    ).toBeGreaterThanOrEqual(9);
+    for (const file of Object.keys(LANES)) {
+      expect(
+        all.filter((a) => a.file === file).length,
+        `${file} has no scope invocation — it cannot be deciding its own scope.`,
+      ).toBeGreaterThan(0);
+    }
+
+    const offenders = [];
+    for (const inv of all) {
+      const where = `${inv.file}:${inv.line}`;
+
+      if (!inv.guarded) {
+        offenders.push(`${where} → bare invocation, not wrapped in \`if ! node …\``);
+        continue;
+      }
+      if (!inv.fallback.includes('>> "$GITHUB_OUTPUT"')) {
+        offenders.push(`${where} → the fallback writes no verdict to \`$GITHUB_OUTPUT\``);
+        continue;
+      }
+
+      // The direction is derived from the MODE, never from the lane's name — the
+      // same rule the script's own catch applies.
+      const live = inv.command.includes('--only-paths');
+      const wanted = live ? 'run_e2e=false' : 'run_e2e=true';
+      const forbidden = live ? 'run_e2e=true' : 'run_e2e=false';
+
+      if (!inv.fallback.includes(wanted)) {
+        offenders.push(
+          `${where} → ${live ? '`--only-paths`' : '`--roots`'} fallback must emit \`${wanted}\``,
+        );
+      }
+      if (inv.fallback.includes(forbidden)) {
+        offenders.push(`${where} → fallback also emits \`${forbidden}\`; the verdict is ambiguous`);
+      }
+    }
+
+    expect(
+      offenders,
+      [
+        'A scope step can fail its job instead of answering.',
+        '',
+        "⚠️ GitHub runs a pull_request's workflow YAML from the MERGE REF while every",
+        'lane checks out `github.event.pull_request.head.sha`. The caller is therefore',
+        'always at least as new as `.github/scripts/e2e-affected.mjs` and never older,',
+        'so on any branch that predates the script `node` exits 1 with `Cannot find',
+        'module` BEFORE the fail-safe inside the script can emit anything. The `changes`',
+        'job dies, and the gate turns that into a red REQUIRED check that nothing but a',
+        'rebase clears. Seen on runs 31719660542 and 31704153529.',
+        '',
+        'So wrap the invocation and emit the verdict yourself when it cannot run:',
+        '',
+        '  if ! node .github/scripts/e2e-affected.mjs \\',
+        '         --roots … --files "…"',
+        '  then',
+        '    {',
+        '      echo "run_e2e=true"',
+        '      echo "reason=…(fail safe)…"',
+        '    } >> "$GITHUB_OUTPUT"',
+        '  fi',
+        '',
+        '⚠️ THE DIRECTION DEPENDS ON THE MODE, and only two exist. `--roots` degrades',
+        'to `run_e2e=true`: a wrong skip ships unverified code. `--only-paths` degrades',
+        'to `run_e2e=false`: it serves `nfe-live` alone, which emits test documents at',
+        'SEFAZ homologacao against a rate-limited endpoint (cStat=656), and',
+        'NFE_CI_LIVE_ENABLED is `true` on this repo. Copying the wrong fallback into',
+        'the live step spends quota on a bug. See `decided()` in ci-nfe.yml, which',
+        'takes the two verdicts as separate arguments for exactly this reason.',
         '',
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),

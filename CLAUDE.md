@@ -21,7 +21,7 @@ skips they run nowhere.** `ci.yml` still lints, typechecks and builds the full
 graph unfiltered. **Touching `.github/workflows/` → the `ci-lanes` skill**, which
 carries the whole design.
 
-Four rules you must not break without reading it first:
+Five rules you must not break without reading it first:
 
 1. ⚠️ **Never put a `paths:` on a lane's `pull_request:`, and never pin a check
    that can be skipped.** A non-matching `paths:` publishes **no check at all** —
@@ -35,9 +35,22 @@ Four rules you must not break without reading it first:
    the skip instead.
 4. ⚠️ The `push:` triggers **keep** their `paths:` deliberately; only
    `pull_request:` goes without.
+5. ⚠️ **The workflow YAML comes from the MERGE REF, the checkout from the PR
+   HEAD — so a scope step must degrade to running the lane, never to failing
+   the job.** The caller is always at least as new as
+   `.github/scripts/e2e-affected.mjs` and never older, so on a branch older than
+   the script `node` exits 1 (`Cannot find module`) *before* the script's own
+   fail-safe can fire, killing `changes` and reddening a required check that only
+   a rebase clears. Every invocation is wrapped in
+   `if ! node …; then <emit the verdict>; fi`. ⚠️ **The direction depends on the
+   mode**: `--roots` degrades to `run_e2e=true` (a wrong skip ships unverified
+   code), `--only-paths` to `run_e2e=false` — that mode serves `nfe-live` alone,
+   which emits at SEFAZ homologação against a rate-limited endpoint, and
+   `NFE_CI_LIVE_ENABLED` is `true`. Same rule inside the script's `catch`.
 
 Enforced by `packages/config-eslint/rules/ci-lane-gates.test.js` — every workflow
-must be a registered lane or an explicitly excused one.
+must be a registered lane or an explicitly excused one, and no scope invocation
+may go unguarded.
 
 Every `pull_request` base filter is
 `[master, main, production, 'claude/**', 'feat/**', 'fix/**']`. That key matches

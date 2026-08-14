@@ -126,7 +126,12 @@ const submitted = await autorizarLote(
 Every call goes through three gates before any byte leaves the process:
 
 1. **Safety guard** — `tpAmb='2'` always passes; `tpAmb='1'` requires
-   `NFE_ALLOW_PRODUCAO=true` (or Vitest's `NODE_ENV='test'`).
+   `NFE_ALLOW_PRODUCAO=true`. ⚠️ At **this** gate — immediately before the
+   POST — `NODE_ENV='test'` does **not** clear it, because the live
+   homologação suites are themselves Vitest, so a test escape here would
+   disable the guard in the one place that reaches SEFAZ. The
+   generator-entry guard (`assertSafeTpAmb`, in `generateNFe`) does keep
+   the Vitest passthrough: it builds XML, it opens no socket.
 2. **XSD validation** — the request is validated against the vendored
    SEFAZ XSD pack (`schemas/*.xsd`) via `xmllint-wasm` before the POST.
    This is the **`cStat=656` ban kill switch**: nothing schema-invalid
@@ -183,16 +188,16 @@ const signedXml = signNFe(out.nfeXml, cert);
 
 ## Layers
 
-| Module            | Job                                                    |
-| ----------------- | ------------------------------------------------------ |
-| `src/operations/` | **Typed entry points** — start here                    |
-| `src/generator/`  | Pedido data → unsigned `<NFe>` + 44-digit chave        |
-| `src/sign/`       | XMLDSig signing via `xml-crypto`                       |
-| `src/xsd/`        | Canonical SEFAZ XSD validation (`xmllint-wasm`)        |
-| `src/safety/`     | Production-traffic guard (`assertSafeTpAmb`)           |
-| `src/soap/`       | Low-level SOAP 1.2 transport + mTLS — power users only |
-| `src/cert/`       | A1 PFX loader                                          |
-| `src/state/`      | cStat → estado mapping, retry policy                   |
-| `src/xml/`        | NF-e XML (de)serializer (META-driven)                  |
-| `src/sanitize/`   | SEFAZ-safe text sanitization                           |
-| `src/endpoints/`  | SEFAZ URLs by UF + ambiente                            |
+| Module            | Job                                                                                                                     |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `src/operations/` | **Typed entry points** — start here                                                                                     |
+| `src/generator/`  | Pedido data → unsigned `<NFe>` + 44-digit chave                                                                         |
+| `src/sign/`       | XMLDSig signing via `xml-crypto`                                                                                        |
+| `src/xsd/`        | Canonical SEFAZ XSD validation (`xmllint-wasm`)                                                                         |
+| `src/safety/`     | Produção guards — `assertSafeTpAmb` (generator entry), `assertSafeTpAmbForTransport` (every POST; no `NODE_ENV` escape) |
+| `src/soap/`       | Low-level SOAP 1.2 transport + mTLS — power users only                                                                  |
+| `src/cert/`       | A1 PFX loader                                                                                                           |
+| `src/state/`      | cStat → estado mapping, retry policy                                                                                    |
+| `src/xml/`        | NF-e XML (de)serializer (META-driven)                                                                                   |
+| `src/sanitize/`   | SEFAZ-safe text sanitization                                                                                            |
+| `src/endpoints/`  | SEFAZ URLs by UF + ambiente                                                                                             |

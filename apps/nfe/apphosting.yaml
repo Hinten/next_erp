@@ -28,5 +28,8 @@ env:
 #   NFE_CERT_PASSWORD           A1 PFX passphrase (Secret Manager)
 #   ALLOWED_ADMIN_ORIGINS       CSV of apps/web origins for CORS (no localhost in prod)
 #
-# Producao only: requires NFE_ALLOW_PRODUCAO=true to clear the safety guard
-# (see src/safety/assertSafeTpAmb).
+# Producao only: requires NFE_ALLOW_PRODUCAO=true to clear BOTH safety guards
+# (packages/integrations/nfe/src/safety) — assertSafeTpAmb at the generator entry,
+# and assertSafeTpAmbForTransport immediately before every SEFAZ POST. Only the
+# first honours NODE_ENV=test; the transport one takes NFE_ALLOW_PRODUCAO and
+# nothing else, because the live CI suites are themselves Vitest.
