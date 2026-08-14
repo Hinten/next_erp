@@ -378,6 +378,27 @@ describe('startPriceSyncJob', () => {
 });
 
 describe('processPriceSyncJob — plan phase', () => {
+  it('a SCOPED job plans only its produto — the scope is read off the job doc (#804 S6)', async () => {
+    // The plan re-runs on every dispatch, in a Cloud Task that only carries
+    // `{jobId, integracaoId}`. If the scope did not travel on the job doc, the
+    // first retry would silently re-plan the conta's whole catalogue.
+    const db = new FakeDb();
+    seedJob(db, 'jobScoped', { produtoId: 'prod-9' });
+    seedLink(db, 'MLB1');
+    const row = { anchorId: 'prod-9' } as unknown as PrecoFamilyRow;
+    vi.mocked(buildPrecoDrafts).mockReturnValue({ drafts: [draft('MLB1')], skips: [] });
+    const deps = runDeps(db, makeApi({ MLB1: mlItem('MLB1') }), {
+      fetchPage: vi.fn(async () => ({ rows: [row], nextAfterAnchorId: null })),
+    });
+
+    await processPriceSyncJob(deps, { jobId: 'jobScoped', integracaoId: CONTA }, 0);
+
+    expect(deps.fetchPage).toHaveBeenCalledWith(
+      deps.db,
+      expect.objectContaining({ produtoId: 'prod-9' }),
+    );
+  });
+
   it('plans one page: appends drafts, folds plan skips, advances the cursor, and drains in the SAME dispatch', async () => {
     const db = new FakeDb();
     seedJob(db, 'job1');
