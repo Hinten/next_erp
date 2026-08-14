@@ -190,9 +190,51 @@ describe('POST /sugerir-medidas — the happy path', () => {
     expect((await POST(req({ ...ok, facts: 'nope' }))).status).toBe(400);
     expect((await POST(req({ ...ok, facts: { nome: 42 } }))).status).toBe(400);
     expect((await POST(req({ ...ok, facts: { descricao: 'x'.repeat(1001) } }))).status).toBe(400);
-    // More photos than the batch cap — one click must not become a huge call.
-    const fotos = Array.from({ length: 5 }, () => ({ arquivoOuterRef: 'arquivos/x' }));
+    // A body that is simply enormous is still refused.
+    const fotos = Array.from({ length: 51 }, () => ({ arquivoOuterRef: 'arquivos/x' }));
     expect((await POST(req({ ...ok, facts: { fotos } }))).status).toBe(400);
+  });
+
+  it('accepts MORE photos than reach the model, instead of failing the request', async () => {
+    // ⚠️ The regression this pins. The body cap used to BE the model cap, so a
+    // tabela with five photos — a front, a back and three pages, the case this
+    // feature exists for — answered `400 facts inválido.`, which the toast now
+    // shows verbatim. `loadFotoImages` already stops at `max`, so a longer
+    // gallery costs nothing; rejecting it just re-broke the feature.
+    const fotos = Array.from({ length: 8 }, (_, i) => ({
+      arquivoOuterRef: `arquivos/f${String(i)}`,
+    }));
+    const res = await POST(req({ ...ok, facts: { fotos } }));
+    expect(res.status).toBe(200);
+    expect(
+      (h.suggest.mock.calls[0]![1] as { facts?: { fotos?: unknown[] } }).facts?.fotos,
+    ).toHaveLength(8);
+  });
+
+  it('accepts a nome and codigo the SCHEMA allows, not just a cell label', async () => {
+    // `tabelaDeMedidasSchema` allows 255 for both; the grid's `MAX_LABEL` is 200
+    // and is a cell bound. Reusing it made a saved 201-char nome return 400 on
+    // every click — the client always sends both fields, touched or not.
+    const facts = { nome: 'n'.repeat(255), codigo: 'c'.repeat(255) };
+    expect((await POST(req({ ...ok, facts }))).status).toBe(200);
+    expect((await POST(req({ ...ok, facts: { nome: 'n'.repeat(256) } }))).status).toBe(400);
+  });
+
+  it('rejects a foto ref that would crash the loader, with 400 rather than 500', async () => {
+    // `loadFotoImages` does `outerRef.replace(...)` then `docRef` with no guard
+    // of its own: a non-string throws TypeError, a slash-bearing id throws
+    // "documentPath must point to a document". Neither matches a catch branch in
+    // POST, so both would surface as an unhandled 500.
+    expect((await POST(req({ ...ok, facts: { fotos: [{ arquivoOuterRef: 42 }] } }))).status).toBe(
+      400,
+    );
+    expect(
+      (await POST(req({ ...ok, facts: { fotos: [{ arquivoJpegOuterRef: 'a/b/c' }] } }))).status,
+    ).toBe(400);
+    // An empty string is legitimate — that variant simply does not exist yet.
+    expect(
+      (await POST(req({ ...ok, facts: { fotos: [{ arquivo400pxOuterRef: '' }] } }))).status,
+    ).toBe(200);
   });
 
   it('works with NO facts at all, so an older client keeps running', async () => {

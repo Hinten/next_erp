@@ -75,8 +75,53 @@ const MAX_LABEL = 200;
  */
 const MAX_IMAGES = 4;
 
-/** The schema's own `descricao` limit, so the body cannot exceed the record. */
+/**
+ * How many photo entries the BODY may carry — a size bound, not a cost one.
+ *
+ * ⚠️ Deliberately NOT `MAX_IMAGES`, and the difference is the whole point.
+ * `loadFotoImages` already stops at `max: MAX_IMAGES`, so a longer gallery costs
+ * nothing extra; rejecting it here instead made a tabela with five photos — a
+ * front, a back and three pages, exactly the case this feature exists for — fail
+ * the entire request with `facts inválido.`, which the toast now shows verbatim.
+ * Before `facts` existed the server read `tabela.fotos` itself and the loader
+ * simply took the first four; this keeps that behaviour while letting
+ * `contexto.anexadas` report what the tabela actually HAS, which is what tells
+ * the operator "the photo is not readable yet" apart from "there is no photo".
+ */
+const MAX_FOTOS_BODY = 50;
+
+/**
+ * The schema's own limits, so a body can never be rejected for a value the
+ * record is allowed to hold.
+ *
+ * ⚠️ `nome`/`codigo` do NOT reuse `MAX_LABEL`: that is a cell-label bound (200),
+ * while `tabelaDeMedidasSchema` allows 255 — so a saved tabela with a 201-char
+ * nome made every click return 400, since the client always sends both fields
+ * whether or not the operator touched them.
+ */
+const MAX_NOME = 255;
+const MAX_CODIGO = 255;
 const MAX_DESCRICAO = 1000;
+
+/**
+ * An `arquivos/<id>` outer ref, or the bare id.
+ *
+ * ⚠️ Firestore document ids may not contain `/`, and `loadFotoImages` strips
+ * everything up to the last `arquivos/` before calling `docRef` — so a
+ * slash-bearing value throws `documentPath must point to a document` and a
+ * non-string throws `TypeError` off `.replace`. Neither matches a `catch` branch
+ * in `POST`, so both would be an unhandled 500 rather than the 400 this parser
+ * exists to produce.
+ */
+const OUTER_REF = /^(?:.*arquivos\/)?[A-Za-z0-9_.~-]{1,1500}$/;
+
+/** The ref fields `FOTO_IMAGE_VARIANTS` reads; anything else is passed through. */
+const FOTO_REF_FIELDS = [
+  'arquivoOuterRef',
+  'arquivoJpegOuterRef',
+  'arquivo400pxOuterRef',
+  'arquivo200pxOuterRef',
+] as const;
 
 const CELL_KINDS = new Set(['text', 'number', 'select', 'multiselect']);
 
@@ -249,9 +294,16 @@ export async function POST(req: Request): Promise<NextResponse> {
  * The trust cost is real but small. The caller holds `PERM.integracao.write` and
  * already owns the record: they could save first and get the same effect, one
  * click later. The one genuinely new capability is that `fotos` lets the caller
- * name **arquivo ids** whose bytes reach the model — bounded by the id-shape
- * check `loadFotoImages` already performs, by `MAX_IMAGES`, and by the fact that
- * the caller never sees those bytes, only measurements.
+ * name **arquivo ids** whose bytes reach the model — bounded by `MAX_IMAGES` at
+ * the loader, by `MAX_FOTOS_BODY` here, and by the fact that the caller never
+ * sees those bytes, only measurements.
+ *
+ * ⚠️ The id-shape check is the `OUTER_REF` test BELOW, and it has to live here:
+ * `loadFotoImages` performs none of its own — it does
+ * `outerRef.replace(/^.*arquivos\//, '')` and hands the result straight to
+ * `docRef`, so a non-string ref throws `TypeError` and a slash-bearing one
+ * throws `documentPath must point to a document`. Neither matches a `catch`
+ * branch in `POST`, so an unvalidated body would be a 500, not a 400.
  *
  * ⚠️ The reference chart is NOT accepted here, on purpose. It is read from the
  * stored document, so the body cannot dictate measurements the model then
@@ -265,8 +317,8 @@ function parseFacts(raw: unknown): SuggestMedidasFacts | undefined | null {
   if (typeof raw !== 'object' || Array.isArray(raw)) return null;
   const f = raw as Record<string, unknown>;
 
-  if (f.nome != null && (typeof f.nome !== 'string' || f.nome.length > MAX_LABEL)) return null;
-  if (f.codigo != null && (typeof f.codigo !== 'string' || f.codigo.length > MAX_LABEL))
+  if (f.nome != null && (typeof f.nome !== 'string' || f.nome.length > MAX_NOME)) return null;
+  if (f.codigo != null && (typeof f.codigo !== 'string' || f.codigo.length > MAX_CODIGO))
     return null;
   if (
     f.descricao != null &&
@@ -277,12 +329,21 @@ function parseFacts(raw: unknown): SuggestMedidasFacts | undefined | null {
 
   let fotos: Foto[] | undefined;
   if (f.fotos != null) {
-    if (!Array.isArray(f.fotos) || f.fotos.length > MAX_IMAGES) return null;
+    if (!Array.isArray(f.fotos) || f.fotos.length > MAX_FOTOS_BODY) return null;
     // Only the ref fields are read — `loadFotoImages` resolves each to an
     // `arquivos/<id>` document and reads the Storage path from THERE, so the
     // body never names a bucket path.
     for (const foto of f.fotos) {
       if (foto == null || typeof foto !== 'object') return null;
+      const rec = foto as Record<string, unknown>;
+      for (const field of FOTO_REF_FIELDS) {
+        const ref = rec[field];
+        // `!= null` and not truthiness: `''` is falsy and the loader skips it,
+        // so an empty string is a legitimate "this variant does not exist yet".
+        if (ref != null && (typeof ref !== 'string' || (ref !== '' && !OUTER_REF.test(ref)))) {
+          return null;
+        }
+      }
     }
     fotos = f.fotos as Foto[];
   }

@@ -16,6 +16,8 @@ import {
 import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
+import { buildMedidasFatos } from '@/lib/mercado-livre/medidasFatos';
+
 import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
@@ -94,15 +96,7 @@ export function MedidasMercadoLivreManager({
    * unsaved `sku` the same way).
    */
   const form = useFormContext<FieldValues>();
-  const getFatos = useCallback(() => {
-    const values = form.getValues();
-    return {
-      nome: typeof values.nome === 'string' ? values.nome : null,
-      codigo: typeof values.codigo === 'string' ? values.codigo : null,
-      descricao: typeof values.descricao === 'string' ? values.descricao : null,
-      fotos: Array.isArray(values.fotos) ? (values.fotos as unknown[]) : null,
-    };
-  }, [form]);
+  const getFatos = useCallback(() => buildMedidasFatos(form.getValues()), [form]);
 
   // Gate the integração read on `canRead`: the collection is
   // PERM.integracao.read-protected, so a produto-only editor (tabMedi uses

@@ -273,10 +273,19 @@ function Fonte({ resultado }: { resultado: MercadoLivreMedidasSugestao }) {
         </Alert>
       )}
       {fotos === 0 && anexadas > 0 && (
-        <Alert color="orange" variant="light" title="A foto ainda não foi processada">
-          {anexadas === 1 ? 'A foto desta tabela' : 'As fotos desta tabela'} ainda não
-          {anexadas === 1 ? ' está pronta' : ' estão prontas'} para leitura, então o modelo usou
-          apenas o texto. Aguarde alguns instantes e tente de novo — não é preciso enviar de novo.
+        <Alert color="orange" variant="light" title="Não foi possível ler a foto">
+          {/*
+            ⚠️ Both halves matter. "Not processed yet" is only ONE of the reasons
+            a photo that exists cannot be read — a format outside the allowlist,
+            a file over the size ceiling, or a batch over the request budget are
+            all PERMANENT, and an alert that says only "aguarde" leaves that
+            operator retrying forever while forbidding the one action that would
+            actually fix it.
+          */}
+          {anexadas === 1 ? 'A foto desta tabela' : 'As fotos desta tabela'} não
+          {anexadas === 1 ? ' pôde' : ' puderam'} ser {anexadas === 1 ? 'lida' : 'lidas'}, então o
+          modelo usou apenas o texto. Se a foto acabou de ser enviada, aguarde alguns instantes e
+          tente de novo; se continuar, envie uma versão menor ou em JPEG.
         </Alert>
       )}
       {resultado.truncado && (

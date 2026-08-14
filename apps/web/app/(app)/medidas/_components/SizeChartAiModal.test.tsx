@@ -66,9 +66,24 @@ describe('SizeChartAiModal — what the model was actually given', () => {
         contexto: { fotos: 0, anexadas: 1, descricao: true, codigo: false, referencia: false },
       }),
     );
-    expect(screen.getByText('A foto ainda não foi processada')).not.toBeNull();
+    expect(screen.getByText('Não foi possível ler a foto')).not.toBeNull();
     expect(screen.queryByText('Sem foto da tabela')).toBeNull();
     expect(screen.queryByText(/Envie a foto da tabela/)).toBeNull();
+  });
+
+  it('offers a way out for the causes that are PERMANENT, not just "wait"', () => {
+    // ⚠️ "Not processed yet" is only one reason a photo that exists cannot be
+    // read: a format outside the allowlist, a file over the size ceiling and a
+    // batch over the request budget are all permanent. An alert that says only
+    // "aguarde" leaves that operator retrying forever.
+    show(
+      resultado({
+        contexto: { fotos: 0, anexadas: 1, descricao: false, codigo: false, referencia: false },
+      }),
+    );
+    const alerta = screen.getByText(/o modelo usou apenas o texto/).textContent ?? '';
+    expect(alerta).toMatch(/aguarde/i);
+    expect(alerta).toMatch(/menor ou em JPEG/);
   });
 
   it('raises NEITHER alert once a photo has been read', () => {
