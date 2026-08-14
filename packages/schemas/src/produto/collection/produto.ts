@@ -84,14 +84,34 @@ export const produtoSchema = z
      * stamp a sale writes (ADR 0014) — because the channels that DO support
      * this upload shape consume that signal.
      *
-     * Mercado Livre has no proper support for it, which is why the ML sweep
-     * alone declines to send a quantity for a virtual kit
-     * (`quantidadeParaEnvio` → null). That is a per-channel limitation, **not**
-     * a property of virtual kits, and it must not be generalized into one.
+     * Mercado Livre has no usable form of it, which is why the ML **sweep**
+     * declines to send a quantity for a virtual kit (`quantidadeParaEnvio` →
+     * null). ML's own Virtual Kits do compute stock from the components, but
+     * they are User-Products-only (`POST /items/kits`, `bundle.components[]` of
+     * `user_product_id`s), immutable once published, and — because a component
+     * is already variation-level — cannot represent a produto that has
+     * variations, so this port never creates one.
+     *
+     * ⚠️ ML **publish** therefore does the opposite of the sweep: it sends the
+     * component-min like any other kit (`quantidadeParaPublicar`). `POST /items`
+     * requires `available_quantity`, so omitting it there does not make ML
+     * derive anything — it makes the produto unpublishable.
+     *
+     * That is a per-channel limitation, **not** a property of virtual kits, and
+     * it must not be generalized into one.
      */
     ehKitVirtual: z.boolean().default(false),
     publicado: z.boolean().default(false),
     ofereceFreteGratis: z.boolean().default(false),
+    /**
+     * ⚠️ **Slated for removal** — do not build on it.
+     *
+     * The legacy ML publish used it as a backorder floor: a produto at zero
+     * stock went out with `available_quantity: 1` instead of 0
+     * (`.old/.../models.dart:1487-1497`). That floor is deliberately NOT ported
+     * (#797 E5) precisely because the field is going away; ML publish reads the
+     * real availability and nothing else.
+     */
     permiteVendaSemEstoque: z.boolean().default(false),
     // "Produto usado" — Flutter reads `as bool?`, but we default to false like
     // the other flags so the ObjectView switch can't be left in an unclearable

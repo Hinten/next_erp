@@ -28,7 +28,13 @@ import type { MlAttributeWire, MlSizeChart } from '@delfrance/schemas';
  * `MlAttributeWire` (the chart's attributes).
  */
 export interface ScoringAttribute {
-  id: string;
+  /**
+   * Optional because the plugin's `MlAttribute` allows an id-less entry (ML's
+   * custom characteristic, which only ever appears in a variation's
+   * combinations). One can never score: the chart's own attributes always carry
+   * an id, so `ca.id !== pa.id` rejects it on every comparison.
+   */
+  id?: string;
   value_id?: string | null;
   value_name?: string | null;
 }
