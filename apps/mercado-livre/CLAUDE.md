@@ -100,6 +100,29 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   once it is on the parameters become MANDATORY — so the flag and the toggle are flipped
   together for a given `client_id`. The prod application is shared with the legacy Flutter
   connect screen, which sends no `code_challenge`; staging has its own application.
+- `app/api/marketplace/mercado-livre/usuarios-teste` + `lib/marketplace/testUsers.ts`
+  + `testUserStore.ts` — the dev-only bootstrap for an end-to-end run: mint ML's
+  seller/buyer **test users** and store them under `integracao/{id}/usuariosTeste`
+  (admin-only, deliberately OUT of `ALL_DOMAINS` — it holds a password in the clear —
+  so rules-gen emits nothing and Firestore default-denies). ML has no sandbox; these
+  are real production accounts, capped at **10 per real account**, never listed by any
+  endpoint, and the password is shown **once and never reissued**.
+  ⚠️ That last fact is the whole design. A mint whose result is not persisted has
+  permanently spent a slot and produced nothing, so: persist each user before minting
+  the next, reuse anything already stored (doc id = the role, so a retry costs zero
+  slots — rule 7 tier 0), and **revoke the bootstrap conta's credential only once both
+  are durable**. `testUsers.test.ts` asserts the INTERLEAVING, not the final state;
+  all three orderings are mutation-proven.
+  ⚠️ `POST` deletes every `tokenDuravel` doc on the conta it used — intended (that
+  account is a real seller account and must not stay connected), but it is why the
+  gate is an explicit `MERCADO_LIVRE_TEST_USERS_ENABLED=1` rather than a `NODE_ENV`
+  check: apps/web calls the DEPLOYED backend even in local dev, and #1059 is the
+  worked example of a `NODE_ENV` escape disabling a guard in the one job that needed
+  it. Unset ⇒ 404, checked before auth.
+  ⚠️ `criarUsuarioTeste` in the integrations package bypasses `parseOk` on purpose:
+  that helper puts the RAW BODY into `MercadoLivreValidationError`, and `respond.ts`
+  logs a validation error's payload straight to the log stream — the exact route #1015
+  leaked an OAuth token response by.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -120,7 +143,9 @@ Two suites, deliberately separated by filename:
   (including the dual-lineage read across Flutter's auto-id docs and this app's
   `current`, and the "one wins" refresh under real contention), the notification store's
   ALREADY_EXISTS/NOT_FOUND semantics, the receiver writing a real failure doc via the
-  `MERCADO_LIVRE_TASKS_DISABLED` valve, and `exchangeAndPersist`.
+  `MERCADO_LIVRE_TASKS_DISABLED` valve, `exchangeAndPersist`, and the test-user store
+  (role doc ids, and `deleteAll` clearing BOTH tokenDuravel lineages — the offline
+  suite mocks Firestore away, so a `current`-only delete cannot be caught there).
 
 - **Cloud Tasks round trip** — `test:tasks` (`*.tasks.test.ts`), run by the same workflow
   under `--config firebase.mercado-livre.tasks.json --only firestore,functions,tasks`.

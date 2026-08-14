@@ -1365,7 +1365,7 @@ describe('criarUsuarioTeste', () => {
     const user = await api.criarUsuarioTeste('MLB');
 
     expect(user).toMatchObject(MINTED);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('/users/test_user');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ site_id: 'MLB' });
