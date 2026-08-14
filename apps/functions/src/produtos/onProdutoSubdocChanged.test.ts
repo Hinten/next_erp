@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry } from '../lib/modificationHistory';
 import { extraDataHistorySource } from './onProdutoExtraDataChanged';
 import { impostoHistorySource } from './onProdutoImpostoChanged';
@@ -11,9 +12,21 @@ describe('extraDataHistorySource', () => {
     expect(extraDataHistorySource.requireParentExists).toBe(true);
   });
 
+  it('is bound to the produto root (entries land under the produto, not elsewhere)', () => {
+    // The root is what `recordModification` writes through now that the factory
+    // is parameterized — a source pointed at the wrong one would silently file
+    // produto history under pedidos.
+    expect(extraDataHistorySource.root).toBe(PRODUTO_HISTORY_ROOT);
+    expect(extraDataHistorySource.root.parentIdParam).toBe('produtoId');
+  });
+
+  it('opts into NO field expansion, keeping produto entries shallow as before', () => {
+    expect(extraDataHistorySource.expand).toBeUndefined();
+  });
+
   it('resolve() maps {produtoId, docId} params to the owning produto path', () => {
     expect(extraDataHistorySource.resolve({ produtoId: 'p1', docId: 'singleton' })).toEqual({
-      produtoId: 'p1',
+      parentId: 'p1',
       docId: 'singleton',
       path: 'produtos/p1/extraData/singleton',
     });
@@ -55,9 +68,14 @@ describe('impostoHistorySource', () => {
     expect(impostoHistorySource.requireParentExists).toBe(true);
   });
 
+  it('is bound to the produto root and opts into no expansion', () => {
+    expect(impostoHistorySource.root).toBe(PRODUTO_HISTORY_ROOT);
+    expect(impostoHistorySource.expand).toBeUndefined();
+  });
+
   it('resolve() maps {produtoId, docId} params to the owning produto path', () => {
     expect(impostoHistorySource.resolve({ produtoId: 'p1', docId: 'op1' })).toEqual({
-      produtoId: 'p1',
+      parentId: 'p1',
       docId: 'op1',
       path: 'produtos/p1/imposto/op1',
     });

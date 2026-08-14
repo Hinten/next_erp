@@ -1,5 +1,6 @@
 import { impostoProdutoMeta } from '@delfrance/schemas';
 
+import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import {
   makeModificationHistoryTrigger,
   type ModificationHistorySource,
@@ -25,6 +26,7 @@ import {
  * targets the NAMED `default` database (gotcha #8).
  */
 export const impostoHistorySource: ModificationHistorySource = {
+  root: PRODUTO_HISTORY_ROOT,
   subcolecao: 'imposto',
   ignoreFields: ['id', 'timestamp'],
   requireParentExists: true,
@@ -32,7 +34,7 @@ export const impostoHistorySource: ModificationHistorySource = {
     // Both wildcards are always present at runtime; the Record index type
     // can't know that (same cast as `onEstoqueDeleted`).
     const { produtoId, docId } = params as { produtoId: string; docId: string };
-    return { produtoId, docId, path: `produtos/${produtoId}/imposto/${docId}` };
+    return { parentId: produtoId, docId, path: `produtos/${produtoId}/imposto/${docId}` };
   },
 };
 

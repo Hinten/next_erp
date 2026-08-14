@@ -6,6 +6,7 @@ import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import { produtoMeta, samePrecos, type PrecosMap } from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
+import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
 
 /**
@@ -146,7 +147,7 @@ export async function recordProdutoModificationAndPropagate(
   });
   if (entry === null) return;
 
-  await recordModification(db, produtoId, entry);
+  await recordModification(db, PRODUTO_HISTORY_ROOT, produtoId, entry);
 
   // Propagation is gated on the entry's `campos` — never on custo alone, a
   // custo edit never touches a child's precos — AND on the opt-out field.

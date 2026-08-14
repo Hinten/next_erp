@@ -45,7 +45,7 @@ async function driveTrigger(
   eventId: string,
   eventTimeMicros: number = EVENT_TIME_MICROS,
 ): Promise<boolean> {
-  const { produtoId, docId, path } = source.resolve(params);
+  const { parentId, docId, path } = source.resolve(params);
   const entry = buildModificationEntry({
     before,
     after,
@@ -55,9 +55,12 @@ async function driveTrigger(
     docId,
     eventId,
     eventTimeMicros,
+    expand: source.expand,
   });
   if (entry === null) return false;
-  return recordModification(db, produtoId, entry, {
+  // The root now comes from the source, so this helper stays a faithful mirror
+  // of the trigger callback for whichever root it is handed.
+  return recordModification(db, source.root, parentId, entry, {
     requireParentExists: source.requireParentExists,
   });
 }
