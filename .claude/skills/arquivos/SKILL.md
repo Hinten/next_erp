@@ -71,6 +71,7 @@ the create-first + dedup core — and return `UploadResult = { id, arquivo }`.
 | Function | Args (besides `storage`/`db`) | Storage path · doc id | Notes |
 | --- | --- | --- | --- |
 | `uploadProductImage` | `produtoId, bytes, contentType, originalFilename?` | `produtos/<id>/originals/<hash>.<ext>` · `<id>_<hash>` | throws if not `image/*`; sets `resizeState:'pending'` → resize trigger generates derivatives |
+| `uploadTabMediImage` | `tabMediId, bytes, contentType, originalFilename?` | `tabMedi/<id>/originals/<hash>.<ext>` · `<id>_<hash>` | throws if not `image/*`; sets `resizeState:'pending'` — resized exactly like a product image |
 | `uploadProductVideo` | `produtoId, bytes, contentType, originalFilename?` | `produtos/<id>/videos/<hash>.<ext>` · `<id>_<hash>` | throws if not `video/*`; **not** resized |
 | `uploadFile` | `bytes, contentType, filepath?, originalFilename?` | `<filepath ?? media>/<hash>[.ext]` · `<hash>` | generic media; `filetype` derived via `filetypeFromMime` |
 | `uploadFromUrl` | `url, filepath?, originalFilename?` | (fetches, then `uploadFile`) | importing a marketplace image |
@@ -86,9 +87,15 @@ the object→doc tag.
 
 Path/id math (pure, no Firebase) lives in `packages/schemas/src/storage/storagePaths.ts`:
 `productOriginalPath`, `productVideoPath`, `productDerivativePath`, `mediaPath`,
-`productArquivoId`, `derivativeArquivoId`, `parseProductOriginalPath`,
-`parseProductMediaDir`, `isWatchedProductOriginal`, `isDerivativeName`,
+`ownedArquivoId`, `productArquivoId`, `tabMediArquivoId`, `derivativeArquivoId`,
+`parseOwnedOriginalPath`, `parseOwnedMediaDir`, `isWatchedOriginal`,
+`isDerivativeName`, `ownedDerivativePath`, `tabMediOriginalPath`,
 `firebaseDownloadUrl`, `normalizeName`, `PRODUCT_IMAGE_VARIANTS` (`200`/`400`/`jpeg`).
+
+⚠️ The **owner-aware** names are the live ones: `isWatchedOriginal` matches
+`produtos/` **and** `tabMedi/` originals, which is what puts size-chart photos
+through the resize pipeline. `parseProductOriginalPath` / `parseProductMediaDir`
+are produto-only VIEWS over them, kept for the produto-scoped callers.
 
 ## 5. Attach a file to a produto (the canonical wiring)
 
@@ -171,8 +178,11 @@ const url = snap.data?.data?.url ?? originalSnap.data?.data?.url ?? null;
   `filepath` (dir, no filename), `filename`, `originalFilename`, `contentType`,
   `url`, `externalIds`, plus the lifecycle markers:
   - `uploadState` `pending`→`finalized` (bytes arrived) — all uploads.
-  - `resizeState` `pending`→`done` (derivatives written) — **product image
-    originals only**; `null` otherwise.
+  - `resizeState` `pending`→`done` (derivatives written) — **image originals of
+    a watched owner** (`produtos/` and `tabMedi/`); `null` otherwise. ⚠️ Also
+    `null` on size-chart photos uploaded before that owner was watched — they
+    have no derivatives until a backfill stamps `'pending'` and lets
+    `reconcileProductImages` pick them up.
   - `criadoEm` µs-since-epoch, required, default `nowMicros()` (sweeps range-query
     it).
   - `markedForDeletionAt` µs or `null` (default) — set by `onProdutoMediaChanged`

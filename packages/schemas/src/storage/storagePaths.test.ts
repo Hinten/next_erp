@@ -10,7 +10,6 @@ import {
   parseOwnedMediaDir,
   parseOwnedOriginalPath,
   parseProductMediaDir,
-  parseProductOriginalPath,
   productAnexoPath,
   productArquivoId,
   productDerivativePath,
@@ -39,33 +38,42 @@ describe('path builders', () => {
   });
 });
 
-describe('parseProductOriginalPath', () => {
+describe('parseOwnedOriginalPath — the produto cases', () => {
+  // These used to test `parseProductOriginalPath`, a produto-only view. That
+  // view lost its last production caller in this change (all three moved to
+  // `parseOwnedOriginalPath`), so it was deleted rather than kept alive by the
+  // tests that were its only remaining users. The cases moved onto the function
+  // the production code actually calls.
   it('round-trips a watched original (with and without extension)', () => {
-    expect(parseProductOriginalPath(`produtos/${PID}/originals/${HASH}.png`)).toEqual({
-      produtoId: PID,
+    expect(parseOwnedOriginalPath(`produtos/${PID}/originals/${HASH}.png`)).toEqual({
+      ownerCollection: 'produtos',
+      ownerId: PID,
       hash: HASH,
       ext: 'png',
     });
-    expect(parseProductOriginalPath(`produtos/${PID}/originals/${HASH}`)).toEqual({
-      produtoId: PID,
+    expect(parseOwnedOriginalPath(`produtos/${PID}/originals/${HASH}`)).toEqual({
+      ownerCollection: 'produtos',
+      ownerId: PID,
       hash: HASH,
       ext: null,
     });
   });
 
   it('returns null for derivatives, videos, media and garbage', () => {
-    expect(parseProductOriginalPath(productDerivativePath(PID, HASH, '200'))).toBeNull();
-    expect(parseProductOriginalPath(productVideoPath(PID, HASH, 'mp4'))).toBeNull();
-    expect(parseProductOriginalPath(mediaPath(HASH, 'png'))).toBeNull();
-    expect(parseProductOriginalPath('produtos/x/originals/a/b')).toBeNull();
-    expect(parseProductOriginalPath('whatever')).toBeNull();
+    expect(parseOwnedOriginalPath(productDerivativePath(PID, HASH, '200'))).toBeNull();
+    expect(parseOwnedOriginalPath(productVideoPath(PID, HASH, 'mp4'))).toBeNull();
+    expect(parseOwnedOriginalPath(mediaPath(HASH, 'png'))).toBeNull();
+    expect(parseOwnedOriginalPath('produtos/x/originals/a/b')).toBeNull();
+    expect(parseOwnedOriginalPath('whatever')).toBeNull();
   });
 
-  it('stays produto-only — a tabMedi original is not a produto original', () => {
-    // The narrow view exists so produto-scoped callers keep their exact shape
-    // even though the underlying parser now accepts both roots. If this ever
-    // returns a value, `parsed.produtoId` starts carrying a tabMedi id.
-    expect(parseProductOriginalPath(tabMediOriginalPath('tm1', HASH, 'jpg'))).toBeNull();
+  it('never labels a tabMedi original as a produto one', () => {
+    // The owner is what every caller branches on — `ownedDerivativePath` writes
+    // under it, so mislabelling would put a size chart's derivatives in the
+    // produto namespace, where the produto orphan sweep would reap them.
+    expect(parseOwnedOriginalPath(tabMediOriginalPath('tm1', HASH, 'jpg'))?.ownerCollection).toBe(
+      'tabMedi',
+    );
   });
 });
 
