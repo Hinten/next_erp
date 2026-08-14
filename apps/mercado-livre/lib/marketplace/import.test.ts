@@ -882,6 +882,90 @@ describe('importProduto — ERP-first variation children (#801)', () => {
     expect([...db.docs('produtos/erp-filho-G/variacaoMercadoLivre').keys()]).toEqual(['link-111']);
   });
 
+  it('reuse REPLACES the child’s precos under sobrescreverPreco (default true) — a decision, not an accident', async () => {
+    const db = new FakeDb();
+    seedTaxonomia(db);
+    seedParent(db);
+    db.seed('produtos', 'erp-filho-G', {
+      nome: 'Camiseta G',
+      sku: 'ERP-G',
+      paiId: PARENT_ID,
+      variacoesUid: COMBO_G,
+      precos: { tabNormal: { valor: 10 } }, // the operator's own price
+    });
+    seedChild(db, 'erp-filho-M', 'ERP-M', COMBO_M);
+
+    await importProduto(deps(db, makeApi(ITEM)), 'MLB999');
+
+    // `sobrescreverPreco` defaults TRUE, so the ML parent's price wins — same as the
+    // SKU rule has always done. Contrast `sobrescreverEstoque`, which defaults FALSE
+    // precisely so ERP stock is never clobbered. If this assertion ever has to change,
+    // it is because the OPTION's meaning changed, not because the dedup regressed.
+    expect(db.docs('produtos').get('erp-filho-G')).toMatchObject({
+      sku: 'ERP-G', // untouched
+      variacoesUid: COMBO_G, // untouched
+      precos: { tabNormal: { valor: 59.9 } }, // REPLACED
+    });
+  });
+
+  it('sobrescreverPreco=false leaves the reused child’s own price table alone', async () => {
+    const db = new FakeDb();
+    seedTaxonomia(db);
+    seedParent(db);
+    db.seed('produtos', 'erp-filho-G', {
+      nome: 'Camiseta G',
+      sku: 'ERP-G',
+      paiId: PARENT_ID,
+      variacoesUid: COMBO_G,
+      precos: { tabNormal: { valor: 10 } },
+    });
+    seedChild(db, 'erp-filho-M', 'ERP-M', COMBO_M);
+
+    await importProduto(
+      deps(db, makeApi(ITEM), {
+        options: { sobrescreverPreco: false },
+      }),
+      'MLB999',
+    );
+
+    expect(db.docs('produtos').get('erp-filho-G')).toMatchObject({
+      precos: { tabNormal: { valor: 10 } },
+    });
+  });
+
+  it('reusing a child whose estoque sits at a NON-CANONICAL id updates that row, never a second one', async () => {
+    const db = new FakeDb();
+    seedTaxonomia(db);
+    seedParent(db);
+    seedChild(db, 'erp-filho-G', 'ERP-G', COMBO_G);
+    seedChild(db, 'erp-filho-M', 'ERP-M', COMBO_M);
+    // A Flutter-era stock row: auto-id, not `est-<produtoId>-<depositoId>`.
+    db.seed('produtos/erp-filho-G/estoques', 'legacy-auto-id', {
+      parentId: 'erp-filho-G',
+      depositoOuterRef: 'documents/depositos/dep1',
+      quantidade: 3,
+      quantidadeReservada: 0,
+    });
+
+    await importProduto(
+      deps(db, makeApi(ITEM), {
+        options: { sobrescreverEstoque: true },
+      }),
+      'MLB999',
+    );
+
+    // Exactly ONE row, still at its original id, carrying the ML quantity. Merging
+    // into the canonical id would have upserted a SECOND, field-less row that every
+    // canonical-id reader would then prefer — the duplicate-stock harm #801 removes.
+    const estoques = db.docs('produtos/erp-filho-G/estoques');
+    expect([...estoques.keys()]).toEqual(['legacy-auto-id']);
+    expect(estoques.get('legacy-auto-id')).toMatchObject({
+      parentId: 'erp-filho-G',
+      depositoOuterRef: 'documents/depositos/dep1',
+      quantidade: 5,
+    });
+  });
+
   it('does not read the parent’s children when every variation resolves by link', async () => {
     const db = new FakeDb();
     seedTaxonomia(db);

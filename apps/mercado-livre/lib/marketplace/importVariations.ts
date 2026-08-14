@@ -187,14 +187,26 @@ export async function importVariationChildren(
       }
     }
 
-    // estoque (create = set; overwrite = merge quantidade — keeps reservada)
+    // estoque (create = set at the canonical id; overwrite = merge quantidade into
+    // the row we actually READ — keeps reservada).
+    //
+    // ⚠️ The merge targets `stockForWrite.docId`, NOT `plan.estoque.docId`. The plan
+    // always names the canonical `makeEstoqueUid(produtoId, depositoId)`, but
+    // `readEstoque` matches on `depositoOuterRef` under ANY doc id — and Flutter-era
+    // rows sit at auto-ids (`aplicarBalanco.ts` counts them as `extras`). Merging into
+    // the canonical id is an UPSERT, so on a non-canonical row it would CREATE a second
+    // estoque doc for the same (produto, depósito) carrying neither `parentId` nor
+    // `depositoOuterRef` — canonical-id readers would then see the phantom while
+    // `readEstoque` kept finding the original, and every re-import would widen the gap.
+    // That is the very duplicate-stock harm #801 exists to remove, and rule 3 is what
+    // puts Flutter-created children (the ones with non-canonical ids) on this path.
     if (plan.estoque) {
       if (stockForWrite == null) {
         await estoqueCollection
           .docRef(db, { produtoId }, plan.estoque.docId)
           .set(estoqueCollection.parse(plan.estoque.data));
       } else {
-        await estoqueCollection.merge(db, { produtoId }, plan.estoque.docId, {
+        await estoqueCollection.merge(db, { produtoId }, stockForWrite.docId, {
           quantidade: plan.estoque.data.quantidade,
           ultimaModificacao: plan.estoque.data.ultimaModificacao,
         });
@@ -305,6 +317,19 @@ interface ResolveExistingChildArgs {
  *    That check is per-candidate rather than a per-call "claimed" set because
  *    User-Products invokes this module once per family member — an in-run set
  *    could not see its siblings. Legacy had no such guard.
+ *
+ * ⚠️ Reuse is NOT "leave the child alone". It takes the `isCreate === false` path,
+ * which preserves the child's own `sku` (`fillNull`) and `variacoesUid`
+ * (`fillEmptyArray`) — but under `sobrescreverPreco`, which DEFAULTS TO TRUE
+ * (`DEFAULT_IMPORT_OPTIONS`), it also replaces the child's whole `precos` map with
+ * the ML parent's (`importCore.ts`, the update branch). That is the documented
+ * meaning of the option and matches what the SKU rule has always done — note the
+ * deliberate asymmetry with `sobrescreverEstoque`, which defaults to FALSE so a
+ * re-import never clobbers ERP stock. Rule 3 makes it reachable on the ERP-first
+ * path, where the operator's own price table is the thing being replaced, so an
+ * operator enabling the import on such a catalogue is choosing that. Pinned by a
+ * test in `import.test.ts`; changing it is an option-semantics decision, not a
+ * bug fix.
  *
  * ⚠️ Ceiling, inherited from the taxonomy matcher, not from this rule: when the
  * ERP's grupo matches none of `taxonomiaCore`'s rungs (attribute id, exact
@@ -488,11 +513,20 @@ async function readRaw(
   return snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
 }
 
+/**
+ * The child's stock row for `depositoId`, matched by `depositoOuterRef` under ANY
+ * doc id — Flutter wrote these at auto-ids, so keying on the canonical
+ * `makeEstoqueUid` would miss them.
+ *
+ * Returns `docId` alongside the quantities precisely because of that: the caller
+ * must write back to the row it read, not to the canonical id (see the ⚠️ on the
+ * estoque write above).
+ */
 async function readEstoque(
   db: Firestore,
   produtoId: string,
   depositoId: string,
-): Promise<{ quantidade: number; reservada: number } | null> {
+): Promise<{ docId: string; quantidade: number; reservada: number } | null> {
   const snap = await estoqueCollection.ref(db, { produtoId }).get();
   for (const d of snap.docs) {
     const data = d.data() as {
@@ -505,6 +539,7 @@ async function readEstoque(
       lastSegment(data.depositoOuterRef) === depositoId
     ) {
       return {
+        docId: d.id,
         quantidade: typeof data.quantidade === 'number' ? data.quantidade : 0,
         reservada: typeof data.quantidadeReservada === 'number' ? data.quantidadeReservada : 0,
       };
