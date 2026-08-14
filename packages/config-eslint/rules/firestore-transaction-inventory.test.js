@@ -122,6 +122,9 @@ const PATHSPECS = [
  *   C — network I/O sits between the outside read and the transaction, which is B
  *       with a much wider window.
  *
+ * A file whose sites span two classes is filed under the STRICTER one (B/C), so
+ * an audit of the guards cannot skim past it.
+ *
  * Tier numbers are ADR 0011's: 0 make the race impossible, 1 native precondition,
  * 2 event-clock watermark, 3 tell the human.
  */
@@ -129,8 +132,6 @@ const INVENTARIO = {
   // ---- A — every input re-derived from a `tx.get` inside the callback -----
   'apps/functions/src/estoques/aplicarBalanco.ts':
     'Two sites. `:417` reads every target with `tx.getAll` and plans against those snapshots; the shard counter rides `FieldValue.increment` (tier 0). `:601` re-reads the balanço and re-checks `podeFinalizarBalanco` on the fresh doc before claiming `finalizando`.',
-  'apps/functions/src/estoques/sincronizarEstoquePedido.ts':
-    'Two sites. `:707` re-extracts the pedido from its own `tx.get` and plans from that, so an OCC retry re-derives; the estoque deltas go through `tx.getAll` + `Math.max(stored, agora)` in `aplicarPlano`. `:997` is class B — the plano comes from the DELETED pedido’s `before` snapshot — guarded by re-reading the pedido and bailing if it reappeared, over tier-0 deltas.',
   'apps/nfe/lib/nfe/orchestrator/audit.ts':
     '`:348` re-reads the NF-e and refuses to leave a FINAL estado for a different one, decided on the fresh snapshot.',
   'apps/nfe/lib/nfe/orchestrator/cancelar.ts':
@@ -161,8 +162,14 @@ const INVENTARIO = {
     'Two sites. `:277` is tier 0 — `create` + `delete` with no read at all, where `create` IS the precondition (`ALREADY_EXISTS` is caught and treated as "a redelivery re-anchored this send"). `:380` claims the mensagem by re-reading it and re-checking `mid` + `isClaimable` on the fresh doc.',
 
   // ---- B/C — outside input reaches the write; the guard is named ----------
+  // ⚠️ A file with sites in BOTH classes is filed HERE, never under A. The
+  // grouping is what an auditor skims, so the failure that costs is a class-B
+  // guard sitting in the A block where a re-check never looks; over-inclusion
+  // costs only a re-read.
+  'apps/functions/src/estoques/sincronizarEstoquePedido.ts':
+    'MIXED. `:707` is class A — it re-extracts the pedido from its own `tx.get` and plans from that, so an OCC retry re-derives; the estoque deltas go through `tx.getAll` + `Math.max(stored, agora)` in `aplicarPlano`. `:997` is class **B** — the plano comes from the DELETED pedido’s `before` snapshot — guarded by re-reading the pedido and bailing if it reappeared, over tier-0 deltas.',
   'apps/whatsapp/lib/whatsapp/credentialStore.ts':
-    'Two sites. `:113` is the only **tier 1** in the repo: the registro pin write-back rides `tx.update(currentRef, data, { lastUpdateTime: options.expectedVersion })`, so a token stored meanwhile fails `FAILED_PRECONDITION` instead of being reverted (#1004). `:158` is a purge — reads the whole lineage with one `tx.get(collRef)` and deletes it.',
+    'Two sites. `:113` is the only **tier 1 INSIDE a transaction**: the registro pin write-back rides `tx.update(currentRef, data, { lastUpdateTime: options.expectedVersion })`, so a token stored meanwhile fails `FAILED_PRECONDITION` instead of being reverted (#1004). ⚠️ Tier 1 outside one also exists and is arguably the better template — `import.ts:341` and `publish.ts:631` both do `ref.update(patch, { lastUpdateTime })`; they carry no `runTransaction`, so they are out of THIS inventory (see #839 §2). `:158` is a purge — reads the whole lineage with one `tx.get(collRef)` and deletes it.',
   'apps/melhor-envio/lib/freight/tokenStore.ts':
     'C — the token comes from an OAuth round-trip before the transaction. Reads the whole lineage with `tx.get(collRef)`, writes the `current` doc and prunes Flutter’s auto-id siblings; "one wins" is the accepted outcome for a refresh. ⚠️ #966 is the open tier-1 follow-up here.',
   'apps/mercado-pago/lib/payments/credentialStore.ts':
