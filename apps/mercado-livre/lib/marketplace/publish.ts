@@ -10,6 +10,11 @@
  * `MercadoLivrePublishError` BEFORE any ML call; an ML API failure after that
  * stamps `estado: 'E'` + `errors: [message]` on the link doc and rethrows, so
  * the UI shows the reason and a later retry overwrites it.
+ *
+ * ⚠️ Which of ML's two publishing models applies is decided here, not by the
+ * link doc alone — see `resolveListingModel` in `publishCore.ts`. A first
+ * publish costs one `GET /users/me` to read the `user_product_seller` tag; a
+ * re-publish costs none.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
@@ -17,6 +22,7 @@ import {
   MercadoLivreError,
   MercadoLivreHttpError,
   type MlAttribute,
+  type MlUser,
   buildItemPayload,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
@@ -53,7 +59,9 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   assemblePublishInput,
+  publishModeIssues,
   resolveCondition,
+  resolveListingModel,
 } from './publishCore';
 import { quantidadeParaEnvio } from './bulkEstoquePlan';
 import {
@@ -87,6 +95,13 @@ export interface PublishDeps {
   listingTypeId?: string | null;
   /** Injectable for tests — downloads image bytes from `arquivo.url`. */
   fetchImpl?: typeof globalThis.fetch;
+  /**
+   * The User-Products capability probe seam — defaults to `api.getMe()`
+   * (`GET /users/me`), the same shape the stock sweep's multiorigin guard uses.
+   * Called at most ONCE per publish, and only on a FIRST publish (see
+   * {@link resolveListingModel}).
+   */
+  getMe?: (api: MercadoLivreApi) => Promise<MlUser>;
 }
 
 export interface PublishResult {
@@ -143,9 +158,30 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         isUserProductModel: linkDoc.data.isUserProductModel ?? false,
         attributes: linkDoc.data.attributes ?? null,
         video_id: linkDoc.data.video_id ?? null,
+        estado: linkDoc.data.estado ?? null,
       }
     : null;
   const linkDocId = linkDoc?.docId ?? produtoMercadoLivreLinkCollection.newDocId(db, { produtoId });
+
+  // ---- Publishing model + pre-flight blocks (#798) ------------------------
+  // Both happen HERE, before the stock reads, the grupo reads and above all
+  // before a single picture is uploaded to ML — a refusal must not cost a
+  // round trip per photo. `assemblePublishInput`'s issues run much later.
+  //
+  // The account probe is skipped entirely on a re-publish: there the persisted
+  // `isUserProductModel` is authoritative, so `GET /users/me` would be a wasted
+  // call whose only possible effect is to break a publish that would work.
+  const sellerIsUserProduct =
+    link?.id == null &&
+    ((await (deps.getMe ?? defaultGetMe)(api)).tags ?? []).includes('user_product_seller');
+  const listingModel = resolveListingModel(link, sellerIsUserProduct);
+  const modeIssues = publishModeIssues({
+    produtoNome: produto.nome,
+    estado: link?.estado ?? null,
+    model: listingModel,
+    childrenCount: children.length,
+  });
+  if (modeIssues.length > 0) throw new MercadoLivrePublishError(modeIssues);
 
   // ---- Stock (integração's depósito when set; else every depósito) -------
   // Kit-aware (#797 E5): a kit publishes what its components can assemble, not
@@ -347,7 +383,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     linkDocId,
     categoryId,
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
-    isUserProductSeller: link?.isUserProductModel ?? false,
+    isUserProductSeller: listingModel === 'user-products',
     sizeChart: tabela.resolved,
   });
   const payload = buildItemPayload(input);
@@ -532,6 +568,14 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The default User-Products capability probe — one `GET /users/me` per FIRST
+ * publish (`estoqueSweep`'s `defaultGetMe`, same seam, different tag).
+ */
+async function defaultGetMe(api: MercadoLivreApi): Promise<MlUser> {
+  return api.getMe();
+}
 
 function toPublishProduto(
   id: string,

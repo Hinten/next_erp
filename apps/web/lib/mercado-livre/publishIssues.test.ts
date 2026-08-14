@@ -38,6 +38,30 @@ describe('mapPublishIssue', () => {
     ).toMatchObject({ scope: 'variacao' });
   });
 
+  it('keeps the #798 pre-flight blocks on the LISTING, not the integração', () => {
+    // Both name "User Products", which the generic account-capability rule
+    // below them would otherwise scope to `integracao` — pointing the operator
+    // at a form that cannot fix either. They are whole-listing states.
+    expect(
+      mapPublishIssue(
+        'anúncio em migração para o modelo User Products (UPtin) — aguarde a conclusão antes de publicar',
+      ),
+    ).toMatchObject({ scope: 'listing', field: null });
+    expect(
+      mapPublishIssue(
+        'produto "Camiseta" tem 3 variações e a conta usa o modelo User Products: cada variação vira ' +
+          'um anúncio próprio, e essa publicação ainda não está implementada — publicar assim criaria ' +
+          'UM anúncio sem variações',
+      ),
+    ).toMatchObject({ scope: 'listing', field: null });
+  });
+
+  it('a genuine account-capability issue still routes to the integração', () => {
+    expect(mapPublishIssue('a conta não está habilitada para user_product_seller')).toMatchObject({
+      scope: 'integracao',
+    });
+  });
+
   it('falls back to a whole-listing banner rather than guessing', () => {
     // Every issue is ALSO rendered verbatim in the alert, so a miss loses
     // nothing — it just doesn't highlight a control.

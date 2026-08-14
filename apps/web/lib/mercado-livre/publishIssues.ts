@@ -58,6 +58,11 @@ const KEYWORD_RULES: KeywordRule[] = [
   { match: /produto sem fotos/i, scope: 'produto', produtoSection: 'Fotos' },
   { match: /produto sem nome/i, scope: 'produto', produtoSection: 'Dados gerais' },
   { match: /é uma variação/i, scope: 'produto' },
+  // #798 — the two pre-flight blocks are whole-listing STATES: nothing in the
+  // integração form fixes either, so they must be caught above the generic
+  // `user products` rule below (which would scope them to the account).
+  { match: /em migração para o modelo user products/i, scope: 'listing' },
+  { match: /ainda não está implementada/i, scope: 'listing' },
   { match: /user products|user_product_seller/i, scope: 'integracao' },
 ];
 
