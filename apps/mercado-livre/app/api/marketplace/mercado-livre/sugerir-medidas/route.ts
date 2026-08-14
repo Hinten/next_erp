@@ -23,7 +23,7 @@ import {
   createVertexListModelsFn,
   getAiModelosCached,
   loadConfigIa,
-  loadFotoImage,
+  loadFotoImages,
   modelosParaValidacao,
 } from '@delfrance/ai/admin';
 import type { MedidaColumnSpec, MedidaRowSpec } from '@delfrance/integrations-mercado-livre';
@@ -33,7 +33,13 @@ import {
   PROVEDOR_IA,
 } from '@delfrance/schemas';
 
-import { TabelaDeMedidasNotFoundError, suggestMedidas } from '@/lib/ai/suggestMedidas';
+import type { Foto } from '@delfrance/schemas';
+
+import {
+  TabelaDeMedidasNotFoundError,
+  suggestMedidas,
+  type SuggestMedidasFacts,
+} from '@/lib/ai/suggestMedidas';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminBucket, getAdminFirestore } from '@/lib/firebase/admin';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
@@ -62,6 +68,16 @@ const MAX_ROWS = 75;
 const MAX_COLUMNS = 15;
 const MAX_LABEL = 200;
 
+/**
+ * How many photos reach the model. Four covers the real cases — front and back,
+ * or a two-page table — without letting a tabela with a long gallery turn one
+ * click into a very expensive call.
+ */
+const MAX_IMAGES = 4;
+
+/** The schema's own `descricao` limit, so the body cannot exceed the record. */
+const MAX_DESCRICAO = 1000;
+
 const CELL_KINDS = new Set(['text', 'number', 'select', 'multiselect']);
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -81,7 +97,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'Corpo inválido: objeto esperado.' }, { status: 400 });
   }
 
-  const { tabMediId, rows, columns, measureType } = body as Record<string, unknown>;
+  const { tabMediId, rows, columns, measureType, mainAttributeId, chartId, facts } = body as Record<
+    string,
+    unknown
+  >;
   if (typeof tabMediId !== 'string' || tabMediId === '') {
     return NextResponse.json({ error: 'tabMediId é obrigatório.' }, { status: 400 });
   }
@@ -98,6 +117,10 @@ export async function POST(req: Request): Promise<NextResponse> {
       { error: 'Monte a grade da guia antes de pedir sugestões.' },
       { status: 422 },
     );
+  }
+  const parsedFacts = parseFacts(facts);
+  if (parsedFacts === null) {
+    return NextResponse.json({ error: 'facts inválido.' }, { status: 400 });
   }
 
   const db = getAdminFirestore();
@@ -134,8 +157,8 @@ export async function POST(req: Request): Promise<NextResponse> {
         {
           db,
           generate: createVertexGenerateFn(),
-          loadImage: (fotos) =>
-            loadFotoImage(
+          loadImages: (fotos) =>
+            loadFotoImages(
               {
                 db,
                 download: async (path) => {
@@ -144,12 +167,21 @@ export async function POST(req: Request): Promise<NextResponse> {
                 },
               },
               fotos,
-              // ⚠️ The FULL-SIZE variant, unlike attribute suggestion. This reads
-              // digits off a printed table; 400 px cannot resolve them, so the
-              // cheap thumbnail would produce a confident, wrong answer rather
-              // than a cheap one. The 400/200 fallbacks are there only for a
-              // photo whose full-size derivative has not landed yet.
-              { prefer: ['jpeg', '400', '200'] },
+              {
+                // ⚠️ FULL-SIZE first, unlike attribute suggestion. This reads
+                // digits off a printed table; 400 px cannot resolve them, so the
+                // cheap thumbnail would produce a confident wrong answer rather
+                // than a cheap one.
+                //
+                // ⚠️ `original` LAST, and it is the one that makes the feature
+                // work at all today: nothing generates derivatives for tabMedi
+                // photos until the `functions:storage` deploy lands and a
+                // backfill runs, so without it every size chart runs text-only.
+                prefer: ['jpeg', '400', '200', 'original'],
+                // A supplier table is routinely two or three photos — front and
+                // back, or several pages.
+                max: MAX_IMAGES,
+              },
             ),
           model: resolveModelo({
             stored: config.modelo,
@@ -170,6 +202,9 @@ export async function POST(req: Request): Promise<NextResponse> {
           rows: parsedRows,
           columns: parsedColumns,
           measureType: typeof measureType === 'string' ? measureType : null,
+          mainAttributeId: typeof mainAttributeId === 'string' ? mainAttributeId : null,
+          chartId: typeof chartId === 'string' ? chartId : null,
+          facts: parsedFacts,
         },
       );
       return NextResponse.json(result);
@@ -200,6 +235,64 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);
     throw err;
   }
+}
+
+/**
+ * The tabela's own fields as the BROWSER currently has them.
+ *
+ * ⚠️ This is a deliberate widening of what the body may say, and the reason is
+ * concrete: the editor lives inside an `ObjectView` form, so a descrição the
+ * operator just typed and a photo they just uploaded are not on the document
+ * yet. Reading only the stored copy meant the model was handed an empty record
+ * and answered "nenhuma medida foi lida" — which is the bug this fixes.
+ *
+ * The trust cost is real but small. The caller holds `PERM.integracao.write` and
+ * already owns the record: they could save first and get the same effect, one
+ * click later. The one genuinely new capability is that `fotos` lets the caller
+ * name **arquivo ids** whose bytes reach the model — bounded by the id-shape
+ * check `loadFotoImages` already performs, by `MAX_IMAGES`, and by the fact that
+ * the caller never sees those bytes, only measurements.
+ *
+ * ⚠️ The reference chart is NOT accepted here, on purpose. It is read from the
+ * stored document, so the body cannot dictate measurements the model then
+ * repeats back as if a human had typed them.
+ *
+ * Every field is optional and falls back to the stored document individually, so
+ * an older client that sends none keeps working unchanged.
+ */
+function parseFacts(raw: unknown): SuggestMedidasFacts | undefined | null {
+  if (raw == null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const f = raw as Record<string, unknown>;
+
+  if (f.nome != null && (typeof f.nome !== 'string' || f.nome.length > MAX_LABEL)) return null;
+  if (f.codigo != null && (typeof f.codigo !== 'string' || f.codigo.length > MAX_LABEL))
+    return null;
+  if (
+    f.descricao != null &&
+    (typeof f.descricao !== 'string' || f.descricao.length > MAX_DESCRICAO)
+  ) {
+    return null;
+  }
+
+  let fotos: Foto[] | undefined;
+  if (f.fotos != null) {
+    if (!Array.isArray(f.fotos) || f.fotos.length > MAX_IMAGES) return null;
+    // Only the ref fields are read — `loadFotoImages` resolves each to an
+    // `arquivos/<id>` document and reads the Storage path from THERE, so the
+    // body never names a bucket path.
+    for (const foto of f.fotos) {
+      if (foto == null || typeof foto !== 'object') return null;
+    }
+    fotos = f.fotos as Foto[];
+  }
+
+  return {
+    nome: typeof f.nome === 'string' ? f.nome : null,
+    codigo: typeof f.codigo === 'string' ? f.codigo : null,
+    descricao: typeof f.descricao === 'string' ? f.descricao : null,
+    fotos: fotos ?? null,
+  };
 }
 
 /**

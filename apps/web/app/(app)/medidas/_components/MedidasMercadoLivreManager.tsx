@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
 import { Alert, Anchor, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { useFormContext, type FieldValues } from 'react-hook-form';
 import { PERM } from '@delfrance/auth';
 import {
   INTEGRACAO_TIPO,
@@ -77,6 +78,31 @@ export function MedidasMercadoLivreManager({
   // Backend gates: read for domains/specs, write for sync.
   const { allowed: canRead } = usePermission(PERM.integracao.read);
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
+
+  /**
+   * The tabela's own fields as the FORM currently has them.
+   *
+   * ⚠️ This tab is a custom `renderInput` inside `ObjectView`, so the operator's
+   * unsaved edits live in the form, not on the document. The AI agent used to
+   * read only the stored copy, which meant a descrição just typed — and, worse, a
+   * photo just uploaded — were invisible to it: the model was handed an empty
+   * record and duly reported it had nothing to read.
+   *
+   * A GETTER, not a subscription: `getValues` is read at click time, so typing in
+   * any field does not re-render this tab. `ObjectView` wraps everything in a
+   * `FormProvider` for exactly this (`VariationManager` reads the parent's
+   * unsaved `sku` the same way).
+   */
+  const form = useFormContext<FieldValues>();
+  const getFatos = useCallback(() => {
+    const values = form.getValues();
+    return {
+      nome: typeof values.nome === 'string' ? values.nome : null,
+      codigo: typeof values.codigo === 'string' ? values.codigo : null,
+      descricao: typeof values.descricao === 'string' ? values.descricao : null,
+      fotos: Array.isArray(values.fotos) ? (values.fotos as unknown[]) : null,
+    };
+  }, [form]);
 
   // Gate the integração read on `canRead`: the collection is
   // PERM.integracao.read-protected, so a produto-only editor (tabMedi uses
@@ -486,6 +512,7 @@ export function MedidasMercadoLivreManager({
           }}
           client={client}
           integracaoId={target.integracaoId}
+          getFatos={getFatos}
           tabMediId={tabMediId}
           chart={target.chart}
           chartIndex={target.chartIndex}

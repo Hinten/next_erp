@@ -66,7 +66,12 @@ beforeEach(() => {
   h.config = configIaSchema.parse({});
   h.configDocId = null;
   h.suggest.mockReset();
-  h.suggest.mockResolvedValue({ sugestoes: [], celulas: 1, comFoto: true, truncado: false });
+  h.suggest.mockResolvedValue({
+    sugestoes: [],
+    celulas: 1,
+    contexto: { fotos: 1, anexadas: 1, descricao: false, codigo: false, referencia: false },
+    truncado: false,
+  });
 });
 
 describe('POST /sugerir-medidas — the gates', () => {
@@ -147,34 +152,70 @@ describe('POST /sugerir-medidas — body validation', () => {
 });
 
 describe('POST /sugerir-medidas — the happy path', () => {
-  it('asks for the FULL-SIZE image variant, not the thumbnail', async () => {
+  it('asks for the FULL-SIZE variant first and the ORIGINAL last', async () => {
     // 400 px cannot resolve digits on a printed table, so the cheap variant
-    // would buy a confident wrong answer rather than a cheap one.
+    // would buy a confident wrong answer rather than a cheap one. And the
+    // ORIGINAL is what makes this work at all today: nothing generates
+    // derivatives for tabMedi photos until the functions deploy lands.
     await POST(req(ok));
     const deps = h.suggest.mock.calls[0]![0] as {
-      loadImage: (fotos: unknown) => Promise<unknown>;
+      loadImages: (fotos: unknown) => Promise<unknown>;
     };
-    const prefer: string[] = [];
-    vi.spyOn(await import('@delfrance/ai/admin'), 'loadFotoImage').mockImplementation(
+    let seen: { prefer?: readonly string[]; max?: number } = {};
+    vi.spyOn(await import('@delfrance/ai/admin'), 'loadFotoImages').mockImplementation(
       async (_deps, _fotos, options) => {
-        prefer.push(...(options?.prefer ?? []));
-        return null;
+        seen = options ?? {};
+        return [];
       },
     );
-    await deps.loadImage([]);
-    expect(prefer[0]).toBe('jpeg');
+    await deps.loadImages([]);
+    expect(seen.prefer?.[0]).toBe('jpeg');
+    expect(seen.prefer?.at(-1)).toBe('original');
+    // Several photos, because a supplier table is often two or three.
+    expect(seen.max).toBeGreaterThan(1);
+  });
+
+  it("accepts the caller's facts and passes them through", async () => {
+    // The editor sits inside an ObjectView form, so an unsaved descrição or a
+    // freshly uploaded photo is not on the document yet.
+    const facts = { descricao: 'recém digitada', fotos: [{ arquivoOuterRef: 'arquivos/x' }] };
+    const res = await POST(req({ ...ok, facts }));
+    expect(res.status).toBe(200);
+    expect((h.suggest.mock.calls[0]![1] as { facts?: unknown }).facts).toMatchObject({
+      descricao: 'recém digitada',
+    });
+  });
+
+  it('rejects facts that are malformed or over the caps', async () => {
+    expect((await POST(req({ ...ok, facts: 'nope' }))).status).toBe(400);
+    expect((await POST(req({ ...ok, facts: { nome: 42 } }))).status).toBe(400);
+    expect((await POST(req({ ...ok, facts: { descricao: 'x'.repeat(1001) } }))).status).toBe(400);
+    // More photos than the batch cap — one click must not become a huge call.
+    const fotos = Array.from({ length: 5 }, () => ({ arquivoOuterRef: 'arquivos/x' }));
+    expect((await POST(req({ ...ok, facts: { fotos } }))).status).toBe(400);
+  });
+
+  it('works with NO facts at all, so an older client keeps running', async () => {
+    const res = await POST(req(ok));
+    expect(res.status).toBe(200);
+    expect((h.suggest.mock.calls[0]![1] as { facts?: unknown }).facts).toBeUndefined();
   });
 
   it('passes the parsed grid straight through and returns the result', async () => {
     h.suggest.mockResolvedValue({
       sugestoes: [{ rowKey: 'g/1/v/p', attributeId: 'CHEST', value_id: null, value_name: '52' }],
       celulas: 1,
-      comFoto: true,
+      contexto: { fotos: 2, anexadas: 2, descricao: true, codigo: false, referencia: true },
       truncado: false,
     });
     const res = await POST(req({ ...ok, measureType: 'BODY_MEASURE' }));
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ comFoto: true, celulas: 1 });
+    // The per-source summary reaches the UI intact — it is what lets the modal
+    // say "2 fotos · descrição" instead of implying the model saw everything.
+    expect(await res.json()).toMatchObject({
+      celulas: 1,
+      contexto: { fotos: 2, descricao: true, referencia: true },
+    });
 
     const args = h.suggest.mock.calls[0]![1] as Record<string, unknown>;
     expect(args).toMatchObject({ tabMediId: 'tm1', measureType: 'BODY_MEASURE' });

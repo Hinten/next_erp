@@ -49,11 +49,13 @@ import {
   resolveChartAttributeValue,
 } from '@/lib/mercado-livre/chartSpec';
 import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
+import { buildChartAiGrid, chartAiGridIsFillable } from '@/lib/mercado-livre/chartAiGrid';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   type MercadoLivreChartValidationError,
   type MercadoLivreClient,
+  type MercadoLivreMedidasFatos,
   type MercadoLivreMedidasSugestao,
 } from '@/lib/mercado-livre/client';
 import { SizeChartAiModal } from './SizeChartAiModal';
@@ -78,6 +80,14 @@ export interface SizeChartEditorModalProps {
   integracaoId: string;
   /** The tabela this guia belongs to — the AI agent reads its photo and descrição. */
   tabMediId: string;
+  /**
+   * The tabela's fields as the FORM has them, read at click time.
+   *
+   * ⚠️ A getter, not values. The AI request must see a descrição typed but not
+   * saved — the stored document does not have it — and passing the values down
+   * would re-render this modal on every keystroke anywhere in the ObjectView.
+   */
+  getFatos: () => MercadoLivreMedidasFatos;
   /** The guia being edited, or null to create one. */
   chart: MlSizeChart | null;
   /** Its index in the conta's stored list, or null for a new one. */
@@ -121,6 +131,7 @@ export function SizeChartEditorModal({
   client,
   integracaoId,
   tabMediId,
+  getFatos,
   chart,
   chartIndex,
   grupos,
@@ -326,39 +337,19 @@ export function SizeChartEditorModal({
    * — because the model answers per attribute id, and a range whose `_FROM` and
    * `_TO` were folded into one entry could not be filled at all.
    */
-  function aiPayload() {
-    return {
-      tabMediId,
-      rows: rows
-        .filter((r) => !r.deleted)
-        .map((r) => ({
-          key: r.key,
-          size: r.cells[effectiveMainId]?.value_name ?? '',
-        })),
-      columns: columns.flatMap((column) =>
-        column.parts
-          // ⚠️ The main attribute is NOT a fillable column. `columns` keeps it
-          // because the grid must render the size cell, but `rows[].size`
-          // already carries that exact value — so sending it burns one of the
-          // 15 schema columns to ask for something we supplied, and a model
-          // that answers differently would rewrite the row's size label if the
-          // operator hit "Marcar todas". That label is the row's identity: ML
-          // freezes it on a sent row, so an accepted suggestion there earns a
-          // validation error at send time and desyncs the row from its
-          // `varianteUid` binding in the meantime.
-          .filter((part) => part.attributeId !== effectiveMainId)
-          .map((part) => ({
-            attributeId: part.attributeId,
-            label: column.parts.length > 1 ? `${column.label} — ${part.label}` : column.label,
-            kind: part.kind,
-            values: part.values,
-            unitId: units[column.key] ?? column.unit.default,
-            required: column.required,
-          })),
-      ),
-      measureType: effectiveMeasureType,
-    };
-  }
+  /**
+   * The grid as the request will describe it.
+   *
+   * ⚠️ Derived ONCE and used by both the button's enable-guard and the payload.
+   * They used to disagree: the guard counted `rows`/`columns` while this filtered
+   * deleted rows and the main-attribute column out, so a grid that looked
+   * populated could send an empty one and come back
+   * "Monte a grade da guia antes de pedir sugestões".
+   */
+  const aiGrid = useMemo(
+    () => buildChartAiGrid({ rows, columns, units, mainAttributeId: effectiveMainId }),
+    [rows, columns, units, effectiveMainId],
+  );
 
   async function runAi() {
     setAiBusy(true);
@@ -366,7 +357,20 @@ export function SizeChartEditorModal({
     setAiRun((n) => n + 1);
     setAiOpen(true);
     try {
-      setAiResult(await client.sugerirMedidas(aiPayload()));
+      setAiResult(
+        await client.sugerirMedidas({
+          tabMediId,
+          rows: aiGrid.rows,
+          columns: aiGrid.columns,
+          measureType: effectiveMeasureType,
+          mainAttributeId: effectiveMainId,
+          // So the chart being edited is never offered back to the model as its
+          // own reference.
+          chartId: chart?.id ?? null,
+          // The tabela's fields as the FORM has them — unsaved edits included.
+          fatos: getFatos(),
+        }),
+      );
     } catch (err) {
       // Close rather than leave the modal spinning forever; the message carries
       // the backend's own wording, including the kill-switch and timeout cases.
@@ -378,7 +382,16 @@ export function SizeChartEditorModal({
         notifications.show({
           color: 'red',
           title: 'Não foi possível preencher com IA',
-          message: reportableMessage(err, 'Falha ao chamar a IA.'),
+          // ⚠️ NOT `reportableMessage`. That helper maps every 409 to "Conta
+          // Mercado Livre não conectada", which is right for the sync and delete
+          // paths — but this route returns 409 for AI_DESATIVADA,
+          // AI_PROVEDOR_NAO_SUPORTADO and AI_JA_EM_ANDAMENTO, so turning the
+          // agent off in /configuracoes/ia was sending the operator to reconnect
+          // a perfectly healthy integration.
+          message:
+            err instanceof MercadoLivreClientHttpError
+              ? err.message
+              : 'Não foi possível contatar o Mercado Livre.',
         });
         return;
       }
@@ -800,8 +813,12 @@ export function SizeChartEditorModal({
             loading={aiBusy}
             // Nothing to fill without a grid, and the route rejects an empty one
             // anyway — better to disable than to spend a round trip on a
-            // guaranteed 422.
-            disabled={!canWrite || busy !== null || rows.length === 0 || columns.length === 0}
+            // guaranteed 422. ⚠️ Reads `aiGrid`, the SAME derivation the request
+            // sends: counting `rows`/`columns` here let a grid that looks
+            // populated (every row deleted, or only the size column visible)
+            // enable the button and come back "Monte a grade da guia antes de
+            // pedir sugestões".
+            disabled={!canWrite || busy !== null || !chartAiGridIsFillable(aiGrid)}
             data-testid="ml-size-chart-ai-fill"
           >
             Preencher com IA
