@@ -89,6 +89,15 @@ function reportEtiqueta(r: ReprintEtiquetaResult): void {
     case 'error':
       showErrorNotification({ title: 'Etiqueta', message: r.message });
       break;
+    case 'timeout':
+      // Names the stage that hung. Before this, the same condition produced NO
+      // toast at all — both buttons simply spun forever on the shared print
+      // mutex, which is indistinguishable from a slow printer.
+      showErrorNotification({
+        title: 'Etiqueta',
+        message: `${r.message} Nada foi impresso. Verifique a conexão e tente novamente.`,
+      });
+      break;
     case 'no-pedido':
       showErrorNotification({ title: 'Etiqueta', message: 'Pedido não encontrado.' });
       break;

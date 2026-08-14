@@ -14,6 +14,7 @@ import { ensureNfeAprovada, printDanfeForCheckout, type CheckoutDanfeFormat } fr
 import { emitirOuImprimirEtiqueta } from './etiqueta/registry';
 import type { EtiquetaOutcome, EtiquetaProviderUi } from './etiqueta/types';
 import { printJob } from '../print-agent/printJob';
+import { DeadlineExceededError, REPRINT_STAGE_TIMEOUT_MS, withDeadline } from './withDeadline';
 
 /**
  * Reprint the NF-e DANFE and the shipping label for a SPECIFIC past checkout —
@@ -47,7 +48,12 @@ export type ReprintEtiquetaResult =
   | EtiquetaOutcome
   | { status: 'no-pedido' }
   | { status: 'no-frete' }
-  | { status: 'no-integration' };
+  | { status: 'no-integration' }
+  /**
+   * A stage outlived its deadline. `stage` names WHICH await hung, so the toast
+   * and any bug report point at one link in the chain instead of "it froze".
+   */
+  | { status: 'timeout'; stage: string; message: string };
 
 /**
  * Reprint the shipping label for the pedido `pedidoId`. Fetches THAT pedido's
@@ -65,28 +71,52 @@ export async function reprintCheckoutEtiqueta(args: {
   formato: 'pdf' | 'zpl2';
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
+  /** Per-stage deadline; defaults to {@link REPRINT_STAGE_TIMEOUT_MS}. */
+  timeoutMs?: number;
 }): Promise<ReprintEtiquetaResult> {
   const { db, pedidoId, freightClient, nfeClient, mercadoLivreClient, formato, ui } = args;
+  const timeoutMs = args.timeoutMs ?? REPRINT_STAGE_TIMEOUT_MS;
 
-  const snap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));
-  if (!snap.exists()) return { status: 'no-pedido' };
-  const pedido = snap.data();
-  const frete = pedido.freteInicial;
-  if (frete === null) return { status: 'no-frete' };
+  // Every await here is bounded and NAMED. Before this, a stall in any one of
+  // them left both modal buttons spinning on the shared print mutex with no
+  // toast and no log — see `withDeadline`.
+  try {
+    const snap = await withDeadline(
+      'carregar o pedido',
+      getDoc(pedidoCollection.docRef(db, {}, pedidoId)),
+      timeoutMs,
+    );
+    if (!snap.exists()) return { status: 'no-pedido' };
+    const pedido = snap.data();
+    const frete = pedido.freteInicial;
+    if (frete === null) return { status: 'no-frete' };
 
-  const intFrete = await resolveIntFrete(db, frete);
-  if (intFrete === null) return { status: 'no-integration' };
+    const intFrete = await withDeadline(
+      'resolver a integração de frete',
+      resolveIntFrete(db, frete),
+      timeoutMs,
+    );
+    if (intFrete === null) return { status: 'no-integration' };
 
-  return emitirOuImprimirEtiqueta({
-    db,
-    pedido,
-    pedidoId,
-    frete,
-    intFrete,
-    formato,
-    deps: { freightClient, nfeClient, mercadoLivreClient, printJob: args.printJobFn ?? printJob },
-    ui,
-  });
+    // ⚠️ NOT bounded: the registry can legitimately await the operator — the
+    // already-posted risk confirm and the ME buy modal both block on a human.
+    // A deadline here would cancel a dialog someone is reading.
+    return await emitirOuImprimirEtiqueta({
+      db,
+      pedido,
+      pedidoId,
+      frete,
+      intFrete,
+      formato,
+      deps: { freightClient, nfeClient, mercadoLivreClient, printJob: args.printJobFn ?? printJob },
+      ui,
+    });
+  } catch (err) {
+    if (err instanceof DeadlineExceededError) {
+      return { status: 'timeout', stage: err.stage, message: err.message };
+    }
+    throw err;
+  }
 }
 
 export type ReprintDanfeResult =

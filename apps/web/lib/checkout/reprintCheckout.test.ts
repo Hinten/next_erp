@@ -136,6 +136,88 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
   });
 });
 
+describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure', () => {
+  /**
+   * The reported bug: clicking "Reimprimir Frete" left BOTH modal buttons
+   * spinning on the shared `usePrintInFlight` flag, with no `/imprimir` request
+   * and no toast. Root cause of the stall is still open, but an unbounded await
+   * behind a spinner is a defect on its own — whatever hangs, the operator must
+   * get a result instead of a permanent spinner.
+   */
+  it('returns a NAMED timeout when the pedido read never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      h.getDoc.mockReturnValue(new Promise(() => {})); // never settles
+      h.dereferenceOuterRef.mockReturnValue({ __intRef: 'INT1' });
+
+      const p = reprintCheckoutEtiqueta({
+        db,
+        pedidoId: 'PEDA',
+        freightClient: {} as never,
+        nfeClient: null,
+        mercadoLivreClient: null,
+        formato: 'pdf',
+        ui,
+        timeoutMs: 30_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const res = await p;
+
+      expect(res.status).toBe('timeout');
+      expect(res).toMatchObject({ stage: 'carregar o pedido' });
+      // The registry must never have run — nothing was printed.
+      expect(h.emitirOuImprimirEtiqueta).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('names the integração stage when THAT is the one that hangs', async () => {
+    // Discriminating: the two bounded stages must be distinguishable in the
+    // report, or the toast tells the operator nothing a spinner did not.
+    vi.useFakeTimers();
+    try {
+      h.getDoc
+        .mockResolvedValueOnce({
+          exists: () => true,
+          data: () => ({
+            freteInicial: {
+              printLabelId: 'LBL-A',
+              integracaoFreteOuterRef: 'documents/int_frete/INT1',
+              modalidade: '0',
+              estado: 'checkFinalizado',
+            },
+          }),
+        })
+        .mockReturnValue(new Promise(() => {})); // int_frete read hangs
+      h.dereferenceOuterRef.mockReturnValue({ __intRef: 'INT1' });
+
+      const p = reprintCheckoutEtiqueta({
+        db,
+        pedidoId: 'PEDA',
+        freightClient: {} as never,
+        nfeClient: null,
+        mercadoLivreClient: null,
+        formato: 'pdf',
+        ui,
+        timeoutMs: 30_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const res = await p;
+
+      expect(res).toMatchObject({
+        status: 'timeout',
+        stage: 'resolver a integração de frete',
+      });
+      expect(h.emitirOuImprimirEtiqueta).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('reprintCheckoutDanfe', () => {
   it('ensures the NF-e then prints, keyed to the given pedidoId', async () => {
     h.ensureNfeAprovada.mockResolvedValue({ ok: true, nfeId: 'N1', chave: 'c', reused: true });
