@@ -45,6 +45,7 @@ import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/
 import {
   estadoLabel,
   isStockLatched,
+  publishSummary,
   refMatchesIntegracao,
 } from '@/lib/mercado-livre/listingLinks';
 import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
@@ -309,7 +310,7 @@ export function MercadoLivreEditor({
       notifications.show({
         color: 'green',
         title: 'Publicado no Mercado Livre',
-        message: `Anúncio ${result.itemId} — ${estadoLabel(result.estado)}.`,
+        message: publishSummary(result),
       });
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {

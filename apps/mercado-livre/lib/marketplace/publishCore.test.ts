@@ -315,6 +315,37 @@ describe('assemblePublishInput', () => {
     isUserProductSeller: false,
   };
 
+  it('a PUBLISHED User-Products family still requires category and listing type', () => {
+    // `isUpdate` says the FAMILY exists — it says nothing about its members, and
+    // a family that gains a variation POSTs that member as a brand-new item.
+    // Letting the ordinary create-only rule stand would send that POST with no
+    // category and earn a 400 the operator cannot read.
+    const upFamily = {
+      ...baseArgs,
+      isUserProductSeller: true,
+      categoryId: null,
+      listingTypeId: null,
+      // `id` here is the FAMILY id, which is what makes this an update.
+      link: { docId: 'link-doc-1', id: '4260899048783356', isUserProductModel: true },
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M', sku: 'SKU-1-M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+      ],
+    };
+    expect(() => assemblePublishInput(upFamily)).toThrowError(/category_id/);
+
+    // The same listing WITHOUT children is one plain item — an update there
+    // genuinely needs neither, so the rule must not widen to every UP listing.
+    expect(() => assemblePublishInput({ ...upFamily, variations: [] })).not.toThrow();
+    // ...and neither does a published LEGACY listing with children: ML takes
+    // its variations inside the one PUT, so no member is ever created alone.
+    expect(() => assemblePublishInput({ ...upFamily, isUserProductSeller: false })).not.toThrow();
+  });
+
   it('assembles a create input with variations end-to-end', () => {
     const input = assemblePublishInput({
       ...baseArgs,

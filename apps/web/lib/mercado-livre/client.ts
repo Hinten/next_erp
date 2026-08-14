@@ -51,10 +51,21 @@ export interface MercadoLivreConta {
 }
 
 export interface MercadoLivrePublicarResult {
+  /** The parent link's external id — a FAMILY id under User Products (#798). */
   itemId: string;
   /** Old-shape estado code, 1–2 chars ('p' publicado, 'pa' pausado, 'E' erro, …). */
   estado: string;
   permalink: string | null;
+  /**
+   * Every ML item the publish wrote: one normally, one PER VARIATION for a
+   * User-Products family.
+   *
+   * ⚠️ Optional because this app talks to the DEPLOYED channel backend, not the
+   * one in this checkout — a revision predating #798 answers without it.
+   */
+  itemIds?: string[];
+  /** Items closed because their ERP variação no longer exists (UP only). */
+  orfaosEncerrados?: string[];
 }
 
 export interface MercadoLivreReverificarResult {
