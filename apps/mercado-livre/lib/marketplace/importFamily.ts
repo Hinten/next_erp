@@ -52,28 +52,66 @@ export async function resolveFamilySiblingIds(
   sellerUserId: number,
   primaryItemId: string,
 ): Promise<FamilySiblingsResult> {
+  const all = await resolveFamilyItemIds(deps, familyId, sellerUserId);
+  if (all.resolutionError != null) {
+    return { ids: [], capped: false, resolutionError: all.resolutionError };
+  }
+  const siblingIds = all.ids.filter((id) => id !== primaryItemId);
+  const capped = siblingIds.length > MAX_FAMILY_SIBLINGS;
+  return {
+    ids: capped ? siblingIds.slice(0, MAX_FAMILY_SIBLINGS) : siblingIds,
+    capped,
+    resolutionError: null,
+  };
+}
+
+/** The full, UNCAPPED membership of a family. */
+export interface FamilyItemsResult {
+  /** Every MLB item id ML reports for the family, deduped. */
+  ids: string[];
+  /**
+   * The ML-API failure that aborted resolution; null on success. ⚠️ An error
+   * and an empty family are NOT interchangeable for a caller that acts on
+   * absence — see {@link resolveFamilyItemIds}.
+   */
+  resolutionError: string | null;
+}
+
+/**
+ * The family's complete MLB item id set — the same two hops as
+ * {@link resolveFamilySiblingIds}, without the primary filter and without the
+ * cap.
+ *
+ * ⚠️ Uncapped **on purpose**, and the two callers want opposite things from it.
+ * Import reads membership to ADD work, so truncating is a cost cap: 60 is
+ * plenty and the rest can wait. The publish orphan sweep reads it to decide
+ * what to CLOSE, and there a truncated (or failed) read is indistinguishable
+ * from "these members no longer exist" — it would close live listings. So this
+ * returns everything or reports the error, and the sweep refuses to act on
+ * anything else.
+ */
+export async function resolveFamilyItemIds(
+  deps: { api: MercadoLivreApi },
+  familyId: string,
+  sellerUserId: number,
+): Promise<FamilyItemsResult> {
   try {
     const family = await deps.api.getUserProductFamily(familyId);
     // `user_products_ids`/`results` are schema-defaulted `string[]` (never
     // null/undefined) — only an empty VALUE needs filtering, not the type.
     const userProductIds = family.user_products_ids.filter((id) => id.length > 0);
-    if (userProductIds.length === 0) return { ids: [], capped: false, resolutionError: null };
+    if (userProductIds.length === 0) return { ids: [], resolutionError: null };
 
     const search = await deps.api.searchItemsByUserProduct(sellerUserId, userProductIds);
-    const siblingIds = [...new Set(search.results)].filter(
-      (id) => id.length > 0 && id !== primaryItemId,
-    );
-    const capped = siblingIds.length > MAX_FAMILY_SIBLINGS;
     return {
-      ids: capped ? siblingIds.slice(0, MAX_FAMILY_SIBLINGS) : siblingIds,
-      capped,
+      ids: [...new Set(search.results)].filter((id) => id.length > 0),
       resolutionError: null,
     };
   } catch (err) {
-    // Best-effort: primary-only import — but SURFACED (not silently identical
-    // to an empty family) so the caller can report it on the family block.
+    // Best-effort: SURFACED (not silently identical to an empty family) so the
+    // caller can tell "the family has no members" from "we couldn't ask".
     if (err instanceof MercadoLivreError) {
-      return { ids: [], capped: false, resolutionError: err.message };
+      return { ids: [], resolutionError: err.message };
     }
     throw err;
   }

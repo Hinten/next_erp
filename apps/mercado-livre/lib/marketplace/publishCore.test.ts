@@ -68,44 +68,18 @@ describe('resolveListingModel', () => {
 });
 
 describe('publishModeIssues', () => {
-  const base = { produtoNome: 'Camiseta Básica', estado: null, childrenCount: 0 } as const;
-
-  it('passes a legacy listing with children and a User-Products listing without', () => {
-    expect(publishModeIssues({ ...base, model: 'legacy', childrenCount: 3 })).toEqual([]);
-    expect(publishModeIssues({ ...base, model: 'user-products' })).toEqual([]);
-  });
-
-  it("estado 'am' (mid-UPtin) blocks either model", () => {
-    for (const model of ['legacy', 'user-products'] as const) {
-      expect(publishModeIssues({ ...base, estado: 'am', model })).toEqual([
-        expect.stringContaining('migração para o modelo User Products'),
-      ]);
-    }
+  it("estado 'am' (mid-UPtin) blocks the publish", () => {
+    expect(publishModeIssues({ estado: 'am' })).toEqual([
+      expect.stringContaining('migração para o modelo User Products'),
+    ]);
   });
 
   it('every OTHER estado publishes normally', () => {
-    for (const estado of ['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
-      expect(publishModeIssues({ ...base, estado, model: 'legacy' })).toEqual([]);
+    // Including null (a first publish) — the block must not fire on a listing
+    // that has no state yet.
+    for (const estado of [null, 'r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
+      expect(publishModeIssues({ estado })).toEqual([]);
     }
-  });
-
-  it('User Products + variation children is blocked, naming the produto and the count', () => {
-    const issues = publishModeIssues({ ...base, model: 'user-products', childrenCount: 3 });
-    expect(issues).toHaveLength(1);
-    expect(issues[0]).toContain('Camiseta Básica');
-    expect(issues[0]).toContain('3 variações');
-  });
-
-  it('pluralises a single variation', () => {
-    expect(publishModeIssues({ ...base, model: 'user-products', childrenCount: 1 })[0]).toContain(
-      '1 variação',
-    );
-  });
-
-  it('aggregates both blocks rather than reporting the first', () => {
-    expect(
-      publishModeIssues({ ...base, estado: 'am', model: 'user-products', childrenCount: 2 }),
-    ).toHaveLength(2);
   });
 });
 

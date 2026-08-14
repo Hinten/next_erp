@@ -60,6 +60,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         integracaoId: body.integracaoId,
         tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
         depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
+        // The seller whose items the User-Products orphan sweep enumerates —
+        // same source `/importar` uses for the family fan-out.
+        sellerUserId: asNumberOrNull(ctx.conta.user_id),
         listingTypeId: body.listingTypeId ?? null,
       },
       body.produtoId,
@@ -79,4 +82,8 @@ export async function POST(req: Request): Promise<NextResponse> {
 
 function asStringOrNull(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+function asNumberOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
