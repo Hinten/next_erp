@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
 import type { CollectionMetadata } from '../../types';
-import { microsSinceEpoch } from '../../shared/datetime';
+import { microsSinceEpoch, millisSinceEpoch } from '../../shared/datetime';
 import { bandeiraSchema } from '../../bandeiraCartao';
 import { outerRefSchema } from '../../shared/outerRef';
 import { ESTADO_PEDIDO } from './pedido';
@@ -291,6 +291,101 @@ export const pagamentoMeta: CollectionMetadata = {
 };
 
 export const pagamento = { schema: pagamentoSchema, meta: pagamentoMeta };
+
+/* -------------------------------------------------------------------------- */
+/*                    HistoricoPagamentoPedido (histpgto)                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * HistoricoPagamentoPedido — subcoleção
+ * `pedidos/{pedidoId}/pagamentos/{pagamentoId}/histpgto` (the legacy
+ * `HITORICO_PAGAMENTO_COLLECTION` constant — `'$PAGAMENTO_COLLECTION' + a
+ * wildcard segment + '/histpgto'` — kept verbatim, typo included:
+ * `.old/packages/pedido/lib/src/models.dart:24-25`.
+ * Mirrors the legacy hand-model `HistoricoPagamentoPedido`
+ * (`.old/packages/pedido/lib/src/models.dart:2054-2098`). One audit row per
+ * `status_pagamento` transition of the parent pagamento, plus an opening row on
+ * creation.
+ *
+ * Written EXCLUSIVELY by the `onPagamentoStatusChanged` Cloud Function
+ * (`apps/functions/src/pedidos/registrarHistoricoPagamento.ts`), the pagamento
+ * counterpart of `onPedidoEstadoChanged` (`historicoEstadoPedido.ts`) — same
+ * design, scoped one level deeper. Observing the pagamento document instead of
+ * appending at the call site (as legacy `Pagamento.save()` did) makes coverage
+ * total: every writer, including the still-running Flutter app and every
+ * webhook, produces a row. `serverOwned` makes a client attempt fail
+ * (`delfrance/no-client-estado-history-write` does not cover this file today —
+ * the rules generator's `serverOwned` denial is the enforcement).
+ *
+ * Lives in THIS file (not its own `histPgto.ts`) and reuses
+ * `PERM_PAGAMENTO_READ/WRITE/DELETE` rather than allocating new permission
+ * bits, mirroring how `historicoEstadoPedido`/`historicoFtIni` reuse the
+ * `PEDIDO` bits of their parent — an audit trail rides its parent's
+ * permission domain, it doesn't get its own.
+ *
+ * DATETIME UNIT — MILLISECONDS, like the sibling `historicoFtIni` and for the
+ * identical reason: legacy `Pagamento.save()` is a LIVE writer of this exact
+ * collection today (`maybeDateTimeToJson` → `millisecondsSinceEpoch`), so a
+ * µs row would sort ~1000× above the real production rows already on disk
+ * and, under `defaultQuery.limit`, push the entire legacy trail off the first
+ * page. `historicoEstadoPedido`'s µs choice does not apply here — that
+ * collection has no live ms writer to interleave with.
+ */
+export const histPgtoSchema = z
+  .object({
+    /**
+     * Wire field names kept EXACTLY as legacy (`status_anterior`/`status_atual`,
+     * not camelCase) — the still-running Flutter app both writes and reads this
+     * collection, so the on-disk key names cannot change. `null` on the opening
+     * row (`status_anterior`) and whenever the payment carries no status.
+     */
+    status_anterior: statusPagamentoSchema.nullable().default(null),
+    status_atual: statusPagamentoSchema.nullable().default(null),
+    timestamp: millisSinceEpoch('Timestamp').nullable().default(null),
+    /**
+     * `documents/usuarios/<uid>` of whoever caused the transition, or `null`
+     * when no end user is behind it. NEW field, absent from the legacy model —
+     * safe to add alongside it, same reasoning as
+     * `historicoFtIni.usuarioHistoricoFreteInicialOuterRef`: legacy's generated
+     * `fromJson` readers in this codebase read named keys and ignore unknown
+     * ones, so an extra key does not break the still-running Flutter reader.
+     */
+    usuarioHistoricoPagamentoOuterRef: outerRefSchema.nullable().default(null).describe('Usuário'),
+    /**
+     * CloudEvent id of the pagamento write that produced this row — also the
+     * document id, which is what makes the at-least-once trigger idempotent.
+     * Null on legacy rows written before the trigger existed.
+     */
+    eventId: z.string().nullable().default(null),
+  })
+  .passthrough();
+
+export type HistPgto = z.infer<typeof histPgtoSchema>;
+
+export const histPgtoMeta: CollectionMetadata = {
+  collectionPath: 'pedidos/{pedidoId}/pagamentos/{pagamentoId}/histpgto',
+  permissions: {
+    read: PERM_PAGAMENTO_READ,
+    write: PERM_PAGAMENTO_WRITE,
+    delete: PERM_PAGAMENTO_DELETE,
+  },
+  // An audit trail the audited party can rewrite is not an audit trail: rules
+  // deny every client create/update/delete (no `su` bypass), leaving the
+  // `onPagamentoStatusChanged` trigger as the sole writer. Read stays open to
+  // `d_pagamento` read. Same posture as `historicoEstadoPedido`/`historicoFtIni`.
+  serverOwned: true,
+  // The read-only status-history dialog: newest-first, one page. Declared here
+  // so the `defaultQuery.indexes` meta-test REQUIRES the matching
+  // `histpgto(timestamp desc)` entry in firestore.indexes.json — on this
+  // Enterprise edition an undeclared index means a per-pagamento scan on every
+  // dialog open, billed by data scanned.
+  defaultQuery: {
+    orderBy: [{ field: 'timestamp', direction: 'desc' }],
+    limit: 50,
+  },
+};
+
+export const histPgto = { schema: histPgtoSchema, meta: histPgtoMeta };
 
 /* -------------------------------------------------------------------------- */
 /*                            MetodoPagamento                                 */

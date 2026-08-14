@@ -418,6 +418,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_pagamento', 4);
     }
 
+    match /pedidos/{pedidoId}/pagamentos/{pagamentoId}/histpgto/{docId} {
+      allow read: if isSuperUser() || p('d_pagamento', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /produtos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create: if (isSuperUser() || p('d_produto', 2)) && v_produtos(request.resource.data, request.resource.data.keys());
@@ -576,6 +582,9 @@ service cloud.firestore {
     }
     match /{path=**}/historicoFtIni/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
+    }
+    match /{path=**}/histpgto/{docId} {
+      allow read: if isSuperUser() || p('d_pagamento', 1);
     }
     match /{path=**}/imposto/{docId} {
       allow read: if isSuperUser() || p('d_impostoCategoria', 1) || p('d_impostoProduto', 1);

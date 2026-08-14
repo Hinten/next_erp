@@ -56,6 +56,7 @@ export { operacaoCollection } from './operacaoCollection';
 export { incidenteCollection } from './incidenteCollection';
 export { metodoPagamentoCollection } from './metodoPagamentoCollection';
 export { pagamentoCollection } from './pagamentoCollection';
+export { histPgtoCollection } from './histPgtoCollection';
 export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollection';
 export { historicoFreteInicialCollection } from './historicoFreteInicialCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';

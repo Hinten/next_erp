@@ -397,6 +397,16 @@
       ]
     },
     {
+      "collectionGroup": "histpgto",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "historicoDeModificacoes",
       "queryScope": "COLLECTION",
       "fields": [

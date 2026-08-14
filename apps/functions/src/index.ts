@@ -27,6 +27,7 @@ export {
 } from './cascades/caroGenericoTriggers';
 export { onNfeDeleted } from './nfe/onNfeDeleted';
 export { onPedidoEstadoChanged } from './pedidos/registrarEstadoPedido';
+export { onPagamentoStatusChanged } from './pedidos/registrarHistoricoPagamento';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
 export {
   onPedidoEstoqueSync,

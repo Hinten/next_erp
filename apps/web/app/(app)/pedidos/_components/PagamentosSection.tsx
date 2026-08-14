@@ -22,7 +22,7 @@ import {
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { notifications } from '@mantine/notifications';
-import { IconCash } from '@tabler/icons-react';
+import { IconCash, IconHistory } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
 import { getDoc } from 'firebase/firestore';
@@ -54,6 +54,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
+import { PagamentoHistoricoModal } from './PagamentoHistoricoModal';
 import { gatewayIdFromTipo, getGateway } from '@/lib/plugins/paymentRegistry';
 import {
   EMPTY_PAGAMENTO_FORM,
@@ -745,6 +746,7 @@ function PagamentoRow({
   const [savingStatus, setSavingStatus] = useState(false);
   const [refunding, setRefunding] = useState(false);
   const [refundError, setRefundError] = useState<string | null>(null);
+  const [historicoOpened, setHistoricoOpened] = useState(false);
 
   // Resolve a configured gateway for this pagamento: dereference its
   // `metodoPagamentoOuterRef` (a `documents/metodo_pgto/<id>` doc-path string) to
@@ -814,7 +816,20 @@ function PagamentoRow({
       <Table.Tr>
         <Table.Td>
           <Stack gap={4}>
-            <PagamentoStatusBadge status={pagamento.status_pagamento ?? null} />
+            <Group gap={4} wrap="nowrap">
+              <PagamentoStatusBadge status={pagamento.status_pagamento ?? null} />
+              <Tooltip label="Histórico de status">
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
+                  size="sm"
+                  aria-label="Ver histórico de status do pagamento"
+                  onClick={() => setHistoricoOpened(true)}
+                >
+                  <IconHistory size={14} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
             <Select
               data={(Object.entries(STATUS_PAGAMENTO_LABELS) as [string, string][]).map(
                 ([value, label]) => ({ value, label }),
@@ -864,6 +879,12 @@ function PagamentoRow({
           </Table.Td>
         </Table.Tr>
       )}
+      <PagamentoHistoricoModal
+        pedidoId={pedidoId}
+        pagamentoId={id}
+        opened={historicoOpened}
+        onClose={() => setHistoricoOpened(false)}
+      />
     </>
   );
 }

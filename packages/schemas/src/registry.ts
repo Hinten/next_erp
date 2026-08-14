@@ -17,6 +17,7 @@ import { intFrete, tokenMelEnv } from './intFrete';
 import {
   pedido,
   pagamento,
+  histPgto,
   metodoPagamento,
   incidente,
   checkout,
@@ -72,6 +73,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   tokenMelEnv,
   pedido,
   pagamento,
+  histPgto,
   metodoPagamento,
   incidente,
   checkout,
