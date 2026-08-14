@@ -169,3 +169,39 @@ describe('escolherDescendenteTeste', () => {
     expect(escolherDescendenteTeste([{ id: 'MLB1' }])).toBe('MLB1');
   });
 });
+
+describe('the root that stands in for "Outros"', () => {
+  // ⚠️ Verified against MLB's LIVE catalogue on 2026-08-14 (conta Lucas Teste):
+  // the site has NO root named "Outros". Its 32 roots end in "Mais Categorias",
+  // and `Mais Categorias › Outros` is a leaf one level down. Matching only the
+  // documented name found nothing, so the route answered `categoryId: null` on
+  // every call and the descent never even started — the whole test-fill silently
+  // did nothing, which is exactly what Lucas reported twice.
+  it('accepts MLB’s "Mais Categorias", which is what the site actually exposes', () => {
+    expect(
+      encontrarCategoriaTeste([
+        { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+        { id: 'MLB5672', name: 'Mais Categorias' },
+      ]),
+    ).toBe('MLB5672');
+  });
+
+  it('still prefers a real "Outros" root when a site has one', () => {
+    // Preference order matters: a site exposing both should use the documented
+    // one rather than the catch-all.
+    expect(
+      encontrarCategoriaTeste([
+        { id: 'MLB9', name: 'Mais Categorias' },
+        { id: 'MLB1', name: 'Outros' },
+      ]),
+    ).toBe('MLB1');
+  });
+
+  it('matches case- and accent-insensitively', () => {
+    expect(encontrarCategoriaTeste([{ id: 'X', name: 'MAIS CATEGORIAS' }])).toBe('X');
+  });
+
+  it('still reports nothing when neither name is present', () => {
+    expect(encontrarCategoriaTeste([{ id: 'MLB1430', name: 'Calçados' }])).toBeNull();
+  });
+});

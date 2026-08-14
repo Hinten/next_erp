@@ -28,8 +28,25 @@ export const TITULO_ANUNCIO_TESTE = 'Item de Teste – Por favor, NÃO OFERTAR!'
 export const DESCRICAO_ANUNCIO_TESTE =
   'Anúncio de teste criado para validar a integração. Não está à venda — por favor, não oferte.';
 
-/** The category name ML asks test listings to use, matched case-insensitively. */
+/** The category name ML's documentation asks test listings to use. */
 export const CATEGORIA_TESTE_NOME = 'Outros';
+
+/**
+ * The ROOT names that stand in for "Outros" on a site, matched
+ * case-insensitively.
+ *
+ * ⚠️ **MLB has no root called "Outros"**, which is why the documented name alone
+ * found nothing and the whole feature silently did nothing — `categoryId` came
+ * back null on every call and the descent below never even started. Verified
+ * against the live catalogue (2026-08-14, conta Lucas Teste): MLB's roots run
+ * "Acessórios para Veículos" … "Serviços" and end in **"Mais Categorias"**, and
+ * `Mais Categorias › Outros` is a LEAF one level down — exactly the shape
+ * `escolherDescendenteTeste` resolves.
+ *
+ * `'Outros'` stays first: it is what ML documents, it is what other sites use,
+ * and if MLB ever promotes it to a root this keeps working without a change.
+ */
+export const CATEGORIA_TESTE_RAIZ_NOMES: readonly string[] = ['Outros', 'Mais Categorias'];
 
 /**
  * Listing types that must never carry a test listing.
@@ -79,8 +96,14 @@ export function escolherTipoAnuncioTeste(
 export function encontrarCategoriaTeste(
   raizes: ReadonlyArray<{ id: string; name?: string | null }>,
 ): string | null {
-  const alvo = normalizar(CATEGORIA_TESTE_NOME);
-  return raizes.find((c) => normalizar(c.name ?? '') === alvo)?.id ?? null;
+  // In preference order, so a site that really does expose "Outros" as a root
+  // uses it rather than the catch-all.
+  for (const nome of CATEGORIA_TESTE_RAIZ_NOMES) {
+    const alvo = normalizar(nome);
+    const hit = raizes.find((c) => normalizar(c.name ?? '') === alvo);
+    if (hit) return hit.id;
+  }
+  return null;
 }
 
 /**
