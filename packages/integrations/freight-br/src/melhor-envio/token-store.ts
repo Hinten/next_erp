@@ -93,6 +93,10 @@ export async function getOrRefreshAccessToken(deps: GetOrRefreshDeps): Promise<S
         'refresh_failed',
         'Sessão Melhor Envio expirada, reconecte a conta.',
         err.body,
+        // The status is right here; dropping it left `status` permanently null
+        // at the only production throw site, so the field existed but never
+        // carried anything.
+        err.status,
       );
     }
     throw err; // transient/network — let the caller bubble it

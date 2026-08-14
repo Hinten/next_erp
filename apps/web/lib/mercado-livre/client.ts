@@ -279,6 +279,28 @@ export interface MercadoLivreTiposAnuncio {
   tipos: MercadoLivreCategoriaNo[];
 }
 
+/**
+ * `GET /anuncio-teste` — the data ML requires a test listing to carry, resolved
+ * against the live catalogue, plus whether the target account is a test user.
+ */
+export interface MercadoLivreAnuncioTeste {
+  title: string;
+  descricao: string;
+  /**
+   * ML's "Outros" category. Null when the site has no such root **or** when it
+   * is not a leaf — only a leaf can be published into, so a mid-tree match is
+   * no category rather than one the form would write and publish must reject.
+   */
+  categoryId: string | null;
+  /** Lowest-exposure type the category offers; null ⇒ the operator picks. */
+  listingTypeId: string | null;
+  conta: {
+    nickname: string | null;
+    /** False ⇒ warn: ML forbids test listings on a real seller account. */
+    ehContaDeTeste: boolean;
+  };
+}
+
 /** One model the AI settings page may offer. */
 export interface MercadoLivreIaModelo {
   id: string;
@@ -519,6 +541,14 @@ export interface MercadoLivreClient {
     integracaoId: string;
     categoryId: string;
   }): Promise<MercadoLivreTiposAnuncio>;
+  /**
+   * The documented test-listing data for this account (PERM.integracao.read).
+   *
+   * ⚠️ Read-only — it resolves what a test listing must look like and reports
+   * whether the account is a test user. Publishing remains a separate,
+   * deliberate click.
+   */
+  anuncioTeste(integracaoId: string): Promise<MercadoLivreAnuncioTeste>;
   /**
    * Models the AI settings page may offer, plus what a suggestion would actually
    * use right now (PERM.integracao.read).
@@ -830,6 +860,10 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreTiposAnuncio>(
         `/api/marketplace/mercado-livre/tipos-anuncio?integracaoId=${encodeURIComponent(input.integracaoId)}` +
           `&categoryId=${encodeURIComponent(input.categoryId)}`,
+      ),
+    anuncioTeste: (integracaoId) =>
+      call<MercadoLivreAnuncioTeste>(
+        `/api/marketplace/mercado-livre/anuncio-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
       ),
     iaModelos: (agenteId) =>
       call<MercadoLivreIaModelos>(

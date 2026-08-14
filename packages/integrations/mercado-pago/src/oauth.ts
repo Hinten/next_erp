@@ -152,9 +152,13 @@ async function requestToken(
     // `invalid_grant` is terminal — the code/refresh token is expired, revoked,
     // or already used. Everything else is a transient/other HTTP error.
     if (code === 'invalid_grant') {
+      // Carry status + body: `description` alone cannot distinguish an expired
+      // code from a `redirect_uri` mismatch.
       throw new MercadoPagoReauthRequiredError(
         'refresh_failed',
         description ?? 'Sessão do Mercado Pago expirada. Reconecte a conta.',
+        res.status,
+        parsed,
       );
     }
     throw new MercadoPagoHttpError(

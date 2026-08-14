@@ -16,7 +16,11 @@
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
-import { CONFIG_IA_MODELO_PADRAO, PROVEDOR_IA } from '@delfrance/schemas';
+import {
+  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  CONFIG_IA_MODELO_PADRAO,
+  PROVEDOR_IA,
+} from '@delfrance/schemas';
 
 import { AlreadyRunningError, resolveModelo, runSingleFlight } from '@delfrance/ai';
 import {
@@ -90,7 +94,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // Read the agent's settings BEFORE claiming the single-flight slot: the kill
   // switch must be able to decline without occupying it, or one disabled-agent
   // click would block the operator's next attempt for no reason.
-  const config = await loadConfigIa(db);
+  const config = await loadConfigIa(db, CONFIG_IA_ML_ATRIBUTOS_DOC_ID);
   if (!config.ativo) {
     return NextResponse.json(
       {
