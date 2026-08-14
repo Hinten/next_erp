@@ -271,6 +271,13 @@ export function ListingForm({
 
   const preencherTeste = useCallback(async () => {
     if (!client) return;
+    // ⚠️ Clear FIRST, so the alert is strictly a report of the latest run. The
+    // catch below reports its failure as a toast and returns without touching
+    // this state, so without the reset a successful fill followed by a failing
+    // one left "Dados de teste preenchidos" — naming a `Categoria definida` that
+    // was never applied — sitting above a fill that did not happen. A close
+    // button does not fix that: it asks the operator to notice and tidy up.
+    setTesteConta(null);
     setCarregandoTeste(true);
     try {
       const dados = await client.anuncioTeste(integracaoId);

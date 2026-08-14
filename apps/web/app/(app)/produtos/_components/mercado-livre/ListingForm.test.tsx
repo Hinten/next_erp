@@ -7,6 +7,7 @@ import type { Firestore } from 'firebase/firestore';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
+import { MercadoLivreClientNetworkError } from '@/lib/mercado-livre/client';
 
 const h = vi.hoisted(() => ({
   /** Every patch a save handed to the port, in order. */
@@ -528,6 +529,39 @@ describe('Preencher com dados de teste', () => {
       expect(screen.getByText(/Categoria definida/)).toBeDefined();
     });
     expect(screen.getByText('Outros › Outros')).toBeDefined();
+  });
+
+  it('does not leave a stale success alert above a FAILED fill', async () => {
+    // ⚠️ The half a close button cannot fix. `preencherTeste`'s catch reports its
+    // failure as a toast and returns without touching `testeConta`, so the
+    // previous run's "Dados de teste preenchidos" — naming a `Categoria definida`
+    // that was never applied — survived on screen above a fill that did not
+    // happen. Clearing at the START of every run makes the alert strictly a
+    // report of the LATEST run.
+    const anuncioTeste = vi
+      .fn()
+      .mockResolvedValueOnce({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        categoriaPath: ['Outros', 'Outros'],
+        listingTypeId: 'free',
+        conta: { nickname: 'TEST0548', ehContaDeTeste: true },
+      })
+      .mockRejectedValueOnce(new MercadoLivreClientNetworkError('sem rede'));
+    setClient({ anuncioTeste });
+    renderForm({ id: null });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+    await waitFor(() => {
+      expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
+    });
+    expect(screen.queryByText(/Categoria definida/)).toBeNull();
   });
 
   it('can be dismissed, and stays dismissed', async () => {
