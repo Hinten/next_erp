@@ -127,4 +127,28 @@ test.describe.serial('Medidas Mercado Livre tab e2e — chart manager', () => {
     await editor.getByRole('button', { name: 'Mostrar' }).click();
     await expect(editor.getByLabel('Domínio')).toBeDisabled();
   });
+
+  test('offers to fill the grid from the size-table photo', async ({ page }) => {
+    await page.goto(`/medidas/${tabMediId}`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    const guia = page.getByTestId(`ml-guia-${conta}-0`);
+    await expect(guia).toBeVisible({ timeout: 30_000 });
+    await guia.getByRole('button', { name: 'Editar' }).click();
+
+    const editor = page.getByTestId('ml-size-chart-editor');
+    await expect(editor).toBeVisible({ timeout: 30_000 });
+
+    // The control is always rendered, so the operator can see the feature
+    // exists, and disabled until there is a grid to fill — asking to fill an
+    // empty grid is a guaranteed 422, so it is refused in the UI instead.
+    const fill = editor.getByTestId('ml-size-chart-ai-fill');
+    await expect(fill).toBeVisible();
+    await expect(fill).toBeDisabled();
+
+    // Deliberately NOT clicked, and the enabled case is deliberately not
+    // asserted: the grid comes from Mercado Livre and this suite has no
+    // marketplace backend, so it never loads here. The suggestion path itself is
+    // covered by the route's unit tests and by the manual staging pass.
+  });
 });

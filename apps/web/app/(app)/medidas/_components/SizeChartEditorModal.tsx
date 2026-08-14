@@ -37,6 +37,7 @@ import {
   CHART_NAME_MAX,
 } from '@/lib/mercado-livre/chartRows';
 import {
+  type ChartCellKind,
   type ChartMeasureType,
   type ChartSpecValue,
   chartLevelAttributes,
@@ -53,7 +54,9 @@ import {
   MercadoLivreClientNetworkError,
   type MercadoLivreChartValidationError,
   type MercadoLivreClient,
+  type MercadoLivreMedidasSugestao,
 } from '@/lib/mercado-livre/client';
+import { SizeChartAiModal } from './SizeChartAiModal';
 import { SizeChartGrid } from './SizeChartGrid';
 
 /** A size variation group (tipo 1) the chart's rows bind to. */
@@ -73,6 +76,8 @@ export interface SizeChartEditorModalProps {
   onClose: () => void;
   client: MercadoLivreClient;
   integracaoId: string;
+  /** The tabela this guia belongs to — the AI agent reads its photo and descrição. */
+  tabMediId: string;
   /** The guia being edited, or null to create one. */
   chart: MlSizeChart | null;
   /** Its index in the conta's stored list, or null for a new one. */
@@ -115,6 +120,7 @@ export function SizeChartEditorModal({
   onClose,
   client,
   integracaoId,
+  tabMediId,
   chart,
   chartIndex,
   grupos,
@@ -147,6 +153,27 @@ export function SizeChartEditorModal({
   const [errorChartIndex, setErrorChartIndex] = useState(0);
   const [busy, setBusy] = useState<'draft' | 'send' | null>(null);
   const [definicaoOpen, setDefinicaoOpen] = useState(!sent);
+
+  /**
+   * AI fill. `aiOpen` with a null `aiResult` is the loading state — the modal
+   * opens immediately so the operator sees the call is running, and fills in
+   * when it answers.
+   */
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiResult, setAiResult] = useState<MercadoLivreMedidasSugestao | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  /**
+   * Bumped per run and used as the review modal's `key`, so each run gets a
+   * FRESH component.
+   *
+   * ⚠️ The modal is rendered unconditionally — only Mantine's `Modal` body
+   * unmounts on close — so its checkbox state survived close → re-open. On a
+   * second run in the same editor session that state was still in force, and a
+   * cell the operator had meanwhile filled arrived **pre-checked** with the
+   * "será substituída" badge: exactly what the modal's own contract says must
+   * never happen. Remounting is cheaper and harder to get wrong than syncing.
+   */
+  const [aiRun, setAiRun] = useState(0);
 
   /* -------------------------------- specs -------------------------------- */
 
@@ -289,6 +316,147 @@ export function SizeChartEditorModal({
     [validationErrors, errorChartIndex],
   );
   const nameError = nome.trim().length === 0 ? null : validateChartName(nome);
+
+  /* ---------------------------------- IA --------------------------------- */
+
+  /**
+   * The grid, in the wire shape the suggestion route understands.
+   *
+   * A `LINKED_BY_CONNECTOR_INPUT` column contributes TWO entries — one per part
+   * — because the model answers per attribute id, and a range whose `_FROM` and
+   * `_TO` were folded into one entry could not be filled at all.
+   */
+  function aiPayload() {
+    return {
+      tabMediId,
+      rows: rows
+        .filter((r) => !r.deleted)
+        .map((r) => ({
+          key: r.key,
+          size: r.cells[effectiveMainId]?.value_name ?? '',
+        })),
+      columns: columns.flatMap((column) =>
+        column.parts
+          // ⚠️ The main attribute is NOT a fillable column. `columns` keeps it
+          // because the grid must render the size cell, but `rows[].size`
+          // already carries that exact value — so sending it burns one of the
+          // 15 schema columns to ask for something we supplied, and a model
+          // that answers differently would rewrite the row's size label if the
+          // operator hit "Marcar todas". That label is the row's identity: ML
+          // freezes it on a sent row, so an accepted suggestion there earns a
+          // validation error at send time and desyncs the row from its
+          // `varianteUid` binding in the meantime.
+          .filter((part) => part.attributeId !== effectiveMainId)
+          .map((part) => ({
+            attributeId: part.attributeId,
+            label: column.parts.length > 1 ? `${column.label} — ${part.label}` : column.label,
+            kind: part.kind,
+            values: part.values,
+            unitId: units[column.key] ?? column.unit.default,
+            required: column.required,
+          })),
+      ),
+      measureType: effectiveMeasureType,
+    };
+  }
+
+  async function runAi() {
+    setAiBusy(true);
+    setAiResult(null);
+    setAiRun((n) => n + 1);
+    setAiOpen(true);
+    try {
+      setAiResult(await client.sugerirMedidas(aiPayload()));
+    } catch (err) {
+      // Close rather than leave the modal spinning forever; the message carries
+      // the backend's own wording, including the kill-switch and timeout cases.
+      setAiOpen(false);
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        notifications.show({
+          color: 'red',
+          title: 'Não foi possível preencher com IA',
+          message: reportableMessage(err, 'Falha ao chamar a IA.'),
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  /** Which widget each attribute renders as — the cell shape depends on it. */
+  const partKindById = useMemo(() => {
+    const out = new Map<string, ChartCellKind>();
+    for (const column of allColumns) {
+      for (const part of column.parts) out.set(part.attributeId, part.kind);
+    }
+    return out;
+  }, [allColumns]);
+
+  /**
+   * A suggestion in the cell shape its column actually reads.
+   *
+   * ⚠️ `SizeChartGrid`'s inputs read a DIFFERENT field per kind — `select` takes
+   * `value_id`, `multiselect` takes `valueList`, text/number take `value_name`.
+   * Writing one shape for all of them left a confirmed multiselect suggestion
+   * rendering as an empty field while `toWireAttributes` still shipped it to ML,
+   * in the single-valued shape.
+   */
+  function aiCellValue(s: MercadoLivreMedidasSugestao['sugestoes'][number]): ChartCellValue {
+    if (partKindById.get(s.attributeId) === 'multiselect') {
+      return {
+        value_id: null,
+        value_name: null,
+        valueList: [{ id: s.value_id ?? '', name: s.value_name }],
+      };
+    }
+    return { value_id: s.value_id, value_name: s.value_name, valueList: null };
+  }
+
+  /**
+   * Whether a suggestion can actually be shown in its cell once applied.
+   *
+   * A `select` renders from `value_id`, so a free-text value the applier could
+   * not match to an option would land as a visibly EMPTY cell that nonetheless
+   * ships to ML. Offering it would be worse than dropping it: the operator ticks
+   * a row, sees nothing change, and only finds out at send time.
+   */
+  function aiApplicable(s: MercadoLivreMedidasSugestao['sugestoes'][number]): boolean {
+    return partKindById.get(s.attributeId) !== 'select' || s.value_id != null;
+  }
+
+  /** Write the accepted cells in, reusing the same path a typed edit takes. */
+  function applyAi(aceitas: MercadoLivreMedidasSugestao['sugestoes']) {
+    const byRow = new Map<string, typeof aceitas>();
+    for (const s of aceitas) {
+      byRow.set(s.rowKey, [...(byRow.get(s.rowKey) ?? []), s]);
+    }
+    setRows((prev) =>
+      prev.map((row) => {
+        const mine = byRow.get(row.key);
+        if (!mine) return row;
+        const cells = { ...row.cells };
+        for (const s of mine) {
+          cells[s.attributeId] = aiCellValue(s);
+        }
+        return { ...row, cells };
+      }),
+    );
+    // Clear any ML error on a cell we just changed — same rule as a typed edit,
+    // where a stale red message on a corrected cell is worse than none.
+    const touched = new Set(aceitas.map((s) => `${s.rowKey}::${s.attributeId}`));
+    setValidationErrors((prev) =>
+      prev.filter((e) => {
+        const row = e.rowIndex == null ? null : rows[e.rowIndex];
+        if (row == null) return true;
+        return !e.attributeIds.some((id) => touched.has(`${row.key}::${id}`));
+      }),
+    );
+  }
 
   /* ------------------------------- assembly ------------------------------ */
 
@@ -613,6 +781,33 @@ export function SizeChartEditorModal({
           </Alert>
         )}
 
+        {/*
+          Outside the `allColumns.length > 0` block on purpose. The grid loads
+          from Mercado Livre, so gating the control on it would hide the feature
+          entirely whenever that call has not answered — the operator would never
+          learn it exists, and the affordance would be untestable without a live
+          backend. Rendering it always, disabled until there is something to
+          fill, says "this exists, it is not ready yet".
+        */}
+        <Group justify="space-between" align="flex-end">
+          <Text size="sm" c="dimmed">
+            Preencha a grade a partir da foto da tabela do fornecedor.
+          </Text>
+          <Button
+            size="compact-sm"
+            variant="light"
+            onClick={() => void runAi()}
+            loading={aiBusy}
+            // Nothing to fill without a grid, and the route rejects an empty one
+            // anyway — better to disable than to spend a round trip on a
+            // guaranteed 422.
+            disabled={!canWrite || busy !== null || rows.length === 0 || columns.length === 0}
+            data-testid="ml-size-chart-ai-fill"
+          >
+            Preencher com IA
+          </Button>
+        </Group>
+
         {allColumns.length > 0 && (
           <>
             <div>
@@ -732,6 +927,21 @@ export function SizeChartEditorModal({
           </Group>
         </Group>
       </Stack>
+
+      <SizeChartAiModal
+        key={aiRun}
+        opened={aiOpen}
+        onClose={() => setAiOpen(false)}
+        resultado={
+          aiResult == null
+            ? null
+            : { ...aiResult, sugestoes: aiResult.sugestoes.filter(aiApplicable) }
+        }
+        rows={rows}
+        columns={columns}
+        mainAttributeId={effectiveMainId}
+        onApply={applyAi}
+      />
     </Modal>
   );
 }

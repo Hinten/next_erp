@@ -307,6 +307,43 @@ export interface MercadoLivreIaModelo {
   label: string;
 }
 
+/** One grid row as the suggestion route describes it. */
+export interface MercadoLivreMedidaRow {
+  /** The editor's stable row key — round-tripped, never shown to the model. */
+  key: string;
+  /** The row's main-attribute value (`P`, `M`, `42`). What the model matches on. */
+  size: string;
+}
+
+/** One grid column as the suggestion route describes it. */
+export interface MercadoLivreMedidaColumn {
+  attributeId: string;
+  label: string;
+  kind: 'text' | 'number' | 'select' | 'multiselect';
+  values: Array<{ id: string; name: string }>;
+  unitId: string | null;
+  required: boolean;
+}
+
+/** One suggested cell. `value_id` is set only for a closed-list match. */
+export interface MercadoLivreMedidaSugestao {
+  rowKey: string;
+  attributeId: string;
+  value_id: string | null;
+  value_name: string;
+}
+
+/** `POST /sugerir-medidas` — staged suggestions, never applied server-side. */
+export interface MercadoLivreMedidasSugestao {
+  sugestoes: MercadoLivreMedidaSugestao[];
+  /** How many cells were offered to the model. */
+  celulas: number;
+  /** Whether a photo reached the model at all. */
+  comFoto: boolean;
+  /** True when a cap or a duplicate size label dropped part of the grid. */
+  truncado: boolean;
+}
+
 /** `GET /ia/modelos` — the catalogue plus the currently effective resolution. */
 export interface MercadoLivreIaModelos {
   modelos: MercadoLivreIaModelo[];
@@ -583,6 +620,21 @@ export interface MercadoLivreClient {
     tabMediId: string;
     tabelas: unknown[];
   }): Promise<MercadoLivreSyncChartsResult>;
+  /**
+   * Ask a model to read the tabela's own photo and fill the grid
+   * (PERM.integracao.write).
+   *
+   * Returns suggestions to STAGE — nothing is written on either side. `comFoto`
+   * is load-bearing in the UI: a `false` means the model only had the
+   * description, and a text-only answer to a transcription task is close to
+   * worthless, so the operator must be able to tell that apart from a bad model.
+   */
+  sugerirMedidas(input: {
+    tabMediId: string;
+    rows: MercadoLivreMedidaRow[];
+    columns: MercadoLivreMedidaColumn[];
+    measureType?: string | null;
+  }): Promise<MercadoLivreMedidasSugestao>;
   /**
    * Ask ML to remove one guia de tamanho (PERM.integracao.write).
    *
@@ -876,6 +928,8 @@ export function createMercadoLivreClient(config: {
       ),
     sizeChartSpecs: (input) =>
       call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
+    sugerirMedidas: (input) =>
+      call<MercadoLivreMedidasSugestao>('/api/marketplace/mercado-livre/sugerir-medidas', input),
     sizeChartSync: (input) =>
       call<MercadoLivreSyncChartsResult>('/api/marketplace/mercado-livre/size-charts/sync', input),
     sizeChartExcluir: (input) =>

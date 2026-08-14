@@ -22,6 +22,8 @@ export type { AiInlineImage, AiPromptRequest, JsonSchemaNode } from './prompt';
 
 export { coerceText, normalizeLoose } from './text';
 
+export { aiCellKey, preCheckedCells, type AiGridCellRef } from './cells';
+
 export {
   AI_MODELOS_FALLBACK,
   bareModelId,
