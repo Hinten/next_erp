@@ -374,9 +374,27 @@ export function main(argv, repoRoot) {
   const raw = readFileSync(filesPath, 'utf8');
   const files = [...new Set(raw.split('\n').map((l) => l.trim()).filter(Boolean))];
 
-  // No paths means we could not learn what changed — never a reason to skip.
+  // No paths means we could not learn what changed — so fall back to the mode's
+  // safe direction, exactly as the CLI catch below does.
+  //
+  // ⚠️ This branch used to hardcode `true`, which was the same inversion the catch
+  // had: `ci-nfe.yml` maps `steps.decide-live.outputs.run_e2e` straight onto
+  // `run_live`, and `collect` only short-circuits on a non-`pull_request` event, a
+  // failed `gh api`, or the 3000-path truncation — so a SUCCESSFUL `gh api`
+  // returning zero paths (a fully-reverted branch, an empty commit) reached here and
+  // emitted at SEFAZ on a PR that changed nothing. Note `decideByPaths` already
+  // returns `false` for an empty list; this branch just never reached it.
   if (files.length === 0) {
-    emit({ runE2e: true, reason: 'the changed-file list was empty — running the suite (fail safe).', rows: [], lane, kind });
+    const live = onlyPaths.length > 0;
+    emit({
+      runE2e: !live,
+      reason: live
+        ? 'the changed-file list was empty — NOT running the live suite (fail safe). An unclassifiable diff must never cost SEFAZ quota.'
+        : 'the changed-file list was empty — running the suite (fail safe).',
+      rows: [],
+      lane,
+      kind,
+    });
     return;
   }
 

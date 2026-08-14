@@ -84,9 +84,13 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    missing fields with a message naming the exact pedido / produto /
    item. The only SEFAZ-mandated literal kept is `'SEM GTIN'` for
    products without a barcode.
-8. **`NFE_ALLOW_PRODUCAO=true` is required for produção.** The library's
-   safety guard (`assertSafeTpAmb`) rejects `tpAmb='1'` without it. Set
-   only in the produção App Hosting backend.
+8. **`NFE_ALLOW_PRODUCAO=true` is required for produção.** Two guards reject
+   `tpAmb='1'` without it: `assertSafeTpAmb` at the `generateNFe` entry, and
+   `assertSafeTpAmbForTransport` immediately before every SEFAZ POST. Set
+   only in the produção App Hosting backend. ⚠️ Only the generator one has a
+   `NODE_ENV='test'` passthrough — the transport one deliberately has none,
+   because `nfe-live` runs the live homologação suites through Vitest, so a
+   test escape there would disable the guard in the one job that reaches SEFAZ.
 9. **Never log raw error objects or cert/XML-bearing values in NF-e code
    paths; never read `NFE_CERT_*` env vars outside the unified loader.**
    Use `safeErrorShape(err)` for catch blocks and

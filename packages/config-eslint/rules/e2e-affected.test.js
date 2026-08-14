@@ -267,6 +267,25 @@ describe('e2e-affected: the CLI fails safe in the direction its MODE declares', 
     expect(live.outputs.run_e2e).toBe('false');
   });
 
+  it('applies the same direction rule to an EMPTY changed-file list', () => {
+    // Not a crash — a clean run that learned nothing. `collect` short-circuits only
+    // on a non-`pull_request` event, a failed `gh api`, or the 3000-path truncation,
+    // so a SUCCESSFUL `gh api` returning zero paths (a fully-reverted branch, an
+    // empty commit) reaches `main()` with an empty list. That branch hardcoded
+    // `true`, so it emitted at SEFAZ on a PR that changed nothing — the same
+    // inversion as the catch, one function earlier.
+    const dir = scratchDir();
+    const empty = path.join(dir, 'empty.txt');
+    writeFileSync(empty, '');
+
+    const roots = runCli(['--roots', '@delfrance/web', '--files', empty]);
+    expect(roots.outputs.run_e2e).toBe('true');
+
+    const live = runCli(['--only-paths', 'apps/nfe', '--files', empty]);
+    expect(live.outputs.run_e2e).toBe('false');
+    expect(live.outputs.reason).toContain('SEFAZ');
+  });
+
   it('still answers normally when nothing is wrong', () => {
     // Anti-vacuity: every assertion above is about failure paths. If the CLI were
     // broken outright they would all still pass.

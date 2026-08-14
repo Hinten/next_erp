@@ -39,10 +39,15 @@ export type TpAmb = '1' | '2';
  *
  * `tpAmb='2'` (homologação) always passes through without checks.
  *
- * Use this at the **generator** boundary, where produção XML can legitimately be
- * built under test without anything being sent. ⚠️ NOT at a boundary that can open a
- * socket — use {@link assertSafeTpAmbForTransport} there, or the guard evaporates
- * under any Vitest-driven live suite.
+ * Wired at exactly one place: `generateNFe` (`src/generator/index.ts`), where
+ * produção XML can legitimately be built under test without anything being sent.
+ *
+ * ⚠️ NOT at a boundary that can open a socket — use
+ * {@link assertSafeTpAmbForTransport} there, or the guard evaporates under any
+ * Vitest-driven live suite. And if you add a second call site, say where: this
+ * docstring claimed the generator boundary for months while the function had **zero**
+ * production callers, which is precisely the kind of drift that let the transport
+ * hole survive.
  */
 export function assertSafeTpAmb(tpAmb: TpAmb): void {
   if (tpAmb === '2') return;
