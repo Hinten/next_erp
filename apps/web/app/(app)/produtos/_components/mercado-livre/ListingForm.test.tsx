@@ -457,6 +457,9 @@ describe('Preencher com dados de teste', () => {
         title: 'Item de Teste – Por favor, NÃO OFERTAR!',
         descricao: 'Anúncio de teste.',
         categoryId: null,
+        categoriaPath: null,
+        // ⚠️ The case that actually happened: MLB has no root named "Outros".
+        categoriaMotivo: 'sem-raiz',
         listingTypeId: null,
         conta: { nickname: 'TEST1', ehContaDeTeste: true },
       })),
@@ -465,7 +468,10 @@ describe('Preencher com dados de teste', () => {
     fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/categoria “Outros” automaticamente/i)).toBeDefined();
+      // ⚠️ Asserts it reads as ABNORMAL, not as a routine "pick one yourself".
+      // The only way we learn ML renamed the tree is someone noticing this line
+      // and the matching `console.error` — a neutral message gets shrugged at.
+      expect(screen.getByText(/árvore de categorias mudou/i)).toBeDefined();
     });
     // ⚠️ And NOT the listing-type message. The route never queries types without
     // a category, so `listingTypeId` is null here for a reason that has nothing

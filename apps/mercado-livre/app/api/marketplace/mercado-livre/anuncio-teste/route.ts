@@ -19,6 +19,7 @@ import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import {
+  CATEGORIA_TESTE_RAIZ_NOMES,
   DESCRICAO_ANUNCIO_TESTE,
   PROFUNDIDADE_MAX_CATEGORIA_TESTE,
   TITULO_ANUNCIO_TESTE,
@@ -37,6 +38,9 @@ import {
   getListingTypesCached,
 } from '@/lib/marketplace/mlMetadataCache';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+
+/** Enough to diagnose a rename; a full site tree does not belong in a log line. */
+const MAX_RAIZES_LOGADAS = 40;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -99,6 +103,31 @@ export async function GET(req: Request): Promise<NextResponse> {
         atual = escolherDescendenteTeste(node.children_categories ?? []);
       }
       if (categoryId == null) categoriaMotivo = 'sem-folha';
+    }
+
+    // ⚠️ **ERROR level, and the only detection mechanism there is.** This fires
+    // when OUR assumption about ML's catalogue stops holding — not when the
+    // operator did anything wrong — and it already happened once: ML documents
+    // «publique na categoria "Outros"» while MLB's actual root is
+    // "Mais Categorias", so the feature silently did nothing until someone drove
+    // it by hand.
+    //
+    // No test can catch a repeat. ML has **no sandbox** and its refresh_token is
+    // single-use and rotating, so no CI lane may ever hold real ML credentials
+    // (see this app's CLAUDE.md) — which means nothing automated can see the
+    // live tree. A log line is the entire early-warning system, so it names both
+    // what we expected AND what ML actually answered: a rename is then one look
+    // away rather than another round of manual testing.
+    if (categoriaMotivo != null) {
+      const vistos = raizes
+        .map((c) => c.name ?? c.id)
+        .slice(0, MAX_RAIZES_LOGADAS)
+        .join(' | ');
+      console.error(
+        `[mercado-livre/api] categoria de teste NÃO resolvida (${categoriaMotivo}). ` +
+          `Esperado um root chamado [${CATEGORIA_TESTE_RAIZ_NOMES.join(' | ')}]. ` +
+          `ML respondeu ${String(raizes.length)} roots: ${vistos}`,
+      );
     }
 
     return NextResponse.json({

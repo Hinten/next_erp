@@ -358,12 +358,12 @@ export function ListingForm({
               it" means picking a subcategory. One shared message for both sent
               them hunting for a setting that does not exist. */}
           {!testeConta.categoriaResolvida && (
-            <Text size="sm">
+            <Text size="sm" c="red" fw={500}>
               {testeConta.categoriaMotivo === 'sem-raiz'
-                ? 'O Mercado Livre não expõe uma categoria raiz chamada “Outros” nesta conta — escolha a categoria manualmente antes de publicar.'
+                ? 'O Mercado Livre não expõe nenhuma das categorias raiz esperadas nesta conta. Isso não deveria acontecer — provavelmente a árvore de categorias mudou. Escolha a categoria manualmente e avise a equipe.'
                 : testeConta.categoriaMotivo === 'sem-folha'
-                  ? 'A categoria “Outros” existe, mas nenhuma subcategoria final foi encontrada abaixo dela — escolha a categoria manualmente antes de publicar.'
-                  : 'Não foi possível usar a categoria “Outros” automaticamente — escolha uma categoria antes de publicar.'}
+                  ? 'A categoria raiz existe, mas nenhuma subcategoria final foi encontrada abaixo dela. Isso não deveria acontecer — provavelmente a árvore de categorias mudou. Escolha a categoria manualmente e avise a equipe.'
+                  : 'Não foi possível usar a categoria de teste automaticamente — escolha uma categoria antes de publicar.'}
             </Text>
           )}
           {/* ⚠️ Only meaningful once a category actually resolved. The route

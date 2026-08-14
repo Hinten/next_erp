@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
@@ -47,13 +47,21 @@ interface Body {
   descricao: string;
   categoryId: string | null;
   categoriaPath: string[] | null;
+  categoriaMotivo: string | null;
   listingTypeId: string | null;
   conta: { nickname: string | null; ehContaDeTeste: boolean };
 }
 
+let erro: ReturnType<typeof vi.spyOn>;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   __resetAllReadCaches();
+  erro = vi.spyOn(console, 'error').mockImplementation(() => {});
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.resolveChannelContext.mockResolvedValue({ integracaoId: 'i', accessToken: 'AT', account: {} });
   h.loadCtx.mockResolvedValue({ resolveChannelContext: h.resolveChannelContext });
@@ -128,6 +136,35 @@ describe('GET /api/marketplace/mercado-livre/anuncio-teste', () => {
     // And the listing type is queried for the LEAF, never the mid-tree node.
     expect(h.getCategoryListingTypes).toHaveBeenCalledWith('MLB5673');
     expect(body.listingTypeId).toBe('free');
+  });
+
+  // ⚠️ The log line IS the early-warning system, so it gets a test of its own.
+  // ML has no sandbox and its refresh_token is single-use and rotating, so no CI
+  // lane may hold real ML credentials — nothing automated can ever see the live
+  // tree. If ML renames the catch-all again (it is "Mais Categorias" today, not
+  // the "Outros" its docs name), this `console.error` in Cloud Logging is the
+  // only thing standing between that and another round of manual testing.
+  it('LOGS what it expected and what ML answered when no root matches', async () => {
+    h.listSiteCategories.mockResolvedValue([
+      { id: 'MLB1430', name: 'Calçados, Roupas e Bolsas' },
+      { id: 'MLB1000', name: 'Eletrônicos' },
+    ]);
+    const body = (await (await GET(req())).json()) as Body;
+    expect(body.categoriaMotivo).toBe('sem-raiz');
+
+    expect(erro).toHaveBeenCalledTimes(1);
+    const [linha] = erro.mock.calls[0] as [string];
+    expect(linha).toContain('[mercado-livre/api]');
+    expect(linha).toContain('sem-raiz');
+    // What we expected…
+    expect(linha).toContain('Mais Categorias');
+    // …and what ML actually said, which is what makes a rename diagnosable.
+    expect(linha).toContain('Eletrônicos');
+  });
+
+  it('stays quiet when the category DID resolve', async () => {
+    await GET(req());
+    expect(erro).not.toHaveBeenCalled();
   });
 
   it('gives up rather than crawling a pathological tree', async () => {
