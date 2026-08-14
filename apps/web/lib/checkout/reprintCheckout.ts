@@ -98,9 +98,14 @@ export async function reprintCheckoutEtiqueta(args: {
     );
     if (intFrete === null) return { status: 'no-integration' };
 
-    // ⚠️ NOT bounded: the registry can legitimately await the operator — the
-    // already-posted risk confirm and the ME buy modal both block on a human.
-    // A deadline here would cancel a dialog someone is reading.
+    // ⚠️ NOT bounded, for two independent reasons — either alone is sufficient.
+    // (1) The registry can legitimately await the OPERATOR: the already-posted
+    // risk confirm and the ME buy modal both block on a human, and a deadline
+    // would cancel a dialog someone is reading. (2) It reaches the side effect —
+    // `freightClient.imprimir` prints, and `comprarEtiqueta` BUYS a label. Every
+    // bounded stage in this file sits strictly before any side effect, which is
+    // what makes "timeout, then re-click" safe; a deadline past that point frees
+    // the mutex after the POST and the re-click buys a second label.
     return await emitirOuImprimirEtiqueta({
       db,
       pedido,
@@ -124,7 +129,9 @@ export type ReprintDanfeResult =
   /** the NF-e is still processing async — reprint again once it lands. */
   | { status: 'pending' }
   | { status: 'no-nfe'; notification: NotificationShape }
-  | { status: 'error'; notification: NotificationShape };
+  | { status: 'error'; notification: NotificationShape }
+  /** A stage outlived its deadline — see the etiqueta twin. */
+  | { status: 'timeout'; stage: string; message: string };
 
 /**
  * Reprint the DANFE for the pedido `pedidoId`: ensure it has a printable
@@ -137,8 +144,11 @@ export async function reprintCheckoutDanfe(args: {
   pedidoId: string;
   formato: CheckoutDanfeFormat;
   printJobFn?: typeof printJob;
+  /** Per-stage deadline; defaults to {@link REPRINT_STAGE_TIMEOUT_MS}. */
+  timeoutMs?: number;
 }): Promise<ReprintDanfeResult> {
   const { db, nfeClient, pedidoId, formato } = args;
+  const timeoutMs = args.timeoutMs ?? REPRINT_STAGE_TIMEOUT_MS;
   if (nfeClient === null) {
     return {
       status: 'no-nfe',
@@ -146,13 +156,36 @@ export async function reprintCheckoutDanfe(args: {
     };
   }
 
-  const nfe = await ensureNfeAprovada(db, nfeClient, pedidoId);
-  if (!nfe.ok) {
-    if (nfe.pending) return { status: 'pending' };
-    return { status: 'no-nfe', notification: nfe.notification };
-  }
-
   try {
+    // Bounded for the same reason as the etiqueta twin, and it matters just as
+    // much: this button shares `usePrintInFlight` with that one, and BOTH render
+    // `loading={printInFlight.inFlight}` — so a stall here spins both buttons
+    // and looks identical to the failure this module exists to eliminate.
+    // `ensureNfeAprovada` wraps an unbounded `getDocs` plus `client.emitir`, and
+    // the NF-e HTTP client sends no `AbortSignal` either.
+    const nfe = await withDeadline(
+      'carregar a NF-e',
+      ensureNfeAprovada(db, nfeClient, pedidoId),
+      timeoutMs,
+    );
+    if (!nfe.ok) {
+      if (nfe.pending) return { status: 'pending' };
+      return { status: 'no-nfe', notification: nfe.notification };
+    }
+
+    // ⚠️ `printDanfeForCheckout` is deliberately NOT bounded, and the reason is
+    // the invariant that makes every deadline in this file safe: each bounded
+    // stage sits BEFORE any side effect, so "timeout, then the operator
+    // re-clicks" cannot double-print. This call IS the side effect — a deadline
+    // here would free the mutex after the job reached the print agent, and the
+    // re-click would print a second copy. The same trap applies to
+    // `freightClient.imprimir` on the etiqueta side, and to any future attempt
+    // to push cancellation down into the transports: moving the line past a
+    // side effect silently converts a hang into a duplicate.
+    //
+    // (`ensureNfeAprovada` is safe to bound despite calling `emitir` because the
+    // server dedups — it returns the existing NF-e with `reused: true` rather
+    // than emitting a second one.)
     const outcome = await printDanfeForCheckout(
       nfeClient,
       pedidoId,
@@ -162,6 +195,9 @@ export async function reprintCheckoutDanfe(args: {
     );
     return { status: outcome };
   } catch (err) {
+    if (err instanceof DeadlineExceededError) {
+      return { status: 'timeout', stage: err.stage, message: err.message };
+    }
     if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
       return { status: 'error', notification: notificationForNFeError(err) };
     }

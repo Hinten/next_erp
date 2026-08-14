@@ -218,6 +218,64 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
   });
 });
 
+describe('reprintCheckoutDanfe — bounded on the same terms as its twin', () => {
+  it('returns a NAMED timeout when the NF-e lookup never settles', async () => {
+    // Not a nice-to-have symmetry: this button shares `usePrintInFlight` with
+    // the frete one and BOTH render `loading={printInFlight.inFlight}`, so a
+    // stall here spins both and looks identical to the bug being hardened
+    // against. Leaving it unbounded meant the operator could not tell which of
+    // the two buttons they were protected on.
+    vi.useFakeTimers();
+    try {
+      h.ensureNfeAprovada.mockReturnValue(new Promise(() => {})); // never settles
+
+      const p = reprintCheckoutDanfe({
+        db,
+        nfeClient: {} as never,
+        pedidoId: 'PEDA',
+        formato: 'simplificadoPdf',
+        timeoutMs: 30_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const res = await p;
+
+      expect(res).toMatchObject({ status: 'timeout', stage: 'carregar a NF-e' });
+      // Nothing was printed — the deadline sits before the side effect.
+      expect(h.printDanfeForCheckout).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT bound the print itself, so a timeout can never double-print', async () => {
+    // The invariant every deadline in this module rests on: each bounded stage
+    // is BEFORE a side effect, so "timeout, then re-click" is safe. If a future
+    // change wraps `printDanfeForCheckout` (or `freightClient.imprimir`), that
+    // stops being true and a re-click prints twice.
+    vi.useFakeTimers();
+    try {
+      h.ensureNfeAprovada.mockResolvedValue({ ok: true, nfeId: 'NFE1' });
+      h.printDanfeForCheckout.mockReturnValue(new Promise(() => {})); // hangs
+
+      let settled = false;
+      void reprintCheckoutDanfe({
+        db,
+        nfeClient: {} as never,
+        pedidoId: 'PEDA',
+        formato: 'simplificadoPdf',
+        timeoutMs: 1_000,
+      }).then(() => (settled = true));
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(settled).toBe(false);
+      expect(h.printDanfeForCheckout).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('reprintCheckoutDanfe', () => {
   it('ensures the NF-e then prints, keyed to the given pedidoId', async () => {
     h.ensureNfeAprovada.mockResolvedValue({ ok: true, nfeId: 'N1', chave: 'c', reused: true });
