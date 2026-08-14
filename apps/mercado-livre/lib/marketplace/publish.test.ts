@@ -1015,17 +1015,30 @@ describe('publishProduto — kit-aware stock (#797 E5)', () => {
     expect(payload.available_quantity).toBe(0);
   });
 
-  it('a VIRTUAL kit sends no available_quantity at all', async () => {
+  it('a VIRTUAL kit still sends a quantity — POST /items requires one', async () => {
     const db = new FakeDb();
-    seedKit(db, { ehKit: true, ehKitVirtual: true, componentesKit: {} });
+    seedKit(db, {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { 'comp-a': { quantidade: 1, limitarEstoque: true } },
+    });
+    db.seed('produtos', 'comp-a', { nome: 'Malha', paiId: null });
+    db.seed('produtos/comp-a/estoques', 'est-a', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 3,
+      quantidadeReservada: 0,
+    });
     const { api, mocks } = makeApi();
 
     await publishProduto(makeDeps(db, api), PROD);
 
-    // ML computes a virtual kit's stock from its components and refuses a
-    // manual value — the key must be ABSENT, not 0 (0 pauses the listing).
+    // The sweep's `quantidadeParaEnvio` returns null here meaning "do not push a
+    // stock update". Publish must NOT read that as "omit the field": this port
+    // never creates a real ML virtual kit (those are User-Products-only), so ML
+    // receives a plain POST /items and rejects one with no available_quantity.
     const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
-    expect(payload).not.toHaveProperty('available_quantity');
+    expect(payload).toHaveProperty('available_quantity');
+    expect(payload.available_quantity).toBe(3);
   });
 
   it('a plain produto still publishes its own stock', async () => {

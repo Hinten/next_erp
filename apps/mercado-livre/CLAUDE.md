@@ -196,16 +196,21 @@ these before "fixing" what looks wrong in `publishCore.ts`:
   is lost the moment a listing migrates. The full note is the ⚠️ in
   `packages/integrations/mercado-livre/src/mapping/itemPayload.ts`.
 - **A grupo outside ML's taxonomy is a *custom characteristic*** — sent as
-  `name` + `value_name` with **no `id`**, and ML allows exactly ONE per product
-  (`assemblePublishInput` raises a validation issue on a second). The old port
-  uppercased the group name into an invented id (`'Sabor'` → `{id:'SABOR'}`).
-- **Virtual kits are ML's to compute, and this port does not create them.** ML's
-  Virtual Kits are User-Products-only (`POST /items/kits`, `bundle.components[]`
-  of `user_product_id`s), immutable once published, and derive their stock from
-  the components — `available_quantity` is explicitly not settable by the seller.
-  Because a component is already variation-level, a produto **with variations
-  cannot be an ML kit at all**. Hence publish omits the quantity for
-  `ehKitVirtual` and sends the component-min for an ordinary kit.
+  `name` + `value_name` with **no `id`**, and ML allows exactly ONE per product,
+  counted over ALL variations. ML also requires every variation to combine the
+  **same** attributes; both are checked once across the children by
+  `validateCombinationsAcrossChildren`, never per child. The old port uppercased
+  the group name into an invented id (`'Sabor'` → `{id:'SABOR'}`).
+- **This port never creates an ML virtual kit, so publish must still send a
+  quantity.** ML's Virtual Kits are User-Products-only (`POST /items/kits`,
+  `bundle.components[]` of `user_product_id`s), immutable once published, and
+  derive their stock from the components; because a component is already
+  variation-level, a produto **with variations cannot be an ML kit at all**.
+  ⚠️ The sweep's `quantidadeParaEnvio` returns `null` for `ehKitVirtual` meaning
+  *"do not push a stock update"* — on the publish path that would omit a field
+  `POST /items` **requires**, making the produto unpublishable. `publish.ts`'s
+  `quantidadeParaPublicar` is the deliberate divergence: a virtual kit publishes
+  the component-min like any other kit.
 
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
 both price tables, so a price notification has nothing to do. It stays in

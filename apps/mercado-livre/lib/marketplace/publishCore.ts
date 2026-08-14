@@ -92,7 +92,7 @@ export interface PublishVariationChild {
   produto: PublishProduto;
   /** The child's `variacoesUid` fake paths (define its combination). */
   variacoesUid: string[];
-  availableQuantity: number | null;
+  availableQuantity: number;
   /** Existing ML variation id from the child's `variacaoMercadoLivre` link. */
   mlVariationId: number | string | null;
   pictureIds?: string[];
@@ -110,8 +110,8 @@ export interface AssemblePublishArgs {
   condicao: number | null;
   /** Price-list id resolved from the integração's `tabelaNormalOuterRef`. */
   priceListId: string | null;
-  /** Parent stock (ignored when legacy variations exist; null = do not send). */
-  availableQuantity: number | null;
+  /** Parent stock (ignored when legacy variations exist). */
+  availableQuantity: number;
   /** ML picture ids, already uploaded/cached by the IO layer. */
   pictures: Array<{ id: string }>;
   variations: PublishVariationChild[];
@@ -315,6 +315,41 @@ function combinationKey(attr: MlAttribute): string | null {
   return attr.id ?? attr.name ?? null;
 }
 
+/** A stored entry is only worth sending if it actually carries a value. */
+function storedIsValued(attr: MlAttribute): boolean {
+  return attr.value_id != null || attr.value_name != null;
+}
+
+/**
+ * Which stored combination keys may be merged WITHOUT breaking uniformity.
+ *
+ * ⚠️ ML requires every variation of an item to combine the SAME attributes
+ * ("você deve carregar o mesmo para todas as variações" — the Variações guide),
+ * and it rejects the whole item when they diverge. `storedCombinations` exists
+ * only for a child that already has a `variacaoMercadoLivre` link, so a child
+ * added in the ERP after the listing was published has none — merging per-child
+ * would hand ML `[SIZE, VOLTAGE]` for one sibling and `[SIZE]` for the next.
+ *
+ * So an attribute survives the republish only when EVERY child can supply a
+ * value for it. Dropping it otherwise restores the pre-#797 behaviour for that
+ * one attribute — the listing loses it, as before — which is strictly better
+ * than a rejection that takes the whole item down with it.
+ */
+export function mergeableStoredKeys(variations: PublishVariationChild[]): Set<string> {
+  if (variations.length === 0) return new Set();
+  const perChild = variations.map(
+    (c) =>
+      new Set(
+        (c.storedCombinations ?? [])
+          .filter(storedIsValued)
+          .map(combinationKey)
+          .filter((k): k is string => k != null),
+      ),
+  );
+  const [first, ...rest] = perChild;
+  return new Set([...first!].filter((key) => rest.every((s) => s.has(key))));
+}
+
 /**
  * Fold the combinations stored on the child's `variacaoMercadoLivre` link doc in
  * UNDER the grupo-derived ones.
@@ -328,10 +363,14 @@ function combinationKey(attr: MlAttribute): string | null {
  * duplicated combination id is an outright ML rejection. Stored entries with no
  * id cannot occur (the importer drops those, `importCore.ts:456`), but they are
  * keyed by `name` anyway so the dedupe holds if that ever changes.
+ *
+ * `allowedKeys` comes from {@link mergeableStoredKeys} and is what keeps the
+ * merge item-wide-uniform; pass `null` only when there is genuinely one child.
  */
 export function mergeStoredCombinations(
   derived: MlAttribute[],
   stored: MlAttribute[] | undefined,
+  allowedKeys: ReadonlySet<string> | null = null,
 ): MlAttribute[] {
   if (!stored?.length) return derived;
   const seen = new Set(derived.map(combinationKey).filter((k): k is string => k != null));
@@ -339,11 +378,61 @@ export function mergeStoredCombinations(
   for (const attr of stored) {
     const key = combinationKey(attr);
     if (key == null || seen.has(key)) continue;
-    if (attr.value_id == null && attr.value_name == null) continue; // valueless: nothing to send
+    if (allowedKeys != null && !allowedKeys.has(key)) continue;
+    if (!storedIsValued(attr)) continue; // valueless: nothing to send
     seen.add(key);
     out.push(attr);
   }
   return out;
+}
+
+/**
+ * The two things ML judges about `attribute_combinations` ACROSS variations, and
+ * which no per-child check can see (#797 E8 review):
+ *
+ *  1. every variation must expose the same set of combination keys — a divergent
+ *     sibling rejects the whole item;
+ *  2. at most ONE id-less custom characteristic may drive the product, counted
+ *     over the union. Two children each varying by a different single custom
+ *     ("Sabor" here, "Estampa" there) pass any per-child count while the item
+ *     varies by two.
+ *
+ * Raises at most one issue per rule, naming the divergence — a per-child message
+ * would repeat itself once per variation on a six-colour produto.
+ */
+export function validateCombinationsAcrossChildren(
+  variations: ReadonlyArray<{ nome: string; combos: MlAttribute[] }>,
+  issues: string[],
+): void {
+  if (variations.length === 0) return;
+
+  const keySets = variations.map((v) => ({
+    nome: v.nome,
+    keys: [...new Set(v.combos.map(combinationKey).filter((k): k is string => k != null))].sort(),
+  }));
+  const reference = keySets[0]!;
+  const divergent = keySets.filter((k) => k.keys.join('|') !== reference.keys.join('|'));
+  if (divergent.length > 0) {
+    const fmt = (k: (typeof keySets)[number]) => `"${k.nome}" [${k.keys.join(', ') || '—'}]`;
+    issues.push(
+      `as variações não combinam os MESMOS atributos, e o Mercado Livre rejeita o anúncio ` +
+        `inteiro nesse caso: ${fmt(reference)} vs ${divergent.map(fmt).join(', ')}. ` +
+        `Preencha o atributo que falta em todas as variações.`,
+    );
+  }
+
+  const customNames = [
+    ...new Set(
+      variations.flatMap((v) => v.combos.filter((c) => c.id == null).map((c) => c.name ?? '?')),
+    ),
+  ];
+  if (customNames.length > 1) {
+    issues.push(
+      `o Mercado Livre aceita apenas UMA característica personalizada por produto, e este ` +
+        `varia por ${customNames.length} (${customNames.map((n) => `"${n}"`).join(', ')}). ` +
+        `Vincule os grupos a atributos do ML ou reduza a um só.`,
+    );
+  }
 }
 
 /**
@@ -364,10 +453,15 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
   }
   if (args.pictures.length === 0) issues.push('produto sem fotos');
 
+  // Only stored attributes EVERY child can supply may be merged, or the
+  // republish hands ML variations with divergent combination sets.
+  const mergeable = mergeableStoredKeys(args.variations);
+
   const variations: ItemVariationInput[] = args.variations.map((child) => {
     const combos = mergeStoredCombinations(
       combinationsFromVariacoes(child.variacoesUid, args.grupos, child.produto.nome, issues),
       child.storedCombinations,
+      mergeable,
     );
     if (combos.length === 0) {
       issues.push(`variação "${child.produto.nome}" sem atributos de combinação`);
@@ -395,19 +489,6 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
         });
       }
     }
-    // ML allows a product to vary by at most ONE custom characteristic
-    // ("Característica personalizada" — only one attribute outside its taxonomy
-    // may drive the variations). Two would be rejected item-wide, so name them
-    // here instead of letting ML answer with a generic 400.
-    const customs = finalCombos.filter((c) => c.id == null);
-    if (customs.length > 1) {
-      const nomes = customs.map((c) => `"${c.name ?? '?'}"`).join(', ');
-      issues.push(
-        `variação "${child.produto.nome}": o Mercado Livre aceita apenas UMA característica ` +
-          `personalizada por produto, e este varia por ${customs.length} (${nomes}). ` +
-          `Vincule os grupos a atributos do ML ou reduza a um só.`,
-      );
-    }
     return {
       mlVariationId: child.mlVariationId,
       produtoId: child.produto.id,
@@ -418,6 +499,14 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       attributes: attrs,
     };
   });
+
+  validateCombinationsAcrossChildren(
+    variations.map((v, i) => ({
+      nome: args.variations[i]!.produto.nome,
+      combos: [...v.attributeCombinations],
+    })),
+    issues,
+  );
 
   if (issues.length > 0) throw new MercadoLivrePublishError(issues);
 

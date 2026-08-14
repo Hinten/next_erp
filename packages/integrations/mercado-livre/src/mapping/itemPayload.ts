@@ -60,13 +60,7 @@ export interface ItemVariationInput {
    * orders sort as 0 (first), matching `models.dart:1392`'s `?? 0`.
    */
   order?: number | null;
-  /**
-   * `null` = send NO `available_quantity` for this variation. That is the
-   * virtual-kit case: ML derives a kit's stock from its components and refuses
-   * to have it set by hand, so the components' own listings carry it instead
-   * (`quantidadeParaEnvio` returns null; legacy `models.dart:1787-1795`).
-   */
-  availableQuantity: number | null;
+  availableQuantity: number;
   /** ML picture ids; when empty the parent's pictures are inherited. */
   pictureIds?: ReadonlyArray<string>;
   /** Combination attributes (SIZE/COLOR…) that define this variation. */
@@ -175,7 +169,7 @@ function buildVariationPayload(
   const pictureIds = v.pictureIds && v.pictureIds.length > 0 ? v.pictureIds : ctx.parentPictureIds;
   out.picture_ids = [...pictureIds];
   out.attribute_combinations = v.attributeCombinations.map(attributeToMercadoLivre);
-  if (v.availableQuantity != null) out.available_quantity = v.availableQuantity;
+  out.available_quantity = v.availableQuantity;
   if (ctx.price != null) out.price = ctx.price;
   return out;
 }

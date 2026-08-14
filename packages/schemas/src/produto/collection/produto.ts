@@ -84,14 +84,19 @@ export const produtoSchema = z
      * stamp a sale writes (ADR 0014) — because the channels that DO support
      * this upload shape consume that signal.
      *
-     * Mercado Livre is why both the ML sweep AND ML publish decline to send a
-     * quantity for a virtual kit (`quantidadeParaEnvio` → null): its own Virtual
-     * Kits feature computes a kit's stock from the components and refuses a
-     * manually set `available_quantity` outright, so the components' listings
-     * carrying it IS the mechanism there. This port does not create ML kits —
+     * Mercado Livre has no usable form of it, which is why the ML **sweep**
+     * declines to send a quantity for a virtual kit (`quantidadeParaEnvio` →
+     * null). ML's own Virtual Kits do compute stock from the components, but
      * they are User-Products-only (`POST /items/kits`, `bundle.components[]` of
-     * `user_product_id`s), immutable once published, and, because a component is
-     * already variation-level, cannot represent a produto that has variations.
+     * `user_product_id`s), immutable once published, and — because a component
+     * is already variation-level — cannot represent a produto that has
+     * variations, so this port never creates one.
+     *
+     * ⚠️ ML **publish** therefore does the opposite of the sweep: it sends the
+     * component-min like any other kit (`quantidadeParaPublicar`). `POST /items`
+     * requires `available_quantity`, so omitting it there does not make ML
+     * derive anything — it makes the produto unpublishable.
+     *
      * That is a per-channel limitation, **not** a property of virtual kits, and
      * it must not be generalized into one.
      */

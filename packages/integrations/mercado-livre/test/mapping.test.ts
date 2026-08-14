@@ -166,18 +166,6 @@ describe('buildItemPayload — legacy variations', () => {
     expect(variations[1]!.id).toBeUndefined(); // id only rides on update
   });
 
-  it('omits available_quantity for a variation that must not send one (#797 E5)', () => {
-    // A virtual kit: ML derives the kit's stock from its components and refuses
-    // a manual value, so `quantidadeParaEnvio` returns null and the key must be
-    // ABSENT — not 0, which would pause the listing.
-    const data = buildItemPayload({
-      ...base,
-      variations: [{ ...base.variations[0]!, availableQuantity: null }],
-    });
-    const variations = data.variations as Array<Record<string, unknown>>;
-    expect(variations[0]).not.toHaveProperty('available_quantity');
-  });
-
   it('sends an id-less custom characteristic by name (#797 E8)', () => {
     // ML identifies an attribute outside its taxonomy by `name`; the old port
     // invented `{ id: 'SABOR' }`. An id-less combination also has no parent

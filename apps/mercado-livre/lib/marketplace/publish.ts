@@ -148,11 +148,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const linkDocId = linkDoc?.docId ?? produtoMercadoLivreLinkCollection.newDocId(db, { produtoId });
 
   // ---- Stock (integração's depósito when set; else every depósito) -------
-  // Kit-aware, via the stock sweep's own `quantidadeParaEnvio` (#797 E5): a kit
-  // publishes what its components can assemble, not its own — usually zero —
-  // stock, and a VIRTUAL kit publishes no quantity at all. ML computes a virtual
-  // kit's stock from its components and refuses a manual value, so the
-  // components' own listings carrying it is the whole mechanism.
+  // Kit-aware (#797 E5): a kit publishes what its components can assemble, not
+  // its own — usually zero — stock.
   //
   // ⚠️ No `permiteVendaSemEstoque` floor: the legacy lifted a backorder produto
   // at zero to 1 (models.dart:1487-1497), but that field is being retired — see
@@ -163,22 +160,18 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     [produto, ...children.map((c) => c.data)],
     depositoId,
   );
-  const availableQuantity = quantidadeParaEnvio({
-    ehKit: produto.ehKit,
-    ehKitVirtual: produto.ehKitVirtual,
-    componentesKit: produto.componentesKit,
-    ownDisponivel: await loadDisponivel(db, produtoId, depositoId),
-    disponivelByProdutoId: componentDisponivel,
-  });
+  const availableQuantity = quantidadeParaPublicar(
+    produto,
+    await loadDisponivel(db, produtoId, depositoId),
+    componentDisponivel,
+  );
   const variations: PublishVariationChild[] = [];
   for (const child of children) {
-    const childAvailable = quantidadeParaEnvio({
-      ehKit: child.data.ehKit,
-      ehKitVirtual: child.data.ehKitVirtual,
-      componentesKit: child.data.componentesKit,
-      ownDisponivel: await loadDisponivel(db, child.id, depositoId),
-      disponivelByProdutoId: componentDisponivel,
-    });
+    const childAvailable = quantidadeParaPublicar(
+      child.data,
+      await loadDisponivel(db, child.id, depositoId),
+      componentDisponivel,
+    );
     // No parent link for THIS integração yet ⇒ the child cannot have a
     // legitimate existing variation on this listing (any variacao docs it
     // holds belong to other accounts).
@@ -772,12 +765,40 @@ function storedCombinationsOf(raw: Record<string, unknown> | undefined): MlAttri
 }
 
 /**
+ * The `available_quantity` to publish for one produto.
+ *
+ * ⚠️ This is deliberately NOT `quantidadeParaEnvio`'s `null` contract. In the
+ * stock SWEEP, `null` means "do not push a stock update for this produto" — a
+ * virtual kit's quantity is not ours to sync, because its components are what
+ * move. On the PUBLISH path there is no such option: `POST /items` requires
+ * `available_quantity` on an item without variations, so omitting it does not
+ * make ML derive anything — it makes the produto unpublishable. ML's own Virtual
+ * Kits, which really do derive their stock, are a User-Products feature
+ * (`POST /items/kits`) this port never creates.
+ *
+ * So a virtual kit is published as the ordinary kit it looks like on this wire:
+ * the component-min, falling back to its own stock when nothing constrains it.
+ */
+function quantidadeParaPublicar(
+  produto: { ehKit: boolean; ehKitVirtual: boolean; componentesKit: ComponentesKit | null },
+  ownDisponivel: number,
+  disponivelByProdutoId: Record<string, number>,
+): number {
+  return (
+    quantidadeParaEnvio({
+      ehKit: produto.ehKit || produto.ehKitVirtual,
+      ehKitVirtual: false, // see the ⚠️ above — the sweep's "never send" is not ours
+      componentesKit: produto.componentesKit,
+      ownDisponivel,
+      disponivelByProdutoId,
+    }) ?? ownDisponivel
+  );
+}
+
+/**
  * `disponivel` for every produto named as a kit component by the parent or by
  * one of its variation children, at the same depósito — the map
- * `quantidadeParaEnvio` needs to take a kit's component-min.
- *
- * Virtual kits are skipped: `quantidadeParaEnvio` short-circuits on them before
- * looking at any component, so loading theirs would be pure reads for nothing.
+ * `quantidadeParaPublicar` needs to take a kit's component-min.
  */
 async function loadComponentDisponivel(
   db: Firestore,
@@ -790,7 +811,7 @@ async function loadComponentDisponivel(
 ): Promise<Record<string, number>> {
   const ids = new Set<string>();
   for (const p of produtos) {
-    if (!p.ehKit || p.ehKitVirtual) continue;
+    if (!p.ehKit && !p.ehKitVirtual) continue;
     for (const [componenteId] of componentesKitEntries(p.componentesKit)) ids.add(componenteId);
   }
   const out: Record<string, number> = {};

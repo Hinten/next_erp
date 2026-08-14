@@ -299,6 +299,117 @@ describe('assemblePublishInput', () => {
     ]);
   });
 
+  it('only merges a stored attribute EVERY child can supply (review #1064)', () => {
+    // child-2 was added in the ERP after the listing was published, so it has no
+    // variation link and no stored VOLTAGE. Merging per-child would send
+    // [SIZE, VOLTAGE] for one sibling and [SIZE] for the other — ML requires the
+    // same attributes on every variation and rejects the whole item.
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: 991,
+          storedCombinations: [{ id: 'VOLTAGE', value_name: '220V' }],
+        },
+        {
+          produto: { ...produto, id: 'child-2', nome: 'Camiseta G' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+          availableQuantity: 2,
+          mlVariationId: null,
+        },
+      ],
+    });
+    expect(input.variations!.map((v) => v.attributeCombinations)).toEqual([
+      [{ id: 'SIZE', value_name: 'M' }],
+      [{ id: 'SIZE', value_name: 'G' }],
+    ]);
+  });
+
+  it('merges a stored attribute when ALL children carry it', () => {
+    const withVoltage = (id: string, nome: string, uid: string, valor: string) => ({
+      produto: { ...produto, id, nome },
+      variacoesUid: [uid],
+      availableQuantity: 4,
+      mlVariationId: 1,
+      storedCombinations: [{ id: 'VOLTAGE', value_name: valor }],
+    });
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        withVoltage('child-1', 'M', 'documents/grupoDeVariacoes/g-tam/variacoes/v-m', '220V'),
+        withVoltage('child-2', 'G', 'documents/grupoDeVariacoes/g-tam/variacoes/v-g', '110V'),
+      ],
+    });
+    expect(input.variations!.map((v) => v.attributeCombinations)).toEqual([
+      [
+        { id: 'SIZE', value_name: 'M' },
+        { id: 'VOLTAGE', value_name: '220V' },
+      ],
+      [
+        { id: 'SIZE', value_name: 'G' },
+        { id: 'VOLTAGE', value_name: '110V' },
+      ],
+    ]);
+  });
+
+  it('blocks siblings whose grupos give them DIFFERENT combination sets', () => {
+    // Pre-existing hazard the per-child checks could never see: one child is in
+    // two grupos, its sibling in one. ML rejects the item, not the variation.
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Camiseta M Preta' },
+            variacoesUid: [
+              'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+              'documents/grupoDeVariacoes/g-cor/variacoes/v-preto',
+            ],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+          {
+            produto: { ...produto, id: 'child-2', nome: 'Camiseta G' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+            availableQuantity: 2,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/não combinam os MESMOS atributos/);
+  });
+
+  it('blocks TWO children each varying by a DIFFERENT single custom characteristic', () => {
+    // One custom apiece passes any per-child count, but the ITEM varies by two.
+    const doisCustoms: PublishGrupoVariacao[] = [
+      { grupoId: 'g-a', nome: 'Sabor', tipo: 0, variacoes: [{ id: 'v-a', nome: 'Menta' }] },
+      { grupoId: 'g-b', nome: 'Estampa', tipo: 0, variacoes: [{ id: 'v-b', nome: 'Onça' }] },
+    ];
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        grupos: doisCustoms,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Menta' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-a/variacoes/v-a'],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+          {
+            produto: { ...produto, id: 'child-2', nome: 'Onça' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-b/variacoes/v-b'],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/apenas UMA característica personalizada/);
+  });
+
   it('blocks a child varying by TWO custom characteristics — ML allows one', () => {
     const doisCustoms: PublishGrupoVariacao[] = [
       { grupoId: 'g-a', nome: 'Sabor', tipo: 0, variacoes: [{ id: 'v-a', nome: 'Menta' }] },
@@ -321,23 +432,6 @@ describe('assemblePublishInput', () => {
         ],
       }),
     ).toThrow(/apenas UMA característica personalizada/);
-  });
-
-  it('a null variation quantity survives assembly (virtual kit — #797 E5)', () => {
-    const input = assemblePublishInput({
-      ...baseArgs,
-      availableQuantity: null,
-      variations: [
-        {
-          produto: { ...produto, id: 'child-1', nome: 'Kit M' },
-          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
-          availableQuantity: null,
-          mlVariationId: null,
-        },
-      ],
-    });
-    expect(input.availableQuantity).toBeNull();
-    expect(input.variations![0]!.availableQuantity).toBeNull();
   });
 
   it('keeps the parent SELLER_SKU for a User-Products seller even with children', () => {
