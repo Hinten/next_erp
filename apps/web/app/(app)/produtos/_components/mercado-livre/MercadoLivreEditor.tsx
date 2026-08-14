@@ -21,13 +21,18 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
-import { INTEGRACAO_TIPO, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  INTEGRACAO_TIPO,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  type ProdutoMercadoLivreLink,
+} from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivreLinkCollection';
 import {
   MercadoLivreClientHttpError,
@@ -45,7 +50,11 @@ import {
 import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
 import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
-import { ListingForm } from './ListingForm';
+import {
+  resumoSalvarAnuncios,
+  type ListingSaveOutcome,
+} from '@/lib/mercado-livre/listingSaveOutcome';
+import { ListingForm, type ListingSaveFn } from './ListingForm';
 import { ListingStatusStrip } from './ListingStatusStrip';
 
 /**
@@ -128,6 +137,26 @@ export function MercadoLivreEditor({
   // schema requires a non-empty `title`, so a draft built from '' would fail
   // its write-side parse rather than save something blank.
   const produtoNome = produtoSnap.data?.data.nome ?? '';
+  // The listing's condição is derived from this, not edited per listing. Read
+  // from the SAVED doc deliberately: publish sends the saved produto, so showing
+  // an unsaved toggle would promise a value publish would not use — the same
+  // reason the card already warns "a publicação envia os dados salvos".
+  const produtoEhUsado = produtoSnap.data?.data.ehUsado ?? false;
+  // ⚠️ `extraData.condicao` is the SECOND input publish resolves the condition
+  // from (`resolveCondicaoAnuncio`), and it lives in its own singleton
+  // subcollection — nothing about it is derivable from the produto doc. Without
+  // it this tab showed "Novo" for a produto marked **Recondicionado** two tabs
+  // away while the first publish sent `used`. Memoized for the same reason as
+  // `produtoDocRef`: `docRef()` returns a fresh object per call, which would
+  // re-subscribe the listener on every render.
+  const extraDataRef = useMemo(
+    () => produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID),
+    [db, produtoId],
+  );
+  const extraDataSnap = useDocSnapshot(extraDataRef);
+  // null while loading, so the derivation falls through to the next tier rather
+  // than asserting "novo" for a beat and flipping.
+  const produtoCondicao = extraDataSnap.data?.data.condicao ?? null;
 
   const [publishing, setPublishing] = useState<string | null>(null);
   /** The conta whose draft is being created, if any. */
@@ -175,20 +204,61 @@ export function MercadoLivreEditor({
     [onDirtyChange],
   );
 
-  const flushesRef = useRef(new Map<string, () => Promise<void>>());
-  const registerFlush = useCallback((linkDocId: string, flush: (() => Promise<void>) | null) => {
-    if (flush) flushesRef.current.set(linkDocId, flush);
+  // Each listing form registers ONE save closure, invoked with the mode that
+  // decides how a failure is reported: `'flush'` throws `AfterSaveBlockedError`
+  // for `ObjectView`'s `onAfterSave`, `'button'` notifies and swallows.
+  const flushesRef = useRef(new Map<string, ListingSaveFn>());
+  const registerFlush = useCallback((linkDocId: string, save: ListingSaveFn | null) => {
+    if (save) flushesRef.current.set(linkDocId, save);
     else flushesRef.current.delete(linkDocId);
   }, []);
 
   useEffect(() => {
     if (!flushRef) return;
-    flushRef.current = () => flushListings(flushesRef.current.values());
+    flushRef.current = () =>
+      flushListings([...flushesRef.current.values()].map((save) => () => save('flush')));
     const ref = flushRef;
     return () => {
       ref.current = null;
     };
   }, [flushRef]);
+
+  /** The conta whose "Salvar anúncio" is in flight, if any. */
+  const [savingConta, setSavingConta] = useState<string | null>(null);
+
+  /**
+   * Save every dirty listing in ONE conta card.
+   *
+   * Per-card rather than per-listing because the button now sits beside
+   * Publicar, which is itself a conta-level action — and a conta can hold several
+   * listings on one produto (#781), so a single button that saved only the first
+   * would silently discard edits to the others.
+   *
+   * `'button'` mode: each form reports its own failure (notification or conflict
+   * modal) and does not throw, so one conflict cannot abandon a sibling's save.
+   *
+   * ⚠️ …with ONE exception, and it is why the outcomes are collected. A listing
+   * whose fields are invalid returns silently — its errors render inline, above
+   * this button. Driving N listings from one click means listing A can be skipped
+   * that way while listing B fires an unqualified green "Anúncio salvo." for the
+   * same click, so the operator reads success for a save that did half the job.
+   * A per-listing button could not produce that; a conta-level one can, so the
+   * shortfall has to be said out loud.
+   */
+  const handleSalvarAnuncios = useCallback(async (contaId: string, linkIds: readonly string[]) => {
+    setSavingConta(contaId);
+    try {
+      const outcomes: ListingSaveOutcome[] = [];
+      for (const linkId of linkIds) {
+        const save = flushesRef.current.get(linkId);
+        if (save) outcomes.push(await save('button'));
+      }
+      const resumo = resumoSalvarAnuncios(outcomes);
+      if (resumo) notifications.show({ color: resumo.color, message: resumo.message });
+    } finally {
+      setSavingConta(null);
+    }
+  }, []);
 
   /**
    * Create the link doc a fresh produto has never had.
@@ -413,8 +483,23 @@ export function MercadoLivreEditor({
             // the same card would give the operator two inputs for one value
             // (and hand the e2e locator two elements to choose between).
             const needsListingType = contaLinks.length === 0;
+            // ⚠️ At least one PUBLISHED listing, not merely a link doc. A draft from
+            // "Preparar anúncio" has `id == null`, and the stock push has nothing to
+            // send for it — the backend answers `sem-id-externo` / "O anúncio ainda
+            // não foi publicado no Mercado Livre". Offering the button there is a
+            // guaranteed no-op dressed as an action. `some`, not `every`, so a conta
+            // holding one published listing and one draft keeps the button.
+            //
+            // ⚠️ Empty string counts as NOT published, matching the backend
+            // exactly: `bulkEstoquePlan` takes `link.id !== ''` as its test and
+            // answers `sem-item-id` otherwise. The schema permits `''` —
+            // `id: z.string().nullable().default(null)` carries no `.min(1)` — and
+            // the Flutter app is a live concurrent writer to these same docs, so
+            // a `!= null` check leaves the same dead button one value narrower.
+            const hasPublished = contaLinks.some((l) => (l.data.id ?? '') !== '');
             const issues = blockedIssues[conta.id] ?? [];
-            const contaDirty = contaLinks.some((l) => dirtyIds.has(l.id));
+            const dirtyLinkIds = contaLinks.filter((l) => dirtyIds.has(l.id)).map((l) => l.id);
+            const contaDirty = dirtyLinkIds.length > 0;
             const publishBlocked = produtoDirty || contaDirty;
             // Publish refuses a create with no category ("categoria do Mercado
             // Livre não definida"). Saying so here beats a round trip that comes
@@ -458,11 +543,18 @@ export function MercadoLivreEditor({
                           {stockResultByLink[l.id]!.mensagem}
                         </Text>
                       )}
+                      {/* The read-only publication facts come BEFORE the editable
+                          form: they are what the operator opens the tab to check
+                          (is it live? at what price? what did ML reject?), and
+                          they were previously buried under a long form. */}
+                      <ListingDetails link={l.data} produtoFotoCount={produtoFotoCount} />
                       <ListingForm
                         produtoId={produtoId}
                         linkDocId={l.id}
                         integracaoId={conta.id}
                         produtoNome={produtoNome}
+                        produtoEhUsado={produtoEhUsado}
+                        produtoCondicao={produtoCondicao}
                         link={l.data}
                         db={db}
                         canWrite={canPublish}
@@ -470,7 +562,6 @@ export function MercadoLivreEditor({
                         onDirtyChange={handleDirtyChange}
                         registerFlush={registerFlush}
                       />
-                      <ListingDetails link={l.data} produtoFotoCount={produtoFotoCount} />
                     </Stack>
                   ))}
 
@@ -485,7 +576,33 @@ export function MercadoLivreEditor({
                   )}
 
                   <Group align="flex-end" gap="sm">
-                    {contaLinks.length > 0 && (
+                    {contaDirty && (
+                      // Beside Publicar on purpose: saving the anúncio and
+                      // publishing it are the two halves of one decision, and this
+                      // button previously sat at the far end of a long form where
+                      // it read as unrelated to the action group.
+                      //
+                      // ⚠️ Gated on `contaDirty` (derived from `dirtyIds`), NOT on
+                      // the form's RHF `isDirty` as the old button was. `dirtyIds`
+                      // is fed by `onDirtyChange(id, isDirty || attrDirty)`, so an
+                      // ATTRIBUTE-only edit now enables it — previously that edit
+                      // left the only save button greyed out and reachable solely
+                      // through the produto's own "Salvar alterações".
+                      <Button
+                        type="button"
+                        variant="light"
+                        onClick={() => void handleSalvarAnuncios(conta.id, dirtyLinkIds)}
+                        loading={savingConta === conta.id}
+                        disabled={disabled || !canPublish || savingConta !== null}
+                      >
+                        {/* Plural counts the listings it will actually SAVE, not
+                            the listings in the card — "Salvar anúncios" beside a
+                            card holding two listings of which one is dirty would
+                            promise more than the click does. */}
+                        {dirtyLinkIds.length > 1 ? 'Salvar anúncios' : 'Salvar anúncio'}
+                      </Button>
+                    )}
+                    {hasPublished && (
                       // Deliberately NOT disabled while a listing is latched: the
                       // push is precisely the operation whose skip row explains WHY
                       // it is latched, and after a re-arm it is how the operator

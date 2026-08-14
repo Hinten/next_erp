@@ -100,8 +100,8 @@ permanent compat code pays for something already bought.
   handle's `merge()`, never `setDoc(ref, patch, { merge: true })` on a converted ref — the
   converter full-parses the patch and the merge mask then overwrites stored siblings.
 - Emulators are used only in named carve-outs (`ci-storage.yml`, `ci-rules.yml`,
-  `e2e-emulator.yml`). Every other e2e spec hits staging. The Pipelines API does not run in
-  the emulator.
+  `ci-mercado-livre.yml`, `e2e-emulator.yml`). Every other e2e spec hits staging. The
+  Pipelines API does not run in the emulator.
 - Eight custom ESLint rules live in `packages/config-eslint/rules/`. Flat config **replaces**
   a rule by name rather than merging, so a workspace that redeclares `no-restricted-syntax`
   silently drops the base selectors.

@@ -21,6 +21,42 @@ export const CONDICAO_PRODUTO_LABELS: Record<CondicaoProduto, string> = {
   3: 'Recondicionado',
 };
 
+/** Which input decided a listing's condition — so a screen can name it. */
+export type FonteCondicaoAnuncio = 'produto' | 'extraData' | 'anuncio';
+
+/**
+ * The condition a marketplace listing publishes with, and WHICH field decided it.
+ *
+ * ⚠️ Shared on purpose. This lives here rather than beside the publish payload
+ * because two very different callers need the same answer and any drift between
+ * them is invisible: `apps/mercado-livre` builds the wire value, and the produto
+ * editor shows the operator what that value will be. A screen that mirrored only
+ * `ehUsado` displayed "Novo" for a produto marked **Recondicionado** in the
+ * ExtraData tab while the first publish sent `used` — two copies that could only
+ * disagree, with one side a screen and the other a payload.
+ *
+ * The precedence is the produto's, not the listing's: `ehUsado` wins, then
+ * `extraData.condicao`, and the stored `link.condition` is only a last resort.
+ * ⚠️ Note it is also a CREATE-only field at Mercado Livre — changing any of these
+ * after publication does not reach an existing listing.
+ */
+export function resolveCondicaoAnuncio(input: {
+  /** The produto's own "Produto usado" switch. */
+  ehUsado: boolean;
+  /** `extraData.condicao`; null when the singleton has not loaded or is absent. */
+  condicao: number | null;
+  /** What the link doc currently stores, if anything. */
+  condicaoAnuncio?: 'new' | 'used' | null;
+}): { condition: 'new' | 'used'; fonte: FonteCondicaoAnuncio } {
+  if (input.ehUsado) return { condition: 'used', fonte: 'produto' };
+  // 2 (usado) and 3 (recondicionado) both map to the only other value the old
+  // CONDITION enum supported; 1 (novo) leaves the decision to the next tier.
+  if (input.condicao != null && input.condicao !== CONDICAO_PRODUTO.novo) {
+    return { condition: 'used', fonte: 'extraData' };
+  }
+  return { condition: input.condicaoAnuncio ?? 'new', fonte: 'anuncio' };
+}
+
 /** Google Shopping `age_group` (string enum). */
 export const googleAgeGroupSchema = z.enum(['newborn', 'infant', 'toddler', 'kids', 'adult']);
 export type GoogleAgeGroup = z.infer<typeof googleAgeGroupSchema>;

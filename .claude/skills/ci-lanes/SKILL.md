@@ -251,18 +251,67 @@ mitigates the staleness it leaves.
   asserts `'2'`; `NFE_AMBIENTE` (accepts `'producao'`, defaults `'homologacao'`)
   is set in no workflow and is neither a repo variable nor a secret; the offline
   job excludes the live suites so it never opens a socket.
-- **`ci.yml` excludes six workspaces** from `turbo run test` —
-  `@delfrance/{nfe-app,integrations-nfe,melhor-envio-app,integrations-freight-br,storage,functions}`
+- **`ci.yml` excludes eight workspaces** from `turbo run test` —
+  `@delfrance/{nfe-app,integrations-nfe,melhor-envio-app,integrations-freight-br,storage,functions,mercado-livre-app,integrations-mercado-livre}`
   — each owned by exactly one domain lane. If that lane skips, those tests run
   nowhere. That is why the domain lanes matter and why their scope must be derived.
-- **`ci-mercado-livre` is excluded from nothing, and still owns tests alone.** The
-  ML workspaces are *not* in that exclusion list, so `ci.yml` runs their unit
-  suite on every PR. But `apps/mercado-livre/vitest.config.ts` excludes
-  `**/*.firestore.test.ts` from that run by design — those live under
-  `test:firestore` / `vitest.firestore.config.ts` and are invoked by this lane
-  only. So the "tests run nowhere" hazard applies here too, just narrower
-  (integration coverage, not total coverage). Do not reason about ownership from
-  the `ci.yml` exclusion list alone; check the workspace's `test` script too.
+  An exclusion is a **promise** that the owning lane runs them; never add a filter
+  without an owner on the other side.
+- **A lane's `test` script is not always `test`.** `ci-mercado-livre` needs two
+  jobs because `apps/mercado-livre` splits its suite across two vitest configs:
+  `vitest.config.ts` excludes `**/*.firestore.test.ts`, `vitest.firestore.config.ts`
+  includes only those. A file matching neither glob runs in NO job. When adding a
+  lane, read the workspace's scripts — do not assume `turbo run test` covers it.
+
+### Moving tests into a lane is not a latency win — measured
+
+Before assuming an exclusion speeds `ci.yml` up, note what was measured on
+2026-08-13 when the ML tests moved:
+
+| | |
+| --- | --- |
+| `ci.yml` Test step, wall | 166 s |
+| `@delfrance/web` alone | **138 s** ← critical path |
+| `@delfrance/mercado-livre-app` | 74.8 s |
+| `@delfrance/integrations-mercado-livre` | 9.2 s |
+| ML share of total CPU | 84 s / 487 s = 17 % |
+
+turbo runs these in parallel and `web` is 83 % of the step's wall time, so
+removing 17 % of the CPU saved ~0 s. The reason to move tests into a lane is
+**ownership and failure attribution** — the failure lands on `CI gate (<lane>)`
+instead of the catch-all `lint-typecheck-test`. Anything that shortens `ci.yml`
+has to shorten `@delfrance/web`.
+
+### ⚠️ `turbo run <task>` has TWO ways to exit 0 having run nothing
+
+Both verified in this repo:
+
+| | command | output | exit |
+| --- | --- | --- | --- |
+| bad package **name** | `turbo run test --filter '@delfrance/nope'` | `x No package found with name …` | **0** |
+| missing **script** | `turbo run test --filter <pkg with no "test">` | `Tasks: 0 successful, 0 total` | **0** |
+
+⚠️ **The second one is not shared with pnpm, and that asymmetry has already bitten
+a review.** `pnpm --filter X run <script>` exits **1** when the script is missing —
+only a bad *name* is unsafe there. So a `pnpm ls` name-check is a sufficient guard
+in front of a `pnpm --filter` step and an **insufficient** one in front of a
+`turbo run` step. Do not copy a guard across the two tools without re-deriving
+which failure modes it covers.
+
+⚠️ **Counting `task == "test"` in `--dry=json` is also not enough** — turbo still
+emits an entry for a package with no script, tagged `"command": "<NONEXISTENT>"`.
+The guard must exclude those:
+
+```bash
+n=$(pnpm turbo run test --dry=json --filter A --filter B \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s).tasks;console.log(t.filter(x=>x.task==="test"&&x.command&&x.command!=="<NONEXISTENT>").length)})')
+[ "$n" = "2" ] || { echo "::error::resolved $n runnable test tasks, expected 2"; exit 1; }
+```
+
+A bad name makes turbo emit no JSON at all, so `JSON.parse` throws and `pipefail`
+fails the step — one check, both modes. `ci-mercado-livre.yml`'s `ml-offline` job
+is the reference implementation. This matters most in a lane whose tests `ci.yml`
+no longer runs: there, either mode is **total** silent loss of coverage.
 
 ## ⚠️ Assertion 1 can go red on `main` after passing on every PR
 

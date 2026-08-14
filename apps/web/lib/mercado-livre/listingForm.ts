@@ -19,6 +19,11 @@
  *  - **`channels`** — Mercado Shops is discontinued, so a listing is always
  *    `['marketplace']` and there is nothing to choose.
  *  - **`tarifaFrete`** is an internal figure, not something ML is told.
+ *  - **`condition`** is `produto.ehUsado`. Whether a product is used is a fact
+ *    about the PRODUCT, not about one of its listings, and two editable copies
+ *    could only disagree. ⚠️ It is also **create-only** at ML
+ *    (`buildItemPayload`, inside `if (!input.isUpdate)`), so an edit here could
+ *    never have reached an existing listing anyway — it only looked like it did.
  *  - **`fotos`** come from the produto's own Fotos tab; publish derives the
  *    listing pictures from `produto.fotos`.
  *
@@ -41,7 +46,6 @@ const DESCRICAO_MAX = 50000;
 export const listingFormSchema = z.object({
   title: z.string().trim().min(1, 'Informe o título do anúncio.'),
   descricao: z.string().max(DESCRICAO_MAX, 'A descrição excede o limite do Mercado Livre.'),
-  condition: z.enum(['new', 'used']),
   // Not `.min(1)`: a draft may legitimately be saved before its category is
   // chosen (an operator fixing the título first), and publish already refuses a
   // listing without one. Blocking the save would trap the other edits.
@@ -57,7 +61,6 @@ export function toFormValues(link: ProdutoMercadoLivreLink): ListingFormInput {
   return {
     title: link.title ?? '',
     descricao: link.descricao ?? '',
-    condition: link.condition === 'used' ? 'used' : 'new',
     category_id: link.category_id ?? '',
     listing_type_id: link.listing_type_id ?? '',
   };
@@ -75,7 +78,6 @@ export function toPatchValues(
   return {
     title: values.title.trim(),
     descricao: blankToNull(values.descricao),
-    condition: values.condition,
     category_id: blankToNull(values.category_id),
     listing_type_id: blankToNull(values.listing_type_id),
   };
