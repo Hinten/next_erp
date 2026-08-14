@@ -23,7 +23,6 @@ export { getAiModelosCached, modelosParaValidacao, __resetAiModelosCache } from 
 export {
   loadConfigIa,
   __resetConfigIaCache,
-  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
   CONFIG_IA_MODELO_PADRAO,
   PROVEDOR_IA,
 } from './configIa';

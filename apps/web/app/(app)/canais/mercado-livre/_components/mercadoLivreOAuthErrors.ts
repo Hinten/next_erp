@@ -1,8 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { notifications } from '@mantine/notifications';
+import { useOAuthCallbackToast } from '@/lib/oauth/useOAuthCallbackToast';
 
 /**
  * The OAuth callback outcome (`?ml=connected|error&reason=…`), turned into
@@ -29,6 +27,12 @@ const MENSAGENS: Readonly<Record<string, string>> = {
   ml_rejeitou:
     'O Mercado Livre recusou a conexão. Confira o client id / secret da aplicação no painel de desenvolvedor — e, se a aplicação foi recriada, se o segredo publicado no servidor é o novo.',
   rede: 'Não foi possível falar com o Mercado Livre. Tente novamente em alguns instantes.',
+  // The 200-but-unparseable arm. Named separately because it has ONE overwhelmingly
+  // likely cause and a concrete fix: `tokenResponseSchema` requires `refresh_token`,
+  // and ML omits it when the aplicação does not grant `offline_access` — so the
+  // credentials are fine and the scope is not.
+  resposta_invalida:
+    'O Mercado Livre aceitou a conexão mas devolveu uma resposta que não pôde ser lida — normalmente falta o refresh_token. Marque a opção de refresh token (escopo offline_access) na aplicação, no painel de desenvolvedor do Mercado Livre, e conecte de novo. Se o problema continuar, os campos exatos que vieram fora do formato estão nos logs do backend.',
   exchange: 'Falha ao trocar o código de autorização por um token de acesso.',
   // --- list page (no trustworthy id) ---
   config: 'O backend está sem a chave de assinatura do state. Avise quem cuida do deploy.',
@@ -37,39 +41,21 @@ const MENSAGENS: Readonly<Record<string, string>> = {
 };
 
 /**
- * ⚠️ `reason` arrives in the URL, so it is untrusted input. React escapes it, but
- * an unrecognised slug is still only echoed when it looks like one of ours — an
- * arbitrary query string must never be reflected into the UI verbatim.
- */
-const SLUG_SEGURO = /^[a-z_]{1,32}$/;
-
-export function mercadoLivreCallbackMessage(reason: string | null): string {
-  const conhecido = reason ? MENSAGENS[reason] : undefined;
-  if (conhecido) return conhecido;
-  return reason && SLUG_SEGURO.test(reason)
-    ? `Motivo não reconhecido (${reason}).`
-    : 'Motivo não informado.';
-}
-
-/**
  * Toast the callback outcome once per navigation. Shared by the account panel and
  * the channel list so the two screens cannot drift apart — the list is reachable
- * by three of the failure slugs and the detail page by the other six.
+ * by three of the failure slugs (`config`, `missing_params`, `bad_state`) and the
+ * detail page by the other seven.
+ *
+ * The mechanism (and the untrusted-slug sanitizer) lives in `@/lib/oauth`, shared
+ * with Melhor Envio and Mercado Pago; only this channel's wording is local.
  */
 export function useMercadoLivreCallbackToast(): void {
-  const searchParams = useSearchParams();
-
-  useEffect(() => {
-    const ml = searchParams.get('ml');
-    if (ml === 'connected') {
-      notifications.show({ color: 'green', message: 'Conta Mercado Livre conectada.' });
-      return;
-    }
-    if (ml !== 'error') return;
-    notifications.show({
-      color: 'red',
-      title: 'Falha ao conectar a conta Mercado Livre',
-      message: mercadoLivreCallbackMessage(searchParams.get('reason')),
-    });
-  }, [searchParams]);
+  useOAuthCallbackToast(CONFIG);
 }
+
+const CONFIG = {
+  chave: 'ml',
+  sucesso: 'Conta Mercado Livre conectada.',
+  tituloErro: 'Falha ao conectar a conta Mercado Livre',
+  mensagens: MENSAGENS,
+} as const;

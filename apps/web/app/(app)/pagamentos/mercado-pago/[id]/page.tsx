@@ -38,7 +38,11 @@ export default function ContaMercadoPagoPage() {
         </Anchor>
       </Group>
 
-      <ContaMercadoPagoPanel metodoId={params.id} />
+      {/* key: a param-only A->B navigation must remount the panel — its local
+          state is per-conta (an in-flight `connecting`, and the one-shot
+          ?mp=connected toast effect), and Next reuses the component across a
+          param change. Same reasoning as the Mercado Livre panel. */}
+      <ContaMercadoPagoPanel key={params.id} metodoId={params.id} />
 
       <ObjectView
         schema={metodoPagamentoSchema}

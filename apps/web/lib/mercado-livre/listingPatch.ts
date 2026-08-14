@@ -26,17 +26,23 @@ import { valuesEqual } from '@delfrance/core/equality';
  *    flips via the server's UPtin migration. An editable toggle here would
  *    silently re-route publishing.
  *
- * ⚠️ `channels`, `crossdocking`, `tarifaFrete` and `video_id` were here and are
- * not any more. The first three never reach the ML payload at all
- * (`buildItemPayload` does not read them), and `crossdocking`/`video_id`
- * duplicate produto fields — a second editable copy could only diverge from the
- * produto that publish actually reads. Their stored values are left untouched;
- * they are simply no longer written from this screen.
+ * ⚠️ `channels`, `crossdocking`, `tarifaFrete`, `video_id` and `condition` were
+ * here and are not any more. The first three never reach the ML payload at all
+ * (`buildItemPayload` does not read them), and `crossdocking`/`video_id`/
+ * `condition` duplicate produto fields — a second editable copy could only
+ * diverge from the produto that publish actually reads.
+ *
+ * ⚠️ `condition` is the one worth spelling out: it is **create-only** at ML
+ * (`buildItemPayload`, inside `if (!input.isUpdate)`), so writing it from here
+ * never reached an existing listing — it only looked like it did. It now derives
+ * from `produto.ehUsado` at publish time (`resolveCondition`).
+ *
+ * Their stored values are left untouched; they are simply no longer written from
+ * this screen.
  */
 export const OPERATOR_OWNED_KEYS = [
   'title',
   'descricao',
-  'condition',
   'category_id',
   'listing_type_id',
   'attributes',
