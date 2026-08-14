@@ -14,8 +14,10 @@
  * fallback-persist branch through the real `getAdminFirestore()`. Nothing here
  * is mocked.
  *
- * ⚠️ This lane cannot cover the Cloud Tasks HAPPY path — Cloud Tasks has no
- * emulator anywhere. It covers the outage path only.
+ * ⚠️ This file covers the enqueue-OUTAGE path. The Cloud Tasks HAPPY path is
+ * covered too, by `route.tasks.test.ts` under the sibling `test:tasks` lane —
+ * it needs the functions + tasks emulators and a built functions artifact, which
+ * is why the two are separate suites rather than one.
  */
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';

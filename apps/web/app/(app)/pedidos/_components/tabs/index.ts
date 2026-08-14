@@ -4,5 +4,6 @@ export { FreteTab } from './FreteTab';
 export { EstadoHistoricoTab } from './EstadoHistoricoTab';
 export { IncidentesTab } from './IncidentesTab';
 export { DevolucaoTab } from './DevolucaoTab';
+export { CheckoutTab } from './CheckoutTab';
 export { PlaceholderTab } from './PlaceholderTab';
 export { EstoqueSyncTab } from './EstoqueSyncTab';

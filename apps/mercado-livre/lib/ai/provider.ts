@@ -33,6 +33,8 @@
 import { GoogleGenAI, type Part } from '@google/genai';
 import type { AiPromptRequest } from '@delfrance/integrations-mercado-livre';
 
+import type { ProviderModelRow } from './models';
+
 export interface GenerateArgs {
   model: string;
   request: AiPromptRequest;
@@ -97,6 +99,36 @@ function getClient(): GoogleGenAI {
 /** Test seam — the client memoizes, and a test that swaps env must reset it. */
 export function __resetAiClient(): void {
   cachedClient = null;
+}
+
+/**
+ * One page of the provider's base-model list, projected to the two fields the
+ * settings page needs. The seam mirrors `GenerateFn`: nothing in this app's
+ * suite touches the SDK.
+ *
+ * ⚠️ **One page, deliberately.** `models.list` returns a pager and the caller
+ * only ever fills a Select; walking every page would trade an unbounded number
+ * of round trips for models nobody scrolls to. `pageSize` is the whole bound —
+ * and the shipped fallback covers the case where this answers nothing usable.
+ *
+ * `queryBase: true` asks for the publisher's catalogue rather than this
+ * project's tuned models, which is what "which Gemini can I pick" means.
+ */
+export type ListModelsFn = () => Promise<ProviderModelRow[]>;
+
+const MODEL_LIST_PAGE_SIZE = 100;
+
+export function createVertexListModelsFn(): ListModelsFn {
+  return async () => {
+    const pager = await getClient().models.list({
+      config: { queryBase: true, pageSize: MODEL_LIST_PAGE_SIZE },
+    });
+    return pager.page.map((m) => ({
+      name: m.name,
+      displayName: m.displayName,
+      supportedActions: m.supportedActions,
+    }));
+  };
 }
 
 /**
