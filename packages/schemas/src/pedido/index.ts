@@ -18,6 +18,7 @@ export * from './collection/incidente'; // pedidos/{id}/incidentes
 export * from './collection/checkout'; // pedidos/{id}/checkout (dispatch audit doc)
 export * from './collection/historicoEstadoPedido'; // pedidos/{id}/historicoEstadoPedido
 export * from './collection/historicoFtIni'; // pedidos/{id}/historicoFtIni (frete trail)
+export * from './collection/historicoModificacoes'; // pedidos/{id}/historicoDeModificacoes
 export * from './collection/orderML'; // pedidos/{id}/orderML (Mercado Livre order mirror)
 
 // === PURE LOGIC (no database) ===

@@ -1,4 +1,12 @@
-// Custom rule: the server-owned pedido audit trails have exactly ONE writer.
+// Custom rule: every server-owned audit trail has exactly ONE writer, and it is
+// a Cloud Function trigger — never application code.
+//
+// Three trails are guarded (see `OWNED_TRAILS`): the two pedido estado trails
+// below, plus the unified field-level `historicoDeModificacoes`, which exists
+// under BOTH `produtos/{id}` and `pedidos/{id}` under one leaf name and is
+// written by the modification-history trigger family. The rule NAME still says
+// `estado` because renaming it would churn every eslint config that references
+// it; the table is the source of truth, not the name.
 //
 // `pedidos/{pedidoId}/historicoEstadoPedido` (the pedido `estado` trail) and
 // `pedidos/{pedidoId}/historicoFtIni` (the `freteInicial.estado` trail) are both
@@ -51,10 +59,27 @@ export const OWNED_TRAILS = [
   {
     subcollection: 'historicoEstadoPedido',
     handles: ['historicoEstadoCollection', 'historicoEstadoPedidoCollection'],
+    owner: 'onPedidoEstadoChanged',
   },
   {
     subcollection: 'historicoFtIni',
     handles: ['historicoFtIniCollection', 'historicoFreteInicialCollection'],
+    owner: 'onPedidoEstadoChanged',
+  },
+  {
+    // The unified field-level history, on BOTH roots — produto
+    // (`onProdutoChanged` + the two subdoc triggers) and pedido
+    // (`onPedidoEstadoChanged` + `onPagamentoChanged` + `onIncidenteChanged`).
+    // One leaf name, so one row covers both; the owner is named generically
+    // because which trigger writes a given row depends on the root.
+    subcollection: 'historicoDeModificacoes',
+    handles: [
+      'historicoModificacaoCollection',
+      'historicoModificacoesCollection',
+      'historicoModificacaoPedidoCollection',
+      'historicoModificacoesPedidoCollection',
+    ],
+    owner: 'the modification-history trigger family',
   },
 ];
 
@@ -64,6 +89,9 @@ const HANDLE_TO_SUBCOLLECTION = new Map(
   ),
 );
 const SUBCOLLECTIONS = OWNED_TRAILS.map(({ subcollection }) => subcollection);
+const SUBCOLLECTION_TO_OWNER = new Map(
+  OWNED_TRAILS.map(({ subcollection, owner }) => [subcollection, owner]),
+);
 
 const WRITE_METHODS = new Set(['set', 'add', 'merge', 'update', 'delete', 'create']);
 const WRITE_OP_TYPES = new Set(['set', 'update', 'merge', 'delete']);
@@ -113,20 +141,20 @@ const rule = {
     type: 'problem',
     docs: {
       description:
-        'Never write the server-owned pedido audit trails ' +
-        '(pedidos/{id}/historicoEstadoPedido, pedidos/{id}/historicoFtIni) from ' +
-        'application code — the onPedidoEstadoChanged Cloud Function owns both.',
+        'Never write a server-owned audit trail (pedidos/{id}/historicoEstadoPedido, ' +
+        'pedidos/{id}/historicoFtIni, {produtos|pedidos}/{id}/historicoDeModificacoes) ' +
+        'from application code — a Cloud Function trigger owns each one.',
     },
     schema: [],
     messages: {
       serverOwned:
-        'Do not write `{{collection}}` from application code. The ' +
-        '`onPedidoEstadoChanged` Cloud Function (apps/functions/src/pedidos/) is the ' +
-        'sole writer of both pedido audit trails — it observes every pedido write and ' +
-        'records each estado transition (`estado` → historicoEstadoPedido, ' +
-        '`freteInicial.estado` → historicoFtIni), so changing the field on the pedido ' +
-        'is all you need to do. The collection is `meta.serverOwned`: this write would ' +
-        'fail with `permission-denied` at runtime.',
+        'Do not write `{{collection}}` from application code. `{{owner}}` ' +
+        '(apps/functions/src/) is its sole writer: the trigger observes every write to ' +
+        'the underlying document and records the row itself, so changing the document ' +
+        'is all you need to do. Writing the trail by hand only ever covers the call ' +
+        'sites someone remembered — which is exactly the coverage gap the triggers ' +
+        'replaced. The collection is `meta.serverOwned`: this write would fail with ' +
+        '`permission-denied` at runtime.',
     },
   },
   create(context) {
@@ -148,7 +176,11 @@ const rule = {
         if (root === null) return;
         const collection = HANDLE_TO_SUBCOLLECTION.get(root);
         if (collection === undefined) return;
-        context.report({ node, messageId: 'serverOwned', data: { collection } });
+        context.report({
+          node,
+          messageId: 'serverOwned',
+          data: { collection, owner: SUBCOLLECTION_TO_OWNER.get(collection) },
+        });
       },
 
       // (2) { type: 'set', path: `pedidos/${id}/historicoEstadoPedido/${docId}` }
@@ -169,7 +201,11 @@ const rule = {
         if (!isWriteOp || pathValue === null) return;
         const collection = matchedSubcollection(pathValue, sourceCode);
         if (collection === null) return;
-        context.report({ node, messageId: 'serverOwned', data: { collection } });
+        context.report({
+          node,
+          messageId: 'serverOwned',
+          data: { collection, owner: SUBCOLLECTION_TO_OWNER.get(collection) },
+        });
       },
     };
   },

@@ -375,6 +375,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
+    match /pedidos/{pedidoId}/historicoDeModificacoes/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /pedidos/{pedidoId}/historicoEstadoPedido/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       // Server-owned collection — Admin SDK only, no su bypass.
@@ -560,9 +566,6 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/historicoDeCusto/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/historicoDeModificacoes/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/historicoDePrecos/{docId} {

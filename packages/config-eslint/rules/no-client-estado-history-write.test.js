@@ -18,6 +18,17 @@ const ruleTester = new RuleTester({
 
 const APP_FILE = '/repo/apps/web/lib/pedidos/clientPort.ts';
 const FUNCTIONS_FILE = '/repo/apps/functions/src/pedidos/registrarEstadoPedido.ts';
+
+/**
+ * Expected error for one trail, with `owner` sourced from the REAL table rather
+ * than retyped — so a row whose owner is wrong fails here instead of shipping a
+ * message that names the wrong trigger.
+ */
+function serverOwnedError(subcollection) {
+  const trail = OWNED_TRAILS.find((t) => t.subcollection === subcollection);
+  if (!trail) throw new Error(`no OWNED_TRAILS entry for ${subcollection}`);
+  return { messageId: 'serverOwned', data: { collection: subcollection, owner: trail.owner } };
+}
 const SCHEMAS_FILE = '/repo/packages/schemas/src/pedido/collection/pedido.ts';
 const DATA_FILE = '/repo/packages/data/src/admin/collections/historicoFreteInicialCollection.ts';
 
@@ -112,6 +123,18 @@ ruleTester.run('no-client-estado-history-write', rule, {
       filename: SCHEMAS_FILE,
       code: `const cascade = [{ path: 'pedidos/{pedidoId}/historicoFtIni', onDelete: 'cascade' }];`,
     },
+    {
+      // The Modificações tab READS this every time it opens; guarding reads
+      // would make the feed unimplementable.
+      name: 'reading the modification history through .ref() is fine',
+      filename: APP_FILE,
+      code: `const q = buildQuery(historicoModificacoesPedidoCollection.ref(db, { pedidoId }), []);`,
+    },
+    {
+      name: 'the modification-history trigger itself is exempt by path',
+      filename: '/repo/apps/functions/src/lib/modificationHistory.ts',
+      code: `await historicoModificacaoPedidoCollection.docRef(db, ctx, entry.eventId).set(row);`,
+    },
   ],
 
   invalid: [
@@ -122,7 +145,7 @@ ruleTester.run('no-client-estado-history-write', rule, {
       // Detector 1 must name the collection it resolved through the handle map,
       // not just fire. Without this the map could point every handle at the
       // wrong trail and the suite would stay green.
-      errors: [{ messageId: 'serverOwned', data: { collection: 'historicoEstadoPedido' } }],
+      errors: [serverOwnedError('historicoEstadoPedido')],
     },
     {
       name: 'add() on the client handle',
@@ -154,7 +177,7 @@ ruleTester.run('no-client-estado-history-write', rule, {
       `,
       // Detector 2's counterpart pin: the reported name has to come from the
       // matched entry, which is why the lookup returns a name and not a boolean.
-      errors: [{ messageId: 'serverOwned', data: { collection: 'historicoEstadoPedido' } }],
+      errors: [serverOwnedError('historicoEstadoPedido')],
     },
     {
       name: 'a delete write op targeting the subcollection',
@@ -182,7 +205,7 @@ ruleTester.run('no-client-estado-history-write', rule, {
       name: 'set() on the frete-trail handle',
       filename: APP_FILE,
       code: `await historicoFtIniCollection.set(db, { pedidoId }, id, data);`,
-      errors: [{ messageId: 'serverOwned', data: { collection: 'historicoFtIni' } }],
+      errors: [serverOwnedError('historicoFtIni')],
     },
     {
       name: 'add() on the frete-trail handle',
@@ -212,7 +235,7 @@ ruleTester.run('no-client-estado-history-write', rule, {
           data: { estado, data: port.now() },
         };
       `,
-      errors: [{ messageId: 'serverOwned', data: { collection: 'historicoFtIni' } }],
+      errors: [serverOwnedError('historicoFtIni')],
     },
     {
       name: 'a delete write op targeting the frete trail with a plain string path',
@@ -232,6 +255,30 @@ ruleTester.run('no-client-estado-history-write', rule, {
       code: `await (historicoFtIniCollection as Handle).set(db, { pedidoId }, id, data);`,
       languageOptions: { parser: tsParser },
       errors: [{ messageId: 'serverOwned' }],
+    },
+    {
+      name: 'set() on the pedido modification-history handle',
+      filename: APP_FILE,
+      code: `await historicoModificacoesPedidoCollection.set(db, { pedidoId }, id, entry);`,
+      errors: [serverOwnedError('historicoDeModificacoes')],
+    },
+    {
+      name: 'merge() on the produto modification-history handle',
+      filename: '/repo/apps/web/lib/produtos/revert.ts',
+      code: `await historicoModificacoesCollection.merge(db, { produtoId }, id, patch);`,
+      errors: [{ messageId: 'serverOwned' }],
+    },
+    {
+      name: 'the admin modification-history handle is guarded outside apps/functions',
+      filename: '/repo/packages/data/src/pedido/usecases.ts',
+      code: `await historicoModificacaoPedidoCollection.docRef(db, { pedidoId }, id).set(entry);`,
+      errors: [{ messageId: 'serverOwned' }],
+    },
+    {
+      name: 'a write op targeting the modification history',
+      filename: APP_FILE,
+      code: `const op = { type: 'set', path: \`produtos/\${id}/historicoDeModificacoes/\${eventId}\` };`,
+      errors: [serverOwnedError('historicoDeModificacoes')],
     },
   ],
 });
