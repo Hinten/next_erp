@@ -162,8 +162,10 @@ export interface PhotoManagerProps {
  * resulting `Foto` ref strings are appended to the form's `fotos` array and
  * persisted on save. Order is the array position (first = capa) — reorder with
  * drag-and-drop. Each thumbnail prefers the 200px derivative and falls back to
- * the original (so an owner without derivatives, e.g. tabela de medidas, renders
- * the original directly).
+ * the original. ⚠️ Both owners are resized now, so the fallback covers only
+ * fotos stored **before** that was true (tabela-de-medidas photos written with
+ * null derivative refs) and the window between upload and the trigger landing —
+ * it is not a permanent mode for any owner.
  *
  * Per-variant galleries (port of the Flutter `Fotos2ProdutoWidget`): when
  * `grupos` is supplied, the selected variants whose group has `permiteFotos` each

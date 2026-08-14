@@ -6,10 +6,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   PRODUCT_IMAGE_VARIANTS,
   derivativeArquivoId,
+  ownedDerivativePath,
   productAnexoPath,
   productArquivoId,
   productDerivativePath,
   productOriginalPath,
+  tabMediArquivoId,
+  tabMediOriginalPath,
 } from '@delfrance/schemas';
 
 import { processArquivoDeletion } from './onArquivoDeleted';
@@ -112,6 +115,73 @@ describe.skipIf(!EMULATED)('onArquivoDeleted (emulator)', () => {
         false,
       );
       const dId = derivativeArquivoId(produtoId, hash, v.key);
+      expect((await db.collection('arquivos').doc(dId).get()).exists).toBe(false);
+    }
+  });
+
+  it('cascades a TABELA DE MEDIDAS original to its derivatives too', async () => {
+    // The resize function covers `tabMedi/<id>/originals` now, so a size-chart
+    // photo has three derivatives. A reaper that still only recognised
+    // `produtos/…` would delete the original and silently strand them — bytes
+    // leaked with nothing failing anywhere, which is why this is asserted end to
+    // end rather than left to the path unit tests.
+    const db = getDb();
+    const bucket = getBucket();
+    const tabMediId = `tm${randomUUID().replace(/-/g, '')}`;
+    const tmHash = randomUUID().replace(/-/g, '');
+    const oPath = tabMediOriginalPath(tabMediId, tmHash, 'jpg');
+    const oSlash = oPath.lastIndexOf('/');
+    const origId = tabMediArquivoId(tabMediId, tmHash);
+
+    await bucket.file(oPath).save(Buffer.from('chart-original'), {
+      contentType: 'application/octet-stream',
+      metadata: { metadata: { arquivoId: origId } },
+    });
+    await db
+      .collection('arquivos')
+      .doc(origId)
+      .set({
+        filetype: 'image',
+        filepath: oPath.slice(0, oSlash),
+        filename: oPath.slice(oSlash + 1),
+        contentType: 'image/jpeg',
+        url: null,
+        externalIds: [],
+        resizeState: 'done',
+        uploadState: 'finalized',
+      });
+
+    for (const v of PRODUCT_IMAGE_VARIANTS) {
+      const dPath = ownedDerivativePath('tabMedi', tabMediId, tmHash, v.key);
+      const dSlash = dPath.lastIndexOf('/');
+      await bucket.file(dPath).save(Buffer.from(`chart-deriv-${v.key}`), {
+        contentType: 'image/jpeg',
+        metadata: { metadata: { resized: 'true', originalPath: oPath } },
+      });
+      await db
+        .collection('arquivos')
+        .doc(derivativeArquivoId(tabMediId, tmHash, v.key))
+        .set({
+          filetype: 'image',
+          filepath: dPath.slice(0, dSlash),
+          filename: dPath.slice(dSlash + 1),
+          contentType: 'image/jpeg',
+          url: null,
+          externalIds: [],
+        });
+    }
+
+    await db.collection('arquivos').doc(origId).delete();
+    await processArquivoDeletion(bucket, db, origId, {
+      filepath: oPath.slice(0, oSlash),
+      filename: oPath.slice(oSlash + 1),
+    });
+
+    expect((await bucket.file(oPath).exists())[0]).toBe(false);
+    for (const v of PRODUCT_IMAGE_VARIANTS) {
+      const dPath = ownedDerivativePath('tabMedi', tabMediId, tmHash, v.key);
+      expect((await bucket.file(dPath).exists())[0]).toBe(false);
+      const dId = derivativeArquivoId(tabMediId, tmHash, v.key);
       expect((await db.collection('arquivos').doc(dId).get()).exists).toBe(false);
     }
   });

@@ -16,11 +16,29 @@ import { derivativeArquivoId, productArquivoId } from './storagePaths';
  */
 export interface FotoRefs {
   arquivoOuterRef: string;
-  // Nullable: an owner without a resize function (e.g. tabela de medidas) has no
-  // derivatives — see `buildOriginalFotoRef`. Product refs are non-null strings.
+  // Nullable: an owner whose photos are not resized has no derivatives — see
+  // `buildOriginalFotoRef`. Both resized owners get non-null strings.
   arquivo200pxOuterRef: string | null;
   arquivo400pxOuterRef: string | null;
   arquivoJpegOuterRef: string | null;
+}
+
+/**
+ * Build the optimistic `Foto` refs from the ORIGINAL's full `arquivos` doc id
+ * (`<ownerId>_<hash>`) — the value every upload helper returns.
+ *
+ * Owner-agnostic, because a derivative id is just the original's id plus the
+ * variant suffix. That is what lets tabela-de-medidas photos reuse the produto
+ * derivative pipeline wholesale rather than growing a parallel one.
+ */
+export function buildFotoRefsFromArquivoId(arquivoId: string): FotoRefs {
+  const ref = (id: string) => `${ARQUIVOS_COLLECTION}/${id}`;
+  return {
+    arquivoOuterRef: ref(arquivoId),
+    arquivo200pxOuterRef: ref(`${arquivoId}_200`),
+    arquivo400pxOuterRef: ref(`${arquivoId}_400`),
+    arquivoJpegOuterRef: ref(`${arquivoId}_jpeg`),
+  };
 }
 
 /** Build the optimistic `Foto` ref strings for a product's original `hash`. */
@@ -35,11 +53,15 @@ export function buildFotoRefs(produtoId: string, hash: string): FotoRefs {
 }
 
 /**
- * Build `Foto` refs for an owner-scoped original whose derivatives are NOT
- * generated (e.g. a tabela-de-medidas photo — no resize function watches its
- * path). Only `arquivoOuterRef` points at a real doc; the derivative refs are
- * `null`, so a gallery thumbnail falls back to the original. `arquivoId` is the
- * full owner-scoped doc id (`<ownerId>_<hash>`) the upload helper returns.
+ * Build `Foto` refs for an original whose derivatives are NOT generated. Only
+ * `arquivoOuterRef` points at a real doc; the derivative refs are `null`, so a
+ * gallery thumbnail falls back to the original.
+ *
+ * ⚠️ No owner uses this on the write path any more — tabela de medidas was the
+ * last one, and it moved to {@link buildFotoRefsFromArquivoId} when the resize
+ * function started watching its prefix. It stays because **stored** fotos
+ * written before that change still carry null derivative refs, and readers must
+ * keep tolerating them until the backfill runs.
  */
 export function buildOriginalFotoRef(arquivoId: string): FotoRefs {
   return {

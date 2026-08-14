@@ -3,12 +3,13 @@ import {
   derivativeArquivoId,
   firebaseDownloadUrl,
   isDerivativeName,
-  isWatchedProductOriginal,
+  isWatchedOriginal,
   mediaPath,
   normalizeName,
+  ownedDerivativePath,
   parseOwnedMediaDir,
+  parseOwnedOriginalPath,
   parseProductMediaDir,
-  parseProductOriginalPath,
   productAnexoPath,
   productArquivoId,
   productDerivativePath,
@@ -37,33 +38,93 @@ describe('path builders', () => {
   });
 });
 
-describe('parseProductOriginalPath / isWatchedProductOriginal', () => {
+describe('parseOwnedOriginalPath — the produto cases', () => {
+  // These used to test `parseProductOriginalPath`, a produto-only view. That
+  // view lost its last production caller in this change (all three moved to
+  // `parseOwnedOriginalPath`), so it was deleted rather than kept alive by the
+  // tests that were its only remaining users. The cases moved onto the function
+  // the production code actually calls.
   it('round-trips a watched original (with and without extension)', () => {
-    expect(parseProductOriginalPath(`produtos/${PID}/originals/${HASH}.png`)).toEqual({
-      produtoId: PID,
+    expect(parseOwnedOriginalPath(`produtos/${PID}/originals/${HASH}.png`)).toEqual({
+      ownerCollection: 'produtos',
+      ownerId: PID,
       hash: HASH,
       ext: 'png',
     });
-    expect(parseProductOriginalPath(`produtos/${PID}/originals/${HASH}`)).toEqual({
-      produtoId: PID,
+    expect(parseOwnedOriginalPath(`produtos/${PID}/originals/${HASH}`)).toEqual({
+      ownerCollection: 'produtos',
+      ownerId: PID,
       hash: HASH,
       ext: null,
     });
   });
 
   it('returns null for derivatives, videos, media and garbage', () => {
-    expect(parseProductOriginalPath(productDerivativePath(PID, HASH, '200'))).toBeNull();
-    expect(parseProductOriginalPath(productVideoPath(PID, HASH, 'mp4'))).toBeNull();
-    expect(parseProductOriginalPath(mediaPath(HASH, 'png'))).toBeNull();
-    expect(parseProductOriginalPath('produtos/x/originals/a/b')).toBeNull();
-    expect(parseProductOriginalPath('whatever')).toBeNull();
+    expect(parseOwnedOriginalPath(productDerivativePath(PID, HASH, '200'))).toBeNull();
+    expect(parseOwnedOriginalPath(productVideoPath(PID, HASH, 'mp4'))).toBeNull();
+    expect(parseOwnedOriginalPath(mediaPath(HASH, 'png'))).toBeNull();
+    expect(parseOwnedOriginalPath('produtos/x/originals/a/b')).toBeNull();
+    expect(parseOwnedOriginalPath('whatever')).toBeNull();
   });
 
-  it('isWatchedProductOriginal matches only originals', () => {
-    expect(isWatchedProductOriginal(productOriginalPath(PID, HASH, 'png'))).toBe(true);
-    expect(isWatchedProductOriginal(productDerivativePath(PID, HASH, '400'))).toBe(false);
-    expect(isWatchedProductOriginal(productVideoPath(PID, HASH, 'mp4'))).toBe(false);
-    expect(isWatchedProductOriginal(mediaPath(HASH, 'png'))).toBe(false);
+  it('never labels a tabMedi original as a produto one', () => {
+    // The owner is what every caller branches on — `ownedDerivativePath` writes
+    // under it, so mislabelling would put a size chart's derivatives in the
+    // produto namespace, where the produto orphan sweep would reap them.
+    expect(parseOwnedOriginalPath(tabMediOriginalPath('tm1', HASH, 'jpg'))?.ownerCollection).toBe(
+      'tabMedi',
+    );
+  });
+});
+
+describe('parseOwnedOriginalPath / isWatchedOriginal', () => {
+  it('recovers the owning collection for both roots', () => {
+    expect(parseOwnedOriginalPath(productOriginalPath(PID, HASH, 'png'))).toEqual({
+      ownerCollection: 'produtos',
+      ownerId: PID,
+      hash: HASH,
+      ext: 'png',
+    });
+    expect(parseOwnedOriginalPath(tabMediOriginalPath('tm1', HASH, 'jpg'))).toEqual({
+      ownerCollection: 'tabMedi',
+      ownerId: 'tm1',
+      hash: HASH,
+      ext: 'jpg',
+    });
+  });
+
+  it('rejects an unknown root rather than guessing an owner', () => {
+    expect(parseOwnedOriginalPath(`media/${PID}/originals/${HASH}.png`)).toBeNull();
+    expect(parseOwnedOriginalPath(`clientes/${PID}/originals/${HASH}.png`)).toBeNull();
+  });
+
+  it('isWatchedOriginal matches originals of BOTH owners, and only originals', () => {
+    // This predicate is what `shouldResize` gates on: a tabMedi original
+    // answering false is exactly the state where the size-chart AI agent has no
+    // readable image, because nothing produced the `jpeg` variant.
+    expect(isWatchedOriginal(productOriginalPath(PID, HASH, 'png'))).toBe(true);
+    expect(isWatchedOriginal(tabMediOriginalPath('tm1', HASH, 'jpg'))).toBe(true);
+
+    expect(isWatchedOriginal(productDerivativePath(PID, HASH, '400'))).toBe(false);
+    expect(isWatchedOriginal(ownedDerivativePath('tabMedi', 'tm1', HASH, '400'))).toBe(false);
+    expect(isWatchedOriginal(productVideoPath(PID, HASH, 'mp4'))).toBe(false);
+    expect(isWatchedOriginal(mediaPath(HASH, 'png'))).toBe(false);
+  });
+
+  it('builds tabMedi derivative paths under the tabMedi root', () => {
+    expect(ownedDerivativePath('tabMedi', 'tm1', HASH, 'jpeg')).toBe(
+      `tabMedi/tm1/derivatives/${HASH}_jpeg.jpeg`,
+    );
+    // The produto view must agree with the general builder.
+    expect(ownedDerivativePath('produtos', PID, HASH, '200')).toBe(
+      productDerivativePath(PID, HASH, '200'),
+    );
+  });
+
+  it('derives a tabMedi derivative id from its original id', () => {
+    // What makes the two owners share one pipeline: a derivative id is the
+    // original's id plus the variant suffix, with no owner collection in it.
+    expect(derivativeArquivoId('tm1', HASH, 'jpeg')).toBe(`${tabMediArquivoId('tm1', HASH)}_jpeg`);
   });
 });
 
