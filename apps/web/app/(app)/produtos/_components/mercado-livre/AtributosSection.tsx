@@ -1,10 +1,22 @@
 'use client';
 
-import { Alert, Badge, Group, Loader, SimpleGrid, Text } from '@mantine/core';
+import { Alert, Badge, Group, Loader, Paper, SimpleGrid, Text } from '@mantine/core';
 
 import type { AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
 import { AttributeField } from './AttributeField';
+
+/**
+ * Alternating cell background, by position in the grid.
+ *
+ * ⚠️ On a 2- or 3-column layout this reads as a **checkerboard**, not as rows —
+ * a deliberate trade Lucas accepted, because striping true rows would need the
+ * live column count and the grid is responsive. The point is the edge between
+ * neighbouring fields, which a checkerboard still provides.
+ */
+function stripeBg(index: number): string | undefined {
+  return index % 2 === 1 ? 'var(--mantine-color-default-hover)' : undefined;
+}
 
 export interface AtributosSectionProps {
   /** Null while no category is chosen — the cascade comes first. */
@@ -111,28 +123,36 @@ export function AtributosSection({
         )}
       </Group>
       <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="sm" verticalSpacing="xs">
-        {attrs.map((attr) => (
-          <AttributeField
-            key={attr.id}
-            attr={attr}
-            row={
-              rowById.get(attr.id) ?? {
-                id: attr.id,
-                value_id: null,
-                value_name: null,
-                unit_id: null,
+        {attrs.map((attr, index) => (
+          // A rich category runs to 30+ fields of near-identical shape, which is
+          // exactly the layout the eye loses its place in. The alternating
+          // background gives each field an edge to track along.
+          //
+          // ⚠️ `var(--mantine-color-default-hover)`, not a palette shade like
+          // `gray.0`: this has to stay legible in dark mode, and a fixed light
+          // grey does not. Same token `PhotoManager` uses for its own striping.
+          <Paper key={attr.id} p="xs" radius="sm" bg={stripeBg(index)}>
+            <AttributeField
+              attr={attr}
+              row={
+                rowById.get(attr.id) ?? {
+                  id: attr.id,
+                  value_id: null,
+                  value_name: null,
+                  unit_id: null,
+                }
               }
-            }
-            onChange={(next) =>
-              onRowsChange(
-                rows.some((r) => r.id === next.id)
-                  ? rows.map((r) => (r.id === next.id ? next : r))
-                  : [...rows, next],
-              )
-            }
-            disabled={disabled}
-            error={errors[attr.id]}
-          />
+              onChange={(next) =>
+                onRowsChange(
+                  rows.some((r) => r.id === next.id)
+                    ? rows.map((r) => (r.id === next.id ? next : r))
+                    : [...rows, next],
+                )
+              }
+              disabled={disabled}
+              error={errors[attr.id]}
+            />
+          </Paper>
         ))}
       </SimpleGrid>
     </>

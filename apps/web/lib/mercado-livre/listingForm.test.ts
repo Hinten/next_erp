@@ -8,7 +8,6 @@ function values(over: Record<string, unknown> = {}) {
   return listingFormSchema.parse({
     title: 'Camiseta',
     descricao: '',
-    condition: 'new',
     category_id: 'MLB31447',
     listing_type_id: 'gold_pro',
     ...over,
@@ -22,7 +21,7 @@ describe('what the form is allowed to edit', () => {
   // second copy could only diverge from what publish reads.
   it('offers no field the produto already owns', () => {
     const fields = Object.keys(listingFormSchema.shape);
-    for (const gone of ['channels', 'crossdocking', 'video_id', 'tarifaFrete']) {
+    for (const gone of ['channels', 'crossdocking', 'video_id', 'tarifaFrete', 'condition']) {
       expect(fields).not.toContain(gone);
     }
   });
@@ -30,7 +29,7 @@ describe('what the form is allowed to edit', () => {
   it('keeps those keys out of the patch allow-list too', () => {
     // Leaving them in OPERATOR_OWNED_KEYS would let a stale form value ride a
     // save even with no control on screen.
-    for (const gone of ['channels', 'crossdocking', 'video_id', 'tarifaFrete']) {
+    for (const gone of ['channels', 'crossdocking', 'video_id', 'tarifaFrete', 'condition']) {
       expect(OPERATOR_OWNED_KEYS).not.toContain(gone);
     }
   });
@@ -42,11 +41,6 @@ describe('toFormValues', () => {
     expect(form.descricao).toBe('');
     expect(form.title).toBe('Camiseta Básica');
     expect(form.category_id).toBe('MLB31447');
-  });
-
-  it('treats any non-used condition as new', () => {
-    expect(toFormValues(linkFixture({ condition: 'used' })).condition).toBe('used');
-    expect(toFormValues(linkFixture({ condition: 'new' })).condition).toBe('new');
   });
 
   it('presents an unset category as an empty string', () => {

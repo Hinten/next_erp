@@ -54,16 +54,44 @@ describe('resolvePrice', () => {
 });
 
 describe('resolveCondition', () => {
-  it('persisted link condition wins over everything', () => {
+  // ⚠️ Every case here makes the produto and the link DISAGREE. The previous
+  // version of this suite asserted "persisted link condition wins over
+  // everything" with a fixture where both said `used`, so it passed under either
+  // precedence and pinned nothing — which is how the produto branch stayed dead
+  // for as long as it did.
+  it('the PRODUTO decides, even when the link says otherwise', () => {
+    // The bug: `produtoMercadoLivreLinkSchema` defaults `condition` to 'new', so
+    // every link doc has a truthy value. With the link tested first, a produto
+    // marked "usado" published as NEW and nothing on screen said so.
+    expect(
+      resolveCondition(
+        { docId: 'l', id: 'MLB1', condition: 'new' },
+        { ...produto, ehUsado: true },
+        1,
+      ),
+    ).toBe('used');
+  });
+
+  it('honours extraData.condicao when ehUsado is not set', () => {
+    // 1 novo, 2 usado, 3 recondicionado — the field has three values and only
+    // one of them is new. Dropping this branch would silently start publishing
+    // recondicionado stock as new.
+    expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'new' }, produto, 2)).toBe('used');
+    expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'new' }, produto, 3)).toBe('used');
+  });
+
+  it('falls back to the link only when the produto says nothing', () => {
+    // An imported listing writes `condition` (`importItem.ts`), so for a produto
+    // whose own flags were never set it is the best answer available.
     expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'used' }, produto, 1)).toBe(
+      'used',
+    );
+    expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'used' }, produto, null)).toBe(
       'used',
     );
   });
 
-  it('ehUsado / condicao 2|3 → used; default new', () => {
-    expect(resolveCondition(null, { ...produto, ehUsado: true }, 1)).toBe('used');
-    expect(resolveCondition(null, produto, 2)).toBe('used');
-    expect(resolveCondition(null, produto, 3)).toBe('used');
+  it('defaults to new with no signal anywhere', () => {
     expect(resolveCondition(null, produto, 1)).toBe('new');
     expect(resolveCondition(null, produto, null)).toBe('new');
   });

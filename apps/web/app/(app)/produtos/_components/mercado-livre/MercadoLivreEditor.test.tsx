@@ -58,6 +58,12 @@ vi.mock('@/lib/mercado-livre/client', async (importActual) => {
 });
 vi.mock('@/lib/data/integracaoCollection', () => ({ integracaoCollection: { ref: () => ({}) } }));
 vi.mock('@/lib/data/produtoCollection', () => ({ produtoCollection: { docRef: () => ({}) } }));
+// The editor reads `extraData.condicao` (the second input `resolveCondicaoAnuncio`
+// uses). Stubbed like its siblings so the real module's `defineCollection` call
+// never runs against the `@delfrance/data` mock above.
+vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
+  produtoExtraDataCollection: { docRef: () => ({}) },
+}));
 vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
   produtoMercadoLivreLinkCollection: { ref: () => ({}) },
 }));

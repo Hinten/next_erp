@@ -18,7 +18,7 @@
  */
 import { NextResponse } from 'next/server';
 import { DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION } from '@delfrance/integrations-mercado-livre';
-import { CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
+import { CONFIG_IA_ML_ATRIBUTOS_DOC_ID, CONFIG_IA_MODELO_PADRAO } from '@delfrance/schemas';
 
 import { resolveModelo } from '@delfrance/ai';
 import {
@@ -40,7 +40,7 @@ export async function GET(req: Request): Promise<NextResponse> {
 
   const [lista, config] = await Promise.all([
     getAiModelosCached(createVertexListModelsFn()),
-    loadConfigIa(getAdminFirestore()),
+    loadConfigIa(getAdminFirestore(), CONFIG_IA_ML_ATRIBUTOS_DOC_ID),
   ]);
 
   const envModelo = process.env.MERCADO_LIVRE_AI_MODEL ?? null;

@@ -43,11 +43,24 @@ export class MercadoPagoValidationError extends MercadoPagoError {
  * token is expired, revoked, or already used), or a `401` from the REST API
  * (the access token was rejected), or no credential at all. The account must
  * complete the OAuth consent flow again; a plain retry won't fix it.
+ *
+ * ⚠️ `reason` is about the CREDENTIAL, not the grant type: `requestToken` raises
+ * `'refresh_failed'` for an `invalid_grant` on a **code exchange** too, so it does
+ * not tell you whether an authorization code or a refresh token died. The caller
+ * knows which flow it started — infer it there, not from this field.
+ *
+ * `status`/`body` carry the MP response when there was one. They exist because
+ * `invalid_grant` is the most common OAuth failure and dropping them left the
+ * caller unable to tell an expired code from a `redirect_uri` mismatch. Both are
+ * null when the error is raised without a response — e.g. `'no_token'`.
  */
 export class MercadoPagoReauthRequiredError extends MercadoPagoError {
   constructor(
     readonly reason: 'no_token' | 'refresh_failed',
     message: string,
+    readonly status: number | null = null,
+    /** The parsed error body, when JSON; the raw text otherwise. */
+    readonly body: unknown = null,
   ) {
     super(message);
     this.name = 'MercadoPagoReauthRequiredError';

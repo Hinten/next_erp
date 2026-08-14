@@ -21,13 +21,18 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
-import { INTEGRACAO_TIPO, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  INTEGRACAO_TIPO,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  type ProdutoMercadoLivreLink,
+} from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivreLinkCollection';
 import {
   MercadoLivreClientHttpError,
@@ -132,6 +137,26 @@ export function MercadoLivreEditor({
   // schema requires a non-empty `title`, so a draft built from '' would fail
   // its write-side parse rather than save something blank.
   const produtoNome = produtoSnap.data?.data.nome ?? '';
+  // The listing's condição is derived from this, not edited per listing. Read
+  // from the SAVED doc deliberately: publish sends the saved produto, so showing
+  // an unsaved toggle would promise a value publish would not use — the same
+  // reason the card already warns "a publicação envia os dados salvos".
+  const produtoEhUsado = produtoSnap.data?.data.ehUsado ?? false;
+  // ⚠️ `extraData.condicao` is the SECOND input publish resolves the condition
+  // from (`resolveCondicaoAnuncio`), and it lives in its own singleton
+  // subcollection — nothing about it is derivable from the produto doc. Without
+  // it this tab showed "Novo" for a produto marked **Recondicionado** two tabs
+  // away while the first publish sent `used`. Memoized for the same reason as
+  // `produtoDocRef`: `docRef()` returns a fresh object per call, which would
+  // re-subscribe the listener on every render.
+  const extraDataRef = useMemo(
+    () => produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID),
+    [db, produtoId],
+  );
+  const extraDataSnap = useDocSnapshot(extraDataRef);
+  // null while loading, so the derivation falls through to the next tier rather
+  // than asserting "novo" for a beat and flipping.
+  const produtoCondicao = extraDataSnap.data?.data.condicao ?? null;
 
   const [publishing, setPublishing] = useState<string | null>(null);
   /** The conta whose draft is being created, if any. */
@@ -528,6 +553,8 @@ export function MercadoLivreEditor({
                         linkDocId={l.id}
                         integracaoId={conta.id}
                         produtoNome={produtoNome}
+                        produtoEhUsado={produtoEhUsado}
+                        produtoCondicao={produtoCondicao}
                         link={l.data}
                         db={db}
                         canWrite={canPublish}

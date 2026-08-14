@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useState } from 'react';
 import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
@@ -13,6 +12,7 @@ import {
   MercadoPagoClientNetworkError,
   useMercadoPagoClient,
 } from '@/lib/mercado-pago/client';
+import { useMercadoPagoCallbackToast } from './mercadoPagoOAuthErrors';
 
 /**
  * Mercado Pago account panel on /pagamentos/mercado-pago/[id] — shows the
@@ -28,20 +28,11 @@ export function ContaMercadoPagoPanel({ metodoId }: { metodoId: string }) {
   // 403.
   const { allowed: canWrite } = usePermission(PERM.metodoPagamento.write);
   const [connecting, setConnecting] = useState(false);
-  const searchParams = useSearchParams();
 
-  // Toast the OAuth callback outcome (?mp=connected|error&reason=…).
-  useEffect(() => {
-    const mp = searchParams.get('mp');
-    if (mp === 'connected') {
-      notifications.show({ color: 'green', message: 'Conta Mercado Pago conectada.' });
-    } else if (mp === 'error') {
-      notifications.show({
-        color: 'red',
-        message: `Falha ao conectar a conta Mercado Pago (${searchParams.get('reason') ?? 'erro'}).`,
-      });
-    }
-  }, [searchParams]);
+  // Toast the OAuth callback outcome (?mp=connected|error&reason=…). Shared with
+  // the payment-method list, which the callback redirects to for the three
+  // failures that happen before a trustworthy metodoId exists.
+  useMercadoPagoCallbackToast();
 
   const query = useQuery({
     queryKey: ['mercado-pago-conta', metodoId],
