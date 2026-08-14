@@ -1,6 +1,7 @@
 'use client';
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { FirebaseError } from 'firebase/app';
 import {
   Alert,
   Badge,
@@ -100,6 +101,8 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
   const [rows, setRows] = useState<Row[]>([]);
   const [cancelado, setCancelado] = useState(false);
   const [opcao, setOpcao] = useState<Opcao>(opcaoInicial);
+  /** Set when the RUN itself broke, as opposed to a listing failing. */
+  const [erro, setErro] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // No reset effect — see the module doc: the parent mounts this fresh per run,
@@ -124,6 +127,19 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
       const res = await executar(opcao, controller.signal, setRows);
       setRows(res.rows);
       setCancelado(res.cancelado);
+    } catch (err) {
+      // Without this the run ended as an unhandled rejection while the dialog
+      // flipped to `terminado` showing "Enviados 0 · Pulados 0 · Falhas 0" and
+      // no rows — telling the operator NOTHING happened, when what actually
+      // happened is that the run broke. Not hypothetical: the providers
+      // deliberately rethrow anything that is not a known channel error, and the
+      // integração read is a live Firestore query that can reject with a
+      // `FirebaseError` (offline, permission) before a single row exists.
+      setErro(err instanceof Error ? err.message : 'Falha inesperada no envio.');
+      // A FirebaseError is expected here and is fully reported above. Anything
+      // else is a coding bug and still surfaces (repo rule 6) — but now the
+      // operator sees it too, instead of a silent all-zeros summary.
+      if (!(err instanceof FirebaseError)) throw err;
     } finally {
       setFase('terminado');
       abortRef.current = null;
@@ -167,6 +183,13 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
         {cancelado && (
           <Alert color="yellow" variant="light">
             Envio cancelado — os itens já enviados foram concluídos.
+          </Alert>
+        )}
+
+        {erro != null && (
+          <Alert color="red" variant="light" title="O envio foi interrompido">
+            {erro}
+            {rows.length > 0 && ' Os itens listados abaixo já haviam sido processados.'}
           </Alert>
         )}
 

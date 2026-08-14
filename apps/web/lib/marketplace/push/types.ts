@@ -76,6 +76,38 @@ export interface PushDeps {
   mercadoLivre: MercadoLivreClient | null;
 }
 
+/**
+ * Make a key generator that never repeats itself within one channel result.
+ *
+ * ⚠️ `(produtoId, anuncioId)` is NOT unique. It is unique among *drafts* — the
+ * backend's `buildPrecoDrafts`/`buildSendTasks` dedupe those — but the SKIP arms
+ * do not, and several are emitted inside a per-link or per-child loop. A family
+ * with two unpublished link docs yields two `{produtoId: anchor, anuncioId:
+ * null}` rows; a User-Products family with two parent links and a child matching
+ * neither yields one row per parent link, all identical. Several anúncios per
+ * família on one conta is the NORMAL case here — it is the whole reason the row
+ * unit is the listing (#781).
+ *
+ * The consequence is not cosmetic: `key` is both the React list key and the
+ * `data-testid` the e2e specs locate rows by, so a collision means React
+ * reconciles two distinct outcomes as one row and the test id stops identifying
+ * anything. The suffix only appears on an actual repeat, so the common case
+ * keeps its readable, stable key.
+ */
+export function makeRowKeyer(): (
+  produtoId: string,
+  integracaoId: string,
+  anuncioId: string | null,
+) => string {
+  const vistos = new Map<string, number>();
+  return (produtoId, integracaoId, anuncioId) => {
+    const base = `${produtoId}:${integracaoId}:${anuncioId ?? '-'}`;
+    const n = vistos.get(base) ?? 0;
+    vistos.set(base, n + 1);
+    return n === 0 ? base : `${base}#${String(n)}`;
+  };
+}
+
 /** Anything registrable by the `IntegracaoTipo` values it claims. */
 export interface TipoClaimer {
   readonly tipos: readonly IntegracaoTipo[];

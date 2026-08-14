@@ -4,6 +4,7 @@ import {
   MercadoLivreClientNetworkError,
 } from '@/lib/mercado-livre/client';
 
+import { makeRowKeyer } from '../../push/types';
 import type {
   PricePushChannelResult,
   PricePushInput,
@@ -28,10 +29,13 @@ export const mercadoLivrePriceProvider: PricePushProvider = {
     const { integracao, produtoIds, deps } = input;
     const client = deps.mercadoLivre;
 
+    // Never `${produtoId}:${integracaoId}:${anuncioId}` inline — the backend's
+    // skip arms can legitimately repeat that triple. See `makeRowKeyer`.
+    const chave = makeRowKeyer();
     const linha = (
       over: Partial<PricePushRow> & Pick<PricePushRow, 'produtoId'>,
     ): PricePushRow => ({
-      key: `${over.produtoId}:${integracao.id}:${over.anuncioId ?? '-'}`,
+      key: chave(over.produtoId, integracao.id, over.anuncioId ?? null),
       produtoNome: input.nomePorProdutoId.get(over.produtoId) ?? null,
       integracaoId: integracao.id,
       integracaoNome: integracao.nome,

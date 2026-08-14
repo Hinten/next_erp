@@ -71,6 +71,36 @@ describe('mercadoLivrePriceProvider', () => {
     expect(res.rows[0]).toMatchObject({ outcome: 'enviado', preco: 50, precoAnterior: 40 });
   });
 
+  /**
+   * The backend's SKIP arms do not dedupe the way its draft arms do, and several
+   * are emitted inside a per-link or per-child loop — a família with two
+   * unpublished links yields two rows that are identical down to
+   * `anuncioId: null`. `key` is both the React list key and the e2e's
+   * `data-testid`, so a collision reconciles two distinct outcomes into one row.
+   */
+  it('keeps row keys unique when the backend legitimately repeats (produtoId, anuncioId)', async () => {
+    const enviarPrecos = vi.fn().mockResolvedValue(
+      envelope({
+        listings: [
+          listing({ outcome: 'pulado', motivo: 'SEM_ITEM_ID', anuncioId: null, preco: null }),
+          listing({ outcome: 'pulado', motivo: 'SEM_ITEM_ID', anuncioId: null, preco: null }),
+        ],
+        produtosSemEnvio: [
+          { produtoId: 'p1', produtoNome: null, motivo: 'NAO_PUBLICADO', mensagem: 'Oculto.' },
+        ],
+      }),
+    );
+
+    const res = await mercadoLivrePriceProvider.enviarPreco(input(enviarPrecos as never));
+
+    expect(res.rows).toHaveLength(3);
+    expect(new Set(res.rows.map((r) => r.key)).size).toBe(3);
+    // The FIRST occurrence keeps the plain, readable key — the e2e locates rows
+    // by the `<produtoId>:` prefix, which every variant preserves.
+    expect(res.rows[0]!.key).toBe('p1:c1:-');
+    expect(res.rows.every((r) => r.key.startsWith('p1:c1:'))).toBe(true);
+  });
+
   it('forwards baixarPreco and the abort signal to the backend', async () => {
     const enviarPrecos = vi.fn().mockResolvedValue(envelope());
     const signal = new AbortController().signal;
