@@ -49,10 +49,18 @@
  *    path that got it right. What this function returns is Σ order
  *    `payments[].shipping_cost`, computed before any frete block exists; the
  *    frete step then converges it onto `freteInicial.valorCobrado`, which is
- *    Σ APPROVED `shipping_payments[].amount` — a DIFFERENT quantity
- *    (`orderImport.ts`'s two frete writes + `orderShipmentImport.ts`). Do not
+ *    Σ APPROVED `shipping_payments[].amount` — a DIFFERENT quantity. Do not
  *    "simplify" either half into the other: this one is all we know at order
  *    time, and the other is the invariant every other reader assumes.
+ *    ⚠️ **The rule is "every writer of the `freteInicial` block also writes the
+ *    cache", so it has to be checked against the write sites, not assumed.**
+ *    Four write it today — `orderImport.ts`'s stale-repair branch, its
+ *    tracking-only merge (the STEADY STATE, and the one the first pass missed)
+ *    and its conference write, plus `orderShipmentImport.ts` — and two more
+ *    touch the block without moving `valorCobrado`, so they need nothing:
+ *    `nfeUpload.ts` spreads the stored block to flip `estado`, and
+ *    `orderPedidoTx.ts`'s create writes `freteInicial: null` beside the
+ *    provisional seed. `grep -n 'freteInicial:'` before adding a fifth;
  *    ⚠️ No report double-counts freight against `valorCobrado`: reports sum
  *    `pedidoTotal` = Σ item subtotals (`apps/web/lib/reports/aggregations.ts`),
  *    NF-e reads `frete.valorCobrado` directly, and the pedido footer recomputes

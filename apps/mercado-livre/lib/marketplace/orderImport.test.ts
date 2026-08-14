@@ -1238,6 +1238,57 @@ describe('importPedidoMercadoLivre — frete', () => {
     expect(written.valorCobrado).toBe(130); // totalItens 100 + frete 30 (#791 repair)
     expect((written.freteInicial as Record<string, unknown>).valorCobrado).toBe(30);
   });
+
+  it('converges valorFreteInicial on the tracking-only merge, leaving valorCobrado alone', async () => {
+    // #796/O9. The tracking-only branch is the STEADY STATE: once `prazoDespacho`
+    // is filled and the pedido has left ESTADOS_CONFERIR_PAGAMENTO,
+    // `conferenciaCompleta` is false and every later shipment update lands here.
+    // It writes `freteInicial` — so the derived cache has to travel with it — but
+    // NOT `valorCobrado`, matching legacy's own tracking-only save.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'pago', // NOT in ESTADOS_CONFERIR_PAGAMENTO
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: {
+        estado: 'despachoAutorizado',
+        externalId: '777',
+        valorCobrado: 5,
+        prazoDespacho: Date.parse('2026-01-03T00:00:00.000Z') * 1000, // non-null ⇒ no full conference
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000, // OLDER than incoming
+      },
+      valorFreteInicial: 7, // the order-import seed — the drift
+      valorCobrado: 107,
+      itens: {},
+    });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 777, status: 'paid' })),
+      getShipment: vi.fn(async () => ({
+        id: 777,
+        order_id: 1,
+        status: 'shipped',
+        substatus: null,
+        last_updated: '2026-01-20T00:00:00.000-03:00', // NEWER than the stored frete
+        shipping_option: {},
+      })),
+      getShipmentPayments: vi.fn(async () => [
+        { payment_id: 900, status: 'approved', amount: 18 },
+        { payment_id: 901, status: 'rejected', amount: 99 }, // excluded
+      ]),
+    });
+    vi.mocked(resolvePrazoDespacho).mockResolvedValue(
+      Date.parse('2026-01-08T00:00:00.000Z') * 1000,
+    );
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect((written.freteInicial as Record<string, unknown>).valorCobrado).toBe(18);
+    expect(written.valorFreteInicial).toBe(18);
+    // Untouched on this branch — legacy writes no total here either.
+    expect(written.valorCobrado).toBe(107);
+  });
 });
 
 describe('importPedidoMercadoLivre — pago advance / downgrade', () => {

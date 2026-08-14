@@ -1163,6 +1163,15 @@ async function applyFreteStep(args: {
         pedidoRef,
         pedidoCollection.parseMerge({
           freteInicial: targetFrete,
+          // #796/O9, same rule as the conference write below: the derived cache
+          // travels with the block. This is the STEADY-STATE branch — once
+          // `prazoDespacho` is filled and the pedido leaves
+          // `ESTADOS_CONFERIR_PAGAMENTO`, every later shipment update lands
+          // here — so omitting it is not a corner case, it is the common path.
+          // `valorCobrado` is deliberately NOT recomputed here (legacy writes
+          // no total on this branch either); its own repair lives in the
+          // `!maisNovo` branch above.
+          valorFreteInicial: roundReais(mappedFrete.valorCobrado ?? 0),
           ultimaModificacao: avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs),
         }) as DocumentData,
       );
