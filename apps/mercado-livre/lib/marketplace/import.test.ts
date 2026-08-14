@@ -777,6 +777,16 @@ describe('importProduto — ERP-first variation children (#801)', () => {
     })),
   };
 
+  /**
+   * {@link ITEM} with NON-NUMERIC variation ids. `itemVariationSchema` accepts them
+   * ("ML has sent numeric and (rarely) string ids over time"), and they are what makes
+   * `numericVariationId` — and therefore the link's `id` field — come out `null`.
+   */
+  const ITEM_ID_NAO_NUMERICO: DocData = {
+    ...ITEM,
+    variations: (ITEM.variations as DocData[]).map((v, i) => ({ ...v, id: i === 0 ? 'A' : 'B' })),
+  };
+
   /** The one `variacaoMercadoLivre` link under a child — fails loudly if there isn't exactly one. */
   const soleLink = (db: FakeDb, childId: string): DocData => {
     const links = db.docs(`produtos/${childId}/variacaoMercadoLivre`);
@@ -1138,6 +1148,36 @@ describe('importProduto — ERP-first variation children (#801)', () => {
       // both variations, so rule 3's lazy `paiId ==` scan must stay unpaid.
       expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'paiId')).toEqual([]);
       expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'sku')).toHaveLength(2);
+    });
+
+    /**
+     * A link's naming field is `numericVariationId(variationId)`, i.e. **`null` for a
+     * non-numeric ML variation id** — a shape THIS importer writes, not just a
+     * Flutter-era artefact. "Names nothing readable" therefore cannot mean "claimed by
+     * someone else", or every re-import would decline the link it wrote a moment ago
+     * and mint a duplicate. Both rules re-import the same listing three times here;
+     * the produto count is the whole assertion.
+     */
+    it.each([
+      ['rule 2 — SKUs ML knows', 'ML-000111', 'ML-000222'],
+      ['rule 3 — SKUs ML does not know', 'ERP-G', 'ERP-M'],
+    ])('a null-id link stays adoptable across re-imports (%s)', async (_rotulo, skuG, skuM) => {
+      const db = new FakeDb();
+      seedTaxonomia(db);
+      seedParent(db);
+      seedChild(db, 'erp-filho-G', skuG, COMBO_G);
+      seedChild(db, 'erp-filho-M', skuM, COMBO_M);
+
+      for (let i = 0; i < 3; i += 1) {
+        await importProduto(deps(db, makeApi(ITEM_ID_NAO_NUMERICO)), 'MLB999');
+      }
+
+      expect(db.docs('produtos').size).toBe(3);
+      expect(
+        childrenOf(db, PARENT_ID)
+          .map(([id]) => id)
+          .sort(),
+      ).toEqual(['erp-filho-G', 'erp-filho-M']);
     });
   });
 });

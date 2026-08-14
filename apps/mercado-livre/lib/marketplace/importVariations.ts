@@ -430,7 +430,7 @@ async function resolveExistingChild(args: ResolveExistingChildArgs): Promise<Res
       // variation. Same guard and same fail-safe direction as rule 3, and free:
       // the link doc is already in hand.
       const existingLink = await findParentLink(db, doc.id, parentLinkOuterRef);
-      if (!existingLink || linkNamesVariation(existingLink.raw, variationId, matchByItemId)) {
+      if (!existingLink || !linkNamesOtherVariation(existingLink.raw, variationId, matchByItemId)) {
         return {
           produtoId: doc.id,
           linkDocId: existingLink?.id ?? null,
@@ -450,10 +450,11 @@ async function resolveExistingChild(args: ResolveExistingChildArgs): Promise<Res
       if (!sameCombo(sibling.variacoesUid, varianteFakes)) continue;
 
       const existingLink = await findParentLink(db, sibling.id, parentLinkOuterRef);
-      // A link to this parent that names a DIFFERENT variation (or names none we
-      // can read) means the child is already spoken for — leave it alone and keep
-      // looking, rather than merging two ML variations onto one produto.
-      if (existingLink && !linkNamesVariation(existingLink.raw, variationId, matchByItemId)) {
+      // A link to this parent naming a DIFFERENT variation means the child is already
+      // spoken for — leave it alone and keep looking, rather than merging two ML
+      // variations onto one produto. A link naming NOTHING readable is not that: see
+      // the ⚠️ on `linkNamesOtherVariation`.
+      if (existingLink && linkNamesOtherVariation(existingLink.raw, variationId, matchByItemId)) {
         continue;
       }
       return {
@@ -486,19 +487,29 @@ async function findParentLink(
 }
 
 /**
- * Does this link doc name `variationId`? Reads the same field the rule-1 query
- * keys on (`itemId` for User-Products, `id` for legacy `variations[]`), compared
- * as a string because the legacy `id` is an int but Flutter-written rows may hold
- * a stringified one. An unreadable/absent key answers FALSE — the caller treats
- * that as "spoken for", the fail-safe direction.
+ * Does this link doc name a variation OTHER than `variationId` — i.e. is the child
+ * already claimed by one of its siblings? Reads the same field the rule-1 query keys
+ * on (`itemId` for User-Products, `id` for legacy `variations[]`), compared as a
+ * string because the legacy `id` is an int but Flutter-written rows may hold a
+ * stringified one.
+ *
+ * ⚠️ An absent/unreadable key answers **FALSE**, deliberately: "names nothing" is not
+ * evidence of anyone else's claim, and treating it as one is self-inflicted. The
+ * naming field is written as `numericVariationId(variationId)`, which is **`null`
+ * whenever the ML variation id is non-numeric** — a shape `itemVariationSchema`
+ * accepts outright ("ML has sent numeric and (rarely) string ids over time"). So this
+ * importer writes null-id links itself; reading one back as "spoken for" made a
+ * re-import decline the link it had just written, and mint a duplicate child on every
+ * single run. Pinned by the three-import test in `import.test.ts`.
  */
-function linkNamesVariation(
+function linkNamesOtherVariation(
   raw: Record<string, unknown>,
   variationId: string,
   matchByItemId: boolean,
 ): boolean {
   const key = matchByItemId ? raw.itemId : raw.id;
-  return (typeof key === 'string' || typeof key === 'number') && String(key) === variationId;
+  if (typeof key !== 'string' && typeof key !== 'number') return false;
+  return String(key) !== variationId;
 }
 
 /**
