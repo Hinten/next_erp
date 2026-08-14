@@ -234,6 +234,19 @@ unifying them needs a runtime `firebase-admin/functions` import.
    (non-scalar → JSON text, reserved/empty field names dropped, byte budget) —
    an `INVALID_ARGUMENT` there is not a `ZodError`, so the receiver rethrows it
    as a 5xx and the provider disables the topic.
+
+   ⭐ **`docIdOf` returning null is a dedup hole, not a neutral default.** The
+   store falls back to an auto id, so `create`'s ALREADY_EXISTS collision — the
+   only thing stopping a failure doc from forking — never fires, and a
+   repeatedly-failing resource accumulates one dead document per attempt. That is
+   tolerable while every id comes off the provider's wire, and stops being
+   tolerable the moment the channel gains a producer that SYNTHESISES
+   notifications (a backfill sweep, a missed-deliveries replay): those carry no
+   provider event id by construction. Derive one — Mercado Livre uses
+   `<topic>:<resource>`, routed back through the same doc-id guard so a malformed
+   value still degrades to an auto id (**#807**). Put `topic` in the key when two
+   topics can share a resource, and use the WHOLE resource: a last-segment key
+   collides `/orders/7` with `/shipments/7`.
 5. **Receiver** — `apps/<canal>/app/api/webhooks/<canal>/route.ts`: verify the
    signature (read the raw body ONCE — a re-serialized JSON won't match the
    HMAC), parse, enqueue, ack 200. Catch enqueue failure → `persistNotificationFailure`

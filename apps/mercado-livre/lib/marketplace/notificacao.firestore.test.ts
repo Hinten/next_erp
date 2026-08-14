@@ -102,16 +102,38 @@ describe.skipIf(!EMULATED)('ML notification store (Firestore emulator)', () => {
     expect(doc.data()).toMatchObject({ erro: 'primeiro erro', status: 'failed', tentativas: 0 });
   });
 
-  it('B1b: two notifications WITHOUT an id get separate auto-id docs (documented, untested until now)', async () => {
-    // `docIdOf` is `p.id`; null falls back to `collection.newDocId`, so ML
-    // deliveries that carry no `_id` cannot dedup against each other. The store
-    // docstring says so; this pins it.
+  it('B1b: two id-less notifications for DIFFERENT resources stay separate docs', async () => {
+    // `payload()` randomises `resource` per call, so these two derive different
+    // doc ids — `docIdOf`'s #807 fallback is `<topic>:<resource>`, and separating
+    // them is the point of putting the whole resource in the key.
     await persistNotificationFailure(db(), payload({ id: null }), 'erro A');
     await persistNotificationFailure(db(), payload({ id: null }), 'erro B');
 
     const snap = await db().collection(NOTIF).get();
     expect(snap.size).toBe(2);
     expect(snap.docs.map((d) => d.data().erro).sort()).toEqual(['erro A', 'erro B']);
+  });
+
+  it('B1c: two id-less notifications for the SAME topic+resource converge on one doc (#807)', async () => {
+    // The half B1b cannot show. Before #807 `docIdOf` returned null here and the
+    // store minted a fresh auto id per persist, so a repeatedly-failing resource
+    // accumulated one dead document per attempt. This is the real-Firestore proof
+    // that `create()` raises code 6 against a DERIVED id, not just an ML one.
+    const p = payload({ id: null, resource: '/orders/424242', topic: 'orders_v2' });
+
+    await persistNotificationFailure(db(), p, 'primeiro erro');
+    await persistNotificationFailure(db(), p, 'segundo erro');
+
+    const snap = await db().collection(NOTIF).get();
+    expect(snap.size).toBe(1);
+
+    const doc = await readDoc('orders_v2:orders_424242');
+    expect(doc.exists).toBe(true);
+    // Same distinguishing assertion as B1: the FIRST record surviving is what
+    // separates "collided and was ignored" from "silently overwrote".
+    expect(doc.data()).toMatchObject({ erro: 'primeiro erro', status: 'failed', tentativas: 0 });
+    // The derived value keys the DOCUMENT; the `id` field stays honestly null.
+    expect(doc.data()!.id).toBeNull();
   });
 
   it('B2: mergeIfExists on a deleted doc returns false and does NOT resurrect it', async () => {

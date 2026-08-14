@@ -66,8 +66,13 @@ export const notificacaoMercadoLivreSchema = z
   .object({
     /**
      * The ML notification id (`_id`/`id`) — normally also the Firestore doc
-     * id (the persister keys the failure doc by it). Null on the rare body
-     * with no id, where an auto doc id is minted instead.
+     * id (the persister keys the failure doc by it). Null whenever ML sent no
+     * id: on the rare body carrying neither key, on a `missed_feeds` entry
+     * without `_id`, and on every notification the order-backfill sweep
+     * synthesises. In those cases the doc id is DERIVED from `topic` + `resource`
+     * (`docIdOf` in `apps/mercado-livre/lib/marketplace/notificacao.ts`, #807) so
+     * repeated failures still converge on one document — this field stays null
+     * rather than carrying the derived value, because it is not an ML id.
      */
     id: z.string().nullable().default(null),
     /** ML resource pointer, e.g. `/orders/2000...` or `/items/MLB123`. */

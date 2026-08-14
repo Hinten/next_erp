@@ -27,6 +27,11 @@ export interface NotificationStoreConfig<TPayload> {
    * the wire carries no id — the store mints an auto id, and two id-less
    * deliveries of one event WILL produce two docs (the sweep's in-run dedup key
    * is what bounds the blast radius).
+   *
+   * ⚠️ A channel with a producer that synthesises notifications — Mercado Livre's
+   * order backfill is the worked example — should DERIVE a deterministic id here
+   * instead of returning null, or a repeatedly-failing resource accumulates one
+   * dead document per attempt with nothing to collide against (#807).
    */
   docIdOf(payload: TPayload): string | null;
   /**
