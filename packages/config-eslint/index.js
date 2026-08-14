@@ -6,6 +6,7 @@ import noAdHocMoneyRounding from './rules/no-ad-hoc-money-rounding.js';
 import noOptionalWithoutNullable from './rules/no-optional-without-nullable.js';
 import noErrorAsSoleInstanceof from './rules/no-error-as-sole-instanceof.js';
 import noLossyDateParse from './rules/no-lossy-date-parse.js';
+import noAmbientTimezone from './rules/no-ambient-timezone.js';
 import preferSchemaEnum from './rules/prefer-schema-enum.js';
 import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.js';
 import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
@@ -108,6 +109,7 @@ const config = [
           'no-client-estado-history-write': noClientEstadoHistoryWrite,
           'no-env-secrets-access': noEnvSecretsAccess,
           'no-lossy-date-parse': noLossyDateParse,
+          'no-ambient-timezone': noAmbientTimezone,
         },
       },
     },
@@ -218,6 +220,30 @@ const config = [
       // means fixing it first. Tests and e2e helpers are exempt wholesale — an
       // ISO literal is the readable way to author a microsecond fixture.
       'delfrance/no-lossy-date-parse': 'warn',
+
+      // The companion to the rule above: `Date.parse` was one way to read the
+      // ambient process timezone, but not the only one. `apps/nfe` sets
+      // TZ=America/Sao_Paulo in its App Hosting config while every other backend
+      // runs UTC, so any server code that formats or reads a wall clock without
+      // naming a zone produces answers three hours apart depending on which
+      // service executed it — and no unit test catches it, because the runner
+      // has its own third timezone.
+      //
+      // The scope is an INCLUDE-list of server surfaces rather than the usual
+      // allow-list, and that inversion is the whole point: reading the ambient
+      // zone is CORRECT in apps/web and packages/ui, where "ambient" means the
+      // operator's own wall clock rather than whichever container happened to
+      // run the code. Forcing those to UTC would show a human the wrong time.
+      //
+      // ⚠️ `@delfrance/data` is scoped by SUBPATH (`src/admin/`, `src/server/`),
+      // not wholesale: `./hooks` ships `'use client'` and `./pedido` is consumed
+      // from apps/web, so the package straddles both worlds.
+      //
+      // Warn, not error: ONE pre-existing site — apps/nfe's certificado route —
+      // a user-facing string whose correct zone is a product decision (probably
+      // America/Sao_Paulo, not UTC), so the rule surfaces it rather than
+      // silently picking one.
+      'delfrance/no-ambient-timezone': 'warn',
 
       // `pedidos/{id}/historicoEstadoPedido` (the pedido `estado` trail) and
       // `pedidos/{id}/historicoFtIni` (the `freteInicial.estado` trail) have
