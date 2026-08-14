@@ -161,7 +161,13 @@ export class PriceSyncAlreadyRunningError extends Error {
  */
 export async function startPriceSyncJob(
   db: Firestore,
-  args: { integracaoId: string; baixarPreco: boolean; startedBy: string },
+  args: {
+    integracaoId: string;
+    baixarPreco: boolean;
+    startedBy: string;
+    /** Scope the job to ONE anchor produto (#804 S6); null = the whole conta. */
+    produtoId?: string | null;
+  },
 ): Promise<{ jobId: string }> {
   const now = Date.now();
   const running = await envioPrecoMercadoLivreCollection
@@ -208,6 +214,7 @@ export async function startPriceSyncJob(
       integracaoId: args.integracaoId,
       status: 'running',
       baixarPreco: args.baixarPreco,
+      produtoId: args.produtoId ?? null,
       startedBy: args.startedBy,
       startedAt: now,
       updatedAt: now,
@@ -453,6 +460,8 @@ export async function processPriceSyncJob(
         integracaoId: payload.integracaoId,
         afterAnchorId,
         pageLimit: precoPageLimit(),
+        // Null for a conta-wide job — the bulk query then runs unchanged.
+        produtoId: job.produtoId,
       });
       // Rows are consumed ONE at a time under `PLAN_PAGE_DRAFTS_CAP`: a row
       // whose drafts would push the fila past the cap — while the fila already

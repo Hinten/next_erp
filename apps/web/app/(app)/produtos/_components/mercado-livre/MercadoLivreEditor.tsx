@@ -268,6 +268,44 @@ export function MercadoLivreEditor({
    * reaches Mercado Livre until Publicar. The live `useSnapshot` above swaps the
    * card over to the full editor as soon as the write lands.
    */
+  /**
+   * Start a produto-scoped price job (#804 S6) and report it. Deliberately does
+   * NOT poll: the job is a handful of PUTs and the listing strip shows the
+   * result on its own; a second progress widget on the produto screen would
+   * duplicate the channel screen's card for no added information.
+   */
+  async function pushPrices(integracaoId: string) {
+    if (!client) return;
+    try {
+      await client.startPriceSync({ integracaoId, produtoId });
+      notifications.show({
+        color: 'green',
+        message: 'Atualização de preços iniciada para este produto.',
+      });
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Anúncio publicado, preços não',
+          message:
+            err.code === 'ML_PRICE_SYNC_RUNNING'
+              ? 'Já existe uma atualização de preços em andamento nesta conta — tente de novo quando terminar.'
+              : err.message,
+        });
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Anúncio publicado, preços não',
+          message: 'Não foi possível contatar o serviço do Mercado Livre.',
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+
   async function handlePreparar(integracaoId: string) {
     setPreparing(integracaoId);
     try {
@@ -295,7 +333,21 @@ export function MercadoLivreEditor({
     }
   }
 
-  async function handlePublish(integracaoId: string, needsListingType: boolean) {
+  /**
+   * Publish, optionally followed by a price push for THIS produto.
+   *
+   * The two are separate calls on purpose. A publish deliberately does not carry
+   * prices — the PUT it sends per listing omits them so a republish (to fix a
+   * photo, a title, an attribute) cannot silently bypass the price flow's
+   * "Permitir baixar preços" guard, and cannot 400 on an item with an active ML
+   * price automation. `withPrices` is the operator saying they meant the price
+   * too, which is why the job it starts allows decreases.
+   */
+  async function handlePublish(
+    integracaoId: string,
+    needsListingType: boolean,
+    withPrices = false,
+  ) {
     if (!client) return;
     setPublishing(integracaoId);
     setBlockedIssues((prev) => ({ ...prev, [integracaoId]: [] }));
@@ -312,6 +364,9 @@ export function MercadoLivreEditor({
         title: 'Publicado no Mercado Livre',
         message: publishSummary(result),
       });
+      // Only after the publish SUCCEEDED: pushing a price to a listing that
+      // failed to publish would either 404 or update the stale version.
+      if (withPrices) await pushPrices(integracaoId);
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {
         if (err.code === 'ML_PUBLISH_BLOCKED' && err.issues && err.issues.length > 0) {
@@ -687,6 +742,30 @@ export function MercadoLivreEditor({
                         }
                       >
                         {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
+                      </Button>
+                    )}
+                    {/* Absent while the listing is still a rascunho: with no link
+                        doc there is no category_id, so publish 422s before it
+                        writes anything and a price push would have nothing to
+                        price. "Preparar anúncio" above is the only action then. */}
+                    {!needsListingType && (
+                      <Button
+                        type="button"
+                        variant="light"
+                        onClick={() => handlePublish(conta.id, false, true)}
+                        loading={publishing === conta.id}
+                        disabled={
+                          disabled ||
+                          !client ||
+                          !canPublish ||
+                          publishing !== null ||
+                          publishBlocked ||
+                          missingCategoria
+                        }
+                      >
+                        {isFirstPublish
+                          ? 'Publicar e atualizar preços'
+                          : 'Republicar e atualizar preços'}
                       </Button>
                     )}
                     {publishBlocked && (

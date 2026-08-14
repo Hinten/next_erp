@@ -278,6 +278,32 @@ describe('startPriceSyncJob', () => {
     });
   });
 
+  it('persists the produto SCOPE on the job doc, not just on the request (#804 S6)', async () => {
+    // The plan step runs later, in a Cloud Task, and re-plans on every dispatch
+    // — a scope kept only in the caller would silently widen to the whole conta
+    // on the first retry.
+    const db = new FakeDb();
+    const { jobId } = await startPriceSyncJob(asDb(db), {
+      integracaoId: CONTA,
+      baixarPreco: true,
+      produtoId: 'prod-9',
+      startedBy: 'user-1',
+    });
+
+    expect(db.docs(JOBS_PATH).get(jobId)).toMatchObject({ produtoId: 'prod-9' });
+  });
+
+  it('a conta-wide job stores produtoId null', async () => {
+    const db = new FakeDb();
+    const { jobId } = await startPriceSyncJob(asDb(db), {
+      integracaoId: CONTA,
+      baixarPreco: false,
+      startedBy: 'user-1',
+    });
+
+    expect(db.docs(JOBS_PATH).get(jobId)).toMatchObject({ produtoId: null });
+  });
+
   it('throws PriceSyncAlreadyRunningError while a job is running for the conta', async () => {
     const db = new FakeDb();
     await startPriceSyncJob(asDb(db), { integracaoId: CONTA, baixarPreco: false, startedBy: 'u' });
@@ -378,6 +404,9 @@ describe('processPriceSyncJob — plan phase', () => {
       integracaoId: CONTA,
       afterAnchorId: null,
       pageLimit: 25,
+      // Null = the conta-wide job. The scope lives on the JOB doc, not on the
+      // request, because the plan re-runs on every dispatch (#804 S6).
+      produtoId: null,
     });
     expect(buildPrecoDrafts).toHaveBeenCalledWith(rowA, {
       integracaoId: CONTA,
@@ -491,6 +520,7 @@ describe('processPriceSyncJob — plan phase', () => {
       integracaoId: CONTA,
       afterAnchorId: 'anchor-A',
       pageLimit: 25,
+      produtoId: null,
     });
     expect(db.docs(JOBS_PATH).get('jobCap2')).toMatchObject({
       status: 'completed',

@@ -66,6 +66,16 @@ class FakeDb {
         max = n;
         return q;
       },
+      // The produto-scoped plan (#804 S6) reads its one anchor by id — no
+      // query, so none of the clauses above apply to it.
+      doc(id: string) {
+        return {
+          id,
+          async get() {
+            return { exists: col.has(id), id, data: () => col.get(id) };
+          },
+        };
+      },
       async get() {
         let rows = [...col.entries()].filter(([, d]) =>
           clauses.every(({ field, op, value }) => matches(d[field], op, value)),
@@ -598,6 +608,49 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
       },
     ]);
     expect(page.nextAfterAnchorId).toBeNull(); // short page — backlog drained
+  });
+
+  it('produtoId scopes the plan to ONE anchor and drains in a single page (#804 S6)', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'A1');
+    seedLink(db, 'A1', 'link1');
+    seedAnchor(db, 'A2');
+    seedLink(db, 'A2', 'link2');
+
+    const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, produtoId: 'A2' });
+
+    expect(page.rows.map((r) => r.produtoId)).toEqual(['A2']);
+    // No cursor: one anchor is the whole backlog, so the job completes in its
+    // first dispatch instead of re-planning a second empty page.
+    expect(page.nextAfterAnchorId).toBeNull();
+    // The joins are the SAME ones the bulk page does — links and children are
+    // still resolved, so the drafts downstream are identical.
+    expect(page.rows[0]!.links.map((l) => l.linkDocId)).toEqual(['link2']);
+  });
+
+  it('a scoped plan reaches produtos the BULK query silently drops', async () => {
+    // Two of the three classes #804 S7 reports the bulk job never enumerating:
+    // an unpublished produto with a live listing, and a drifted
+    // `integracoesComProduto` denorm. The operator named this produto — their
+    // explicit request must not be a silent no-op.
+    const db = new FakeDb();
+    seedAnchor(db, 'A1', { publicado: false, integracoesComProduto: ['outra-conta'] });
+    seedLink(db, 'A1', 'link1');
+
+    expect(
+      (await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 })).rows,
+    ).toHaveLength(0);
+    expect(
+      (await fetchPrecoPage(asDb(db), { integracaoId: CONTA, produtoId: 'A1' })).rows,
+    ).toHaveLength(1);
+  });
+
+  it('a scoped plan on a missing produto yields nothing rather than throwing', async () => {
+    const page = await fetchPrecoPage(asDb(new FakeDb()), {
+      integracaoId: CONTA,
+      produtoId: 'nao-existe',
+    });
+    expect(page).toEqual({ rows: [], nextAfterAnchorId: null });
   });
 
   it('keyset: a FULL page sets nextAfterAnchorId; the resumed page drains', async () => {

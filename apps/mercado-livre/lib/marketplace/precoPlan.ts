@@ -156,6 +156,19 @@ export interface FetchPrecoPageArgs {
   afterAnchorId?: string | null;
   /** Page size override — defaults to `precoPageLimit()`. */
   pageLimit?: number;
+  /**
+   * Plan ONE anchor produto instead of the conta's whole catalogue (#804 S6) —
+   * the produto-scoped push behind the produto screen's price action.
+   *
+   * ⚠️ It reads the anchor DIRECTLY, so it deliberately does not apply the bulk
+   * query's `publicado == true` / `integracoesComProduto array-contains`
+   * filters. The operator named this produto; a stale `integracoesComProduto`
+   * denorm or an unpublished produto with a live listing — two of the classes
+   * #804 S7 reports the bulk job silently dropping — must not make their
+   * explicit request a no-op. The link-level filtering downstream is unchanged,
+   * so a produto with no link for this conta still yields a `SEM_LINK` skip.
+   */
+  produtoId?: string | null;
 }
 
 /** One plan page. */
@@ -201,6 +214,16 @@ export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
   // ASC, __name__)` composite (Step 10's entry, ASC form per #705 — zero new
   // indexes); the field mask keeps the page light (produtos docs carry heavy
   // media arrays).
+  // Produto-scoped push: ONE anchor, read by id — no query, no cursor, and the
+  // whole backlog drained in the first dispatch (see `FetchPrecoPageArgs`).
+  if (args.produtoId != null) {
+    const snap = await produtoCollection.docRef(db, {}, args.produtoId).get();
+    if (!snap.exists) return { rows: [], nextAfterAnchorId: null };
+    const raw = (snap.data() ?? {}) as Record<string, unknown>;
+    const row = await readFamilia(db, args.produtoId, raw, contaRefForms);
+    return { rows: [row], nextAfterAnchorId: null };
+  }
+
   let anchorsQuery = produtoCollection
     .ref(db, {})
     .where('paiId', '==', null)

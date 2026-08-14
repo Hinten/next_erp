@@ -519,8 +519,20 @@ export interface MercadoLivreClient {
    */
   startPriceSync(input: {
     integracaoId: string;
-    /** Default false — price DECREASES are skipped (`PRECO_ANTIGO_MAIOR`) unless opted in. */
+    /**
+     * Whether price DECREASES may go out (`PRECO_ANTIGO_MAIOR` otherwise).
+     * ⚠️ The server default depends on scope: FALSE conta-wide, TRUE when
+     * `produtoId` is given — the operator named that produto, and a bulk run
+     * must never lower every listing below its ML price unasked.
+     */
     baixarPreco?: boolean;
+    /**
+     * Scope the run to ONE produto (#804 S6) instead of the whole catalogue.
+     * ⚠️ apps/web calls the DEPLOYED channel backend: a revision predating this
+     * IGNORES the field and runs the conta-wide job, so never send it as the
+     * silent half of a produto-scoped action without saying so in the UI.
+     */
+    produtoId?: string;
   }): Promise<{ jobId: string }>;
   /** Poll a price-sync job's progress (PERM.integracao.read). 404s on an unknown/foreign jobId. */
   priceSyncStatus(input: {
@@ -882,7 +894,8 @@ export function createMercadoLivreClient(config: {
     startPriceSync: (input) =>
       call<{ jobId: string }>('/api/marketplace/mercado-livre/atualizar-precos', {
         integracaoId: input.integracaoId,
-        baixarPreco: input.baixarPreco,
+        ...(input.baixarPreco === undefined ? {} : { baixarPreco: input.baixarPreco }),
+        ...(input.produtoId === undefined ? {} : { produtoId: input.produtoId }),
       }),
     enviarEstoque: (input) =>
       call<MercadoLivreEnvioEstoqueResult>(

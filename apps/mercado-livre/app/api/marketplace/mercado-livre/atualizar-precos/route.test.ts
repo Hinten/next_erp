@@ -71,6 +71,7 @@ describe('POST /api/marketplace/mercado-livre/atualizar-precos', () => {
     expect(h.startPriceSyncJob).toHaveBeenCalledWith(expect.anything(), {
       integracaoId: 'int-1',
       baixarPreco: false,
+      produtoId: null,
       startedBy: 'u1',
     });
     expect(h.enqueue).toHaveBeenCalledWith({ jobId: 'job-1', integracaoId: 'int-1' });
@@ -80,7 +81,39 @@ describe('POST /api/marketplace/mercado-livre/atualizar-precos', () => {
   it('forwards baixarPreco: true when the caller opts into price decreases', async () => {
     await POST(req({ integracaoId: 'int-1', baixarPreco: true }));
     const [, args] = h.startPriceSyncJob.mock.calls[0]!;
-    expect(args).toEqual({ integracaoId: 'int-1', baixarPreco: true, startedBy: 'u1' });
+    expect(args).toEqual({
+      integracaoId: 'int-1',
+      baixarPreco: true,
+      produtoId: null,
+      startedBy: 'u1',
+    });
+  });
+
+  it('a produtoId scopes the job AND flips the baixarPreco default to true (#804 S6)', async () => {
+    // The two scopes need opposite defaults. Conta-wide, an unasked decrease
+    // would lower every listing sitting below its ML price. For ONE produto the
+    // operator named it — legacy's per-produto row action passed
+    // `baixarPreco: true` for the same reason.
+    await POST(req({ integracaoId: 'int-1', produtoId: 'prod-9' }));
+    const [, args] = h.startPriceSyncJob.mock.calls[0]!;
+    expect(args).toEqual({
+      integracaoId: 'int-1',
+      baixarPreco: true,
+      produtoId: 'prod-9',
+      startedBy: 'u1',
+    });
+  });
+
+  it('an explicit baixarPreco still wins over the scoped default', async () => {
+    await POST(req({ integracaoId: 'int-1', produtoId: 'prod-9', baixarPreco: false }));
+    const [, args] = h.startPriceSyncJob.mock.calls[0]!;
+    expect(args).toMatchObject({ baixarPreco: false, produtoId: 'prod-9' });
+  });
+
+  it('400s on an empty or non-string produtoId', async () => {
+    expect((await POST(req({ integracaoId: 'int-1', produtoId: '' }))).status).toBe(400);
+    expect((await POST(req({ integracaoId: 'int-1', produtoId: 7 }))).status).toBe(400);
+    expect(h.startPriceSyncJob).not.toHaveBeenCalled();
   });
 
   it('400s on a missing integracaoId, invalid JSON, non-object bodies and a non-boolean baixarPreco', async () => {
