@@ -56,6 +56,10 @@ async function driveTrigger(
     eventId,
     eventTimeMicros,
     expand: source.expand,
+    // The emulator hardcodes `authId` to an e-mail (firebase-tools#7609), so a
+    // real trigger firing here always resolves to `null` anyway — mirroring that
+    // keeps the helper faithful. The actor is asserted in a staging e2e.
+    usuarioOuterRef: null,
   });
   if (entry === null) return false;
   // The root now comes from the source, so this helper stays a faithful mirror

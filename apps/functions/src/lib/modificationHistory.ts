@@ -1,11 +1,12 @@
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
-import { onDocumentWritten } from 'firebase-functions/v2/firestore';
+import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import type { z } from 'zod';
 import { diffDocumentFields, type ExpandSpec } from '@delfrance/core';
 import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import type { AdminCollectionHandle } from '@delfrance/data/admin';
 
 import { getDb } from './admin';
+import { resolveUsuarioOuterRef } from './authContext';
 
 /**
  * Generic modification-history recorder — one entry per CloudEvent under the
@@ -33,6 +34,14 @@ export interface ModificationEntry {
   changes: Record<string, { old: unknown; new: unknown }>;
   timestamp: number;
   eventId: string;
+  /**
+   * `documents/usuarios/<uid>`, or `null` when the write had no end user behind
+   * it (Admin SDK: webhooks, imports, this app's own write-backs, scripts).
+   * Always PRESENT on a row written from here — the schema's third state
+   * (absent) is reserved for rows that predate the field, so a legacy row stays
+   * distinguishable from a genuine system write.
+   */
+  usuarioOuterRef: string | null;
 }
 
 /**
@@ -72,6 +81,8 @@ export function buildModificationEntry(input: {
   eventTimeMicros: number;
   /** Per-field descent; see {@link ModificationHistorySource.expand}. */
   expand?: Readonly<Record<string, ExpandSpec>>;
+  /** Resolved acting user, or `null`. See {@link ModificationEntry.usuarioOuterRef}. */
+  usuarioOuterRef: string | null;
 }): ModificationEntry | null {
   const diff = diffDocumentFields(input.before, input.after, {
     ignore: input.ignore,
@@ -87,6 +98,7 @@ export function buildModificationEntry(input: {
     changes: diff.changes,
     timestamp: input.eventTimeMicros,
     eventId: input.eventId,
+    usuarioOuterRef: input.usuarioOuterRef,
   };
 }
 
@@ -169,7 +181,12 @@ export function makeModificationHistoryTrigger(
   document: string,
   source: ModificationHistorySource,
 ) {
-  return onDocumentWritten(
+  // The `WithAuthContext` variant so a row can name the acting user when the
+  // write came from a signed-in client. ⚠️ This is a DIFFERENT Eventarc event
+  // type (`…document.v1.written.withAuthContext`), so switching an
+  // already-deployed trigger to it may need a delete + redeploy — see
+  // apps/functions/CLAUDE.md.
+  return onDocumentWrittenWithAuthContext(
     { document, database: process.env.FIREBASE_DATABASE_ID ?? 'default' },
     async (event) => {
       const params = event.params as Record<string, string>;
@@ -195,6 +212,7 @@ export function makeModificationHistoryTrigger(
           ? nowMicros()
           : millisToMicros(eventTimeMillis),
         expand: source.expand,
+        usuarioOuterRef: resolveUsuarioOuterRef(event.authType, event.authId),
       });
       if (entry === null) return;
 

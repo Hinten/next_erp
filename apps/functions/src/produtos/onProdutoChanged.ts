@@ -1,11 +1,12 @@
 import type { DocumentData, DocumentReference, Firestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
-import { onDocumentWritten } from 'firebase-functions/v2/firestore';
+import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
 import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import { produtoMeta, samePrecos, type PrecosMap } from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
+import { resolveUsuarioOuterRef } from '../lib/authContext';
 import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
 
@@ -132,6 +133,12 @@ export async function recordProdutoModificationAndPropagate(
    * review, PR #609).
    */
   eventTimeMicros: number,
+  /**
+   * Resolved acting user (`documents/usuarios/<uid>`) or `null` for an
+   * Admin-SDK write. Threaded in rather than resolved here so this core stays
+   * pure and drivable from the emulator suite.
+   */
+  usuarioOuterRef: string | null = null,
 ): Promise<void> {
   if (after === undefined) return; // produto delete — no entry (see doc comment)
 
@@ -144,6 +151,7 @@ export async function recordProdutoModificationAndPropagate(
     docId: produtoId,
     eventId,
     eventTimeMicros,
+    usuarioOuterRef,
   });
   if (entry === null) return;
 
@@ -185,7 +193,7 @@ export async function recordProdutoModificationAndPropagate(
  * alone) performs the one extra read that finds children to propagate to.
  * Targets the NAMED `default` database (gotcha #8).
  */
-export const onProdutoChanged = onDocumentWritten(
+export const onProdutoChanged = onDocumentWrittenWithAuthContext(
   {
     document: `${produtoMeta.collectionPath}/{produtoId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
@@ -206,6 +214,7 @@ export const onProdutoChanged = onDocumentWritten(
       after,
       event.id,
       Number.isNaN(eventTimeMillis) ? nowMicros() : millisToMicros(eventTimeMillis),
+      resolveUsuarioOuterRef(event.authType, event.authId),
     );
   },
 );

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { CAMPOS_ESTOQUE_SYNC } from '@delfrance/data/pedido';
 import { ESTADO_FRETE, ESTADO_PEDIDO } from '@delfrance/schemas';
 
+import { resolveUsuarioOuterRef as sharedResolveUsuarioOuterRef } from '../lib/authContext';
 import {
+  PEDIDO_HISTORY_IGNORE_FIELDS,
   buildEstadoHistoryEntry,
   buildFreteHistoryEntry,
   resolveUsuarioOuterRef,
@@ -14,46 +17,51 @@ const UID = 'abcDEF0123456789abcDEF01'; // 24 chars, uid-shaped
 const EVENT_MICROS = 1_700_000_000_000_000;
 const EVENT_MILLIS = 1_700_000_000_000;
 
-describe('resolveUsuarioOuterRef', () => {
-  it('maps a uid-shaped authId to the documents/usuarios outer-ref', () => {
-    expect(resolveUsuarioOuterRef('api_key', UID)).toBe(`documents/usuarios/${UID}`);
-    // A standard 28-char Firebase Auth uid.
-    const uid28 = 'kJ8fL2mNp9QrS4tUvW6xY0zA1bC3';
-    expect(resolveUsuarioOuterRef('unknown', uid28)).toBe(`documents/usuarios/${uid28}`);
+describe('resolveUsuarioOuterRef re-export', () => {
+  it('is the same function lib/authContext defines (behaviour pinned there)', () => {
+    // The resolver moved to `../lib/authContext` when the modification-history
+    // factory became a second consumer. This file keeps re-exporting it so the
+    // pedido trails stay readable end to end; the exhaustive cases live next to
+    // the implementation, in `lib/authContext.test.ts`.
+    expect(resolveUsuarioOuterRef).toBe(sharedResolveUsuarioOuterRef);
+  });
+});
+
+describe('PEDIDO_HISTORY_IGNORE_FIELDS', () => {
+  it('is exactly the stamps, the ML watermark, the itens projection and the sync write-back', () => {
+    expect([...PEDIDO_HISTORY_IGNORE_FIELDS].sort()).toEqual([
+      'dataIndisponivelEstoque',
+      'dataRemocaoEstoque',
+      'estoqueAplicado',
+      'itensIds',
+      'lastMarketplaceUpdate',
+      'timestamp',
+      'ultimaModificacao',
+    ]);
   });
 
-  it('accepts the _ and - a custom (Admin-SDK-set) uid may carry', () => {
-    // `createUser({ uid })` and user imports allow these; dropping such an actor
-    // to null would be a silent audit gap.
-    const custom = 'tenant_acme-user-000042xyz';
-    expect(resolveUsuarioOuterRef('api_key', custom)).toBe(`documents/usuarios/${custom}`);
+  it('contains every CAMPOS_ESTOQUE_SYNC field — the phantom-row guard', () => {
+    // `sincronizarEstoquePedido` writes these back seconds after the save that
+    // caused them and does NOT stamp `ultimaModificacao`, so leaving any of them
+    // out means every stock-moving save produces a second, "Sistema"-attributed
+    // row for a change no operator made. Asserted against the imported constant
+    // so extending the sync extends this automatically.
+    for (const campo of CAMPOS_ESTOQUE_SYNC) {
+      expect(PEDIDO_HISTORY_IGNORE_FIELDS).toContain(campo);
+    }
   });
 
-  it('returns null when there is no authId at all', () => {
-    expect(resolveUsuarioOuterRef('api_key', undefined)).toBeNull();
-    expect(resolveUsuarioOuterRef(undefined, undefined)).toBeNull();
-    expect(resolveUsuarioOuterRef('unknown', '')).toBeNull();
-  });
-
-  it('returns null for auth types that can never be an end user', () => {
-    // Admin SDK writes: the Mercado Pago webhook, ML import, other functions.
-    expect(resolveUsuarioOuterRef('service_account', UID)).toBeNull();
-    expect(resolveUsuarioOuterRef('system', UID)).toBeNull();
-    expect(resolveUsuarioOuterRef('unauthenticated', UID)).toBeNull();
-  });
-
-  it('rejects anything that is not uid-shaped', () => {
-    // The emulator hardcodes this one (firebase-tools#7609) — it must NOT
-    // become a bogus usuário ref in the audit trail.
-    expect(resolveUsuarioOuterRef('unknown', 'fake-auth-id@gmail.com')).toBeNull();
-    // Firebase-console writes report the operator's email.
-    expect(resolveUsuarioOuterRef('unknown', 'someone@example.com')).toBeNull();
-    // A service-account identifier.
-    expect(resolveUsuarioOuterRef('unknown', 'my-app@appspot.gserviceaccount.com')).toBeNull();
-    // Too short / illegal characters.
-    expect(resolveUsuarioOuterRef('api_key', 'short')).toBeNull();
-    expect(resolveUsuarioOuterRef('api_key', 'has spaces in it here')).toBeNull();
-    expect(resolveUsuarioOuterRef('api_key', 'has/slashes/in/it/abcdef')).toBeNull();
+  it('does NOT ignore the fields an operator actually edits', () => {
+    for (const campo of [
+      'estado',
+      'freteInicial',
+      'itens',
+      'valorCobrado',
+      'observacoesInternas',
+      'clientePedidoOuterRef',
+    ]) {
+      expect(PEDIDO_HISTORY_IGNORE_FIELDS).not.toContain(campo);
+    }
   });
 });
 
