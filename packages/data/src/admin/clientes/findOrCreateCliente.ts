@@ -91,6 +91,19 @@ export interface RejectedClienteCandidate {
   readonly matchedBy: ClienteMatchKey;
   readonly candidateCpfCnpj: string | null;
   readonly candidateIdEstrangeiro: string | null;
+  /**
+   * The third strong key. Present because `isSameCliente` gates on it, so a
+   * candidate can be rejected purely because its ML buyer id contradicts — and
+   * with only the two fiscal identifiers printed, that rejection logs as
+   * `{ candidateCpfCnpj: null, candidateIdEstrangeiro: null }`, which reads as a
+   * bug in the gate rather than the correct verdict it is.
+   *
+   * It is also becoming the COMMON rejection: an ML contact created from a
+   * pre-sale question has an ML id and a name and nothing else, so a later
+   * telefone or email hit on a different buyer contradicts here and nowhere
+   * else.
+   */
+  readonly candidateIdMercadoLivre: string | null;
 }
 
 export interface FindOrCreateClienteResult {
@@ -193,8 +206,16 @@ export function buildClienteUpdatePatch(
   // write left to make is the one that ADDS the id — which is how a cliente
   // first created from an order (cpf_cnpj, no ML id) gains one the next time
   // that buyer asks a question.
-  if (fields.idMercadoLivre != null && identityValue(old.idMercadoLivre) == null) {
-    patch.idMercadoLivre = fields.idMercadoLivre;
+  //
+  // Stored TRIMMED, unlike `idEstrangeiro` above. That field is documented free
+  // text; this one is the key the next delivery looks itself up by, and the
+  // cascade leg queries `identityValue(...)`. Storing `' 301110805 '` raw while
+  // querying `'301110805'` means every later lookup misses — one junk cliente
+  // per question notification, which is the exact failure this key exists to
+  // prevent, reintroduced by whitespace.
+  const idMl = identityValue(fields.idMercadoLivre);
+  if (idMl != null && identityValue(old.idMercadoLivre) == null) {
+    patch.idMercadoLivre = idMl;
   }
 
   // `isSameTelefone` treats the legacy raw 10/11-digit BR shape and the
@@ -324,6 +345,7 @@ export async function findOrCreateCliente(
         matchedBy: leg.key,
         candidateCpfCnpj: identityValue(candidate.data.cpf_cnpj),
         candidateIdEstrangeiro: identityValue(candidate.data.idEstrangeiro),
+        candidateIdMercadoLivre: identityValue(candidate.data.idMercadoLivre),
       });
     }
     if (matched) break;
@@ -352,10 +374,12 @@ export async function findOrCreateCliente(
     // value would not round-trip clienteSchema's `^[0-9A-Z]*$` at all.
     cpf_cnpj: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
     idEstrangeiro: fields.idEstrangeiro,
-    // `?? null` because the field is optional on ClienteResolveFields — an
-    // `undefined` here would be rejected by the Firebase SDK, which refuses
-    // undefined in addDoc/setDoc.
-    idMercadoLivre: fields.idMercadoLivre ?? null,
+    // `identityValue`, not a bare `?? null`: it trims (so the value round-trips
+    // the cascade leg, which queries the trimmed form) AND it collapses both
+    // `undefined` — the field is optional on `ClienteResolveFields` — and a
+    // blank string to `null`, which is what the Firebase SDK requires, since it
+    // rejects `undefined` in addDoc/setDoc.
+    idMercadoLivre: identityValue(fields.idMercadoLivre),
     ie: fields.ie,
     // `sanitizeTelefone`, not `normalizeTelefone`: a masked value (`11*****8888`)
     // would otherwise be stripped to 6 digits and throw a ZodError inside
