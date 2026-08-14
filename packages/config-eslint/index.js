@@ -235,9 +235,14 @@ const config = [
       // operator's own wall clock rather than whichever container happened to
       // run the code. Forcing those to UTC would show a human the wrong time.
       //
-      // Warn, not error: 3 pre-existing sites, all user-facing strings whose
-      // correct zone is a product decision (probably America/Sao_Paulo, not
-      // UTC), so the rule surfaces them rather than silently picking one.
+      // ⚠️ `@delfrance/data` is scoped by SUBPATH (`src/admin/`, `src/server/`),
+      // not wholesale: `./hooks` ships `'use client'` and `./pedido` is consumed
+      // from apps/web, so the package straddles both worlds.
+      //
+      // Warn, not error: ONE pre-existing site — apps/nfe's certificado route —
+      // a user-facing string whose correct zone is a product decision (probably
+      // America/Sao_Paulo, not UTC), so the rule surfaces it rather than
+      // silently picking one.
       'delfrance/no-ambient-timezone': 'warn',
 
       // `pedidos/{id}/historicoEstadoPedido` (the pedido `estado` trail) and
