@@ -7,7 +7,7 @@
  * makes the answer safe to *show* — and only to show. Suggestions are staged in
  * a review modal and applied cell by cell by the operator; nothing here writes.
  */
-import { coerceText, normalizeLoose } from '@delfrance/ai';
+import { aiCellKey, coerceText, normalizeLoose, preCheckedCells } from '@delfrance/ai';
 
 import { NA_VALUE_ID } from './attributeApply';
 import type { MedidaColumnSpec, MedidaRowSpec } from './medidasSchema';
@@ -121,26 +121,16 @@ function normalizeDecimal(text: string): string {
 }
 
 /**
- * Which suggestions the review modal should pre-check.
+ * ⚠️ Both moved to `@delfrance/ai`, and are re-exported here under their old
+ * names so no call site in this package changed.
  *
- * Only those landing on a cell that is currently EMPTY. A suggestion that would
- * overwrite a measurement an operator typed starts unchecked — visible, so it
- * can be accepted deliberately, but never applied by default. Same rule as
- * `preCheckedSuggestionIds` for attributes.
+ * They are agent-neutral (a `(rowKey, attributeId)` pair and an "is it filled?"
+ * predicate), and their only production consumer is the review modal in
+ * `apps/web` — which cannot import THIS package, whose root is server-only (the
+ * OAuth core handles the app `clientSecret`). Leaving them here meant either a
+ * second copy in the browser or no caller at all for the tested ones.
  */
-export function preCheckedMedidaCells(
-  suggestions: AiMedidaSuggestion[],
-  isFilled: (rowKey: string, attributeId: string) => boolean,
-): string[] {
-  return suggestions
-    .filter((s) => !isFilled(s.rowKey, s.attributeId))
-    .map((s) => medidaCellKey(s.rowKey, s.attributeId));
-}
-
-/** Stable identity for one suggested cell — the review modal's checkbox key. */
-export function medidaCellKey(rowKey: string, attributeId: string): string {
-  return `${rowKey}::${attributeId}`;
-}
+export { aiCellKey as medidaCellKey, preCheckedCells as preCheckedMedidaCells };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value);

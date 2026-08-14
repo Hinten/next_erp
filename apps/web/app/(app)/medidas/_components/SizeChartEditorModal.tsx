@@ -37,6 +37,7 @@ import {
   CHART_NAME_MAX,
 } from '@/lib/mercado-livre/chartRows';
 import {
+  type ChartCellKind,
   type ChartMeasureType,
   type ChartSpecValue,
   chartLevelAttributes,
@@ -161,6 +162,18 @@ export function SizeChartEditorModal({
   const [aiOpen, setAiOpen] = useState(false);
   const [aiResult, setAiResult] = useState<MercadoLivreMedidasSugestao | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
+  /**
+   * Bumped per run and used as the review modal's `key`, so each run gets a
+   * FRESH component.
+   *
+   * ⚠️ The modal is rendered unconditionally — only Mantine's `Modal` body
+   * unmounts on close — so its checkbox state survived close → re-open. On a
+   * second run in the same editor session that state was still in force, and a
+   * cell the operator had meanwhile filled arrived **pre-checked** with the
+   * "será substituída" badge: exactly what the modal's own contract says must
+   * never happen. Remounting is cheaper and harder to get wrong than syncing.
+   */
+  const [aiRun, setAiRun] = useState(0);
 
   /* -------------------------------- specs -------------------------------- */
 
@@ -323,14 +336,25 @@ export function SizeChartEditorModal({
           size: r.cells[effectiveMainId]?.value_name ?? '',
         })),
       columns: columns.flatMap((column) =>
-        column.parts.map((part) => ({
-          attributeId: part.attributeId,
-          label: column.parts.length > 1 ? `${column.label} — ${part.label}` : column.label,
-          kind: part.kind,
-          values: part.values,
-          unitId: units[column.key] ?? column.unit.default,
-          required: column.required,
-        })),
+        column.parts
+          // ⚠️ The main attribute is NOT a fillable column. `columns` keeps it
+          // because the grid must render the size cell, but `rows[].size`
+          // already carries that exact value — so sending it burns one of the
+          // 15 schema columns to ask for something we supplied, and a model
+          // that answers differently would rewrite the row's size label if the
+          // operator hit "Marcar todas". That label is the row's identity: ML
+          // freezes it on a sent row, so an accepted suggestion there earns a
+          // validation error at send time and desyncs the row from its
+          // `varianteUid` binding in the meantime.
+          .filter((part) => part.attributeId !== effectiveMainId)
+          .map((part) => ({
+            attributeId: part.attributeId,
+            label: column.parts.length > 1 ? `${column.label} — ${part.label}` : column.label,
+            kind: part.kind,
+            values: part.values,
+            unitId: units[column.key] ?? column.unit.default,
+            required: column.required,
+          })),
       ),
       measureType: effectiveMeasureType,
     };
@@ -339,6 +363,7 @@ export function SizeChartEditorModal({
   async function runAi() {
     setAiBusy(true);
     setAiResult(null);
+    setAiRun((n) => n + 1);
     setAiOpen(true);
     try {
       setAiResult(await client.sugerirMedidas(aiPayload()));
@@ -363,6 +388,47 @@ export function SizeChartEditorModal({
     }
   }
 
+  /** Which widget each attribute renders as — the cell shape depends on it. */
+  const partKindById = useMemo(() => {
+    const out = new Map<string, ChartCellKind>();
+    for (const column of allColumns) {
+      for (const part of column.parts) out.set(part.attributeId, part.kind);
+    }
+    return out;
+  }, [allColumns]);
+
+  /**
+   * A suggestion in the cell shape its column actually reads.
+   *
+   * ⚠️ `SizeChartGrid`'s inputs read a DIFFERENT field per kind — `select` takes
+   * `value_id`, `multiselect` takes `valueList`, text/number take `value_name`.
+   * Writing one shape for all of them left a confirmed multiselect suggestion
+   * rendering as an empty field while `toWireAttributes` still shipped it to ML,
+   * in the single-valued shape.
+   */
+  function aiCellValue(s: MercadoLivreMedidasSugestao['sugestoes'][number]): ChartCellValue {
+    if (partKindById.get(s.attributeId) === 'multiselect') {
+      return {
+        value_id: null,
+        value_name: null,
+        valueList: [{ id: s.value_id ?? '', name: s.value_name }],
+      };
+    }
+    return { value_id: s.value_id, value_name: s.value_name, valueList: null };
+  }
+
+  /**
+   * Whether a suggestion can actually be shown in its cell once applied.
+   *
+   * A `select` renders from `value_id`, so a free-text value the applier could
+   * not match to an option would land as a visibly EMPTY cell that nonetheless
+   * ships to ML. Offering it would be worse than dropping it: the operator ticks
+   * a row, sees nothing change, and only finds out at send time.
+   */
+  function aiApplicable(s: MercadoLivreMedidasSugestao['sugestoes'][number]): boolean {
+    return partKindById.get(s.attributeId) !== 'select' || s.value_id != null;
+  }
+
   /** Write the accepted cells in, reusing the same path a typed edit takes. */
   function applyAi(aceitas: MercadoLivreMedidasSugestao['sugestoes']) {
     const byRow = new Map<string, typeof aceitas>();
@@ -375,11 +441,7 @@ export function SizeChartEditorModal({
         if (!mine) return row;
         const cells = { ...row.cells };
         for (const s of mine) {
-          cells[s.attributeId] = {
-            value_id: s.value_id,
-            value_name: s.value_name,
-            valueList: null,
-          };
+          cells[s.attributeId] = aiCellValue(s);
         }
         return { ...row, cells };
       }),
@@ -867,9 +929,14 @@ export function SizeChartEditorModal({
       </Stack>
 
       <SizeChartAiModal
+        key={aiRun}
         opened={aiOpen}
         onClose={() => setAiOpen(false)}
-        resultado={aiResult}
+        resultado={
+          aiResult == null
+            ? null
+            : { ...aiResult, sugestoes: aiResult.sugestoes.filter(aiApplicable) }
+        }
         rows={rows}
         columns={columns}
         mainAttributeId={effectiveMainId}

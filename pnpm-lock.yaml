@@ -592,6 +592,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@delfrance/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@delfrance/auth':
         specifier: workspace:*
         version: link:../../packages/auth

@@ -13,6 +13,7 @@ import {
   Table,
   Text,
 } from '@mantine/core';
+import { aiCellKey, preCheckedCells } from '@delfrance/ai';
 import type { MercadoLivreMedidasSugestao } from '@/lib/mercado-livre/client';
 import type { ChartColumn } from '@/lib/mercado-livre/chartSpec';
 import { type ChartRowDraft, isFilled } from '@/lib/mercado-livre/chartRows';
@@ -49,10 +50,15 @@ export interface SizeChartAiModalProps {
   onApply: (aceitas: MercadoLivreMedidasSugestao['sugestoes']) => void;
 }
 
-/** Stable identity for one proposed cell; mirrors `medidaCellKey` server-side. */
-function cellKey(rowKey: string, attributeId: string): string {
-  return `${rowKey}::${attributeId}`;
-}
+/**
+ * ⚠️ `medidaCellKey` and `preCheckedMedidaCells` are IMPORTED, not reimplemented.
+ *
+ * Both ship from `@delfrance/integrations-mercado-livre` with their own unit
+ * tests, and this modal is their only production consumer — a local copy of the
+ * key and of the pre-check rule would have meant two implementations of a rule
+ * the stack deliberately factored out, with the tested ones having no caller at
+ * all.
+ */
 
 export function SizeChartAiModal({
   opened,
@@ -83,16 +89,18 @@ export function SizeChartAiModal({
 
   // Seeded once per result: the pre-check decision depends on the grid as it was
   // when the suggestion came back, and re-deriving it on every render would undo
-  // the operator's own unticking.
+  // the operator's own unticking. The parent remounts this component per run
+  // (`key={aiRun}`), so `marcadas` never survives into a later suggestion.
   const [marcadas, setMarcadas] = useState<Set<string> | null>(null);
-  const seeded = useMemo(() => {
-    const next = new Set<string>();
-    for (const s of sugestoes) {
-      if (atualDe(s.rowKey, s.attributeId) == null) next.add(cellKey(s.rowKey, s.attributeId));
-    }
-    return next;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sugestoes]);
+  const seeded = useMemo(
+    () =>
+      new Set(
+        preCheckedCells(sugestoes, (rowKey, attributeId) =>
+          isFilled(rowByKey.get(rowKey)?.cells[attributeId]),
+        ),
+      ),
+    [sugestoes, rowByKey],
+  );
   const checked = marcadas ?? seeded;
 
   function toggle(key: string) {
@@ -104,7 +112,7 @@ export function SizeChartAiModal({
     });
   }
 
-  const aceitas = sugestoes.filter((s) => checked.has(cellKey(s.rowKey, s.attributeId)));
+  const aceitas = sugestoes.filter((s) => checked.has(aiCellKey(s.rowKey, s.attributeId)));
   const carregando = resultado == null;
 
   return (
@@ -139,7 +147,9 @@ export function SizeChartAiModal({
                       size="compact-xs"
                       variant="subtle"
                       onClick={() =>
-                        setMarcadas(new Set(sugestoes.map((s) => cellKey(s.rowKey, s.attributeId))))
+                        setMarcadas(
+                          new Set(sugestoes.map((s) => aiCellKey(s.rowKey, s.attributeId))),
+                        )
                       }
                     >
                       Marcar todas
@@ -167,7 +177,7 @@ export function SizeChartAiModal({
                     </Table.Thead>
                     <Table.Tbody>
                       {sugestoes.map((s) => {
-                        const key = cellKey(s.rowKey, s.attributeId);
+                        const key = aiCellKey(s.rowKey, s.attributeId);
                         const atual = atualDe(s.rowKey, s.attributeId);
                         const size =
                           rowByKey.get(s.rowKey)?.cells[mainAttributeId]?.value_name ??
