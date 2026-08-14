@@ -5,7 +5,7 @@ import { OPERATOR_OWNED_KEYS, buildListingPatch, detectConflict } from './listin
 describe('buildListingPatch', () => {
   it('writes only dirty, operator-owned keys', () => {
     const patch = buildListingPatch(
-      { title: 'Novo título', descricao: 'nova', condition: 'used' },
+      { title: 'Novo título', descricao: 'nova', category_id: 'MLB31447' },
       { title: true, descricao: false },
       1_700_000_000_000,
     );

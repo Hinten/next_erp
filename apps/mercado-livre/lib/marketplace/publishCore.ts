@@ -27,7 +27,7 @@ import {
   attrSku,
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
-import { parseFakePath } from '@delfrance/schemas';
+import { parseFakePath, resolveCondicaoAnuncio } from '@delfrance/schemas';
 
 import type { ResolvedSizeChart } from './sizeChart';
 
@@ -131,17 +131,41 @@ export function resolvePrice(
   return valor;
 }
 
+/**
+ * The listing's `condition`, decided by the **produto**.
+ *
+ * ⚠️ The precedence used to start at `link.condition`, and that made every other
+ * branch dead code: `produtoMercadoLivreLinkSchema` declares
+ * `condition: z.enum(['new','used']).default('new')`, so a link doc ALWAYS has a
+ * truthy `condition` and the first test always won. A produto marked "usado"
+ * still published as `new` unless someone had also set the listing's own copy.
+ *
+ * The produto now wins, which is what the field means: whether a product is used
+ * is a fact about the product, not about one of its listings. `link.condition`
+ * survives as the last resort — an imported listing writes it
+ * (`importItem.ts`), so it is the best available answer for a produto whose own
+ * flags were never set.
+ *
+ * `condicao != 1` stays as the secondary branch: `extraData.condicao` is a
+ * three-value field (1 novo, 2 usado, 3 recondicionado) and dropping it would
+ * silently start publishing recondicionado stock as new.
+ *
+ * ⚠️ The precedence itself lives in `@delfrance/schemas` because the produto
+ * editor has to SHOW the operator what this will send. A second copy over there
+ * mirrored only `ehUsado`, so a produto marked recondicionado displayed "Novo"
+ * and published `used` — a disagreement nothing could catch, because one side is
+ * a screen and the other a payload.
+ */
 export function resolveCondition(
   link: PublishLink | null,
   produto: PublishProduto,
   condicao: number | null,
 ): 'new' | 'used' {
-  if (link?.condition) return link.condition;
-  if (produto.ehUsado) return 'used';
-  // extraData.condicao: 1 = novo; 2 (usado) and 3 (recondicionado) map to the
-  // only other value the old CONDITION enum supported.
-  if (condicao != null && condicao !== 1) return 'used';
-  return 'new';
+  return resolveCondicaoAnuncio({
+    ehUsado: produto.ehUsado === true,
+    condicao,
+    condicaoAnuncio: link?.condition ?? null,
+  }).condition;
 }
 
 /**
