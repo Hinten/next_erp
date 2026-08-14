@@ -163,6 +163,79 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     : null;
   const linkDocId = linkDoc?.docId ?? produtoMercadoLivreLinkCollection.newDocId(db, { produtoId });
 
+  // ---- Category -----------------------------------------------------------
+  // The link doc is the ONLY source. Publish used to fall back to
+  // `suggestCategories(produto.nome, 1)[0]` with no human in the loop — and a
+  // wrong first hit is only discoverable once the listing exists, in the wrong
+  // category, on a live marketplace. #799: the suggestion is OFFERED by the
+  // listing editor (GET /categorias/sugestoes) and applied by a person. A
+  // missing category_id is the 422 `assemblePublishInput` already raises.
+  const categoryId = link?.category_id ?? null;
+
+  const pubProduto = toPublishProduto(produtoId, produto);
+  const condicao = typeof extra?.condicao === 'number' ? extra.condicao : null;
+
+  /**
+   * Write the fields publish OWNS onto the link doc, and nothing else.
+   *
+   * This used to be `set(parse({ ...linkDoc.data, ...patch }))` — a
+   * read-modify-write re-applying a snapshot captured many awaits earlier
+   * (the doc is read at the top of this function; the ML round trip, the chart
+   * binding and every picture upload happen in between). Root `CLAUDE.md` rule
+   * 7 names that shape exactly, and the still-running Flutter app is a LIVE
+   * concurrent writer to these same documents — as are the items webhook, the
+   * price sync and the stock sender. An operator's `descricao` edit landing
+   * during a publish was silently reverted to whatever we read at the start.
+   *
+   * Patching only publish-owned fields makes the race impossible rather than
+   * unlikely (tier 0): everything we don't write — descricao, channels,
+   * crossdocking, tarifaFrete, comissao and the unknown legacy keys the
+   * `.passthrough()` schema carries — is now simply never touched, so it
+   * cannot be clobbered.
+   *
+   * `mergeIfExists` rather than `merge`: between our read and this write the
+   * doc may have been deleted, and `merge` is an UPSERT that would resurrect a
+   * GHOST carrying only the patch keys (`parseMerge` fills no defaults, so
+   * `contaOuterRef` and `title` would be missing and every later soft-read
+   * would warn). On `false` — or on a genuine first publish — we fall through
+   * to a full, schema-valid `set`.
+   */
+  const writeLinkDoc = async (patch: Record<string, unknown>): Promise<void> => {
+    if (linkDoc) {
+      const merged = await produtoMercadoLivreLinkCollection.mergeIfExists(
+        db,
+        { produtoId },
+        linkDocId,
+        patch,
+      );
+      if (merged) return;
+    }
+    await produtoMercadoLivreLinkCollection.set(db, { produtoId }, linkDocId, {
+      contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
+      // Never overwrite an operator-authored title (#799 bug 4a) — only seed
+      // one here, where the schema requires a non-empty value.
+      title: trimToNull(linkDoc?.data.title) ?? produto.nome,
+      dataCadastro: linkDoc?.data.dataCadastro ?? Date.now(),
+      ...patch,
+    });
+  };
+
+  // Every ML API failure from here on stamps `estado: 'E'` + `errors` on the
+  // link doc (the module's header contract; legacy's `on MLError` catch
+  // covered the category-detail call of the chart binding too).
+  const stampErrorLinkDoc = async (message: string): Promise<void> => {
+    await writeLinkDoc({
+      sku: produto.sku ?? null,
+      condition: resolveCondition(link, pubProduto, condicao),
+      category_id: linkDoc?.data.category_id ?? categoryId,
+      listing_type_id: linkDoc?.data.listing_type_id ?? deps.listingTypeId ?? null,
+      estado: 'E',
+      isUserProductModel: link?.isUserProductModel ?? false,
+      errors: [message],
+      ultimaModificacao: Date.now(),
+    });
+  };
+
   // ---- Publishing model + pre-flight blocks (#798) ------------------------
   // Both happen HERE, before the stock reads, the grupo reads and above all
   // before a single picture is uploaded to ML — a refusal must not cost a
@@ -171,9 +244,23 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // The account probe is skipped entirely on a re-publish: there the persisted
   // `isUserProductModel` is authoritative, so `GET /users/me` would be a wasted
   // call whose only possible effect is to break a publish that would work.
-  const sellerIsUserProduct =
-    link?.id == null &&
-    ((await (deps.getMe ?? defaultGetMe)(api)).tags ?? []).includes('user_product_seller');
+  //
+  // ⚠️ It is an ML call, so it is bound by the module's header contract exactly
+  // like the chart binding's `getCategory` below: a dead credential or a
+  // transient 5xx must leave its reason ON THE DOC, not only in the HTTP
+  // response. Without this the ML tab would show a listing still sitting at
+  // `estado: 'r'` with no `errors`, i.e. no trace of why the last attempt
+  // failed. (This is what the stamping closures above are hoisted for.)
+  let sellerIsUserProduct = false;
+  if (link?.id == null) {
+    try {
+      const user = await (deps.getMe ?? defaultGetMe)(api);
+      sellerIsUserProduct = (user.tags ?? []).includes('user_product_seller');
+    } catch (err) {
+      if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err.message);
+      throw err;
+    }
+  }
   const listingModel = resolveListingModel(link, sellerIsUserProduct);
   const modeIssues = publishModeIssues({
     produtoNome: produto.nome,
@@ -248,79 +335,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       })),
     });
   }
-
-  // ---- Category -----------------------------------------------------------
-  // The link doc is the ONLY source. Publish used to fall back to
-  // `suggestCategories(produto.nome, 1)[0]` with no human in the loop — and a
-  // wrong first hit is only discoverable once the listing exists, in the wrong
-  // category, on a live marketplace. #799: the suggestion is OFFERED by the
-  // listing editor (GET /categorias/sugestoes) and applied by a person. A
-  // missing category_id is the 422 `assemblePublishInput` already raises.
-  const categoryId = link?.category_id ?? null;
-
-  const pubProduto = toPublishProduto(produtoId, produto);
-  const condicao = typeof extra?.condicao === 'number' ? extra.condicao : null;
-
-  /**
-   * Write the fields publish OWNS onto the link doc, and nothing else.
-   *
-   * This used to be `set(parse({ ...linkDoc.data, ...patch }))` — a
-   * read-modify-write re-applying a snapshot captured many awaits earlier
-   * (the doc is read at the top of this function; the ML round trip, the chart
-   * binding and every picture upload happen in between). Root `CLAUDE.md` rule
-   * 7 names that shape exactly, and the still-running Flutter app is a LIVE
-   * concurrent writer to these same documents — as are the items webhook, the
-   * price sync and the stock sender. An operator's `descricao` edit landing
-   * during a publish was silently reverted to whatever we read at the start.
-   *
-   * Patching only publish-owned fields makes the race impossible rather than
-   * unlikely (tier 0): everything we don't write — descricao, channels,
-   * crossdocking, tarifaFrete, comissao and the unknown legacy keys the
-   * `.passthrough()` schema carries — is now simply never touched, so it
-   * cannot be clobbered.
-   *
-   * `mergeIfExists` rather than `merge`: between our read and this write the
-   * doc may have been deleted, and `merge` is an UPSERT that would resurrect a
-   * GHOST carrying only the patch keys (`parseMerge` fills no defaults, so
-   * `contaOuterRef` and `title` would be missing and every later soft-read
-   * would warn). On `false` — or on a genuine first publish — we fall through
-   * to a full, schema-valid `set`.
-   */
-  const writeLinkDoc = async (patch: Record<string, unknown>): Promise<void> => {
-    if (linkDoc) {
-      const merged = await produtoMercadoLivreLinkCollection.mergeIfExists(
-        db,
-        { produtoId },
-        linkDocId,
-        patch,
-      );
-      if (merged) return;
-    }
-    await produtoMercadoLivreLinkCollection.set(db, { produtoId }, linkDocId, {
-      contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
-      // Never overwrite an operator-authored title (#799 bug 4a) — only seed
-      // one here, where the schema requires a non-empty value.
-      title: trimToNull(linkDoc?.data.title) ?? produto.nome,
-      dataCadastro: linkDoc?.data.dataCadastro ?? Date.now(),
-      ...patch,
-    });
-  };
-
-  // Every ML API failure from here on stamps `estado: 'E'` + `errors` on the
-  // link doc (the module's header contract; legacy's `on MLError` catch
-  // covered the category-detail call of the chart binding too).
-  const stampErrorLinkDoc = async (message: string): Promise<void> => {
-    await writeLinkDoc({
-      sku: produto.sku ?? null,
-      condition: resolveCondition(link, pubProduto, condicao),
-      category_id: linkDoc?.data.category_id ?? categoryId,
-      listing_type_id: linkDoc?.data.listing_type_id ?? deps.listingTypeId ?? null,
-      estado: 'E',
-      isUserProductModel: link?.isUserProductModel ?? false,
-      errors: [message],
-      ultimaModificacao: Date.now(),
-    });
-  };
 
   // ---- Size chart (tabela de medidas) binding -----------------------------
   let tabela: TabelaBinding;
