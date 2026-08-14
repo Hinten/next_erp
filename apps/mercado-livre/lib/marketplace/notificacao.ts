@@ -354,6 +354,18 @@ function asDocId(v: string | null): string | null {
  * pair collides and is ignored. That IS the convergence being bought, and the
  * parked doc already records the condition. `resolve`/`drop` DELETE the doc, so a
  * successful re-drive frees the id again.
+ *
+ * ⚠️ And the key is built from UNTRUSTED wire fields, so it is PREDICTABLE. ML
+ * does not sign its callbacks, and the receiver accepts a body whose
+ * `application_id` is absent — only a FOREIGN one is 403'd (`route.ts`, #811) —
+ * so anyone who can reach the endpoint may post `{topic, resource}` with no id
+ * and take `<topic>:<resource>` first. A later genuine failure for that pair then
+ * collides and is dropped, leaving the squatter's `erro`/`user_id`/wire fields on
+ * the surviving document: a doc under a derived id is NOT guaranteed to be ours.
+ * Weigh that against what it replaces rather than against nothing — the same body
+ * used to fork a fresh auto-id doc on EVERY delivery, so that endpoint bought
+ * unbounded writes instead of one squatted key. Tightening it means tightening
+ * the RECEIVER (an origin the id-less path can be trusted from), not this helper.
  */
 function derivedDocId(p: MlNotificationPayload): string | null {
   const resource = p.resource.replace(/\/+/g, '_').replace(/^_+|_+$/g, '');
