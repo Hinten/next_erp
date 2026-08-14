@@ -50,6 +50,18 @@ describe('applyAiMedidas — resolving the answer onto rows', () => {
     ]);
   });
 
+  it("drops a match on ML's `-1` sentinel, whatever ML localised it to", () => {
+    // The `NA_TEXTS` list cannot be the only guard: ML spells the sentinel
+    // differently per attribute and per site, so an unlisted spelling matches a
+    // real option whose id is `-1` and would push it through as a staged
+    // measurement. `-1` also satisfies ML's required check, so accepting one
+    // would silence the validation meant to catch a missing measurement.
+    const withNa: MedidaColumnSpec[] = [
+      { ...COLUMNS[1]!, values: [{ id: '-1', name: 'Sem especificar' }] },
+    ];
+    expect(applyAiMedidas(ROWS, withNa, { P: { FIT: 'Sem especificar' } })).toEqual([]);
+  });
+
   it('keeps an unmatched enum value as free text', () => {
     // ML rejects it and names the cell, which beats a silent omission.
     expect(apply({ P: { FIT: 'Oversized' } })[0]).toMatchObject({

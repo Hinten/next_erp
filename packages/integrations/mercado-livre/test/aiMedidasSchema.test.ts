@@ -123,15 +123,77 @@ describe('buildMedidasSchema — shape', () => {
     expect(schema.properties?.P?.properties?.FIT?.enum).toBeUndefined();
   });
 
-  it('gives each row its OWN column object, not a shared reference', () => {
-    // The tree is handed to a provider that may mutate or serialise it; one
-    // shared object across 75 rows makes any such edit apply to all of them.
+  it('gives each row its own CELL objects, not just its own record', () => {
+    // ⚠️ The record identity is the weak assertion, and it passed under a shallow
+    // spread that still shared every cell node across all 75 rows. What matters
+    // is the leaf: a provider editing `properties.P.properties.FIT` must not be
+    // editing row M's at the same time.
     const { schema } = buildMedidasSchema(ROWS, COLUMNS);
     expect(schema.properties?.P?.properties).not.toBe(schema.properties?.M?.properties);
+    expect(schema.properties?.P?.properties?.FIT).not.toBe(schema.properties?.M?.properties?.FIT);
+    expect(schema.properties?.P?.properties?.FIT?.enum).not.toBe(
+      schema.properties?.M?.properties?.FIT?.enum,
+    );
+
+    // And prove it behaviourally, not just by reference.
+    schema.properties!.P!.properties!.FIT!.description = 'MUTATED';
+    expect(schema.properties?.M?.properties?.FIT?.description).not.toBe('MUTATED');
+  });
+
+  it("never offers ML's `-1` sentinel as an enum member", () => {
+    // Identified by value ID: ML localises its NAME per attribute and per site,
+    // so a name-based filter matches nothing and offers it as a legal choice.
+    const withNa = column({
+      attributeId: 'FIT',
+      kind: 'select',
+      unitId: null,
+      values: [
+        { id: 'F1', name: 'Justa' },
+        { id: '-1', name: 'Nao aplicavel' },
+      ],
+    });
+    const { schema } = buildMedidasSchema(ROWS, [withNa]);
+    expect(schema.properties?.P?.properties?.FIT?.enum).toEqual(['Justa']);
+  });
+
+  it('falls back to free text when the sentinel was the ONLY value', () => {
+    // Counting before the drop would emit `enum: []` — a schema no answer can
+    // satisfy, turning "I cannot read this" into a hard validation failure.
+    const onlyNa = column({
+      attributeId: 'FIT',
+      kind: 'select',
+      unitId: null,
+      values: [{ id: '-1', name: 'N/A' }],
+    });
+    const { schema } = buildMedidasSchema(ROWS, [onlyNa]);
+    expect(schema.properties?.P?.properties?.FIT?.enum).toBeUndefined();
   });
 });
 
 describe('buildMedidasSchema — caps and collisions are reported, never silent', () => {
+  it('dedupes on the SAME key the answer is resolved with — case and accents', () => {
+    // ⚠️ The bug this pins: the dedupe key used to be `trim()` while
+    // `applyAiMedidas` resolves with `normalizeLoose`. `Único` and `unico`
+    // survived as two schema properties, both answers landed on the FIRST row,
+    // the second row got nothing, and `truncated` stayed false — silent
+    // mis-attribution, the one outcome the dedupe exists to rule out.
+    const nearDup: MedidaRowSpec[] = [
+      { key: 'g/1/v/a', size: 'Único' },
+      { key: 'g/1/v/b', size: 'unico' },
+    ];
+    const built = buildMedidasSchema(nearDup, COLUMNS);
+    expect(built.rows).toHaveLength(1);
+    expect(Object.keys(built.schema.properties ?? {})).toEqual(['Único']);
+    expect(built.truncated).toBe(true);
+  });
+
+  it('keeps the ORIGINAL spelling as the property name', () => {
+    // The key is normalised; the label the model sees is not — it has to match
+    // what is printed on the photo.
+    const built = buildMedidasSchema([{ key: 'g/1/v/a', size: 'Único' }], COLUMNS);
+    expect(Object.keys(built.schema.properties ?? {})).toEqual(['Único']);
+  });
+
   it('drops a duplicate size label rather than let it collide', () => {
     // Two rows on one schema property could not be attributed to either, and
     // writing a measurement to the wrong row is worse than not writing it.
