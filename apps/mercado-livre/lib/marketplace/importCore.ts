@@ -463,17 +463,43 @@ function comboToWireAttribute(combo: MlItemAttribute): Record<string, unknown> |
   return wire;
 }
 
-export function assembleVariationChildPlan(args: VariationChildAssembleArgs): VariationChildPlan {
-  const { mappedVariation, taxonomia, parent, options, isCreate, existingProduto, now } = args;
+/** One variation's own resolved taxonomy, in the produto wire shapes. */
+export interface VariationCombo {
+  /** `produto.grupoDeVariacoesUid` — bare grupo ids; null when nothing resolved. */
+  grupoUids: string[] | null;
+  /** `produto.variacoesUid` — variant fake paths; null when nothing resolved. */
+  varianteFakes: string[] | null;
+}
 
-  // This variation's own resolved taxonomy — the item-wide `taxonomia` array covers
-  // every variation's combos, so filter to the ones this variation actually has.
-  const comboKeys = new Set(mappedVariation.combos.map(comboAttrKey));
+/**
+ * Filter the item-wide `taxonomia` array (which covers EVERY variation's combos)
+ * down to the ones this variation actually has, and project them onto the two
+ * produto array fields.
+ *
+ * Exported because `resolveExistingChild` (`importVariations.ts`) needs this
+ * variation's combination BEFORE the child produto is assembled, to look for an
+ * ERP child already carrying it (#801). Both callers must derive it the same way
+ * or the dedup would probe with a combination the write then contradicts — hence
+ * one definition, not two.
+ */
+export function resolveVariationCombo(
+  combos: readonly MlItemAttribute[],
+  taxonomia: readonly TaxonomiaResolution[],
+): VariationCombo {
+  const comboKeys = new Set(combos.map(comboAttrKey));
   const matched = taxonomia.filter((t) => comboKeys.has(t.attrKey));
   const grupoUidsSet = [...new Set(matched.map((t) => t.grupoUid))];
   const varianteFakesSet = [...new Set(matched.map((t) => t.varianteFake))];
-  const grupoUids = grupoUidsSet.length > 0 ? grupoUidsSet : null;
-  const varianteFakes = varianteFakesSet.length > 0 ? varianteFakesSet : null;
+  return {
+    grupoUids: grupoUidsSet.length > 0 ? grupoUidsSet : null,
+    varianteFakes: varianteFakesSet.length > 0 ? varianteFakesSet : null,
+  };
+}
+
+export function assembleVariationChildPlan(args: VariationChildAssembleArgs): VariationChildPlan {
+  const { mappedVariation, taxonomia, parent, options, isCreate, existingProduto, now } = args;
+
+  const { grupoUids, varianteFakes } = resolveVariationCombo(mappedVariation.combos, taxonomia);
 
   // ---- produto ------------------------------------------------------------
   let produto: { data: Record<string, unknown>; full: boolean } | null = null;
