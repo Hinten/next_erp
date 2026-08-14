@@ -391,6 +391,7 @@ describe('Preencher com dados de teste', () => {
         descricao: 'Anúncio de teste.',
         categoryId: 'MLB5672',
         categoriaPath: ['Outros', 'Outros'],
+        categoriaMotivo: null,
         listingTypeId: 'free',
         conta: { nickname: 'TEST0548', ehContaDeTeste: true },
       })),
@@ -516,6 +517,30 @@ describe('Preencher com dados de teste', () => {
     setClient();
     renderForm({ id: null });
     expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('MOVES the category and reloads the attributes on an existing draft', async () => {
+    // ⚠️ Lucas's exact report: a produto with a draft listing that ALREADY has a
+    // category. The whole point of the fix is that the field moves off it and
+    // the attribute grid re-queries for the new one — and until now nothing
+    // asserted either, so the client half of this path was untested.
+    //
+    // The attributes query key is `['ml','atributos',integracaoId,categoryId]`,
+    // so a re-fetch with the new id IS the grid reloading.
+    setClient();
+    const atributos = h.client!.categoriaAtributos as ReturnType<typeof vi.fn>;
+    // The fixture's category is MLB31447; the fill answers MLB5672.
+    renderForm({ id: null, category_id: 'MLB31447' });
+
+    await waitFor(() => {
+      expect(atributos).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'MLB31447' }));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(atributos).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'MLB5672' }));
+    });
   });
 
   it('names the category it actually chose', async () => {

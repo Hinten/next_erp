@@ -271,6 +271,7 @@ export function ListingForm({
     ehContaDeTeste: boolean;
     categoriaResolvida: boolean;
     categoriaPath: string[] | null;
+    categoriaMotivo: 'sem-raiz' | 'sem-folha' | null;
     tipoResolvido: boolean;
   } | null>(null);
 
@@ -292,6 +293,7 @@ export function ListingForm({
         ehContaDeTeste: dados.conta.ehContaDeTeste,
         categoriaResolvida: dados.categoryId != null,
         categoriaPath: dados.categoriaPath ?? null,
+        categoriaMotivo: dados.categoriaMotivo ?? null,
         tipoResolvido: dados.listingTypeId != null,
       });
     } catch (err) {
@@ -356,13 +358,17 @@ export function ListingForm({
               Categoria definida: <strong>{testeConta.categoriaPath.join(' › ')}</strong>.
             </Text>
           )}
-          {/* Covers both ways the route can decline it: "Outros" absent from the
-              catalogue, and no leaf reachable beneath it — only a leaf can be
-              published into, so neither yields a usable category. */}
+          {/* ⚠️ Name the CAUSE. The two need different actions: "this site has no
+              Outros root" is nothing the operator can fix, while "no leaf beneath
+              it" means picking a subcategory. One shared message for both sent
+              them hunting for a setting that does not exist. */}
           {!testeConta.categoriaResolvida && (
             <Text size="sm">
-              Não foi possível usar a categoria “Outros” automaticamente — escolha uma categoria
-              antes de publicar.
+              {testeConta.categoriaMotivo === 'sem-raiz'
+                ? 'O Mercado Livre não expõe uma categoria raiz chamada “Outros” nesta conta — escolha a categoria manualmente antes de publicar.'
+                : testeConta.categoriaMotivo === 'sem-folha'
+                  ? 'A categoria “Outros” existe, mas nenhuma subcategoria final foi encontrada abaixo dela — escolha a categoria manualmente antes de publicar.'
+                  : 'Não foi possível usar a categoria “Outros” automaticamente — escolha uma categoria antes de publicar.'}
             </Text>
           )}
           {/* ⚠️ Only meaningful once a category actually resolved. The route

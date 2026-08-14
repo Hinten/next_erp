@@ -297,6 +297,13 @@ export interface MercadoLivreAnuncioTeste {
    * category was chosen. Null whenever `categoryId` is.
    */
   categoriaPath: string[] | null;
+  /**
+   * Why there is no category, when there isn't one. `'sem-raiz'` = ML's site has
+   * no root named "Outros"; `'sem-folha'` = it has one, but no leaf was reachable
+   * beneath it. Null when a category WAS resolved. The two need different
+   * actions, so one "não foi possível" message for both sent operators hunting.
+   */
+  categoriaMotivo: 'sem-raiz' | 'sem-folha' | null;
   /** Lowest-exposure type the category offers; null ⇒ the operator picks. */
   listingTypeId: string | null;
   conta: {
