@@ -179,15 +179,27 @@ Per-topic handlers, as of the `processNotificationPayload` dispatch in
 `lib/marketplace/notificacao.ts` — check that function, not this list, when it
 matters:
 
-| Topic | Handler |
-|---|---|
-| `items` | listing status-sync + the UP-migration takeover (#440/#441) |
-| `orders_v2`, `orders` | order → pedido import (Step 9) |
-| `payments` | payment sync onto the pedido's embedded pagamento (Step 9) |
-| `shipments` | shipment/`freteInicial` sync (Step 9) |
-| `claims` | claim → incidente/conversa/mensagens import (Step 14) |
-| `items_prices` | **permanent no-op**, ack-only |
-| `orders_feedback`, `questions`, `messages`, `stock-location` | not handled yet |
+| Topic | Disposition | Handler |
+|---|---|---|
+| `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) |
+| `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
+| `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9) |
+| `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
+| `claims` | `handled` | claim → incidente/conversa/mensagens import (Step 14) |
+| `items_prices` | `ack` | **permanent no-op** (#803) — persists nothing |
+| `orders_feedback`, `stock-location` | `ack` | nothing to do; persists nothing |
+| `questions`, `messages` | `park` | data-bearing, importer pending (#532/#533) |
+| `public_offers`, `public_candidates`, `user-products-families` | `ignore` | never enqueued, never persisted (#813) |
+
+⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacao.ts`, not
+this table. The four dispositions differ in what they COST: `handled` and `ack`
+persist nothing on success, `park` writes one document per delivery (the price
+of a replayable record while an importer is pending), and `ignore` is refused at
+the **receiver** so it never becomes a Cloud Task at all. `ack` vs `ignore` is
+the distinction #813 turned on — both write nothing, but `ack` reports `done`,
+which is indistinguishable from work actually performed, while `ignore` reports
+`dropped/ignorado`. A topic ABSENT from the table still parks, deliberately:
+that is the only signal a new ML topic appeared.
 
 ### Publishing: two models coexist, and one of them cannot order variations
 
@@ -222,10 +234,12 @@ these before "fixing" what looks wrong in `publishCore.ts`:
   the component-min like any other kit.
 
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
-both price tables, so a price notification has nothing to do. It stays in
-`KNOWN_TOPICS` only so it acks instead of parking a document per delivery. **Do
-not attach a handler to it.** The four genuinely-unhandled topics also ack
-without persisting; #813 tracks that cost.
+both price tables, so a price notification has nothing to do. It stays in the
+disposition table only so it acks instead of parking a document per delivery.
+**Do not attach a handler to it.** Being the one permanently-`ack` topic also
+makes it the inert fixture the notification suite keys ~20 tests on
+(`INERT_TOPIC` in `notificacao.test.ts`, pinned by its own guard) — every other
+quiet-looking topic is a handler waiting to happen.
 
 ## Env
 

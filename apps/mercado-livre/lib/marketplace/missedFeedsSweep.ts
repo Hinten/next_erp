@@ -80,7 +80,7 @@ import {
 
 import { type MlTaskScheduler, MlTasksDisabledError } from './mlTasks';
 import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './mercadoLivre';
-import { isKnownTopic, parseNotificationBody } from './notificacao';
+import { isKnownTopic, parseNotificationBody, shouldEnqueueTopic } from './notificacao';
 
 /** The env flag gating the sweep — runs ONLY when it is exactly `'1'`. */
 export const MISSED_FEEDS_FLAG_ENV = 'MERCADO_LIVRE_MISSED_FEEDS_ENABLED';
@@ -366,8 +366,13 @@ async function sweepConta(
       tick.vistos.add(key);
       novos += 1;
 
+      // Two reasons to skip, counted the same way. UNKNOWN: enqueuing it would
+      // park a fresh document every morning (#813). IGNORED: the receiver already
+      // refuses these, and replaying them here would reintroduce exactly the
+      // per-delivery cost the ignore list removes — this is the second producer
+      // the `shouldEnqueueTopic` gate exists for.
       const topic = typeof entry.topic === 'string' ? entry.topic : null;
-      if (topic == null || !isKnownTopic(topic)) {
+      if (topic == null || !isKnownTopic(topic) || !shouldEnqueueTopic(topic)) {
         bump(tick.topicosPulados, topic ?? '(sem topic)');
         skippedTopic += 1;
         continue;
