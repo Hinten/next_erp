@@ -144,6 +144,19 @@ export interface PrecoFamilyRow {
   precos: Record<string, { valor?: unknown }> | null;
   /** Schema default TRUE — anything but a stored literal `false` propagates. */
   propagatePriceToChildren: boolean;
+  /**
+   * Always TRUE on a `fetchPrecoPage` row (the query filters on it). It is read
+   * for real by {@link fetchPrecoFamiliasByIds}, which carries NO anchor
+   * pre-filters — that is what turns #804's "unpublished produto with a live
+   * listing" from a silent server-side exclusion into a visible skip row.
+   */
+  publicado: boolean;
+  /**
+   * Non-null only on a by-ids row: a 2-deep `paiId` chain, where the "anchor"
+   * one hop up is itself a variation child. Pathological; the caller reports it
+   * rather than pricing a family that is not one.
+   */
+  paiId: string | null;
   /** The conta's `produtoMercadoLivre` links on the family (both ref forms). */
   links: PrecoLinkRow[];
   children: PrecoFamilyChild[];
@@ -185,17 +198,19 @@ export type FetchPrecoPage = (db: Firestore, args: FetchPrecoPageArgs) => Promis
  * bad doc must skip-shape downstream (a junk `precos` reads as null →
  * `PRECO_NAO_ENCONTRADO`), never throw the page away.
  */
+/**
+ * Both accepted `contaOuterRef` forms (the linkRefs invariant, mirroring
+ * refMatchesIntegracao): the canonical `documents/integracao/<id>` the apps
+ * write plus the bare `integracao/<id>` legacy readers tolerate.
+ */
+function contaRefFormsDe(integracaoId: string): string[] {
+  return [toOuterRef(`integracao/${integracaoId}`), `integracao/${integracaoId}`];
+}
+
 export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
   const pageLimit = args.pageLimit ?? precoPageLimit();
   const afterAnchorId = args.afterAnchorId ?? null;
-
-  // Both accepted `contaOuterRef` forms (the linkRefs invariant, mirroring
-  // refMatchesIntegracao): the canonical `documents/integracao/<id>` the apps
-  // write plus the bare `integracao/<id>` legacy readers tolerate.
-  const contaRefForms = [
-    toOuterRef(`integracao/${args.integracaoId}`),
-    `integracao/${args.integracaoId}`,
-  ];
+  const contaRefForms = contaRefFormsDe(args.integracaoId);
 
   // Rides the DECLARED `produtos(paiId, publicado, integracoesComProduto
   // ASC, __name__)` composite (Step 10's entry, ASC form per #705 — zero new
@@ -206,7 +221,11 @@ export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
     .where('paiId', '==', null)
     .where('publicado', '==', true)
     .where('integracoesComProduto', 'array-contains', args.integracaoId)
-    .select('precos', 'propagatePriceToChildren')
+    // `publicado`/`paiId` are two scalars the query already constrains — they
+    // ride the mask anyway so a page row and a by-ids row are the SAME shape,
+    // rather than a page row silently reading `publicado: false` off a field
+    // the mask omitted.
+    .select('precos', 'propagatePriceToChildren', 'publicado', 'paiId')
     .orderBy(FieldPath.documentId())
     .limit(pageLimit);
   if (afterAnchorId != null) anchorsQuery = anchorsQuery.startAfter(afterAnchorId);
@@ -220,6 +239,57 @@ export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
   const full = anchorsSnap.docs.length === pageLimit;
   const lastId = anchorsSnap.docs[anchorsSnap.docs.length - 1]?.id ?? null;
   return { rows, nextAfterAnchorId: full ? lastId : null };
+};
+
+export interface FetchPrecoFamiliasByIdsArgs {
+  /** Conta whose links are joined onto each family. */
+  integracaoId: string;
+  /** Exactly these anchors — already resolved child→anchor by the caller. */
+  anchorIds: readonly string[];
+}
+
+/** The by-ids discovery seam — injectable so tests stub it. */
+export type FetchPrecoFamiliasByIds = (
+  db: Firestore,
+  args: FetchPrecoFamiliasByIdsArgs,
+) => Promise<PrecoFamilyRow[]>;
+
+/**
+ * The MANUAL push's target set (#804 S6) — the price twin of
+ * `fetchStockFamiliesByIds`.
+ *
+ * ⚠️ It carries **none** of `fetchPrecoPage`'s three anchor terms — no
+ * `paiId == null`, no `publicado == true`, no
+ * `integracoesComProduto array-contains`. That is the whole point. Those terms
+ * are what make #804's three classes vanish from the bulk job's report: an
+ * unpublished produto with a live listing, a produto whose
+ * `integracoesComProduto` denorm drifted, and a link sitting on a non-anchor
+ * produto are all filtered out SERVER-SIDE, so the job has nothing to skip and
+ * nothing to say. Reading the anchors by key instead means every one of them
+ * reaches `enviarPrecoManual`, which reports each as an explicit row.
+ *
+ * A batch key read, so — unlike the stock side's `db.pipeline().documents(...)`
+ * — there is no index to miss and it runs in the emulator. A missing document
+ * is simply absent from the result; the caller diffs against `anchorIds` and
+ * reports `FAMILIA_NAO_ENCONTRADA` rather than dropping it.
+ */
+export const fetchPrecoFamiliasByIds: FetchPrecoFamiliasByIds = async (db, args) => {
+  const anchorIds = [...new Set(args.anchorIds)];
+  if (anchorIds.length === 0) return [];
+  const contaRefForms = contaRefFormsDe(args.integracaoId);
+
+  const snaps = await db.getAll(...anchorIds.map((id) => produtoCollection.docRef(db, {}, id)), {
+    fieldMask: ['precos', 'propagatePriceToChildren', 'publicado', 'paiId'],
+  });
+
+  const rows: PrecoFamilyRow[] = [];
+  for (const snap of snaps) {
+    if (!snap.exists) continue;
+    rows.push(
+      await readFamilia(db, snap.id, (snap.data() ?? {}) as Record<string, unknown>, contaRefForms),
+    );
+  }
+  return rows;
 };
 
 /** Join one anchor's links + children + variação links into a family row. */
@@ -271,6 +341,9 @@ async function readFamilia(
     // Schema default TRUE: only a stored literal `false` turns propagation off
     // (an absent or junk value reads as the default, like the schema parse).
     propagatePriceToChildren: raw.propagatePriceToChildren !== false,
+    // Schema default FALSE — only a stored literal `true` counts as published.
+    publicado: raw.publicado === true,
+    paiId: nonEmptyString(raw.paiId),
     links: linksSnap.docs.map((linkDoc) => {
       const l = linkDoc.data() as Record<string, unknown>;
       return {
