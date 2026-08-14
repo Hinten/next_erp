@@ -1,6 +1,10 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
+import {
+  MercadoLivreHttpError,
+  MercadoLivreNetworkError,
+  MercadoLivreValidationError,
+} from '@delfrance/integrations-mercado-livre';
 
 import type { PrecoFamilyRow } from './precoPlan';
 import type { PrecoDraftOutcome, PriceSyncApi } from './precoDraftSend';
@@ -357,6 +361,32 @@ describe('aborts', () => {
       ['MLB111', 'falha', 'ERRO_CANAL'],
       ['MLB222', 'enviado', null],
     ]);
+  });
+
+  /**
+   * `enviarPrecoDraft` rethrows every ML error it does not classify, not just
+   * the 5xx one: a `fetch` that never connected and a response ML changed the
+   * shape of both come out as siblings of `MercadoLivreHttpError`. Catching only
+   * the HTTP subclass let those escape `runPool`'s `Promise.all` and answer the
+   * REQUEST with an error, throwing away every listing's outcome — including the
+   * ones already sent, whose link writebacks had already happened.
+   */
+  it.each([
+    ['network', new MercadoLivreNetworkError('fetch failed')],
+    ['validation', new MercadoLivreValidationError('resposta inesperada', [])],
+  ])('a %s error is ONE failed listing, never a dead request', async (_nome, erro) => {
+    const send = vi.fn(async (_db: unknown, draft: { itemId: string }) => {
+      if (draft.itemId === 'MLB111') throw erro;
+      return ENVIADO;
+    }) as never;
+
+    const res = await run({ rows: [twoLinkRow], sendDraft: send });
+
+    expect(res.listings.map((l) => [l.anuncioId, l.outcome, l.motivo])).toEqual([
+      ['MLB111', 'falha', 'ERRO_CANAL'],
+      ['MLB222', 'enviado', null],
+    ]);
+    expect(res.resumo).toMatchObject({ enviados: 1, falhas: 1 });
   });
 
   it('a non-ML error is never swallowed (repo rule 6)', async () => {

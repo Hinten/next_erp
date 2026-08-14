@@ -36,7 +36,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { type EnvioPrecoFilaItem, idFromRef } from '@delfrance/schemas';
-import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
+import { MercadoLivreError } from '@delfrance/integrations-mercado-livre';
 
 import { envInt } from './bulkEstoquePlan';
 import { resolverAnchors, runPool } from './estoqueManual';
@@ -473,10 +473,20 @@ export async function enviarPrecoManual(
           return;
       }
     } catch (err) {
-      // `enviarPrecoDraft` rethrows 5xx/network for its caller's retry
-      // mechanism. There is no queue behind a synchronous request, so this IS
-      // the end of the line for that listing — report it and let the others run.
-      if (err instanceof MercadoLivreHttpError) {
+      // `enviarPrecoDraft` rethrows everything it does not classify — a 5xx
+      // `MercadoLivreHttpError`, but ALSO `MercadoLivreNetworkError` (`fetch`
+      // itself failed) and `MercadoLivreValidationError` (ML changed a response
+      // field). There is no queue behind a synchronous request, so this IS the
+      // end of the line for that listing — report it and let the others run.
+      //
+      // ⚠️ Narrow on the BASE class, exactly as `estoqueManual.ts` does. Catching
+      // only `MercadoLivreHttpError` let the other two escape `runPool`'s
+      // `Promise.all`, so ONE `fetch` blip answered the request with an error
+      // instead of the envelope — throwing away the outcome of every listing,
+      // including the ones whose PUT had already landed and whose link
+      // writebacks had already happened. That contradicts this route's contract
+      // that a valid request answers 200 even when every listing failed.
+      if (err instanceof MercadoLivreError) {
         listings.push({
           ...base,
           outcome: 'falha',
