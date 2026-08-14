@@ -15,17 +15,30 @@
  * import cycle. `PriceSyncApi` therefore lives here and `precoSync.ts`
  * re-exports it under its original name.
  *
- * The gates, in order — see `precoSync.ts`'s module doc for the rationale
- * behind each:
- *  (1) fresh `GET /items/{id}`;
+ * The gates, in order, with what each one decides. This list is the canonical
+ * one — `precoSync.ts` documents the JOB and points here for the ladder, so do
+ * not re-add a back-reference to it: the rationale lives with the code.
+ *
+ *  (1) fresh `GET /items/{id}` — a 429 asks the caller to pause, another 4xx
+ *      records a `GET_PRODUTO_ERROR` failure, a dead credential stops the whole
+ *      run, and 5xx/network RETHROW so the caller's own retry mechanism sees
+ *      them (the Cloud Tasks queue for the job; nothing for a synchronous
+ *      request, which is why the manual push reports them itself);
  *  (2) skip-if-equal (`PRECO_ANTIGO_IGUAL`) — also what makes a replayed send
  *      idempotent after a crash between the PUT and the checkpoint;
- *  (3) fresh status gate (`podeEnviarPreco`) + the mid-migration tag skip;
+ *  (3) fresh status gate (`podeEnviarPreco`: `CLOSED` / `FORBIDDEN` /
+ *      `STATUS_<x>`) plus the mid-migration tag skip (`AGUARDANDO_MIGRACAO`);
  *  (4) decrease guard (`PRECO_ANTIGO_MAIOR`) unless the caller allows it;
  *  (5) build the PRICE-ONLY body (per-variation for legacy `variations[]`);
- *  (6) `PUT /items/{id}`;
- *  (7) verify the echoed price (`PRECO_NAO_ATUALIZADO` on mismatch);
- *  (8) success writeback onto the link doc.
+ *  (6) `PUT /items/{id}` — `PRECO_NAO_MODIFICAVEL` is a terminal skip with NO
+ *      link stamp, another deterministic 4xx is an `UPDATE_PRECO_ERROR` failure
+ *      WITH the link stamped `estado 'E'`, and the pause / stop / rethrow arms
+ *      are the same classes as (1);
+ *  (7) verify the echoed price (`PRECO_NAO_ATUALIZADO` on mismatch, and
+ *      deliberately no link stamp — the PUT was accepted, the listing is fine);
+ *  (8) success writeback onto the link doc — fresh status always, plus
+ *      `precoPublicado` for `item` drafts ONLY, because sibling `variationItem`
+ *      drafts share the parent link doc and would flip-flop it.
  *
  * Gate (9), the per-item checkpoint, belongs to the caller: the manual push has
  * no job document to checkpoint into.
