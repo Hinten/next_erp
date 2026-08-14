@@ -379,14 +379,25 @@ describe('Republicar e atualizar preços', () => {
     expect(startPriceSync).not.toHaveBeenCalled();
   });
 
-  it('is absent while the listing is still a rascunho', async () => {
-    // No link doc id ⇒ no `category_id`, so publish 422s before writing
-    // anything and there is nothing to price. "Preparar anúncio" is the only
-    // action at that point.
+  it('is absent until the conta has a link doc at all', async () => {
+    // With NO link doc there is no `category_id`, so publish 422s before
+    // writing anything and there would be nothing to price — "Preparar anúncio"
+    // is the only action. A rascunho (a link doc with `id: null`) DOES get the
+    // button: a first publish is a legitimate thing to pair with a price push.
     h.links = [];
     wireClient();
     renderEditor();
 
     expect(screen.queryByRole('button', { name: /atualizar preços/i })).toBeNull();
+  });
+
+  it('a rascunho offers the paired action as a FIRST publish', async () => {
+    h.links = [link('link-1', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    wireClient();
+    renderEditor();
+
+    expect(screen.getByRole('button', { name: 'Publicar e atualizar preços' })).toBeInstanceOf(
+      HTMLButtonElement,
+    );
   });
 });
