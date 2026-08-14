@@ -599,6 +599,12 @@ export async function discoverPedidoMercadoLivre(
         freteInicial: null,
         descontoTotal: core.descontoTotal,
         valorCobrado: core.valorCobrado,
+        // PROVISIONAL seed (#796/O9), not the final value. The frete block does
+        // not exist yet, so the only freight figure available is Σ order
+        // `payments[].shipping_cost`; the frete step converges this onto
+        // `freteInicial.valorCobrado` — the definition every other reader in the
+        // repo assumes (`derivePedidoTotals`). See `orderMapping.ts`'s deviation
+        // note before treating this as the authoritative number.
         valorFreteInicial: core.valorFreteInicial,
         timestamp: core.timestamp,
         ultimaModificacao: nowUs,

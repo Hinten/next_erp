@@ -36,7 +36,57 @@
  *    this port actively returns/persists it (the new `pedidoSchema` has the
  *    field) and rounds it with `roundReais` for consistency with the other two
  *    money outputs, even though legacy never rounded it (there was no
- *    round-point to port, since the assignment was dead);
+ *    round-point to port, since the assignment was dead).
+ *    ⚠️ **DECISION #796/O9 — the commented-out line was a HOLE, not a design,
+ *    and the value returned here is a PROVISIONAL SEED.** `valorFreteInicial`
+ *    is not an independent field anywhere in this app: `derivePedidoTotals`
+ *    (`packages/schemas/src/pedido/pureLogic/totals.ts`) DEFINES it as
+ *    `freteInicial.valorCobrado` and `packages/data/src/pedido/usecases.ts`
+ *    lists it in `DERIVED_CACHES` — and that is a faithful port of legacy
+ *    `Pedido.factory` (`.old/packages/pedido/lib/src/models.dart:3601`), which
+ *    freight-fills the same cache on every manually-created legacy pedido. So
+ *    the ML importer was the ONE legacy path that left it at 0, not the one
+ *    path that got it right. What this function returns is Σ order
+ *    `payments[].shipping_cost`, computed before any frete block exists; the
+ *    frete step then converges it onto `freteInicial.valorCobrado`, which is
+ *    Σ APPROVED `shipping_payments[].amount` — a DIFFERENT quantity
+ *    (`orderImport.ts`'s two frete writes + `orderShipmentImport.ts`). Do not
+ *    "simplify" either half into the other: this one is all we know at order
+ *    time, and the other is the invariant every other reader assumes.
+ *    ⚠️ No report double-counts freight against `valorCobrado`: reports sum
+ *    `pedidoTotal` = Σ item subtotals (`apps/web/lib/reports/aggregations.ts`),
+ *    NF-e reads `frete.valorCobrado` directly, and the pedido footer recomputes
+ *    live. Nothing in the repo adds the two fields together;
+ *  - `ordem` is the 0-based `index` of the line within ITS ML order, where
+ *    legacy leaves the `ItemDoPedido` constructor default of **1**
+ *    (`.old/packages/pedido/lib/src/models.dart:160`; `_makeItemDoPedido` never
+ *    sets it). ⚠️ **DECISION #796/O8 — keep 0-based; "restoring parity" would
+ *    be a regression.** A constant 1 on every line makes all three legacy sorts
+ *    inert (`models.dart:191`, `:2671`, `:3595`), i.e. legacy ML pedidos have no
+ *    line order at all; `index` gives them one. Every consumer treats the value
+ *    as a RELATIVE sort key — `flattenPedidoItens`
+ *    (`packages/schemas/src/pedido/pureLogic/itens.ts`), the web form's copy
+ *    (`apps/web/app/(app)/pedidos/_components/flattenItens.ts`) and the print
+ *    model (`apps/web/lib/pedido-print/assemble.ts`). NF-e does NOT read it:
+ *    `det/@nItem` is the flatten index
+ *    (`apps/nfe/lib/nfe/orchestrator/generator-input.ts`). The accepted cost is
+ *    cosmetic and single-site: the `#` column renders `ordem` raw
+ *    (`apps/web/app/(app)/pedidos/_components/tabs/PrincipalTab.tsx`), so an ML
+ *    pedido's first line shows `0` where a manual pedido's shows `1` (the schema
+ *    default is 1, `packages/schemas/src/pedido/collection/pedido.ts`, and the
+ *    manual editor allocates `max(ordem) + 1`).
+ *    ⚠️ **The numbering is PER ML ORDER, and packs therefore COLLIDE.**
+ *    `buildItensByOrderId` (`orderImport.ts`) restarts the counter at 0 for each
+ *    sibling order and `orderPedidoTx.ts` appends the lines without renumbering,
+ *    so a pack pedido holds duplicate `ordem` values and the sort INTERLEAVES
+ *    the siblings instead of appending them. That is a separate defect from the
+ *    0-vs-1 question, recorded here and deliberately not fixed under #796; the
+ *    fix is a continuous 1..N renumber at append time inside `orderPedidoTx`'s
+ *    transaction.
+ *    ⚠️ `index` also feeds `makeItemEnsureUniqueId(orderId, mktplaceId, index)`,
+ *    which IS load-bearing (dedup, append-only merge, incidente doc ids). The
+ *    two uses are independent — changing `ordem` must not change what reaches
+ *    that function;
  *  - timestamps convert ISO → **microseconds** (project policy — see
  *    `packages/schemas/src/pedido/collection/pedido.ts:119-124`), not the
  *    legacy `DateTime` object;

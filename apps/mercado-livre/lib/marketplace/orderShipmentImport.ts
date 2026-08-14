@@ -94,6 +94,16 @@
  *    NOT: it is the ML ORDER-clock watermark whose single writer is the order
  *    import (#791/O15). This path carries the SHIPMENT clock, which already
  *    lives inside the frete block.
+ *  - `valorFreteInicial` rides every write too (#796/O9). It is not an
+ *    independent field anywhere in this app — `derivePedidoTotals`
+ *    (`packages/schemas/src/pedido/pureLogic/totals.ts`) DEFINES it as
+ *    `freteInicial.valorCobrado`, and `packages/data/src/pedido/usecases.ts`
+ *    lists it in `DERIVED_CACHES` — so a write of the frete block that leaves
+ *    it behind is a write that puts the document out of agreement with itself.
+ *    Legacy never wrote it on any ML path (the constructor arg is commented out
+ *    at `.old/.../mercado_livre/lib/src/models.dart:3084`), which is why the
+ *    drift had no legacy counterpart to port. `valorCobrado`, by contrast, is
+ *    NOT written here — see the comment at the write.
  *
  * THROW-ON-TRANSIENT discipline: every error EXCEPT a 404 on the primary
  * `getShipment` call propagates (the calling notification queue retries);
@@ -107,6 +117,7 @@ import {
   type MlShipment,
 } from '@delfrance/integrations-mercado-livre';
 import { coerceToMicros } from '@delfrance/core/datetime';
+import { roundReais } from '@delfrance/core/money';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
 
 import { loadContaBag, resolveMercadoEnviosIntFreteOuterRef } from './orderImport';
@@ -260,6 +271,20 @@ export async function importShipmentMercadoLivre(
       pedidoRef,
       pedidoCollection.parseMerge({
         freteInicial: targetFrete,
+        // The derived cache of the block above (#796/O9) — `valorFreteInicial`
+        // is DEFINED as `freteInicial.valorCobrado` everywhere else in the repo
+        // (`derivePedidoTotals`, `packages/schemas/src/pedido/pureLogic/totals.ts`),
+        // so it travels with every write of that block or it drifts. Read off
+        // `mapped`, which `mergeFreteInicial` copies VERBATIM into
+        // `valorCobrado` (no `?? existing`), so it is typed and is exactly what
+        // lands in the doc.
+        //
+        // ⚠️ `valorCobrado` is deliberately NOT written here. Legacy's
+        // `_cadastrarAtualizarShipment` writes only `freteInicial` on this path
+        // (tasks.dart:1295-1319) — recomputing the pedido total belongs to the
+        // order import's conference, which owns the item list this path never
+        // reads. Its staleness has its own analysis in `orderImport.ts`.
+        valorFreteInicial: roundReais(mapped.valorCobrado ?? 0),
         // Wall clock, monotonic. `lastMarketplaceUpdate` is NOT written here:
         // it is the ML ORDER-clock watermark, and its single writer is the
         // order import (#791). This path carries the SHIPMENT clock, which

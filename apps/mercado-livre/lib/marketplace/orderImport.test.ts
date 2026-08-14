@@ -1117,6 +1117,11 @@ describe('importPedidoMercadoLivre — frete', () => {
     const written = db.docs('pedidos').get('pedido-1');
     expect(written).toMatchObject({
       valorCobrado: 120, // roundReais(totalItens 100 + valorFreteInicial 20)
+      // #796/O9: the cache travels with the frete block it is derived from. The
+      // create-time seed was Σ order `payments[].shipping_cost`; this is Σ
+      // APPROVED `shipping_payments[].amount`, i.e. `freteInicial.valorCobrado`
+      // asserted below — the definition `derivePedidoTotals` gives the field.
+      valorFreteInicial: 20,
       // Wall clock, monotonic (#791): this stamp is the display / recency-sort /
       // update-monitor field, so it is NOT the ML order clock. That clock lives
       // in `lastMarketplaceUpdate`, written by `discoverPedidoMercadoLivre`.
@@ -1172,6 +1177,66 @@ describe('importPedidoMercadoLivre — frete', () => {
     expect(db.docs('pedidos').get('pedido-1')!.freteInicial).toEqual(freteInicial);
     // Nothing was written to the pedido at all.
     expect(db.lastPatch('pedidos', 'pedido-1')).toBeUndefined();
+  });
+
+  it('converges a drifted valorFreteInicial onto the stored frete on the stale branch', async () => {
+    // #796/O9. Reaching the in-transaction `!maisNovo` branch needs BOTH: a
+    // shipment payload OLDER than the stored frete (so the tx-fresh verdict is
+    // "not newer") AND a null `prazoDespacho` (so the cheap pre-read early-out
+    // does not return before the transaction). That combination is exactly the
+    // state a pedido sits in after an order import that has not conferred yet.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'pago',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: {
+        estado: 'postado',
+        valorCobrado: 30, // Σ approved shipping_payments — the authoritative figure.
+        prazoDespacho: null,
+        ultimaModificacao: Date.parse('2026-01-05T00:00:00.000Z') * 1000,
+      },
+      // The create-time seed: Σ order `payments[].shipping_cost`, a DIFFERENT
+      // quantity, left behind by every write since. This is the drift.
+      valorFreteInicial: 7,
+      valorCobrado: 107,
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            mktplaceId: 'MLB1',
+            precoDeVenda: 100,
+            quantidade: 1,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 777, status: 'paid' })),
+      getShipment: vi.fn(async () => ({
+        id: 777,
+        order_id: 1,
+        status: 'shipped',
+        last_updated: '2026-01-01T00:00:00.000-03:00', // OLDER than the stored frete.
+        shipping_option: {},
+      })),
+      getShipmentPayments: vi.fn(async () => []),
+    });
+    vi.mocked(resolvePrazoDespacho).mockResolvedValue(
+      Date.parse('2026-01-08T00:00:00.000Z') * 1000,
+    );
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    // Both money caches now agree with the STORED frete — never with the older
+    // payload, which contributes nothing on this branch.
+    expect(written.valorFreteInicial).toBe(30);
+    expect(written.valorCobrado).toBe(130); // totalItens 100 + frete 30 (#791 repair)
+    expect((written.freteInicial as Record<string, unknown>).valorCobrado).toBe(30);
   });
 });
 

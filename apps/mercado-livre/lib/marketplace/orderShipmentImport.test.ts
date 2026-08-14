@@ -464,7 +464,7 @@ describe('importShipmentMercadoLivre — staleness', () => {
 });
 
 describe('importShipmentMercadoLivre — happy path write', () => {
-  it('merges freteInicial (preserving unmapped + null-mapped fields and estado) and writes EXACTLY {freteInicial, ultimaModificacao}', async () => {
+  it('merges freteInicial (preserving unmapped + null-mapped fields and estado) and writes EXACTLY {freteInicial, valorFreteInicial, ultimaModificacao}', async () => {
     const db = new FakeDb();
     seedConta(db);
     seedIntFrete(db);
@@ -503,10 +503,17 @@ describe('importShipmentMercadoLivre — happy path write', () => {
     expect(pedidoOps.map((e) => e.op)).toEqual(['get', 'update']);
 
     const patch = db.lastPatch('pedidos', 'pedido-1')!;
-    expect(Object.keys(patch).sort()).toEqual(['freteInicial', 'ultimaModificacao']);
+    expect(Object.keys(patch).sort()).toEqual([
+      'freteInicial',
+      'ultimaModificacao',
+      'valorFreteInicial',
+    ]);
     expect(patch.ultimaModificacao).toBe(NOW_US);
 
     const freteInicial = patch.freteInicial as DocData;
+    // #796/O9: the derived cache travels with the block it is derived from —
+    // asserted RELATIONALLY, since that identity is the whole invariant.
+    expect(patch.valorFreteInicial).toBe(freteInicial.valorCobrado);
     expect(freteInicial.estado).toBe('despachoAutorizado'); // preserved, not regressed to 'iniciado'
     expect(freteInicial.printLabelId).toBe('label-123'); // unmapped field, preserved
     expect(freteInicial.externalOptionId).toBe('opt-9'); // unmapped field, preserved
@@ -515,6 +522,47 @@ describe('importShipmentMercadoLivre — happy path write', () => {
 
     // pedido.estado (the TOP-LEVEL field) is never part of the patch.
     expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+  });
+
+  it('converges a drifted valorFreteInicial and leaves valorCobrado alone (legacy parity)', async () => {
+    // #796/O9. `valorFreteInicial` is DEFINED as `freteInicial.valorCobrado`
+    // (`derivePedidoTotals`), so it has to travel with every write of that
+    // block. `valorCobrado` must NOT: legacy's `_cadastrarAtualizarShipment`
+    // writes only the frete on this path (tasks.dart:1295-1319), and this
+    // handler never reads the item list a total would have to be built from.
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: {
+        estado: 'despachoAutorizado',
+        externalId: '777',
+        valorCobrado: 5, // superseded by the incoming approved payments below
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000, // OLDER than incoming
+      },
+      // The order-import seed (Σ order `payments[].shipping_cost`) — a different
+      // quantity from the shipment's approved payments, hence the drift.
+      valorFreteInicial: 7,
+      valorCobrado: 107,
+    });
+    const api = makeApi({
+      getShipmentPayments: vi.fn(async () => [
+        { payment_id: 900, status: 'approved', amount: 18 },
+        { payment_id: 901, status: 'rejected', amount: 99 }, // not approved — excluded
+      ]),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: null });
+
+    const patch = db.lastPatch('pedidos', 'pedido-1')!;
+    expect((patch.freteInicial as DocData).valorCobrado).toBe(18);
+    expect(patch.valorFreteInicial).toBe(18);
+    expect(patch).not.toHaveProperty('valorCobrado');
+    expect(db.docs('pedidos').get('pedido-1')!.valorCobrado).toBe(107);
   });
 
   it('warns on an externalId mismatch but still processes the merge', async () => {

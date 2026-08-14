@@ -17,6 +17,25 @@
  * legacy never applies `maybeDateTimeToJson` to those, only the five order-level
  * fields carry the `@JsonKey(toJson: maybeDateTimeToJson)` override.
  *
+ * ⚠️ **DECISION #796/O11 — the four Dart-ODM bookkeeping keys are omitted, on
+ * purpose.** `_$OrderMLToJson` opens with four `writeNotNull` calls the audit
+ * counted as one (`.old/packages/canais_de_venda/mercado_livre/lib/src/models.g.dart:647-650`):
+ * `docId`, `createTime`, `updateTime`, `readTime`. None of them is Mercado Livre
+ * data — they describe the Flutter ODM's own document handle, which is why this
+ * writer emits none of them: the doc PATH already carries the id
+ * (`pedidos/{pedidoId}/orderML/{order.id}`), `_$OrderMLFromJson` reads `docId`
+ * as a NULLABLE `String?` (`models.g.dart:599`) so their absence is harmless
+ * even to the legacy decoder, and per ADR 0013 plus the callback-URL cutover
+ * contract that decoder is retired in the same window. Adding them back would
+ * cost four redundant keys on every mirror doc for a re-derivable value.
+ * The same convention is recorded twice in `packages/schemas` —
+ * `src/pedido/collection/checkout.ts` and `src/pedido/collection/historicoFtIni.ts`,
+ * both of which keep the keys READABLE via `.passthrough()` without writing
+ * them. ⚠️ The omission is already pinned: `orderMLWire.test.ts`'s
+ * `expect(wire).toEqual({...})` is a STRICT deep-equality over the whole wire
+ * object, so adding a `docId` here turns that test red. That is the intended
+ * signal, not a test to relax.
+ *
  * `MlOrder`'s tolerant Zod schema (`packages/integrations/mercado-livre/src/types.ts`)
  * only names the fields the PRODUCT-import side needs today, so several fields
  * this mirror doc requires (`payments`, `comment`, `coupon`, `buying_mode`,

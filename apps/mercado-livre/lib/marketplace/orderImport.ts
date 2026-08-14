@@ -1092,6 +1092,20 @@ async function applyFreteStep(args: {
       if (freshFrete != null && freshFrete.prazoDespacho == null && prazoDespachoUs != null) {
         patchParado.freteInicial = { ...freshFrete, prazoDespacho: prazoDespachoUs };
       }
+      // Converge the frete money cache (#796/O9). `valorFreteInicial` is DEFINED
+      // as `freteInicial.valorCobrado` everywhere else in the repo
+      // (`derivePedidoTotals`, `packages/schemas/src/pedido/pureLogic/totals.ts`;
+      // `DERIVED_CACHES` in `packages/data/src/pedido/usecases.ts`), so it needs
+      // no ownership caveat — the moment a frete block exists the correct value
+      // is unambiguous. Without this the create-time seed (Σ order
+      // `payments[].shipping_cost`) survives forever next to a frete block whose
+      // `valorCobrado` is Σ APPROVED `shipping_payments[].amount` — a different
+      // quantity — and the two caches disagree indefinitely. Same staleness rule
+      // as below: the STORED frete, never this (older) payload.
+      if (freshFrete != null) {
+        const freteAlvo = roundReais(freshFrete.valorCobrado ?? 0);
+        if (freshPedido.valorFreteInicial !== freteAlvo) patchParado.valorFreteInicial = freteAlvo;
+      }
       // Repair an under-counted total (#791). The conference computes
       // `valorCobrado` from the items it can see; a pack sibling merged AFTER it
       // leaves the total permanently low, and the pedido then reaches `pago` on
@@ -1241,6 +1255,14 @@ async function applyFreteStep(args: {
     const patch: Record<string, unknown> = {
       freteInicial: targetFrete,
       valorCobrado: roundReais(totalItens + (mappedFrete.valorCobrado ?? 0)),
+      // The derived cache of the block being written one line above (#796/O9) —
+      // `mergeFreteInicial` copies `valorCobrado` VERBATIM (`mapped.valorCobrado`,
+      // no `?? existing`), so `mappedFrete` here is exactly what lands in
+      // `freteInicial`, and reading it typed beats narrowing `targetFrete`'s
+      // `unknown`. Replaces the create-time seed, which was Σ order
+      // `payments[].shipping_cost` — a different quantity from this shipment's
+      // Σ approved `shipping_payments[].amount`.
+      valorFreteInicial: roundReais(mappedFrete.valorCobrado ?? 0),
     };
 
     // Recovery. A divergence we recorded has cleared, so undo what we did:
