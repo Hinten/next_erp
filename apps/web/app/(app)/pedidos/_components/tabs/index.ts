@@ -7,3 +7,4 @@ export { DevolucaoTab } from './DevolucaoTab';
 export { CheckoutTab } from './CheckoutTab';
 export { PlaceholderTab } from './PlaceholderTab';
 export { EstoqueSyncTab } from './EstoqueSyncTab';
+export { ModificacoesTab } from './ModificacoesTab';

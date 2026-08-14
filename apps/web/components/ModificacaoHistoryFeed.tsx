@@ -144,6 +144,17 @@ export interface ModificacaoHistoryFeedProps {
   ) => ReactNode;
   emptyLabel?: string;
   pageSize?: number;
+  /**
+   * Rows from ANOTHER source to interleave into the same timeline, sorted with
+   * the rest by `timestamp`.
+   *
+   * The pedido tab uses this for the pre-trigger `historicoEstadoPedido` rows:
+   * once the trigger ships, an estado change is recorded HERE as an ordinary
+   * field, so replaying the whole legacy trail would double every post-deploy
+   * transition. The caller is responsible for passing only rows this collection
+   * does not already cover — see `ModificacoesTab`, which keys on `eventId`.
+   */
+  extraEntries?: ReadonlyArray<ListEntry>;
 }
 
 export function ModificacaoHistoryFeed({
@@ -154,6 +165,7 @@ export function ModificacaoHistoryFeed({
   renderFieldActions,
   emptyLabel = 'Nenhuma modificação registrada.',
   pageSize = DEFAULT_PAGE_SIZE,
+  extraEntries,
 }: ModificacaoHistoryFeedProps) {
   // Identity of the document being viewed — the reset effect below keys on it,
   // and a plain object would be a new reference on every render.
@@ -221,8 +233,14 @@ export function ModificacaoHistoryFeed({
     const liveRows = (live.data ?? []).map(rowToEntry);
     const seen = new Set(liveRows.map((r) => r.id));
     const tail = extraRows.filter((r) => !seen.has(r.id)).map(rowToEntry);
-    return [...liveRows, ...tail];
-  }, [live.data, extraRows]);
+    const own = [...liveRows, ...tail];
+    if (!extraEntries || extraEntries.length === 0) return own;
+    // Interleave the injected rows by time. Both inputs are already
+    // newest-first, so this only has to merge them; a missing timestamp sorts
+    // last rather than jumping to the top.
+    const at = (e: ListEntry) => e.timestamp ?? Number.NEGATIVE_INFINITY;
+    return [...own, ...extraEntries].sort((a, b) => at(b) - at(a));
+  }, [live.data, extraRows, extraEntries]);
 
   // One batched resolution wave for every actor on screen.
   const nomes = useUsuarioNomes(
