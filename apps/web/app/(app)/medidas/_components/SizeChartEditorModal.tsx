@@ -719,27 +719,35 @@ export function SizeChartEditorModal({
           </Alert>
         )}
 
+        {/*
+          Outside the `allColumns.length > 0` block on purpose. The grid loads
+          from Mercado Livre, so gating the control on it would hide the feature
+          entirely whenever that call has not answered — the operator would never
+          learn it exists, and the affordance would be untestable without a live
+          backend. Rendering it always, disabled until there is something to
+          fill, says "this exists, it is not ready yet".
+        */}
+        <Group justify="space-between" align="flex-end">
+          <Text size="sm" c="dimmed">
+            Preencha a grade a partir da foto da tabela do fornecedor.
+          </Text>
+          <Button
+            size="compact-sm"
+            variant="light"
+            onClick={() => void runAi()}
+            loading={aiBusy}
+            // Nothing to fill without a grid, and the route rejects an empty one
+            // anyway — better to disable than to spend a round trip on a
+            // guaranteed 422.
+            disabled={!canWrite || busy !== null || rows.length === 0 || columns.length === 0}
+            data-testid="ml-size-chart-ai-fill"
+          >
+            Preencher com IA
+          </Button>
+        </Group>
+
         {allColumns.length > 0 && (
           <>
-            <Group justify="space-between" align="flex-end">
-              <Text size="sm" c="dimmed">
-                Preencha a grade a partir da foto da tabela do fornecedor.
-              </Text>
-              <Button
-                size="compact-sm"
-                variant="light"
-                onClick={() => void runAi()}
-                loading={aiBusy}
-                // Nothing to fill without a grid, and the route rejects an empty
-                // one anyway — better to disable than to spend a round trip on a
-                // guaranteed 422.
-                disabled={!canWrite || busy !== null || rows.length === 0 || columns.length === 0}
-                data-testid="ml-size-chart-ai-fill"
-              >
-                Preencher com IA
-              </Button>
-            </Group>
-
             <div>
               <Text size="sm" fw={500} mb={4}>
                 Colunas
