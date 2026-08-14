@@ -29,6 +29,24 @@ export interface AiPromptRequest {
   image?: AiInlineImage;
   /** What the answer must look like. */
   responseSchema: JsonSchemaNode;
+  /**
+   * A prior exchange to revise, rather than start over.
+   *
+   * ⚠️ The whole point is that the model CORRECTS its own answer. Sending the
+   * operator's complaint alone would make it re-derive everything from the same
+   * facts and very likely repeat the mistake; sending the previous answer next
+   * to the complaint is what makes "a cor está errada, é azul-marinho" a fix
+   * rather than a re-roll.
+   *
+   * Absent on a first run. Agent-neutral on purpose — the size-chart agent gets
+   * this for free the day it wants it.
+   */
+  anterior?: {
+    /** The previous answer, serialised as the model returned it. */
+    resposta: string;
+    /** What the operator asked to change. */
+    feedback: string;
+  };
 }
 
 /**

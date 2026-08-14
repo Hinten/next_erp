@@ -1,35 +1,31 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import {
-  Alert,
-  Badge,
-  Button,
-  Checkbox,
-  Group,
-  Modal,
-  ScrollArea,
-  Stack,
-  Table,
-  Text,
-} from '@mantine/core';
+import { useMemo } from 'react';
+import { Alert, Stack, Text } from '@mantine/core';
+import { AiReviewAtual, AiReviewModal } from '@delfrance/ui';
 import { aiCellKey, preCheckedCells } from '@delfrance/ai';
 import type { MercadoLivreMedidasSugestao } from '@/lib/mercado-livre/client';
 import type { ChartColumn } from '@/lib/mercado-livre/chartSpec';
 import { type ChartRowDraft, isFilled } from '@/lib/mercado-livre/chartRows';
 
+type MedidaSugestao = MercadoLivreMedidasSugestao['sugestoes'][number];
+
 /**
  * Review the model's proposed measurements before any of them reach the grid.
  *
- * ⚠️ **Nothing is applied until Confirmar.** That is the whole point of the
- * screen, and it is not caution for its own sake: a measurement that is wrong is
+ * ⚠️ **Nothing is applied until Aplicar.** That is the whole point of the screen,
+ * and it is not caution for its own sake: a measurement that is wrong is
  * indistinguishable from one that is right once it is in the grid, and it ships
- * to buyers. The operator has to see `atual → sugerido` for every cell, with the
- * photo they uploaded next to them, before agreeing.
+ * to buyers. The operator has to see `atual → sugerido` for every cell before
+ * agreeing.
  *
- * Cells that already hold a value start **unchecked** with the current value
- * shown — visible so they can be accepted deliberately, never overwritten by
- * default. Same rule the attribute agent follows via `preCheckedSuggestionIds`.
+ * ⚠️ The dialog itself is `AiReviewModal` from `@delfrance/ui` — the shared
+ * staging surface every agent answers through. What is measurement-shaped stays
+ * here: the cell key, the size label, and the two provenance banners. The
+ * checkbox set, the seed-once rule, Marcar/Desmarcar todas and the Aplicar gate
+ * are the generic half, and having them in one place is what stops "a suggestion
+ * is offered, never applied" from meaning something slightly different on each
+ * screen.
  */
 export interface SizeChartAiModalProps {
   opened: boolean;
@@ -50,16 +46,6 @@ export interface SizeChartAiModalProps {
   onApply: (aceitas: MercadoLivreMedidasSugestao['sugestoes']) => void;
 }
 
-/**
- * ⚠️ `medidaCellKey` and `preCheckedMedidaCells` are IMPORTED, not reimplemented.
- *
- * Both ship from `@delfrance/integrations-mercado-livre` with their own unit
- * tests, and this modal is their only production consumer — a local copy of the
- * key and of the pre-check rule would have meant two implementations of a rule
- * the stack deliberately factored out, with the tested ones having no caller at
- * all.
- */
-
 export function SizeChartAiModal({
   opened,
   onClose,
@@ -69,8 +55,6 @@ export function SizeChartAiModal({
   mainAttributeId,
   onApply,
 }: SizeChartAiModalProps) {
-  const sugestoes = useMemo(() => resultado?.sugestoes ?? [], [resultado]);
-
   const rowByKey = useMemo(() => new Map(rows.map((r) => [r.key, r])), [rows]);
   const labelByAttr = useMemo(() => {
     const out = new Map<string, string>();
@@ -87,158 +71,57 @@ export function SizeChartAiModal({
     return cell?.value_name ?? cell?.valueList?.map((v) => v.name).join(', ') ?? null;
   }
 
-  // Seeded once per result: the pre-check decision depends on the grid as it was
-  // when the suggestion came back, and re-deriving it on every render would undo
-  // the operator's own unticking. The parent remounts this component per run
-  // (`key={aiRun}`), so `marcadas` never survives into a later suggestion.
-  const [marcadas, setMarcadas] = useState<Set<string> | null>(null);
-  const seeded = useMemo(
+  // ⚠️ `preCheckedCells` is IMPORTED, not reimplemented. It ships from
+  // `@delfrance/ai` with its own unit tests and this modal is its only
+  // production consumer — a local copy of the rule would leave the tested one
+  // with no caller at all.
+  const preChecked = useMemo(
     () =>
       new Set(
-        preCheckedCells(sugestoes, (rowKey, attributeId) =>
+        preCheckedCells(resultado?.sugestoes ?? [], (rowKey, attributeId) =>
           isFilled(rowByKey.get(rowKey)?.cells[attributeId]),
         ),
       ),
-    [sugestoes, rowByKey],
+    [resultado, rowByKey],
   );
-  const checked = marcadas ?? seeded;
-
-  function toggle(key: string) {
-    setMarcadas((prev) => {
-      const next = new Set(prev ?? seeded);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  const aceitas = sugestoes.filter((s) => checked.has(aiCellKey(s.rowKey, s.attributeId)));
-  const carregando = resultado == null;
 
   return (
-    <Modal
+    <AiReviewModal<MedidaSugestao>
       opened={opened}
       onClose={onClose}
       title="Medidas sugeridas pela IA"
-      size="xl"
-      centered
       data-testid="ml-size-chart-ai-modal"
-    >
-      <Stack gap="md">
-        {carregando && <Text size="sm">Lendo a foto da tabela…</Text>}
-
-        {!carregando && (
-          <>
-            <Fonte resultado={resultado} />
-
-            {sugestoes.length === 0 ? (
-              <Alert color="yellow" variant="light" title="Nenhuma medida foi lida">
-                O modelo não conseguiu ler nenhuma medida com segurança. Confira se a foto da tabela
-                está legível e se os tamanhos da guia batem com os da tabela.
-              </Alert>
-            ) : (
-              <>
-                <Group justify="space-between">
-                  <Text size="sm">
-                    {aceitas.length} de {sugestoes.length} medidas selecionadas.
-                  </Text>
-                  <Group gap="xs">
-                    <Button
-                      size="compact-xs"
-                      variant="subtle"
-                      onClick={() =>
-                        setMarcadas(
-                          new Set(sugestoes.map((s) => aiCellKey(s.rowKey, s.attributeId))),
-                        )
-                      }
-                    >
-                      Marcar todas
-                    </Button>
-                    <Button
-                      size="compact-xs"
-                      variant="subtle"
-                      onClick={() => setMarcadas(new Set())}
-                    >
-                      Desmarcar todas
-                    </Button>
-                  </Group>
-                </Group>
-
-                <ScrollArea.Autosize mah={420}>
-                  <Table striped highlightOnHover withTableBorder>
-                    <Table.Thead>
-                      <Table.Tr>
-                        <Table.Th w={40} />
-                        <Table.Th>Tamanho</Table.Th>
-                        <Table.Th>Medida</Table.Th>
-                        <Table.Th>Atual</Table.Th>
-                        <Table.Th>Sugerido</Table.Th>
-                      </Table.Tr>
-                    </Table.Thead>
-                    <Table.Tbody>
-                      {sugestoes.map((s) => {
-                        const key = aiCellKey(s.rowKey, s.attributeId);
-                        const atual = atualDe(s.rowKey, s.attributeId);
-                        const size =
-                          rowByKey.get(s.rowKey)?.cells[mainAttributeId]?.value_name ??
-                          s.rowKey.split('/').pop();
-                        return (
-                          <Table.Tr key={key}>
-                            <Table.Td>
-                              <Checkbox
-                                checked={checked.has(key)}
-                                onChange={() => toggle(key)}
-                                aria-label={`Aplicar ${labelByAttr.get(s.attributeId) ?? s.attributeId}`}
-                              />
-                            </Table.Td>
-                            <Table.Td>{size}</Table.Td>
-                            <Table.Td>{labelByAttr.get(s.attributeId) ?? s.attributeId}</Table.Td>
-                            <Table.Td>
-                              {atual == null ? (
-                                <Text size="sm" c="dimmed">
-                                  vazio
-                                </Text>
-                              ) : (
-                                <Group gap={6}>
-                                  <Text size="sm">{atual}</Text>
-                                  <Badge size="xs" color="yellow" variant="light">
-                                    será substituída
-                                  </Badge>
-                                </Group>
-                              )}
-                            </Table.Td>
-                            <Table.Td>
-                              <Text size="sm" fw={500}>
-                                {s.value_name}
-                              </Text>
-                            </Table.Td>
-                          </Table.Tr>
-                        );
-                      })}
-                    </Table.Tbody>
-                  </Table>
-                </ScrollArea.Autosize>
-              </>
-            )}
-          </>
-        )}
-
-        <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>
-            Cancelar
-          </Button>
-          <Button
-            onClick={() => {
-              onApply(aceitas);
-              onClose();
-            }}
-            disabled={carregando || aceitas.length === 0}
-          >
-            Aplicar {aceitas.length > 0 ? `(${aceitas.length})` : ''}
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
+      items={resultado?.sugestoes ?? null}
+      loadingLabel="Lendo a foto da tabela…"
+      emptyTitle="Nenhuma medida foi lida"
+      emptyMessage="O modelo não conseguiu ler nenhuma medida com segurança. Confira se a foto da tabela está legível e se os tamanhos da guia batem com os da tabela."
+      keyOf={(s) => aiCellKey(s.rowKey, s.attributeId)}
+      shouldPreCheck={(s) => preChecked.has(aiCellKey(s.rowKey, s.attributeId))}
+      labelOf={(s) => labelByAttr.get(s.attributeId) ?? s.attributeId}
+      selectionLabel={(n, total) => `${String(n)} de ${String(total)} medidas selecionadas.`}
+      banners={resultado != null ? <Fonte resultado={resultado} /> : null}
+      columns={[
+        {
+          label: 'Tamanho',
+          render: (s) =>
+            rowByKey.get(s.rowKey)?.cells[mainAttributeId]?.value_name ?? s.rowKey.split('/').pop(),
+        },
+        { label: 'Medida', render: (s) => labelByAttr.get(s.attributeId) ?? s.attributeId },
+        {
+          label: 'Atual',
+          render: (s) => <AiReviewAtual atual={atualDe(s.rowKey, s.attributeId)} />,
+        },
+        {
+          label: 'Sugerido',
+          render: (s) => (
+            <Text size="sm" fw={500}>
+              {s.value_name}
+            </Text>
+          ),
+        },
+      ]}
+      onApply={onApply}
+    />
   );
 }
 
@@ -266,8 +149,7 @@ function Fonte({ resultado }: { resultado: MercadoLivreMedidasSugestao }) {
         </Alert>
       )}
       <Text size="xs" c="dimmed">
-        {resultado.comFoto ? '1 foto + descrição' : 'apenas a descrição'} · {resultado.celulas}{' '}
-        células oferecidas ao modelo · nada é gravado até você confirmar.
+        {resultado.celulas} células oferecidas ao modelo · nada é gravado até você confirmar.
       </Text>
     </Stack>
   );

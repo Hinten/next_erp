@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Alert, Badge, Group, Loader, Paper, SimpleGrid, Text } from '@mantine/core';
 
 import type { AttrRow } from '@/lib/mercado-livre/attributeForm';
@@ -31,6 +32,16 @@ export interface AtributosSectionProps {
   loading: boolean;
   failed: boolean;
   disabled?: boolean;
+  /**
+   * The "Preencher com IA" trigger, rendered in this section's header.
+   *
+   * ⚠️ Passed IN rather than built here. The call needs `produtoId`,
+   * `integracaoId` and the form's current category — all of which live in
+   * `ListingForm` — and this component is otherwise a pure function of its
+   * props. It sits in the header because that is the row above the grid the
+   * suggestions actually fill.
+   */
+  acaoIa?: ReactNode;
 }
 
 /**
@@ -58,6 +69,7 @@ export function AtributosSection({
   loading,
   failed,
   disabled,
+  acaoIa,
 }: AtributosSectionProps) {
   const rowById = new Map(rows.map((r) => [r.id, r]));
   const pendingRequired = attrs.filter((a) => a.required && errors[a.id] != null).length;
@@ -109,18 +121,21 @@ export function AtributosSection({
 
   return (
     <>
-      <Group gap="xs">
-        <Text size="sm" fw={600}>
-          Atributos
-        </Text>
-        <Badge size="sm" variant="light">
-          {attrs.length}
-        </Badge>
-        {pendingRequired > 0 && (
-          <Badge size="sm" color="red" variant="light">
-            {pendingRequired} obrigatório(s) sem valor
+      <Group gap="xs" justify="space-between" wrap="nowrap">
+        <Group gap="xs">
+          <Text size="sm" fw={600}>
+            Atributos
+          </Text>
+          <Badge size="sm" variant="light">
+            {attrs.length}
           </Badge>
-        )}
+          {pendingRequired > 0 && (
+            <Badge size="sm" color="red" variant="light">
+              {pendingRequired} obrigatório(s) sem valor
+            </Badge>
+          )}
+        </Group>
+        {acaoIa}
       </Group>
       <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="sm" verticalSpacing="xs">
         {attrs.map((attr, index) => (

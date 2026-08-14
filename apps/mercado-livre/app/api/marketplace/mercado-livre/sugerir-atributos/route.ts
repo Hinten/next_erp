@@ -23,6 +23,7 @@ import {
 } from '@delfrance/schemas';
 
 import { AlreadyRunningError, resolveModelo, runSingleFlight } from '@delfrance/ai';
+import type { AiAttributeSuggestion } from '@delfrance/integrations-mercado-livre';
 import {
   AiNotConfiguredError,
   AiUnparseableAnswerError,
@@ -52,6 +53,8 @@ export const runtime = 'nodejs';
  * well past a normal Flash-Lite answer and well short of a hung request.
  */
 const AI_TIMEOUT_MS = 45_000;
+/** The operator's correction is a sentence; anything longer is a prompt-bill risk. */
+const MAX_FEEDBACK = 1_000;
 
 /**
  * ⚠️ The shipped default now lives in `packages/schemas` as
@@ -78,7 +81,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return NextResponse.json({ error: 'Corpo inválido: objeto esperado.' }, { status: 400 });
   }
-  const { integracaoId, produtoId, categoryId } = body as Record<string, unknown>;
+  const { integracaoId, produtoId, categoryId, feedback, anterior } = body as Record<
+    string,
+    unknown
+  >;
   if (typeof integracaoId !== 'string' || integracaoId === '') {
     return NextResponse.json({ error: 'integracaoId é obrigatório.' }, { status: 400 });
   }
@@ -88,6 +94,27 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (typeof categoryId !== 'string' || categoryId === '') {
     return NextResponse.json({ error: 'categoryId é obrigatório.' }, { status: 400 });
   }
+  // ⚠️ The revise turn. Capped because it is free text that lands in a prompt:
+  // an unbounded field is an unbounded token bill on a per-click path, and the
+  // operator's correction is a sentence, not a document.
+  if (feedback !== undefined && typeof feedback !== 'string') {
+    return NextResponse.json({ error: 'feedback deve ser texto.' }, { status: 400 });
+  }
+  if (typeof feedback === 'string' && feedback.length > MAX_FEEDBACK) {
+    return NextResponse.json(
+      { error: `feedback deve ter no máximo ${String(MAX_FEEDBACK)} caracteres.` },
+      { status: 400 },
+    );
+  }
+  if (anterior !== undefined && !Array.isArray(anterior)) {
+    return NextResponse.json({ error: 'anterior deve ser uma lista.' }, { status: 400 });
+  }
+  // Both halves or neither: a correction with nothing to correct would have the
+  // model re-derive from the same facts and repeat itself.
+  const revisao =
+    typeof feedback === 'string' && feedback.trim() !== ''
+      ? { feedback, anterior: (anterior ?? []) as AiAttributeSuggestion[] }
+      : null;
 
   const db = getAdminFirestore();
 
@@ -121,7 +148,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
-    return await runSingleFlight(auth.caller.uid, async () => {
+    return await runSingleFlight(`atributos:${auth.caller.uid}`, async () => {
       const ctx = await loadMercadoLivreContext(db, integracaoId);
       const channelCtx = await ctx.resolveChannelContext();
       const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
@@ -160,6 +187,7 @@ export async function POST(req: Request): Promise<NextResponse> {
             disponiveis: modelosParaValidacao(await getAiModelosCached(createVertexListModelsFn())),
           }).modelo,
           systemInstruction: config.promptSistema,
+          revisao,
           temperature: config.temperatura,
           maxOutputTokens: config.maxOutputTokens,
           signal: AbortSignal.timeout(AI_TIMEOUT_MS),
