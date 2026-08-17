@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -7,6 +7,7 @@ import type { Firestore } from 'firebase/firestore';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
+import { MercadoLivreClientNetworkError } from '@/lib/mercado-livre/client';
 
 const h = vi.hoisted(() => ({
   /** Every patch a save handed to the port, in order. */
@@ -370,6 +371,18 @@ describe('Descrição is collapsed until it has something to show', () => {
 });
 
 describe('Preencher com dados de teste', () => {
+  // ⚠️ The button ships in DEVELOPMENT builds only — publishing a test listing
+  // creates a real listing on the real marketplace. Under vitest `NODE_ENV` is
+  // `'test'`, so without this every assertion below would fail on a button that
+  // is correctly absent. `vi.stubEnv` works only because the component reads
+  // `process.env.NODE_ENV` inline rather than into a module-level const.
+  beforeEach(() => {
+    vi.stubEnv('NODE_ENV', 'development');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   function setClient(over: Partial<Record<string, unknown>> = {}) {
     h.client = {
       categoriaAtributos: vi.fn(async () => ({ leaf: true, atributos: [], omitidos: [] })),
@@ -377,6 +390,8 @@ describe('Preencher com dados de teste', () => {
         title: 'Item de Teste – Por favor, NÃO OFERTAR!',
         descricao: 'Anúncio de teste.',
         categoryId: 'MLB5672',
+        categoriaPath: ['Outros', 'Outros'],
+        categoriaMotivo: null,
         listingTypeId: 'free',
         conta: { nickname: 'TEST0548', ehContaDeTeste: true },
       })),
@@ -442,6 +457,9 @@ describe('Preencher com dados de teste', () => {
         title: 'Item de Teste – Por favor, NÃO OFERTAR!',
         descricao: 'Anúncio de teste.',
         categoryId: null,
+        categoriaPath: null,
+        // ⚠️ The case that actually happened: MLB has no root named "Outros".
+        categoriaMotivo: 'sem-raiz',
         listingTypeId: null,
         conta: { nickname: 'TEST1', ehContaDeTeste: true },
       })),
@@ -450,7 +468,10 @@ describe('Preencher com dados de teste', () => {
     fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/categoria “Outros” automaticamente/i)).toBeDefined();
+      // ⚠️ Asserts it reads as ABNORMAL, not as a routine "pick one yourself".
+      // The only way we learn ML renamed the tree is someone noticing this line
+      // and the matching `console.error` — a neutral message gets shrugged at.
+      expect(screen.getByText(/árvore de categorias mudou/i)).toBeDefined();
     });
     // ⚠️ And NOT the listing-type message. The route never queries types without
     // a category, so `listingTypeId` is null here for a reason that has nothing
@@ -491,5 +512,103 @@ describe('Preencher com dados de teste', () => {
     setClient();
     renderForm({ id: null }, { canWrite: false });
     expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('does NOT ship in a production build', async () => {
+    // ⚠️ The gate that matters. ML has no sandbox, so publishing a test listing
+    // creates a REAL listing on the real marketplace — the affordance has no
+    // business existing in a deployed app. `NODE_ENV` is a build-time constant,
+    // so the branch is stripped rather than merely hidden.
+    vi.stubEnv('NODE_ENV', 'production');
+    setClient();
+    renderForm({ id: null });
+    expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('MOVES the category and reloads the attributes on an existing draft', async () => {
+    // ⚠️ Lucas's exact report: a produto with a draft listing that ALREADY has a
+    // category. The whole point of the fix is that the field moves off it and
+    // the attribute grid re-queries for the new one — and until now nothing
+    // asserted either, so the client half of this path was untested.
+    //
+    // The attributes query key is `['ml','atributos',integracaoId,categoryId]`,
+    // so a re-fetch with the new id IS the grid reloading.
+    setClient();
+    const atributos = h.client!.categoriaAtributos as ReturnType<typeof vi.fn>;
+    // The fixture's category is MLB31447; the fill answers MLB5672.
+    renderForm({ id: null, category_id: 'MLB31447' });
+
+    await waitFor(() => {
+      expect(atributos).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'MLB31447' }));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(atributos).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'MLB5672' }));
+    });
+  });
+
+  it('names the category it actually chose', async () => {
+    // The field shows a bare `MLB…` id until the path resolves, and which leaf
+    // under "Outros" the route landed on is not guessable from it.
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Categoria definida/)).toBeDefined();
+    });
+    expect(screen.getByText('Outros › Outros')).toBeDefined();
+  });
+
+  it('does not leave a stale success alert above a FAILED fill', async () => {
+    // ⚠️ The half a close button cannot fix. `preencherTeste`'s catch reports its
+    // failure as a toast and returns without touching `testeConta`, so the
+    // previous run's "Dados de teste preenchidos" — naming a `Categoria definida`
+    // that was never applied — survived on screen above a fill that did not
+    // happen. Clearing at the START of every run makes the alert strictly a
+    // report of the LATEST run.
+    const anuncioTeste = vi
+      .fn()
+      .mockResolvedValueOnce({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        categoriaPath: ['Outros', 'Outros'],
+        listingTypeId: 'free',
+        conta: { nickname: 'TEST0548', ehContaDeTeste: true },
+      })
+      .mockRejectedValueOnce(new MercadoLivreClientNetworkError('sem rede'));
+    setClient({ anuncioTeste });
+    renderForm({ id: null });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+    await waitFor(() => {
+      expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
+    });
+    expect(screen.queryByText(/Categoria definida/)).toBeNull();
+  });
+
+  it('can be dismissed, and stays dismissed', async () => {
+    // ⚠️ `setTesteConta` was only ever called on success and never reset, so the
+    // alert outlived even a later FAILED click — leaving a stale "preenchidos"
+    // banner above a fill that did not happen.
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar aviso' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
+    });
   });
 });

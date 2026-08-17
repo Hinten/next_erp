@@ -35,39 +35,90 @@ import type { Arquivo, Foto } from '@delfrance/schemas';
 
 import type { AiInlineImage } from '../prompt';
 
-/** Which derivative to read. Mirrors `PRODUCT_IMAGE_VARIANTS`' keys. */
-export type FotoImageVariant = '200' | '400' | 'jpeg';
+/**
+ * Which stored image to read. `200`/`400`/`jpeg` mirror `PRODUCT_IMAGE_VARIANTS`;
+ * `original` is the raw upload.
+ */
+export type FotoImageVariant = '200' | '400' | 'jpeg' | 'original';
 
 interface VariantSource {
   /** The `Foto` field holding this variant's `arquivos/<id>` path. */
-  ref: keyof Pick<Foto, 'arquivo200pxOuterRef' | 'arquivo400pxOuterRef' | 'arquivoJpegOuterRef'>;
+  ref: keyof Pick<
+    Foto,
+    'arquivo200pxOuterRef' | 'arquivo400pxOuterRef' | 'arquivoJpegOuterRef' | 'arquivoOuterRef'
+  >;
   /**
    * Hard ceiling on what we will base64 and send. Sized to the variant: past it
    * the ref is pointing at something we did not expect, and skipping beats
    * shipping megabytes of it to a billed model call.
    */
   maxBytes: number;
+  /**
+   * Content types allowed for this variant. Every derivative is a JPEG the
+   * resize function produced, so the check is redundant there; the ORIGINAL is
+   * whatever the operator uploaded, so it is the reason this field exists.
+   */
+  allow?: ReadonlySet<string>;
 }
 
 const MB = 1024 * 1024;
 
 /**
- * ⚠️ `arquivoOuterRef` (the raw original) is deliberately absent — see the
- * header. Adding it here would let an unconverted HEIC reach the model, which
- * Vertex rejects, and a 40 MB upload past every ceiling below.
+ * What Vertex accepts as an inline image. HEIC/HEIF matter — that is what
+ * phones produce, and a supplier's size table is usually a phone photo.
+ */
+const ORIGINAL_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+]);
+
+/**
+ * ⚠️ `original` is offered LAST and only to callers that ask for it.
+ *
+ * It used to be banned outright, for three reasons — unknown format, unbounded
+ * size, possibly unrotated. Each is now a guard rather than a ban, because the
+ * ban had a much worse consequence than any of them: **nothing generates
+ * derivatives for tabela-de-medidas photos until the `functions:storage` deploy
+ * lands and a backfill runs**, so refusing the original meant the size-chart
+ * agent could never see a photo at all. The same gap reopens, briefly, for every
+ * new upload between the write and the trigger firing.
+ *
+ * Rotation is accepted deliberately: an unrotated photo is still legible to the
+ * model, and refusing one is worse than reading it sideways.
  */
 export const FOTO_IMAGE_VARIANTS: Record<FotoImageVariant, VariantSource> = {
   '200': { ref: 'arquivo200pxOuterRef', maxBytes: 2 * MB },
   '400': { ref: 'arquivo400pxOuterRef', maxBytes: 2 * MB },
   jpeg: { ref: 'arquivoJpegOuterRef', maxBytes: 7 * MB },
+  original: { ref: 'arquivoOuterRef', maxBytes: 7 * MB, allow: ORIGINAL_CONTENT_TYPES },
 };
 
 /**
  * Default order, unchanged from when this only served attribute suggestion:
  * 400 px is the best detail-per-token trade for "what is this product", and
  * 200 px is the fallback when only it has landed.
+ *
+ * ⚠️ Neither `jpeg` nor `original` is here, and a test asserts it. Appending
+ * either would multiply the cost of every attribute suggestion — a full-size
+ * photo where a thumbnail answered the question — with nothing failing.
  */
 const DEFAULT_PREFERENCE: readonly FotoImageVariant[] = ['400', '200'];
+
+/** How many photos to send when the caller does not say. */
+const DEFAULT_MAX_IMAGES = 1;
+
+/**
+ * Ceiling on the batch, independent of the per-image ones.
+ *
+ * Vertex bounds the whole request, so four originals at their individual 7 MB
+ * ceiling would pass every per-image check and still fail the call. Stopping
+ * early yields fewer photos rather than an error.
+ */
+const DEFAULT_TOTAL_BYTES = 12 * MB;
 
 export interface LoadFotoImageDeps {
   db: Firestore;
@@ -76,44 +127,68 @@ export interface LoadFotoImageDeps {
 }
 
 export interface LoadFotoImageOptions {
-  /** Variants to try, best first. Defaults to `['400', '200']`. */
+  /** Variants to try per photo, best first. Defaults to `['400', '200']`. */
   prefer?: readonly FotoImageVariant[];
+  /** How many photos to return at most. Defaults to 1. */
+  max?: number;
+  /** Shared byte budget across the batch. Defaults to 12 MB. */
+  totalBytes?: number;
 }
 
 /**
- * Resolve the first photo to inline bytes, or null when there is nothing
- * suitable.
+ * Resolve photos to inline bytes, in gallery order, skipping any that cannot be
+ * read.
  *
- * Null is a normal outcome, not an error: a record with no photos, or whose
- * derivatives have not been generated yet, still gets a text-only suggestion.
- * ⚠️ That is not a rare path — the resize is asynchronous, and a photo uploaded
- * before its owner was covered by the resize function has no derivatives at all
- * until a backfill runs. Callers must surface "ran without a photo" rather than
- * implying the model saw one.
+ * An empty result is a normal outcome, not an error: a record with no photos, or
+ * one whose photos are all unreadable, still gets a text-only suggestion.
+ * ⚠️ Callers must surface how many photos actually made it rather than implying
+ * the model saw them all — that difference is exactly what made a silent
+ * text-only run look like a broken feature.
  */
+export async function loadFotoImages(
+  deps: LoadFotoImageDeps,
+  fotos: readonly Foto[] | null | undefined,
+  options: LoadFotoImageOptions = {},
+): Promise<AiInlineImage[]> {
+  const prefer = options.prefer ?? DEFAULT_PREFERENCE;
+  const max = options.max ?? DEFAULT_MAX_IMAGES;
+  let budget = options.totalBytes ?? DEFAULT_TOTAL_BYTES;
+
+  const out: AiInlineImage[] = [];
+  for (const foto of fotos ?? []) {
+    if (out.length >= max) break;
+    for (const variant of prefer) {
+      const source = FOTO_IMAGE_VARIANTS[variant];
+      const ref = foto[source.ref];
+      if (!ref) continue;
+      const loaded = await tryLoad(deps, ref, source);
+      if (!loaded) continue;
+      // Over budget: stop taking photos rather than shipping a request the
+      // provider will reject. What we already have is still worth sending.
+      if (loaded.bytes > budget) return out;
+      budget -= loaded.bytes;
+      out.push(loaded.image);
+      break;
+    }
+  }
+  return out;
+}
+
+/** Single-photo convenience for callers that only ever want one. */
 export async function loadFotoImage(
   deps: LoadFotoImageDeps,
   fotos: readonly Foto[] | null | undefined,
   options: LoadFotoImageOptions = {},
 ): Promise<AiInlineImage | null> {
-  const foto = (fotos ?? [])[0];
-  if (!foto) return null;
-
-  for (const variant of options.prefer ?? DEFAULT_PREFERENCE) {
-    const source = FOTO_IMAGE_VARIANTS[variant];
-    const ref = foto[source.ref];
-    if (!ref) continue;
-    const image = await tryLoad(deps, ref, source.maxBytes);
-    if (image) return image;
-  }
-  return null;
+  const [first] = await loadFotoImages(deps, fotos, { ...options, max: 1 });
+  return first ?? null;
 }
 
 async function tryLoad(
   deps: LoadFotoImageDeps,
   outerRef: string,
-  maxBytes: number,
-): Promise<AiInlineImage | null> {
+  source: VariantSource,
+): Promise<{ image: AiInlineImage; bytes: number } | null> {
   const arquivoId = outerRef.replace(/^.*arquivos\//, '');
   if (!arquivoId) return null;
 
@@ -123,6 +198,12 @@ async function tryLoad(
     snap.data(),
     arquivoCollection.docPath({}, arquivoId),
   ) as Arquivo;
+
+  // The format gate, and it only bites on the ORIGINAL — every derivative is a
+  // JPEG we produced. A PDF or a TIFF uploaded as a "photo" is rejected here
+  // rather than by the provider, which would fail the whole suggestion.
+  const contentType = arquivo.contentType ?? 'image/jpeg';
+  if (source.allow && !source.allow.has(contentType.toLowerCase())) return null;
 
   // ⚠️ `filepath` is the Storage **directory**, never the object name —
   // `arquivo.ts:131` says so and both writers agree (`processOriginal.ts` splits
@@ -137,11 +218,11 @@ async function tryLoad(
   // Downloading through the Admin SDK keeps this inside the project — no public
   // URL, no token, no outbound fetch to a value read out of a document.
   const bytes = await deps.download(objectName);
-  if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) return null;
+  if (bytes.byteLength === 0 || bytes.byteLength > source.maxBytes) return null;
 
   return {
-    base64: Buffer.from(bytes).toString('base64'),
-    mimeType: arquivo.contentType ?? 'image/jpeg',
+    image: { base64: Buffer.from(bytes).toString('base64'), mimeType: contentType },
+    bytes: bytes.byteLength,
   };
 }
 

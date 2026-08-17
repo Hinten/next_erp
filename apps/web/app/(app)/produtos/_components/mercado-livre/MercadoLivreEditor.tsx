@@ -18,6 +18,7 @@ import {
   Select,
   Stack,
   Text,
+  Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
@@ -40,6 +41,7 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
+import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
 import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
 import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
 import {
@@ -505,6 +507,20 @@ export function MercadoLivreEditor({
             // Livre não definida"). Saying so here beats a round trip that comes
             // back as a 422 the operator has to read.
             const missingCategoria = primary != null && (primary.category_id ?? '') === '';
+            // One place decides both whether Publicar is disabled and what the
+            // tooltip says, so the two can never disagree — the previous shape
+            // had the conditions inline and the explanations in three separate
+            // `<Text>` blocks that covered only half of them.
+            const publishReason = publishDisabledReason({
+              disabled: Boolean(disabled),
+              canPublish,
+              hasClient: client != null,
+              publishingThisConta: publishing === conta.id,
+              publishingOtherConta: publishing !== null && publishing !== conta.id,
+              produtoDirty,
+              contaDirty,
+              missingCategoria,
+            });
 
             return (
               <Card key={conta.id} withBorder padding="md" data-testid={`ml-conta-${conta.id}`}>
@@ -668,25 +684,34 @@ export function MercadoLivreEditor({
                         </Button>
                       </>
                     ) : (
-                      <Button
-                        type="button"
-                        variant={isFirstPublish ? 'filled' : 'light'}
-                        onClick={() => handlePublish(conta.id, false)}
-                        loading={publishing === conta.id}
-                        disabled={
-                          disabled ||
-                          !client ||
-                          !canPublish ||
-                          publishing !== null ||
-                          // The backend publishes the SAVED produto and the SAVED
-                          // link doc, so publishing over pending edits ships the
-                          // previous version and reports success.
-                          publishBlocked ||
-                          missingCategoria
-                        }
+                      // ⚠️ The <span> is load-bearing: Mantine turns pointer
+                      // events OFF on a disabled button, so a Tooltip wrapping it
+                      // directly never fires. Wrapping an inline-block element
+                      // instead is the idiom that works — see `PermGate`.
+                      // ⚠️ A wrapper does not change the button's accessible name
+                      // (`Publicar no Mercado Livre` / `Republicar`), which the
+                      // vendas e2e locates by role+name. An `aria-label` here
+                      // would silently break it.
+                      <Tooltip
+                        label={publishReason}
+                        disabled={publishReason == null}
+                        withArrow
+                        position="bottom"
+                        multiline
+                        w={260}
                       >
-                        {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
-                      </Button>
+                        <span style={{ display: 'inline-block' }}>
+                          <Button
+                            type="button"
+                            variant={isFirstPublish ? 'filled' : 'light'}
+                            onClick={() => handlePublish(conta.id, false)}
+                            loading={publishing === conta.id}
+                            disabled={publishReason != null}
+                          >
+                            {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
+                          </Button>
+                        </span>
+                      </Tooltip>
                     )}
                     {publishBlocked && (
                       <Text size="xs" c="dimmed">

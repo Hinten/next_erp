@@ -17,7 +17,7 @@ vi.mock('@delfrance/data/admin/collections', () => ({
   },
 }));
 
-const { loadFotoImage } = await import('./fotoImage');
+const { loadFotoImage, loadFotoImages } = await import('./fotoImage');
 
 function foto(over: Partial<Foto> = {}): Foto {
   return {
@@ -57,9 +57,11 @@ describe('loadFotoImage', () => {
     expect(d.download).toHaveBeenCalledWith('produtos/p/derivatives/hash_200.jpeg');
   });
 
-  it('NEVER falls back to the original', async () => {
-    // An original can be many megabytes and there is no server-side resize
-    // here; a text-only suggestion beats shipping one.
+  it('does not fall back to the original unless asked', async () => {
+    // ⚠️ The original is reachable NOW, but only for a caller that names it in
+    // `prefer` — the size-chart agent, whose photos have no derivatives yet. On
+    // the default order it stays out: it is the largest thing on the record, and
+    // a produto's 400 px thumbnail already answers "what is this product".
     h.docs.set('prod_hash', { filepath: 'produtos/p/originals', filename: 'hash.jpg' });
     const d = deps();
     await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
@@ -181,5 +183,126 @@ describe('loadFotoImage — variant preference', () => {
     const d = deps();
     await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
     expect(d.download).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reach the ORIGINAL by default either', async () => {
+    // Same guard, extended. The original is the largest thing on the record;
+    // adding it to the default order would put a full phone photo into every
+    // attribute suggestion.
+    h.docs.set('prod_hash', { filepath: 'produtos/p/originals', filename: 'hash.jpg' });
+    const d = deps();
+    await expect(loadFotoImage(d, [foto()])).resolves.toBeNull();
+    expect(d.download).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The original fallback exists because **nothing generates derivatives for
+ * tabela-de-medidas photos** until the `functions:storage` deploy lands and a
+ * backfill runs — so refusing the original meant the size-chart agent could
+ * never see a photo at all.
+ */
+describe('loadFotoImages — the original fallback', () => {
+  const originalDoc = { filepath: 'tabMedi/t/originals', filename: 'hash.jpg' };
+
+  it('reads the original when NO derivative exists', async () => {
+    h.docs.set('prod_hash', { ...originalDoc, contentType: 'image/jpeg' });
+    const d = deps();
+    const out = await loadFotoImages(d, [foto()], { prefer: ['jpeg', '400', '200', 'original'] });
+    expect(out).toHaveLength(1);
+    expect(d.download).toHaveBeenCalledWith('tabMedi/t/originals/hash.jpg');
+  });
+
+  it('still prefers a derivative when one exists', async () => {
+    // The original is bigger and unrotated; it is the fallback, not the choice.
+    h.docs.set('prod_hash', { ...originalDoc, contentType: 'image/jpeg' });
+    h.docs.set('prod_hash_jpeg', {
+      filepath: 'tabMedi/t/derivatives',
+      filename: 'hash_jpeg.jpeg',
+    });
+    const d = deps();
+    await loadFotoImages(d, [foto()], { prefer: ['jpeg', '400', '200', 'original'] });
+    expect(d.download).toHaveBeenCalledWith('tabMedi/t/derivatives/hash_jpeg.jpeg');
+  });
+
+  it('accepts HEIC — it is what phones produce', async () => {
+    h.docs.set('prod_hash', { ...originalDoc, contentType: 'image/heic' });
+    const out = await loadFotoImages(deps(), [foto()], { prefer: ['original'] });
+    expect(out[0]?.mimeType).toBe('image/heic');
+  });
+
+  it('refuses a content type Vertex cannot read', async () => {
+    // A PDF uploaded as a "photo" is rejected here rather than by the provider,
+    // which would fail the whole suggestion instead of degrading to text.
+    h.docs.set('prod_hash', { ...originalDoc, contentType: 'application/pdf' });
+    await expect(loadFotoImages(deps(), [foto()], { prefer: ['original'] })).resolves.toEqual([]);
+  });
+
+  it('refuses an original past its ceiling', async () => {
+    h.docs.set('prod_hash', { ...originalDoc, contentType: 'image/jpeg' });
+    const d = deps(vi.fn(async () => new Uint8Array(8 * 1024 * 1024)));
+    await expect(loadFotoImages(d, [foto()], { prefer: ['original'] })).resolves.toEqual([]);
+  });
+});
+
+describe('loadFotoImages — several photos', () => {
+  function fotoN(n: number) {
+    return foto({
+      arquivo400pxOuterRef: `arquivos/p${String(n)}_400`,
+      arquivo200pxOuterRef: null,
+      arquivoJpegOuterRef: null,
+    });
+  }
+
+  it('returns every photo, in gallery order', async () => {
+    // A supplier table is routinely two or three photos — front and back, or
+    // several pages. Only the first used to survive.
+    for (const n of [1, 2, 3]) {
+      h.docs.set(`p${String(n)}_400`, { filepath: 'tabMedi/t/d', filename: `${String(n)}.jpeg` });
+    }
+    const d = deps();
+    const out = await loadFotoImages(d, [fotoN(1), fotoN(2), fotoN(3)], { max: 4 });
+    expect(out).toHaveLength(3);
+    expect(d.download).toHaveBeenNthCalledWith(1, 'tabMedi/t/d/1.jpeg');
+    expect(d.download).toHaveBeenNthCalledWith(2, 'tabMedi/t/d/2.jpeg');
+    expect(d.download).toHaveBeenNthCalledWith(3, 'tabMedi/t/d/3.jpeg');
+  });
+
+  it('honours `max`', async () => {
+    for (const n of [1, 2, 3]) {
+      h.docs.set(`p${String(n)}_400`, { filepath: 'tabMedi/t/d', filename: `${String(n)}.jpeg` });
+    }
+    expect(await loadFotoImages(deps(), [fotoN(1), fotoN(2), fotoN(3)], { max: 2 })).toHaveLength(
+      2,
+    );
+  });
+
+  it('defaults to ONE photo, so existing callers are unchanged', async () => {
+    for (const n of [1, 2]) {
+      h.docs.set(`p${String(n)}_400`, { filepath: 'tabMedi/t/d', filename: `${String(n)}.jpeg` });
+    }
+    expect(await loadFotoImages(deps(), [fotoN(1), fotoN(2)])).toHaveLength(1);
+  });
+
+  it('stops at the shared budget rather than overflowing the request', async () => {
+    // Vertex bounds the WHOLE request, so several photos each under their own
+    // ceiling can still fail the call. Fewer photos beats an error.
+    for (const n of [1, 2, 3]) {
+      h.docs.set(`p${String(n)}_400`, { filepath: 'tabMedi/t/d', filename: `${String(n)}.jpeg` });
+    }
+    const d = deps(vi.fn(async () => new Uint8Array(1024 * 1024)));
+    const out = await loadFotoImages(d, [fotoN(1), fotoN(2), fotoN(3)], {
+      max: 4,
+      totalBytes: 2.5 * 1024 * 1024,
+    });
+    expect(out).toHaveLength(2);
+  });
+
+  it('skips an unreadable photo and keeps going', async () => {
+    // One missing derivative must not truncate the gallery.
+    h.docs.set('p1_400', { filepath: 'tabMedi/t/d', filename: '1.jpeg' });
+    h.docs.set('p3_400', { filepath: 'tabMedi/t/d', filename: '3.jpeg' });
+    const out = await loadFotoImages(deps(), [fotoN(1), fotoN(2), fotoN(3)], { max: 4 });
+    expect(out).toHaveLength(2);
   });
 });

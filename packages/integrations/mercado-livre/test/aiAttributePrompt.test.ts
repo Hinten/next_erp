@@ -141,12 +141,23 @@ describe('buildAttributePrompt', () => {
     const prompt = buildAttributePrompt(
       input({ image: { base64: 'QUJD', mimeType: 'image/jpeg' } }),
     );
-    expect(prompt.image).toEqual({ base64: 'QUJD', mimeType: 'image/jpeg' });
+    expect(prompt.images).toEqual([{ base64: 'QUJD', mimeType: 'image/jpeg' }]);
     expect(JSON.stringify(prompt)).not.toMatch(/https?:\/\//);
   });
 
   it('works for a produto with no photo', () => {
-    expect(buildAttributePrompt(input()).image).toBeUndefined();
+    expect(buildAttributePrompt(input()).images).toEqual([]);
+  });
+
+  it('sends AT MOST one photo — a second angle buys nothing here', () => {
+    // `AiPromptRequest` carries a list because the size-chart agent needs
+    // several. This agent is looking at a product photo to decide "sleeve:
+    // short", so a second one is pure token cost; the shape is shared, the
+    // policy is not.
+    const prompt = buildAttributePrompt(
+      input({ image: { base64: 'QUJD', mimeType: 'image/jpeg' } }),
+    );
+    expect(prompt.images).toHaveLength(1);
   });
 
   it('carries the response schema through untouched', () => {

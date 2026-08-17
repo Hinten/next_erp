@@ -25,8 +25,16 @@ export interface AiPromptRequest {
   systemInstruction: string;
   /** The user turn: the facts the model reasons from. */
   text: string;
-  /** At most one image. Absent when the record has none. */
-  image?: AiInlineImage;
+  /**
+   * Every image the record could supply, in order. Empty when it has none.
+   *
+   * ⚠️ A LIST, not a single `image`, and there is deliberately no singular field
+   * beside it. A supplier's size table is routinely two or three photos (front
+   * and back, or several pages), and sending only the first threw the rest away
+   * silently. Two fields for one concept is the drift trap this package has
+   * already paid for elsewhere.
+   */
+  images: AiInlineImage[];
   /** What the answer must look like. */
   responseSchema: JsonSchemaNode;
 }

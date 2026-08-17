@@ -138,3 +138,37 @@ describe('mercadoLivreHttpFallbackMessage', () => {
     }
   });
 });
+
+describe('sugerirMedidas — the body', () => {
+  /** Captures the JSON body of the single request the call makes. */
+  async function bodyOf(input: Parameters<ReturnType<typeof client>['sugerirMedidas']>[0]) {
+    let sent: Record<string, unknown> = {};
+    const c = client(async (_url, init) => {
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    await c.sugerirMedidas(input);
+    return sent;
+  }
+
+  const grid = { tabMediId: 'tm1', rows: [{ key: 'k', size: 'P' }], columns: [] };
+
+  it('renames `fatos` to `facts` on the wire', async () => {
+    // The browser-facing API is Portuguese like the rest of this client; the
+    // route's vocabulary is English. A mismatch here is silent — the route
+    // simply ignores an unknown key and reads the stale stored document, which
+    // is the exact bug `fatos` exists to fix.
+    const sent = await bodyOf({ ...grid, fatos: { descricao: 'recém digitada' } });
+    expect(sent.facts).toEqual({ descricao: 'recém digitada' });
+    expect(sent.fatos).toBeUndefined();
+  });
+
+  it('omits `facts` entirely when the caller has none', async () => {
+    // Not `facts: undefined`: the route falls back per field only when the key
+    // is absent, and `JSON.stringify` would drop it anyway — pinning it keeps
+    // that accident from becoming load-bearing silently.
+    const sent = await bodyOf(grid);
+    expect('facts' in sent).toBe(false);
+    expect(sent.tabMediId).toBe('tm1');
+  });
+});

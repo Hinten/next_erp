@@ -51,13 +51,12 @@ export interface SizeChartAiModalProps {
 }
 
 /**
- * ⚠️ `medidaCellKey` and `preCheckedMedidaCells` are IMPORTED, not reimplemented.
+ * ⚠️ `aiCellKey` and `preCheckedCells` are IMPORTED, not reimplemented.
  *
- * Both ship from `@delfrance/integrations-mercado-livre` with their own unit
- * tests, and this modal is their only production consumer — a local copy of the
- * key and of the pre-check rule would have meant two implementations of a rule
- * the stack deliberately factored out, with the tested ones having no caller at
- * all.
+ * Both ship from `@delfrance/ai` with their own unit tests, and this modal is
+ * their only production consumer — a local copy of the key and of the pre-check
+ * rule would have meant two implementations of a rule the stack deliberately
+ * factored out, with the tested ones having no caller at all.
  */
 
 export function SizeChartAiModal({
@@ -125,7 +124,7 @@ export function SizeChartAiModal({
       data-testid="ml-size-chart-ai-modal"
     >
       <Stack gap="md">
-        {carregando && <Text size="sm">Lendo a foto da tabela…</Text>}
+        {carregando && <Text size="sm">Lendo a tabela de medidas…</Text>}
 
         {!carregando && (
           <>
@@ -245,18 +244,48 @@ export function SizeChartAiModal({
 /**
  * What the model actually saw.
  *
- * ⚠️ `comFoto: false` is the case this exists for. A tabela whose photo predates
- * the resize rollout has no derivative to read, so the agent falls back to the
- * description alone — and a text-only answer to a transcription task is close to
- * worthless. Without this line the operator would blame the model.
+ * ⚠️ This exists because a text-only answer to a transcription task is close to
+ * worthless, and without saying so the operator blames the model. The two
+ * photo-less cases carry OPPOSITE instructions, which is why `contexto` reports
+ * `fotos` and `anexadas` separately rather than one flag: a tabela with no photo
+ * needs one uploaded, while a tabela whose photo has no readable copy yet needs
+ * only time — telling that operator to "envie a foto" sends them to redo the
+ * thing they just did.
  */
 function Fonte({ resultado }: { resultado: MercadoLivreMedidasSugestao }) {
+  const { fotos, anexadas, descricao, codigo, referencia } = resultado.contexto;
+
+  // Everything that reached the model, in the order it matters. Listing the
+  // sources is what lets the operator judge the ANSWER instead of guessing
+  // whether the model was given anything to work with.
+  const usados: string[] = [];
+  if (fotos > 0) usados.push(fotos === 1 ? '1 foto' : `${String(fotos)} fotos`);
+  if (descricao) usados.push('descrição');
+  if (codigo) usados.push('código');
+  if (referencia) usados.push('1 guia de referência');
+
   return (
     <Stack gap="xs">
-      {!resultado.comFoto && (
+      {fotos === 0 && anexadas === 0 && (
         <Alert color="orange" variant="light" title="Sem foto da tabela">
-          Nenhuma foto legível foi encontrada nesta tabela de medidas, então o modelo usou apenas a
-          descrição. Envie a foto da tabela do fornecedor na aba Fotos para um resultado melhor.
+          Esta tabela de medidas não tem nenhuma foto, então o modelo usou apenas o texto. Envie a
+          foto da tabela do fornecedor na aba Fotos para um resultado melhor.
+        </Alert>
+      )}
+      {fotos === 0 && anexadas > 0 && (
+        <Alert color="orange" variant="light" title="Não foi possível ler a foto">
+          {/*
+            ⚠️ Both halves matter. "Not processed yet" is only ONE of the reasons
+            a photo that exists cannot be read — a format outside the allowlist,
+            a file over the size ceiling, or a batch over the request budget are
+            all PERMANENT, and an alert that says only "aguarde" leaves that
+            operator retrying forever while forbidding the one action that would
+            actually fix it.
+          */}
+          {anexadas === 1 ? 'A foto desta tabela' : 'As fotos desta tabela'} não
+          {anexadas === 1 ? ' pôde' : ' puderam'} ser {anexadas === 1 ? 'lida' : 'lidas'}, então o
+          modelo usou apenas o texto. Se a foto acabou de ser enviada, aguarde alguns instantes e
+          tente de novo; se continuar, envie uma versão menor ou em JPEG.
         </Alert>
       )}
       {resultado.truncado && (
@@ -265,9 +294,9 @@ function Fonte({ resultado }: { resultado: MercadoLivreMedidasSugestao }) {
           mesmo nome). As medidas que faltarem precisam ser preenchidas à mão.
         </Alert>
       )}
-      <Text size="xs" c="dimmed">
-        {resultado.comFoto ? '1 foto + descrição' : 'apenas a descrição'} · {resultado.celulas}{' '}
-        células oferecidas ao modelo · nada é gravado até você confirmar.
+      <Text size="xs" c="dimmed" data-testid="ml-size-chart-ai-fonte">
+        {usados.length > 0 ? usados.join(' · ') : 'nenhum contexto disponível'} ·{' '}
+        {resultado.celulas} células oferecidas ao modelo · nada é gravado até você confirmar.
       </Text>
     </Stack>
   );
