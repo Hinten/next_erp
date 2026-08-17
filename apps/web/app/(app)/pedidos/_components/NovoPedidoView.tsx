@@ -11,6 +11,7 @@ import { PageHeader } from '@delfrance/ui';
 import type { Pedido } from '@delfrance/schemas';
 import {
   buildDevolucaoIntegralSeed,
+  buildDuplicarPedidoSeed,
   criarEntradaDevolucaoIntegral,
   criarSaidaComDevolucao,
   PedidoConflictError,
@@ -43,7 +44,9 @@ const PAGE_MIN_HEIGHT =
  * The create-pedido page, parametrized by direction: `/pedidos/novo` (saída)
  * and `/pedidos/entradas/novo` (entrada) share this view. The entrada route
  * additionally accepts `?devolucaoDe=<pedidoId>` (#551) to pre-seed a full
- * return of a saída — hence the `useSearchParams` + Suspense split.
+ * return of a saída; both routes accept `?copiarDe=<pedidoId>` (#370) to
+ * pre-seed a duplicate of an existing pedido — hence the `useSearchParams` +
+ * Suspense split.
  */
 export function NovoPedidoView({ direcao }: { direcao: Direcao }) {
   return (
@@ -61,15 +64,27 @@ export function NovoPedidoView({ direcao }: { direcao: Direcao }) {
 }
 
 function NovoPedidoInner({ direcao }: { direcao: Direcao }) {
-  const devolucaoDe = useSearchParams().get('devolucaoDe');
+  const searchParams = useSearchParams();
+  const devolucaoDe = searchParams.get('devolucaoDe');
+  const copiarDe = searchParams.get('copiarDe');
   if (direcao === 'entrada' && devolucaoDe) {
     return <NovaEntradaDevolucaoIntegral originId={devolucaoDe} />;
+  }
+  if (copiarDe) {
+    return <NovoPedidoCopia direcao={direcao} originId={copiarDe} />;
   }
   return <NovoPedidoCreate direcao={direcao} />;
 }
 
-/** The plain create view, plus the #488 troca-com-devolução save branch. */
-function NovoPedidoCreate({ direcao }: { direcao: Direcao }) {
+/**
+ * Create-flow submit orchestration shared by the plain create ({@link
+ * NovoPedidoCreate}) and the #370 "Duplicar pedido" pre-filled create
+ * ({@link NovoPedidoCopia}) — both save through the exact same path (the
+ * #488 troca-com-devolução branch included; a duplicate's `itensDevolvidos`
+ * is always stripped by {@link buildDuplicarPedidoSeed}, so
+ * `prepareDevolucaoSave` naturally falls through to the plain create for it).
+ */
+function useCreatePedidoSubmit(direcao: Direcao) {
   const cfg = DIRECAO[direcao];
   const router = useRouter();
   const nfeClient = useNFeClient();
@@ -160,6 +175,14 @@ function NovoPedidoCreate({ direcao }: { direcao: Direcao }) {
     router.replace(cfg.editarPath(id));
   }
 
+  return { handleSubmit, confirmElement, emitirPromptElement };
+}
+
+/** The plain create view — no pre-fill. */
+function NovoPedidoCreate({ direcao }: { direcao: Direcao }) {
+  const cfg = DIRECAO[direcao];
+  const { handleSubmit, confirmElement, emitirPromptElement } = useCreatePedidoSubmit(direcao);
+
   return (
     <DirecaoSurface direcao={direcao}>
       <Stack mih={PAGE_MIN_HEIGHT}>
@@ -174,6 +197,77 @@ function NovoPedidoCreate({ direcao }: { direcao: Direcao }) {
         {confirmElement}
         {emitirPromptElement}
         <PedidoForm ehSaida={cfg.ehSaida} submitLabel="Criar" onSubmit={handleSubmit} />
+      </Stack>
+    </DirecaoSurface>
+  );
+}
+
+/**
+ * `/pedidos/novo?copiarDe=<id>` and `/pedidos/entradas/novo?copiarDe=<id>`
+ * (#370): the create form pre-filled by cloning an existing pedido — cliente,
+ * operação, itens and frete carry through; state/print/marketplace metadata
+ * and the origin's relational links are stripped so the duplicate starts as
+ * an independent, unpaid draft (see {@link buildDuplicarPedidoSeed} for the
+ * exact field-by-field rules). Saves through the same
+ * {@link useCreatePedidoSubmit} path as the plain create.
+ */
+function NovoPedidoCopia({ direcao, originId }: { direcao: Direcao; originId: string }) {
+  const cfg = DIRECAO[direcao];
+  const { user } = useAuth();
+  const usuarioRef = user ? `documents/usuarios/${user.uid}` : null;
+  const { handleSubmit, confirmElement, emitirPromptElement } = useCreatePedidoSubmit(direcao);
+
+  const port = useMemo(() => createClientPedidoPort(getFirebaseFirestore()), []);
+
+  const {
+    data: seed,
+    error,
+    isPending,
+  } = useQuery({
+    queryKey: ['pedidos', 'duplicarSeed', originId, usuarioRef],
+    // A missing origin is definitive — don't retry it.
+    retry: (failureCount, err) => !(err instanceof PedidoConflictError) && failureCount < 2,
+    queryFn: () => buildDuplicarPedidoSeed(port, { originId, usuarioRef }),
+  });
+
+  return (
+    <DirecaoSurface direcao={direcao}>
+      <Stack mih={PAGE_MIN_HEIGHT}>
+        <PageHeader
+          title={cfg.novoTitle}
+          description={
+            seed ? `Cópia do pedido ${seed.originNumero ?? originId}` : 'Duplicar pedido'
+          }
+          actions={
+            <Button component={Link} href={cfg.listPath} variant="subtle">
+              Voltar
+            </Button>
+          }
+        />
+        {confirmElement}
+        {emitirPromptElement}
+        {isPending ? (
+          <Stack>
+            <Skeleton height={32} width={240} />
+            <Skeleton height={400} />
+          </Stack>
+        ) : error instanceof PedidoConflictError ? (
+          <Alert color="yellow" title="Pedido não encontrado">
+            O pedido a ser duplicado não existe mais.{' '}
+            <Anchor component={Link} href={cfg.listPath}>
+              Voltar para {cfg.listTitle}
+            </Anchor>
+          </Alert>
+        ) : error ? (
+          <Alert color="red">{error.message}</Alert>
+        ) : (
+          <PedidoForm
+            defaultValues={seed.values as Pedido}
+            ehSaida={cfg.ehSaida}
+            submitLabel="Criar"
+            onSubmit={handleSubmit}
+          />
+        )}
       </Stack>
     </DirecaoSurface>
   );
