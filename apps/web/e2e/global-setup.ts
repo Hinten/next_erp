@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { ensureTestUser, grantAllPerms, seed } from '@delfrance/test-fixtures';
+import { ensureTestUser, grantAllPerms } from '@delfrance/test-fixtures';
 import { e2eUserEmail } from './_helpers/run-id';
 import { sweepStaleE2EUsers } from './_helpers/admin-cleanup';
 import { verifyE2ENamespaceAccess } from './_helpers/verify-e2e-rules';
@@ -13,23 +13,30 @@ import { verifyE2ENamespaceAccess } from './_helpers/verify-e2e-rules';
  *
  * Happy path:
  *   1. Sweep ephemeral e2e users leaked by crashed prior runs.
- *   2. Seed the namespaced grupoEconomico (idempotent).
- *   3. Create an ephemeral Firebase Auth user for this run — unique email
+ *   2. Create an ephemeral Firebase Auth user for this run — unique email
  *      derived from the run id, random password — and grant it all permission
  *      bits + the tenant claim via setCustomUserClaims. globalTeardown
  *      deletes it. No shared persistent account: parallel-safe, no
  *      `E2E_USER_*` secrets, no password drift.
- *   4. Outside emulator mode, probe the DEPLOYED staging ruleset as that user
+ *   3. Outside emulator mode, probe the DEPLOYED staging ruleset as that user
  *      over the real REST APIs (never the Admin SDK, which bypasses rules) —
- *      write+read one doc under this run's `e2e_<runId>_probe` namespace and
- *      abort with a clear message if denied, instead of letting a stale/wrong
- *      rules deploy surface as a confusing per-test `PERMISSION_DENIED` deep
- *      into the suite (#160, #172).
- *   5. Drive the login form, wait for Firebase to persist the session into
+ *      write, read and delete `e2e_probe/<runId>` and abort with a clear
+ *      message if denied, instead of letting a stale/wrong rules deploy
+ *      surface as a confusing per-test `PERMISSION_DENIED` deep into the
+ *      suite (#160, #172).
+ *   4. Drive the login form, wait for Firebase to persist the session into
  *      IndexedDB, capture `storageState`, then verify it actually restores an
  *      authenticated session in a fresh context. Retried up to 3×; if no
  *      attempt produces a working storageState we throw — far better than
  *      letting the whole suite run with broken auth and die on test #1.
+ *
+ * There is deliberately no tenant seed here any more. It wrote
+ * `e2e_<runId>_grupoEconomico/seed`, which NOTHING ever read — the app reads the
+ * real `grupoEconomico/<claim>` doc — and its run-id-in-the-collection-NAME shape
+ * is what made orphaned namespaces unreclaimable without a root
+ * `listCollections()`. Issue #14 (multi-tenancy rework) lists it among the call
+ * sites to retire. ⚠️ The `grupoEconomico: 'seed'` CLAIM below is a different
+ * thing and must stay: it is what `useTenant()` reads.
  *
  * Auth is mandatory: if the Admin SDK secrets are missing
  * (FIREBASE_PROJECT_ID, and — outside emulator mode — FIREBASE_SERVICE_ACCOUNT)
@@ -96,7 +103,6 @@ export default async function globalSetup(_config: FullConfig) {
   const email = e2eUserEmail();
   const password = randomUUID();
 
-  const { namespace } = await seed();
   await ensureTestUser(email, password);
   // Grant the permission + tenant claims BEFORE the UI login below: the login
   // mints the ID token that the captured storageState carries, so the claims
@@ -146,8 +152,8 @@ export default async function globalSetup(_config: FullConfig) {
       if (verified) {
         // eslint-disable-next-line no-console
         console.log(
-          `[globalSetup] seeded tenant ${namespace}_grupoEconomico/seed, ` +
-            `granted perms to ${email}, storageState -> ${storageStatePath} ` +
+          `[globalSetup] granted perms to ${email}, ` +
+            `storageState -> ${storageStatePath} ` +
             `(verified on attempt ${attempt}/${AUTH_SETUP_ATTEMPTS})`,
         );
         return;
