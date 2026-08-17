@@ -285,7 +285,12 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const listingModel = resolveListingModel(link, sellerIsUserProduct);
   /** A User-Products family: N ML items sharing a `family_name`, not one item. */
   const isUserProductFamily = listingModel === 'user-products' && children.length > 0;
-  const modeIssues = publishModeIssues({ estado: link?.estado ?? null });
+  const modeIssues = publishModeIssues({
+    estado: link?.estado ?? null,
+    model: listingModel,
+    linkId: link?.id ?? null,
+    childrenCount: children.length,
+  });
   if (modeIssues.length > 0) throw new MercadoLivrePublishError(modeIssues);
 
   // ---- Stock (integração's depósito when set; else every depósito) -------

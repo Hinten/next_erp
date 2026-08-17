@@ -1443,6 +1443,45 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     ]);
   });
 
+  it('does NOT clobber a concurrent write to a member link (rule 7)', async () => {
+    // `state.raw` is captured in the children loop, BEFORE the grupo reads, the
+    // size-chart binding, every picture upload and all N ML calls — so by the
+    // time the member link is written that snapshot is stale. Re-applying it
+    // wholesale reverts whatever the live Flutter app, `importVariations` or the
+    // UPtin takeover wrote in between; `parse` even fills defaults for what the
+    // snapshot lacks, so it is a clobber and not a merge.
+    const db = new FakeDb();
+    seedFamily(db); // child-1 only
+    seedPublishedFamily(db, ['child-1']);
+    const { api } = upApi({
+      updateItem: vi.fn(async (id: string, payload: Record<string, unknown>) => {
+        // A concurrent writer lands mid-publish, exactly inside the window
+        // between the children loop's read and this member's link write.
+        //
+        // ⚠️ Gated on the MEMBER payload. The orphan sweep also calls
+        // `updateItem` — with `{status}` bodies, and AFTER the link write — so an
+        // ungated mock re-applied the "concurrent" fields once more at the end
+        // and the assertion below passed under a full-clobber implementation.
+        if (!('status' in payload)) {
+          const doc = db.docs('produtos/child-1/variacaoMercadoLivre').get('var-child-1')!;
+          doc.attributes = [{ id: 'VOLTAGE', value_name: '220V' }];
+          doc.campoLegadoDesconhecido = 'preservar';
+        }
+        return { ...ITEM_RESPONSE, id, family_id: 4260899048783356 };
+      }),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const member = db.docs('produtos/child-1/variacaoMercadoLivre').get('var-child-1')!;
+    // Publish's own field landed...
+    expect(member.itemId).toBe('MLB901');
+    // ...and the concurrent writer's survived. `attributes` in particular is
+    // what Flutter rebuilds its next publish's combinations from.
+    expect(member.attributes).toEqual([{ id: 'VOLTAGE', value_name: '220V' }]);
+    expect(member.campoLegadoDesconhecido).toBe('preservar');
+  });
+
   it('closes the ML item of a variation deleted in the ERP', async () => {
     // "Camiseta G" was removed here; its MLB902 is still live on ML with no
     // produto behind it — the stock sweep would never touch it again and an
