@@ -195,6 +195,12 @@ export function resolveListingModel(
 export function publishModeIssues(args: {
   /** The link doc's `estado`, or null on a first publish. */
   estado: string | null;
+  /** The resolved model — a family id is only possible under User Products. */
+  model: ListingModel;
+  /** The link doc's `id`, or null when the listing was never published. */
+  linkId: string | null;
+  /** How many variation children this produto owns. */
+  childrenCount: number;
 }): string[] {
   const issues: string[] = [];
 
@@ -206,6 +212,32 @@ export function publishModeIssues(args: {
   if (args.estado === 'am') {
     issues.push(
       'anúncio em migração para o modelo User Products (UPtin) — aguarde a conclusão antes de publicar',
+    );
+  }
+
+  // A User-Products family whose variations were ALL deleted. `link.id` holds a
+  // FAMILY id, and with no children the fan-out does not engage — so the publish
+  // would fall through to `PUT /items/{familyId}`, the one call this whole model
+  // forbids, and earn a 4xx the operator cannot read. The orphan sweep lives
+  // inside the fan-out too, so the family's members would stay live and selling
+  // with no produto behind any of them.
+  //
+  // ⚠️ Detected by the SHAPE of the id, not by `childrenCount` alone: a produto
+  // that never had variations is also `isUserProductModel` with zero children,
+  // and there `link.id` is a real item id that must keep republishing normally.
+  // An ML item id always carries its site prefix (`MLB…`); a family id is the
+  // bare integer ML computes (`import.ts:193` stringifies it). All-digits is
+  // therefore the one form that cannot be an item.
+  if (
+    args.model === 'user-products' &&
+    args.childrenCount === 0 &&
+    args.linkId != null &&
+    /^\d+$/.test(args.linkId)
+  ) {
+    issues.push(
+      'este anúncio é uma família User Products (o vínculo aponta para a família, não para um ' +
+        'anúncio) e o produto não tem mais variações — recadastre as variações ou encerre os ' +
+        'anúncios da família no Mercado Livre',
     );
   }
 

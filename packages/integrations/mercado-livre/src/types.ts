@@ -826,6 +826,22 @@ export type MlUserProductFamily = z.infer<typeof userProductFamilySchema>;
 export const userProductItemsSearchSchema = z
   .object({
     results: z.array(z.string()).default([]),
+    /**
+     * ML's own paging block. ⚠️ Load-bearing for `resolveFamilyItemIds`: without
+     * `total` there is no way to tell a complete answer from ML's default first
+     * page, and the publish orphan sweep decides what to CLOSE from this. Kept
+     * optional — a missing block degrades to the short-page test, never to a
+     * false claim of completeness.
+     */
+    paging: z
+      .object({
+        total: z.number().int().nullable().optional(),
+        limit: z.number().int().nullable().optional(),
+        offset: z.number().int().nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type MlUserProductItemsSearch = z.infer<typeof userProductItemsSearchSchema>;

@@ -68,8 +68,17 @@ describe('resolveListingModel', () => {
 });
 
 describe('publishModeIssues', () => {
+  // A published LEGACY listing: an item id, no children. The baseline every
+  // case below deviates from in exactly one dimension.
+  const base = {
+    estado: 'p' as string | null,
+    model: 'legacy' as const,
+    linkId: 'MLB111' as string | null,
+    childrenCount: 0,
+  };
+
   it("estado 'am' (mid-UPtin) blocks the publish", () => {
-    expect(publishModeIssues({ estado: 'am' })).toEqual([
+    expect(publishModeIssues({ ...base, estado: 'am' })).toEqual([
       expect.stringContaining('migração para o modelo User Products'),
     ]);
   });
@@ -78,8 +87,51 @@ describe('publishModeIssues', () => {
     // Including null (a first publish) — the block must not fire on a listing
     // that has no state yet.
     for (const estado of [null, 'r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
-      expect(publishModeIssues({ estado })).toEqual([]);
+      expect(publishModeIssues({ ...base, estado })).toEqual([]);
     }
+  });
+
+  it('a User-Products family that lost every variation is blocked', () => {
+    // `linkId` is a FAMILY id and there are no children, so the fan-out does not
+    // engage and the publish would fall through to `PUT /items/{familyId}` — the
+    // one call this model forbids. Reachable from the normal flow: publish a
+    // family, delete every variation, republish.
+    const issues = publishModeIssues({
+      ...base,
+      model: 'user-products',
+      linkId: '4260899048783356',
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('família User Products');
+  });
+
+  it('a User-Products produto that NEVER had variations still publishes', () => {
+    // ⚠️ The case the guard must not claim. It is also `isUserProductModel` with
+    // zero children — the only difference is that its `linkId` is a real item
+    // id, which is why the guard tests the id's SHAPE and not the child count.
+    expect(publishModeIssues({ ...base, model: 'user-products', linkId: 'MLB2631229629' })).toEqual(
+      [],
+    );
+  });
+
+  it('the same family id is fine while the variations still exist', () => {
+    // With children the fan-out engages and never touches `link.id`.
+    expect(
+      publishModeIssues({
+        ...base,
+        model: 'user-products',
+        linkId: '4260899048783356',
+        childrenCount: 2,
+      }),
+    ).toEqual([]);
+  });
+
+  it('a legacy listing is never judged by its id shape, and a first publish never is', () => {
+    // The guard is scoped to User Products: only that model ever stores a family
+    // id here, so a numeric legacy id (however unlikely) is not ours to reject.
+    expect(publishModeIssues({ ...base, linkId: '123456' })).toEqual([]);
+    // Nothing published yet ⇒ no id to misread.
+    expect(publishModeIssues({ ...base, model: 'user-products', linkId: null })).toEqual([]);
   });
 });
 

@@ -55,7 +55,11 @@ export interface UserProductMember {
    * create vs update**, per member.
    */
   itemId: string | null;
-  /** The stored link body, spread back so nothing we don't own is lost. */
+  /**
+   * The stored link body. Read for the two outer refs when a member has to be
+   * created from scratch — never re-applied wholesale (see {@link writeMemberLink}:
+   * this snapshot predates every ML call in the run).
+   */
   raw: Record<string, unknown>;
   sku: string | null;
 }
@@ -234,10 +238,30 @@ export async function sweepRemovedMembers(
 /* --------------------------------- helpers ---------------------------------- */
 
 /**
- * Persist one member's `variacaoMercadoLivre` link. Same wire shape the legacy
- * variations branch writes, with `itemId` in place of the numeric `id` (which
- * has no meaning under User Products — there is no variation object to have an
- * id, and `variacaoLinkHasListing` accepts either).
+ * Persist one member's `variacaoMercadoLivre` link — **patching only the fields
+ * publish owns**, never re-applying the snapshot it read.
+ *
+ * ⚠️ This used to `set(parse({ ...state.raw, … }))`, and that is the
+ * read-modify-write root `CLAUDE.md` rule 7 names. `state.raw` is captured in
+ * `publish.ts`'s children loop, which runs BEFORE the grupo reads, the
+ * size-chart binding (an ML call), every picture upload, `assemblePublishInput`
+ * and all N create/update calls — so the snapshot is minutes old by the time it
+ * lands, and `parse` fills defaults for whatever it lacks, making the write a
+ * genuine clobber rather than a merge. Concurrent writers to these documents are
+ * named in-repo: the live Flutter app, `importVariations.ts` and
+ * `importMigration.ts` (the UPtin takeover — precisely what flips a listing into
+ * this model).
+ *
+ * Patching makes the race impossible rather than unlikely (tier 0), the same
+ * argument the PARENT link write already makes in `publish.ts`. `attributes` in
+ * particular is never touched: Flutter regenerates the next publish's
+ * non-SIZE/COLOR combinations from it.
+ *
+ * `mergeIfExists` rather than `merge`: the doc may have been deleted since we
+ * read it, and `merge` is an UPSERT that would resurrect a GHOST holding only
+ * the patch keys — `parseMerge` fills no defaults, so the two required outer
+ * refs would be missing. On `false` we fall through to a full, schema-valid
+ * `set`, which is also the genuine first-publish path.
  */
 async function writeMemberLink(
   db: Firestore,
@@ -255,27 +279,40 @@ async function writeMemberLink(
   const docId =
     state?.varLinkDocId ?? variacaoMercadoLivreLinkCollection.newDocId(db, { produtoId: childId });
 
-  await variacaoMercadoLivreLinkCollection.docRef(db, { produtoId: childId }, docId).set(
+  // The three fields publish owns. ⚠️ `id` (the legacy numeric variation id) is
+  // NOT among them: under User Products there is no variation object to carry
+  // one, and an invented value would make `variacaoLinkHasListing` report a
+  // legacy listing that does not exist. A member migrated by UPtin keeps
+  // whatever its old link holds — patching leaves it alone by construction.
+  const patch = {
+    itemId,
+    // #920: unconditional, so a re-publish self-heals a row predating the field.
+    contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
+    sku,
+  };
+
+  if (state?.varLinkDocId != null) {
+    const merged = await variacaoMercadoLivreLinkCollection.mergeIfExists(
+      db,
+      { produtoId: childId },
+      docId,
+      patch,
+    );
+    if (merged) return;
+  }
+
+  await variacaoMercadoLivreLinkCollection.set(
+    db,
+    { produtoId: childId },
+    docId,
     variacaoMercadoLivreLinkCollection.parse({
-      // Spread first, exactly as the legacy variations branch does: Flutter
-      // regenerates the next publish's non-SIZE/COLOR combinations from the
-      // stored `attributes`, so wiping them would corrupt its republish.
-      ...(state?.raw ?? {}),
-      itemId,
-      // ⚠️ `id` (the legacy numeric variation id) is deliberately NOT written:
-      // under User Products there is no variation object to carry one, and an
-      // invented value would make `variacaoLinkHasListing` report a legacy
-      // listing that does not exist. A member migrated by UPtin keeps whatever
-      // its old link held, via the spread above.
       produtoVariacaoOuterRef:
         (state?.raw.produtoVariacaoOuterRef as string | undefined) ??
         toOuterRef(`produtos/${childId}`),
       produtoMercadoLivreOuterRef:
         (state?.raw.produtoMercadoLivreOuterRef as string | undefined) ??
         toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${parentLinkDocId}`),
-      // #920: unconditional, so a re-publish self-heals a row predating the field.
-      contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
-      sku,
+      ...patch,
     }),
   );
 }
