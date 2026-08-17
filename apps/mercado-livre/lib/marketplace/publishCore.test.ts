@@ -7,6 +7,7 @@ import {
   assemblePublishInput,
   buildParentAttributes,
   combinationsFromVariacoes,
+  mergeStoredCombinations,
   resolveCondition,
   resolvePrice,
 } from './publishCore';
@@ -134,7 +135,7 @@ describe('buildParentAttributes', () => {
 });
 
 describe('combinationsFromVariacoes', () => {
-  it('maps tamanho→SIZE, cor→COLOR, outros→NOME_DO_GRUPO', () => {
+  it('maps tamanho→SIZE, cor→COLOR, and an ERP-only grupo to a CUSTOM characteristic', () => {
     const issues: string[] = [];
     const combos = combinationsFromVariacoes(
       [
@@ -146,12 +147,60 @@ describe('combinationsFromVariacoes', () => {
       'Filho',
       issues,
     );
+    // #797 E8: `g-out` is a Firestore auto-id, so its group is NOT in ML's
+    // taxonomy. ML's shape for that is `name` + `value_name` and NO id — the
+    // old port sent `{ id: 'ESTAMPA_ESPECIAL' }`, an id that exists nowhere.
     expect(combos).toEqual([
       { id: 'SIZE', value_name: 'M' },
       { id: 'COLOR', value_name: 'Preto' },
-      { id: 'ESTAMPA_ESPECIAL', value_name: 'X' },
+      { name: 'Estampa Especial', value_name: 'X' },
     ]);
     expect(issues).toEqual([]);
+  });
+
+  it('uses an ML-derived grupo id verbatim, with the variante value_id (#797 E8)', () => {
+    // The taxonomy importer names the grupo doc after the ML attribute
+    // (`taxonomiaCore.ts:251`) and the variante after its value_id (`:284`).
+    const mlGrupos: PublishGrupoVariacao[] = [
+      {
+        grupoId: 'FLAVOR',
+        nome: 'Sabor',
+        tipo: 0,
+        variacoes: [{ id: '2450279', nome: 'Baunilha', mlValueId: '2450279' }],
+      },
+    ];
+    const issues: string[] = [];
+    expect(
+      combinationsFromVariacoes(
+        ['documents/grupoDeVariacoes/FLAVOR/variacoes/2450279'],
+        mlGrupos,
+        'Filho',
+        issues,
+      ),
+    ).toEqual([{ id: 'FLAVOR', value_id: '2450279', value_name: 'Baunilha' }]);
+    expect(issues).toEqual([]);
+  });
+
+  it('omits value_id when ML never minted one (the link holds a NAME, not an id)', () => {
+    // `externalVariacaoLinks[].externalId` is `value_id ?? value_name`, so the
+    // IO layer passes null unless it equals the variante id. Sending a name as
+    // `value_id` would fabricate a taxonomy reference.
+    const mlGrupos: PublishGrupoVariacao[] = [
+      {
+        grupoId: 'FLAVOR',
+        nome: 'Sabor',
+        tipo: 0,
+        variacoes: [{ id: 'n-baunilha', nome: 'Baunilha', mlValueId: null }],
+      },
+    ];
+    expect(
+      combinationsFromVariacoes(
+        ['documents/grupoDeVariacoes/FLAVOR/variacoes/n-baunilha'],
+        mlGrupos,
+        'Filho',
+        [],
+      ),
+    ).toEqual([{ id: 'FLAVOR', value_name: 'Baunilha' }]);
   });
 
   it('reports unknown paths/variants as issues instead of dropping them', () => {
@@ -163,6 +212,46 @@ describe('combinationsFromVariacoes', () => {
       issues,
     );
     expect(issues).toHaveLength(2);
+  });
+});
+
+describe('mergeStoredCombinations', () => {
+  it('recovers a stored combination no grupo can rebuild (#797 E8)', () => {
+    // VOLTAGE was configured in Flutter; the ERP has no grupo for it, so the
+    // grupo walk alone would DROP it on the first republish.
+    expect(
+      mergeStoredCombinations(
+        [{ id: 'COLOR', value_name: 'Preto' }],
+        [{ id: 'VOLTAGE', value_name: '220V' }],
+      ),
+    ).toEqual([
+      { id: 'COLOR', value_name: 'Preto' },
+      { id: 'VOLTAGE', value_name: '220V' },
+    ]);
+  });
+
+  it('the grupo wins a collision — a duplicated combination id is an ML rejection', () => {
+    expect(
+      mergeStoredCombinations(
+        [{ id: 'COLOR', value_name: 'Preto' }],
+        [{ id: 'COLOR', value_name: 'Azul (stale)' }],
+      ),
+    ).toEqual([{ id: 'COLOR', value_name: 'Preto' }]);
+  });
+
+  it('keys an id-less entry by name, and drops a valueless one', () => {
+    expect(
+      mergeStoredCombinations(
+        [{ name: 'Sabor', value_name: 'Baunilha' }],
+        [{ name: 'Sabor', value_name: 'Menta' }, { id: 'VOLTAGE' }],
+      ),
+    ).toEqual([{ name: 'Sabor', value_name: 'Baunilha' }]);
+  });
+
+  it('is a no-op without stored entries', () => {
+    const derived = [{ id: 'SIZE', value_name: 'M' }];
+    expect(mergeStoredCombinations(derived, undefined)).toBe(derived);
+    expect(mergeStoredCombinations(derived, [])).toBe(derived);
   });
 });
 
@@ -217,6 +306,160 @@ describe('assemblePublishInput', () => {
       attributeCombinations: [{ id: 'SIZE', value_name: 'M' }],
       attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-1-M' }],
     });
+  });
+
+  it('merges the stored combinations of the child link doc (#797 E8)', () => {
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: 991,
+          storedCombinations: [{ id: 'VOLTAGE', value_name: '220V' }],
+        },
+      ],
+    });
+    expect(input.variations![0]!.attributeCombinations).toEqual([
+      { id: 'SIZE', value_name: 'M' },
+      { id: 'VOLTAGE', value_name: '220V' },
+    ]);
+  });
+
+  it('only merges a stored attribute EVERY child can supply (review #1064)', () => {
+    // child-2 was added in the ERP after the listing was published, so it has no
+    // variation link and no stored VOLTAGE. Merging per-child would send
+    // [SIZE, VOLTAGE] for one sibling and [SIZE] for the other — ML requires the
+    // same attributes on every variation and rejects the whole item.
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: 991,
+          storedCombinations: [{ id: 'VOLTAGE', value_name: '220V' }],
+        },
+        {
+          produto: { ...produto, id: 'child-2', nome: 'Camiseta G' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+          availableQuantity: 2,
+          mlVariationId: null,
+        },
+      ],
+    });
+    expect(input.variations!.map((v) => v.attributeCombinations)).toEqual([
+      [{ id: 'SIZE', value_name: 'M' }],
+      [{ id: 'SIZE', value_name: 'G' }],
+    ]);
+  });
+
+  it('merges a stored attribute when ALL children carry it', () => {
+    const withVoltage = (id: string, nome: string, uid: string, valor: string) => ({
+      produto: { ...produto, id, nome },
+      variacoesUid: [uid],
+      availableQuantity: 4,
+      mlVariationId: 1,
+      storedCombinations: [{ id: 'VOLTAGE', value_name: valor }],
+    });
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        withVoltage('child-1', 'M', 'documents/grupoDeVariacoes/g-tam/variacoes/v-m', '220V'),
+        withVoltage('child-2', 'G', 'documents/grupoDeVariacoes/g-tam/variacoes/v-g', '110V'),
+      ],
+    });
+    expect(input.variations!.map((v) => v.attributeCombinations)).toEqual([
+      [
+        { id: 'SIZE', value_name: 'M' },
+        { id: 'VOLTAGE', value_name: '220V' },
+      ],
+      [
+        { id: 'SIZE', value_name: 'G' },
+        { id: 'VOLTAGE', value_name: '110V' },
+      ],
+    ]);
+  });
+
+  it('blocks siblings whose grupos give them DIFFERENT combination sets', () => {
+    // Pre-existing hazard the per-child checks could never see: one child is in
+    // two grupos, its sibling in one. ML rejects the item, not the variation.
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Camiseta M Preta' },
+            variacoesUid: [
+              'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+              'documents/grupoDeVariacoes/g-cor/variacoes/v-preto',
+            ],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+          {
+            produto: { ...produto, id: 'child-2', nome: 'Camiseta G' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+            availableQuantity: 2,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/não combinam os MESMOS atributos/);
+  });
+
+  it('blocks TWO children each varying by a DIFFERENT single custom characteristic', () => {
+    // One custom apiece passes any per-child count, but the ITEM varies by two.
+    const doisCustoms: PublishGrupoVariacao[] = [
+      { grupoId: 'g-a', nome: 'Sabor', tipo: 0, variacoes: [{ id: 'v-a', nome: 'Menta' }] },
+      { grupoId: 'g-b', nome: 'Estampa', tipo: 0, variacoes: [{ id: 'v-b', nome: 'Onça' }] },
+    ];
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        grupos: doisCustoms,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Menta' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-a/variacoes/v-a'],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+          {
+            produto: { ...produto, id: 'child-2', nome: 'Onça' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-b/variacoes/v-b'],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/apenas UMA característica personalizada/);
+  });
+
+  it('blocks a child varying by TWO custom characteristics — ML allows one', () => {
+    const doisCustoms: PublishGrupoVariacao[] = [
+      { grupoId: 'g-a', nome: 'Sabor', tipo: 0, variacoes: [{ id: 'v-a', nome: 'Menta' }] },
+      { grupoId: 'g-b', nome: 'Estampa', tipo: 0, variacoes: [{ id: 'v-b', nome: 'Onça' }] },
+    ];
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        grupos: doisCustoms,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Camiseta X' },
+            variacoesUid: [
+              'documents/grupoDeVariacoes/g-a/variacoes/v-a',
+              'documents/grupoDeVariacoes/g-b/variacoes/v-b',
+            ],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/apenas UMA característica personalizada/);
   });
 
   it('keeps the parent SELLER_SKU for a User-Products seller even with children', () => {

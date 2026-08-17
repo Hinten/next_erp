@@ -966,3 +966,191 @@ describe('publishProduto — dual-run wire shape', () => {
     ]);
   });
 });
+
+describe('publishProduto — kit-aware stock (#797 E5)', () => {
+  /** seedBase gives the parent 10 − 2 reservada = 8 of its own. */
+  const OWN_DISPONIVEL = 8;
+
+  function seedKit(db: FakeDb, produtoPatch: DocData): void {
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    Object.assign(db.docs('produtos').get(PROD)!, produtoPatch);
+  }
+
+  it('a kit publishes its component-min, not its own stock', async () => {
+    const db = new FakeDb();
+    seedKit(db, {
+      ehKit: true,
+      componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+    });
+    db.seed('produtos', 'comp-a', { nome: 'Malha', paiId: null });
+    db.seed('produtos/comp-a/estoques', 'est-a', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 5,
+      quantidadeReservada: 0,
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // 5 units of a component consumed 2-at-a-time build 2 kits. Before #797 E5
+    // this published the kit's OWN 8 — an oversell of four.
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.available_quantity).toBe(2);
+    expect(payload.available_quantity).not.toBe(OWN_DISPONIVEL);
+  });
+
+  it('a component with no estoque at all counts as ZERO, never as unconstrained', async () => {
+    const db = new FakeDb();
+    seedKit(db, {
+      ehKit: true,
+      componentesKit: { 'comp-sem-estoque': { quantidade: 1, limitarEstoque: true } },
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.available_quantity).toBe(0);
+  });
+
+  it('a VIRTUAL kit still sends a quantity — POST /items requires one', async () => {
+    const db = new FakeDb();
+    seedKit(db, {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { 'comp-a': { quantidade: 1, limitarEstoque: true } },
+    });
+    db.seed('produtos', 'comp-a', { nome: 'Malha', paiId: null });
+    db.seed('produtos/comp-a/estoques', 'est-a', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 3,
+      quantidadeReservada: 0,
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // The sweep's `quantidadeParaEnvio` returns null here meaning "do not push a
+    // stock update". Publish must NOT read that as "omit the field": this port
+    // never creates a real ML virtual kit (those are User-Products-only), so ML
+    // receives a plain POST /items and rejects one with no available_quantity.
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).toHaveProperty('available_quantity');
+    expect(payload.available_quantity).toBe(3);
+  });
+
+  it('a plain produto still publishes its own stock', async () => {
+    const db = new FakeDb();
+    seedKit(db, {});
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.available_quantity).toBe(OWN_DISPONIVEL);
+  });
+});
+
+describe('publishProduto — per-variation pictures (#797 E7)', () => {
+  const AZUL = 'documents/grupoDeVariacoes/g-cor/variacoes/v-azul';
+  const PRETO = 'documents/grupoDeVariacoes/g-cor/variacoes/v-preto';
+
+  function seedCores(db: FakeDb): void {
+    seedBase(db, {
+      externalIds: [
+        { externalId: 'PIC-GENERICA', integracaoPath: `documents/integracao/${CONTA}` },
+      ],
+    });
+    // Parent gallery: one untagged photo plus one per colour.
+    db.docs('produtos').get(PROD)!.fotos = [
+      { arquivoOuterRef: 'arquivos/arq-1' },
+      { arquivoOuterRef: 'arquivos/arq-azul', variantePath: AZUL },
+      { arquivoOuterRef: 'arquivos/arq-preto', variantePath: PRETO },
+    ];
+    for (const [arq, pic] of [
+      ['arq-azul', 'PIC-AZUL'],
+      ['arq-preto', 'PIC-PRETO'],
+    ]) {
+      db.seed('arquivos', arq!, {
+        filename: `${arq}.jpg`,
+        contentType: 'image/jpeg',
+        url: `https://storage/${arq}.jpg`,
+        externalIds: [{ externalId: pic!, integracaoPath: `documents/integracao/${CONTA}` }],
+      });
+    }
+    db.seed('grupoDeVariacoes', 'g-cor', {
+      nome: 'Cor',
+      tipo: 2,
+      variacoes: [
+        { id: 'v-azul', nome: 'Azul' },
+        { id: 'v-preto', nome: 'Preto' },
+      ],
+    });
+    for (const [id, nome, uid, ordem] of [
+      ['child-azul', 'Camiseta Azul', AZUL, 0],
+      ['child-preto', 'Camiseta Preta', PRETO, 1],
+    ] as const) {
+      db.seed('produtos', id, { nome, sku: `SKU-${id}`, paiId: PROD, ordem, variacoesUid: [uid] });
+      db.seed(`produtos/${id}/estoques`, 'est', {
+        depositoOuterRef: 'documents/depositos/dep-1',
+        quantidade: 3,
+        quantidadeReservada: 0,
+      });
+    }
+  }
+
+  it('each variation gets the photos tagged for ITS variante', async () => {
+    const db = new FakeDb();
+    seedCores(db);
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    const variations = payload.variations as Array<Record<string, unknown>>;
+    // Before #797 E7 `pictureIds` was never populated, so BOTH of these were
+    // the parent set — and a republish overwrote the correct per-variation
+    // picture_ids ML already held.
+    expect(variations[0]!.picture_ids).toEqual(['PIC-AZUL']);
+    expect(variations[1]!.picture_ids).toEqual(['PIC-PRETO']);
+    expect(variations[0]!.picture_ids).not.toEqual(variations[1]!.picture_ids);
+    // The item gallery is untouched — the variation ids are NOT unioned in.
+    expect(payload.pictures).toEqual([
+      { id: 'PIC-GENERICA' },
+      { id: 'PIC-AZUL' },
+      { id: 'PIC-PRETO' },
+    ]);
+  });
+
+  it('an untagged catalogue still falls back to the parent gallery', async () => {
+    const db = new FakeDb();
+    seedCores(db);
+    // Strip the per-colour tags: nothing matches, so rung 3 applies.
+    db.docs('produtos').get(PROD)!.fotos = [{ arquivoOuterRef: 'arquivos/arq-1' }];
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const variations = (mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>)
+      .variations as Array<Record<string, unknown>>;
+    // ML requires every variation to carry a picture.
+    expect(variations[0]!.picture_ids).toEqual(['PIC-GENERICA']);
+    expect(variations[1]!.picture_ids).toEqual(['PIC-GENERICA']);
+  });
+
+  it('resolves each arquivo ONCE per publish, however many children share it', async () => {
+    const db = new FakeDb();
+    seedCores(db);
+    db.docs('produtos').get(PROD)!.fotos = [{ arquivoOuterRef: 'arquivos/arq-1' }];
+    // No cached external id → the shared photo must be uploaded exactly once,
+    // not once per child (parent + 2 children would be three uploads).
+    db.docs('arquivos').get('arq-1')!.externalIds = null;
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.uploadPicture).toHaveBeenCalledTimes(1);
+  });
+});

@@ -25,6 +25,27 @@
  * documentation/tooling paths. Getting the skip wrong ships unverified code;
  * getting the run wrong costs one CI run.
  *
+ * ...with ONE inversion. `--only-paths` mode serves `nfe-live` alone, which emits
+ * test documents at SEFAZ homologação and is rate-limited (cStat=656). There the
+ * safe direction is NOT running — see decideByPaths() and the CLI catch, which both
+ * derive their fail-safe from the mode rather than assuming "run".
+ *
+ * ⚠️ VERSION SKEW IS STRUCTURAL — THE CALLER MUST NEVER LET THIS FILE KILL A LANE.
+ * For a `pull_request` event GitHub runs the workflow YAML from the MERGE REF, while
+ * every lane checks out `github.event.pull_request.head.sha`. The YAML is therefore
+ * always at least as new as this script and never older, which has two consequences:
+ *
+ *   1. On a branch whose head predates this file, `node` exits 1 with
+ *      `Cannot find module` BEFORE the catch at the bottom can emit anything. Seen
+ *      on runs 31719660542 and 31704153529. Every call site therefore wraps the
+ *      invocation in `if ! node …; then <emit the mode's safe verdict>; fi` —
+ *      enforced by `ci-lane-gates.test.js`. A dead scope job fails `changes`, which
+ *      the gate reports as red on a required check that only a rebase can clear.
+ *   2. A flag added to the YAML reaches an OLDER copy of this script. Hence
+ *      parseArgs() throws on an unrecognised `--flag` instead of swallowing it as a
+ *      value, so the skew surfaces through the fail-safe rather than as a wrong
+ *      verdict.
+ *
  * Usage (see .github/workflows/e2e-*.yml):
  *   node .github/scripts/e2e-affected.mjs --roots @delfrance/web --files list.txt
  */
@@ -270,7 +291,7 @@ export function decideByPaths({ files, prefixes }) {
 // CLI
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   // `kind` only labels the job-summary heading. It defaults to E2E so the three
   // e2e lanes keep their output byte-for-byte; the domain lanes pass `--kind CI`
   // so their summaries do not announce themselves as e2e.
@@ -281,6 +302,26 @@ function parseArgs(argv) {
     if (FLAGS.has(token)) {
       current = token.slice(2);
       continue;
+    }
+    // ⚠️ An unrecognised `--flag` is a VERSION SKEW signal, not a value.
+    //
+    // GitHub runs a pull_request's workflow YAML from the merge ref while the lanes
+    // check out the PR head, so the YAML is always >= this file, never the reverse:
+    // a flag added to the caller reaches an older copy of this script on any
+    // unrebased branch. Without this the token would be appended as a VALUE to
+    // whatever flag preceded it — `--self a.yml` lands two bogus entries in
+    // `--roots`. That happens to degrade safely today, because `closureOf` throws on
+    // an unknown root and the CLI catch turns the throw into a fail-safe run, but
+    // that is an accident of flag ORDER, not a property. Throw instead, and let the
+    // same catch route it to the mode's safe direction.
+    //
+    // No legitimate value starts with `--`: roots are package names, `--self` and
+    // `--files` take paths, `--only-paths` takes repo-relative prefixes, and
+    // `--lane`/`--kind` take labels.
+    if (token.startsWith('--')) {
+      throw new Error(
+        `unknown flag ${token} — this copy of the script predates the workflow invoking it (rebase the branch)`,
+      );
     }
     if (current === 'roots') args.roots.push(token);
     else if (current === 'only-paths') args.onlyPaths.push(token);
@@ -333,9 +374,27 @@ export function main(argv, repoRoot) {
   const raw = readFileSync(filesPath, 'utf8');
   const files = [...new Set(raw.split('\n').map((l) => l.trim()).filter(Boolean))];
 
-  // No paths means we could not learn what changed — never a reason to skip.
+  // No paths means we could not learn what changed — so fall back to the mode's
+  // safe direction, exactly as the CLI catch below does.
+  //
+  // ⚠️ This branch used to hardcode `true`, which was the same inversion the catch
+  // had: `ci-nfe.yml` maps `steps.decide-live.outputs.run_e2e` straight onto
+  // `run_live`, and `collect` only short-circuits on a non-`pull_request` event, a
+  // failed `gh api`, or the 3000-path truncation — so a SUCCESSFUL `gh api`
+  // returning zero paths (a fully-reverted branch, an empty commit) reached here and
+  // emitted at SEFAZ on a PR that changed nothing. Note `decideByPaths` already
+  // returns `false` for an empty list; this branch just never reached it.
   if (files.length === 0) {
-    emit({ runE2e: true, reason: 'the changed-file list was empty — running the suite (fail safe).', rows: [], lane, kind });
+    const live = onlyPaths.length > 0;
+    emit({
+      runE2e: !live,
+      reason: live
+        ? 'the changed-file list was empty — NOT running the live suite (fail safe). An unclassifiable diff must never cost SEFAZ quota.'
+        : 'the changed-file list was empty — running the suite (fail safe).',
+      rows: [],
+      lane,
+      kind,
+    });
     return;
   }
 
@@ -361,12 +420,26 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   try {
     main(process.argv.slice(2), repoRoot);
   } catch (err) {
-    // A crash here must not become a skip. Report the failure AND run the suite:
-    // the gate reads `run_e2e`, so the lane stays honest even when this script is
-    // the thing that broke.
+    // A crash must not become a silent wrong answer — but "safe" is not one
+    // direction, it is whichever direction the MODE declares. This mirrors
+    // `decided()` in ci-nfe.yml, which takes the lane verdict and the live verdict
+    // as two separate arguments for exactly this reason.
+    //
+    //   --roots      → RUN. A wrong skip ships unverified code.
+    //   --only-paths → DO NOT RUN. This mode exists solely for `nfe-live`, which
+    //                  emits test documents at SEFAZ homologação and is rate-limited
+    //                  (cStat=656). A wrong run spends quota that a human then has to
+    //                  wait out; the offline NF-e suite has already run and the gate
+    //                  says out loud that live did not.
+    //
+    // Reading the mode off `process.argv` rather than off `parseArgs` is deliberate:
+    // parsing is one of the things that can throw.
+    const live = process.argv.includes('--only-paths');
     emit({
-      runE2e: true,
-      reason: `the scope script failed (${err.message}) — running the suite (fail safe).`,
+      runE2e: !live,
+      reason: live
+        ? `the scope script failed (${err.message}) — NOT running the live suite (fail safe). An unclassifiable diff must never cost SEFAZ quota.`
+        : `the scope script failed (${err.message}) — running the suite (fail safe).`,
       rows: [],
       lane: 'error',
     });

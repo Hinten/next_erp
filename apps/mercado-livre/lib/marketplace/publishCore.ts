@@ -14,8 +14,9 @@
  *    WEIGHT + SELLER_PACKAGE_* dimensions (combination ids pruned later by the
  *    mapper);
  *  - variation combinations map the child's `variacoesUid` through the
- *    grupoDeVariacoes docs: tipo 1 (tamanho) → SIZE, tipo 2 (cor) → COLOR,
- *    other tipos → the group name uppercased (ML validates per category).
+ *    grupoDeVariacoes docs — see {@link combinationForVariante} for the id
+ *    rules, and {@link mergeStoredCombinations} for the ones a Flutter user
+ *    configured that no grupo can rebuild.
  */
 import {
   type BuildItemPayloadInput,
@@ -74,7 +75,17 @@ export interface PublishGrupoVariacao {
   nome: string;
   /** 0/null = outros, 1 = tamanho, 2 = cor. */
   tipo: number | null;
-  variacoes: Array<{ id: string; nome: string }>;
+  variacoes: Array<{
+    id: string;
+    nome: string;
+    /**
+     * This variante's ML `value_id`, when ML is the one that minted it. The IO
+     * layer resolves it from `externalVariacaoLinks` and passes null whenever
+     * the link's `externalId` is a value *name* rather than an id — see
+     * `resolveMlValueId` in `publish.ts`.
+     */
+    mlValueId?: string | null;
+  }>;
 }
 
 export interface PublishVariationChild {
@@ -85,6 +96,12 @@ export interface PublishVariationChild {
   /** Existing ML variation id from the child's `variacaoMercadoLivre` link. */
   mlVariationId: number | string | null;
   pictureIds?: string[];
+  /**
+   * `attribute_combinations` already stored on the child's `variacaoMercadoLivre`
+   * link doc (written by the importer). Merged UNDER the grupo-derived ones so a
+   * VOLTAGE/FLAVOR/MODEL a Flutter user configured survives a republish.
+   */
+  storedCombinations?: MlAttribute[];
 }
 
 export interface AssemblePublishArgs {
@@ -238,11 +255,54 @@ export function buildParentAttributes(
   return attrs;
 }
 
-/** The ML attribute id for a variation group (old SIZE/COLOR conventions). */
-export function combinationIdForGrupo(grupo: PublishGrupoVariacao): string {
-  if (grupo.tipo === 1) return 'SIZE';
-  if (grupo.tipo === 2) return 'COLOR';
-  return grupo.nome.trim().toUpperCase().replace(/\s+/g, '_');
+/**
+ * Does this grupo's doc id double as a Mercado Livre attribute id?
+ *
+ * The taxonomy importer NAMES an ML-derived grupo after the ML attribute itself
+ * (`FLAVOR`, `VOLTAGE`, `MAIN_COLOR` — `taxonomiaCore.ts:251`), falling back to
+ * `n-<slug>` only when ML sent a name and no id. A grupo created in the ERP
+ * carries a Firestore auto-id instead. ML attribute ids are UPPER_SNAKE, so
+ * that shape is the test.
+ *
+ * ⚠️ A heuristic, deliberately biased: a 20-char Firestore auto-id that happens
+ * to be all upper-case and digits would match (~1e-5), and the cost is one
+ * publish rejected by ML naming the bad attribute. Guessing the other way is
+ * what #797 E8 reports — an INVENTED id (`SABOR`) shipped to a live listing.
+ */
+const ML_ATTRIBUTE_ID = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * The `attribute_combinations` entry for one variante of one grupo.
+ *
+ *  - tipo 1 (tamanho) → `SIZE`, tipo 2 (cor) → `COLOR` — the legacy conventions;
+ *  - an ML-derived grupo → its own doc id, which IS the ML attribute id;
+ *  - anything else → a **custom characteristic**: `name` + `value_name` and NO
+ *    `id`, which is the only shape ML documents for an attribute outside its
+ *    taxonomy. The `name` is what buyers see on the VIP. The old port sent
+ *    `{ id: NOME_DO_GRUPO }` here (`'Sabor'` → `{id:'SABOR'}`), an id that
+ *    exists nowhere in ML (#797 E8).
+ *
+ * `value_id` rides along only when ML minted the variante — see
+ * `PublishGrupoVariacao.variacoes[].mlValueId`.
+ */
+export function combinationForVariante(
+  grupo: PublishGrupoVariacao,
+  variante: { id: string; nome: string; mlValueId?: string | null },
+): MlAttribute {
+  const id =
+    grupo.tipo === 1
+      ? 'SIZE'
+      : grupo.tipo === 2
+        ? 'COLOR'
+        : ML_ATTRIBUTE_ID.test(grupo.grupoId)
+          ? grupo.grupoId
+          : null;
+  if (id == null) return { name: grupo.nome, value_name: variante.nome };
+  return {
+    id,
+    ...(variante.mlValueId != null ? { value_id: variante.mlValueId } : {}),
+    value_name: variante.nome,
+  };
 }
 
 /**
@@ -269,9 +329,134 @@ export function combinationsFromVariacoes(
       issues.push(`variação "${childNome}": grupo/variante não encontrado (${uid})`);
       continue;
     }
-    out.push({ id: combinationIdForGrupo(grupo), value_name: variante.nome });
+    out.push(combinationForVariante(grupo, variante));
   }
   return out;
+}
+
+/** Identity of a combination entry: the ML attribute id, else its custom name. */
+function combinationKey(attr: MlAttribute): string | null {
+  return attr.id ?? attr.name ?? null;
+}
+
+/** A stored entry is only worth sending if it actually carries a value. */
+function storedIsValued(attr: MlAttribute): boolean {
+  return attr.value_id != null || attr.value_name != null;
+}
+
+/**
+ * Which stored combination keys may be merged WITHOUT breaking uniformity.
+ *
+ * ⚠️ ML requires every variation of an item to combine the SAME attributes
+ * ("você deve carregar o mesmo para todas as variações" — the Variações guide),
+ * and it rejects the whole item when they diverge. `storedCombinations` exists
+ * only for a child that already has a `variacaoMercadoLivre` link, so a child
+ * added in the ERP after the listing was published has none — merging per-child
+ * would hand ML `[SIZE, VOLTAGE]` for one sibling and `[SIZE]` for the next.
+ *
+ * So an attribute survives the republish only when EVERY child can supply a
+ * value for it. Dropping it otherwise restores the pre-#797 behaviour for that
+ * one attribute — the listing loses it, as before — which is strictly better
+ * than a rejection that takes the whole item down with it.
+ */
+export function mergeableStoredKeys(variations: PublishVariationChild[]): Set<string> {
+  if (variations.length === 0) return new Set();
+  const perChild = variations.map(
+    (c) =>
+      new Set(
+        (c.storedCombinations ?? [])
+          .filter(storedIsValued)
+          .map(combinationKey)
+          .filter((k): k is string => k != null),
+      ),
+  );
+  const [first, ...rest] = perChild;
+  return new Set([...first!].filter((key) => rest.every((s) => s.has(key))));
+}
+
+/**
+ * Fold the combinations stored on the child's `variacaoMercadoLivre` link doc in
+ * UNDER the grupo-derived ones.
+ *
+ * The grupos only ever rebuild SIZE/COLOR plus whatever the taxonomy importer
+ * mapped, so a variation attribute a Flutter user configured by hand (VOLTAGE,
+ * FLAVOR, MODEL) had nothing to regenerate it and vanished on the first
+ * republish (#797 E8). The stored entries are the record of it.
+ *
+ * The grupo wins every collision — it reflects what the ERP believes NOW, and a
+ * duplicated combination id is an outright ML rejection. Stored entries with no
+ * id cannot occur (the importer drops those, `importCore.ts:456`), but they are
+ * keyed by `name` anyway so the dedupe holds if that ever changes.
+ *
+ * `allowedKeys` comes from {@link mergeableStoredKeys} and is what keeps the
+ * merge item-wide-uniform; pass `null` only when there is genuinely one child.
+ */
+export function mergeStoredCombinations(
+  derived: MlAttribute[],
+  stored: MlAttribute[] | undefined,
+  allowedKeys: ReadonlySet<string> | null = null,
+): MlAttribute[] {
+  if (!stored?.length) return derived;
+  const seen = new Set(derived.map(combinationKey).filter((k): k is string => k != null));
+  const out = [...derived];
+  for (const attr of stored) {
+    const key = combinationKey(attr);
+    if (key == null || seen.has(key)) continue;
+    if (allowedKeys != null && !allowedKeys.has(key)) continue;
+    if (!storedIsValued(attr)) continue; // valueless: nothing to send
+    seen.add(key);
+    out.push(attr);
+  }
+  return out;
+}
+
+/**
+ * The two things ML judges about `attribute_combinations` ACROSS variations, and
+ * which no per-child check can see (#797 E8 review):
+ *
+ *  1. every variation must expose the same set of combination keys — a divergent
+ *     sibling rejects the whole item;
+ *  2. at most ONE id-less custom characteristic may drive the product, counted
+ *     over the union. Two children each varying by a different single custom
+ *     ("Sabor" here, "Estampa" there) pass any per-child count while the item
+ *     varies by two.
+ *
+ * Raises at most one issue per rule, naming the divergence — a per-child message
+ * would repeat itself once per variation on a six-colour produto.
+ */
+export function validateCombinationsAcrossChildren(
+  variations: ReadonlyArray<{ nome: string; combos: MlAttribute[] }>,
+  issues: string[],
+): void {
+  if (variations.length === 0) return;
+
+  const keySets = variations.map((v) => ({
+    nome: v.nome,
+    keys: [...new Set(v.combos.map(combinationKey).filter((k): k is string => k != null))].sort(),
+  }));
+  const reference = keySets[0]!;
+  const divergent = keySets.filter((k) => k.keys.join('|') !== reference.keys.join('|'));
+  if (divergent.length > 0) {
+    const fmt = (k: (typeof keySets)[number]) => `"${k.nome}" [${k.keys.join(', ') || '—'}]`;
+    issues.push(
+      `as variações não combinam os MESMOS atributos, e o Mercado Livre rejeita o anúncio ` +
+        `inteiro nesse caso: ${fmt(reference)} vs ${divergent.map(fmt).join(', ')}. ` +
+        `Preencha o atributo que falta em todas as variações.`,
+    );
+  }
+
+  const customNames = [
+    ...new Set(
+      variations.flatMap((v) => v.combos.filter((c) => c.id == null).map((c) => c.name ?? '?')),
+    ),
+  ];
+  if (customNames.length > 1) {
+    issues.push(
+      `o Mercado Livre aceita apenas UMA característica personalizada por produto, e este ` +
+        `varia por ${customNames.length} (${customNames.map((n) => `"${n}"`).join(', ')}). ` +
+        `Vincule os grupos a atributos do ML ou reduza a um só.`,
+    );
+  }
 }
 
 /**
@@ -292,12 +477,15 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
   }
   if (args.pictures.length === 0) issues.push('produto sem fotos');
 
+  // Only stored attributes EVERY child can supply may be merged, or the
+  // republish hands ML variations with divergent combination sets.
+  const mergeable = mergeableStoredKeys(args.variations);
+
   const variations: ItemVariationInput[] = args.variations.map((child) => {
-    const combos = combinationsFromVariacoes(
-      child.variacoesUid,
-      args.grupos,
-      child.produto.nome,
-      issues,
+    const combos = mergeStoredCombinations(
+      combinationsFromVariacoes(child.variacoesUid, args.grupos, child.produto.nome, issues),
+      child.storedCombinations,
+      mergeable,
     );
     if (combos.length === 0) {
       issues.push(`variação "${child.produto.nome}" sem atributos de combinação`);
@@ -335,6 +523,14 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       attributes: attrs,
     };
   });
+
+  validateCombinationsAcrossChildren(
+    variations.map((v, i) => ({
+      nome: args.variations[i]!.produto.nome,
+      combos: [...v.attributeCombinations],
+    })),
+    issues,
+  );
 
   if (issues.length > 0) throw new MercadoLivrePublishError(issues);
 

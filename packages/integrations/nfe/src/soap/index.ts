@@ -27,7 +27,7 @@ import { rootCertificates } from 'node:tls';
 import { HttpClient } from 'soap';
 
 import type { NFeCertificate } from '../cert';
-import { assertSafeTpAmb, type TpAmb } from '../safety';
+import { assertSafeTpAmbForTransport, type TpAmb } from '../safety';
 import { validateXsd, type XsdRootKey } from '../xsd';
 
 const NFE_WSDL_BASE = 'http://www.portalfiscal.inf.br/nfe/wsdl';
@@ -342,9 +342,13 @@ export interface SefazCall {
   readonly agent: https.Agent;
   /**
    * SEFAZ ambiente literal — `'2'` homologação, `'1'` produção. Checked by
-   * `assertSafeTpAmb` before every POST: `'1'` is rejected unless the
+   * `assertSafeTpAmbForTransport` before every POST: `'1'` is rejected unless the
    * `NFE_ALLOW_PRODUCAO=true` env var is set. The call site must pass this
    * explicitly; relying on a regex over the body is a worse safety boundary.
+   *
+   * ⚠️ The transport variant, deliberately — it has no `NODE_ENV='test'`
+   * passthrough. The live homologação suites ARE Vitest, so the generator-level
+   * guard would be disabled in exactly the runs that reach SEFAZ.
    */
   readonly tpAmb: TpAmb;
   readonly timeoutMs?: number;
@@ -410,7 +414,7 @@ async function postSoapValidated(
   call: SefazCall,
   dadosMsg: string,
 ): Promise<PostResult> {
-  assertSafeTpAmb(call.tpAmb);
+  assertSafeTpAmbForTransport(call.tpAmb);
   await validateXsd(contract.requestRoot, dadosMsg);
   const result = await postSoap({
     url: call.url,
@@ -478,7 +482,8 @@ export const CONSCAD_VERSAO = '2.00';
  * the codegen-driven `postSoapValidated` — it builds the SOAP envelope +
  * SOAPAction like the other operations, plus the **`<nfeCabecMsg>` SOAP Header**
  * (`cUF` + `versaoDados=2.00`) that the layout-2.00 message requires (omitting
- * it is a `cStat=215`). `assertSafeTpAmb` still guards produção before the POST.
+ * it is a `cStat=215`). `assertSafeTpAmbForTransport` still guards produção before
+ * the POST.
  *
  * `cUF` is the IBGE 2-digit code of the queried UF (e.g. `35` for SP).
  */
@@ -487,7 +492,7 @@ export async function nfeConsultaCadastro(
   consCadXml: string,
   cUF: string,
 ): Promise<PostResult> {
-  assertSafeTpAmb(call.tpAmb);
+  assertSafeTpAmbForTransport(call.tpAmb);
   return postSoap({
     url: call.url,
     operation: 'NFeConsultaCadastro',

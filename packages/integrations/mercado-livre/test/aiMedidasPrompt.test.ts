@@ -45,8 +45,16 @@ describe('DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION — the load-bearing rules', () => 
     expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('média');
   });
 
-  it('names the photo as the source of truth', () => {
+  it('tells the model to use EVERY source, not just the photo', () => {
+    // ⚠️ The rule this replaced said the description "serve apenas para
+    // desambiguar", which is what taught the model to ignore a description
+    // carrying real measurements.
+    expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('USE TODAS as informações');
+  });
+
+  it('makes the photo win a CONFLICT, rather than being the only source', () => {
     expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('FOTO');
+    expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('contradisserem');
   });
 });
 
@@ -120,13 +128,59 @@ describe('buildMedidasPrompt', () => {
     ).toContain('Modelagem PT-BR');
   });
 
-  it('attaches the image only when there is one', () => {
-    expect(buildMedidasPrompt({ tabelaNome: 'T', built: built() }).image).toBeUndefined();
-    const withImage = buildMedidasPrompt({
+  it('includes the código when set, and omits it when not', () => {
+    expect(buildMedidasPrompt({ tabelaNome: 'T', built: built() }).text).not.toContain('Código');
+    expect(
+      buildMedidasPrompt({ tabelaNome: 'T', built: built(), codigo: 'FORN-42' }).text,
+    ).toContain('FORN-42');
+  });
+
+  it('includes a reference chart, labelled as ANOTHER conta and subordinate to the photo', () => {
+    // Without that framing the model reads it as a partially-filled answer and
+    // echoes it back, including for sizes the photo shows differently.
+    const p = buildMedidasPrompt({
       tabelaNome: 'T',
       built: built(),
-      image: { base64: 'AQID', mimeType: 'image/jpeg' },
+      referencia: { nome: 'Camiseta', rows: [{ size: 'P', medidas: { CHEST: '52 cm' } }] },
     });
-    expect(withImage.image).toEqual({ base64: 'AQID', mimeType: 'image/jpeg' });
+    expect(p.text).toContain('outra conta');
+    expect(p.text).toContain('a foto prevalece');
+    expect(p.text).toContain('- P: CHEST=52 cm');
+  });
+
+  it('leaves the reference out entirely when there is none, or it is empty', () => {
+    expect(buildMedidasPrompt({ tabelaNome: 'T', built: built() }).text).not.toContain(
+      'outra conta',
+    );
+    expect(
+      buildMedidasPrompt({ tabelaNome: 'T', built: built(), referencia: { nome: 'x', rows: [] } })
+        .text,
+    ).not.toContain('outra conta');
+  });
+
+  it('puts the reference AFTER the columns', () => {
+    // The model should read what it is being asked for before it reads someone
+    // else's answer to a similar question.
+    const p = buildMedidasPrompt({
+      tabelaNome: 'T',
+      built: built(),
+      referencia: { nome: null, rows: [{ size: 'P', medidas: { CHEST: '52' } }] },
+    });
+    expect(p.text.indexOf('outra conta')).toBeGreaterThan(p.text.indexOf('Medidas a preencher'));
+  });
+
+  it('attaches images only when there are some', () => {
+    expect(buildMedidasPrompt({ tabelaNome: 'T', built: built() }).images).toEqual([]);
+  });
+
+  it('carries EVERY photo through, in order', () => {
+    // A supplier table is routinely two or three photos — front and back, or
+    // several pages. Sending only the first threw the rest away silently.
+    const images = [
+      { base64: 'AQID', mimeType: 'image/jpeg' },
+      { base64: 'BAUG', mimeType: 'image/png' },
+      { base64: 'BwgJ', mimeType: 'image/heic' },
+    ];
+    expect(buildMedidasPrompt({ tabelaNome: 'T', built: built(), images }).images).toEqual(images);
   });
 });

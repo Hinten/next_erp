@@ -369,7 +369,7 @@ export type ContingenciaMode = 'none' | 'svc' | 'epec';
  * the EPEC evento goes to the Ambiente Nacional.
  *
  * Production-traffic safety (`NFE_ALLOW_PRODUCAO` opt-in) is enforced
- * by `assertSafeTpAmb` at the SOAP layer — not duplicated here.
+ * by `assertSafeTpAmbForTransport` at the SOAP layer — not duplicated here.
  */
 export function resolveTpEmis(uf: UF, mode: ContingenciaMode = 'none'): TpEmis {
   switch (mode) {

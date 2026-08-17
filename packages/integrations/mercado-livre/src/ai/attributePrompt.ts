@@ -126,7 +126,11 @@ export function buildAttributePrompt(input: AttributePromptInput): AiPromptReque
       ? input.systemInstruction!.trim()
       : DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
     text: facts.join('\n\n'),
-    ...(input.image ? { image: input.image } : {}),
+    // One photo, wrapped: `AiPromptRequest` carries a LIST since the size-chart
+    // agent needs several. This agent deliberately stays at one — it is looking
+    // at a product photo to decide "sleeve: short", and a second angle buys
+    // nothing for the tokens.
+    images: input.image ? [input.image] : [],
     responseSchema: input.responseSchema,
   };
 }

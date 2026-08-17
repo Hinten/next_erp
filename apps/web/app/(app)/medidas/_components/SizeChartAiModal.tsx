@@ -21,10 +21,10 @@ type MedidaSugestao = MercadoLivreMedidasSugestao['sugestoes'][number];
  *
  * ⚠️ The dialog itself is `AiReviewModal` from `@delfrance/ui` — the shared
  * staging surface every agent answers through. What is measurement-shaped stays
- * here: the cell key, the size label, and the two provenance banners. The
- * checkbox set, the seed-once rule, Marcar/Desmarcar todas and the Aplicar gate
- * are the generic half, and having them in one place is what stops "a suggestion
- * is offered, never applied" from meaning something slightly different on each
+ * here: the cell key, the size label, and the provenance banners. The checkbox
+ * set, the seed-once rule, Marcar/Desmarcar todas and the Aplicar gate are the
+ * generic half, and having them in one place is what stops "a suggestion is
+ * offered, never applied" from meaning something slightly different on each
  * screen.
  */
 export interface SizeChartAiModalProps {
@@ -71,10 +71,10 @@ export function SizeChartAiModal({
     return cell?.value_name ?? cell?.valueList?.map((v) => v.name).join(', ') ?? null;
   }
 
-  // ⚠️ `preCheckedCells` is IMPORTED, not reimplemented. It ships from
-  // `@delfrance/ai` with its own unit tests and this modal is its only
-  // production consumer — a local copy of the rule would leave the tested one
-  // with no caller at all.
+  // ⚠️ `aiCellKey` and `preCheckedCells` are IMPORTED, not reimplemented. Both
+  // ship from `@delfrance/ai` with their own unit tests and this modal is their
+  // only production consumer — a local copy of the key or of the pre-check rule
+  // would leave the tested ones with no caller at all.
   const preChecked = useMemo(
     () =>
       new Set(
@@ -92,7 +92,7 @@ export function SizeChartAiModal({
       title="Medidas sugeridas pela IA"
       data-testid="ml-size-chart-ai-modal"
       items={resultado?.sugestoes ?? null}
-      loadingLabel="Lendo a foto da tabela…"
+      loadingLabel="Lendo a tabela de medidas…"
       emptyTitle="Nenhuma medida foi lida"
       emptyMessage="O modelo não conseguiu ler nenhuma medida com segurança. Confira se a foto da tabela está legível e se os tamanhos da guia batem com os da tabela."
       keyOf={(s) => aiCellKey(s.rowKey, s.attributeId)}
@@ -128,18 +128,48 @@ export function SizeChartAiModal({
 /**
  * What the model actually saw.
  *
- * ⚠️ `comFoto: false` is the case this exists for. A tabela whose photo predates
- * the resize rollout has no derivative to read, so the agent falls back to the
- * description alone — and a text-only answer to a transcription task is close to
- * worthless. Without this line the operator would blame the model.
+ * ⚠️ This exists because a text-only answer to a transcription task is close to
+ * worthless, and without saying so the operator blames the model. The two
+ * photo-less cases carry OPPOSITE instructions, which is why `contexto` reports
+ * `fotos` and `anexadas` separately rather than one flag: a tabela with no photo
+ * needs one uploaded, while a tabela whose photo has no readable copy yet needs
+ * only time — telling that operator to "envie a foto" sends them to redo the
+ * thing they just did.
  */
 function Fonte({ resultado }: { resultado: MercadoLivreMedidasSugestao }) {
+  const { fotos, anexadas, descricao, codigo, referencia } = resultado.contexto;
+
+  // Everything that reached the model, in the order it matters. Listing the
+  // sources is what lets the operator judge the ANSWER instead of guessing
+  // whether the model was given anything to work with.
+  const usados: string[] = [];
+  if (fotos > 0) usados.push(fotos === 1 ? '1 foto' : `${String(fotos)} fotos`);
+  if (descricao) usados.push('descrição');
+  if (codigo) usados.push('código');
+  if (referencia) usados.push('1 guia de referência');
+
   return (
     <Stack gap="xs">
-      {!resultado.comFoto && (
+      {fotos === 0 && anexadas === 0 && (
         <Alert color="orange" variant="light" title="Sem foto da tabela">
-          Nenhuma foto legível foi encontrada nesta tabela de medidas, então o modelo usou apenas a
-          descrição. Envie a foto da tabela do fornecedor na aba Fotos para um resultado melhor.
+          Esta tabela de medidas não tem nenhuma foto, então o modelo usou apenas o texto. Envie a
+          foto da tabela do fornecedor na aba Fotos para um resultado melhor.
+        </Alert>
+      )}
+      {fotos === 0 && anexadas > 0 && (
+        <Alert color="orange" variant="light" title="Não foi possível ler a foto">
+          {/*
+            ⚠️ Both halves matter. "Not processed yet" is only ONE of the reasons
+            a photo that exists cannot be read — a format outside the allowlist,
+            a file over the size ceiling, or a batch over the request budget are
+            all PERMANENT, and an alert that says only "aguarde" leaves that
+            operator retrying forever while forbidding the one action that would
+            actually fix it.
+          */}
+          {anexadas === 1 ? 'A foto desta tabela' : 'As fotos desta tabela'} não
+          {anexadas === 1 ? ' pôde' : ' puderam'} ser {anexadas === 1 ? 'lida' : 'lidas'}, então o
+          modelo usou apenas o texto. Se a foto acabou de ser enviada, aguarde alguns instantes e
+          tente de novo; se continuar, envie uma versão menor ou em JPEG.
         </Alert>
       )}
       {resultado.truncado && (
@@ -148,7 +178,8 @@ function Fonte({ resultado }: { resultado: MercadoLivreMedidasSugestao }) {
           mesmo nome). As medidas que faltarem precisam ser preenchidas à mão.
         </Alert>
       )}
-      <Text size="xs" c="dimmed">
+      <Text size="xs" c="dimmed" data-testid="ml-size-chart-ai-fonte">
+        {usados.length > 0 ? usados.join(' · ') : 'nenhum contexto disponível'} ·{' '}
         {resultado.celulas} células oferecidas ao modelo · nada é gravado até você confirmar.
       </Text>
     </Stack>

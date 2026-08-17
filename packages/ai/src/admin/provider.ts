@@ -145,12 +145,10 @@ export function createVertexListModelsFn(): ListModelsFn {
 export function createVertexGenerateFn(): GenerateFn {
   return async ({ model, request, temperature, maxOutputTokens, signal }) => {
     const parts: Part[] = [{ text: request.text }];
-    if (request.image) {
+    for (const image of request.images) {
       // Inline bytes, never a URL — the legacy passed a tokened Storage HTTPS
       // URL as Vertex `fileUri`, a field documented for gs:// and YouTube only.
-      parts.push({
-        inlineData: { data: request.image.base64, mimeType: request.image.mimeType },
-      });
+      parts.push({ inlineData: { data: image.base64, mimeType: image.mimeType } });
     }
 
     // ⚠️ A REVISION is a real multi-turn exchange, not a longer prompt. The

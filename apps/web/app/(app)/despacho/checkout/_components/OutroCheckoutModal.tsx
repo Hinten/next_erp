@@ -26,6 +26,20 @@ import type { OutroCheckoutRow } from './useOutrosCheckouts';
 /** `modalidadeFrete` code for "sem frete" — mirrors `etiqueta/gates.ts`. */
 const MODALIDADE_SEM_FRETE = '9';
 
+/**
+ * Compile-time exhaustiveness guard for the two report switches below.
+ *
+ * ⚠️ Both switches are pure side effect (they only fire a toast), so a missing
+ * arm is invisible: no type error, no lint error — `@typescript-eslint/switch-
+ * exhaustiveness-check` is not enabled anywhere in this repo — and at runtime
+ * just silence. Silence is precisely the failure these reporters exist to
+ * remove: the stage times out, the mutex releases correctly, and the operator
+ * still sees nothing. Deleting an arm now reds `tsc` instead.
+ */
+function assertNever(value: never): never {
+  throw new Error(`Unhandled reprint result: ${JSON.stringify(value)}`);
+}
+
 function reportDanfe(r: ReprintDanfeResult): void {
   switch (r.status) {
     case 'printed':
@@ -53,6 +67,16 @@ function reportDanfe(r: ReprintDanfeResult): void {
     case 'error':
       showErrorNotification(r.notification);
       break;
+    case 'timeout':
+      // Same wedge as the etiqueta twin: this button shares the print mutex, so
+      // a stall here spun BOTH buttons with no toast.
+      showErrorNotification({
+        title: 'NF-e',
+        message: `${r.message} Nada foi impresso. Verifique a conexão e tente novamente.`,
+      });
+      break;
+    default:
+      return assertNever(r);
   }
 }
 
@@ -89,6 +113,22 @@ function reportEtiqueta(r: ReprintEtiquetaResult): void {
     case 'error':
       showErrorNotification({ title: 'Etiqueta', message: r.message });
       break;
+    case 'timeout':
+      // Names the stage that hung. Before this, the same condition produced NO
+      // toast at all — both buttons simply spun forever on the shared print
+      // mutex, which is indistinguishable from a slow printer.
+      showErrorNotification({
+        title: 'Etiqueta',
+        message: `${r.message} Nada foi impresso. Verifique a conexão e tente novamente.`,
+      });
+      break;
+    default:
+      // ⚠️ Exhaustiveness backstop. A missing arm here is SILENT — no toast, and
+      // the operator sees exactly the "it froze" symptom this module exists to
+      // remove. `@typescript-eslint/switch-exhaustiveness-check` is not enabled
+      // in this repo, so nothing else catches it; this makes a new
+      // `ReprintEtiquetaResult` member a typecheck error instead.
+      return assertNever(r);
     case 'no-pedido':
       showErrorNotification({ title: 'Etiqueta', message: 'Pedido não encontrado.' });
       break;
