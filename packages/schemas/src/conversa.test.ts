@@ -17,6 +17,25 @@ describe('conversaSchema', () => {
     expect(out.urlAvatar).toBe('');
   });
 
+  it('defaults the cliente link and the reply block to null', () => {
+    const out = conversaSchema.parse({});
+    expect(out.clienteOuterRef).toBeNull();
+    expect(out.respostaBloqueada).toBeNull();
+    // The legacy usuario link is UNCHANGED — Flutter and WhatsApp still write it,
+    // and readers fall back to it. Dropping it would strip the only contact link
+    // off every conversa the migration import brings in.
+    expect(out.usarioOuterRef).toBeNull();
+  });
+
+  it('round-trips a cliente-linked, reply-blocked conversa', () => {
+    const out = conversaSchema.parse({
+      clienteOuterRef: 'documents/clientes/cli1',
+      respostaBloqueada: 'Pergunta já respondida no Mercado Livre',
+    });
+    expect(out.clienteOuterRef).toBe('documents/clientes/cli1');
+    expect(out.respostaBloqueada).toBe('Pergunta já respondida no Mercado Livre');
+  });
+
   it('accepts every estadoConversa code (incl. spam=99)', () => {
     for (const value of Object.values(ESTADO_CONVERSA)) {
       const out = conversaSchema.safeParse({ estadoConversa: value });
@@ -54,6 +73,13 @@ describe('mensagemSchema', () => {
     expect(out.estadoEnvio).toBe(ESTADO_ENVIO.salva);
     expect(out.tipo).toBe('c');
     expect(out.canal).toBe(0);
+  });
+
+  it('defaults the cliente author ref to null, alongside the legacy author fields', () => {
+    const out = mensagemSchema.parse({});
+    expect(out.clienteMensagemOuterRef).toBeNull();
+    expect(out.usarioMensagemOuterRef).toBeNull();
+    expect(out.user_id).toBeNull();
   });
 
   it('accepts every estadoEnvio code', () => {

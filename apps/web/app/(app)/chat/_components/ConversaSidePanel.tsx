@@ -44,7 +44,7 @@ function ParticipantRow({ uid }: { uid: string }) {
 }
 
 function ClienteSection({ conversa }: { conversa: Conversa }) {
-  const link = useClienteLink(conversa.usarioOuterRef);
+  const link = useClienteLink(conversa.clienteOuterRef, conversa.usarioOuterRef);
 
   if (link.status === 'no-user') {
     return (

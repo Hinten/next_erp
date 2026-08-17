@@ -123,6 +123,7 @@ const baseMensagem: Mensagem = {
   resposta: null,
   canal: 0,
   usarioMensagemOuterRef: null,
+  clienteMensagemOuterRef: null,
   user_id: 'operator-1',
   urlAvatar: null,
   mid: null,
