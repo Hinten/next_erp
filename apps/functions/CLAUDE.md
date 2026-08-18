@@ -172,7 +172,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
   `ALL_DOMAINS` does not register (`variacoesml` is the one the emulator suite
   pins), so a registry walk orphans them silently. Verify live with
   `scripts/check-delete-cost.mjs`.
-- **`onPedidoEstadoChanged`** (`onDocumentWrittenWithAuthContext('pedidos/{pedidoId}')`)
+- **`onPedidoChanged`** (`onDocumentWrittenWithAuthContext('pedidos/{pedidoId}')`)
   — the SOLE writer of BOTH pedido audit trails: the order state
   (`pedidos/{pedidoId}/historicoEstadoPedido`) and the freight state
   (`pedidos/{pedidoId}/historicoFtIni`, tracking the EMBEDDED
@@ -214,7 +214,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
   (`onDocumentWrittenWithAuthContext`, both built from
   `makeModificationHistoryTrigger`) — the two covered subcollections of the
   pedido modification history. The pedido DOCUMENT's own entry rides
-  `onPedidoEstadoChanged` above rather than getting a fourth trigger: that
+  `onPedidoChanged` above rather than getting a fourth trigger: that
   function already observes every pedido write, so a separate one would double
   the event cost to record the same thing.
   ⚠️ **All three write ONE collection**, `pedidos/{id}/historicoDeModificacoes`,
@@ -248,6 +248,19 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
   (`…document.v1.written.withAuthContext`), so a redeploy of an existing
   function may need a delete + redeploy — see gotcha #7 — with a short window in
   which those writes record no history.
+- ⚠️⚠️ **`onPedidoEstadoChanged` was RENAMED to `onPedidoChanged`** (the file is
+  now `pedidos/registrarHistoricoPedido.ts`) because it stopped being an
+  estado-only recorder — it writes all three pedido trails. The export key IS the
+  deployed function name, so this is a NEW function to Firebase and the old one
+  is **not** replaced by the deploy. It must be deleted explicitly, or it lingers
+  and keeps writing the estado/frete trails from its stale code:
+  ```bash
+  firebase functions:delete onPedidoEstadoChanged --region us-east1 --project <id> --force
+  ```
+  Both rows are keyed on `event.id`, so while both exist the duplicate estado /
+  frete writes are content-identical and harmless — the zombie is a cost and
+  clarity problem, not a correctness one. Deleting cloud functions is a
+  destructive shared-infra action: **ask the user to run it.**
 - **`aplicarEstoque`** (`onCall` — the repo's FIRST HTTPS callable) — server-owned
   estoque write path for the web client (replaces the direct client `writeBatch`
   from PR #217). Enforces auth + `PERM.estoque.write` itself (the `su` super-user

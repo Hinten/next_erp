@@ -1210,7 +1210,7 @@ async function applyFreteStep(args: {
         //    items for repair;
         //  - `ESTADOS_PEDIDO_MOVIMENTACAO` excludes `error`, so
         //    `onPedidoEstoqueSync` returns the reserved stock.
-        // `historicoEstadoPedido` is appended by the `onPedidoEstadoChanged`
+        // `historicoEstadoPedido` is appended by the `onPedidoChanged`
         // trigger observing this very write — never write that trail from here.
         if (freshPedido.estado !== ESTADO_PEDIDO.error) {
           tx.update(

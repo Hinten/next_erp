@@ -8,7 +8,7 @@ import {
   buildEstadoHistoryEntry,
   buildFreteHistoryEntry,
   resolveUsuarioOuterRef,
-} from './registrarEstadoPedido';
+} from './registrarHistoricoPedido';
 
 const UID = 'abcDEF0123456789abcDEF01'; // 24 chars, uid-shaped
 

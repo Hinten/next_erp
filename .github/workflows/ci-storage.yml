@@ -36,7 +36,7 @@ on:
       - 'packages/schemas/src/pedido/collection/**'
       - 'packages/data/src/admin/collections/historicoFreteInicialCollection.ts'
       - 'packages/schemas/src/shared/frete.ts'
-      # `onPedidoEstadoChanged` writes the estado audit trail THROUGH these two
+      # `onPedidoChanged` writes the estado audit trail THROUGH these two
       # (`historicoEstadoPedidoCollection.parse`), and since #697 they are the
       # only place the row shape is asserted — the always-on assertion that used
       # to live in `@delfrance/data` went away with the client-side writer, and

@@ -2,7 +2,7 @@
  * Mapping a Firestore CloudEvent's auth context to an acting user.
  *
  * Lives in `lib/` because two trigger families need it now — the pedido estado
- * trails (`../pedidos/registrarEstadoPedido`) and the modification-history
+ * trails (`../pedidos/registrarHistoricoPedido`) and the modification-history
  * factory (`./modificationHistory`) — and it must not drift between them.
  *
  * Deliberately NOT in `@delfrance/core` or `@delfrance/schemas`: it encodes

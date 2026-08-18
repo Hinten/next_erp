@@ -7,7 +7,7 @@ import { defineAdminCollection } from '../defineAdminCollection';
  * subcollection — the pedido twin of {@link historicoModificacaoCollection}.
  *
  * Written by the `apps/functions` pedido trigger family
- * (`onPedidoEstadoChanged` for the pedido document itself, `onPagamentoChanged`
+ * (`onPedidoChanged` for the pedido document itself, `onPagamentoChanged`
  * and `onIncidenteChanged` for its covered subcollections), one deterministic-id
  * record per CloudEvent (`docId` = the triggering event's `eventId`). Rows for
  * the subcollections carry `subcolecao: 'pagamentos' | 'incidentes'`, so the

@@ -22,11 +22,22 @@ import { PEDIDO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
 
 /**
- * Pedido audit trails, both derived from the same `pedidos/{pedidoId}` write:
- * the estado trail (`…/historicoEstadoPedido`) and the frete trail
- * (`…/historicoFtIni`).
+ * ALL of a pedido's audit trails, derived from the same `pedidos/{pedidoId}`
+ * write:
+ *  - the estado trail (`…/historicoEstadoPedido`),
+ *  - the frete trail (`…/historicoFtIni`), tracking the EMBEDDED
+ *    `freteInicial.estado`, and
+ *  - the unified field-level history (`…/historicoDeModificacoes`), which
+ *    records every other change to the document — and, on a delete, a
+ *    tombstone.
  *
- * This trigger is the SOLE writer of BOTH subcollections. It replaces the
+ * Three trails, ONE trigger, because they all observe the same document: a
+ * second trigger on `pedidos/{pedidoId}` would double the event cost to record
+ * the same write. (The pedido's `pagamentos` and `incidentes` feed the same
+ * history collection from their own triggers, since they are different
+ * documents.)
+ *
+ * This trigger is the SOLE writer of all three subcollections. It replaces the
  * hand-written appends that used to sit at the call sites (the web editor's
  * `recordEstadoChange`, the client pagamento reconcile, and the Mercado Pago
  * webhook's admin reconcile), which between them covered only 3 of the ~12 code
@@ -243,7 +254,7 @@ export async function recordFreteHistory(
  * No self-retrigger: the writes land in SUBcollections, and document triggers
  * on `pedidos/{pedidoId}` do not fire for subcollection writes.
  */
-export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
+export const onPedidoChanged = onDocumentWrittenWithAuthContext(
   {
     document: `${pedidoMeta.collectionPath}/{pedidoId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
@@ -345,13 +356,13 @@ export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
 
     if (estadoEntry !== null) {
       logger.info(
-        `onPedidoEstadoChanged: pedido ${pedidoId} → ${estadoEntry.estado}` +
+        `onPedidoChanged: pedido ${pedidoId} → ${estadoEntry.estado}` +
           ` (por ${estadoEntry.usuarioHistoricoEstadosPedidoOuterRef ?? 'sistema'})`,
       );
     }
     if (freteEntry !== null) {
       logger.info(
-        `onPedidoEstadoChanged: frete do pedido ${pedidoId} → ${freteEntry.estado}` +
+        `onPedidoChanged: frete do pedido ${pedidoId} → ${freteEntry.estado}` +
           ` (por ${freteEntry.usuarioHistoricoFreteInicialOuterRef ?? 'sistema'})`,
       );
     }

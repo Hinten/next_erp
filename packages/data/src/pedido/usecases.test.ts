@@ -277,7 +277,7 @@ describe('savePedido', () => {
 });
 
 describe('estado history', () => {
-  it('is never written from here — the onPedidoEstadoChanged trigger owns it', async () => {
+  it('is never written from here — the onPedidoChanged trigger owns it', async () => {
     const { port, written, committed } = fakePort({ estado: 'iniciado' }, 4242);
     await savePedido(port, {
       pedidoId: 'ped1',
@@ -463,7 +463,7 @@ describe('cancelarPedido', () => {
     expect(written()).toEqual({ estado: 'cancelado', ultimaModificacao: 777 });
   });
 
-  it('writes no história row — the onPedidoEstadoChanged trigger owns it', async () => {
+  it('writes no história row — the onPedidoChanged trigger owns it', async () => {
     const { port, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
     await cancelarPedido(port, { pedidoId: 'x' });
     // The subcollection is `meta.serverOwned`: a client append is denied by the

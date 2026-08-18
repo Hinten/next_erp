@@ -27,7 +27,7 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * the pagamento (which is where the legacy Flutter `histpgto` put it).
  *
  * Written EXCLUSIVELY by the `apps/functions` pedido trigger family
- * (`onPedidoEstadoChanged`, `onPagamentoChanged`, `onIncidenteChanged`).
+ * (`onPedidoChanged`, `onPagamentoChanged`, `onIncidenteChanged`).
  *
  * ⚠️ Unlike produto, `pedidos` has NO delete-cascade trigger (owner call,
  * 2026-08 — `pedidos/{id}/nfev4` holds emitted fiscal documents), so a row here

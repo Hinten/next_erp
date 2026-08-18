@@ -16,7 +16,7 @@ import { warmRoutes } from './helpers/warmup';
  * legacy `Pedido.save()` behavior). Seeds a minimal pedido (one item + the
  * required refs) directly via the Admin SDK, then drives the UI.
  *
- * Since #697 the audit row comes from the `onPedidoEstadoChanged` Cloud Function
+ * Since #697 the audit row comes from the `onPedidoChanged` Cloud Function
  * rather than the client, which makes this the ONLY place in the repo that can
  * prove the trail's ACTOR end-to-end: the emulator hardcodes the Firestore
  * event's `authId` to 'fake-auth-id@gmail.com' (firebase-tools#7609, closed as
@@ -150,7 +150,7 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
       .toBe('pago');
 
     // And a historicoEstadoPedido row records the change. That row is written by
-    // the `onPedidoEstadoChanged` Cloud Function (apps/functions) reacting to the
+    // the `onPedidoChanged` Cloud Function (apps/functions) reacting to the
     // pedido write above — no longer by the client — so this assertion requires
     // the function to be DEPLOYED to the staging project. The timeout covers a
     // cold start on top of the trigger's own delivery latency, and matches the

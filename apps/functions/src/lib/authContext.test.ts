@@ -5,7 +5,7 @@ import { resolveUsuarioOuterRef } from './authContext';
 const UID = 'AbCdEf0123456789AbCdEf01';
 
 /**
- * Moved here from `../pedidos/registrarEstadoPedido.test.ts` when the
+ * Moved here from `../pedidos/registrarHistoricoPedido.test.ts` when the
  * modification-history factory became a second consumer. The pedido trails keep
  * re-exporting the function, and that re-export is pinned in the old file.
  */

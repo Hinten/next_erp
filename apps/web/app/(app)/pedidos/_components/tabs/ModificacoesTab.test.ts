@@ -30,7 +30,7 @@ describe('legacyEstadoEntries', () => {
     // The history entry's doc id IS the event id, so the feed can hide a row
     // exactly when its replacement is loaded. Filtering on `eventId != null`
     // here instead would ASSUME the replacement exists — and it does not for
-    // transitions `onPedidoEstadoChanged` recorded before this PR's functions
+    // transitions `onPedidoChanged` recorded before this PR's functions
     // deploy, which would then be dropped from the tab and never replaced.
     const entries = legacyEstadoEntries(
       [row('a', { eventId: 'evt-1' }), row('b', { eventId: null })],
