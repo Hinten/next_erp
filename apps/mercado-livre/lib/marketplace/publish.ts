@@ -10,6 +10,11 @@
  * `MercadoLivrePublishError` BEFORE any ML call; an ML API failure after that
  * stamps `estado: 'E'` + `errors: [message]` on the link doc and rethrows, so
  * the UI shows the reason and a later retry overwrites it.
+ *
+ * ⚠️ Which of ML's two publishing models applies is decided here, not by the
+ * link doc alone — see `resolveListingModel` in `publishCore.ts`. A first
+ * publish costs one `GET /users/me` to read the `user_product_seller` tag; a
+ * re-publish costs none.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
@@ -17,6 +22,7 @@ import {
   MercadoLivreError,
   MercadoLivreHttpError,
   type MlAttribute,
+  type MlUser,
   buildItemPayload,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
@@ -53,7 +59,9 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   assemblePublishInput,
+  publishModeIssues,
   resolveCondition,
+  resolveListingModel,
 } from './publishCore';
 import { quantidadeParaEnvio } from './bulkEstoquePlan';
 import {
@@ -87,6 +95,13 @@ export interface PublishDeps {
   listingTypeId?: string | null;
   /** Injectable for tests — downloads image bytes from `arquivo.url`. */
   fetchImpl?: typeof globalThis.fetch;
+  /**
+   * The User-Products capability probe seam — defaults to `api.getMe()`
+   * (`GET /users/me`), the same shape the stock sweep's multiorigin guard uses.
+   * Called at most ONCE per publish, and only on a FIRST publish (see
+   * {@link resolveListingModel}).
+   */
+  getMe?: (api: MercadoLivreApi) => Promise<MlUser>;
 }
 
 export interface PublishResult {
@@ -143,75 +158,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         isUserProductModel: linkDoc.data.isUserProductModel ?? false,
         attributes: linkDoc.data.attributes ?? null,
         video_id: linkDoc.data.video_id ?? null,
+        estado: linkDoc.data.estado ?? null,
       }
     : null;
   const linkDocId = linkDoc?.docId ?? produtoMercadoLivreLinkCollection.newDocId(db, { produtoId });
-
-  // ---- Stock (integração's depósito when set; else every depósito) -------
-  // Kit-aware (#797 E5): a kit publishes what its components can assemble, not
-  // its own — usually zero — stock.
-  //
-  // ⚠️ No `permiteVendaSemEstoque` floor: the legacy lifted a backorder produto
-  // at zero to 1 (models.dart:1487-1497), but that field is being retired — see
-  // the note on `produtoSchema`.
-  const depositoId = deps.depositoOuterRef ? idFromRef(deps.depositoOuterRef) : null;
-  const componentDisponivel = await loadComponentDisponivel(
-    db,
-    [produto, ...children.map((c) => c.data)],
-    depositoId,
-  );
-  const availableQuantity = quantidadeParaPublicar(
-    produto,
-    await loadDisponivel(db, produtoId, depositoId),
-    componentDisponivel,
-  );
-  const variations: PublishVariationChild[] = [];
-  for (const child of children) {
-    const childAvailable = quantidadeParaPublicar(
-      child.data,
-      await loadDisponivel(db, child.id, depositoId),
-      componentDisponivel,
-    );
-    // No parent link for THIS integração yet ⇒ the child cannot have a
-    // legitimate existing variation on this listing (any variacao docs it
-    // holds belong to other accounts).
-    const existingVar = linkDoc ? await findVariacaoLink(db, child.id, linkDoc.docId) : null;
-    variations.push({
-      produto: toPublishProduto(child.id, child.data),
-      variacoesUid: child.data.variacoesUid ?? [],
-      availableQuantity: childAvailable,
-      mlVariationId: existingVar?.mlId ?? null,
-      storedCombinations: storedCombinationsOf(existingVar?.raw),
-    });
-  }
-
-  // ---- Variation groups ---------------------------------------------------
-  const grupoIds = new Set<string>();
-  for (const v of variations) {
-    for (const uid of v.variacoesUid) {
-      const parsed = parseFakePath(uid);
-      if (parsed) grupoIds.add(parsed.grupoId);
-    }
-  }
-  const grupos: PublishGrupoVariacao[] = [];
-  for (const grupoId of grupoIds) {
-    const snap = await grupoDeVariacoesCollection.docRef(db, {}, grupoId).get();
-    if (!snap.exists) continue; // reported as a per-variation issue downstream
-    const g = grupoDeVariacoesCollection.parseRead(
-      snap.data(),
-      grupoDeVariacoesCollection.docPath({}, grupoId),
-    );
-    grupos.push({
-      grupoId,
-      nome: g.nome,
-      tipo: g.tipo ?? null,
-      variacoes: (g.variacoes ?? []).map((v) => ({
-        id: v.id,
-        nome: v.nome,
-        mlValueId: resolveMlValueId(v, integracaoId),
-      })),
-    });
-  }
 
   // ---- Category -----------------------------------------------------------
   // The link doc is the ONLY source. Publish used to fall back to
@@ -286,6 +236,106 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     });
   };
 
+  // ---- Publishing model + pre-flight blocks (#798) ------------------------
+  // Both happen HERE, before the stock reads, the grupo reads and above all
+  // before a single picture is uploaded to ML — a refusal must not cost a
+  // round trip per photo. `assemblePublishInput`'s issues run much later.
+  //
+  // The account probe is skipped entirely on a re-publish: there the persisted
+  // `isUserProductModel` is authoritative, so `GET /users/me` would be a wasted
+  // call whose only possible effect is to break a publish that would work.
+  //
+  // ⚠️ It is an ML call, so it is bound by the module's header contract exactly
+  // like the chart binding's `getCategory` below: a dead credential or a
+  // transient 5xx must leave its reason ON THE DOC, not only in the HTTP
+  // response. Without this the ML tab would show a listing still sitting at
+  // `estado: 'r'` with no `errors`, i.e. no trace of why the last attempt
+  // failed. (This is what the stamping closures above are hoisted for.)
+  let sellerIsUserProduct = false;
+  if (link?.id == null) {
+    try {
+      const user = await (deps.getMe ?? defaultGetMe)(api);
+      sellerIsUserProduct = (user.tags ?? []).includes('user_product_seller');
+    } catch (err) {
+      if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err.message);
+      throw err;
+    }
+  }
+  const listingModel = resolveListingModel(link, sellerIsUserProduct);
+  const modeIssues = publishModeIssues({
+    produtoNome: produto.nome,
+    estado: link?.estado ?? null,
+    model: listingModel,
+    childrenCount: children.length,
+  });
+  if (modeIssues.length > 0) throw new MercadoLivrePublishError(modeIssues);
+
+  // ---- Stock (integração's depósito when set; else every depósito) -------
+  // Kit-aware (#797 E5): a kit publishes what its components can assemble, not
+  // its own — usually zero — stock.
+  //
+  // ⚠️ No `permiteVendaSemEstoque` floor: the legacy lifted a backorder produto
+  // at zero to 1 (models.dart:1487-1497), but that field is being retired — see
+  // the note on `produtoSchema`.
+  const depositoId = deps.depositoOuterRef ? idFromRef(deps.depositoOuterRef) : null;
+  const componentDisponivel = await loadComponentDisponivel(
+    db,
+    [produto, ...children.map((c) => c.data)],
+    depositoId,
+  );
+  const availableQuantity = quantidadeParaPublicar(
+    produto,
+    await loadDisponivel(db, produtoId, depositoId),
+    componentDisponivel,
+  );
+  const variations: PublishVariationChild[] = [];
+  for (const child of children) {
+    const childAvailable = quantidadeParaPublicar(
+      child.data,
+      await loadDisponivel(db, child.id, depositoId),
+      componentDisponivel,
+    );
+    // No parent link for THIS integração yet ⇒ the child cannot have a
+    // legitimate existing variation on this listing (any variacao docs it
+    // holds belong to other accounts).
+    const existingVar = linkDoc ? await findVariacaoLink(db, child.id, linkDoc.docId) : null;
+    variations.push({
+      produto: toPublishProduto(child.id, child.data),
+      variacoesUid: child.data.variacoesUid ?? [],
+      availableQuantity: childAvailable,
+      mlVariationId: existingVar?.mlId ?? null,
+      storedCombinations: storedCombinationsOf(existingVar?.raw),
+    });
+  }
+
+  // ---- Variation groups ---------------------------------------------------
+  const grupoIds = new Set<string>();
+  for (const v of variations) {
+    for (const uid of v.variacoesUid) {
+      const parsed = parseFakePath(uid);
+      if (parsed) grupoIds.add(parsed.grupoId);
+    }
+  }
+  const grupos: PublishGrupoVariacao[] = [];
+  for (const grupoId of grupoIds) {
+    const snap = await grupoDeVariacoesCollection.docRef(db, {}, grupoId).get();
+    if (!snap.exists) continue; // reported as a per-variation issue downstream
+    const g = grupoDeVariacoesCollection.parseRead(
+      snap.data(),
+      grupoDeVariacoesCollection.docPath({}, grupoId),
+    );
+    grupos.push({
+      grupoId,
+      nome: g.nome,
+      tipo: g.tipo ?? null,
+      variacoes: (g.variacoes ?? []).map((v) => ({
+        id: v.id,
+        nome: v.nome,
+        mlValueId: resolveMlValueId(v, integracaoId),
+      })),
+    });
+  }
+
   // ---- Size chart (tabela de medidas) binding -----------------------------
   let tabela: TabelaBinding;
   try {
@@ -347,7 +397,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     linkDocId,
     categoryId,
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
-    isUserProductSeller: link?.isUserProductModel ?? false,
+    isUserProductSeller: listingModel === 'user-products',
     sizeChart: tabela.resolved,
   });
   const payload = buildItemPayload(input);
@@ -532,6 +582,14 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The default User-Products capability probe — one `GET /users/me` per FIRST
+ * publish (`estoqueSweep`'s `defaultGetMe`, same seam, different tag).
+ */
+async function defaultGetMe(api: MercadoLivreApi): Promise<MlUser> {
+  return api.getMe();
+}
 
 function toPublishProduto(
   id: string,

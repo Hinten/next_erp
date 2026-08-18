@@ -231,6 +231,13 @@ describe('buildItemPayload — legacy variations', () => {
 
 describe('buildItemPayload — User Products seller', () => {
   it('sends family_name and NO variations array content', () => {
+    // ⚠️ This pins the MAPPER, not a supported outcome. Handing this builder a
+    // User-Products seller together with children collapses a whole listing
+    // family into one variation-less item — which is why `publishProduto`
+    // refuses that combination outright before it ever gets here (#798; see
+    // `publish.test.ts` → "User-Products model resolution"). Under UP each
+    // variation is its own ML item, so a family is published by calling this
+    // once PER MEMBER, never once with a variations array.
     const data = buildItemPayload({
       isUpdate: false,
       isUserProductSeller: true,
