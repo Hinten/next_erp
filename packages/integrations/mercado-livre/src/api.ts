@@ -16,6 +16,7 @@ import {
   type MlCategoryAttribute,
   type MlCategoryListingType,
   type MlClaim,
+  type MlQuestion,
   type MlClaimMessage,
   type MlClaimReason,
   type MlClaimSearch,
@@ -61,6 +62,7 @@ import {
   mlClaimMessagesSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
+  mlQuestionSchema,
   mlClaimSearchSchema,
   mlMissedFeedsSchema,
   mlPaymentSchema,
@@ -341,6 +343,15 @@ export interface MercadoLivreApi {
   getActiveChartDomains(): Promise<MlActiveChartDomains>;
   /** `GET /catalog_domains/{id}` — domain label for pickers. */
   getCatalogDomain(domainId: string): Promise<MlCatalogDomain>;
+
+  /**
+   * `GET /questions/{questionId}?api_version=4` — one pre-sale question (#532).
+   *
+   * `api_version=4` is NOT optional: without it ML returns the legacy shape,
+   * which omits `buyer_id` and nests the asker differently. The importer keys
+   * the contact on that id, so the older shape would silently lose it.
+   */
+  getQuestion(questionId: number): Promise<MlQuestion>;
 
   /** `GET /post-purchase/v1/claims/{claimId}` — one claim (claims import, Step 14). */
   getClaim(claimId: number): Promise<MlClaim>;
@@ -784,6 +795,8 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCatalogDomain: (domainId) =>
       request('GET', `/catalog_domains/${domainId}`, catalogDomainSchema),
 
+    getQuestion: (questionId) =>
+      request('GET', `/questions/${questionId}?api_version=4`, mlQuestionSchema),
     getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),
     getClaimMessages: (claimId) =>
       request('GET', `/post-purchase/v1/claims/${claimId}/messages`, mlClaimMessagesSchema),

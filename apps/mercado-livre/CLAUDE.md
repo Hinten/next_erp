@@ -211,9 +211,10 @@ matters:
 | `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9) |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
 | `claims` | `handled` | claim → incidente/conversa/mensagens import (Step 14) |
+| `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
 | `items_prices` | `ack` | **permanent no-op** (#803) — persists nothing |
 | `orders_feedback`, `stock-location` | `ack` | nothing to do; persists nothing |
-| `questions`, `messages` | `park` | data-bearing, importer pending (#532/#533) |
+| `messages` | `park` | data-bearing, importer pending (#532 post-sale half) |
 | `public_offers`, `public_candidates`, `user-products-families` | `ignore` | never enqueued, never persisted (#813) |
 
 ⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacao.ts`, not

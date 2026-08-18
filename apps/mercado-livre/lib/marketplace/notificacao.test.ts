@@ -574,18 +574,59 @@ describe('handleNotificationTask', () => {
   });
 
   it('a data-bearing topic with no importer yet PARKS — never a silent done', async () => {
-    // The #813 headline: acking `questions`/`messages` makes them
-    // indistinguishable from processed work, so the cutover loses them with no
-    // failure doc, no parked doc and no warn line.
+    // The #813 headline: acking a data-bearing topic makes it indistinguishable
+    // from processed work, so the cutover loses it with no failure doc, no
+    // parked doc and no warn line.
+    //
+    // `messages` is the remaining one — `questions` gained its importer in #532
+    // and is `handled` now, which is exactly the transition this arm is for.
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
     const r = await handleNotificationTask(
       asDb(db),
-      payloadOf({ topic: 'questions', resource: '/questions/123' }),
+      payloadOf({ topic: 'messages', resource: 'abc123def456' }),
       0,
     );
     expect(r.outcome).toBe('parked');
     expect(db.docs(NOTIF).get('N1')!.status).toBe('parked');
+  });
+
+  it('routes a questions notification to the question importer (#532)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const questionImportRunner = vi.fn(async () => ({
+      conversaId: 'conv-1',
+      clienteId: 'cli-1',
+      skipped: null,
+    }));
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ topic: 'questions', resource: '/questions/123' }),
+      0,
+      { questionImportRunner },
+    );
+
+    expect(questionImportRunner).toHaveBeenCalledWith(expect.anything(), 'conta-A', 123);
+    expect(r.outcome).toBe('done');
+    // A processed question persists NOTHING — the whole point of the failures-only store.
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('drops a questions notification whose resource carries no id', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const questionImportRunner = vi.fn();
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ topic: 'questions', resource: '/questions/nao-numerico' }),
+      0,
+      { questionImportRunner },
+    );
+
+    expect(questionImportRunner).not.toHaveBeenCalled();
+    expect(r.outcome).toBe('dropped');
   });
 
   it('no active account → DEFERRED, not failed: the seller may connect tomorrow (#808)', async () => {

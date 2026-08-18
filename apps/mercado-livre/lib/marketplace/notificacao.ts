@@ -84,6 +84,7 @@ import {
   syncItemStatus,
 } from './itemsStatusSync';
 import { type ClaimImportResult, importClaimMercadoLivre } from './claimImport';
+import { type QuestionImportResult, importQuestionMercadoLivre } from './questionImport';
 import { resolveContaAtivaPorUserId } from './contaCache';
 import { handleUptinMigration } from './importMigration';
 import { lastSegment, parseItemIdFromResource } from './linkRefs';
@@ -180,7 +181,7 @@ export const TOPIC_DISPOSITION = {
   // costs a document per delivery and buys a replayable record until the
   // importers land; the whole stack deploys together, so that window is a
   // review cycle, not production time.
-  questions: 'park',
+  questions: 'handled',
   messages: 'park',
 
   // Delivered routinely, deliberately not our business.
@@ -717,6 +718,18 @@ const runShipmentImport: ShipmentImportRunner = async (db, integracaoId, resourc
  * is the numeric ML claim id parsed from the notification's `resource`
  * (`/claims/123` → `123`).
  */
+/**
+ * The #532 questions-import seam invoked for `questions` notifications —
+ * shaped exactly like {@link ClaimImportRunner}. `resourceId` is the numeric
+ * ML question id parsed from the notification's `resource`
+ * (`/questions/123` → `123`).
+ */
+export type QuestionImportRunner = (
+  db: Firestore,
+  integracaoId: string,
+  resourceId: number,
+) => Promise<QuestionImportResult>;
+
 export type ClaimImportRunner = (
   db: Firestore,
   integracaoId: string,
@@ -734,6 +747,33 @@ export type ClaimImportRunner = (
  * `processNotificationPayload`'s default for `claims` so an ordinary
  * notification needs no caller change; tests inject their own runner.
  */
+/**
+ * The production #532 question importer. Same seller-token path as
+ * `runClaimImport`, with ONE clock read for the whole operation.
+ *
+ * ⚠️ Milliseconds only — a question touches `chat`/`mensagem`, which are ms,
+ * and never the incidente/pedido side, which is µs. There is deliberately no
+ * µs twin here to pick the wrong one from.
+ */
+const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourceId) => {
+  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  const channelCtx = await ctx.resolveChannelContext();
+  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  return importQuestionMercadoLivre(
+    {
+      db,
+      api,
+      integracaoId,
+      conta: {
+        userId: asNumberOrNull(ctx.conta.user_id),
+        cor: asNumberOrNull(ctx.conta.cor),
+      },
+      nowMs: Date.now(),
+    },
+    resourceId,
+  );
+};
+
 const runClaimImport: ClaimImportRunner = async (db, integracaoId, resourceId) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
@@ -822,6 +862,7 @@ export interface NotificationRunners {
   paymentImportRunner?: PaymentImportRunner;
   shipmentImportRunner?: ShipmentImportRunner;
   claimImportRunner?: ClaimImportRunner;
+  questionImportRunner?: QuestionImportRunner;
 }
 
 /**
@@ -842,6 +883,7 @@ export async function processNotificationPayload(
   const paymentImportRunner = runners.paymentImportRunner ?? runPaymentImport;
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
   const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
+  const questionImportRunner = runners.questionImportRunner ?? runQuestionImport;
 
   // Ignored topics settle BEFORE the account lookup — the cheapest possible
   // answer to "this is not our business". Resolving the conta first would cost a
@@ -984,6 +1026,29 @@ export async function processNotificationPayload(
     }
     if (result.skipped) {
       console.warn('[mercado-livre] claim import skipped', {
+        integracaoId,
+        resourceId,
+        skipped: result.skipped,
+      });
+    }
+    return { kind: 'done', integracaoId };
+  }
+
+  // `questions` — a pre-sale buyer question (#532). Idempotent by ML question
+  // id. A question we cannot answer never OPENS a thread, but a delivery for a
+  // thread that already exists is still processed: that is the only event that
+  // can close the conversa we opened while it was unanswered.
+  if (payload.topic === 'questions') {
+    const resourceId = parseOrderResourceId(payload.resource);
+    if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
+    const result = await wrapImportRunner(integracaoId, () =>
+      questionImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
+    if (result.skipped) {
+      console.warn('[mercado-livre] question import skipped', {
         integracaoId,
         resourceId,
         skipped: result.skipped,

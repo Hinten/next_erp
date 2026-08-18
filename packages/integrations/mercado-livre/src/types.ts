@@ -1225,3 +1225,76 @@ export const mlMissedFeedsSchema = z
   .object({ messages: z.array(mlMissedFeedSchema).default([]) })
   .passthrough();
 export type MlMissedFeeds = z.infer<typeof mlMissedFeedsSchema>;
+
+/* ------------------- Perguntas / questions (#532, Step M11) ---------------- */
+
+/**
+ * The seller's answer to a question (`question.answer`, ML `api_version=4`).
+ *
+ * ⚠️ `text` is `.default('')`, not required. A **BANNED** answer comes back with
+ * an EMPTY text by ML's own documentation — the moderation stripped it — and an
+ * empty string must round-trip rather than fail the parse of the whole question.
+ *
+ * ⚠️ The datetimes here are ISO-8601 STRINGS while the parent carries them the
+ * same way; the importer converts once, at the mapping boundary. The legacy
+ * `questionsML` schema modelled the parent's as epoch millis and the answer's as
+ * ISO, which is the kind of split that produces 1970 timestamps.
+ */
+export const mlQuestionAnswerSchema = z
+  .object({
+    text: z.string().default(''),
+    /** `ACTIVE` / `DISABLED` / `BANNED` — a plain string, never an enum. */
+    status: z.string().nullable().default(null),
+    date_created: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlQuestionAnswer = z.infer<typeof mlQuestionAnswerSchema>;
+
+/** The asker, as `GET /questions/{id}?api_version=4` returns it. */
+export const mlQuestionFromSchema = z
+  .object({
+    id: z.number().int().nullable().default(null),
+    nickname: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlQuestionFrom = z.infer<typeof mlQuestionFromSchema>;
+
+/**
+ * A Mercado Livre question (`GET /questions/{id}?api_version=4`).
+ *
+ * Only `id` is required. Every vocabulary field is a plain nullable string —
+ * the same rule the claim schemas follow, and for the same reason: the legacy
+ * Dart `StatusQuestionMl` enum THREW on any value outside its four members, so
+ * ML shipping a fifth (it documents seven today: `UNANSWERED`, `ANSWERED`,
+ * `CLOSED_UNANSWERED`, `UNDER_REVIEW`, `BANNED`, `DELETED`, `DISABLED`) would
+ * poison the whole import.
+ *
+ * ⚠️ Do NOT model this on `packages/schemas/src/questionMercadoLivre.ts`. That
+ * schema uses `z.enum` for `status` and is dual-run-only — it feeds the legacy
+ * `questionsML` collection, which this port never writes and which is deleted
+ * with the Flutter decommission (#829).
+ *
+ * `buyer_id` and `from.id` are two spellings of the same asker: the by-id
+ * endpoint returns `buyer_id`, the search endpoint returns `from`. The importer
+ * reads whichever is present.
+ */
+export const mlQuestionSchema = z
+  .object({
+    id: z.number().int(),
+    seller_id: z.number().int().nullable().default(null),
+    buyer_id: z.number().int().nullable().default(null),
+    item_id: z.string().nullable().default(null),
+    status: z.string().nullable().default(null),
+    /** Empty when `status` is `BANNED` — ML strips moderated text. */
+    text: z.string().default(''),
+    date_created: z.string().nullable().default(null),
+    last_updated: z.string().nullable().default(null),
+    /** `true` while ML withholds the question from the seller. */
+    hold: z.boolean().nullable().default(null),
+    deleted_from_listing: z.boolean().nullable().default(null),
+    suspected_spam: z.boolean().nullable().default(null),
+    answer: mlQuestionAnswerSchema.nullable().default(null),
+    from: mlQuestionFromSchema.nullable().default(null),
+  })
+  .passthrough();
+export type MlQuestion = z.infer<typeof mlQuestionSchema>;
