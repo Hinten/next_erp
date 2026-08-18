@@ -129,6 +129,41 @@ describe.skipIf(!EMULATED)('createTokenDuravelStore (Firestore emulator)', () =>
     expect((await store.loadValid(CUTOFF))?.access_token).toBe('AT-flutter');
   });
 
+  it('A2b: deleteAll clears BOTH lineages, leaving no readable credential', async () => {
+    const integracaoId = newIntegracaoId();
+    const store = createTokenDuravelStore(getAdminFirestore(), integracaoId);
+
+    // Exactly the A2 arrangement — the shape that makes a `current`-only delete
+    // look like it worked while a live Flutter refresh_token survives it.
+    await store.save(tok({ access_token: 'AT-current' }));
+    await rawColl(integracaoId).add(tok({ access_token: 'AT-flutter-1' }));
+    await rawColl(integracaoId).add(tok({ access_token: 'AT-flutter-2' }));
+    // POSITIVE assertion first: prove the docs are really there, on the database
+    // under test, before asserting they are gone.
+    expect((await rawColl(integracaoId).get()).size).toBe(3);
+
+    const removed = await store.deleteAll();
+
+    expect(removed).toBe(3);
+    expect((await rawColl(integracaoId).get()).empty).toBe(true);
+    // The store must now read as disconnected through its own API, not just at
+    // the raw collection — this is what the conta panel renders.
+    expect(await store.loadLatest()).toBeNull();
+    expect(await store.loadValid(CUTOFF)).toBeNull();
+    await expect(getOrRefreshAccessToken(store, config, { now: NOW })).rejects.toBeInstanceOf(
+      MercadoLivreReauthRequiredError,
+    );
+  });
+
+  it('A2c: deleteAll on an account with no credential is a no-op, not a throw', async () => {
+    // The mint flow calls this after persisting both users; a conta that was
+    // never connected must not turn that into a failure.
+    const integracaoId = newIntegracaoId();
+    const store = createTokenDuravelStore(getAdminFirestore(), integracaoId);
+
+    await expect(store.deleteAll()).resolves.toBe(0);
+  });
+
   it('A2b: `loadValid` is a STRICT `>` — a token expiring exactly at the cutoff is not valid', async () => {
     const integracaoId = newIntegracaoId();
     const store = createTokenDuravelStore(getAdminFirestore(), integracaoId);
@@ -246,6 +281,7 @@ describe.skipIf(!EMULATED)('createTokenDuravelStore (Firestore emulator)', () =>
       return {
         loadValid: (cutoff) => real.loadValid(cutoff),
         loadLatest: () => real.loadLatest(),
+        deleteAll: () => real.deleteAll(),
         async save(fresh) {
           const saved = await real.save(fresh);
           markWinnerSaved();
