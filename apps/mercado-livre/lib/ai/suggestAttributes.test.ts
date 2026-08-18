@@ -120,7 +120,7 @@ describe('suggestAttributes', () => {
   it('runs text-only when the produto has no usable photo', async () => {
     const d = deps();
     const result = await suggestAttributes(d, { produtoId: 'p1', categoryId: 'MLB31447' });
-    expect(d.generate.mock.calls[0]![0].request.image).toBeUndefined();
+    expect(d.generate.mock.calls[0]![0].request.images).toEqual([]);
     expect(result.comFoto).toBe(false);
   });
 
@@ -129,10 +129,9 @@ describe('suggestAttributes', () => {
       loadImage: vi.fn(async () => ({ base64: 'QUJD', mimeType: 'image/jpeg' })),
     });
     const result = await suggestAttributes(d, { produtoId: 'p1', categoryId: 'MLB31447' });
-    expect(d.generate.mock.calls[0]![0].request.image).toEqual({
-      base64: 'QUJD',
-      mimeType: 'image/jpeg',
-    });
+    expect(d.generate.mock.calls[0]![0].request.images).toEqual([
+      { base64: 'QUJD', mimeType: 'image/jpeg' },
+    ]);
     expect(result.comFoto).toBe(true);
   });
 

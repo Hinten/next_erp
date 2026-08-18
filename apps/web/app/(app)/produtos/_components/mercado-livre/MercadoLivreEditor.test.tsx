@@ -312,46 +312,62 @@ describe('the publication facts come before the editable form', () => {
 });
 
 /**
- * #798 / #804 S6 — publishing and pricing are two calls, and the button that
- * does both is the only thing that makes that split invisible to the operator.
+ * #798 — publish and price are two calls, and this button is the only thing that
+ * makes that split invisible to the operator.
  *
- * A publish deliberately omits prices from the PUT it sends per listing, so a
+ * A publish deliberately omits `price` from the PUT it sends per listing, so a
  * republish (to fix a photo, a title, an attribute) cannot silently bypass the
- * price flow's "Permitir baixar preços" guard, nor 400 on an item with an
- * active ML price automation.
+ * price flow's "Permitir baixar preços" guard nor 400 on an item with an active
+ * ML price automation. The price half rides the SHARED marketplace price rail
+ * (#804's `POST /enviar-precos`), not the account-wide job — synchronous, so it
+ * reports a per-listing outcome and cannot collide with a running bulk job.
  */
 describe('Republicar e atualizar preços', () => {
   const PUBLISHED = { itemId: 'MLB1', estado: 'p', permalink: null, itemIds: ['MLB1'] };
+  const PRICED = {
+    canal: 'mercado-livre',
+    integracaoId: 'conta-1',
+    contaNome: null,
+    solicitados: 1,
+    familias: 1,
+    resumo: { enviados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+    listings: [],
+    produtosSemEnvio: [],
+    pausadoAte: null,
+  };
 
   function wireClient(over: Record<string, unknown> = {}) {
     const publicar = vi.fn(async () => PUBLISHED);
-    const startPriceSync = vi.fn(async () => ({ jobId: 'job-1' }));
-    h.client = { publicar, startPriceSync, ...over };
-    return { publicar, startPriceSync };
+    const enviarPrecos = vi.fn(async () => PRICED);
+    h.client = { publicar, enviarPrecos, ...over };
+    return { publicar, enviarPrecos };
   }
 
-  it('publishes and THEN pushes the price, scoped to this produto', async () => {
+  it('publishes and THEN prices, through the shared rail, scoped to this produto', async () => {
     h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
-    const { publicar, startPriceSync } = wireClient();
+    const { publicar, enviarPrecos } = wireClient();
     renderEditor();
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Republicar e atualizar preços' }));
     });
 
-    await waitFor(() => expect(startPriceSync).toHaveBeenCalled());
+    await waitFor(() => expect(enviarPrecos).toHaveBeenCalled());
     expect(publicar).toHaveBeenCalledOnce();
-    // No `baixarPreco`: the server flips its default to true for a
-    // produto-scoped run, and hardcoding it here would freeze that rule in two
-    // places at once.
-    expect(startPriceSync).toHaveBeenCalledWith({ integracaoId: 'conta-1', produtoId: 'prod-1' });
+    // `baixarPreco: true` matches the rail's own default for a hand-picked
+    // selection — naming the produto IS the explicit intent.
+    expect(enviarPrecos).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      produtoIds: ['prod-1'],
+      baixarPreco: true,
+    });
   });
 
-  it('does NOT push a price when the publish failed', async () => {
+  it('does NOT price when the publish failed', async () => {
     // Pricing a listing that failed to publish either 404s or updates the stale
     // version — neither is what the operator asked for.
     h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
-    const { startPriceSync } = wireClient({
+    const { enviarPrecos } = wireClient({
       publicar: vi.fn(async () => {
         throw new MercadoLivreClientHttpError('falha no Mercado Livre', 500, null);
       }),
@@ -363,12 +379,35 @@ describe('Republicar e atualizar preços', () => {
     });
 
     await waitFor(() => expect(h.notify).toHaveBeenCalled());
-    expect(startPriceSync).not.toHaveBeenCalled();
+    expect(enviarPrecos).not.toHaveBeenCalled();
+  });
+
+  it('a 200 carrying only failures is reported as a failure, not a success', async () => {
+    // ⚠️ Per-listing failure is DATA on this rail. Treating "no throw" as success
+    // would tell the operator the price went out when nothing did.
+    h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+    wireClient({
+      enviarPrecos: vi.fn(async () => ({
+        ...PRICED,
+        resumo: { enviados: 0, pulados: 0, falhas: 1, naoTentados: 0 },
+      })),
+    });
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Republicar e atualizar preços' }));
+    });
+
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ color: 'yellow', title: 'Nenhum preço enviado' }),
+      ),
+    );
   });
 
   it('plain Republicar never touches prices', async () => {
     h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
-    const { publicar, startPriceSync } = wireClient();
+    const { publicar, enviarPrecos } = wireClient();
     renderEditor();
 
     await act(async () => {
@@ -376,13 +415,12 @@ describe('Republicar e atualizar preços', () => {
     });
 
     await waitFor(() => expect(publicar).toHaveBeenCalled());
-    expect(startPriceSync).not.toHaveBeenCalled();
+    expect(enviarPrecos).not.toHaveBeenCalled();
   });
 
   it('spins ONLY the button that was clicked', async () => {
-    // Both actions share one handler, so a bare conta id in the loading state
-    // lit up both and the operator could not tell which one was running.
-    // Mantine renders a loading Button as `data-loading` + `disabled`.
+    // Both actions share one handler, so a bare conta id in the loading state lit
+    // up both and the operator could not tell which was running.
     h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
     let release!: () => void;
     wireClient({
@@ -406,10 +444,9 @@ describe('Republicar e atualizar preços', () => {
   });
 
   it('is absent until the conta has a link doc at all', async () => {
-    // With NO link doc there is no `category_id`, so publish 422s before
-    // writing anything and there would be nothing to price — "Preparar anúncio"
-    // is the only action. A rascunho (a link doc with `id: null`) DOES get the
-    // button: a first publish is a legitimate thing to pair with a price push.
+    // With NO link doc there is no `category_id`, so publish 422s before writing
+    // anything and there would be nothing to price. A rascunho (a link doc with
+    // `id == null`) DOES get it — see the next case.
     h.links = [];
     wireClient();
     renderEditor();

@@ -101,16 +101,6 @@ export const envioPrecoMercadoLivreSchema = z.object({
    * case a lower new price skips as `PRECO_ANTIGO_MAIOR`.
    */
   baixarPreco: z.boolean().default(false),
-  /**
-   * Scope: ONE anchor produto instead of the conta's whole catalogue (#804 S6),
-   * the produto screen's own price action. `null` = the bulk job.
-   *
-   * It lives on the JOB rather than on the request alone because the plan step
-   * runs later, in a Cloud Task, and re-plans on every dispatch — a scope kept
-   * only in the caller would silently widen to the whole conta on the first
-   * retry.
-   */
-  produtoId: z.string().min(1).nullable().default(null),
   /** The plan's keyset cursor over anchor produtos — `null` before the first page. */
   afterAnchorId: z.string().nullable().default(null),
   /**

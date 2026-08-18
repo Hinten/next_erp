@@ -29,6 +29,7 @@ export {
 
 export {
   loadFotoImage,
+  loadFotoImages,
   FOTO_IMAGE_VARIANTS,
   type FotoImageVariant,
   type LoadFotoImageDeps,

@@ -44,46 +44,28 @@
  * price-ONLY body fails loudly (400 `item.price.not_modifiable` → terminal
  * skip `PRECO_NAO_MODIFICAVEL`, gate 6), but a price bundled with ANY other
  * field returns 200 with the price SILENTLY IGNORED — the one failure mode
- * that never surfaces. So every body this module sends carries price fields
+ * that never surfaces. So every body the sender builds carries price fields
  * and nothing else, and gate 7 re-verifies the echoed price anyway.
  *
- * ---- Per-item gates, in order (drain phase):
- *  (1) fresh `GET /items/{id}` — 429 pauses the job, other 4xx records a
- *      `GET_PRODUTO_ERROR` failure, a dead credential fails the whole job,
- *      5xx/network rethrow (the queue retries);
- *  (2) skip-if-equal (`PRECO_ANTIGO_IGUAL`) — also what makes a replayed
- *      dispatch idempotent after a crash between PUT and checkpoint;
- *  (3) fresh status gate (`podeEnviarPreco`: CLOSED / FORBIDDEN /
- *      STATUS_<x>) + the mid-migration tag skip (`AGUARDANDO_MIGRACAO`);
- *  (4) decrease guard (`PRECO_ANTIGO_MAIOR`) unless the run set `baixarPreco`;
- *  (5) build the price-only body (per-variation for legacy `variations[]`);
- *  (6) `PUT /items/{id}` — `PRECO_NAO_MODIFICAVEL` terminal skip /
- *      `UPDATE_PRECO_ERROR` failure with the link stamped `estado 'E'` /
- *      pause / job-fail / rethrow, same classes as (1);
- *  (7) verify the echoed price (`PRECO_NAO_ATUALIZADO` on mismatch, no stamp);
- *  (8) success writeback onto the link (fresh status; plus `precoPublicado`
- *      for `item` drafts only — variation siblings share the parent link doc);
- *  (9) per-item checkpoint merge.
+ * ---- Per-item gates (1)-(8) live in `precoDraftSend.ts`, shared verbatim
+ * with the manual produto-scoped push (#804) so there is only ever ONE place
+ * the sent price is decided. This module owns gate (9), the per-item
+ * checkpoint, plus the job-level meaning of each outcome: a `pausa` re-enqueues
+ * WITHOUT consuming the draft, a `fatal` stamps the job `failed`, and
+ * `pulado`/`falha` feed the capped detail lists behind uncapped counters.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
-import { roundReais } from '@delfrance/core/money';
 import {
   ENVIO_PRECO_MERCADO_LIVRE_STATUS,
   type EnvioPrecoMercadoLivre,
   idFromRef,
 } from '@delfrance/schemas';
 import {
-  type MlItem,
   MercadoLivreHttpError,
-  MercadoLivreReauthRequiredError,
   createMercadoLivreApi,
-  estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
-import {
-  envioPrecoMercadoLivreCollection,
-  produtoMercadoLivreLinkCollection,
-} from '@delfrance/data/admin/collections';
+import { envioPrecoMercadoLivreCollection } from '@delfrance/data/admin/collections';
 
 import {
   PLAN_PAGE_DRAFTS_CAP,
@@ -93,13 +75,20 @@ import {
   type FetchPrecoPage,
   buildPrecoDrafts,
   fetchPrecoPage,
-  podeEnviarPreco,
   precoItemsPerDispatch,
   precoPageLimit,
   precoRatePauseMin,
 } from './precoPlan';
+import { type PriceSyncApi, enviarPrecoDraft } from './precoDraftSend';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import type { MlPriceSyncScheduler } from './mlPriceSyncTasks';
+
+/**
+ * Re-exported under its original name: the type moved to `precoDraftSend.ts`
+ * (which must not import from here — that would close a cycle), but this module
+ * is where every existing consumer imports it from.
+ */
+export type { PriceSyncApi };
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -123,13 +112,6 @@ export const PRICE_SYNC_MAX_ATTEMPTS = 3;
  * queue's retry attempts, so a genuinely live job always checkpoints inside it.
  */
 export const PRICE_SYNC_STALE_RUNNING_MS = 6 * 60 * 60 * 1000;
-
-/** ML `tags` prefix marking an in-progress User-Products migration — both known
- * tags (`variations_migration_source` / `variations_migration_uptin`, the
- * `itemsStatusSync.ts` MIGRATION_TAGS pair) share it. A mid-migration listing
- * must not be written to; the migration handoff (#441) re-links it and the
- * NEXT manual run covers the successor items. */
-const MIGRATION_TAG_PREFIX = 'variations_migration_';
 
 export const priceSyncTaskSchema = z
   .object({
@@ -161,13 +143,7 @@ export class PriceSyncAlreadyRunningError extends Error {
  */
 export async function startPriceSyncJob(
   db: Firestore,
-  args: {
-    integracaoId: string;
-    baixarPreco: boolean;
-    startedBy: string;
-    /** Scope the job to ONE anchor produto (#804 S6); null = the whole conta. */
-    produtoId?: string | null;
-  },
+  args: { integracaoId: string; baixarPreco: boolean; startedBy: string },
 ): Promise<{ jobId: string }> {
   const now = Date.now();
   const running = await envioPrecoMercadoLivreCollection
@@ -214,19 +190,12 @@ export async function startPriceSyncJob(
       integracaoId: args.integracaoId,
       status: 'running',
       baixarPreco: args.baixarPreco,
-      produtoId: args.produtoId ?? null,
       startedBy: args.startedBy,
       startedAt: now,
       updatedAt: now,
     },
   );
   return { jobId: ref.id };
-}
-
-/** The minimal ML API surface the price sync needs (injectable for tests). */
-export interface PriceSyncApi {
-  getItem(id: string): Promise<MlItem>;
-  updateItem(id: string, payload: Record<string, unknown>): Promise<MlItem>;
 }
 
 /** The resolved per-account dependencies `processPriceSyncJob` needs. */
@@ -276,54 +245,6 @@ async function readJob(db: Firestore, jobId: string): Promise<EnvioPrecoMercadoL
   return envioPrecoMercadoLivreCollection.parseRead(
     snap.data(),
     envioPrecoMercadoLivreCollection.docPath({}, jobId),
-  );
-}
-
-/** The listing's CURRENT normal price — `base_price` (promo-independent) first,
- * the same `base_price ?? price` read the import uses; non-positive/absent → null. */
-function currentListingPrice(item: MlItem): number | null {
-  const raw = item.base_price ?? item.price;
-  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? roundReais(raw) : null;
-}
-
-/** One raw price field carries the sent preco (numeric + `roundReais`-equal). */
-function priceFieldMatches(raw: unknown, preco: number): boolean {
-  return typeof raw === 'number' && Number.isFinite(raw) && roundReais(raw) === preco;
-}
-
-/** One fresh/echoed variation entry already carries the sent preco — the ONE
- * predicate shared by gate 2's variations-aware skip and gate 7's
- * variations-body verifier. */
-function variationAtPreco(v: { price?: number | null }, preco: number): boolean {
-  return priceFieldMatches(v.price, preco);
-}
-
-/** Gate 7, single-price body: read the SAME promo-independent field order gate
- * 2 uses (`base_price ?? price`), then accept a match on EITHER field — an
- * active ML promotion legitimately makes the echoed `price` differ from the
- * standard price, so only both fields missing the sent preco is a failure. */
-function verifyItemPrice(resp: MlItem, preco: number): boolean {
-  return priceFieldMatches(resp.base_price, preco) || priceFieldMatches(resp.price, preco);
-}
-
-/** Gate 7, variations body: EVERY echoed variation must carry the new price;
- * ML sometimes omits `variations` on the PUT echo — fall back to item-level. */
-function verifyVariationsPrice(resp: MlItem, preco: number): boolean {
-  const vars = resp.variations ?? [];
-  if (vars.length === 0) return verifyItemPrice(resp, preco);
-  return vars.every((v) => variationAtPreco(v, preco));
-}
-
-/** ML's price-automation rejection — a 400 whose body is
- * `{ "error": "item.price.not_modifiable", ... }`. `MercadoLivreHttpError.body`
- * is the parsed JSON when the response was JSON and the raw text otherwise, so
- * narrow defensively before reading `error`. */
-function isPriceNotModifiable(body: unknown): boolean {
-  return (
-    body != null &&
-    typeof body === 'object' &&
-    !Array.isArray(body) &&
-    (body as Record<string, unknown>).error === 'item.price.not_modifiable'
   );
 }
 
@@ -460,8 +381,6 @@ export async function processPriceSyncJob(
         integracaoId: payload.integracaoId,
         afterAnchorId,
         pageLimit: precoPageLimit(),
-        // Null for a conta-wide job — the bulk query then runs unchanged.
-        produtoId: job.produtoId,
       });
       // Rows are consumed ONE at a time under `PLAN_PAGE_DRAFTS_CAP`: a row
       // whose drafts would push the fila past the cap — while the fila already
@@ -512,169 +431,27 @@ export async function processPriceSyncJob(
         await checkpoint();
       };
 
-      // ---- (1) Fresh GET — the skip/decrease/status gates below must judge
-      // the listing as it is NOW, not as it was at plan time.
-      let item: MlItem;
-      try {
-        item = await ctx.api.getItem(draft.itemId);
-      } catch (err) {
-        if (err instanceof MercadoLivreReauthRequiredError) {
-          // A dead credential fails every remaining item identically —
-          // reconnecting the conta is a human action, so fail the whole job.
-          return failJob('credencial do Mercado Livre expirada — reconecte a conta');
-        }
-        if (err instanceof MercadoLivreHttpError) {
-          if (err.status === 429) return pausePath(err);
-          if (err.status >= 400 && err.status < 500) {
-            // Deterministic (404 gone, 403…) — record and move on.
-            registerFailure(draft.itemId, draft.produtoId, 'GET_PRODUTO_ERROR', err.message);
-            await consume();
-            continue;
-          }
-          throw err; // 5xx — transient, the queue retries
-        }
-        throw err; // network / validation / anything unclassified — the queue retries
-      }
+      // ---- Gates (1)-(8), shared verbatim with the manual push. The job's
+      // only remaining say is what each outcome MEANS to the checkpoint.
+      const outcome = await enviarPrecoDraft(db, draft, ctx.api, {
+        nowMs,
+        baixarPreco: job.baixarPreco,
+      });
 
-      // The FRESH variation ids an `item` draft would PUT through (gate 5's
-      // legacy variations body) — also gate 2's equality source: on a legacy
-      // variations listing the item-level price is not authoritative, so the
-      // skip must judge every variation. `variationItem` drafts PUT on their
-      // own MLB item and never carry a variations body.
-      const freshVariations =
-        draft.kind === 'item' ? (item.variations ?? []).filter((v) => v.id != null) : [];
+      // A dead credential fails every remaining item identically — reconnecting
+      // the conta is a human action, so fail the whole job.
+      if (outcome.kind === 'fatal') return failJob(outcome.erro);
+      // NOT consumed: the delayed re-dispatch retries this same draft (a PUT
+      // that landed before the 429 replays as PRECO_ANTIGO_IGUAL via gate 2).
+      if (outcome.kind === 'pausa') return pausePath(outcome.err);
 
-      // ---- (2) Skip-if-equal: the listing already carries this price. With
-      // variations, EVERY one must already sit at the target price — one
-      // drifted variation must still be corrected by the PUT.
-      const current = currentListingPrice(item);
-      const alreadyEqual =
-        freshVariations.length > 0
-          ? freshVariations.every((v) => variationAtPreco(v, draft.preco))
-          : current != null && current === draft.preco;
-      if (alreadyEqual) {
-        registerSkip(draft.itemId, draft.produtoId, 'PRECO_ANTIGO_IGUAL');
-        await consume();
-        continue;
-      }
-
-      // ---- (3) Fresh status gate + the mid-migration tag skip (see the
-      // MIGRATION_TAG_PREFIX doc — mirrors itemsStatusSync's tag check).
-      const gate = podeEnviarPreco(item.status, item.sub_status);
-      if (!gate.ok) {
-        registerSkip(draft.itemId, draft.produtoId, gate.code);
-        await consume();
-        continue;
-      }
-      if ((item.tags ?? []).some((t) => t.startsWith(MIGRATION_TAG_PREFIX))) {
-        registerSkip(draft.itemId, draft.produtoId, 'AGUARDANDO_MIGRACAO');
-        await consume();
-        continue;
-      }
-
-      // ---- (4) Decrease guard: never lower a listing's price unless the
-      // user ticked "Permitir baixar preços" for THIS run.
-      if (current != null && draft.preco < current && !job.baixarPreco) {
-        registerSkip(draft.itemId, draft.produtoId, 'PRECO_ANTIGO_MAIOR');
-        await consume();
-        continue;
-      }
-
-      // ---- (5) The price-only body — NEVER any other field (the 2026-03-18
-      // hazard in the module doc: a price bundled with other fields is
-      // silently ignored on automation-active items; price-only keeps the
-      // failure a loud 400 that gate 6 maps to PRECO_NAO_MODIFICAVEL).
-      let body: Record<string, unknown>;
-      let sentVariations = false;
-      if (freshVariations.length > 0) {
-        // Legacy model: a listing with variations only accepts its (uniform)
-        // price through the variations array — one entry per FRESH variation
-        // id (stored ids could miss a variation added since the last import).
-        sentVariations = true;
-        body = { variations: freshVariations.map((v) => ({ id: v.id, price: draft.preco })) };
+      if (outcome.kind === 'pulado') {
+        registerSkip(draft.itemId, draft.produtoId, outcome.code);
+      } else if (outcome.kind === 'falha') {
+        registerFailure(draft.itemId, draft.produtoId, outcome.code, outcome.error);
       } else {
-        // UP model (`variationItem`: the variation IS its own MLB item) and
-        // variation-less listings — plain item-level price.
-        body = { price: draft.preco };
+        enviados += 1;
       }
-
-      // ---- (6) The ONE PUT this draft exists for.
-      let resp: MlItem;
-      try {
-        resp = await ctx.api.updateItem(draft.itemId, body);
-      } catch (err) {
-        if (err instanceof MercadoLivreReauthRequiredError) {
-          return failJob('credencial do Mercado Livre expirada — reconecte a conta');
-        }
-        if (err instanceof MercadoLivreHttpError) {
-          if (err.status === 429) return pausePath(err);
-          if (err.status === 400 && isPriceNotModifiable(err.body)) {
-            // The seller opted this item into ML's OWN price automation — our
-            // price is rejected by design and the listing is healthy. Terminal
-            // SKIP, and deliberately NO link stamp: `estado 'E'` would
-            // misreport a live listing as broken.
-            registerSkip(draft.itemId, draft.produtoId, 'PRECO_NAO_MODIFICAVEL');
-            await consume();
-            continue;
-          }
-          if (err.status >= 400 && err.status < 500) {
-            // Deterministic rejection — stamp the link exactly like
-            // estoqueSend/publish do, record the failure, move on.
-            // `mergeIfExists`: the draft's target was planned earlier in the
-            // job, so the link may already be gone — never upsert a ghost.
-            await produtoMercadoLivreLinkCollection.mergeIfExists(
-              db,
-              { produtoId: draft.produtoId },
-              draft.linkDocId,
-              { estado: 'E', errors: [err.message], ultimaModificacao: nowMs },
-            );
-            registerFailure(draft.itemId, draft.produtoId, 'UPDATE_PRECO_ERROR', err.message);
-            await consume();
-            continue;
-          }
-          throw err; // 5xx — transient, the queue retries
-        }
-        throw err; // network / anything unclassified — the queue retries
-      }
-
-      // ---- (7) Verify the echo actually carries the new price (the silent-
-      // ignore hazard's cousin: a 200 whose price did not stick). NO link
-      // stamp: the PUT was accepted and the listing is healthy — `estado 'E'`
-      // would misreport it; the failure row carries the diagnosis.
-      const verified = sentVariations
-        ? verifyVariationsPrice(resp, draft.preco)
-        : verifyItemPrice(resp, draft.preco);
-      if (!verified) {
-        registerFailure(
-          draft.itemId,
-          draft.produtoId,
-          'PRECO_NAO_ATUALIZADO',
-          `resposta do Mercado Livre não confirmou o preço ${draft.preco}`,
-        );
-        await consume();
-        continue;
-      }
-
-      // ---- (8) Success writeback (estoqueSend's status-writeback shape).
-      // Only `item` drafts also stamp `precoPublicado` (the publish.ts field):
-      // sibling `variationItem` drafts all share the PARENT link doc, and with
-      // `propagatePriceToChildren: false` a per-child stamp would flip-flop to
-      // whichever child was sent last — so variation sends stamp status only.
-      const writeback: Record<string, unknown> = {
-        estado: estadoFromMlStatus(resp.status),
-        status: resp.status ?? null,
-        sub_status: resp.sub_status ?? [],
-        ultimaModificacao: nowMs,
-      };
-      if (draft.kind === 'item') writeback.precoPublicado = draft.preco;
-      // `mergeIfExists` — same reason as the failure stamp above.
-      await produtoMercadoLivreLinkCollection.mergeIfExists(
-        db,
-        { produtoId: draft.produtoId },
-        draft.linkDocId,
-        writeback,
-      );
-      enviados += 1;
       await consume();
     }
 

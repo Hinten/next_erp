@@ -24,6 +24,14 @@
  *    id); the child link resolves by its string `itemId` field (the member's
  *    own MLB id) scoped to the parent link, not a numeric `id`.
  *
+ * Either scheme only mints an id once `resolveExistingChild` has failed all
+ * THREE reuse rules — link, SKU, then variation combination (#801). The third
+ * one is what makes an ERP-FIRST catalogue safe: children created in the ERP or
+ * the Flutter app, never linked to ML and without a matching `SELLER_SKU`, are
+ * invisible to the first two, so before it existed the first import minted a
+ * whole SECOND set of children (duplicate stock rows, duplicate denorm entries,
+ * a split catalogue to merge by hand).
+ *
  * No photo import here (legacy parity): `variations[].picture_ids` /
  * User-Products per-member pictures are never imported — only the
  * parent-level `item.pictures` are (handled by `import.ts` itself, via
@@ -32,6 +40,7 @@
 import { createHash } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { type MappedMlVariation } from '@delfrance/integrations-mercado-livre';
+import { sameCombo } from '@delfrance/schemas';
 import {
   estoqueCollection,
   produtoCollection,
@@ -42,6 +51,7 @@ import {
   type ImportOptions,
   type VariationChildAssembleArgs,
   assembleVariationChildPlan,
+  resolveVariationCombo,
 } from './importCore';
 import { type TaxonomiaResolution } from './taxonomiaCore';
 import { isAlreadyExists } from '@delfrance/data/admin';
@@ -86,15 +96,23 @@ export async function importVariationChildren(
   const depositoId = depositoOuterRef ? lastSegment(depositoOuterRef) : null;
   let created = 0;
 
+  // The parent's existing children, read AT MOST ONCE per call and only when a
+  // variation actually reaches the combination rule — a steady-state re-import
+  // resolves everything by link and pays zero extra reads. Memoised on the
+  // PROMISE, so a future concurrent caller can't double-issue the query.
+  let siblingsPromise: Promise<SiblingChild[]> | null = null;
+  const loadSiblings = () => (siblingsPromise ??= readSiblingChildren(db, parent.produtoId));
+
   for (const mappedVariation of mappedVariations) {
-    const resolved = await resolveExistingChild(
+    const resolved = await resolveExistingChild({
       db,
-      mappedVariation.variationId,
-      mappedVariation.sku,
-      parent.produtoId,
-      parent.linkOuterRef,
-      up != null,
-    );
+      mappedVariation,
+      taxonomia,
+      parentProdutoId: parent.produtoId,
+      parentLinkOuterRef: parent.linkOuterRef,
+      matchByItemId: up != null,
+      loadSiblings,
+    });
     const fixedWidthId = up
       ? `XMLB000000000000000${up.parentLinkDocId}vMLB${mappedVariation.variationId}`
       : null;
@@ -169,14 +187,26 @@ export async function importVariationChildren(
       }
     }
 
-    // estoque (create = set; overwrite = merge quantidade — keeps reservada)
+    // estoque (create = set at the canonical id; overwrite = merge quantidade into
+    // the row we actually READ — keeps reservada).
+    //
+    // ⚠️ The merge targets `stockForWrite.docId`, NOT `plan.estoque.docId`. The plan
+    // always names the canonical `makeEstoqueUid(produtoId, depositoId)`, but
+    // `readEstoque` matches on `depositoOuterRef` under ANY doc id — and Flutter-era
+    // rows sit at auto-ids (`aplicarBalanco.ts` counts them as `extras`). Merging into
+    // the canonical id is an UPSERT, so on a non-canonical row it would CREATE a second
+    // estoque doc for the same (produto, depósito) carrying neither `parentId` nor
+    // `depositoOuterRef` — canonical-id readers would then see the phantom while
+    // `readEstoque` kept finding the original, and every re-import would widen the gap.
+    // That is the very duplicate-stock harm #801 exists to remove, and rule 3 is what
+    // puts Flutter-created children (the ones with non-canonical ids) on this path.
     if (plan.estoque) {
       if (stockForWrite == null) {
         await estoqueCollection
           .docRef(db, { produtoId }, plan.estoque.docId)
           .set(estoqueCollection.parse(plan.estoque.data));
       } else {
-        await estoqueCollection.merge(db, { produtoId }, plan.estoque.docId, {
+        await estoqueCollection.merge(db, { produtoId }, stockForWrite.docId, {
           quantidade: plan.estoque.data.quantidade,
           ultimaModificacao: plan.estoque.data.ultimaModificacao,
         });
@@ -222,32 +252,125 @@ export async function importVariationChildren(
 
 interface ResolvedChild {
   produtoId: string;
-  /** Existing link doc id + raw (when resolved via the link); null via SKU. */
+  /** Existing link doc id + raw (when resolved via the link); null via SKU/combo. */
   linkDocId: string | null;
   linkRaw: Record<string, unknown> | null;
 }
 
+/** One existing child of the parent, in the shape the combination rule needs. */
+interface SiblingChild {
+  id: string;
+  /** Raw `variacoesUid` (non-string entries dropped); `[]` when absent. */
+  variacoesUid: string[];
+}
+
+interface ResolveExistingChildArgs {
+  db: Firestore;
+  mappedVariation: MappedMlVariation;
+  /** The item-wide taxonomy resolution — filtered down to this variation's own combos. */
+  taxonomia: readonly TaxonomiaResolution[];
+  parentProdutoId: string;
+  parentLinkOuterRef: string;
+  matchByItemId: boolean;
+  /** Lazy + memoised `paiId == parentProdutoId` read, owned by the caller. */
+  loadSiblings: () => Promise<SiblingChild[]>;
+}
+
 /**
- * Resolve the ERP child produto for one variation/member: first by an existing
- * `variacaoMercadoLivre` link scoped to THIS parent link (a collectionGroup
- * query, filtered by the exact `produtoMercadoLivreOuterRef` string), then by
- * `sku` + `paiId == parentProdutoId` — and when found by SKU, REUSE that
- * child's existing link for this parent if present. Null → create.
+ * Resolve the ERP child produto for one variation/member. Three rules, tried in
+ * order; the first hit wins and `null` means "mint a new child".
  *
- * `matchByItemId` selects the link-lookup field: legacy `variations[]`
- * (false) matches on the numeric `id` field (a variation id is only unique
- * within its own item, hence the parent-link scoping); User-Products (true)
- * matches on the string `itemId` field (the member's own MLB id — globally
- * unique, but still parent-scoped for symmetry/defense-in-depth).
+ *  1. **Link** — an existing `variacaoMercadoLivre` scoped to THIS parent link (a
+ *     collectionGroup query, filtered by the exact `produtoMercadoLivreOuterRef`
+ *     string). `matchByItemId` selects the field: legacy `variations[]` (false)
+ *     matches the numeric `id` (a variation id is only unique within its own
+ *     item, hence the parent-link scoping); User-Products (true) matches the
+ *     string `itemId` (the member's own MLB id — globally unique, but still
+ *     parent-scoped for symmetry/defense-in-depth).
+ *  2. **SKU** — `sku` + `paiId == parentProdutoId`, accepted only when it is
+ *     UNAMBIGUOUS (#1067, see below), reusing that child's existing link for this
+ *     parent if present (else a re-import mints a second link doc).
+ *  3. **Variation combination** (#801) — an existing child of the same parent
+ *     whose `variacoesUid` is the same SET as this variation's. This is the
+ *     ERP-first rule: rules 1 and 2 can only see a catalogue ML already knows
+ *     about, so without it a first import duplicates every child a user built in
+ *     the ERP or in Flutter.
+ *
+ * ## Why rule 2 declines an ambiguous SKU (#1067)
+ * Sibling SKUs are legally non-unique here, and that is by construction rather
+ * than corruption: a child's SKU is DERIVED as `parentSku + variante.codigo`
+ * (`variacoes.ts`), so two variants without a `codigo` yield two siblings sharing
+ * one non-empty SKU — which is why `findDuplicateSkus` exists and why the web
+ * "Gerar Variações" grid blocks the save. Flutter-era rows add plenty more: that
+ * app never validated a typed SKU at all, and its own `balancoEstoque` has a live
+ * "SKU duplicado" branch. With `limit(1)` and no `orderBy` this rule bound
+ * whichever document the index happened to return first, and a wrong bind is
+ * expensive — the child gains a real link at a deterministic id, its `precos` map
+ * is replaced wholesale under `sobrescreverPreco`, and `orderProdutoResolve`
+ * later routes incoming ML ORDERS through that link. So two guards:
+ *  - **`limit(2)`, accept only on exactly one hit** — the second document is not a
+ *    candidate, it is the ambiguity signal. On two hits the SKU cannot decide, so
+ *    resolution falls through to rule 3, which picks by combination;
+ *  - **a candidate whose link to THIS parent names a DIFFERENT variation is
+ *    rejected**, exactly as in rule 3 — the write would otherwise repoint that
+ *    link in place. Free, since `findParentLink` already ran.
+ *
+ * ⚠️ Deliberately NOT guarded: a SKU match whose `variacoesUid` contradicts the
+ * variation but is the only hit is still accepted. Rejecting it would re-open the
+ * duplication #801 closed — under the taxonomy ceiling below the resolver mints a
+ * fresh grupo, so the fake paths differ and rule 3 misses too, leaving the SKU as
+ * the only rung that still binds that catalogue. Ambiguity, not disagreement, is
+ * what this rule refuses to guess about. The residue: two ML variations sharing
+ * one `SELLER_SKU` on a FIRST import, where the colliding sibling does not exist
+ * yet and carries no link, so neither guard can see it.
+ *
+ * ## Why rule 3 is re-derived, not transcribed
+ * The legacy importer ran `paiId == x` AND `variacoesUid == <array>`
+ * (`models.dart:1176-1181`) — Firestore array equality, so order- AND
+ * length-sensitive. Its probe array is built in raw ML `attribute_combinations`
+ * order and never de-duplicated, while a child written by the produto UI is
+ * stored de-duped and re-sorted by group `ordem`; the two rarely coincide, so
+ * the legacy query missed most Flutter-created children — exactly the case it
+ * was supposed to catch. Legacy's own UI used an order-INSENSITIVE comparison,
+ * which is what {@link sameCombo} implements (and what the "Gerar Variações"
+ * grid and `reconcileStagedChildren` already use for the ERP-side twin of this
+ * problem). Re-deriving also keeps this off a new composite index: `paiId ==`
+ * alone rides the existing `produtos(paiId ASC, nome ASC)` entry by prefix,
+ * whereas `variacoesUid ==` would need one declared and deployed.
+ *
+ * Two guards make rule 3 safe:
+ *  - an **empty combination never matches** (legacy's `variacoesPath.isNotEmpty`),
+ *    otherwise an unmapped variation would claim any combo-less child;
+ *  - a candidate already carrying a link to THIS parent for a DIFFERENT variation
+ *    is rejected, so two ML variations can never collapse onto one ERP child.
+ *    That check is per-candidate rather than a per-call "claimed" set because
+ *    User-Products invokes this module once per family member — an in-run set
+ *    could not see its siblings. Legacy had no such guard.
+ *
+ * ⚠️ Reuse is NOT "leave the child alone". It takes the `isCreate === false` path,
+ * which preserves the child's own `sku` (`fillNull`) and `variacoesUid`
+ * (`fillEmptyArray`) — but under `sobrescreverPreco`, which DEFAULTS TO TRUE
+ * (`DEFAULT_IMPORT_OPTIONS`), it also replaces the child's whole `precos` map with
+ * the ML parent's (`importCore.ts`, the update branch). That is the documented
+ * meaning of the option and matches what the SKU rule has always done — note the
+ * deliberate asymmetry with `sobrescreverEstoque`, which defaults to FALSE so a
+ * re-import never clobbers ERP stock. Rule 3 makes it reachable on the ERP-first
+ * path, where the operator's own price table is the thing being replaced, so an
+ * operator enabling the import on such a catalogue is choosing that. Pinned by a
+ * test in `import.test.ts`; changing it is an option-semantics decision, not a
+ * bug fix.
+ *
+ * ⚠️ Ceiling, inherited from the taxonomy matcher, not from this rule: when the
+ * ERP's grupo matches none of `taxonomiaCore`'s rungs (attribute id, exact
+ * `nome`, or `tipo` for SIZE/COLOR) the resolver CREATES a new grupo, the fake
+ * paths differ, and the duplicate still happens. Legacy had the same ceiling.
  */
-async function resolveExistingChild(
-  db: Firestore,
-  variationId: string,
-  childSku: string | null,
-  parentProdutoId: string,
-  parentLinkOuterRef: string,
-  matchByItemId: boolean,
-): Promise<ResolvedChild | null> {
+async function resolveExistingChild(args: ResolveExistingChildArgs): Promise<ResolvedChild | null> {
+  const { db, mappedVariation, taxonomia, parentProdutoId, parentLinkOuterRef, matchByItemId } =
+    args;
+  const variationId = mappedVariation.variationId;
+  const childSku = mappedVariation.sku;
+
   if (matchByItemId) {
     const linkSnap = await variacaoMercadoLivreLinkCollection
       .groupQuery(db)
@@ -285,30 +408,134 @@ async function resolveExistingChild(
     }
   }
 
+  // Rule 2 — SKU. `limit(2)`, not `limit(1)`: the second document is never a
+  // candidate, it is the AMBIGUITY SIGNAL (#1067). Two hits mean the SKU cannot
+  // decide, so we decline and let rule 3 pick by combination. Same
+  // limit-2-as-a-detector trick `resolveSkuBalanco.ts` uses to tell "duplicado"
+  // from "encontrado" — one extra document read buys the distinction.
   if (childSku) {
     const skuSnap = await produtoCollection
       .ref(db, {})
       .where('sku', '==', childSku)
       .where('paiId', '==', parentProdutoId)
-      .limit(1)
+      .limit(2)
       .get();
-    const doc = skuSnap.docs[0];
+    const doc = skuSnap.docs.length === 1 ? skuSnap.docs[0] : undefined;
     if (doc) {
       // Reuse an existing link to THIS parent under the SKU-matched child, so a
-      // re-import updates it rather than creating a second link doc.
-      const linkSub = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: doc.id }).get();
-      const existingLink = linkSub.docs.find(
-        (l) =>
-          (l.data() as Record<string, unknown>).produtoMercadoLivreOuterRef === parentLinkOuterRef,
-      );
+      // re-import updates it rather than creating a second link doc — but only
+      // when that link is not already spoken for. `assembleVariationChildPlan`
+      // overwrites the naming field unconditionally, so adopting a link that names
+      // a DIFFERENT variation would silently repoint it in place and strand that
+      // variation. Same guard and same fail-safe direction as rule 3, and free:
+      // the link doc is already in hand.
+      const existingLink = await findParentLink(db, doc.id, parentLinkOuterRef);
+      if (!existingLink || !linkNamesOtherVariation(existingLink.raw, variationId, matchByItemId)) {
+        return {
+          produtoId: doc.id,
+          linkDocId: existingLink?.id ?? null,
+          linkRaw: existingLink?.raw ?? null,
+        };
+      }
+    }
+  }
+
+  // Rule 3 — variation combination (#801). Skipped entirely when this variation
+  // resolved to nothing, which is also what keeps the lazy sibling read unpaid on
+  // a listing whose attributes the taxonomy could not map.
+  const { varianteFakes } = resolveVariationCombo(mappedVariation.combos, taxonomia);
+  if (varianteFakes != null && varianteFakes.length > 0) {
+    for (const sibling of await args.loadSiblings()) {
+      if (sibling.variacoesUid.length === 0) continue;
+      if (!sameCombo(sibling.variacoesUid, varianteFakes)) continue;
+
+      const existingLink = await findParentLink(db, sibling.id, parentLinkOuterRef);
+      // A link to this parent naming a DIFFERENT variation means the child is already
+      // spoken for — leave it alone and keep looking, rather than merging two ML
+      // variations onto one produto. A link naming NOTHING readable is not that: see
+      // the ⚠️ on `linkNamesOtherVariation`.
+      if (existingLink && linkNamesOtherVariation(existingLink.raw, variationId, matchByItemId)) {
+        continue;
+      }
       return {
-        produtoId: doc.id,
+        produtoId: sibling.id,
         linkDocId: existingLink?.id ?? null,
-        linkRaw: existingLink ? (existingLink.data() as Record<string, unknown>) : null,
+        linkRaw: existingLink?.raw ?? null,
       };
     }
   }
+
   return null;
+}
+
+/**
+ * The `variacaoMercadoLivre` link under `produtoId` that points at THIS parent
+ * link, if any. A child holds one link per (parent link, integração), so the
+ * subcollection is tiny and an in-memory filter beats a second indexed query.
+ */
+async function findParentLink(
+  db: Firestore,
+  produtoId: string,
+  parentLinkOuterRef: string,
+): Promise<{ id: string; raw: Record<string, unknown> } | null> {
+  const linkSub = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId }).get();
+  for (const l of linkSub.docs) {
+    const raw = l.data() as Record<string, unknown>;
+    if (raw.produtoMercadoLivreOuterRef === parentLinkOuterRef) return { id: l.id, raw };
+  }
+  return null;
+}
+
+/**
+ * Does this link doc name a variation OTHER than `variationId` — i.e. is the child
+ * already claimed by one of its siblings? Reads the same field the rule-1 query keys
+ * on (`itemId` for User-Products, `id` for legacy `variations[]`), compared as a
+ * string because the legacy `id` is an int but Flutter-written rows may hold a
+ * stringified one.
+ *
+ * ⚠️ An absent/unreadable key answers **FALSE**, deliberately: "names nothing" is not
+ * evidence of anyone else's claim, and treating it as one is self-inflicted. The
+ * naming field is written as `numericVariationId(variationId)`, which is **`null`
+ * whenever the ML variation id is non-numeric** — a shape `itemVariationSchema`
+ * accepts outright ("ML has sent numeric and (rarely) string ids over time"). So this
+ * importer writes null-id links itself; reading one back as "spoken for" made a
+ * re-import decline the link it had just written, and mint a duplicate child on every
+ * single run. Pinned by the three-import test in `import.test.ts`.
+ */
+function linkNamesOtherVariation(
+  raw: Record<string, unknown>,
+  variationId: string,
+  matchByItemId: boolean,
+): boolean {
+  const key = matchByItemId ? raw.itemId : raw.id;
+  if (typeof key !== 'string' && typeof key !== 'number') return false;
+  return String(key) !== variationId;
+}
+
+/**
+ * The parent's existing children (`paiId ==`), projected to what rule 3 compares.
+ * Raw reads — `produtoCollection.ref` carries no converter, and a full parse here
+ * would be both wasted work and a needless failure surface on Flutter-era rows.
+ *
+ * ⚠️ Rides the existing `produtos(paiId ASC, nome ASC)` composite by prefix — do
+ * not add an `orderBy`/second filter without checking `firestore.indexes.json`
+ * first; Enterprise auto-creates nothing and an unindexed query silently
+ * full-scans onto the invoice.
+ */
+async function readSiblingChildren(
+  db: Firestore,
+  parentProdutoId: string,
+): Promise<SiblingChild[]> {
+  const snap = await produtoCollection.ref(db, {}).where('paiId', '==', parentProdutoId).get();
+  return snap.docs.map((d) => {
+    const raw = (d.data() ?? {}) as { variacoesUid?: unknown };
+    return {
+      id: d.id,
+      variacoesUid: Array.isArray(raw.variacoesUid)
+        ? raw.variacoesUid.filter((u): u is string => typeof u === 'string')
+        : [],
+    };
+  });
 }
 
 /**
@@ -338,11 +565,20 @@ async function readRaw(
   return snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
 }
 
+/**
+ * The child's stock row for `depositoId`, matched by `depositoOuterRef` under ANY
+ * doc id — Flutter wrote these at auto-ids, so keying on the canonical
+ * `makeEstoqueUid` would miss them.
+ *
+ * Returns `docId` alongside the quantities precisely because of that: the caller
+ * must write back to the row it read, not to the canonical id (see the ⚠️ on the
+ * estoque write above).
+ */
 async function readEstoque(
   db: Firestore,
   produtoId: string,
   depositoId: string,
-): Promise<{ quantidade: number; reservada: number } | null> {
+): Promise<{ docId: string; quantidade: number; reservada: number } | null> {
   const snap = await estoqueCollection.ref(db, { produtoId }).get();
   for (const d of snap.docs) {
     const data = d.data() as {
@@ -355,6 +591,7 @@ async function readEstoque(
       lastSegment(data.depositoOuterRef) === depositoId
     ) {
       return {
+        docId: d.id,
         quantidade: typeof data.quantidade === 'number' ? data.quantidade : 0,
         reservada: typeof data.quantidadeReservada === 'number' ? data.quantidadeReservada : 0,
       };

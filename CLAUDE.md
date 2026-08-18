@@ -7,7 +7,7 @@ skills in `.claude/skills/`, the ADRs under `apps/docs/`, and package READMEs.
 
 `@delfrance/erp-next` (Apache-2.0) — a multi-app Next.js/Turborepo monorepo, the
 OSS rewrite of the Delfrance Flutter ERP at feature parity on the same Firebase
-backend. See `README.md` and `CONTRIBUTING.md`. The Flutter app is a separate
+backend. See `README.md` and `.github/CONTRIBUTING.md`. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 

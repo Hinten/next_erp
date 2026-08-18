@@ -19,9 +19,12 @@ import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import {
+  CATEGORIA_TESTE_RAIZ_NOMES,
   DESCRICAO_ANUNCIO_TESTE,
+  PROFUNDIDADE_MAX_CATEGORIA_TESTE,
   TITULO_ANUNCIO_TESTE,
   encontrarCategoriaTeste,
+  escolherDescendenteTeste,
   escolherTipoAnuncioTeste,
   isContaDeTeste,
 } from '@/lib/marketplace/anuncioTeste';
@@ -35,6 +38,9 @@ import {
   getListingTypesCached,
 } from '@/lib/marketplace/mlMetadataCache';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+
+/** Enough to diagnose a rename; a full site tree does not belong in a log line. */
+const MAX_RAIZES_LOGADAS = 40;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -54,30 +60,82 @@ export async function GET(req: Request): Promise<NextResponse> {
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
     const [raizes, me] = await Promise.all([getCategoriasRaizCached(api), api.getMe()]);
-    const encontrada = encontrarCategoriaTeste(raizes);
+    const raiz = encontrarCategoriaTeste(raizes);
 
-    // The listing type is a per-CATEGORY answer, so it can only be resolved once
-    // a category is. No usable "Outros" ⇒ no type either, and the operator picks both.
+    // ⚠️ **Descend to a LEAF.** Only a leaf can be published into, and ML's
+    // "Outros" is a root WITH children — so the previous "root must itself be a
+    // leaf" test failed every time, the route always answered `categoryId: null`,
+    // and the form's null-guard skipped the write. The operator watched the title
+    // change while the category and the whole attribute grid sat still.
     //
-    // ⚠️ A mid-tree "Outros" is reported as NO category, not as a category with
-    // no types. Only a leaf can be published into, so handing the form a
-    // mid-tree `category_id` would write a value publish must reject while the
-    // UI blamed the listing types — the failure would point at the wrong field.
-    // "Outros" is a leaf on MLB today, but that is ML's to change.
+    // Walking is the fix, not a hardcoded id: `escolherDescendenteTeste` prefers a
+    // child also named "Outros" and otherwise takes the first, so the listing
+    // lands inside the category ML's own documentation asks test listings to use.
+    // The resolved path rides back so the operator can see the choice and change it.
+    //
+    // The listing type is a per-CATEGORY answer, so it is only queried once a leaf
+    // is in hand. No leaf ⇒ no type either, and the operator picks both.
     let listingTypeId: string | null = null;
     let categoryId: string | null = null;
-    if (encontrada != null) {
-      const node = await getCategoriaCached(api, encontrada);
-      if (isLeafCategory(node.children_categories)) {
-        categoryId = encontrada;
-        listingTypeId = escolherTipoAnuncioTeste(await getListingTypesCached(api, encontrada));
+    let categoriaPath: string[] | null = null;
+    // ⚠️ WHY there is no category, not just that there isn't one. The two causes
+    // need different actions from the operator — "ML has no Outros root on this
+    // site" is nothing they can fix, while "no leaf beneath it" means picking a
+    // subcategory — and a single "não foi possível" message sent them hunting.
+    let categoriaMotivo: 'sem-raiz' | 'sem-folha' | null = null;
+
+    if (raiz == null) categoriaMotivo = 'sem-raiz';
+
+    if (raiz != null) {
+      const trilha: string[] = [];
+      let atual: string | null = raiz;
+      // Bounded: each hop is one `GET /categories/{id}`. The cache is global —
+      // ML category metadata is not per-seller — so repeat clicks are free.
+      for (let i = 0; atual != null && i < PROFUNDIDADE_MAX_CATEGORIA_TESTE; i += 1) {
+        const node = await getCategoriaCached(api, atual);
+        trilha.push(node.name ?? atual);
+        if (isLeafCategory(node.children_categories)) {
+          categoryId = atual;
+          categoriaPath = trilha;
+          listingTypeId = escolherTipoAnuncioTeste(await getListingTypesCached(api, atual));
+          break;
+        }
+        atual = escolherDescendenteTeste(node.children_categories ?? []);
       }
+      if (categoryId == null) categoriaMotivo = 'sem-folha';
+    }
+
+    // ⚠️ **ERROR level, and the only detection mechanism there is.** This fires
+    // when OUR assumption about ML's catalogue stops holding — not when the
+    // operator did anything wrong — and it already happened once: ML documents
+    // «publique na categoria "Outros"» while MLB's actual root is
+    // "Mais Categorias", so the feature silently did nothing until someone drove
+    // it by hand.
+    //
+    // No test can catch a repeat. ML has **no sandbox** and its refresh_token is
+    // single-use and rotating, so no CI lane may ever hold real ML credentials
+    // (see this app's CLAUDE.md) — which means nothing automated can see the
+    // live tree. A log line is the entire early-warning system, so it names both
+    // what we expected AND what ML actually answered: a rename is then one look
+    // away rather than another round of manual testing.
+    if (categoriaMotivo != null) {
+      const vistos = raizes
+        .map((c) => c.name ?? c.id)
+        .slice(0, MAX_RAIZES_LOGADAS)
+        .join(' | ');
+      console.error(
+        `[mercado-livre/api] categoria de teste NÃO resolvida (${categoriaMotivo}). ` +
+          `Esperado um root chamado [${CATEGORIA_TESTE_RAIZ_NOMES.join(' | ')}]. ` +
+          `ML respondeu ${String(raizes.length)} roots: ${vistos}`,
+      );
     }
 
     return NextResponse.json({
       title: TITULO_ANUNCIO_TESTE,
       descricao: DESCRICAO_ANUNCIO_TESTE,
       categoryId,
+      categoriaPath,
+      categoriaMotivo,
       listingTypeId,
       conta: {
         nickname: me.nickname ?? null,

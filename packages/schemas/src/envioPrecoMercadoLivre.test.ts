@@ -29,9 +29,6 @@ describe('envioPrecoMercadoLivreSchema', () => {
       integracaoId: 'INT1',
       status: 'running',
       baixarPreco: false,
-      // #804 S6 — absent means the conta-wide job, so an existing doc written
-      // before the field keeps behaving exactly as it did.
-      produtoId: null,
       afterAnchorId: null,
       planejamentoConcluido: false,
       fila: [],
@@ -46,29 +43,6 @@ describe('envioPrecoMercadoLivreSchema', () => {
       finishedAt: null,
       erro: null,
     });
-  });
-
-  it('carries a produto SCOPE, and rejects an empty one (#804 S6)', () => {
-    expect(
-      envioPrecoMercadoLivreSchema.parse({
-        integracaoId: 'INT1',
-        status: 'running',
-        produtoId: 'prod-9',
-        startedAt: 1,
-        updatedAt: 1,
-      }).produtoId,
-    ).toBe('prod-9');
-    // An empty string would read as "scoped" while naming no produto — the plan
-    // would then read a doc at `produtos/` and quietly return nothing.
-    expect(
-      envioPrecoMercadoLivreSchema.safeParse({
-        integracaoId: 'INT1',
-        status: 'running',
-        produtoId: '',
-        startedAt: 1,
-        updatedAt: 1,
-      }).success,
-    ).toBe(false);
   });
 
   it('parses a full in-progress job (mid-fila, mid-plan)', () => {

@@ -28,8 +28,25 @@ export const TITULO_ANUNCIO_TESTE = 'Item de Teste – Por favor, NÃO OFERTAR!'
 export const DESCRICAO_ANUNCIO_TESTE =
   'Anúncio de teste criado para validar a integração. Não está à venda — por favor, não oferte.';
 
-/** The category name ML asks test listings to use, matched case-insensitively. */
+/** The category name ML's documentation asks test listings to use. */
 export const CATEGORIA_TESTE_NOME = 'Outros';
+
+/**
+ * The ROOT names that stand in for "Outros" on a site, matched
+ * case-insensitively.
+ *
+ * ⚠️ **MLB has no root called "Outros"**, which is why the documented name alone
+ * found nothing and the whole feature silently did nothing — `categoryId` came
+ * back null on every call and the descent below never even started. Verified
+ * against the live catalogue (2026-08-14, conta Lucas Teste): MLB's roots run
+ * "Acessórios para Veículos" … "Serviços" and end in **"Mais Categorias"**, and
+ * `Mais Categorias › Outros` is a LEAF one level down — exactly the shape
+ * `escolherDescendenteTeste` resolves.
+ *
+ * `'Outros'` stays first: it is what ML documents, it is what other sites use,
+ * and if MLB ever promotes it to a root this keeps working without a change.
+ */
+export const CATEGORIA_TESTE_RAIZ_NOMES: readonly string[] = ['Outros', 'Mais Categorias'];
 
 /**
  * Listing types that must never carry a test listing.
@@ -79,8 +96,48 @@ export function escolherTipoAnuncioTeste(
 export function encontrarCategoriaTeste(
   raizes: ReadonlyArray<{ id: string; name?: string | null }>,
 ): string | null {
+  // In preference order, so a site that really does expose "Outros" as a root
+  // uses it rather than the catch-all.
+  for (const nome of CATEGORIA_TESTE_RAIZ_NOMES) {
+    const alvo = normalizar(nome);
+    const hit = raizes.find((c) => normalizar(c.name ?? '') === alvo);
+    if (hit) return hit.id;
+  }
+  return null;
+}
+
+/**
+ * How deep the descent below "Outros" may go.
+ *
+ * Each level costs one `GET /categories/{id}`, so this is the only thing bounding
+ * the call count. Six is far past MLB's real depth and still cheap; a tree that
+ * needs more is one this feature should decline rather than crawl.
+ */
+export const PROFUNDIDADE_MAX_CATEGORIA_TESTE = 6;
+
+/**
+ * Pick which child to descend into on the way to a leaf.
+ *
+ * ⚠️ **This is why the whole feature was silently doing nothing.** ML's "Outros"
+ * is a ROOT with children, and only a leaf can be published into — so requiring
+ * the root itself to be a leaf meant `categoryId` came back `null` on every
+ * single call, the form's (correct) null-guard skipped the write, and the
+ * operator saw the title change while the category and the whole attribute grid
+ * sat still.
+ *
+ * Prefer a child that is itself named "Outros" — ML nests it that way, and it is
+ * the most neutral place a test listing can land. Otherwise take the first child:
+ * still inside "Outros", which is the category ML's own documentation asks test
+ * listings to use, and the operator sees the resolved path and can change it.
+ * Never a hardcoded id.
+ */
+export function escolherDescendenteTeste(
+  filhos: ReadonlyArray<{ id: string; name?: string | null }>,
+): string | null {
+  if (filhos.length === 0) return null;
   const alvo = normalizar(CATEGORIA_TESTE_NOME);
-  return raizes.find((c) => normalizar(c.name ?? '') === alvo)?.id ?? null;
+  const homonimo = filhos.find((c) => normalizar(c.name ?? '') === alvo);
+  return (homonimo ?? filhos[0])?.id ?? null;
 }
 
 /**

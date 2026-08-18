@@ -94,10 +94,24 @@ export function db(serviceAccountPath?: string): Firestore {
 }
 
 /**
- * Each Playwright run gets its own namespace prefix to avoid collisions when
- * multiple PRs run in parallel against the same staging project.
+ * The rules probe collection: a FIXED name, with the run id as the DOCUMENT id.
+ *
+ * The run id used to live in the collection *name* (`e2e_<runId>_probe`), which
+ * meant every run minted a new collection and reclaiming another run's leftovers
+ * needed a root `listCollections()` — a cost that grows with the leak itself.
+ * With the id in the key, teardown is a keyed `delete()`: O(1), no enumeration.
+ *
+ * Still matches the staging-only rule regex `^e2e_[0-9A-Za-z_]+$`
+ * (`firestore.e2e.rules`), so nothing about the ruleset changes.
  */
-export function namespace(): string {
-  const runId = process.env.GITHUB_RUN_ID ?? 'local';
-  return `e2e_${runId}`;
+export const E2E_PROBE_COLLECTION = 'e2e_probe';
+
+/**
+ * Deterministic per-run key, isolating parallel runs against the shared staging
+ * project. Stable across re-run attempts by design — GitHub reuses
+ * `GITHUB_RUN_ID` and only bumps `GITHUB_RUN_ATTEMPT`, so attempt 2 reclaims
+ * attempt 1's doc instead of leaking it.
+ */
+export function e2eRunId(): string {
+  return process.env.GITHUB_RUN_ID ?? 'local';
 }

@@ -1,21 +1,12 @@
 /**
  * `POST /api/marketplace/mercado-livre/atualizar-precos` — kick off the manual
- * price sync ("Atualizar preços") for a Mercado Livre account: pushes
+ * bulk price sync ("Atualizar preços") for a Mercado Livre account: pushes
  * each linked produto's price (the conta's tabela normal) to its ML listings,
  * checkpointed in an admin-only `enviosPrecoMercadoLivre` job doc processed
  * asynchronously by a Cloud Tasks queue (see `lib/marketplace/precoSync.ts` +
- * `lib/marketplace/mlPriceSyncTasks.ts`). Body: `{ integracaoId, baixarPreco?,
- * produtoId? }`.
- *
- * `produtoId` scopes the run to ONE produto (#804 S6) instead of the conta's
- * whole catalogue — the produto screen's own price action, and what the
- * "Republicar e atualizar preços" button calls after a publish. It also flips
- * the `baixarPreco` default: FALSE conta-wide (a bulk run must not lower every
- * listing sitting below its ML price unasked) but TRUE for one produto, since
- * the operator named it — legacy's per-produto row action passed `true` for the
- * same reason. An explicit value in the body wins over both.
- *
- * Requires `PERM.integracao.write`.
+ * `lib/marketplace/mlPriceSyncTasks.ts`). Body: `{ integracaoId,
+ * baixarPreco? }` — `baixarPreco` defaults to false, i.e. price DECREASES are
+ * skipped unless the user opts in. Requires `PERM.integracao.write`.
  *
  * The conta must have a tabela normal configured — without one there is no
  * price source, so the route fails fast with 400 `SEM_TABELA_NORMAL` BEFORE
@@ -40,23 +31,10 @@ import { createMlPriceSyncScheduler } from '@/lib/marketplace/mlPriceSyncTasks';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-/**
- * Tolerant of an absent `baixarPreco`; rejects wrong types.
- *
- * ⚠️ `baixarPreco` has NO default here any more, because the two scopes need
- * opposite ones. The conta-wide job keeps `false` — a bulk run must never lower
- * every listing sitting below its ML price without an explicit opt-in. A
- * `produtoId`-scoped run defaults to `true`: the operator picked one produto and
- * asked for its price, and legacy's own per-produto row action passed
- * `baixarPreco: true` for exactly that reason
- * (`.old/lib/produtos/pages/produtoTableView.dart:604-608`). An explicit value
- * in the body still wins over both.
- */
+/** Tolerant of an absent `baixarPreco` (→ false); rejects wrong types. */
 const bodySchema = z.object({
   integracaoId: z.string().min(1),
-  baixarPreco: z.boolean().optional(),
-  /** Scope the run to ONE anchor produto (#804 S6). */
-  produtoId: z.string().min(1).optional(),
+  baixarPreco: z.boolean().default(false),
 });
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -75,15 +53,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   const body = bodySchema.safeParse(parsed);
   if (!body.success) {
     return NextResponse.json(
-      {
-        error:
-          'Body inválido: integracaoId é obrigatório; baixarPreco é booleano opcional; produtoId é string opcional.',
-      },
+      { error: 'Body inválido: integracaoId é obrigatório; baixarPreco é booleano opcional.' },
       { status: 400 },
     );
   }
-  const { integracaoId, produtoId } = body.data;
-  const baixarPreco = body.data.baixarPreco ?? produtoId != null;
+  const { integracaoId, baixarPreco } = body.data;
 
   const db = getAdminFirestore();
   try {
@@ -109,7 +83,6 @@ export async function POST(req: Request): Promise<NextResponse> {
       const started = await startPriceSyncJob(db, {
         integracaoId,
         baixarPreco,
-        produtoId: produtoId ?? null,
         startedBy: auth.caller.uid,
       });
       jobId = started.jobId;

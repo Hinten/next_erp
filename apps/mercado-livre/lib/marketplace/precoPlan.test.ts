@@ -11,6 +11,7 @@ import {
   type PrecoFamilyRow,
   type PrecoLinkRow,
   buildPrecoDrafts,
+  fetchPrecoFamiliasByIds,
   fetchPrecoPage,
   podeEnviarPreco,
   precoItemsPerDispatch,
@@ -66,15 +67,10 @@ class FakeDb {
         max = n;
         return q;
       },
-      // The produto-scoped plan (#804 S6) reads its one anchor by id — no
-      // query, so none of the clauses above apply to it.
+      // `fetchPrecoFamiliasByIds` reads anchors by KEY — the ref only has to
+      // carry enough for this fake's `getAll` to find the doc again.
       doc(id: string) {
-        return {
-          id,
-          async get() {
-            return { exists: col.has(id), id, data: () => col.get(id) };
-          },
-        };
+        return { id, __col: path, __id: id };
       },
       async get() {
         let rows = [...col.entries()].filter(([, d]) =>
@@ -91,6 +87,20 @@ class FakeDb {
       },
     };
     return q;
+  }
+
+  /** Batch key read — a missing document is simply ABSENT-flagged, never thrown. */
+  getAll(...args: unknown[]) {
+    const refs = args.filter(
+      (a): a is { __col: string; __id: string } =>
+        a != null && typeof a === 'object' && '__id' in a,
+    );
+    return Promise.resolve(
+      refs.map((ref) => {
+        const data = this.col(ref.__col).get(ref.__id);
+        return { id: ref.__id, exists: data != null, data: () => data };
+      }),
+    );
   }
 }
 
@@ -172,6 +182,11 @@ function familyRow(over: Partial<PrecoFamilyRow> = {}): PrecoFamilyRow {
     produtoId: 'PROD',
     precos: { [TAB]: { valor: 10 } },
     propagatePriceToChildren: true,
+    // A `fetchPrecoPage` row always carries these two (the query constrains
+    // both); a `fetchPrecoFamiliasByIds` row carries whatever the produto
+    // stores, which is what makes #804's excluded classes visible.
+    publicado: true,
+    paiId: null,
     links: [linkRow()],
     children: [],
     ...over,
@@ -594,6 +609,8 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
         produtoId: 'A1',
         precos: { [TAB]: { valor: 10 } },
         propagatePriceToChildren: true,
+        publicado: true,
+        paiId: null,
         links: [
           {
             linkDocId: 'link1',
@@ -608,49 +625,6 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
       },
     ]);
     expect(page.nextAfterAnchorId).toBeNull(); // short page — backlog drained
-  });
-
-  it('produtoId scopes the plan to ONE anchor and drains in a single page (#804 S6)', async () => {
-    const db = new FakeDb();
-    seedAnchor(db, 'A1');
-    seedLink(db, 'A1', 'link1');
-    seedAnchor(db, 'A2');
-    seedLink(db, 'A2', 'link2');
-
-    const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, produtoId: 'A2' });
-
-    expect(page.rows.map((r) => r.produtoId)).toEqual(['A2']);
-    // No cursor: one anchor is the whole backlog, so the job completes in its
-    // first dispatch instead of re-planning a second empty page.
-    expect(page.nextAfterAnchorId).toBeNull();
-    // The joins are the SAME ones the bulk page does — links and children are
-    // still resolved, so the drafts downstream are identical.
-    expect(page.rows[0]!.links.map((l) => l.linkDocId)).toEqual(['link2']);
-  });
-
-  it('a scoped plan reaches produtos the BULK query silently drops', async () => {
-    // Two of the three classes #804 S7 reports the bulk job never enumerating:
-    // an unpublished produto with a live listing, and a drifted
-    // `integracoesComProduto` denorm. The operator named this produto — their
-    // explicit request must not be a silent no-op.
-    const db = new FakeDb();
-    seedAnchor(db, 'A1', { publicado: false, integracoesComProduto: ['outra-conta'] });
-    seedLink(db, 'A1', 'link1');
-
-    expect(
-      (await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 })).rows,
-    ).toHaveLength(0);
-    expect(
-      (await fetchPrecoPage(asDb(db), { integracaoId: CONTA, produtoId: 'A1' })).rows,
-    ).toHaveLength(1);
-  });
-
-  it('a scoped plan on a missing produto yields nothing rather than throwing', async () => {
-    const page = await fetchPrecoPage(asDb(new FakeDb()), {
-      integracaoId: CONTA,
-      produtoId: 'nao-existe',
-    });
-    expect(page).toEqual({ rows: [], nextAfterAnchorId: null });
   });
 
   it('keyset: a FULL page sets nextAfterAnchorId; the resumed page drains', async () => {
@@ -735,6 +709,8 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
         produtoId: 'A1',
         precos: null,
         propagatePriceToChildren: true,
+        publicado: true,
+        paiId: null,
         links: [
           {
             linkDocId: 'link1',
@@ -762,5 +738,129 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
     seedLink(db, 'A1', 'link1');
     const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 });
     expect(page.rows[0]!.propagatePriceToChildren).toBe(false);
+  });
+});
+
+/**
+ * #804 S7's three classes, from the by-ids side. Each of these produces NO row
+ * at all from `fetchPrecoPage` — the anchor query filters it out server-side —
+ * which is precisely why the manual push reads anchors by key instead.
+ */
+describe('fetchPrecoFamiliasByIds — the manual push target set', () => {
+  it('returns an UNPUBLISHED produto that has a live link (fetchPrecoPage drops it silently)', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'A1', { publicado: false });
+    seedLink(db, 'A1', 'link1');
+
+    // The bulk query sees nothing at all…
+    const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 });
+    expect(page.rows).toEqual([]);
+
+    // …while the by-ids read hands the caller a row it can report on.
+    const rows = await fetchPrecoFamiliasByIds(asDb(db), {
+      integracaoId: CONTA,
+      anchorIds: ['A1'],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.publicado).toBe(false);
+    expect(rows[0]!.links).toHaveLength(1);
+  });
+
+  it('returns a produto whose integracoesComProduto denorm drifted (empty) but whose link is live', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'A1', { integracoesComProduto: [] });
+    seedLink(db, 'A1', 'link1');
+
+    expect((await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 })).rows).toEqual(
+      [],
+    );
+
+    const rows = await fetchPrecoFamiliasByIds(asDb(db), {
+      integracaoId: CONTA,
+      anchorIds: ['A1'],
+    });
+    expect(rows.map((r) => r.produtoId)).toEqual(['A1']);
+    expect(rows[0]!.links).toHaveLength(1);
+  });
+
+  it('surfaces paiId so a 2-deep chain is reportable rather than priced as a family', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'MID', { paiId: 'TOP' });
+    seedLink(db, 'MID', 'link1');
+
+    const rows = await fetchPrecoFamiliasByIds(asDb(db), {
+      integracaoId: CONTA,
+      anchorIds: ['MID'],
+    });
+    expect(rows[0]!.paiId).toBe('TOP');
+  });
+
+  it('omits a missing document instead of throwing — the caller diffs against anchorIds', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'A1');
+    seedLink(db, 'A1', 'link1');
+
+    const rows = await fetchPrecoFamiliasByIds(asDb(db), {
+      integracaoId: CONTA,
+      anchorIds: ['A1', 'SUMIU'],
+    });
+    expect(rows.map((r) => r.produtoId)).toEqual(['A1']);
+  });
+
+  it('dedupes anchorIds and short-circuits on an empty selection', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'A1');
+    seedLink(db, 'A1', 'link1');
+
+    const rows = await fetchPrecoFamiliasByIds(asDb(db), {
+      integracaoId: CONTA,
+      anchorIds: ['A1', 'A1'],
+    });
+    expect(rows).toHaveLength(1);
+
+    expect(await fetchPrecoFamiliasByIds(asDb(db), { integracaoId: CONTA, anchorIds: [] })).toEqual(
+      [],
+    );
+  });
+
+  it('joins the conta links and the variation children, same as a page row', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'A1');
+    seedLink(db, 'A1', 'link1', { isUserProductModel: true });
+    db.seed('produtos', 'C1', { paiId: 'A1', precos: { [TAB]: { valor: 7 } } });
+    db.seed('produtos/C1/variacaoMercadoLivre', 'v1', {
+      itemId: 'MLB222',
+      produtoMercadoLivreOuterRef: 'documents/produtos/A1/produtoMercadoLivre/link1',
+    });
+
+    const rows = await fetchPrecoFamiliasByIds(asDb(db), {
+      integracaoId: CONTA,
+      anchorIds: ['A1'],
+    });
+    expect(rows[0]!.children).toEqual([
+      {
+        produtoId: 'C1',
+        precos: { [TAB]: { valor: 7 } },
+        varLinks: [
+          {
+            docId: 'v1',
+            itemId: 'MLB222',
+            produtoMercadoLivreOuterRef: 'documents/produtos/A1/produtoMercadoLivre/link1',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('matches the bare `integracao/<id>` contaOuterRef form too', async () => {
+    const db = new FakeDb();
+    seedAnchor(db, 'A1');
+    seedLink(db, 'A1', 'link1', { contaOuterRef: `integracao/${CONTA}` });
+
+    const rows = await fetchPrecoFamiliasByIds(asDb(db), {
+      integracaoId: CONTA,
+      anchorIds: ['A1'],
+    });
+    expect(rows[0]!.links).toHaveLength(1);
   });
 });
