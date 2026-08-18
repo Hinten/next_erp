@@ -187,6 +187,50 @@ export interface MercadoLivreEnvioEstoqueResult {
 }
 
 /**
+ * One listing's outcome from an on-demand PRICE push (#804).
+ *
+ * Channel-NEUTRAL on purpose (`anuncioId`, not `itemId`): the second
+ * marketplace's `/api/marketplace/<canal>/enviar-precos` answers with the same
+ * envelope, and `lib/marketplace/preco` dispatches without knowing which one
+ * replied.
+ *
+ * ⚠️ `motivo` is UPPER_SNAKE here and kebab on the stock envelope. That is not
+ * an oversight — these are the price stack's own codes, the same ones the
+ * account-wide job persists in its `skips` list. Nothing in this layer reads
+ * them; `mensagem` is what gets rendered.
+ */
+export interface MercadoLivreEnvioPrecoListing {
+  produtoId: string;
+  produtoNome: string | null;
+  variacaoProdutoId: string | null;
+  anuncioId: string | null;
+  linkDocId: string | null;
+  outcome: 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
+  /** Machine code; null only on `'enviado'`. */
+  motivo: string | null;
+  /** Operator-facing pt-BR text — the BACKEND owns this wording. */
+  mensagem: string;
+  /** The price actually sent; null when nothing was sent. */
+  preco: number | null;
+  /** What the listing carried before, when the run got far enough to read it. */
+  precoAnterior: number | null;
+  variacoes: number | null;
+}
+
+export interface MercadoLivreEnvioPrecoResult {
+  canal: 'mercado-livre';
+  integracaoId: string;
+  contaNome: string | null;
+  solicitados: number;
+  familias: number;
+  resumo: { enviados: number; pulados: number; falhas: number; naoTentados: number };
+  listings: MercadoLivreEnvioPrecoListing[];
+  produtosSemEnvio: MercadoLivreEnvioEstoqueSemEnvio[];
+  /** ISO-8601 — set when ML rate-limited the conta. */
+  pausadoAte: string | null;
+}
+
+/**
  * The RUNNING jobs of both bulk flows for a set of contas
  * (`GET jobs-em-andamento`). Each entry carries the `jobId` the caller then
  * polls through the per-flow `…Status` methods, plus the `integracaoId` that
@@ -581,6 +625,28 @@ export interface MercadoLivreClient {
     signal?: AbortSignal;
   }): Promise<MercadoLivreEnvioEstoqueResult>;
   /**
+   * Push the CURRENT price of up to 50 produtos to their ML listings, right now
+   * (PERM.integracao.write) — the produto-scoped twin of `startPriceSync`
+   * (#804), restoring the legacy produtos-table row action.
+   *
+   * SYNCHRONOUS: it returns one outcome per LISTING, not a job id. Per-listing
+   * failure is DATA — a valid request answers 200 even when every listing
+   * failed — so only conta-level refusals throw: 400 `ML_SELECAO_EXCEDE_LIMITE`
+   * (an oversize selection is rejected, never truncated) and 400
+   * `ML_CONTA_SEM_TABELA_NORMAL`.
+   *
+   * `baixarPreco` allows the send to LOWER a listing's price. The produtos
+   * table defaults it ON, unlike the account-wide job: hand-picking produtos IS
+   * the explicit intent, and it is what the legacy per-produto action did
+   * unconditionally. Unticked, a decrease skips `PRECO_ANTIGO_MAIOR`.
+   */
+  enviarPrecos(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    baixarPreco?: boolean;
+    signal?: AbortSignal;
+  }): Promise<MercadoLivreEnvioPrecoResult>;
+  /**
    * The RUNNING mass-import and price-sync jobs across a set of contas, in one
    * round trip (PERM.integracao.read) — how the channel list re-attaches its
    * pollers after a reload, since a `jobId` only ever lived in React state.
@@ -933,6 +999,16 @@ export function createMercadoLivreClient(config: {
           integracaoId: input.integracaoId,
           produtoIds: input.produtoIds,
           reenviarComErro: input.reenviarComErro ?? false,
+        },
+        input.signal,
+      ),
+    enviarPrecos: (input) =>
+      call<MercadoLivreEnvioPrecoResult>(
+        '/api/marketplace/mercado-livre/enviar-precos',
+        {
+          integracaoId: input.integracaoId,
+          produtoIds: input.produtoIds,
+          baixarPreco: input.baixarPreco ?? false,
         },
         input.signal,
       ),
