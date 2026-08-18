@@ -194,11 +194,6 @@ export function buildDevolucaoPedido(
     chNFeReferenciadas: args.chNFeReferenciadas.length > 0 ? [...args.chNFeReferenciadas] : null,
     saidasRelacionadas: [...args.saidasRelacionadas],
     valorCobrado: totals.valorCobrado,
-    valorCusto: totals.valorCusto,
-    valorFreteInicial: totals.valorFreteInicial,
-    custoFreteInicial: totals.custoFreteInicial,
-    valorDevolucao: totals.valorDevolucao,
-    valorCustoDevolvidos: totals.valorCustoDevolvidos,
     timestamp: now,
     ultimaModificacao: now,
   });

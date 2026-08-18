@@ -59,7 +59,6 @@ service cloud.firestore {
       return (!c.hasAny(['bloquearEmissaoNFe']) || (d.get('bloquearEmissaoNFe', null) == null || d.get('bloquearEmissaoNFe', null) is bool))
         && (!c.hasAny(['chNFeReferenciadas']) || (d.get('chNFeReferenciadas', null) == null || d.get('chNFeReferenciadas', null) is list))
         && (!c.hasAny(['clientePedidoOuterRef']) || (d.get('clientePedidoOuterRef', null) == null || d.get('clientePedidoOuterRef', null) is string))
-        && (!c.hasAny(['custoFreteInicial']) || (d.get('custoFreteInicial', null) == null || d.get('custoFreteInicial', null) is number))
         && (!c.hasAny(['dataFinalExpedicao']) || (d.get('dataFinalExpedicao', null) == null || d.get('dataFinalExpedicao', null) is int))
         && (!c.hasAny(['dataIndisponivelEstoque']) || (d.get('dataIndisponivelEstoque', null) == null || d.get('dataIndisponivelEstoque', null) is int))
         && (!c.hasAny(['dataRemocaoEstoque']) || (d.get('dataRemocaoEstoque', null) == null || d.get('dataRemocaoEstoque', null) is int))
@@ -90,11 +89,7 @@ service cloud.firestore {
         && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['valorCobrado']) || (d.get('valorCobrado', null) == null || d.get('valorCobrado', null) is number))
         && (!c.hasAny(['valorComissoes']) || (d.get('valorComissoes', null) == null || d.get('valorComissoes', null) is number))
-        && (!c.hasAny(['valorCusto']) || (d.get('valorCusto', null) == null || d.get('valorCusto', null) is number))
-        && (!c.hasAny(['valorCustoDevolvidos']) || (d.get('valorCustoDevolvidos', null) == null || d.get('valorCustoDevolvidos', null) is number))
         && (!c.hasAny(['valorDespesasIncidentes']) || (d.get('valorDespesasIncidentes', null) == null || d.get('valorDespesasIncidentes', null) is number))
-        && (!c.hasAny(['valorDevolucao']) || (d.get('valorDevolucao', null) == null || d.get('valorDevolucao', null) is number))
-        && (!c.hasAny(['valorFreteInicial']) || (d.get('valorFreteInicial', null) == null || d.get('valorFreteInicial', null) is number))
         && (!c.hasAny(['valorFretesIncidentes']) || (d.get('valorFretesIncidentes', null) == null || d.get('valorFretesIncidentes', null) is number))
         && (!c.hasAny(['vendedorPedidoOuterRef']) || (d.get('vendedorPedidoOuterRef', null) == null || d.get('vendedorPedidoOuterRef', null) is string));
     }

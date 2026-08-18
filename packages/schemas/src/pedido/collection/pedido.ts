@@ -227,15 +227,19 @@ export const pedidoSchema = z
     // Stock sync (server-owned — see estoqueAplicadoSchema) ------------------
     estoqueAplicado: estoqueAplicadoSchema.nullable().default(null).describe('Estoque aplicado'),
 
-    // Totals (Flutter caches derived totals on the doc; the orchestrator
-    // recomputes via itens but the table UI prefers the cached field).
+    // Totals. `valorCobrado` is the ONE derived money cache still persisted:
+    // it backs a server-side `orderBy` + currency filter on `/pedidos`
+    // (`PedidosListView.tsx`) and the two indexes serving them, so it cannot be
+    // computed at read time. The other five Flutter wrote here
+    // (`valorCusto`, `valorFreteInicial`, `custoFreteInicial`, `valorDevolucao`,
+    // `valorCustoDevolvidos`) were REMOVED: each was a pure function of `itens`
+    // or `freteInicial` on this same document, with no reader, no query and no
+    // index, so a cache could only ever drift from the value it cached (#796).
+    // `derivePedidoTotals` still computes all six — they are display values now.
+    // ⚠️ Do not re-add one to "make a report easier": reports sum item
+    // subtotals, NF-e reads `frete.valorCobrado`, the footer derives live.
     valorCobrado: z.number().nullable().default(null).describe('Valor cobrado'),
     descontoTotal: z.number().default(0).describe('Desconto total'),
-    valorCusto: z.number().nullable().default(null).describe('Valor de custo'),
-    valorFreteInicial: z.number().nullable().default(null).describe('Valor do frete inicial'),
-    custoFreteInicial: z.number().nullable().default(null).describe('Custo do frete inicial'),
-    valorDevolucao: z.number().nullable().default(null).describe('Valor de devolução'),
-    valorCustoDevolvidos: z.number().nullable().default(null).describe('Valor de custo devolvido'),
     valorDespesasIncidentes: z.number().nullable().default(null).describe('Despesas incidentes'),
     valorFretesIncidentes: z.number().nullable().default(null).describe('Fretes incidentes'),
     valorComissoes: z.number().nullable().default(null).describe('Comissões'),

@@ -82,7 +82,16 @@ export function flattenItensDevolvidos(
   return out;
 }
 
-/** The full set of money caches the legacy factory writes back to the doc. */
+/**
+ * The money figures the legacy factory derived. ⚠️ Only `valorCobrado` is still
+ * PERSISTED — the other five were removed from `pedidoSchema` (#796) because
+ * each was a pure function of `itens` or `freteInicial` on the same document,
+ * with no reader, no query and no index, so a stored copy could only drift from
+ * the value it copied. They stay on this interface because they are still
+ * DISPLAYED: `PedidoFooter` renders `valorFreteInicial` and `valorDevolucao`
+ * from a live `derivePedidoTotals(...)` over watched form state. Derive, do not
+ * store.
+ */
 export interface PedidoDerivedTotals {
   /** Σ item subtotals (not stored on the doc, but useful for the UI). */
   subtotal: number;
