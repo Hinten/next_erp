@@ -45,7 +45,7 @@ function refForPath(db: Firestore, path: string): DocumentReference {
   if (parts.length === 4 && parts[0] === 'pedidos') {
     const [, pedidoId, sub, id] = parts as [string, string, string, string];
     // NOTE: `historicoEstadoPedido` is deliberately absent. That subcollection is
-    // written exclusively by the `onPedidoEstadoChanged` Cloud Function and the
+    // written exclusively by the `onPedidoChanged` Cloud Function and the
     // rules deny every client write (`meta.serverOwned`), so there is no write op
     // to resolve — the Estado/Histórico tab only READS it, via its own handle.
     if (sub === 'incidentes') {

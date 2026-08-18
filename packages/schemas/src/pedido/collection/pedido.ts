@@ -299,7 +299,7 @@ export const pedidoMeta: CollectionMetadata = {
     // the legacy leaf names so the Flutter app keeps reading them. The new app
     // writes two of them: `checkout` (saveCheckout, schema
     // `checkoutFretePedidoMeta`) and `historicoFtIni`, whose sole writer is the
-    // `onPedidoEstadoChanged` trigger (schema `historicoFreteInicialMeta`).
+    // `onPedidoChanged` trigger (schema `historicoFreteInicialMeta`).
     // `checkin` still has no schema and no writer here — only Flutter fills it
     // — but the cascade must clean it too so a deleted pedido never leaves
     // orphans (#372). `histestq` is intentionally omitted: it is a dead legacy

@@ -287,13 +287,42 @@ interface ResolveExistingChildArgs {
  *     item, hence the parent-link scoping); User-Products (true) matches the
  *     string `itemId` (the member's own MLB id — globally unique, but still
  *     parent-scoped for symmetry/defense-in-depth).
- *  2. **SKU** — `sku` + `paiId == parentProdutoId`, reusing that child's existing
- *     link for this parent if present (else a re-import mints a second link doc).
+ *  2. **SKU** — `sku` + `paiId == parentProdutoId`, accepted only when it is
+ *     UNAMBIGUOUS (#1067, see below), reusing that child's existing link for this
+ *     parent if present (else a re-import mints a second link doc).
  *  3. **Variation combination** (#801) — an existing child of the same parent
  *     whose `variacoesUid` is the same SET as this variation's. This is the
  *     ERP-first rule: rules 1 and 2 can only see a catalogue ML already knows
  *     about, so without it a first import duplicates every child a user built in
  *     the ERP or in Flutter.
+ *
+ * ## Why rule 2 declines an ambiguous SKU (#1067)
+ * Sibling SKUs are legally non-unique here, and that is by construction rather
+ * than corruption: a child's SKU is DERIVED as `parentSku + variante.codigo`
+ * (`variacoes.ts`), so two variants without a `codigo` yield two siblings sharing
+ * one non-empty SKU — which is why `findDuplicateSkus` exists and why the web
+ * "Gerar Variações" grid blocks the save. Flutter-era rows add plenty more: that
+ * app never validated a typed SKU at all, and its own `balancoEstoque` has a live
+ * "SKU duplicado" branch. With `limit(1)` and no `orderBy` this rule bound
+ * whichever document the index happened to return first, and a wrong bind is
+ * expensive — the child gains a real link at a deterministic id, its `precos` map
+ * is replaced wholesale under `sobrescreverPreco`, and `orderProdutoResolve`
+ * later routes incoming ML ORDERS through that link. So two guards:
+ *  - **`limit(2)`, accept only on exactly one hit** — the second document is not a
+ *    candidate, it is the ambiguity signal. On two hits the SKU cannot decide, so
+ *    resolution falls through to rule 3, which picks by combination;
+ *  - **a candidate whose link to THIS parent names a DIFFERENT variation is
+ *    rejected**, exactly as in rule 3 — the write would otherwise repoint that
+ *    link in place. Free, since `findParentLink` already ran.
+ *
+ * ⚠️ Deliberately NOT guarded: a SKU match whose `variacoesUid` contradicts the
+ * variation but is the only hit is still accepted. Rejecting it would re-open the
+ * duplication #801 closed — under the taxonomy ceiling below the resolver mints a
+ * fresh grupo, so the fake paths differ and rule 3 misses too, leaving the SKU as
+ * the only rung that still binds that catalogue. Ambiguity, not disagreement, is
+ * what this rule refuses to guess about. The residue: two ML variations sharing
+ * one `SELLER_SKU` on a FIRST import, where the colliding sibling does not exist
+ * yet and carries no link, so neither guard can see it.
  *
  * ## Why rule 3 is re-derived, not transcribed
  * The legacy importer ran `paiId == x` AND `variacoesUid == <array>`
@@ -379,23 +408,35 @@ async function resolveExistingChild(args: ResolveExistingChildArgs): Promise<Res
     }
   }
 
+  // Rule 2 — SKU. `limit(2)`, not `limit(1)`: the second document is never a
+  // candidate, it is the AMBIGUITY SIGNAL (#1067). Two hits mean the SKU cannot
+  // decide, so we decline and let rule 3 pick by combination. Same
+  // limit-2-as-a-detector trick `resolveSkuBalanco.ts` uses to tell "duplicado"
+  // from "encontrado" — one extra document read buys the distinction.
   if (childSku) {
     const skuSnap = await produtoCollection
       .ref(db, {})
       .where('sku', '==', childSku)
       .where('paiId', '==', parentProdutoId)
-      .limit(1)
+      .limit(2)
       .get();
-    const doc = skuSnap.docs[0];
+    const doc = skuSnap.docs.length === 1 ? skuSnap.docs[0] : undefined;
     if (doc) {
       // Reuse an existing link to THIS parent under the SKU-matched child, so a
-      // re-import updates it rather than creating a second link doc.
+      // re-import updates it rather than creating a second link doc — but only
+      // when that link is not already spoken for. `assembleVariationChildPlan`
+      // overwrites the naming field unconditionally, so adopting a link that names
+      // a DIFFERENT variation would silently repoint it in place and strand that
+      // variation. Same guard and same fail-safe direction as rule 3, and free:
+      // the link doc is already in hand.
       const existingLink = await findParentLink(db, doc.id, parentLinkOuterRef);
-      return {
-        produtoId: doc.id,
-        linkDocId: existingLink?.id ?? null,
-        linkRaw: existingLink?.raw ?? null,
-      };
+      if (!existingLink || !linkNamesOtherVariation(existingLink.raw, variationId, matchByItemId)) {
+        return {
+          produtoId: doc.id,
+          linkDocId: existingLink?.id ?? null,
+          linkRaw: existingLink?.raw ?? null,
+        };
+      }
     }
   }
 
@@ -409,10 +450,11 @@ async function resolveExistingChild(args: ResolveExistingChildArgs): Promise<Res
       if (!sameCombo(sibling.variacoesUid, varianteFakes)) continue;
 
       const existingLink = await findParentLink(db, sibling.id, parentLinkOuterRef);
-      // A link to this parent that names a DIFFERENT variation (or names none we
-      // can read) means the child is already spoken for — leave it alone and keep
-      // looking, rather than merging two ML variations onto one produto.
-      if (existingLink && !linkNamesVariation(existingLink.raw, variationId, matchByItemId)) {
+      // A link to this parent naming a DIFFERENT variation means the child is already
+      // spoken for — leave it alone and keep looking, rather than merging two ML
+      // variations onto one produto. A link naming NOTHING readable is not that: see
+      // the ⚠️ on `linkNamesOtherVariation`.
+      if (existingLink && linkNamesOtherVariation(existingLink.raw, variationId, matchByItemId)) {
         continue;
       }
       return {
@@ -445,19 +487,29 @@ async function findParentLink(
 }
 
 /**
- * Does this link doc name `variationId`? Reads the same field the rule-1 query
- * keys on (`itemId` for User-Products, `id` for legacy `variations[]`), compared
- * as a string because the legacy `id` is an int but Flutter-written rows may hold
- * a stringified one. An unreadable/absent key answers FALSE — the caller treats
- * that as "spoken for", the fail-safe direction.
+ * Does this link doc name a variation OTHER than `variationId` — i.e. is the child
+ * already claimed by one of its siblings? Reads the same field the rule-1 query keys
+ * on (`itemId` for User-Products, `id` for legacy `variations[]`), compared as a
+ * string because the legacy `id` is an int but Flutter-written rows may hold a
+ * stringified one.
+ *
+ * ⚠️ An absent/unreadable key answers **FALSE**, deliberately: "names nothing" is not
+ * evidence of anyone else's claim, and treating it as one is self-inflicted. The
+ * naming field is written as `numericVariationId(variationId)`, which is **`null`
+ * whenever the ML variation id is non-numeric** — a shape `itemVariationSchema`
+ * accepts outright ("ML has sent numeric and (rarely) string ids over time"). So this
+ * importer writes null-id links itself; reading one back as "spoken for" made a
+ * re-import decline the link it had just written, and mint a duplicate child on every
+ * single run. Pinned by the three-import test in `import.test.ts`.
  */
-function linkNamesVariation(
+function linkNamesOtherVariation(
   raw: Record<string, unknown>,
   variationId: string,
   matchByItemId: boolean,
 ): boolean {
   const key = matchByItemId ? raw.itemId : raw.id;
-  return (typeof key === 'string' || typeof key === 'number') && String(key) === variationId;
+  if (typeof key !== 'string' && typeof key !== 'number') return false;
+  return String(key) !== variationId;
 }
 
 /**

@@ -1,30 +1,25 @@
-import { db, namespace } from './admin';
-
-async function deleteCollection(path: string, batchSize = 200) {
-  const ref = db().collection(path);
-  const snap = await ref.limit(batchSize).get();
-  if (snap.empty) return;
-  const batch = db().batch();
-  snap.docs.forEach((d) => batch.delete(d.ref));
-  await batch.commit();
-  if (snap.size === batchSize) {
-    await deleteCollection(path, batchSize);
-  }
-}
+import { E2E_PROBE_COLLECTION, db, e2eRunId } from './admin';
 
 /**
- * Clear every collection prefixed with the current run's namespace. Used to
- * scrub e2e fixtures between runs against staging.
+ * Drop this run's rules-probe document.
+ *
+ * The probe is the ONLY doc the suite writes outside the real collections, and
+ * its key is the run id — so this is a single keyed delete: **no
+ * `listCollections()`, no query, no read**. It used to enumerate the root and
+ * prefix-match `e2e_<runId>_*` collection NAMES, which is why the leak was both
+ * expensive to reclaim and impossible to reclaim across runs.
+ *
+ * Deleting an absent doc is a no-op, so this is safe to run twice — and it
+ * normally IS a no-op: `verifyE2ENamespaceAccess` deletes the probe inline,
+ * seconds after writing it. This covers the case where the process died in
+ * between. The cross-run backstop is `sweepStaleE2EProbes` in
+ * `apps/web/e2e/_helpers/stale-sweep.ts`, for when no teardown runs at all.
  */
 export async function runTeardown(): Promise<void> {
-  const ns = namespace();
-  const collections = await db().listCollections();
-  const targets = collections.map((c) => c.id).filter((id) => id.startsWith(`${ns}_`));
-  for (const id of targets) {
-    // eslint-disable-next-line no-console
-    console.log(`[teardown] clearing ${id}`);
-    await deleteCollection(id);
-  }
+  const runId = e2eRunId();
+  // eslint-disable-next-line no-console
+  console.log(`[teardown] clearing ${E2E_PROBE_COLLECTION}/${runId}`);
+  await db().collection(E2E_PROBE_COLLECTION).doc(runId).delete();
 }
 
 /**

@@ -23,6 +23,7 @@ export * from './ai/attributeSchema';
 export * from './ai/attributePrompt';
 export * from './ai/attributeApply';
 export * from './ai/medidasSchema';
+export * from './ai/medidasReference';
 export * from './ai/medidasPrompt';
 export * from './ai/medidasApply';
 

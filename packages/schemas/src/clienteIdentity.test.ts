@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CLIENTE_MATCH_KEY,
+  CLIENTE_STRONG_KEYS,
   emailLookupShapes,
   idCompatible,
   identityValue,
+  idMercadoLivreCompatible,
   isSameCliente,
   isSameEmail,
   isSameTelefone,
@@ -97,6 +100,49 @@ describe('isSameCliente', () => {
 
   it('accepts a partial shape — the keys are optional', () => {
     expect(isSameCliente({}, {})).toBe(true);
+  });
+
+  it('rejects when the Mercado Livre buyer ids contradict', () => {
+    // Two ML accounts are two buyers, even when every other signal lines up.
+    expect(isSameCliente({ idMercadoLivre: '301110805' }, { idMercadoLivre: '987654321' })).toBe(
+      false,
+    );
+  });
+
+  it('matches when only one side carries an ML id — absence is no evidence', () => {
+    // How a cliente created from an order later gains the id of the buyer who
+    // asks a question from the same account.
+    expect(isSameCliente({ cpf_cnpj: CPF }, { cpf_cnpj: CPF, idMercadoLivre: '301110805' })).toBe(
+      true,
+    );
+  });
+});
+
+describe('idMercadoLivreCompatible', () => {
+  it('treats absence on either side as no evidence', () => {
+    expect(idMercadoLivreCompatible(null, '301110805')).toBe(true);
+    expect(idMercadoLivreCompatible('301110805', null)).toBe(true);
+    expect(idMercadoLivreCompatible('', '301110805')).toBe(true);
+  });
+
+  it('compares exactly, without the documento normalizer', () => {
+    expect(idMercadoLivreCompatible('301110805', '301110805')).toBe(true);
+    expect(idMercadoLivreCompatible(' 301110805 ', '301110805')).toBe(true);
+    expect(idMercadoLivreCompatible('301110805', '987654321')).toBe(false);
+  });
+
+  it('does NOT strip punctuation the way idCompatible does', () => {
+    // The whole reason this is a separate predicate. `normalizeDocumento` drops
+    // `.`/`-`/`/` and uppercases — harmless on today's all-digit ML ids, and a
+    // silent account merge the day either that normalizer or ML's id format
+    // changes. Pinning the divergence keeps the two from being "simplified"
+    // into one.
+    expect(idCompatible('301-110805', '301110805')).toBe(true);
+    expect(idMercadoLivreCompatible('301-110805', '301110805')).toBe(false);
+  });
+
+  it('is a STRONG key, so isSameCliente gates on it', () => {
+    expect(CLIENTE_STRONG_KEYS).toContain(CLIENTE_MATCH_KEY.idMercadoLivre);
   });
 });
 

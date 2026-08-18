@@ -208,7 +208,7 @@ export async function savePedido(
 // Estado history
 // ---------------------------------------------------------------------------
 // There is deliberately NO history helper here. `historicoEstadoPedido` rows are
-// written exclusively by the `onPedidoEstadoChanged` Cloud Function, which
+// written exclusively by the `onPedidoChanged` Cloud Function, which
 // observes every `pedidos/{pedidoId}` write — so any code path that changes
 // `estado` is covered automatically and none may append rows itself (the rules
 // deny client writes to that subcollection).
@@ -407,7 +407,7 @@ export function nextPedidoEstado(
  * the estado actually changed.
  *
  * Writes ONLY the pedido doc. The `historicoEstadoPedido` row is appended by
- * the `onPedidoEstadoChanged` trigger, which observes this very write and
+ * the `onPedidoChanged` trigger, which observes this very write and
  * derives the actor from its auth context — so no `usuarioRef` is threaded
  * through here, and appending a row by hand would now be denied by the rules
  * (`meta.serverOwned`).

@@ -5,8 +5,8 @@ import { defineAdminCollection } from '../defineAdminCollection';
 /**
  * Admin-SDK handle for `pedidos/{pedidoId}/historicoFtIni` — the
  * `freteInicial.estado` audit trail. Rows are written SOLELY by the
- * `onPedidoEstadoChanged` Cloud Function
- * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which observes every
+ * `onPedidoChanged` Cloud Function
+ * (`apps/functions/src/pedidos/registrarHistoricoPedido.ts`), which observes every
  * pedido write and appends one row per genuine `freteInicial.estado`
  * transition. Nothing else writes here: a caller that flips the frete estado
  * (the payment reconciles in `../pedidoReconcile.ts`, the Frete tab, the

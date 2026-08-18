@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Anchor, Badge, Button, Group, Menu, Stack, TextInput } from '@mantine/core';
+import { Anchor, Badge, Button, Menu, Stack, TextInput } from '@mantine/core';
 import { TableView, type VirtualColumn } from '@delfrance/ui';
 import type { PipelineFieldFilter } from '@delfrance/data';
 import { PERM } from '@delfrance/auth';
@@ -12,7 +12,9 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
 import { EnviarEstoqueDialog } from './_components/EnviarEstoqueDialog';
+import { EnviarPrecoDialog } from './_components/EnviarPrecoDialog';
 import { useEnviarEstoqueAction } from './_components/useEnviarEstoqueAction';
+import { useEnviarPrecoAction } from './_components/useEnviarPrecoAction';
 
 // U+F8FF: a very high private-use code point. Appended to the search term it
 // bounds a nome prefix range (nome >= term && nome <= term + sentinel).
@@ -64,6 +66,7 @@ export default function ProdutosPage() {
   // never offered something that will 403.
   const { allowed: canWriteIntegracao } = usePermission(PERM.integracao.write);
   const { action: enviarEstoqueAction, modal: enviarEstoqueModal } = useEnviarEstoqueAction();
+  const { action: enviarPrecoAction, modal: enviarPrecoModal } = useEnviarPrecoAction();
   const [search, setSearch] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   const trimmed = search.trim();
@@ -139,18 +142,36 @@ export default function ProdutosPage() {
         }}
         rowHref={(id) => `/produtos/${id}/editar`}
         selectable
-        actions={canWriteIntegracao ? [enviarEstoqueAction] : []}
-        // TableView owns the header, so the page's existing actions ride in
-        // through the "Novo" slot rather than a separate PageHeader.
+        // Both pushes fan out over EVERY channel a produto is listed on, so the
+        // list grows with each integration rather than with each channel screen
+        // — see `lib/marketplace/push/README.md`.
+        actions={canWriteIntegracao ? [enviarPrecoAction, enviarEstoqueAction] : []}
+        // The docked rail rather than the top toolbar — the shape
+        // /canais/mercado-livre adopted in #816. This screen carries the most
+        // controls of any list in the app (Novo, Importar, Preços em massa,
+        // Enviar preços, Enviar estoque), and the rail gives every one of them
+        // a labelled full-width button instead of crowding the header. Its
+        // `renderActionsPanelExtra` slot is also the only place a push's
+        // progress could live on screen, if either ever becomes a background
+        // job — today both are synchronous and report inside their dialog.
+        // ⚠️ The rail REPLACES the top ActionBar (TableView guards that on
+        // `!panelEnabled`), so the buttons below now render INSIDE it — hence
+        // the vertical Stack and `fullWidth`.
+        actionsPanel={{ width: 300 }}
         renderNewButton={() => (
-          <Group gap="sm">
-            <Button variant="default" onClick={() => setImportOpen(true)}>
+          <Stack gap="xs">
+            <Button fullWidth component={Link} href="/produtos/novo">
+              Novo produto
+            </Button>
+            <Button fullWidth variant="default" onClick={() => setImportOpen(true)}>
               Importar do Mercado Livre
             </Button>
             {canWritePrecos && (
               <Menu withinPortal position="bottom-end" shadow="md">
                 <Menu.Target>
-                  <Button variant="default">Preços em massa</Button>
+                  <Button fullWidth variant="default">
+                    Preços em massa
+                  </Button>
                 </Menu.Target>
                 <Menu.Dropdown>
                   <Menu.Item component={Link} href="/produtos/recalcular-precos">
@@ -162,22 +183,27 @@ export default function ProdutosPage() {
                 </Menu.Dropdown>
               </Menu>
             )}
-            <Button component={Link} href="/produtos/novo">
-              Novo produto
-            </Button>
-          </Group>
+          </Stack>
         )}
       />
 
       {/* Mounted fresh per run: the dialog's initial state IS its reset, which
-          is what keeps "Reenviar anúncios com erro" re-armed OFF every time
-          instead of remembering the last choice. */}
+          is what re-arms each checkbox to its safe default every time instead
+          of remembering the last choice. */}
       {enviarEstoqueModal.opened && (
         <EnviarEstoqueDialog
           key={enviarEstoqueModal.alvos.map((a) => a.produtoId).join(',')}
           opened
           alvos={enviarEstoqueModal.alvos}
           onClose={enviarEstoqueModal.close}
+        />
+      )}
+      {enviarPrecoModal.opened && (
+        <EnviarPrecoDialog
+          key={enviarPrecoModal.alvos.map((a) => a.produtoId).join(',')}
+          opened
+          alvos={enviarPrecoModal.alvos}
+          onClose={enviarPrecoModal.close}
         />
       )}
     </Stack>

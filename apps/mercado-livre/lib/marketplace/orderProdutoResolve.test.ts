@@ -213,7 +213,7 @@ describe('resolveOrderLineProduto — simple listing (unchanged behaviour)', () 
       integracaoId: CONTA,
     });
 
-    expect(out).toBeNull();
+    expect(out).toEqual({ produtoId: null, via: 'unresolved' });
   });
 });
 
@@ -277,7 +277,7 @@ describe('resolveOrderLineProduto — legacy variations[] listing', () => {
       integracaoId: CONTA,
     });
 
-    expect(out).toBeNull();
+    expect(out).toEqual({ produtoId: null, via: 'unresolved' });
   });
 
   it('skips the link step for a non-numeric variation_id and falls through to SKU', async () => {
@@ -385,7 +385,7 @@ describe('resolveOrderLineProduto — User-Products family', () => {
       integracaoId: CONTA,
     });
 
-    expect(out).toBeNull();
+    expect(out).toEqual({ produtoId: null, via: 'unresolved' });
   });
 });
 
@@ -414,6 +414,10 @@ describe('resolveOrderLineProduto — SKU fallbacks', () => {
     });
 
     expect(out).toEqual({ produtoId: 'filho-1', via: 'sku-child' });
+    // Two produtos share 'DUP', but the `paiId` scope leaves this rung exactly
+    // one hit — so the ambiguity count must come from the SCOPED probe, never
+    // from an unscoped one.
+    expect(db.queries.filter((q) => q.source === 'produtos')).toHaveLength(1);
   });
 
   it('falls back to a ROOT produto by SKU (the pre-#792 shape)', async () => {
@@ -458,7 +462,11 @@ describe('resolveOrderLineProduto — SKU fallbacks', () => {
       integracaoId: CONTA,
     });
 
-    expect(out).toBeNull();
+    expect(out).toEqual({ produtoId: null, via: 'unresolved' });
+    // A ZERO-hit rung must still fall through: no parent ⇒ sku-child skipped,
+    // then sku-root and sku-any both ran. A guard that stopped on anything other
+    // than "two or more" would cut this short.
+    expect(db.queries.filter((q) => q.source === 'produtos')).toHaveLength(2);
   });
 
   it('does not run any SKU query when the line has no seller_sku', async () => {
@@ -471,7 +479,148 @@ describe('resolveOrderLineProduto — SKU fallbacks', () => {
       integracaoId: CONTA,
     });
 
-    expect(out).toBeNull();
+    expect(out).toEqual({ produtoId: null, via: 'unresolved' });
     expect(db.queries.some((q) => q.source === 'produtos')).toBe(false);
+  });
+});
+
+/**
+ * Every SKU rung binds only when the SKU names EXACTLY ONE produto. Sibling and
+ * root SKUs are legally non-unique here, and with `limit(1)` and no `orderBy`
+ * these rungs used to bind whichever document the index returned first.
+ *
+ * ⚠️ Assert BINDINGS and QUERY COUNTS, never just the verdict. "Stopped at this
+ * rung" and "fell through and the next rung also declined" produce the SAME
+ * verdict — only the number of `produtos` queries separates them.
+ *
+ * ⚠️ The double's `limit` is `hits.slice(0, n)` over an insertion-ordered `Map`,
+ * so `db.seed` order is index order and `limit(1)` returns the FIRST-SEEDED
+ * match. That is what makes the `it.each` pairs meaningful: under `limit(1)`
+ * the two orders bind different produtos, so they cannot both stay green.
+ */
+describe('resolveOrderLineProduto — SKU ambiguity guard', () => {
+  const produtosQueries = (db: FakeDb) => db.queries.filter((q) => q.source === 'produtos');
+
+  it.each([
+    ['A first', ['filho-A', 'filho-B']],
+    ['B first', ['filho-B', 'filho-A']],
+  ] as const)(
+    'rung sku-child: two children of the parent sharing a SKU bind nothing (%s)',
+    async (_rotulo, ordemDeSeed) => {
+      const db = new FakeDb();
+      const parentLinkRef = seedParentListing(db, {
+        produtoId: 'pai-1',
+        linkId: 'L1',
+        mlItemId: 'MLB1',
+      });
+      const variationIds: Record<string, number> = { 'filho-A': 999, 'filho-B': 998 };
+      for (const childId of ordemDeSeed) {
+        seedVariationChild(db, {
+          childId,
+          parentProdutoId: 'pai-1',
+          parentLinkOuterRef: parentLinkRef,
+          variationId: variationIds[childId]!, // neither is the sold variation
+          sku: 'DUP',
+        });
+      }
+
+      const out = await resolveOrderLineProduto(asDb(db), {
+        itemId: 'MLB1',
+        variationId: '456',
+        sku: 'DUP',
+        integracaoId: CONTA,
+      });
+
+      expect(out).toEqual({ produtoId: null, via: 'ambiguous-sku' });
+      // ONE produtos query: the stage stopped here rather than widening to the
+      // root/unscoped rungs, which could only bind something less related.
+      expect(produtosQueries(db)).toHaveLength(1);
+      expect(produtosQueries(db)[0]!.limit).toBe(2);
+      expect(produtosQueries(db)[0]!.clauses).toEqual([
+        ['sku', 'DUP'],
+        ['paiId', 'pai-1'],
+      ]);
+    },
+  );
+
+  it.each([
+    ['A first', ['raiz-A', 'raiz-B']],
+    ['B first', ['raiz-B', 'raiz-A']],
+  ] as const)(
+    'rung sku-root: two roots sharing a SKU bind nothing (%s)',
+    async (_rotulo, ordemDeSeed) => {
+      const db = new FakeDb();
+      for (const id of ordemDeSeed) {
+        db.seed('produtos', id, { nome: 'Solto', sku: 'RAIZ-DUP', paiId: null });
+      }
+
+      const out = await resolveOrderLineProduto(asDb(db), {
+        itemId: 'MLB-SEM-LINK',
+        variationId: null,
+        sku: 'RAIZ-DUP',
+        integracaoId: CONTA,
+      });
+
+      expect(out).toEqual({ produtoId: null, via: 'ambiguous-sku' });
+      // No parent ⇒ sku-child was skipped, so this ONE query is sku-root. Without
+      // the count, a fall-through implementation would look identical: sku-any
+      // would see the same two roots and also decline.
+      expect(produtosQueries(db)).toHaveLength(1);
+      expect(produtosQueries(db)[0]!.limit).toBe(2);
+    },
+  );
+
+  it('rung sku-any: two produtos of other parents sharing a SKU bind nothing', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'orfao-A', { nome: 'A', sku: 'SO-SKU', paiId: 'pai-desconhecido' });
+    db.seed('produtos', 'orfao-B', { nome: 'B', sku: 'SO-SKU', paiId: 'outro-pai' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: '456',
+      sku: 'SO-SKU',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: null, via: 'ambiguous-sku' });
+    // sku-root ran (0 hits, fell through), then sku-any stopped.
+    expect(produtosQueries(db)).toHaveLength(2);
+
+    // The warn is the ONLY surface that names both colliding produtos — the
+    // incidente message is operator-facing and deliberately stays short.
+    const ambiguo = warn.mock.calls.find((c) => String(c[0]).includes('mais de um produto'));
+    expect(ambiguo?.[1]).toMatchObject({ rung: 'sku-any', produtoIds: ['orfao-A', 'orfao-B'] });
+    // The single-hit "resolvido apenas pelo SKU" warn must NOT fire: nothing bound.
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('resolvido apenas pelo SKU'))).toBe(
+      false,
+    );
+  });
+
+  it('a link rung still pre-empts the SKU stage, ambiguous SKU or not', async () => {
+    const db = new FakeDb();
+    const parentLinkRef = seedParentListing(db, {
+      produtoId: 'pai-1',
+      linkId: 'L1',
+      mlItemId: 'MLB1',
+    });
+    seedVariationChild(db, {
+      childId: 'filho-1',
+      parentProdutoId: 'pai-1',
+      parentLinkOuterRef: parentLinkRef,
+      variationId: 456, // the sold variation — the link answers
+      sku: 'DUP',
+    });
+    db.seed('produtos', 'raiz-dup', { nome: 'Outro', sku: 'DUP', paiId: null });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB1',
+      variationId: '456',
+      sku: 'DUP',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'filho-1', via: 'variation-link' });
+    expect(produtosQueries(db)).toHaveLength(0);
   });
 });

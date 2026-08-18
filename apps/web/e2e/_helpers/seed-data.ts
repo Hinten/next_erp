@@ -900,7 +900,13 @@ export async function seedMensagem(
  * em-resposta RED with a recent inbound message, one pendente, one em-resposta
  * BLUE), each ordered deterministically by `ultima_modificacao`. The RED
  * conversa carries a `mensagem` so its tile preview + the thread render seeded
- * text. `origem` is `whatsapp` (drives no query here — the spec browses "Todas").
+ * text.
+ *
+ * ⚠️ `origem` must stay `whatsapp`, and that is now load-bearing rather than
+ * arbitrary. It drives no query (the spec browses "Todas"), but since #817 it
+ * drives the COMPOSER: `whatsapp` is the only origem with `temEnvio: true`, so
+ * any other value makes the composer render a read-only notice and the
+ * "entra na conversa e responde" spec fails on a missing input.
  */
 export async function seedConversas(prefix: string): Promise<SeededChat> {
   const now = Date.now();
@@ -1959,7 +1965,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
 /**
  * Teardown for `seedPedidoFreteFixtures`. The marketplace fixture pedido is
  * seeded with a NON-null `freteInicial` already at `postado`, so the
- * `onPedidoEstadoChanged` trigger appends a `historicoFtIni` row for it — and,
+ * `onPedidoChanged` trigger appends a `historicoFtIni` row for it — and,
  * because that same trigger records an opening row on create, a
  * `historicoEstadoPedido` row too. Both are swept BEFORE
  * `cleanupPedidoFixtures` deletes the parents, which never cascades.
@@ -3577,7 +3583,7 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
  *  - `historicoFtIni` — every fixture pedido here is seeded with a NON-null
  *    `freteInicial` (`checkoutFrete`, estado `emSeparacao`) and `saveCheckout`
  *    drives it to `checkFinalizado` on EVERY conference, so
- *    `onPedidoEstadoChanged` appends a freight-audit row per pedido per run;
+ *    `onPedidoChanged` appends a freight-audit row per pedido per run;
  *  - `historicoEstadoPedido` — the SAME trigger records an opening row on
  *    create, and every fixture pedido here is seeded at `pago`, so each run
  *    also mints one estado row per pedido. Leaking since #697; swept here

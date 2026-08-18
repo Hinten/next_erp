@@ -63,7 +63,7 @@
  *     PAYMENT clock, which already lives on the pagamento doc. Deliberately NOT `reconcilePedidoFromPagamento` (that generic
  *     path is Mercado Pago's) — NO downgrade, NO `freteInicial` flip. The
  *     `historicoEstadoPedido` row is no longer this path's concern either: the
- *     `onPedidoEstadoChanged` trigger observes the pedido write and records the
+ *     `onPedidoChanged` trigger observes the pedido write and records the
  *     transition (with a null usuário — this runs on the Admin SDK).
  *
  * THROW-ON-TRANSIENT discipline: every error except a 404 on the primary

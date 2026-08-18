@@ -28,6 +28,7 @@ function callOnce() {
     request: {
       systemInstruction: 'sys',
       text: 'produto',
+      images: [],
       responseSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
   });

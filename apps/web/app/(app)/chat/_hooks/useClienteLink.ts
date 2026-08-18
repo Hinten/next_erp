@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { getDocs } from 'firebase/firestore';
+import { getDoc, getDocs } from 'firebase/firestore';
 import { buildQuery, limit, whereOp } from '@delfrance/data';
 import { idFromRef } from '@delfrance/schemas';
 import { clienteCollection } from '@/lib/data/clienteCollection';
@@ -39,15 +39,43 @@ export function clienteUserRefCandidates(
   return [`documents/usuarios/${uid}`, `usuarios/${uid}`];
 }
 
-export function useClienteLink(usarioOuterRef: string | null | undefined): ClienteLink {
-  const candidates = clienteUserRefCandidates(usarioOuterRef);
+/**
+ * @param clienteOuterRef `conversa.clienteOuterRef` — the direct link. When
+ *   present it wins and the query below becomes a single `getDoc`, skipping the
+ *   `usuarios` hop entirely.
+ * @param usarioOuterRef `conversa.usarioOuterRef` — the legacy path, still the
+ *   only link on Flutter-written and WhatsApp conversas.
+ *
+ * ⚠️ Direct ref FIRST, and the order is load-bearing rather than cosmetic. Doc
+ * ids for ML conversas are byte-exact legacy digests, so the first post-cutover
+ * redelivery for an old thread `merge()`s onto the Flutter-written document —
+ * and a merge does not clear `usarioOuterRef`. Those docs therefore carry BOTH
+ * fields, and only preferring the direct one resolves them to the right cliente.
+ */
+export function useClienteLink(
+  clienteOuterRef: string | null | undefined,
+  usarioOuterRef: string | null | undefined,
+): ClienteLink {
+  const clienteId = clienteOuterRef ? idFromRef(clienteOuterRef) : null;
+  const candidates = clienteId ? null : clienteUserRefCandidates(usarioOuterRef);
+  const enabled = clienteId != null || candidates !== null;
 
   const { data, isFetching, isError } = useQuery({
-    queryKey: ['clienteLink', usarioOuterRef ?? null],
-    enabled: candidates !== null,
+    queryKey: ['clienteLink', clienteId ?? usarioOuterRef ?? null],
+    enabled,
     staleTime: 60_000,
     queryFn: async (): Promise<{ clienteId: string; nome: string } | null> => {
       const db = getFirebaseFirestore();
+      const pickNome = (raw: unknown): string =>
+        typeof raw === 'string' && raw.trim() !== '' ? raw : '(sem nome)';
+
+      // Direct ref — one doc read, no query, so no index question arises.
+      if (clienteId) {
+        const snap = await getDoc(clienteCollection.docRef(db, {}, clienteId));
+        if (!snap.exists()) return null;
+        return { clienteId: snap.id, nome: pickNome(snap.data()?.nome) };
+      }
+
       const snap = await getDocs(
         buildQuery(clienteCollection.ref(db, {}), [
           whereOp('userCliente', 'in', candidates!),
@@ -56,12 +84,11 @@ export function useClienteLink(usarioOuterRef: string | null | undefined): Clien
       );
       const doc = snap.docs[0];
       if (!doc) return null;
-      const nome = doc.data().nome;
-      return { clienteId: doc.id, nome: nome && nome.trim() !== '' ? nome : '(sem nome)' };
+      return { clienteId: doc.id, nome: pickNome(doc.data().nome) };
     },
   });
 
-  if (candidates === null) return { status: 'no-user' };
+  if (!enabled) return { status: 'no-user' };
   // A query FAILURE (permissions/network) must NOT read as 'not-found' — that
   // would offer "Criar cliente" and risk a duplicate. Surface it as 'error'.
   if (isError && data === undefined) return { status: 'error' };

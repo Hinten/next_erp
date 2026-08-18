@@ -10,6 +10,7 @@
  */
 import type { AiInlineImage, AiPromptRequest } from '@delfrance/ai';
 
+import type { AiAttributeSuggestion } from './attributeApply';
 import type { AiAttributeSpec, JsonSchemaNode } from './attributeSchema';
 
 /**
@@ -31,6 +32,14 @@ export interface AttributePromptInput {
   image?: AiInlineImage;
   /** Overrides the shipped default; the settings page supplies this. */
   systemInstruction?: string | null;
+  /**
+   * The operator's correction plus the answer being corrected.
+   *
+   * ⚠️ Both halves, or neither. The complaint alone would have the model
+   * re-derive from the same facts and repeat itself; the previous answer beside
+   * it is what turns "a cor está errada, é azul-marinho" into an amendment.
+   */
+  revisao?: { feedback: string; anterior: AiAttributeSuggestion[] } | null;
 }
 
 /**
@@ -98,12 +107,30 @@ export function buildAttributePrompt(input: AttributePromptInput): AiPromptReque
     facts.push(`Atributos a preencher quando possível:\n${wanted.join('\n')}`);
   }
 
+  // The revision rides as a real prior turn (`AiPromptRequest.anterior`), not as
+  // more text in the user turn — see the provider, which replays it as a
+  // model/user exchange.
+  const revisao =
+    input.revisao != null && nonBlank(input.revisao.feedback)
+      ? {
+          resposta: JSON.stringify(
+            Object.fromEntries(input.revisao.anterior.map((a) => [a.id, a.value_name])),
+          ),
+          feedback: input.revisao.feedback.trim(),
+        }
+      : undefined;
+
   return {
+    ...(revisao ? { anterior: revisao } : {}),
     systemInstruction: nonBlank(input.systemInstruction)
       ? input.systemInstruction!.trim()
       : DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
     text: facts.join('\n\n'),
-    ...(input.image ? { image: input.image } : {}),
+    // One photo, wrapped: `AiPromptRequest` carries a LIST since the size-chart
+    // agent needs several. This agent deliberately stays at one — it is looking
+    // at a product photo to decide "sleeve: short", and a second angle buys
+    // nothing for the tokens.
+    images: input.image ? [input.image] : [],
     responseSchema: input.responseSchema,
   };
 }

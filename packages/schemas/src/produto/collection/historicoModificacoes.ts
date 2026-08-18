@@ -1,6 +1,10 @@
-import { z } from 'zod';
-import { microsSinceEpoch } from '../../shared/datetime';
 import type { CollectionMetadata } from '../../types';
+
+export {
+  historicoModificacaoSchema,
+  type HistoricoModificacao,
+} from '../../shared/historicoModificacoes';
+import { historicoModificacaoSchema } from '../../shared/historicoModificacoes';
 
 // Unified modification history is produto-scoped: it reuses the produto
 // permission bits (byte 8 — see `produto.ts`), so reading a produto's history
@@ -13,40 +17,20 @@ const PERM_PRODUTO_WRITE = 1n << 9n;
 const PERM_PRODUTO_DELETE = 1n << 10n;
 
 /**
- * `produtos/{id}/historicoDeModificacoes` doc — the unified modification
- * history for a produto. Written EXCLUSIVELY by the `onProdutoChanged`
- * trigger family (Admin SDK, `apps/functions`); clients are read-only
- * (`meta.serverOwned`, no `su` bypass). One doc per Firestore CloudEvent that
- * touches the produto — `docId` = `eventId`, so a redelivered event overwrites
- * the same doc with content-identical data instead of duplicating it.
- * `timestamp` is the event's `event.time` as **microseconds since epoch**
- * (`microsSinceEpoch()`, the repo's datetime standard; ms-derived precision ×
- * 1000, like `nowMicros()`) — never `Date.now()`, so replays stay
- * content-identical and ordered by when the write actually happened.
- * `campos`/`changes` cover only top-level fields that changed, diffed by
- * `@delfrance/core`'s `diffDocumentFields`.
+ * `produtos/{id}/historicoDeModificacoes` — the produto-rooted instance of the
+ * shared entry schema (`../../shared/historicoModificacoes`). Written
+ * EXCLUSIVELY by the `onProdutoChanged` trigger family (Admin SDK,
+ * `apps/functions`).
  *
  * This supersedes the per-field `historicoDePrecos`/`historicoDeCusto`
- * subcollections (`./historicos.ts`) for produto writes made through this
- * app: those two stay registered (and are still written by the legacy
- * Flutter app for its own dual-run), but the Next trigger no longer writes
- * them.
+ * subcollections (`./historicos.ts`) for produto writes made through this app:
+ * those two stay registered (and are still written by the legacy Flutter app
+ * for its own dual-run), but the Next trigger no longer writes them.
+ *
+ * The pedido-rooted twin is
+ * `../../pedido/collection/historicoModificacoes.ts`; the two metas are pinned
+ * to each other by `../../shared/historicoModificacoes.meta.test.ts`.
  */
-export const historicoModificacaoSchema = z
-  .object({
-    path: z.string(),
-    subcolecao: z.string().nullable().default(null),
-    docId: z.string(),
-    kind: z.enum(['create', 'update', 'delete']),
-    campos: z.array(z.string()),
-    changes: z.record(z.string(), z.object({ old: z.unknown(), new: z.unknown() }).passthrough()),
-    timestamp: microsSinceEpoch(),
-    eventId: z.string(),
-  })
-  .passthrough();
-
-export type HistoricoModificacao = z.infer<typeof historicoModificacaoSchema>;
-
 export const historicoModificacaoMeta: CollectionMetadata = {
   collectionPath: 'produtos/{produtoId}/historicoDeModificacoes',
   permissions: {
@@ -55,6 +39,27 @@ export const historicoModificacaoMeta: CollectionMetadata = {
     delete: PERM_PRODUTO_DELETE,
   },
   serverOwned: true,
+  // Every read is scoped to ONE produto (`ModificacoesManager` /
+  // `ProdutoHistoryButton` both resolve `{ produtoId }`), so the generator's
+  // default `{path=**}/historicoDeModificacoes` block buys nothing — and it
+  // actively hurts now that a second root shares this leaf name: `emit.ts`
+  // makes a group block's read check the UNION of every owning collection's
+  // read claim, so leaving it on would let `d_pedido` group-read every
+  // produto's history (custo and precos included) and vice versa. Suppressing
+  // it on ONE meta is not enough — the wildcard matches any parent, so the
+  // surviving block would still cover the other root's docs. Both metas set it.
+  noCollectionGroupRead: true,
+  // The Modificações tab's feed query (`ModificacoesManager`): newest-first,
+  // one page. Declared so the `defaultQuery.indexes` meta-test REQUIRES the
+  // matching `historicoDeModificacoes(timestamp desc)` entry — the tab has
+  // always issued this sort, but with no defaultQuery nothing forced the index
+  // and Enterprise would silently full-scan (the #717 failure, on produto this
+  // time). `campos CONTAINS + timestamp desc` (ProdutoHistoryButton) stays
+  // hand-maintained: `CollectionDefaultQuery` has no array-contains form.
+  defaultQuery: {
+    orderBy: [{ field: 'timestamp', direction: 'desc' }],
+    limit: 50,
+  },
 };
 
 export const historicoModificacao = {

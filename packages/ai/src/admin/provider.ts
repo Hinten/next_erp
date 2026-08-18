@@ -145,17 +145,28 @@ export function createVertexListModelsFn(): ListModelsFn {
 export function createVertexGenerateFn(): GenerateFn {
   return async ({ model, request, temperature, maxOutputTokens, signal }) => {
     const parts: Part[] = [{ text: request.text }];
-    if (request.image) {
+    for (const image of request.images) {
       // Inline bytes, never a URL — the legacy passed a tokened Storage HTTPS
       // URL as Vertex `fileUri`, a field documented for gs:// and YouTube only.
-      parts.push({
-        inlineData: { data: request.image.base64, mimeType: request.image.mimeType },
-      });
+      parts.push({ inlineData: { data: image.base64, mimeType: image.mimeType } });
     }
+
+    // ⚠️ A REVISION is a real multi-turn exchange, not a longer prompt. The
+    // previous answer goes back as the `model` turn and the operator's
+    // correction as a fresh `user` turn, so the model is amending something it
+    // said rather than being told about it second-hand.
+    const contents =
+      request.anterior == null
+        ? [{ role: 'user', parts }]
+        : [
+            { role: 'user', parts },
+            { role: 'model', parts: [{ text: request.anterior.resposta }] },
+            { role: 'user', parts: [{ text: request.anterior.feedback }] },
+          ];
 
     const response = await getClient().models.generateContent({
       model,
-      contents: [{ role: 'user', parts }],
+      contents,
       config: {
         systemInstruction: request.systemInstruction,
         responseMimeType: 'application/json',

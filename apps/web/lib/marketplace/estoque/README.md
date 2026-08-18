@@ -8,11 +8,24 @@ providers keyed by `IntegracaoTipo`. It is the port of the legacy
 `enviarEstoqueAmazonListings` / `enviarEstoqueMagalu` and fell through to
 _"Tipo de integração não suportado"_.
 
-- `types.ts` — the `StockPushProvider` contract, the injected `deps` clients,
-  and the `StockPushRow` display shape.
+- `types.ts` — the `StockPushProvider` contract and the `StockPushRow` display
+  shape (`quantidade` on top of `../push/types`' `PushRowBase`).
 - `registry.ts` — `PROVIDERS`, `resolveStockPushProvider`, and the shared entry
   point `enviarEstoqueParaIntegracao` (which runs the `ativo === false` gate).
+- `enviarEstoqueRun.ts` — the thin binding onto `../push/run.ts`.
 - `providers/*` — one file per channel.
+
+## The fan-out itself lives one level up
+
+`../push/` owns everything this flow shares with **"Enviar preços"** (#804): the
+orchestrator, the progress dialog and the provider-map builder. The legacy had
+two dialogs that differed only in the verb in the title and the tick-box above
+the run; so does this. Read `../push/README.md` for what is shared and what
+each operation deliberately keeps.
+
+`enviarEstoqueRun.test.ts` is where the SHARED orchestrator is pinned — dedup,
+the whole-selection dispatch, the per-conta row keys, both cancel checks. It is
+not duplicated under `../preco/`.
 
 ## Why the ROW unit is the listing, not the produto
 

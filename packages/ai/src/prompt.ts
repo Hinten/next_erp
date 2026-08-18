@@ -25,10 +25,36 @@ export interface AiPromptRequest {
   systemInstruction: string;
   /** The user turn: the facts the model reasons from. */
   text: string;
-  /** At most one image. Absent when the record has none. */
-  image?: AiInlineImage;
+  /**
+   * Every image the record could supply, in order. Empty when it has none.
+   *
+   * ⚠️ A LIST, not a single `image`, and there is deliberately no singular field
+   * beside it. A supplier's size table is routinely two or three photos (front
+   * and back, or several pages), and sending only the first threw the rest away
+   * silently. Two fields for one concept is the drift trap this package has
+   * already paid for elsewhere.
+   */
+  images: AiInlineImage[];
   /** What the answer must look like. */
   responseSchema: JsonSchemaNode;
+  /**
+   * A prior exchange to revise, rather than start over.
+   *
+   * ⚠️ The whole point is that the model CORRECTS its own answer. Sending the
+   * operator's complaint alone would make it re-derive everything from the same
+   * facts and very likely repeat the mistake; sending the previous answer next
+   * to the complaint is what makes "a cor está errada, é azul-marinho" a fix
+   * rather than a re-roll.
+   *
+   * Absent on a first run. Agent-neutral on purpose — the size-chart agent gets
+   * this for free the day it wants it.
+   */
+  anterior?: {
+    /** The previous answer, serialised as the model returned it. */
+    resposta: string;
+    /** What the operator asked to change. */
+    feedback: string;
+  };
 }
 
 /**

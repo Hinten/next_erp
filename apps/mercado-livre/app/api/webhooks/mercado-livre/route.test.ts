@@ -95,6 +95,26 @@ describe('POST /api/webhooks/mercado-livre', () => {
     expect(h.enqueue.mock.calls[0]![1]).toBeUndefined();
   });
 
+  it('acks an IGNORED topic without enqueuing — the delivery never becomes a task (#813)', async () => {
+    // The cost-saving half of the ignore list. The dispatch also drops these,
+    // but only stopping here avoids paying for the enqueue, the function
+    // invocation and the conta lookup — and `user-products-families` fires on
+    // every family change for a User-Products seller.
+    for (const topic of ['public_offers', 'public_candidates', 'user-products-families']) {
+      h.enqueue.mockClear();
+      const res = await POST(req({ _id: `ign-${topic}`, resource: '/x/1', topic, user_id: 1 }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ accepted: false, ignored: true });
+      expect(h.enqueue).not.toHaveBeenCalled();
+      expect(h.create).not.toHaveBeenCalled();
+    }
+  });
+
+  it('still enqueues an UNKNOWN topic, so a new ML topic parks and stays visible', async () => {
+    await POST(req({ _id: 'N-new', resource: '/algo/1', topic: 'algum_topico_novo', user_id: 1 }));
+    expect(h.enqueue).toHaveBeenCalledTimes(1);
+  });
+
   it('acks without enqueuing on noise (missing topic/resource) and on bad JSON', async () => {
     const noise = await POST(req({ topic: 'orders_v2' }));
     expect(noise.status).toBe(200);

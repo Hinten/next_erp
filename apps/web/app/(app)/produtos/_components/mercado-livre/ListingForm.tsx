@@ -6,8 +6,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import {
+  ActionIcon,
   Alert,
-  Anchor,
   Button,
   Fieldset,
   Group,
@@ -20,6 +20,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { IconChevronDown, IconChevronUp, IconSparkles } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
@@ -29,6 +30,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  applySuggestions,
   attributesForSave,
   seedRows,
   validateAttr,
@@ -38,6 +40,8 @@ import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
+  type MercadoLivreAtributoSugestao,
+  type MercadoLivreAtributosSugestao,
 } from '@/lib/mercado-livre/client';
 
 import {
@@ -62,6 +66,7 @@ import {
   saveListing,
 } from '@/lib/mercado-livre/saveListing';
 import type { OperatorOwnedKey } from '@/lib/mercado-livre/listingPatch';
+import { AtributosAiModal } from './AtributosAiModal';
 import { AtributosSection } from './AtributosSection';
 import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
@@ -265,11 +270,20 @@ export function ListingForm({
     nickname: string | null;
     ehContaDeTeste: boolean;
     categoriaResolvida: boolean;
+    categoriaPath: string[] | null;
+    categoriaMotivo: 'sem-raiz' | 'sem-folha' | null;
     tipoResolvido: boolean;
   } | null>(null);
 
   const preencherTeste = useCallback(async () => {
     if (!client) return;
+    // ⚠️ Clear FIRST, so the alert is strictly a report of the latest run. The
+    // catch below reports its failure as a toast and returns without touching
+    // this state, so without the reset a successful fill followed by a failing
+    // one left "Dados de teste preenchidos" — naming a `Categoria definida` that
+    // was never applied — sitting above a fill that did not happen. A close
+    // button does not fix that: it asks the operator to notice and tidy up.
+    setTesteConta(null);
     setCarregandoTeste(true);
     try {
       const dados = await client.anuncioTeste(integracaoId);
@@ -278,6 +292,8 @@ export function ListingForm({
         nickname: dados.conta.nickname,
         ehContaDeTeste: dados.conta.ehContaDeTeste,
         categoriaResolvida: dados.categoryId != null,
+        categoriaPath: dados.categoriaPath ?? null,
+        categoriaMotivo: dados.categoriaMotivo ?? null,
         tipoResolvido: dados.listingTypeId != null,
       });
     } catch (err) {
@@ -312,6 +328,13 @@ export function ListingForm({
         color={testeConta.ehContaDeTeste ? 'blue' : 'yellow'}
         variant="light"
         mb="xs"
+        // Without this it never goes away: `setTesteConta` is only ever called
+        // on a successful fill and never reset, so the alert outlived even a
+        // later FAILED click — which reports itself as a toast and leaves a
+        // stale success banner sitting above the form.
+        withCloseButton
+        closeButtonLabel="Fechar aviso"
+        onClose={() => setTesteConta(null)}
         title={
           testeConta.ehContaDeTeste
             ? 'Dados de teste preenchidos'
@@ -327,13 +350,25 @@ export function ListingForm({
               conta em Canais &gt; Mercado Livre.
             </Text>
           )}
-          {/* Covers both ways the route can decline it: "Outros" absent from the
-              catalogue, and "Outros" present but mid-tree — only a leaf can be
-              published into, so neither yields a usable category. */}
-          {!testeConta.categoriaResolvida && (
+          {/* Name the category that was actually chosen. The route resolves a
+              LEAF under "Outros" (ML files test listings there), and which leaf
+              it landed on is not guessable from the id the field now shows. */}
+          {testeConta.categoriaResolvida && testeConta.categoriaPath != null && (
             <Text size="sm">
-              Não foi possível usar a categoria “Outros” automaticamente — escolha uma categoria
-              antes de publicar.
+              Categoria definida: <strong>{testeConta.categoriaPath.join(' › ')}</strong>.
+            </Text>
+          )}
+          {/* ⚠️ Name the CAUSE. The two need different actions: "this site has no
+              Outros root" is nothing the operator can fix, while "no leaf beneath
+              it" means picking a subcategory. One shared message for both sent
+              them hunting for a setting that does not exist. */}
+          {!testeConta.categoriaResolvida && (
+            <Text size="sm" c="red" fw={500}>
+              {testeConta.categoriaMotivo === 'sem-raiz'
+                ? 'O Mercado Livre não expõe nenhuma das categorias raiz esperadas nesta conta. Isso não deveria acontecer — provavelmente a árvore de categorias mudou. Escolha a categoria manualmente e avise a equipe.'
+                : testeConta.categoriaMotivo === 'sem-folha'
+                  ? 'A categoria raiz existe, mas nenhuma subcategoria final foi encontrada abaixo dela. Isso não deveria acontecer — provavelmente a árvore de categorias mudou. Escolha a categoria manualmente e avise a equipe.'
+                  : 'Não foi possível usar a categoria de teste automaticamente — escolha uma categoria antes de publicar.'}
             </Text>
           )}
           {/* ⚠️ Only meaningful once a category actually resolved. The route
@@ -395,6 +430,59 @@ export function ListingForm({
     }
     return out;
   }, [attrs, attrRows]);
+
+  // ---- AI attribute suggestion (#799 A4) ---------------------------------
+  // ⚠️ Staged, never applied. The route answers with suggestions and the modal
+  // applies only what the operator ticked — the whole reason it is `sugerir-`.
+  const [iaAberto, setIaAberto] = useState(false);
+  const [iaResultado, setIaResultado] = useState<MercadoLivreAtributosSugestao | null>(null);
+  const [iaOcupado, setIaOcupado] = useState(false);
+  const [iaFeedback, setIaFeedback] = useState('');
+  /** Bumped per run so the modal remounts and its checkbox set re-seeds. */
+  const [iaRun, setIaRun] = useState(0);
+
+  const pedirIa = useCallback(
+    async (opts?: { feedback?: string; anterior?: MercadoLivreAtributoSugestao[] }) => {
+      if (!client || effectiveCategoryId == null) return;
+      setIaOcupado(true);
+      // A revise turn keeps the modal open over the previous answer; a fresh run
+      // opens it empty so the dialog is its own spinner.
+      if (opts?.feedback == null) {
+        setIaResultado(null);
+        setIaRun((n) => n + 1);
+        setIaAberto(true);
+      }
+      try {
+        const res = await client.sugerirAtributos({
+          integracaoId,
+          produtoId,
+          categoryId: effectiveCategoryId,
+          ...(opts?.feedback != null ? { feedback: opts.feedback } : {}),
+          ...(opts?.anterior != null ? { anterior: opts.anterior } : {}),
+        });
+        setIaResultado(res);
+        setIaRun((n) => n + 1);
+        setIaFeedback('');
+      } catch (err) {
+        if (
+          err instanceof MercadoLivreClientHttpError ||
+          err instanceof MercadoLivreClientNetworkError
+        ) {
+          setIaAberto(false);
+          notifications.show({
+            color: 'red',
+            title: 'Não foi possível preencher com IA',
+            message: err.message,
+          });
+          return;
+        }
+        throw err;
+      } finally {
+        setIaOcupado(false);
+      }
+    },
+    [client, effectiveCategoryId, integracaoId, produtoId],
+  );
 
   // Re-seed from the live snapshot ONLY while the operator has nothing pending.
   // A publish or a webhook landing mid-edit must not silently rewrite the text
@@ -559,12 +647,20 @@ export function ListingForm({
   return (
     <>
       <Fieldset legend="Dados do anúncio" variant="unstyled">
-        {!isPublished && !readOnly && (
+        {/* ⚠️ Development builds only. Publishing a test listing creates a REAL
+            listing on the real marketplace (ML has no sandbox), so the affordance
+            has no business existing in a deployed app — and `NODE_ENV` is a
+            build-time constant, so the branch is stripped entirely rather than
+            merely hidden. Same shape as the checkout harness and the print
+            preview.
+            ⚠️ Read INLINE, never into a module-level const: a const is captured
+            at import time and `vi.stubEnv` can no longer move it, which would
+            make this untestable. */}
+        {process.env.NODE_ENV === 'development' && !isPublished && !readOnly && (
           <Group justify="flex-end" mb="xs">
             <Button
               type="button"
-              variant="subtle"
-              size="compact-xs"
+              variant="light"
               onClick={() => void preencherTeste()}
               loading={carregandoTeste}
               disabled={client == null}
@@ -624,14 +720,23 @@ export function ListingForm({
                 in the section on the field least often used. Anything already
                 written opens expanded, because a hidden non-empty field is a
                 field nobody remembers to check. */}
-            <Anchor
-              component="button"
+            {/* A bare `Anchor` read as body text here — no variant, no colour,
+                nothing marking it as the control that reveals a whole field. A
+                subtle Button with a chevron says "this opens something". */}
+            <Button
               type="button"
-              size="xs"
+              variant="subtle"
+              size="compact-sm"
+              justify="flex-start"
+              w="fit-content"
+              px={4}
+              leftSection={
+                descricaoOpen ? <IconChevronUp size={14} /> : <IconChevronDown size={14} />
+              }
               onClick={() => setDescricaoOpen((v) => !v)}
             >
               {descricaoOpen ? 'Ocultar descrição' : 'Descrição do anúncio (opcional)'}
-            </Anchor>
+            </Button>
             {/* ⚠️ Rendered ALWAYS and hidden with CSS, never unmounted. Mantine's
                 <Collapse> unmounts its children, and an unmounted `Controller`
                 is one RHF `shouldUnregister` default away from silently dropping
@@ -706,8 +811,56 @@ export function ListingForm({
           loading={atributosQuery.isPending && effectiveCategoryId != null}
           failed={atributosQuery.isError}
           disabled={readOnly}
+          acaoIa={
+            <Tooltip label="Preencher com IA" withArrow>
+              {/* ⚠️ A <span> so the tooltip still fires when the button is
+                  disabled — Mantine turns pointer events off on a disabled
+                  control, which is the trap `PermGate` documents. */}
+              <span style={{ display: 'inline-block' }}>
+                <ActionIcon
+                  variant="subtle"
+                  size="sm"
+                  aria-label="Preencher com IA"
+                  loading={iaOcupado && !iaAberto}
+                  disabled={
+                    readOnly ||
+                    client == null ||
+                    effectiveCategoryId == null ||
+                    atributosQuery.data?.leaf === false
+                  }
+                  onClick={() => void pedirIa()}
+                >
+                  <IconSparkles size={16} />
+                </ActionIcon>
+              </span>
+            </Tooltip>
+          }
         />
       </Fieldset>
+
+      <AtributosAiModal
+        key={iaRun}
+        opened={iaAberto}
+        onClose={() => setIaAberto(false)}
+        resultado={iaResultado}
+        attrs={attrs}
+        rows={attrRows}
+        onApply={(aceitas) => {
+          const ids = new Set(aceitas.map((a) => a.id));
+          setEdited({
+            categoryId: effectiveCategoryId,
+            rows: applySuggestions(attrs, attrRows, aceitas, (id) => ids.has(id)),
+          });
+        }}
+        feedback={{
+          value: iaFeedback,
+          onChange: setIaFeedback,
+          onResubmit: () =>
+            void pedirIa({ feedback: iaFeedback, anterior: iaResultado?.sugestoes ?? [] }),
+          busy: iaOcupado,
+          placeholder: 'Ex.: a cor está errada, é azul-marinho; o material é algodão.',
+        }}
+      />
 
       {/* ⚠️ "Salvar anúncio" is NOT rendered here any more. It lives in
           `MercadoLivreEditor`'s action group, beside "Publicar no Mercado Livre",

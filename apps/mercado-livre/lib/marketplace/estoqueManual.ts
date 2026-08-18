@@ -675,8 +675,9 @@ async function enviarComLadder(
   throw ultimoErro instanceof Error ? ultimoErro : new Error('envio manual falhou');
 }
 
-/** Fixed-size worker pool preserving no particular completion order. */
-async function runPool<T>(
+/** Fixed-size worker pool preserving no particular completion order. Exported
+ * for `precoManual.ts`, which bounds its sends exactly the same way. */
+export async function runPool<T>(
   items: readonly T[],
   size: number,
   worker: (item: T) => Promise<void>,

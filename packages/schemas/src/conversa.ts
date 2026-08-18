@@ -126,6 +126,23 @@ export const conversaSchema = z.object({
   pedidoOuterRef: outerRefSchema.nullable().default(null),
   incidenteOuterRef: outerRefSchema.nullable().default(null),
   produtoOuterRef: outerRefSchema.nullable().default(null),
+  /**
+   * The contact behind this conversa, as a `clientes` ref.
+   *
+   * `usuarios` is for people who can log into the system; an inbound contact is
+   * a `cliente`. The legacy app minted a synthetic sem-auth `usuarios` doc per
+   * contact purely so `usarioOuterRef` had something to point at, and the chat
+   * UI then reached the customer through a second hop
+   * (`clientes.userCliente == documents/usuarios/<uid>`). This field removes both
+   * the doc and the hop.
+   *
+   * `usarioOuterRef` above STAYS: the still-running Flutter app and the existing
+   * WhatsApp pipeline both write it, and the migration import will bring in years
+   * of conversas carrying it. Readers prefer `clienteOuterRef` and fall back to
+   * the usuario hop — never the other way round, because a redelivery `merge()`
+   * onto a legacy doc leaves BOTH fields populated.
+   */
+  clienteOuterRef: outerRefSchema.nullable().default(null),
 
   usuarios: z.array(z.string()).nullable().default(null),
 
@@ -152,6 +169,29 @@ export const conversaSchema = z.object({
   versao: z.number().int().nullable().default(null),
   mensagensIdMap: z.record(z.string(), z.unknown()).nullable().default(null),
   mensagensId: z.array(z.string()).nullable().default(null),
+
+  /**
+   * Why this thread can no longer be answered — `null` means it can.
+   *
+   * Written by the channel importers, read by the composer. The string is the
+   * operator-facing reason, shown in place of the input ("Pergunta já respondida
+   * no Mercado Livre", "Prazo de resposta encerrado", "Reclamação sem ações
+   * disponíveis"), which is what #817 asks for: a composer that explains itself
+   * rather than one that silently vanishes.
+   *
+   * ⚠️ Deliberately NOT `estadoConversa`. That field is operator triage state —
+   * `claimImport.ts` restores it after every merge precisely so a webhook cannot
+   * clobber someone mid-triage — and a webhook writing it would also ping-pong
+   * against `podeReabrirConversa`. This field is channel-owned, that one is
+   * operator-owned, and keeping them apart is what lets both be written safely.
+   *
+   * ⚠️ A UI HINT, never enforcement. It records what the channel last observed,
+   * so it is stale by construction: a claim's available actions can empty out and
+   * a post-sale window can close between the last import and the operator
+   * pressing send. The send route re-derives the capability from the live
+   * provider and is the only authority.
+   */
+  respostaBloqueada: z.string().nullable().default(null),
 });
 // No `.passthrough()`: every field the legacy Flutter app and the webchat
 // widget write to `chat/*` is modeled above, so unknown top-level keys are
@@ -259,6 +299,18 @@ export const mensagemSchema = z.object({
   canal: z.number().int().default(0),
   usarioMensagemOuterRef: outerRefSchema.nullable().default(null),
   user_id: z.string().nullable().default(null),
+  /**
+   * The message author when the author is the CONTACT — the `clientes` twin of
+   * `usarioMensagemOuterRef`/`user_id` above, which stay for legacy + WhatsApp
+   * writers. See `clienteOuterRef` on the conversa.
+   *
+   * ⚠️ This is NOT what decides which side of the thread a bubble renders on.
+   * `MensagemBubble` reads `estadoEnvio === recebido` for that, so an inbound
+   * message must be stamped `recebido` regardless of which author field it
+   * carries — dropping `user_id` without that stamp renders buyer and seller
+   * messages identically.
+   */
+  clienteMensagemOuterRef: outerRefSchema.nullable().default(null),
   urlAvatar: z.string().nullable().default(null),
   mid: z.string().nullable().default(null),
   midGroup: z.string().nullable().default(null),
