@@ -67,7 +67,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     isHtml: true,
     temEnvio: false,
   },
-  // mlped — limite 300 (L1014), maximoAnexos 1 (L1069), formats L1085,
+  // mlped — limite 350 (corrected from legacy 300 at L1014), maximoAnexos 1 (L1069), formats L1085,
   // size 25 MB (L1101), isHtml true (L1028).
   mlped: {
     limiteCaracteres: 350,
