@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import { Alert, Divider, Group, Select, Skeleton, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle } from '@tabler/icons-react';
@@ -20,12 +20,10 @@ import { ClientePicker } from '@/components/pickers/ClientePicker';
 import { EnderecoPicker, useEnderecoFromRef } from '@/components/pickers/EnderecoPicker';
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import type { FreteInicialFormState, VolumeFormState } from '../types';
+import type { FreteInicialFormState } from '../types';
 import { collectFreteErrors } from '../freteErrors';
 import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
 import { seedFreteInicial } from './frete/seedFreteInicial';
-import { pesoPedido, shouldSeedVolume, volumePadrao } from './frete/pesoPedido';
-import { useProdutoPesoMap } from './frete/useProdutoPesoMap';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
@@ -164,63 +162,8 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 
-  // Auto-weight + default Volume (#371, port of the legacy ME widget's
-  // seed-if-empty init). Only fetches/considers seeding when there's a real
-  // chance of it: frete active, not marketplace-owned (that block is
-  // importer-owned end to end — never inject a fabricated Volume into it),
-  // and no volume already stored. `pendingActivationRef` further latches to a
-  // genuine same-session `temFrete` false→true transition (a live
-  // `onModalidadeChange`, not the initial load of an already-active pedido)
-  // so the seed's `shouldDirty: true` is always a real user action — it never
-  // races the page's post-load server-truth correction, which only repaints
-  // a still-clean form, nor re-fabricates a Volume an operator removed and
-  // saved on purpose.
-  const itensFlat = form.watch('_itensFlat') ?? [];
-  const hasStoredVolumes = !!freteInicial?.volumes && freteInicial.volumes.length > 0;
-  const produtoUidsForPeso = useMemo(
-    () =>
-      temFrete && !marketplaceOwned && !hasStoredVolumes
-        ? itensFlat.filter((i) => !i._delete && !!i.produtoUid).map((i) => i.produtoUid as string)
-        : [],
-    [temFrete, marketplaceOwned, hasStoredVolumes, itensFlat],
-  );
-  const produtoPesoById = useProdutoPesoMap(db, produtoUidsForPeso);
-  const wasTemFreteRef = useRef(temFrete);
-  const pendingActivationRef = useRef(false);
-  const autoSeededVolumeRef = useRef(false);
-  useEffect(() => {
-    const wasTemFrete = wasTemFreteRef.current;
-    wasTemFreteRef.current = temFrete;
-    if (!wasTemFrete && temFrete) pendingActivationRef.current = true;
-
-    if (autoSeededVolumeRef.current) return;
-    if (produtoPesoById === undefined) return; // batch still in flight
-    const currentVolumes = form.getValues(fretePath('volumes')) as VolumeFormState[] | null;
-    const shouldSeed = shouldSeedVolume({
-      pendingActivation: pendingActivationRef.current,
-      marketplaceOwned,
-      volumes: currentVolumes,
-      produtoPesoById,
-    });
-    if (!shouldSeed) return;
-    autoSeededVolumeRef.current = true;
-    const peso = pesoPedido(
-      itensFlat
-        .filter((i) => !i._delete)
-        .map((i) => ({
-          produtoUid: i.produtoUid,
-          quantidade: i.quantidade,
-        })),
-      produtoPesoById,
-    );
-    form.setValue(fretePath('volumes'), [volumePadrao(peso)], {
-      shouldDirty: true,
-      shouldValidate: true,
-    });
-  }, [temFrete, marketplaceOwned, itensFlat, produtoPesoById, form]);
-
   function renderTipoFields() {
-    if (!integracaoRef) return <GenericFreteFields form={form} disabled={disabled} />;
+    if (!integracaoRef) return <GenericFreteFields form={form} db={db} disabled={disabled} />;
     if (loadingIntegracao) return <Skeleton height={120} />;
     if (!integracaoDoc) {
       return (
@@ -237,6 +180,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
         return (
           <RetiradaFields
             form={form}
+            db={db}
             disabled={disabled}
             integracao={integracaoDoc.data}
             isCreate={!pedidoId}
@@ -246,17 +190,19 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
         return (
           <MotoboyFields
             form={form}
+            db={db}
             disabled={disabled}
             integracao={integracaoDoc.data}
             cepDestino={cepDestino}
           />
         );
       case 'fob':
-        return <FobFields form={form} disabled={disabled} />;
+        return <FobFields form={form} db={db} disabled={disabled} />;
       case 'melhorEnvios':
         return (
           <MelhorEnvioFields
             form={form}
+            db={db}
             disabled={disabled}
             integracao={integracaoDoc.data}
             cepDestino={cepDestino}
@@ -265,7 +211,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
           />
         );
       default:
-        return <GenericFreteFields form={form} disabled={disabled} />;
+        return <GenericFreteFields form={form} db={db} disabled={disabled} />;
     }
   }
 

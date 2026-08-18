@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { Alert, Button, Group, Select, Stack } from '@mantine/core';
+import type { Firestore } from 'firebase/firestore';
 import type { IntFrete } from '@delfrance/schemas';
 import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import {
@@ -41,6 +42,7 @@ import { EtiquetaMelhorEnvioPanel } from './EtiquetaMelhorEnvioPanel';
  */
 export function MelhorEnvioFields({
   form,
+  db,
   disabled,
   integracao,
   cepDestino,
@@ -48,6 +50,7 @@ export function MelhorEnvioFields({
   pedidoId,
 }: {
   form: PedidoFormHandle;
+  db: Firestore;
   disabled?: boolean;
   integracao: IntFrete;
   cepDestino: string | null;
@@ -173,7 +176,7 @@ export function MelhorEnvioFields({
 
   return (
     <Stack gap="sm">
-      <VolumesEditor form={form} disabled={disabled} />
+      <VolumesEditor form={form} db={db} disabled={disabled} />
 
       {!cepOrigem && (
         <Alert color="yellow">

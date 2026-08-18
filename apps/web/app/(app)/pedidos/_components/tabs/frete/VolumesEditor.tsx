@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
   ActionIcon,
   Button,
@@ -10,20 +11,45 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
+import type { Firestore } from 'firebase/firestore';
 import type { VolumeFormState } from '../../types';
 import type { PedidoFormHandle } from './fields';
 import { fretePath } from './fields';
-import { volumePadrao } from './pesoPedido';
+import { pesoPedido, volumePadrao } from './pesoPedido';
+import { useProdutoPesoMap } from './useProdutoPesoMap';
 
 export interface VolumesEditorProps {
   form: PedidoFormHandle;
+  db: Firestore;
   disabled?: boolean;
   /** FOB allows a single volume (legacy `maximoDeVolumes: 1`). */
   maxVolumes?: number;
 }
 
-export function VolumesEditor({ form, disabled, maxVolumes }: VolumesEditorProps) {
+export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorProps) {
   const volumes = (form.watch(fretePath('volumes')) as VolumeFormState[] | null) ?? [];
+
+  // getPesoPedido() (#371) as the "+ Novo volume" button's starting weight,
+  // instead of a blind 1kg guess. Deliberately NOT auto-inserted: a fabricated
+  // 10×10×10cm box feeds straight into a real freight quote
+  // (`melhorEnvioCart`), so review flagged silently auto-seeding one as risking
+  // a materially inaccurate quote nobody looked at. Requiring the click keeps
+  // the box in front of the operator before it's ever sent anywhere — the
+  // computed weight is the only thing that gets smarter.
+  const itensFlat = form.watch('_itensFlat') ?? [];
+  const produtoUidsForPeso = useMemo(
+    () => itensFlat.filter((i) => !i._delete && !!i.produtoUid).map((i) => i.produtoUid as string),
+    [itensFlat],
+  );
+  const produtoPesoById = useProdutoPesoMap(db, produtoUidsForPeso);
+  const defaultPesoBruto = produtoPesoById
+    ? pesoPedido(
+        itensFlat
+          .filter((i) => !i._delete)
+          .map((i) => ({ produtoUid: i.produtoUid, quantidade: i.quantidade })),
+        produtoPesoById,
+      )
+    : 1;
 
   const update = (next: VolumeFormState[]) => {
     form.setValue(fretePath('volumes'), next.length > 0 ? next : null, {
@@ -128,7 +154,7 @@ export function VolumesEditor({ form, disabled, maxVolumes }: VolumesEditorProps
             type="button"
             variant="light"
             size="xs"
-            onClick={() => update([...volumes, volumePadrao()])}
+            onClick={() => update([...volumes, volumePadrao(defaultPesoBruto)])}
             disabled={disabled}
           >
             + Novo volume

@@ -26,17 +26,35 @@ function coerceQuantidade(q: number | null | undefined): number {
 }
 
 /**
+ * A pedido item's `produtoUid` can be a legacy full path (`produtos/p2`, the
+ * old Flutter ODM convention) instead of a bare id — the same fixup
+ * `productIdsFromPedidos` applies (`lib/pedido/downloadAnexos.ts`) and the one
+ * legacy `getPesoPedido` itself does (`.split('/').last`, per issue #371's
+ * legacy-context comment). Every produtoUid lookup in this module goes
+ * through this so a legacy row still resolves its produto instead of
+ * silently falling back to the 1kg/unit default.
+ */
+export function normalizeProdutoId(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const id = raw.includes('/') ? (raw.split('/').pop() ?? raw) : raw;
+  return id || null;
+}
+
+/**
  * Port of `getPesoPedido` (`.old/lib/pedido/providers/cadastroPedidoProvider.dart:1394-1448`,
  * see issue #371's legacy-context comment for the full trace) — the pedido's
- * total weight in **kg**, used to auto-seed the Frete tab's default Volume so
- * freight can be quoted without manual entry.
+ * total weight in **kg**, used to default the Frete tab's "+ Novo volume"
+ * weight so adding one doesn't start from a blind guess.
  *
  * `itens` must already exclude staged-for-deletion rows (`FlatItem._delete`) —
  * this function has no delete-marker concept of its own. `produtoPesoById` is
- * a pre-batched map keyed by produto id; for a produto whose own weights are
- * both null/0 AND carries a `paiId`, the map must ALSO hold that parent's
- * entry (the variation→parent fallback below reads it from the same map, one
- * lookup, no nested fetch).
+ * a pre-batched map keyed by **normalized** produto id (see
+ * {@link normalizeProdutoId} — this function normalizes each item's
+ * `produtoUid` before looking it up, so the caller may pass either bare ids
+ * or legacy full paths); for a produto whose own weights are both null/0 AND
+ * carries a `paiId`, the map must ALSO hold that parent's entry (the
+ * variation→parent fallback below reads it from the same map, one lookup, no
+ * nested fetch).
  *
  * - No items → `1` (1kg floor, never 0 — a freight quote must never request a
  *   0kg shipment).
@@ -59,11 +77,12 @@ export function pesoPedido(
   let peso = 0;
   for (const item of itens) {
     const quantidade = coerceQuantidade(item.quantidade);
-    if (!item.produtoUid) {
+    const produtoId = normalizeProdutoId(item.produtoUid);
+    if (!produtoId) {
       peso += 1 * quantidade;
       continue;
     }
-    const produto = produtoPesoById[item.produtoUid];
+    const produto = produtoPesoById[produtoId];
     if (!produto) {
       peso += 1 * quantidade;
       continue;
@@ -84,7 +103,9 @@ export function pesoPedido(
  * `pesoBruto` as `pesoLiquido` (2 decimals, byte-parity `duasCasasDecimais`
  * rounding — {@link roundReais} despite the money-flavored name, see
  * `@delfrance/core/money`), 'Pacote', hardcoded 10×10×10cm (the factory does
- * not read product dimensions).
+ * not read product dimensions — see `VolumesEditor`'s "+ Novo volume" button
+ * for why that fallback is only ever a *starting point* the operator reviews,
+ * never auto-committed to a quote unseen).
  */
 export function volumePadrao(pesoBruto = 1): VolumeFormState {
   return {
@@ -97,42 +118,4 @@ export function volumePadrao(pesoBruto = 1): VolumeFormState {
     dimensoes: { altura: 10, largura: 10, comprimento: 10 },
     lacres: null,
   };
-}
-
-/**
- * Whether the Frete tab should auto-seed a default Volume right now — pure
- * decision extracted from the tab's effect so it is unit-testable without
- * mounting the form. Port of the legacy ME widget's "seed only when volumes
- * is empty" init behavior (`_adicionarVolumeInicial`,
- * `.old/lib/integracoes_frete/melhor_envios/widgets.dart:87`), generalized to
- * every tipo per #371 — with two guards the legacy single-tipo widget didn't
- * need:
- *
- * - `pendingActivation` — true only for a frete-just-turned-on transition
- *   THIS mount (the caller latches it the moment `temFrete` flips false→true
- *   from a live `onModalidadeChange`, e.g. picking a modalidade on a fresh
- *   pedido). An already-active pedido loaded straight from Firestore with
- *   `volumes` empty (a legacy data gap, or a volume the operator removed and
- *   saved on purpose) never gets one fabricated back on a later open — only a
- *   genuine same-session activation seeds, so the seed's `shouldDirty: true`
- *   always reflects a real user action, never a passive-mount side effect
- *   that could race the page's post-load server-truth correction (a dirty
- *   form is never repainted with server truth).
- * - `marketplaceOwned` — a marketplace-imported freteInicial is owned
- *   entirely by the order importer (`MarketplaceReadOnly` renders no editor
- *   at all); this must never inject a locally-fabricated Volume into it.
- */
-export function shouldSeedVolume(input: {
-  /** A false→true `temFrete` transition happened this mount and is unresolved. */
-  pendingActivation: boolean;
-  marketplaceOwned: boolean;
-  volumes: readonly VolumeFormState[] | null | undefined;
-  /** `undefined` = the batched produto weight lookup is still in flight. */
-  produtoPesoById: Readonly<Record<string, ProdutoPesoInfo | null>> | undefined;
-}): boolean {
-  if (!input.pendingActivation) return false;
-  if (input.marketplaceOwned) return false;
-  if (input.volumes && input.volumes.length > 0) return false;
-  if (input.produtoPesoById === undefined) return false;
-  return true;
 }

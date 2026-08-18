@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pesoPedido, shouldSeedVolume, volumePadrao, type ProdutoPesoInfo } from './pesoPedido';
+import { normalizeProdutoId, pesoPedido, volumePadrao, type ProdutoPesoInfo } from './pesoPedido';
 
 function peso(over: Partial<ProdutoPesoInfo> = {}): ProdutoPesoInfo {
   return { pesoBrutoKg: null, pesoLiquidoKg: null, paiId: null, ...over };
@@ -106,6 +106,29 @@ describe('pesoPedido', () => {
     // the paiId branch — still exercises "everything resolves to the 1kg floor".
     expect(result).toBe(1);
   });
+
+  it('resolves a legacy full-path produtoUid the same as its bare id (#1093 review)', () => {
+    const result = pesoPedido([{ produtoUid: 'produtos/p1', quantidade: 2 }], {
+      p1: peso({ pesoBrutoKg: 3 }),
+    });
+    expect(result).toBe(6);
+  });
+});
+
+describe('normalizeProdutoId', () => {
+  it('passes a bare id through unchanged', () => {
+    expect(normalizeProdutoId('p1')).toBe('p1');
+  });
+
+  it('takes the last segment of a legacy full path', () => {
+    expect(normalizeProdutoId('produtos/p1')).toBe('p1');
+  });
+
+  it('returns null for null, undefined or empty', () => {
+    expect(normalizeProdutoId(null)).toBeNull();
+    expect(normalizeProdutoId(undefined)).toBeNull();
+    expect(normalizeProdutoId('')).toBeNull();
+  });
 });
 
 describe('volumePadrao', () => {
@@ -126,38 +149,5 @@ describe('volumePadrao', () => {
     const v = volumePadrao();
     expect(v.pesoBruto).toBe(1);
     expect(v.pesoLiquido).toBe(0.9);
-  });
-});
-
-describe('shouldSeedVolume', () => {
-  function base(over: Partial<Parameters<typeof shouldSeedVolume>[0]> = {}) {
-    return {
-      pendingActivation: true,
-      marketplaceOwned: false,
-      volumes: null,
-      produtoPesoById: {},
-      ...over,
-    };
-  }
-
-  it('does not seed without a same-session activation transition', () => {
-    expect(shouldSeedVolume(base({ pendingActivation: false }))).toBe(false);
-  });
-
-  it('does not seed into a marketplace-owned freteInicial', () => {
-    expect(shouldSeedVolume(base({ marketplaceOwned: true }))).toBe(false);
-  });
-
-  it('does not seed when volumes already has entries', () => {
-    expect(shouldSeedVolume(base({ volumes: [volumePadrao()] }))).toBe(false);
-  });
-
-  it('does not seed while the produto weight batch is still loading', () => {
-    expect(shouldSeedVolume(base({ produtoPesoById: undefined }))).toBe(false);
-  });
-
-  it('seeds on a pending activation with empty volumes, resolved weights, not marketplace-owned', () => {
-    expect(shouldSeedVolume(base())).toBe(true);
-    expect(shouldSeedVolume(base({ volumes: [] }))).toBe(true);
   });
 });
