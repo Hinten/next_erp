@@ -151,9 +151,22 @@ export function createVertexGenerateFn(): GenerateFn {
       parts.push({ inlineData: { data: image.base64, mimeType: image.mimeType } });
     }
 
+    // ⚠️ A REVISION is a real multi-turn exchange, not a longer prompt. The
+    // previous answer goes back as the `model` turn and the operator's
+    // correction as a fresh `user` turn, so the model is amending something it
+    // said rather than being told about it second-hand.
+    const contents =
+      request.anterior == null
+        ? [{ role: 'user', parts }]
+        : [
+            { role: 'user', parts },
+            { role: 'model', parts: [{ text: request.anterior.resposta }] },
+            { role: 'user', parts: [{ text: request.anterior.feedback }] },
+          ];
+
     const response = await getClient().models.generateContent({
       model,
-      contents: [{ role: 'user', parts }],
+      contents,
       config: {
         systemInstruction: request.systemInstruction,
         responseMimeType: 'application/json',

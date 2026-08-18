@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import {
+  ActionIcon,
   Alert,
   Button,
   Fieldset,
@@ -19,7 +20,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconChevronDown, IconChevronUp } from '@tabler/icons-react';
+import { IconChevronDown, IconChevronUp, IconSparkles } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
@@ -29,6 +30,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  applySuggestions,
   attributesForSave,
   seedRows,
   validateAttr,
@@ -38,6 +40,8 @@ import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
+  type MercadoLivreAtributoSugestao,
+  type MercadoLivreAtributosSugestao,
 } from '@/lib/mercado-livre/client';
 
 import {
@@ -62,6 +66,7 @@ import {
   saveListing,
 } from '@/lib/mercado-livre/saveListing';
 import type { OperatorOwnedKey } from '@/lib/mercado-livre/listingPatch';
+import { AtributosAiModal } from './AtributosAiModal';
 import { AtributosSection } from './AtributosSection';
 import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
@@ -426,6 +431,59 @@ export function ListingForm({
     return out;
   }, [attrs, attrRows]);
 
+  // ---- AI attribute suggestion (#799 A4) ---------------------------------
+  // ⚠️ Staged, never applied. The route answers with suggestions and the modal
+  // applies only what the operator ticked — the whole reason it is `sugerir-`.
+  const [iaAberto, setIaAberto] = useState(false);
+  const [iaResultado, setIaResultado] = useState<MercadoLivreAtributosSugestao | null>(null);
+  const [iaOcupado, setIaOcupado] = useState(false);
+  const [iaFeedback, setIaFeedback] = useState('');
+  /** Bumped per run so the modal remounts and its checkbox set re-seeds. */
+  const [iaRun, setIaRun] = useState(0);
+
+  const pedirIa = useCallback(
+    async (opts?: { feedback?: string; anterior?: MercadoLivreAtributoSugestao[] }) => {
+      if (!client || effectiveCategoryId == null) return;
+      setIaOcupado(true);
+      // A revise turn keeps the modal open over the previous answer; a fresh run
+      // opens it empty so the dialog is its own spinner.
+      if (opts?.feedback == null) {
+        setIaResultado(null);
+        setIaRun((n) => n + 1);
+        setIaAberto(true);
+      }
+      try {
+        const res = await client.sugerirAtributos({
+          integracaoId,
+          produtoId,
+          categoryId: effectiveCategoryId,
+          ...(opts?.feedback != null ? { feedback: opts.feedback } : {}),
+          ...(opts?.anterior != null ? { anterior: opts.anterior } : {}),
+        });
+        setIaResultado(res);
+        setIaRun((n) => n + 1);
+        setIaFeedback('');
+      } catch (err) {
+        if (
+          err instanceof MercadoLivreClientHttpError ||
+          err instanceof MercadoLivreClientNetworkError
+        ) {
+          setIaAberto(false);
+          notifications.show({
+            color: 'red',
+            title: 'Não foi possível preencher com IA',
+            message: err.message,
+          });
+          return;
+        }
+        throw err;
+      } finally {
+        setIaOcupado(false);
+      }
+    },
+    [client, effectiveCategoryId, integracaoId, produtoId],
+  );
+
   // Re-seed from the live snapshot ONLY while the operator has nothing pending.
   // A publish or a webhook landing mid-edit must not silently rewrite the text
   // someone is typing — that case is what the conflict modal is for.
@@ -753,8 +811,56 @@ export function ListingForm({
           loading={atributosQuery.isPending && effectiveCategoryId != null}
           failed={atributosQuery.isError}
           disabled={readOnly}
+          acaoIa={
+            <Tooltip label="Preencher com IA" withArrow>
+              {/* ⚠️ A <span> so the tooltip still fires when the button is
+                  disabled — Mantine turns pointer events off on a disabled
+                  control, which is the trap `PermGate` documents. */}
+              <span style={{ display: 'inline-block' }}>
+                <ActionIcon
+                  variant="subtle"
+                  size="sm"
+                  aria-label="Preencher com IA"
+                  loading={iaOcupado && !iaAberto}
+                  disabled={
+                    readOnly ||
+                    client == null ||
+                    effectiveCategoryId == null ||
+                    atributosQuery.data?.leaf === false
+                  }
+                  onClick={() => void pedirIa()}
+                >
+                  <IconSparkles size={16} />
+                </ActionIcon>
+              </span>
+            </Tooltip>
+          }
         />
       </Fieldset>
+
+      <AtributosAiModal
+        key={iaRun}
+        opened={iaAberto}
+        onClose={() => setIaAberto(false)}
+        resultado={iaResultado}
+        attrs={attrs}
+        rows={attrRows}
+        onApply={(aceitas) => {
+          const ids = new Set(aceitas.map((a) => a.id));
+          setEdited({
+            categoryId: effectiveCategoryId,
+            rows: applySuggestions(attrs, attrRows, aceitas, (id) => ids.has(id)),
+          });
+        }}
+        feedback={{
+          value: iaFeedback,
+          onChange: setIaFeedback,
+          onResubmit: () =>
+            void pedirIa({ feedback: iaFeedback, anterior: iaResultado?.sugestoes ?? [] }),
+          busy: iaOcupado,
+          placeholder: 'Ex.: a cor está errada, é azul-marinho; o material é algodão.',
+        }}
+      />
 
       {/* ⚠️ "Salvar anúncio" is NOT rendered here any more. It lives in
           `MercadoLivreEditor`'s action group, beside "Publicar no Mercado Livre",
