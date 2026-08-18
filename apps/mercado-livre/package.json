@@ -14,6 +14,9 @@
     "test:tasks": "vitest run --config vitest.tasks.config.ts",
     "backfill:int-frete": "dotenv -e ../../.env.local -- tsx scripts/backfill-int-frete.ts",
     "check:deposito-source": "dotenv -e ../../.env.local -- tsx scripts/check-deposito-source.ts",
+    "inspect:anuncio": "dotenv -e ../../.env.local -- tsx scripts/inspect-anuncio.ts",
+    "inspect:pedido": "dotenv -e ../../.env.local -- tsx scripts/inspect-pedido.ts",
+    "dump:notificacoes": "dotenv -e ../../.env.local -- tsx scripts/dump-notificacoes.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {
