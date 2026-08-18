@@ -117,7 +117,7 @@ import {
   type ResultadoConferencia,
 } from './orderShipmentConference';
 import { assertOrderItemsComplete, mlOrderItemToItemDoPedido } from './orderMapping';
-import { resolveOrderLineProduto } from './orderProdutoResolve';
+import { resolveOrderLineProduto, type ResolvedOrderLineProduto } from './orderProdutoResolve';
 import { estadoPedidoFromOrderStatus } from './orderStatusMaps';
 import { makePagamentoIdMercadoLivre } from './orderIds';
 import { mlPaymentToPagamento } from './orderPaymentMapping';
@@ -459,6 +459,13 @@ async function resolvePackOrders(
 interface OrderLineMlIds {
   itemId: string;
   variationId: string | null;
+  /**
+   * Which rung answered, or why none did — `recordItensSemProduto` reads it to
+   * pick the incidente's wording. Null only for a line whose `item.id` is empty,
+   * so the resolver was never called (unreachable in practice:
+   * `assertOrderItemsComplete` throws on such a line first).
+   */
+  via: ResolvedOrderLineProduto['via'] | null;
 }
 
 async function buildItensByOrderId(
@@ -472,7 +479,10 @@ async function buildItensByOrderId(
 }> {
   const out = new Map<number, ItemDoPedido[]>();
   const mlIdsByUniqueId = new Map<string, OrderLineMlIds>();
-  const memo = new Map<string, string | null>();
+  // Memoises the WHOLE resolution, not just the produto id: a pack's sibling
+  // orders repeat the same listing, and each of their lines needs the same miss
+  // reason, not "first one ambiguous, second one generic".
+  const memo = new Map<string, ResolvedOrderLineProduto>();
   for (const order of orders) {
     const lines = order.order_items ?? [];
     const itens: ItemDoPedido[] = [];
@@ -483,22 +493,23 @@ async function buildItensByOrderId(
       const variationId = variationIdRaw != null ? String(variationIdRaw) : null;
       const sku = line.item?.seller_sku ?? null;
 
-      let produtoUid: string | null = null;
+      let resolved: ResolvedOrderLineProduto | null = null;
       if (itemId) {
         const memoKey = `${itemId}|${variationId ?? ''}`;
-        if (memo.has(memoKey)) {
-          produtoUid = memo.get(memoKey) ?? null;
+        const cached = memo.get(memoKey);
+        if (cached) {
+          resolved = cached;
         } else {
-          const resolved = await resolveOrderLineProduto(db, {
+          resolved = await resolveOrderLineProduto(db, {
             itemId,
             variationId,
             sku,
             integracaoId,
           });
-          produtoUid = resolved?.produtoId ?? null;
-          memo.set(memoKey, produtoUid);
+          memo.set(memoKey, resolved);
         }
       }
+      const produtoUid = resolved?.produtoId ?? null;
 
       const item = mlOrderItemToItemDoPedido({
         orderId: order.id,
@@ -509,7 +520,11 @@ async function buildItensByOrderId(
       });
       itens.push(item);
       if (item.ensureUniqueId != null) {
-        mlIdsByUniqueId.set(item.ensureUniqueId, { itemId, variationId });
+        mlIdsByUniqueId.set(item.ensureUniqueId, {
+          itemId,
+          variationId,
+          via: resolved?.via ?? null,
+        });
       }
     }
     out.set(order.id, itens);
@@ -567,18 +582,35 @@ async function recordItensSemProduto(
       const mlIds = mlIdsByUniqueId.get(item.ensureUniqueId);
       const anuncio = mlIds?.itemId ?? item.mktplaceId ?? '?';
       const variacao = mlIds?.variationId ?? null;
-      const motivo =
+      // An AMBIGUOUS sku is a different problem from an absent one, and it needs
+      // a different action: de-duplicating the cadastro alone does NOT re-bind
+      // this pedido, because the item merge is append-only (`orderPedidoTx`
+      // skips a line whose `ensureUniqueId` is already stored), so the operator
+      // must bind here as well. Both branches are one produto-less line, hence
+      // one doc id — the verdict can flip between two deliveries of the same
+      // order, and a second id namespace would leave two rows for one line.
+      const ambiguo = mlIds?.via === 'ambiguous-sku';
+      const subtipo = ambiguo ? 'ml-produto-sku-ambiguo' : 'ml-produto-nao-vinculado';
+      const cabecalho =
         `[Mercado Livre] Item "${item.nomeDeVenda ?? anuncio}" ` +
         `(anúncio ${anuncio}${variacao != null ? `, variação ${variacao}` : ''}, ` +
-        `SKU ${item.sku ?? '—'}) não foi vinculado a nenhum produto do ERP. ` +
-        `O item ficou sem produto: nenhum estoque foi movimentado. ` +
-        `Vincule o produto manualmente no pedido.`;
+        `SKU ${item.sku ?? '—'}) `;
+      const motivo = ambiguo
+        ? cabecalho +
+          `não foi vinculado: este SKU corresponde a mais de um produto do ERP, ` +
+          `então nenhum foi escolhido. ` +
+          `O item ficou sem produto: nenhum estoque foi movimentado. ` +
+          `Vincule o produto manualmente neste pedido e corrija os SKUs duplicados no cadastro.`
+        : cabecalho +
+          `não foi vinculado a nenhum produto do ERP. ` +
+          `O item ficou sem produto: nenhum estoque foi movimentado. ` +
+          `Vincule o produto manualmente no pedido.`;
       try {
         await incidenteCollection.docRef(db, { pedidoId }, `ml-prod-${item.ensureUniqueId}`).create(
           incidenteCollection.parse({
             origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
             tipo: TIPO_INCIDENTE.outros,
-            subtipo: 'ml-produto-nao-vinculado',
+            subtipo,
             motivoDoIncidente: motivo,
             comentarios: null,
             timestamp: nowUs,
