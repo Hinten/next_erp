@@ -67,6 +67,9 @@ const defaultSleep = (ms: number): Promise<void> =>
 /** Small guard subtracted from the computed expiry (mirrors the old app's -5s). */
 const EXPIRY_GUARD_MS = 5_000;
 
+/** Deletes per batch in `deleteAll` — Firestore caps a batch at 500 writes. */
+const DELETE_BATCH_SIZE = 450;
+
 /**
  * Map a fresh ML `/oauth/token` response to the durable wire shape. `expires_in`
  * becomes an **absolute** ms-since-epoch expiry (`now + expires_in*1000 - 5s`),
@@ -91,6 +94,20 @@ export interface TokenDuravelStore {
   loadLatest(): Promise<TokenDuravel | null>;
   /** Persist a fresh credential (initial connect / after a refresh). */
   save(fresh: TokenDuravel): Promise<TokenDuravel>;
+  /**
+   * Disconnect the account: delete **every** credential doc, returning how many
+   * were removed.
+   *
+   * ⚠️ Deletes the whole collection, not `current`. Reads here span two
+   * lineages — Flutter's auto-ids and this app's fixed `current` — and
+   * `loadValid`/`loadLatest` take the newest by `expires_in` across both, so
+   * removing only `current` would leave a live `refresh_token` on an account
+   * we just reported as disconnected, and the next read would happily use it.
+   *
+   * The only caller today is the test-user mint flow (`testUsers.ts`), which
+   * revokes the bootstrap conta once it has consumed one of its ten slots.
+   */
+  deleteAll(): Promise<number>;
 }
 
 export function createTokenDuravelStore(db: Firestore, integracaoId: string): TokenDuravelStore {
@@ -118,6 +135,24 @@ export function createTokenDuravelStore(db: Firestore, integracaoId: string): To
         .docRef(db, ctx, CURRENT_DOC_ID)
         .set(tokenDuravelCollection.parse(fresh));
       return fresh;
+    },
+    async deleteAll(): Promise<number> {
+      // Read the ids rather than deleting by known id: `current` is only OUR
+      // lineage, and a Flutter-written auto-id left behind is a live credential.
+      // `select()` keeps this to document names — the token bodies are never
+      // materialized just to delete them.
+      const snap = await coll.select().get();
+      if (snap.empty) return 0;
+      // Chunked because a Firestore batch caps at 500 writes. Flutter appends an
+      // auto-id doc per connect and never prunes, so the count is unbounded in
+      // principle — and a partial delete here is precisely the outcome this
+      // function exists to prevent.
+      for (let i = 0; i < snap.docs.length; i += DELETE_BATCH_SIZE) {
+        const batch = db.batch();
+        for (const doc of snap.docs.slice(i, i + DELETE_BATCH_SIZE)) batch.delete(doc.ref);
+        await batch.commit();
+      }
+      return snap.size;
     },
   };
 }

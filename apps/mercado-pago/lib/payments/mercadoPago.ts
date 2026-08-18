@@ -32,6 +32,7 @@ import {
   createCredentialStore,
   credentialFromResponse,
 } from './credentialStore';
+import { invalidateMercadoPagoMetodo, readMercadoPagoMetodo } from './metodoCache';
 
 /** The account doc is missing, not a Mercado Pago tipo, or has no credentials. */
 export class MercadoPagoContaNotConfiguredError extends Error {
@@ -78,9 +79,22 @@ export interface ResolveAccessTokenOpts {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-/** The OAuth redirect URI — must match what's registered in the MP app. */
+/**
+ * The OAuth redirect URI — must match what's registered in the MP app.
+ *
+ * ⚠️ A BLANK `MERCADO_PAGO_PUBLIC_URL=` must fall back like an unset one. The old
+ * `??` guarded only `undefined`/`null`, so a blank value produced `base === ''` and
+ * sent the relative `"/api/oauth/mercado-pago/callback"` to MP as the `redirect_uri`
+ * — which MP rejects at the token step with a 400 this app could not report.
+ * Same `??`-versus-empty-string hole #887 fixed for `*_TASKS_REGION`.
+ *
+ * The localhost default stays: local dev has no public origin. It is also why a
+ * misconfigured deployed backend fails at MP rather than at boot — hence the value
+ * being echoed in the callback's failure log.
+ */
 export function mercadoPagoRedirectUri(): string {
-  const base = (process.env.MERCADO_PAGO_PUBLIC_URL ?? 'http://localhost:3007').replace(/\/$/, '');
+  const raw = process.env.MERCADO_PAGO_PUBLIC_URL?.trim();
+  const base = (raw && raw.length > 0 ? raw : 'http://localhost:3007').replace(/\/$/, '');
   return `${base}/api/oauth/mercado-pago/callback`;
 }
 
@@ -105,8 +119,14 @@ export interface MercadoPagoContext {
   /** The parsed metodo_pgto doc (extra fields ride through). */
   readonly conta: Readonly<Record<string, unknown>>;
   readonly store: CredentialStore;
-  /** Build the MP consent URL for this account, embedding the signed `state`. */
-  authorizeUrl(state: string): string;
+  /**
+   * Build the MP consent URL for this account, embedding the signed `state` and,
+   * when the registered app has PKCE on, the `code_challenge` (#1034).
+   */
+  authorizeUrl(
+    state: string,
+    pkce?: { codeChallenge: string; codeChallengeMethod?: 'S256' | 'plain' },
+  ): string;
   /**
    * The live access token: the stored one while comfortably valid, or a freshly
    * refreshed one (persisting MP's rotated refresh token). Concurrency-safe —
@@ -116,22 +136,26 @@ export interface MercadoPagoContext {
    * reconnect via OAuth).
    */
   resolveAccessToken(now?: number, opts?: ResolveAccessTokenOpts): Promise<string>;
-  /** Exchange an authorization code and persist the resulting credential. */
-  exchangeAndPersist(code: string, now?: number): Promise<void>;
+  /**
+   * Exchange an authorization code and persist the resulting credential.
+   * `codeVerifier` is the PKCE proof (RFC 7636) minted by the connect route and
+   * redeemed from the OAuth state record; omit it when PKCE is off for this MP
+   * application. The refresh grant never carries one.
+   */
+  exchangeAndPersist(code: string, codeVerifier?: string, now?: number): Promise<void>;
 }
 
 export async function loadMercadoPagoContext(
   db: Firestore,
   metodoId: string,
 ): Promise<MercadoPagoContext> {
-  const snap = await metodoPagamentoCollection.docRef(db, {}, metodoId).get();
-  if (!snap.exists) {
+  // The cached reader replaces the READ, not the contract — both throws below
+  // are unchanged, and a `null` stands in for `!snap.exists`. See
+  // `metodoCache.ts` for why the cache is a separate module.
+  const conta = await readMercadoPagoMetodo(db, metodoId);
+  if (conta == null) {
     throw new MercadoPagoContaNotConfiguredError(`Método de pagamento ${metodoId} não encontrado.`);
   }
-  const conta = metodoPagamentoCollection.parseRead(
-    snap.data(),
-    metodoPagamentoCollection.docPath({}, metodoId),
-  );
   if (conta.tipo !== TIPO_INTEGRACAO_PGTO.mercadoPago) {
     throw new MercadoPagoContaNotConfiguredError(
       `Método de pagamento ${metodoId} não é do tipo Mercado Pago.`,
@@ -145,11 +169,18 @@ export async function loadMercadoPagoContext(
     metodoId,
     conta,
     store,
-    authorizeUrl(state: string): string {
+    authorizeUrl(
+      state: string,
+      pkce?: { codeChallenge: string; codeChallengeMethod?: 'S256' | 'plain' },
+    ): string {
+      // Whether PKCE is in play is decided by the connect route, next to the flag
+      // and the store that holds the matching verifier — not here.
       return buildAuthorizeUrl({
         clientId: oauthConfig.clientId,
         redirectUri: oauthConfig.redirectUri,
         state,
+        codeChallenge: pkce?.codeChallenge,
+        codeChallengeMethod: pkce?.codeChallengeMethod,
       });
     },
     async resolveAccessToken(
@@ -211,8 +242,12 @@ export async function loadMercadoPagoContext(
         throw err;
       }
     },
-    async exchangeAndPersist(code: string, now: number = Date.now()): Promise<void> {
-      const resp = await exchangeCode(oauthConfig, code);
+    async exchangeAndPersist(
+      code: string,
+      codeVerifier?: string,
+      now: number = Date.now(),
+    ): Promise<void> {
+      const resp = await exchangeCode(oauthConfig, code, codeVerifier);
       await store.save(credentialFromResponse(resp, now));
       // Denormalize the MP collector id (the seller's numeric user_id) onto the
       // metodo_pgto doc so an inbound webhook resolves this account with a single
@@ -220,6 +255,10 @@ export async function loadMercadoPagoContext(
       // touches other fields.
       if (resp.user_id != null) {
         await metodoPagamentoCollection.merge(db, {}, metodoId, { user_id: resp.user_id });
+        // This process just wrote the document it caches. The merge also changes
+        // the collector query's own predicate and flips the v1 scan's answer, so
+        // those entries go too.
+        invalidateMercadoPagoMetodo(metodoId, resp.user_id);
       }
     },
   };

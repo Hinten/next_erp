@@ -22,9 +22,11 @@ import {
   checkout,
   historicoEstadoPedido,
   historicoFtIni,
+  historicoModificacaoPedido,
   orderML,
 } from './pedido';
 import { counter } from './counter';
+import { configIa } from './configIa';
 import { conversa, mensagem } from './conversa';
 import { integracao, brandShopee, token6h, tokenDuravel } from './integracao';
 import { notificacaoMercadoLivre } from './notificacaoMercadoLivre';
@@ -76,8 +78,10 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   checkout,
   historicoEstadoPedido,
   historicoFtIni,
+  historicoModificacaoPedido,
   orderML,
   counter,
+  configIa,
   conversa,
   mensagem,
   integracao,

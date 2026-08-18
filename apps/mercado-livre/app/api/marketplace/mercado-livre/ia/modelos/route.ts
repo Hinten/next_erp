@@ -1,0 +1,125 @@
+/**
+ * `GET /api/marketplace/mercado-livre/ia/modelos`
+ *
+ * The models the AI settings page may offer, plus the agent's currently
+ * effective settings — so the page can render a populated Select and show what a
+ * suggestion would actually use right now, including the resolution the operator
+ * cannot see (config doc → env → shipped default) and whether a stored model has
+ * been substituted because the provider no longer serves it.
+ *
+ * Read-only and cached. Requires `PERM.integracao.read` — the same bit that gates
+ * reading a channel's connection status, and the read half of the pair that
+ * gates saving this document.
+ *
+ * ⚠️ This route must never fail because the provider is unreachable. The model
+ * list is a convenience; the page's job is to let someone fix a broken setting,
+ * which is exactly when the provider is most likely to be the broken thing. The
+ * fallback lives in `getAiModelosCached`.
+ */
+import { NextResponse } from 'next/server';
+import {
+  DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
+  DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION,
+} from '@delfrance/integrations-mercado-livre';
+import {
+  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  CONFIG_IA_ML_MEDIDAS_DOC_ID,
+  CONFIG_IA_MODELO_PADRAO,
+} from '@delfrance/schemas';
+
+import { resolveModelo } from '@delfrance/ai';
+import {
+  createVertexListModelsFn,
+  getAiModelosCached,
+  loadConfigIa,
+  modelosParaValidacao,
+} from '@delfrance/ai/admin';
+
+import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
+import { getAdminFirestore } from '@/lib/firebase/admin';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+/**
+ * Which agent's settings to report on. Unknown values fall back to the attribute
+ * agent rather than 404: this endpoint exists to *diagnose* a broken setting, so
+ * answering with something usable beats failing on a typo in a query string.
+ *
+ * ⚠️ Each agent ships its OWN default instruction, and reporting the wrong one
+ * would be worse than reporting none — the page shows it as "what runs when the
+ * field is empty", so a mismatched text is an actively misleading answer.
+ */
+const PROMPT_PADRAO: Record<string, string> = {
+  [CONFIG_IA_ML_ATRIBUTOS_DOC_ID]: DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
+  [CONFIG_IA_ML_MEDIDAS_DOC_ID]: DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION,
+};
+
+export async function GET(req: Request): Promise<NextResponse> {
+  const auth = await verifyCaller(req, PERM.integracao.read);
+  if ('error' in auth) return auth.error;
+
+  const pedido = new URL(req.url).searchParams.get('agente');
+  const agenteId =
+    pedido != null && Object.hasOwn(PROMPT_PADRAO, pedido) ? pedido : CONFIG_IA_ML_ATRIBUTOS_DOC_ID;
+
+  const [lista, config] = await Promise.all([
+    getAiModelosCached(createVertexListModelsFn()),
+    loadConfigIa(getAdminFirestore(), agenteId),
+  ]);
+
+  const envModelo = process.env.MERCADO_LIVRE_AI_MODEL ?? null;
+  const resolvido = resolveModelo({
+    stored: config.modelo,
+    env: envModelo,
+    padrao: CONFIG_IA_MODELO_PADRAO,
+    // ⚠️ Validated against the LIVE list only. The fallback list is fine to
+    // offer in the Select, but using it here would report a perfectly good
+    // stored model as `substituido` purely because the list call failed — and
+    // the page would tell the operator to fix a setting that is not broken.
+    disponiveis: modelosParaValidacao(lista),
+  });
+
+  return NextResponse.json({
+    modelos: lista.modelos,
+    fonte: lista.fonte,
+    ...(lista.erro != null ? { erro: lista.erro } : {}),
+    /**
+     * The shipped system instruction, verbatim, so the settings page can SHOW
+     * what runs when the field is left empty — an instruction you cannot read is
+     * one you cannot decide to change.
+     *
+     * ⚠️ It travels over the wire rather than being imported by `apps/web`
+     * because this package's root is **server-side only** (its OAuth core holds
+     * the app clientSecret and must never reach a browser bundle). Copying the
+     * text into `apps/web` would be the other way to show it, and the copy would
+     * drift from the one the model is actually given.
+     */
+    agente: agenteId,
+    promptPadrao: PROMPT_PADRAO[agenteId] ?? DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
+    /**
+     * What a call would use, and why. `origem` is the honest answer to "the page
+     * shows model X, is that what runs?" — an env var set on the backend
+     * overrides nothing the operator can see, so the page has to be able to say
+     * that out loud.
+     */
+    efetivo: {
+      modelo: resolvido.modelo,
+      substituido: resolvido.substituido,
+      origem: origemDe(config.modelo, envModelo),
+      padrao: CONFIG_IA_MODELO_PADRAO,
+    },
+  });
+}
+
+/**
+ * ⚠️ Mirrors `resolveModelo`'s precedence and must stay in step with it. It is
+ * separate because `resolveModelo` answers *which* model and this answers *why*,
+ * and folding the label into the resolver would put a UI string in the middle of
+ * the call path.
+ */
+function origemDe(stored: string | null, env: string | null): 'config' | 'env' | 'padrao' {
+  if (typeof stored === 'string' && stored.trim() !== '') return 'config';
+  if (typeof env === 'string' && env.trim() !== '') return 'env';
+  return 'padrao';
+}

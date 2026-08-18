@@ -8,25 +8,19 @@
  * accept a trivial adaptation of it, which is what lets the runtime decision
  * stay open until it is actually made.
  */
+import type { AiInlineImage, AiPromptRequest } from '@delfrance/ai';
+
+import type { AiAttributeSuggestion } from './attributeApply';
 import type { AiAttributeSpec, JsonSchemaNode } from './attributeSchema';
 
-/** An image sent to the model as bytes, never as a URL. */
-export interface AiInlineImage {
-  /** Raw bytes, base64-encoded. */
-  base64: string;
-  /** e.g. `image/jpeg`. */
-  mimeType: string;
-}
-
-export interface AiPromptRequest {
-  systemInstruction: string;
-  /** The user turn: the product facts the model reasons from. */
-  text: string;
-  /** At most one product photo. Absent when the produto has none. */
-  image?: AiInlineImage;
-  /** What the answer must look like — see `buildAttributeSchema`. */
-  responseSchema: JsonSchemaNode;
-}
+/**
+ * ⚠️ `AiPromptRequest` and `AiInlineImage` moved to `@delfrance/ai` when a
+ * second agent needed them: `provider.ts` is the only module that talks to a
+ * model, and having it import its own vocabulary from a *channel* package meant
+ * every future agent would drag Mercado Livre in behind it. They are re-exported
+ * here so no call site in this package changed.
+ */
+export type { AiInlineImage, AiPromptRequest };
 
 export interface AttributePromptInput {
   produtoNome: string;
@@ -38,6 +32,14 @@ export interface AttributePromptInput {
   image?: AiInlineImage;
   /** Overrides the shipped default; the settings page supplies this. */
   systemInstruction?: string | null;
+  /**
+   * The operator's correction plus the answer being corrected.
+   *
+   * ⚠️ Both halves, or neither. The complaint alone would have the model
+   * re-derive from the same facts and repeat itself; the previous answer beside
+   * it is what turns "a cor está errada, é azul-marinho" into an amendment.
+   */
+  revisao?: { feedback: string; anterior: AiAttributeSuggestion[] } | null;
 }
 
 /**
@@ -47,17 +49,31 @@ export interface AttributePromptInput {
  * than an approximation, and so a test can assert the omission rule survives an
  * edit to the wording.
  *
- * The load-bearing sentence is the omission rule. The legacy prompt had no
- * equivalent, and its schema forced an answer for every property — so the model
- * had no way to say "I don't know" and duly made things up.
+ * ⚠️ The load-bearing part is the THREE-WAY split: a value, "N/A" (the attribute
+ * does not apply to this kind of product), or an omitted key (the attribute
+ * applies but the data does not say). The legacy prompt had none of this and its
+ * schema forced an answer for every property, so the model could neither decline
+ * nor disclaim and duly made things up. Collapsing the last two back together —
+ * in either direction — recreates that: forbidding "N/A" makes the model invent
+ * values for attributes that genuinely do not apply, and accepting "N/A" as
+ * "I don't know" writes a false claim onto a live listing.
  */
 export const DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION = [
   'Você preenche atributos de anúncios do Mercado Livre a partir dos dados de um produto.',
   'Responda SOMENTE com JSON no formato pedido.',
-  'OMITA a chave de qualquer atributo que você não conseguir determinar com segurança a partir das informações fornecidas.',
   'Nunca invente medidas, códigos, modelos ou números que não estejam nos dados.',
   'Quando o atributo tiver uma lista de valores possíveis, use exatamente um dos valores da lista.',
-  'Nunca responda "N/A", "não se aplica" ou "-1": deixar em branco é decisão do operador.',
+  // ⚠️ The distinction below is the whole design. Two different situations look
+  // similar to a model and must produce OPPOSITE outputs, so they are spelled
+  // out with an example each rather than named once and hoped for.
+  'Existem três respostas possíveis para cada atributo, e escolher entre elas é a parte mais importante da tarefa:',
+  '(1) VALOR — você sabe o valor a partir dos dados: responda o valor.',
+  '(2) NÃO SE APLICA — o atributo não faz sentido para este tipo de produto: responda "N/A".',
+  'Exemplo: "Voltagem" em uma camiseta, ou "Material da sola" em um caderno. O atributo existe na categoria, mas nada neste produto poderia preenchê-lo.',
+  '(3) NÃO SEI — o atributo faz sentido para este produto, mas os dados fornecidos não dizem qual é o valor: OMITA a chave inteira do JSON.',
+  'Exemplo: "Marca" de uma camiseta cuja marca não aparece no nome nem na descrição. A camiseta tem uma marca; você é que não sabe qual.',
+  'Nunca use "N/A" para dizer que não sabe — "N/A" afirma que o atributo é inaplicável, e essa afirmação vai para o anúncio.',
+  'Na dúvida entre (2) e (3), escolha (3) e omita a chave.',
 ].join(' ');
 
 /**
@@ -91,12 +107,30 @@ export function buildAttributePrompt(input: AttributePromptInput): AiPromptReque
     facts.push(`Atributos a preencher quando possível:\n${wanted.join('\n')}`);
   }
 
+  // The revision rides as a real prior turn (`AiPromptRequest.anterior`), not as
+  // more text in the user turn — see the provider, which replays it as a
+  // model/user exchange.
+  const revisao =
+    input.revisao != null && nonBlank(input.revisao.feedback)
+      ? {
+          resposta: JSON.stringify(
+            Object.fromEntries(input.revisao.anterior.map((a) => [a.id, a.value_name])),
+          ),
+          feedback: input.revisao.feedback.trim(),
+        }
+      : undefined;
+
   return {
+    ...(revisao ? { anterior: revisao } : {}),
     systemInstruction: nonBlank(input.systemInstruction)
       ? input.systemInstruction!.trim()
       : DEFAULT_ATTRIBUTE_SYSTEM_INSTRUCTION,
     text: facts.join('\n\n'),
-    ...(input.image ? { image: input.image } : {}),
+    // One photo, wrapped: `AiPromptRequest` carries a LIST since the size-chart
+    // agent needs several. This agent deliberately stays at one — it is looking
+    // at a product photo to decide "sleeve: short", and a second angle buys
+    // nothing for the tokens.
+    images: input.image ? [input.image] : [],
     responseSchema: input.responseSchema,
   };
 }

@@ -30,12 +30,19 @@ import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';
 import { AfterSaveBlockedError } from './afterSaveBlocked';
+import { ConflictModal } from './ConflictModal';
+import { buildConflictFields, labelFromShape } from './conflictFields';
 import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
 import { resolveStampFields, type StampFieldOverride } from './resolveStampFields';
-import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
+import {
+  NothingChangedError,
+  RecordConflictError,
+  saveRecord,
+  type TransactionWrite,
+} from './saveRecord';
 import { useServerTruthSeed } from './useServerTruthSeed';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 
@@ -135,6 +142,32 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * are persisted here.
    */
   transactionWrites?: (id: string, values: Record<string, unknown>) => TransactionWrite[];
+
+  /**
+   * Turn the ADR 0011 **tier 3** concurrency guard off for this screen.
+   *
+   * On by default. Every ERP record has at least two writers — the Flutter app
+   * still writes the same documents, and several are also written by triggers
+   * and webhooks — so a save that loses should say so rather than silently
+   * revert the winner. When it fires, the operator gets the diff and chooses.
+   *
+   * Reach for this only when a screen genuinely cannot express its write as a
+   * disjoint patch and the false conflicts outweigh the real ones. Prefer
+   * {@link concurrencyIgnoreFields}, which silences a specific server-written
+   * field instead of the whole screen.
+   */
+  disableConcurrencyGuard?: boolean;
+
+  /**
+   * Fields whose remote change must not raise a conflict — values the operator
+   * could not have authored, so interrupting them over one is noise.
+   *
+   * The last-modified/creation stamps are handled already. Pass the domain's
+   * server-written keys: a `<domain>Meta.serverOwnedFields`, or anything a
+   * trigger writes back onto the record (`onProdutoChanged`'s `precos`
+   * propagation onto a variation child is the motivating case).
+   */
+  concurrencyIgnoreFields?: string[];
 
   /**
    * Extra unsaved state OUTSIDE this form that the leave-guard must also
@@ -252,6 +285,8 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   validate,
   transientFields = [],
   transactionWrites,
+  disableConcurrencyGuard = false,
+  concurrencyIgnoreFields,
   extraDirty = false,
   currentUserUid,
   pager,
@@ -399,20 +434,49 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // is pristine, so an in-progress edit is never clobbered. The seeding logic
   // (first paint vs. one-time server-truth correction, tracked per record id)
   // now lives in `useServerTruthSeed`.
+  //
+  // `baseline` is the ADR 0011 tier-3 version handed to `saveRecord`: the record
+  // as the operator last saw it from SERVER TRUTH.
+  //
+  // ⚠️ It is deliberately NOT seeded from a cache paint. The IndexedDB snapshot
+  // right after an edit still holds the pre-save value, so a baseline taken from
+  // it differs from the server on exactly the fields just saved — the guard
+  // would fire on every save and operators would learn to click through it. That
+  // is not hypothetical: it is the bug #791 fixed for `lastMarketplaceUpdate`.
+  const baseline = useRef<Record<string, unknown> | null>(null);
   useServerTruthSeed({
     id: docSnap.data?.id,
     fromCache: docSnap.fromCache,
     isDirty: form.formState.isDirty,
-    onSeed: () => {
+    onSeed: (serverTruth) => {
       form.reset({ ...emptyDefaults, ...(docSnap.data?.data as FieldValues) });
+      // Seeded HERE, in the same callback as the form — which is exactly what
+      // `useServerTruthSeed`'s contract requires, and for this reason: a form
+      // corrected to server truth while the baseline still held the cached copy
+      // would compare the operator's patch against a version nobody ever
+      // displayed. That mismatch is how the pedido editor turned its own
+      // trigger's write-back into a false conflict (#972).
+      //
+      // Only from server truth, and only alongside a re-seed — the hook already
+      // refuses to fire while the form is dirty, so a remote change arriving
+      // mid-edit can never quietly become the new baseline and swallow the
+      // conflict it should raise.
+      if (serverTruth) baseline.current = docSnap.data?.data as Record<string, unknown>;
     },
   });
   // Create mode has no snapshot to seed from — reset to the page's defaults.
+  //
+  // Note the deliberate hole left by the above: a cache-first paint whose server
+  // correction arrives only after the operator has started typing leaves the
+  // baseline null, so that one save is unguarded. Fail-open matches the previous
+  // behaviour; guarding against a version we never showed them would raise a
+  // conflict they cannot act on.
   useEffect(() => {
     if (!docSnap.data && !internalId) {
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
+      baseline.current = null;
     }
-  }, [docSnap.data?.id, docSnap.fromCache]);
+  }, [docSnap.data?.id, docSnap.fromCache, docSnap.data?.data]);
 
   // Copy mode: once the source doc loads, seed the form with its values. The
   // document id never lives in the schema data, so it's already excluded;
@@ -431,6 +495,16 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   }, [copySnap.data?.id]);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // The remote doc a tier-3 conflict was raised against, plus the fields that
+  // collided and whether the operator had asked to keep editing. `continue` is
+  // kept so "Salvar mesmo assim" resumes the button they actually pressed.
+  const [conflict, setConflict] = useState<{
+    /** The version the form was seeded from — the modal's "Você carregou". */
+    loaded: Record<string, unknown>;
+    current: Record<string, unknown>;
+    fields: string[];
+    continueEditing: boolean;
+  } | null>(null);
   // Delete confirmation modal: the user must type "excluir" to enable the
   // destructive button — guards against accidental clicks.
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -440,6 +514,36 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // this form's own dirty state cannot see. That tab must not arm its own
   // guard — see the prop's doc comment.
   useUnsavedChangesGuard(form.formState.isDirty || extraDirty);
+
+  /**
+   * The schema's own object shape, for the conflict modal's field labels. The
+   * cast is the same one the descriptor pipeline makes: `schema` is an object
+   * schema by contract here (it is what drives every rendered field), but the
+   * `ZodTypeAny` prop type does not say so.
+   */
+  const labelShape = (schema as unknown as { shape?: Record<string, ZodTypeAny> }).shape ?? {};
+
+  /**
+   * "Recarregar do servidor" — take the server's version for the fields that
+   * actually collided, and KEEP every edit that did not.
+   *
+   * The operator only loses what genuinely conflicted; a name they retyped while
+   * someone else changed the price survives. `shouldDirty` is what makes that
+   * true — the re-applied values must stay in `dirtyFields` or the next save
+   * would not write them at all.
+   */
+  function reloadFromServer(): void {
+    if (!conflict) return;
+    const keep = form.getValues() as Record<string, unknown>;
+    const dirtyNow = form.formState.dirtyFields as Record<string, unknown>;
+    const collided = new Set(conflict.fields);
+    form.reset({ ...emptyDefaults, ...(conflict.current as FieldValues) });
+    for (const key of Object.keys(dirtyNow)) {
+      if (collided.has(key)) continue;
+      form.setValue(key, keep[key] as never, { shouldDirty: true });
+    }
+    setConflict(null);
+  }
 
   async function doSave(continueEditing: boolean) {
     setSubmitError(null);
@@ -502,6 +606,16 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         // turns them into sibling writes keyed by the resolved record id.
         siblingWrites: transactionWrites ? (id) => transactionWrites(id, values) : undefined,
         currentUserUid,
+        // ADR 0011 tier 3. "Salvar mesmo assim" does NOT come through here with
+        // the guard off — it comes through with `baseline.current` already
+        // re-based onto the version the modal showed (see the catch below).
+        // The comparison therefore still runs, and that is the whole point: a
+        // THIRD writer landing while the operator read the diff raises the modal
+        // again instead of being silently overwritten. Skipping the check on an
+        // override would reintroduce the lost update one step later, against a
+        // write the operator had just been told was safe.
+        baseline: disableConcurrencyGuard ? undefined : (baseline.current ?? undefined),
+        ignoreFields: concurrencyIgnoreFields ? new Set(concurrencyIgnoreFields) : undefined,
         stampUnit: stampFields.stampUnit,
         // `false` when auto-detect found nothing — don't fall back to the
         // saveRecord defaults (`timestamp` / `ultimaModificacao`) on schemas
@@ -529,6 +643,21 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // (it sits after the throw), which is exactly what we want.
       if (err instanceof AfterSaveBlockedError) {
         setSubmitError(err.message);
+        return;
+      }
+      // Tier 3 — someone else changed a field this save writes. Show the diff
+      // and let the operator choose; never discard what they typed. The form
+      // stays dirty, so the leave-guard still protects them.
+      if (err instanceof RecordConflictError) {
+        if (err.missing || err.current === null) {
+          setSubmitError(err.message);
+          return;
+        }
+        const loaded = baseline.current ?? {};
+        // Re-baseline onto the version being shown: whatever they decide next
+        // is judged against what they actually saw.
+        baseline.current = err.current;
+        setConflict({ loaded, current: err.current, fields: err.fields, continueEditing });
         return;
       }
       if (err instanceof NothingChangedError) {
@@ -879,6 +1008,36 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
           )}
 
           {submitError && <Alert color="red">{submitError}</Alert>}
+
+          <ConflictModal
+            opened={conflict !== null}
+            title="Registro alterado"
+            fields={
+              conflict
+                ? buildConflictFields(
+                    conflict.loaded,
+                    conflict.current,
+                    conflict.fields,
+                    // Every listed field is one this save writes — that is how
+                    // `saveRecord` picked them — so all of them overwrite.
+                    new Set(conflict.fields),
+                    { labelFor: (f) => labelFromShape(labelShape, f) },
+                  )
+                : []
+            }
+            saving={form.formState.isSubmitting}
+            onForceSave={() => {
+              const { continueEditing } = conflict!;
+              setConflict(null);
+              // Plain re-save. `baseline.current` was re-based onto the version
+              // shown when the conflict was caught, so the guard still runs: if
+              // nothing moved since, this commits; if a third writer landed
+              // meanwhile, the modal comes straight back with THAT version.
+              void doSave(continueEditing);
+            }}
+            onReloadFromServer={reloadFromServer}
+            onCancel={() => setConflict(null)}
+          />
 
           <Group justify="space-between">
             {deleteVisible && internalId && !blocked ? (

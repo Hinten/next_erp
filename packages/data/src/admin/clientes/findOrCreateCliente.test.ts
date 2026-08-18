@@ -162,6 +162,7 @@ describe('findOrCreateCliente — identity gate (#786)', () => {
         matchedBy: 'telefone',
         candidateCpfCnpj: CPF_A,
         candidateIdEstrangeiro: null,
+        candidateIdMercadoLivre: null,
       },
     ]);
 
@@ -672,5 +673,196 @@ describe('buildClienteUpdatePatch', () => {
         }),
       ),
     ).toEqual({});
+  });
+});
+
+/* ------------------------- Mercado Livre buyer key ------------------------- */
+
+const ML_BUYER_A = '301110805';
+const ML_BUYER_B = '987654321';
+
+/**
+ * The shape a PRE-SALE Mercado Livre question resolves to: an ML buyer id and a
+ * nickname, and genuinely nothing else. No CPF, no phone, no e-mail — the asker
+ * has not bought anything yet, so none of those exist.
+ */
+function perguntaFields(overrides: Partial<ClienteResolveFields> = {}): ClienteResolveFields {
+  return {
+    tipo: null,
+    nome: 'comprador_ml',
+    cpf_cnpj: null,
+    idEstrangeiro: null,
+    ie: null,
+    telefone: null,
+    email: null,
+    idMercadoLivre: ML_BUYER_A,
+    ...overrides,
+  };
+}
+
+describe('findOrCreateCliente — Mercado Livre buyer id', () => {
+  it('resolves a pre-sale question to the existing cliente instead of blind-creating', async () => {
+    // The headline case, and the reason the field exists. Without an
+    // idMercadoLivre leg every one of the four original legs is null, the
+    // cascade falls through to `clienteCollection.add`, and each question
+    // notification mints a fresh junk cliente.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-ml', {
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_A,
+    });
+
+    const res = await findOrCreateCliente(db(fake), { fields: perguntaFields(), nowMs: NOW_MS });
+
+    expect(res).toMatchObject({ clienteId: 'cli-ml', created: false, matchedBy: 'idMercadoLivre' });
+    expect(fake.docCount(CLIENTES)).toBe(1);
+  });
+
+  it('two deliveries of the same question converge on ONE cliente', async () => {
+    // At-least-once delivery is the contract from both ML and Cloud Tasks, so
+    // the second run is not hypothetical. Before the leg existed this produced
+    // two rows; the assertion that matters is the count.
+    const fake = new FakeDb();
+
+    const first = await findOrCreateCliente(db(fake), { fields: perguntaFields(), nowMs: NOW_MS });
+    const second = await findOrCreateCliente(db(fake), { fields: perguntaFields(), nowMs: NOW_MS });
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.clienteId).toBe(first.clienteId);
+    expect(fake.docCount(CLIENTES)).toBe(1);
+  });
+
+  it('stores the id on the created cliente so the second delivery can find it', async () => {
+    const fake = new FakeDb();
+
+    const res = await findOrCreateCliente(db(fake), { fields: perguntaFields(), nowMs: NOW_MS });
+
+    expect(fake.storedDoc(CLIENTES, res.clienteId)).toMatchObject({
+      idMercadoLivre: ML_BUYER_A,
+      nome: 'comprador_ml',
+      // Nothing was invented for the fields a pre-sale asker does not have.
+      cpf_cnpj: null,
+      telefone: null,
+      email: null,
+    });
+  });
+
+  it('fills the id onto a cliente that was created from an order first', async () => {
+    // The convergence direction that matters commercially: the buyer ordered
+    // (so we have their CPF) and only later asked a question.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
+
+    const res = await findOrCreateCliente(db(fake), {
+      fields: fields({ idMercadoLivre: ML_BUYER_A }),
+      nowMs: NOW_MS,
+    });
+
+    expect(res).toMatchObject({ clienteId: 'cli-a', created: false, matchedBy: 'cpf_cnpj' });
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({ idMercadoLivre: ML_BUYER_A });
+  });
+
+  it('treats a DIFFERENT stored ML id as a different person', async () => {
+    // Two ML accounts are two buyers. The phone leg would otherwise merge them
+    // and attribute one buyer's questions to the other.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-other', {
+      nome: 'Bruno Lima',
+      telefone: TELEFONE_NORMALIZED,
+      idMercadoLivre: ML_BUYER_B,
+    });
+
+    const res = await findOrCreateCliente(db(fake), {
+      fields: perguntaFields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+
+    expect(res.created).toBe(true);
+    expect(res.clienteId).not.toBe('cli-other');
+    expect(fake.storedDoc(CLIENTES, 'cli-other')).toMatchObject({ idMercadoLivre: ML_BUYER_B });
+  });
+
+  it('stores the id TRIMMED, so a padded value still round-trips the lookup', async () => {
+    // The cascade leg queries `identityValue(...)`, which trims. Storing the
+    // caller's value verbatim meant `' 301110805 '` was written raw and every
+    // later lookup asked for `'301110805'` and missed — one junk cliente per
+    // question notification, the exact failure this key exists to prevent,
+    // reintroduced by whitespace.
+    const fake = new FakeDb();
+
+    const first = await findOrCreateCliente(db(fake), {
+      fields: perguntaFields({ idMercadoLivre: `  ${ML_BUYER_A}  ` }),
+      nowMs: NOW_MS,
+    });
+    expect(fake.storedDoc(CLIENTES, first.clienteId)).toMatchObject({
+      idMercadoLivre: ML_BUYER_A,
+    });
+
+    // The delivery that follows carries the clean value and must find it.
+    const second = await findOrCreateCliente(db(fake), { fields: perguntaFields(), nowMs: NOW_MS });
+    expect(second.created).toBe(false);
+    expect(second.clienteId).toBe(first.clienteId);
+    expect(fake.docCount(CLIENTES)).toBe(1);
+  });
+
+  it('trims on the fill-in path too', () => {
+    expect(
+      buildClienteUpdatePatch({ cpf_cnpj: CPF_A } as never, {
+        ...fields(),
+        idMercadoLivre: `  ${ML_BUYER_A}  `,
+      }),
+    ).toMatchObject({ idMercadoLivre: ML_BUYER_A });
+  });
+
+  it('reports the ML id on a rejected candidate, so the log states the reason', async () => {
+    // With only the two fiscal identifiers printed, a rejection caused by a
+    // contradicting ML id logs as `{ candidateCpfCnpj: null,
+    // candidateIdEstrangeiro: null }` — which reads as a bug in the gate rather
+    // than the correct verdict it is. And for ML contacts this is the COMMON
+    // rejection: they have an ML id and a name and nothing else.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-other', {
+      nome: 'Bruno Lima',
+      telefone: TELEFONE_NORMALIZED,
+      idMercadoLivre: ML_BUYER_B,
+    });
+
+    const res = await findOrCreateCliente(db(fake), {
+      fields: perguntaFields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+
+    expect(res.rejected).toEqual([
+      {
+        id: 'cli-other',
+        matchedBy: 'telefone',
+        candidateCpfCnpj: null,
+        candidateIdEstrangeiro: null,
+        candidateIdMercadoLivre: ML_BUYER_B,
+      },
+    ]);
+  });
+
+  it('never overwrites a stored ML id (fill-only-when-absent)', () => {
+    expect(
+      buildClienteUpdatePatch({ idMercadoLivre: ML_BUYER_A } as never, {
+        ...perguntaFields(),
+        idMercadoLivre: ML_BUYER_A,
+      }),
+    ).not.toHaveProperty('idMercadoLivre');
+  });
+
+  it('leaves the cascade untouched for callers that never pass an ML id', async () => {
+    // `idMercadoLivre` is optional on ClienteResolveFields precisely so the
+    // WhatsApp and billing-info callers keep compiling AND keep behaving.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
+
+    const res = await findOrCreateCliente(db(fake), { fields: fields(), nowMs: NOW_MS });
+
+    expect(res).toMatchObject({ clienteId: 'cli-a', created: false, matchedBy: 'cpf_cnpj' });
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).not.toHaveProperty('idMercadoLivre');
   });
 });

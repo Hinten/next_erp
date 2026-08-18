@@ -89,7 +89,7 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
 
   /**
    * Drop every pagamento + estado-history + frete-history row of the fixture
-   * pedido. `historicoFtIni` is the freight trail `onPedidoEstadoChanged` also
+   * pedido. `historicoFtIni` is the freight trail `onPedidoChanged` also
    * owns; this fixture seeds no `freteInicial`, so it stays empty today — the
    * sweep is here so it stays true if that ever changes. Two hazards it implies:
    *
@@ -123,7 +123,7 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
   }
 
   /** Every `historicoEstadoPedido` row's `estado` — the trail the
-   *  `onPedidoEstadoChanged` trigger appends ASYNCHRONOUSLY, one row per
+   *  `onPedidoChanged` trigger appends ASYNCHRONOUSLY, one row per
    *  transition PLUS an opening row for the estado the pedido was created or
    *  reset with. Never count the whole trail; look for the estado you expect. */
   async function getHistoricoEstados(): Promise<string[]> {
@@ -169,7 +169,7 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
     // transaction and wrote the estado…
     await expect.poll(getEstado, { timeout: 30_000 }).toBe('pago');
     // …and a historicoEstadoPedido row follows, written ASYNCHRONOUSLY by the
-    // `onPedidoEstadoChanged` trigger observing that pedido write — NOT by the
+    // `onPedidoChanged` trigger observing that pedido write — NOT by the
     // reconcile, and not in its transaction (#697). Hence the poll.
     await expect.poll(getHistoricoEstados, { timeout: 30_000 }).toContain('pago');
   });

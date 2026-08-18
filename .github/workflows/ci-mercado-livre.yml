@@ -1,0 +1,737 @@
+name: CI — Mercado Livre (Firestore emulator)
+
+# Integration lane for the Mercado Livre backend (#823). Runs every
+# `apps/mercado-livre/**/*.firestore.test.ts` against a REAL Firestore (the
+# emulator), because all ~93 offline ML tests mock Firestore away — the shared
+# notification pipeline drives a hand-rolled `FakeDb`, and the token store an
+# in-memory `fakeStore` with a scripted `validSeq`. Those cover the LOGIC; this
+# lane covers the Firestore SEMANTICS the logic is built on (real query
+# ordering, ALREADY_EXISTS on create, NOT_FOUND on update, read-your-own-write).
+#
+# OFFLINE BY CONSTRUCTION — no Mercado Livre credentials, ever. ML has no
+# sandbox (their docs are explicit), its refresh_token is single-use and
+# rotating, and OAuth needs a human consent screen with a static redirect URI.
+# A credentialed lane would rotate — and therefore INVALIDATE — the token the
+# deployed staging backend holds. The ML HTTP surface is injected/stubbed, and
+# vitest.firestore.setup.ts installs a fetch kill-switch that throws on any
+# non-localhost host so "offline" is a property of the lane, not of the author.
+#
+# THIS LANE OWNS EVERY MERCADO LIVRE TEST, in three parallel jobs:
+#   - `ML offline (unit)`      — the ~111 `*.test.ts` files across both ML
+#                                workspaces, via `turbo run test`.
+#   - `ML backend on the …`    — the `*.firestore.test.ts` files, via
+#                                `test:firestore` against a real emulator.
+#   - `ML Cloud Tasks round …` — the `*.tasks.test.ts` files, via `test:tasks`,
+#                                which additionally boots the functions + tasks
+#                                emulators and serves the real ML functions
+#                                artifact. It pays a bundle build and a slower
+#                                start, which is why it is its own job.
+# `ci.yml` excludes both workspaces from its `turbo run test`, so when this lane
+# does not run, NONE of them run. Scope is therefore derived from the
+# `workspace:*` dependency graph in `changes`, never from a hand-written list,
+# and the verdict is published by an unskippable `gate`.
+#
+# History, because both halves were once wrong. The lane arrived ungated (#999)
+# with a `pull_request: paths:` list; `main` went red the moment the guard
+# demanded a total partition (#1031), and #1045 gave it the `changes`/`gate`
+# pair. Until then `ci.yml` ran the unit suite, and #999's header argued that was
+# deliberate insurance against a stale `paths:` list. Graph-derived scope retired
+# that argument, so the tests moved here where the domain owns them.
+#
+# ⚠️ Splitting these jobs is not cosmetic. The three suites are disjoint BY
+# GLOB: `vitest.config.ts` EXCLUDES both `**/*.firestore.test.ts` and
+# `**/*.tasks.test.ts` from the unit run, and each dedicated config includes only
+# its own suffix — so a file matching NO glob runs in NO job at all. All three
+# configs carry a mirror-image root-level entry for exactly that reason; read
+# their comments before touching any `include`.
+#
+# ⚠️ An earlier revision of this header claimed Cloud Tasks could not be emulated
+# at all, then that the emulator rejected our region-qualified queue name
+# (firebase-admin-node#2725). BOTH were wrong: a `tasks` emulator exists, and
+# that issue was closed 2024-10-11 and fixed in firebase-admin 12.7.0 — this repo
+# pins 14.2.0. `locations/<region>/functions/<queue>` is therefore both the
+# production-correct and the emulator-correct form, and NO production code
+# changed to make the round trip testable.
+#
+# ⚠️ What this lane does NOT prove, so nobody reads its green as more than it is:
+#   - Composite INDEX DECLARATION. The emulator auto-creates every composite, and
+#     on Enterprise a missing index does not throw — it silently full-scans and
+#     bills the scan. That is guard C/D in
+#     packages/data/src/admin/notifications/notificationGuardrails.test.ts.
+#   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
+#     emulator — dispatch is pure FIFO with no `scheduleTime` predicate
+#     (firebase-tools#8254, open, triaged upstream as a feature request and
+#     unchanged through 15.26.0). That is the receiver's 10s refetch delay for
+#     the order family; `mlTasks.test.ts` pins it statically instead.
+#     `retryConfig` and `rateLimits` ARE emulated, but they are likewise cheaper
+#     to assert off `__endpoint` in processNotification.test.ts.
+#   - The nested apps/mercado-livre/functions FIRESTORE TRIGGERS. The tasks job
+#     loads the whole codebase, so they are registered, but nothing drives them.
+#   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
+#   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
+#     exposes db.pipeline(), so feature-probing answers yes then fails at execution.
+#   - The Mercado Livre API itself. By design; there is no sandbox to point at.
+
+on:
+  push:
+    branches: [master, main]
+    # ⚠️ `push:` KEEPS its `paths:`; `pull_request:` deliberately has none — see
+    # the note there. Nothing on the push path is a required check, and the
+    # `changes` job short-circuits to run=true on every non-PR event, so this
+    # list only decides whether the post-merge safety net fires at all.
+    paths:
+      # Globs, never named files: ci-storage.yml:27-35 records that a
+      # named-file list silently rots into zero coverage.
+      - 'apps/mercado-livre/**'
+      # Acceptance criterion of #823: a PR touching ONLY the library must run an
+      # integration-level check. The OAuth callback test drives this package's
+      # real exchangeCode → requestToken → tokenResponseSchema path.
+      - 'packages/integrations/mercado-livre/**'
+      - 'packages/data/src/admin/notifications/**'
+      - 'packages/data/src/admin/collections/**'
+      - 'packages/data/src/admin/defineAdminCollection.ts'
+      - 'packages/data/src/admin/grpcErrors.ts'
+      - 'packages/schemas/src/integracao.ts'
+      - 'packages/schemas/src/notificacaoMercadoLivre.ts'
+      - 'packages/schemas/src/shared/notificationResilience.ts'
+      - 'firestore.indexes.json'
+      - 'firebase.mercado-livre.json'
+      - 'firebase.mercado-livre.tasks.json'
+      - 'pnpm-lock.yaml'
+      # Self-reference: without it, a PR that only edits this workflow never
+      # exercises it.
+      - '.github/workflows/ci-mercado-livre.yml'
+  pull_request:
+    # The prefix entries cover stacked PRs — this key matches the PR's BASE, so
+    # a child based on any other prefix reports zero checks, not failures.
+    # `production` is the release base (main → production): without it this lane
+    # publishes nothing on the PR that actually ships, and a pinned check that
+    # never reports leaves that PR permanently unmergeable.
+    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    # ⚠️ NO `paths:` here, and never add one. A `pull_request: paths:` that does
+    # not match means GitHub never instantiates the workflow, so it publishes NO
+    # check run at all — not a failure, not a skip, nothing. A required status
+    # check that is never reported cannot gate anything.
+    #
+    # The list that used to sit here was also wrong in the way every hand-written
+    # list eventually is: it named four specific `packages/data/src/admin/*`
+    # paths, so a change anywhere else in `packages/data` — which this app
+    # depends on — skipped the lane silently. The `changes` job below derives the
+    # real closure from the `workspace:*` graph instead, and still reports.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Replaces the `pull_request: paths:` list this lane used to carry. Same script
+  # the other seven lanes use; the only per-lane input is `--roots`, from which it
+  # walks the `workspace:*` graph. `@delfrance/integrations-mercado-livre` needs no
+  # entry of its own — it is in the app's closure, which is exactly the acceptance
+  # criterion of #823 ("a PR touching ONLY the library must run this lane"),
+  # verified rather than assumed.
+  changes:
+    name: CI scope (mercado-livre)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_e2e: ${{ steps.decide.outputs.run_e2e || steps.collect.outputs.run_e2e }}
+      reason: ${{ steps.decide.outputs.reason || steps.collect.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Collect the changed paths
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          FILES="$RUNNER_TEMP/changed-files.txt"
+          : > "$FILES"
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+          decided() {
+            {
+              echo "decided=true"
+              echo "run_e2e=true"
+              echo "reason=$1"
+            } >> "$GITHUB_OUTPUT"
+            echo "run_e2e=true :: $1"
+          }
+
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            decided "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the lane."
+            exit 0
+          fi
+
+          if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
+                 --jq '.[] | .filename, (.previous_filename // empty)' > "$FILES"
+          then
+            decided "could not list the PR's files — running the lane (fail safe)."
+            exit 0
+          fi
+
+          n=$(wc -l < "$FILES" | tr -d ' ')
+          if [ "$n" -ge 3000 ]; then
+            decided "the API returned $n path(s) — truncated. Running the lane (fail safe)."
+            exit 0
+          fi
+          echo "Collected $n changed path(s)."
+
+      - name: Decide whether this lane must run
+        id: decide
+        if: steps.collect.outputs.decided != 'true'
+        # ⚠️ The `if !` fallback is load-bearing, not defensive noise. This YAML comes
+        # from the merge ref while the checkout above is the PR head, so on a branch
+        # older than the script node exits 1 (`Cannot find module`) before the
+        # script's own fail-safe can fire — killing `changes` and reddening a gate
+        # that only a rebase could clear. Degrade to RUNNING the lane. See the
+        # VERSION SKEW note in e2e-affected.mjs; enforced by ci-lane-gates.test.js.
+        run: |
+          if ! node .github/scripts/e2e-affected.mjs \
+                 --kind CI \
+                 --lane mercado-livre \
+                 --roots @delfrance/mercado-livre-app \
+                 --self .github/workflows/ci-mercado-livre.yml \
+                 --files "${{ steps.collect.outputs.files }}"
+          then
+            {
+              echo "run_e2e=true"
+              echo "reason=the scope script could not run at this PR's head commit — it is older than the workflow invoking it. Running the lane (fail safe). Merge \`main\` into this branch for a real scope decision."
+            } >> "$GITHUB_OUTPUT"
+            echo "::warning title=CI scope (mercado-livre)::the scope script is missing from this PR's head commit — running the lane (fail safe). Merge main into the branch."
+          fi
+
+  # The unit half. `ci.yml` used to run this; it now excludes both ML workspaces,
+  # so this job is the only place these ~111 files execute.
+  #
+  # ⚠️ Named `ML offline (unit)` and NOT `... (lint + typecheck + unit + build)`
+  # like its siblings in ci-{nfe,freight,storage}.yml, because it genuinely runs
+  # only tests. `ci.yml` still runs `turbo run typecheck`, `lint` and `build`
+  # across the FULL graph with no filter and no `if:`, so repeating them here
+  # would be pure re-execution — turbo's `test` task declares `dependsOn:
+  # ["^build"]`, not `^test`, and no remote cache is configured (ci-storage.yml's
+  # unit step records the same trap). A check-run name is a claim about coverage;
+  # this one must not overclaim.
+  #
+  # Runs in PARALLEL with the emulator job — both `needs: [changes]` only — so the
+  # lane's wall time is unchanged at ~80s. No JDK and no firebase-tools here: this
+  # job must never touch the emulator.
+  ml-offline:
+    name: ML offline (unit)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    # Observed: 74.8s (app) + 9.2s (package) of vitest, plus install.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Skip Next.js telemetry collection + its build-time notice in CI.
+      NEXT_TELEMETRY_DISABLED: '1'
+      # ⚠️ Deliberately NO `REQUIRE_EMULATOR` and no `FIRESTORE_EMULATOR_HOST`.
+      # `vitest.config.ts` excludes `**/*.firestore.test.ts`, so this job is
+      # emulator-free by construction; setting either would be a lie about what
+      # ran, and REQUIRE_EMULATOR would fail the job outright.
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from `packageManager`
+          # in package.json — the single source of truth — and overrides any
+          # `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # ⚠️ Mandatory, not decoration. `turbo run test` has TWO independent ways to
+      # exit ZERO having run nothing, both verified in this repo:
+      #
+      #   1. A mistyped package NAME —
+      #      `turbo run test --filter '@delfrance/does-not-exist'`
+      #      → "x No package found with name ... in workspace", exit 0.
+      #      Near-misses are real: the two names below differ only by prefix, and
+      #      the `mercado-livre` functions codebase and the apps/ directory name
+      #      are both plausible slips.
+      #   2. A missing test SCRIPT — `turbo run test` against a package with no
+      #      `test` in `scripts` → "Tasks: 0 successful, 0 total", exit 0.
+      #
+      # ⚠️ (2) is the one a `pnpm ls` name-check CANNOT see, and the difference is
+      # the TOOL, not the threat: `pnpm --filter X run <script>` exits 1 when the
+      # script is missing (which is why the emulator job's guard below can get away
+      # with a name check), while `turbo run <task>` exits 0. Renaming
+      # apps/mercado-livre's `"test"` script — entirely plausible if the suite is
+      # ever split — would otherwise leave this job green having run 97 fewer
+      # files, with `ci.yml` no longer running them either.
+      #
+      # ⚠️ Counting `task == "test"` alone is ALSO not enough: turbo's dry-run still
+      # emits an entry for a package with no script, tagged
+      # `"command": "<NONEXISTENT>"`. Excluding those is the part that catches (2).
+      # A bad name makes turbo emit no JSON at all, so `JSON.parse` throws, node
+      # exits non-zero and `pipefail` fails the step — that is how (1) is caught.
+      - name: Assert both test tasks exist and are runnable
+        run: |
+          set -euo pipefail
+          n=$(pnpm turbo run test --dry=json \
+                --filter @delfrance/mercado-livre-app \
+                --filter @delfrance/integrations-mercado-livre \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s).tasks;console.log(t.filter(x=>x.task==="test"&&x.command&&x.command!=="<NONEXISTENT>").length)})')
+          echo "runnable \`test\` tasks resolved: $n"
+          if [ "$n" != "2" ]; then
+            echo "::error::turbo resolved $n runnable \`test\` tasks, expected 2 — the test step below would exit 0 without running anything."
+            exit 1
+          fi
+
+      - name: Unit tests (offline — excludes *.firestore.test.ts)
+        run: |
+          pnpm turbo run test \
+            --filter @delfrance/mercado-livre-app \
+            --filter @delfrance/integrations-mercado-livre
+
+  ml-firestore-emulator:
+    name: ML backend on the Firestore emulator
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # `resolveProjectId` (apps/mercado-livre/lib/firebase/admin.ts) reads
+      # FIREBASE_PROJECT_ID → GOOGLE_CLOUD_PROJECT → FIREBASE_CONFIG — never
+      # GCLOUD_PROJECT, which is what emulators:exec exports. It WOULD resolve
+      # demo-erp via FIREBASE_CONFIG, but pinning it here keeps the lane off an
+      # undocumented CLI detail.
+      FIREBASE_PROJECT_ID: demo-erp
+      # The database is literally named `default`, not `(default)` (Enterprise).
+      # In the emulator `(default)` silently exists, so a wrong id is invisible
+      # here and fatal in production — hence pinned, and hence every suite
+      # carries a positive existence assertion.
+      FIREBASE_DATABASE_ID: default
+      # Arms the fail-loud gate in vitest.firestore.setup.ts. Without it, an
+      # absent FIRESTORE_EMULATOR_HOST would skip every suite and still exit 0,
+      # because vitest's success check counts COLLECTED files, not run tests.
+      REQUIRE_EMULATOR: '1'
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # The Firestore emulator runs on the JVM; firebase-tools >= 15 needs JDK 21+.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from `packageManager`
+          # in package.json — the single source of truth — and overrides any
+          # `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      # ⚠️ `pnpm --filter <name-that-matches-nothing>` prints "No projects
+      # matched the filters" and exits ZERO — verified. A typo in the run step
+      # below would therefore produce a fully green job that executed no tests,
+      # and three near-misses exist (@delfrance/integrations-mercado-livre, the
+      # `mercado-livre` functions codebase name, the apps/ directory name).
+      # A missing *script* is safe (pnpm exits 1); only a bad package name is not.
+      #
+      # ⚠️ That last sentence is a property of **pnpm**, not of this repo — do NOT
+      # carry it over to a `turbo run <task>` step. turbo exits 0 on a missing
+      # script too, so a name-only check there is insufficient; see the stronger
+      # dry-run guard in `ml-offline` above, which asserts runnable TASKS.
+      - name: Assert the test filter resolves to a real package
+        run: |
+          set -euo pipefail
+          matched=$(pnpm ls --filter @delfrance/mercado-livre-app --depth -1 --parseable | grep -c . || true)
+          echo "packages matched by the filter: $matched"
+          if [ "$matched" != "1" ]; then
+            echo "::error::pnpm --filter matched $matched packages — the emulator step would exit 0 without running anything."
+            exit 1
+          fi
+
+      - name: Run the ML backend suite on the Firestore emulator
+        # emulators:exec boots Firestore and exports FIRESTORE_EMULATOR_HOST into
+        # the child, which is what the Admin SDK auto-detects (no service account
+        # needed) AND what arms the setup gate. Keep this a SINGLE command: piping
+        # it (`| tee`) or appending `|| true` would swap the child's exit code for
+        # the pipeline's and lose the failure.
+        run: |
+          firebase emulators:exec \
+            --config firebase.mercado-livre.json \
+            --project demo-erp \
+            --only firestore \
+            "pnpm --filter @delfrance/mercado-livre-app test:firestore"
+
+  ml-tasks-roundtrip:
+    name: ML Cloud Tasks round trip
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      # ⚠️ These two MUST match. FUNCTIONS_REGION is inlined into the functions
+      # bundle at build time; MERCADO_LIVRE_TASKS_REGION is read by the enqueuer
+      # at run time. A mismatch is exactly the silent drop mlTasks.ts warns about
+      # — and it is what the round-trip test detects (verified: with the enqueuer
+      # on us-central1 and the bundle on us-east5, the emulator answers
+      # "Tried to queue a task from a non-existent queue" and the doc lands
+      # `failed` instead of `deferred`).
+      FUNCTIONS_REGION: us-east5
+      MERCADO_LIVRE_TASKS_REGION: us-east5
+      FIREBASE_PROJECT_ID: demo-erp
+      FIREBASE_DATABASE_ID: default
+      REQUIRE_EMULATOR: '1'
+      # 8 of the 15 ML functions declare these as `secrets:`, and demo-erp has no
+      # Secret Manager. Dummy values are safe AND sufficient: the exercised path
+      # (a seller with no integração) never refreshes a token, and the lane's
+      # fetch kill-switch throws on any non-localhost host regardless.
+      MERCADO_LIVRE_CLIENT_ID: '1111111111111111'
+      MERCADO_LIVRE_CLIENT_SECRET: dummy-secret-not-a-credential
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      # `predeploy` hooks do NOT run under emulators:exec, so the artifact has to
+      # be built explicitly. ⚠️ `build.mjs` alone emits only dist/index.js —
+      # prepare-deploy.mjs is the ONLY path that produces a servable folder
+      # (bundle + package.json with main/type + the node_modules junction that
+      # firebase-tools' trigger analysis needs). Mirrors ci-storage.yml, which
+      # likewise builds immediately before its emulators:exec.
+      - name: Build the ML functions deploy artifact
+        run: node apps/mercado-livre/functions/scripts/prepare-deploy.mjs
+
+      - name: Assert the test filter resolves to a real package
+        run: |
+          set -euo pipefail
+          matched=$(pnpm ls --filter @delfrance/mercado-livre-app --depth -1 --parseable | grep -c . || true)
+          echo "packages matched by the filter: $matched"
+          if [ "$matched" != "1" ]; then
+            echo "::error::pnpm --filter matched $matched packages — the emulator step would exit 0 without running anything."
+            exit 1
+          fi
+
+      # firestore + functions + tasks. The tasks emulator only has queues because
+      # the FUNCTIONS emulator registers them from the trigger definitions, so
+      # both are required; emulators:exec exports CLOUD_TASKS_EMULATOR_HOST into
+      # the child, which is what the Admin SDK reroutes on.
+      - name: Run the Cloud Tasks round trip
+        run: |
+          firebase emulators:exec \
+            --config firebase.mercado-livre.tasks.json \
+            --project demo-erp \
+            --only firestore,functions,tasks \
+            "pnpm --filter @delfrance/mercado-livre-app test:tasks"
+
+  report-failure:
+    # Renamed off `Post failure note on PR`: a check-run name carries no workflow
+    # prefix, so that string was one indistinguishable check across several lanes.
+    name: Mercado Livre failure note
+    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip]
+    # Fork guard: this job holds `pull-requests: write`, which a fork run's
+    # read-only token cannot exercise — it would 403 and mask the real failure.
+    if: >-
+      ${{ failure() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.fork == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment failure summary
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body =
+              `❌ \`ci-mercado-livre.yml\` failed on this PR.\n\n` +
+              `See the Actions tab for full logs: ` +
+              `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });
+
+  # THE pinnable check for this lane. Everything above can legitimately be
+  # skipped; this cannot.
+  #
+  # ⚠️ `if: always()` and NOTHING else, on purpose. A job skipped by `if:` still
+  # publishes a check run, with conclusion `skipped`, and GitHub's required-
+  # status-check evaluation treats `skipped` as SATISFYING the requirement. A gate
+  # carrying any other condition would go green in exactly the cases it exists to
+  # report on. Do not add one.
+  #
+  # ⚠️ `needs:` lists the CERTIFIABLE jobs only. The report-* jobs are `skipped` on
+  # every green run, so needing them would make this gate permanently red.
+  gate:
+    name: CI gate (mercado-livre)
+    needs: [changes, ml-offline, ml-firestore-emulator, ml-tasks-roundtrip]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          LANE: CI gate (mercado-livre)
+          SCOPE_JOB: CI scope (mercado-livre)
+          PR: ${{ github.event.pull_request.number }}
+
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_LANE: ${{ needs.changes.outputs.run_e2e }}
+          REASON: ${{ needs.changes.outputs.reason }}
+
+          # --- recorded guards. ONLY these can excuse a skip. ------------------
+          GUARD_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          GUARD_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+
+          # --- per-job results -------------------------------------------------
+          RESULT_OFFLINE: ${{ needs.ml-offline.result }}
+          RESULT_EMULATOR: ${{ needs.ml-firestore-emulator.result }}
+          RESULT_TASKS: ${{ needs.ml-tasks-roundtrip.result }}
+
+          # --- the manifest. One row per certified job:
+          #       <result env var>|required|optional:<guard>[+<guard>]|<published check-run name>
+          #     The check-run name must match the job's `name:` byte for byte — it
+          #     is how the anti-vacuity lock finds the job in the jobs API.
+          JOBS: |
+            RESULT_OFFLINE|required|ML offline (unit)
+            RESULT_EMULATOR|required|ML backend on the Firestore emulator
+            RESULT_TASKS|required|ML Cloud Tasks round trip
+        run: |
+          set -uo pipefail
+          ROWS="$RUNNER_TEMP/gate-rows.md";        : > "$ROWS"
+          NOTES="$RUNNER_TEMP/gate-notes.md";      : > "$NOTES"
+          CERTIFY="$RUNNER_TEMP/gate-certify.txt"; : > "$CERTIFY"
+
+          row()  { printf '| `%s` | `%s` | %s |\n' "$1" "$2" "$3" >> "$ROWS"; }
+          note() { printf '%s\n\n' "$1" >> "$NOTES"; }
+
+          report() {
+            {
+              echo "### $LANE — $1"
+              echo
+              echo "$2"
+              echo
+              echo "| check run | result | verdict |"
+              echo "| --- | --- | --- |"
+              cat "$ROWS"
+              echo
+              echo "Scope (\`$SCOPE_JOB\`): \`run=${RUN_LANE:-<empty>}\` — ${REASON:-<none recorded>}"
+              echo
+              cat "$NOTES"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          fail() { report "NOT verified" "$1"; echo "::error title=$LANE::$1";  exit 1; }
+          # Mirror a PASS into the log too: otherwise a green gate is visible only
+          # in the step summary, which is not part of what the failure reporters
+          # collect, so a green gate could never be audited from the logs.
+          pass() { report "verified"     "$1"; echo "::notice title=$LANE::$1"; exit 0; }
+
+          # (1) The decider must have concluded. "We do not know" is never green.
+          [ "$CHANGES_RESULT" = "success" ] || \
+            fail "The scope job concluded \`$CHANGES_RESULT\`, so nothing decided whether this lane had to run."
+
+          # (2) ...and it must have produced a verdict.
+          case "$RUN_LANE" in
+            true|false) : ;;
+            *) fail "The scope job produced no verdict (\`run=${RUN_LANE:-<empty>}\`)." ;;
+          esac
+
+          # explain_skip <guard-spec>: 0 + sets WHY when a RECORDED input accounts
+          # for the skip, 1 otherwise. This is the whole trick — the gate re-derives
+          # the predicate that should have caused the skip instead of trusting the
+          # job's declared class. An `if:` clause nobody taught this function about
+          # matches no guard, so the skip goes RED.
+          explain_skip() {
+            WHY=""
+            if [ "$GUARD_DISPATCH" = "true" ]; then return 1; fi
+            local g
+            local IFS='+'
+            for g in $1; do
+              case "$g" in
+                not_fork)
+                  if [ "${GUARD_FORK:-}" = "true" ]; then
+                    WHY="this PR comes from a fork, and fork PRs cannot read repo secrets. A maintainer can verify from an in-repo branch: \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\`."
+                    return 0
+                  fi ;;
+                *) return 1 ;;
+              esac
+            done
+            return 1
+          }
+
+          # (3) Walk the manifest.
+          #     `done <<< "$JOBS"` is a HERESTRING, not a pipe: a pipe would run the
+          #     loop in a subshell and every RED/BROKEN assignment would be
+          #     discarded, making this gate unconditionally green.
+          RED=""; BROKEN=""
+          while IFS='|' read -r var class check; do
+            case "${var:-}" in ''|'#'*) continue ;; esac
+            result="${!var:-}"
+
+            case "$class" in
+              required)   guards='' ;;
+              optional:*) guards="${class#optional:}" ;;
+              *) fail "Gate manifest error: \`$check\` declares an unknown class \`$class\`. Refusing to certify a lane whose own manifest this gate cannot parse." ;;
+            esac
+
+            case "$result" in
+              success)
+                printf '%s\n' "$check" >> "$CERTIFY"
+                row "$check" "$result" "ran and passed"
+                ;;
+              skipped)
+                if [ -n "$BROKEN" ]; then
+                  row "$check" "$result" "not reached — \`$BROKEN\` did not succeed"
+                elif [ "$RUN_LANE" = "false" ]; then
+                  row "$check" "$result" "not required — nothing this lane depends on changed"
+                elif [ -n "$guards" ] && explain_skip "$guards"; then
+                  row "$check" "$result" "**DID NOT RUN** — $WHY"
+                  note "**\`$check\` did not run on this PR** — $WHY"
+                  echo "::warning title=$LANE::\`$check\` did not run — $WHY"
+                else
+                  row "$check" "$result" "**UNEXPLAINED SKIP**"
+                  RED="${RED}\`$check\` was skipped and this gate cannot explain why: the lane is in scope and no recorded guard (${guards:-none, this job is required}) accounts for it. Someone added an \`if:\` without teaching the gate about it. "
+                fi
+                ;;
+              '')
+                row "$check" "$result" "**NO RESULT**"
+                RED="${RED}This gate has no result for \`$check\` — its \`needs:\` list and its manifest disagree. "
+                ;;
+              *)
+                row "$check" "$result" "**NOT a pass**"
+                # `cancelled` covers concurrency cancel-in-progress AND the job
+                # timeout, and is deliberately red: a suite that was killed proved
+                # nothing.
+                RED="${RED}\`$check\` concluded \`$result\`. "
+                BROKEN="$check"
+                ;;
+            esac
+          done <<< "$JOBS"
+
+          # (4) Positive proof, not merely the absence of failure — the e2e gate's
+          #     anti-vacuity lock generalised to N jobs. `needs.<job>.result` reports
+          #     what the runner thinks; it does not assert a job of that name ever
+          #     existed. Ask the API, once.
+          if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+                 --jq '.jobs[] | [.name, (.conclusion // "pending")] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
+          then
+            fail "Could not list this run's jobs, so this gate cannot prove the certified jobs actually ran. Refusing to certify on \`needs.*.result\` alone."
+          fi
+
+          while IFS= read -r check; do
+            [ -n "$check" ] || continue
+            # Last match wins, mirroring the e2e gate's `| last`: re-running a single
+            # job appends a second entry under the same name.
+            actual=$(awk -F'\t' -v n="$check" '$1 == n { c = $2 } END { print (c == "" ? "missing" : c) }' "$RUNNER_TEMP/jobs.tsv")
+            if [ "$actual" != "success" ]; then
+              RED="${RED}\`needs\` reported success for \`$check\`, but the job of that name in this run concluded \`$actual\`. Refusing to certify a lane whose job cannot be found. "
+            fi
+          done < "$CERTIFY"
+
+          # (5) No advisory step to surface here: unlike ci-nfe.yml, this lane has
+          #     no `continue-on-error` steps, so every failure inside it is already
+          #     fatal and shows up through the normal result path above.
+
+          [ -z "$RED" ] || fail "$RED"
+
+          if [ ! -s "$CERTIFY" ]; then
+            pass "No run was required — $REASON See the \`$SCOPE_JOB\` job summary for the full path attribution."
+          fi
+          pass "Every required job for this lane concluded \`success\`. Scope: $REASON"

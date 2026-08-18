@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  READ_CACHE_DISABLED_ENV,
+  READ_CACHE_TTL,
+  __resetAllReadCaches,
+} from '@delfrance/data/admin/cache';
 import { melhorEnvioBaseUrl } from '@delfrance/integrations-freight-br';
 
 // Mock the seams loadMelhorEnvioContext touches so we exercise the resolver
@@ -39,13 +44,25 @@ vi.mock('@delfrance/integrations-freight-br', async (importActual) => {
   return { ...actual, exchangeCode: h.exchangeCode };
 });
 
-const { loadMelhorEnvioContext, MelhorEnvioConfigError, MelhorEnvioContaNotConfiguredError } =
-  await import('./melhorEnvio');
+const {
+  loadMelhorEnvioContext,
+  melhorEnvioRedirectUri,
+  MelhorEnvioConfigError,
+  MelhorEnvioContaNotConfiguredError,
+  __setMelhorEnvioCacheClockForTests,
+} = await import('./melhorEnvio');
 
 const db = {} as never;
 
+let now = 1_700_000_000_000;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // The int_frete reader is module-scope and every test here uses `int-1`, so
+  // without this the first test's absent-document entry serves the rest.
+  __resetAllReadCaches();
+  now = 1_700_000_000_000;
+  __setMelhorEnvioCacheClockForTests(() => now);
   h.store.saved = null;
   h.store.load.mockImplementation(async () => h.store.saved);
   h.store.save.mockImplementation(async (t) => {
@@ -60,7 +77,37 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetAllReadCaches();
+  __setMelhorEnvioCacheClockForTests();
   vi.unstubAllEnvs();
+});
+
+describe('melhorEnvioRedirectUri', () => {
+  const CAMINHO = '/api/oauth/melhor-envio/callback';
+
+  it('builds the callback URI from MELHOR_ENVIO_PUBLIC_URL', () => {
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', 'https://me.example.com');
+    expect(melhorEnvioRedirectUri()).toBe(`https://me.example.com${CAMINHO}`);
+  });
+
+  it('strips a trailing slash so the URI matches the ME registration exactly', () => {
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', 'https://me.example.com/');
+    expect(melhorEnvioRedirectUri()).toBe(`https://me.example.com${CAMINHO}`);
+  });
+
+  it('falls back to localhost when the origin is unset', () => {
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', undefined);
+    expect(melhorEnvioRedirectUri()).toBe(`http://localhost:3005${CAMINHO}`);
+  });
+
+  it.each(['', '   '])('treats a blank origin (%j) as unset', (valor) => {
+    // The old `??` guarded only undefined/null, so a blank env var produced
+    // `base === ''` and sent the RELATIVE "/api/oauth/melhor-envio/callback" to ME
+    // as the redirect_uri — a silent mismatch, since nothing on this path logged.
+    // Same `??`-versus-empty-string hole #887 fixed for *_TASKS_REGION.
+    vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', valor);
+    expect(melhorEnvioRedirectUri()).toBe(`http://localhost:3005${CAMINHO}`);
+  });
 });
 
 describe('loadMelhorEnvioContext', () => {
@@ -122,5 +169,71 @@ describe('loadMelhorEnvioContext', () => {
     expect(saved.expirationDate).toBe(1_000 + 2_592_000 * 1_000);
     expect(h.store.save).toHaveBeenCalledTimes(1);
     expect(h.store.saved?.access_token).toBe('at-1');
+  });
+});
+
+describe('loadMelhorEnvioContext — the int_frete read cache', () => {
+  function seedConta(): void {
+    h.docRefGet.mockResolvedValue({ exists: true, data: () => ({}) });
+    h.parseRead.mockReturnValue({ tipo: 'melhorEnvios' });
+  }
+
+  it('serves a repeated load from cache', async () => {
+    seedConta();
+
+    await loadMelhorEnvioContext(db, 'int-1');
+    await loadMelhorEnvioContext(db, 'int-1');
+
+    expect(h.docRefGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-reads after ttlMs — the staleness contract, not just the hit', async () => {
+    seedConta();
+
+    await loadMelhorEnvioContext(db, 'int-1');
+    now += READ_CACHE_TTL.config - 1;
+    await loadMelhorEnvioContext(db, 'int-1');
+    expect(h.docRefGet).toHaveBeenCalledTimes(1);
+
+    // The boundary is EXCLUSIVE: at exactly `ttlMs` the entry is expired.
+    now += 1;
+    await loadMelhorEnvioContext(db, 'int-1');
+    expect(h.docRefGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('still throws on a wrong tipo when the value came from cache', async () => {
+    // The reader replaced the READ, not the contract: the guard runs against
+    // the cached value on every call, not just the first.
+    h.docRefGet.mockResolvedValue({ exists: true, data: () => ({}) });
+    h.parseRead.mockReturnValue({ tipo: 'motoboy' });
+
+    await expect(loadMelhorEnvioContext(db, 'int-1')).rejects.toBeInstanceOf(
+      MelhorEnvioContaNotConfiguredError,
+    );
+    await expect(loadMelhorEnvioContext(db, 'int-1')).rejects.toBeInstanceOf(
+      MelhorEnvioContaNotConfiguredError,
+    );
+    expect(h.docRefGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('never caches an absent document', async () => {
+    h.docRefGet.mockResolvedValue({ exists: false });
+    await expect(loadMelhorEnvioContext(db, 'int-1')).rejects.toBeInstanceOf(
+      MelhorEnvioContaNotConfiguredError,
+    );
+
+    // An integration re-created moments later resolves without waiting out a TTL.
+    seedConta();
+    await expect(loadMelhorEnvioContext(db, 'int-1')).resolves.toBeDefined();
+  });
+
+  it('passes through when the kill switch is set', async () => {
+    vi.stubEnv(READ_CACHE_DISABLED_ENV, '1');
+    seedConta();
+
+    await loadMelhorEnvioContext(db, 'int-1');
+    await loadMelhorEnvioContext(db, 'int-1');
+
+    expect(h.docRefGet).toHaveBeenCalledTimes(2);
   });
 });

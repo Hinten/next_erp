@@ -7,14 +7,7 @@ import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
  * the patch only when their inputs (items / desconto / frete / devolução)
  * changed. Kept in sync with `derivePedidoTotals` (`@delfrance/schemas`).
  */
-const DERIVED_CACHES = [
-  'valorCobrado',
-  'valorCusto',
-  'valorFreteInicial',
-  'custoFreteInicial',
-  'valorDevolucao',
-  'valorCustoDevolvidos',
-] as const;
+const DERIVED_CACHES = ['valorCobrado'] as const;
 
 /**
  * Form-only / transient keys that must never reach the pedido doc: the
@@ -134,6 +127,17 @@ const CONCURRENCY_IGNORE = new Set<string>([
   'timestamp',
   'lastMarketplaceUpdate',
   ...CAMPOS_ESTOQUE_SYNC,
+  // Removed derived caches (#796). `pedidoSchema` is `.passthrough()`, so a key
+  // this app no longer writes still rides the raw baseline/current diff below —
+  // and the still-live Flutter `Pedido.factory` keeps recomputing all five on
+  // every integral save. Without this the operator would get a conflict modal
+  // naming a field that is not on their screen and that they cannot have
+  // authored, which is exactly the question this set answers.
+  'valorCusto',
+  'valorFreteInicial',
+  'custoFreteInicial',
+  'valorDevolucao',
+  'valorCustoDevolvidos',
 ]);
 
 /**
@@ -208,7 +212,7 @@ export async function savePedido(
 // Estado history
 // ---------------------------------------------------------------------------
 // There is deliberately NO history helper here. `historicoEstadoPedido` rows are
-// written exclusively by the `onPedidoEstadoChanged` Cloud Function, which
+// written exclusively by the `onPedidoChanged` Cloud Function, which
 // observes every `pedidos/{pedidoId}` write — so any code path that changes
 // `estado` is covered automatically and none may append rows itself (the rules
 // deny client writes to that subcollection).
@@ -407,7 +411,7 @@ export function nextPedidoEstado(
  * the estado actually changed.
  *
  * Writes ONLY the pedido doc. The `historicoEstadoPedido` row is appended by
- * the `onPedidoEstadoChanged` trigger, which observes this very write and
+ * the `onPedidoChanged` trigger, which observes this very write and
  * derives the actor from its auth context — so no `usuarioRef` is threaded
  * through here, and appending a row by hand would now be denied by the rules
  * (`meta.serverOwned`).

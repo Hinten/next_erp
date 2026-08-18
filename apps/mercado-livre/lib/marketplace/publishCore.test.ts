@@ -7,7 +7,10 @@ import {
   assemblePublishInput,
   buildParentAttributes,
   combinationsFromVariacoes,
+  mergeStoredCombinations,
+  publishModeIssues,
   resolveCondition,
+  resolveListingModel,
   resolvePrice,
 } from './publishCore';
 
@@ -38,6 +41,100 @@ const grupos: PublishGrupoVariacao[] = [
   { grupoId: 'g-out', nome: 'Estampa Especial', tipo: null, variacoes: [{ id: 'v-x', nome: 'X' }] },
 ];
 
+describe('resolveListingModel', () => {
+  // ⚠️ Every case makes the two inputs DISAGREE, so a test can only pass by
+  // reading the one the precedence rule names.
+  it('a PUBLISHED listing follows its persisted flag, never the account tag', () => {
+    const published = { docId: 'link-1', id: 'MLB123' };
+    expect(resolveListingModel({ ...published, isUserProductModel: true }, false)).toBe(
+      'user-products',
+    );
+    expect(resolveListingModel({ ...published, isUserProductModel: false }, true)).toBe('legacy');
+  });
+
+  it('a listing that was NEVER published follows the account tag', () => {
+    // The draft link doc apps/web creates carries `isUserProductModel: false`,
+    // so reading it here — what publish did before #798 — resolves every first
+    // publish on a tagged account to 'legacy' and ML answers 400.
+    const draft = { docId: 'link-1', id: null, isUserProductModel: false };
+    expect(resolveListingModel(draft, true)).toBe('user-products');
+    expect(resolveListingModel(draft, false)).toBe('legacy');
+  });
+
+  it('no link doc at all still follows the account tag', () => {
+    expect(resolveListingModel(null, true)).toBe('user-products');
+    expect(resolveListingModel(null, false)).toBe('legacy');
+  });
+});
+
+describe('publishModeIssues', () => {
+  // A published LEGACY listing: an item id, no children. The baseline every
+  // case below deviates from in exactly one dimension.
+  const base = {
+    estado: 'p' as string | null,
+    model: 'legacy' as const,
+    linkId: 'MLB111' as string | null,
+    childrenCount: 0,
+  };
+
+  it("estado 'am' (mid-UPtin) blocks the publish", () => {
+    expect(publishModeIssues({ ...base, estado: 'am' })).toEqual([
+      expect.stringContaining('migração para o modelo User Products'),
+    ]);
+  });
+
+  it('every OTHER estado publishes normally', () => {
+    // Including null (a first publish) — the block must not fire on a listing
+    // that has no state yet.
+    for (const estado of [null, 'r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
+      expect(publishModeIssues({ ...base, estado })).toEqual([]);
+    }
+  });
+
+  it('a User-Products family that lost every variation is blocked', () => {
+    // `linkId` is a FAMILY id and there are no children, so the fan-out does not
+    // engage and the publish would fall through to `PUT /items/{familyId}` — the
+    // one call this model forbids. Reachable from the normal flow: publish a
+    // family, delete every variation, republish.
+    const issues = publishModeIssues({
+      ...base,
+      model: 'user-products',
+      linkId: '4260899048783356',
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('família User Products');
+  });
+
+  it('a User-Products produto that NEVER had variations still publishes', () => {
+    // ⚠️ The case the guard must not claim. It is also `isUserProductModel` with
+    // zero children — the only difference is that its `linkId` is a real item
+    // id, which is why the guard tests the id's SHAPE and not the child count.
+    expect(publishModeIssues({ ...base, model: 'user-products', linkId: 'MLB2631229629' })).toEqual(
+      [],
+    );
+  });
+
+  it('the same family id is fine while the variations still exist', () => {
+    // With children the fan-out engages and never touches `link.id`.
+    expect(
+      publishModeIssues({
+        ...base,
+        model: 'user-products',
+        linkId: '4260899048783356',
+        childrenCount: 2,
+      }),
+    ).toEqual([]);
+  });
+
+  it('a legacy listing is never judged by its id shape, and a first publish never is', () => {
+    // The guard is scoped to User Products: only that model ever stores a family
+    // id here, so a numeric legacy id (however unlikely) is not ours to reject.
+    expect(publishModeIssues({ ...base, linkId: '123456' })).toEqual([]);
+    // Nothing published yet ⇒ no id to misread.
+    expect(publishModeIssues({ ...base, model: 'user-products', linkId: null })).toEqual([]);
+  });
+});
+
 describe('resolvePrice', () => {
   it('reads the tabela-normal price', () => {
     const issues: string[] = [];
@@ -54,16 +151,44 @@ describe('resolvePrice', () => {
 });
 
 describe('resolveCondition', () => {
-  it('persisted link condition wins over everything', () => {
+  // ⚠️ Every case here makes the produto and the link DISAGREE. The previous
+  // version of this suite asserted "persisted link condition wins over
+  // everything" with a fixture where both said `used`, so it passed under either
+  // precedence and pinned nothing — which is how the produto branch stayed dead
+  // for as long as it did.
+  it('the PRODUTO decides, even when the link says otherwise', () => {
+    // The bug: `produtoMercadoLivreLinkSchema` defaults `condition` to 'new', so
+    // every link doc has a truthy value. With the link tested first, a produto
+    // marked "usado" published as NEW and nothing on screen said so.
+    expect(
+      resolveCondition(
+        { docId: 'l', id: 'MLB1', condition: 'new' },
+        { ...produto, ehUsado: true },
+        1,
+      ),
+    ).toBe('used');
+  });
+
+  it('honours extraData.condicao when ehUsado is not set', () => {
+    // 1 novo, 2 usado, 3 recondicionado — the field has three values and only
+    // one of them is new. Dropping this branch would silently start publishing
+    // recondicionado stock as new.
+    expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'new' }, produto, 2)).toBe('used');
+    expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'new' }, produto, 3)).toBe('used');
+  });
+
+  it('falls back to the link only when the produto says nothing', () => {
+    // An imported listing writes `condition` (`importItem.ts`), so for a produto
+    // whose own flags were never set it is the best answer available.
     expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'used' }, produto, 1)).toBe(
+      'used',
+    );
+    expect(resolveCondition({ docId: 'l', id: 'MLB1', condition: 'used' }, produto, null)).toBe(
       'used',
     );
   });
 
-  it('ehUsado / condicao 2|3 → used; default new', () => {
-    expect(resolveCondition(null, { ...produto, ehUsado: true }, 1)).toBe('used');
-    expect(resolveCondition(null, produto, 2)).toBe('used');
-    expect(resolveCondition(null, produto, 3)).toBe('used');
+  it('defaults to new with no signal anywhere', () => {
     expect(resolveCondition(null, produto, 1)).toBe('new');
     expect(resolveCondition(null, produto, null)).toBe('new');
   });
@@ -106,7 +231,7 @@ describe('buildParentAttributes', () => {
 });
 
 describe('combinationsFromVariacoes', () => {
-  it('maps tamanho→SIZE, cor→COLOR, outros→NOME_DO_GRUPO', () => {
+  it('maps tamanho→SIZE, cor→COLOR, and an ERP-only grupo to a CUSTOM characteristic', () => {
     const issues: string[] = [];
     const combos = combinationsFromVariacoes(
       [
@@ -118,12 +243,60 @@ describe('combinationsFromVariacoes', () => {
       'Filho',
       issues,
     );
+    // #797 E8: `g-out` is a Firestore auto-id, so its group is NOT in ML's
+    // taxonomy. ML's shape for that is `name` + `value_name` and NO id — the
+    // old port sent `{ id: 'ESTAMPA_ESPECIAL' }`, an id that exists nowhere.
     expect(combos).toEqual([
       { id: 'SIZE', value_name: 'M' },
       { id: 'COLOR', value_name: 'Preto' },
-      { id: 'ESTAMPA_ESPECIAL', value_name: 'X' },
+      { name: 'Estampa Especial', value_name: 'X' },
     ]);
     expect(issues).toEqual([]);
+  });
+
+  it('uses an ML-derived grupo id verbatim, with the variante value_id (#797 E8)', () => {
+    // The taxonomy importer names the grupo doc after the ML attribute
+    // (`taxonomiaCore.ts:251`) and the variante after its value_id (`:284`).
+    const mlGrupos: PublishGrupoVariacao[] = [
+      {
+        grupoId: 'FLAVOR',
+        nome: 'Sabor',
+        tipo: 0,
+        variacoes: [{ id: '2450279', nome: 'Baunilha', mlValueId: '2450279' }],
+      },
+    ];
+    const issues: string[] = [];
+    expect(
+      combinationsFromVariacoes(
+        ['documents/grupoDeVariacoes/FLAVOR/variacoes/2450279'],
+        mlGrupos,
+        'Filho',
+        issues,
+      ),
+    ).toEqual([{ id: 'FLAVOR', value_id: '2450279', value_name: 'Baunilha' }]);
+    expect(issues).toEqual([]);
+  });
+
+  it('omits value_id when ML never minted one (the link holds a NAME, not an id)', () => {
+    // `externalVariacaoLinks[].externalId` is `value_id ?? value_name`, so the
+    // IO layer passes null unless it equals the variante id. Sending a name as
+    // `value_id` would fabricate a taxonomy reference.
+    const mlGrupos: PublishGrupoVariacao[] = [
+      {
+        grupoId: 'FLAVOR',
+        nome: 'Sabor',
+        tipo: 0,
+        variacoes: [{ id: 'n-baunilha', nome: 'Baunilha', mlValueId: null }],
+      },
+    ];
+    expect(
+      combinationsFromVariacoes(
+        ['documents/grupoDeVariacoes/FLAVOR/variacoes/n-baunilha'],
+        mlGrupos,
+        'Filho',
+        [],
+      ),
+    ).toEqual([{ id: 'FLAVOR', value_name: 'Baunilha' }]);
   });
 
   it('reports unknown paths/variants as issues instead of dropping them', () => {
@@ -135,6 +308,46 @@ describe('combinationsFromVariacoes', () => {
       issues,
     );
     expect(issues).toHaveLength(2);
+  });
+});
+
+describe('mergeStoredCombinations', () => {
+  it('recovers a stored combination no grupo can rebuild (#797 E8)', () => {
+    // VOLTAGE was configured in Flutter; the ERP has no grupo for it, so the
+    // grupo walk alone would DROP it on the first republish.
+    expect(
+      mergeStoredCombinations(
+        [{ id: 'COLOR', value_name: 'Preto' }],
+        [{ id: 'VOLTAGE', value_name: '220V' }],
+      ),
+    ).toEqual([
+      { id: 'COLOR', value_name: 'Preto' },
+      { id: 'VOLTAGE', value_name: '220V' },
+    ]);
+  });
+
+  it('the grupo wins a collision — a duplicated combination id is an ML rejection', () => {
+    expect(
+      mergeStoredCombinations(
+        [{ id: 'COLOR', value_name: 'Preto' }],
+        [{ id: 'COLOR', value_name: 'Azul (stale)' }],
+      ),
+    ).toEqual([{ id: 'COLOR', value_name: 'Preto' }]);
+  });
+
+  it('keys an id-less entry by name, and drops a valueless one', () => {
+    expect(
+      mergeStoredCombinations(
+        [{ name: 'Sabor', value_name: 'Baunilha' }],
+        [{ name: 'Sabor', value_name: 'Menta' }, { id: 'VOLTAGE' }],
+      ),
+    ).toEqual([{ name: 'Sabor', value_name: 'Baunilha' }]);
+  });
+
+  it('is a no-op without stored entries', () => {
+    const derived = [{ id: 'SIZE', value_name: 'M' }];
+    expect(mergeStoredCombinations(derived, undefined)).toBe(derived);
+    expect(mergeStoredCombinations(derived, [])).toBe(derived);
   });
 });
 
@@ -153,6 +366,37 @@ describe('assemblePublishInput', () => {
     listingTypeId: 'gold_special',
     isUserProductSeller: false,
   };
+
+  it('a PUBLISHED User-Products family still requires category and listing type', () => {
+    // `isUpdate` says the FAMILY exists — it says nothing about its members, and
+    // a family that gains a variation POSTs that member as a brand-new item.
+    // Letting the ordinary create-only rule stand would send that POST with no
+    // category and earn a 400 the operator cannot read.
+    const upFamily = {
+      ...baseArgs,
+      isUserProductSeller: true,
+      categoryId: null,
+      listingTypeId: null,
+      // `id` here is the FAMILY id, which is what makes this an update.
+      link: { docId: 'link-doc-1', id: '4260899048783356', isUserProductModel: true },
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M', sku: 'SKU-1-M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+      ],
+    };
+    expect(() => assemblePublishInput(upFamily)).toThrowError(/category_id/);
+
+    // The same listing WITHOUT children is one plain item — an update there
+    // genuinely needs neither, so the rule must not widen to every UP listing.
+    expect(() => assemblePublishInput({ ...upFamily, variations: [] })).not.toThrow();
+    // ...and neither does a published LEGACY listing with children: ML takes
+    // its variations inside the one PUT, so no member is ever created alone.
+    expect(() => assemblePublishInput({ ...upFamily, isUserProductSeller: false })).not.toThrow();
+  });
 
   it('assembles a create input with variations end-to-end', () => {
     const input = assemblePublishInput({
@@ -189,6 +433,160 @@ describe('assemblePublishInput', () => {
       attributeCombinations: [{ id: 'SIZE', value_name: 'M' }],
       attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-1-M' }],
     });
+  });
+
+  it('merges the stored combinations of the child link doc (#797 E8)', () => {
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: 991,
+          storedCombinations: [{ id: 'VOLTAGE', value_name: '220V' }],
+        },
+      ],
+    });
+    expect(input.variations![0]!.attributeCombinations).toEqual([
+      { id: 'SIZE', value_name: 'M' },
+      { id: 'VOLTAGE', value_name: '220V' },
+    ]);
+  });
+
+  it('only merges a stored attribute EVERY child can supply (review #1064)', () => {
+    // child-2 was added in the ERP after the listing was published, so it has no
+    // variation link and no stored VOLTAGE. Merging per-child would send
+    // [SIZE, VOLTAGE] for one sibling and [SIZE] for the other — ML requires the
+    // same attributes on every variation and rejects the whole item.
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: 991,
+          storedCombinations: [{ id: 'VOLTAGE', value_name: '220V' }],
+        },
+        {
+          produto: { ...produto, id: 'child-2', nome: 'Camiseta G' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+          availableQuantity: 2,
+          mlVariationId: null,
+        },
+      ],
+    });
+    expect(input.variations!.map((v) => v.attributeCombinations)).toEqual([
+      [{ id: 'SIZE', value_name: 'M' }],
+      [{ id: 'SIZE', value_name: 'G' }],
+    ]);
+  });
+
+  it('merges a stored attribute when ALL children carry it', () => {
+    const withVoltage = (id: string, nome: string, uid: string, valor: string) => ({
+      produto: { ...produto, id, nome },
+      variacoesUid: [uid],
+      availableQuantity: 4,
+      mlVariationId: 1,
+      storedCombinations: [{ id: 'VOLTAGE', value_name: valor }],
+    });
+    const input = assemblePublishInput({
+      ...baseArgs,
+      variations: [
+        withVoltage('child-1', 'M', 'documents/grupoDeVariacoes/g-tam/variacoes/v-m', '220V'),
+        withVoltage('child-2', 'G', 'documents/grupoDeVariacoes/g-tam/variacoes/v-g', '110V'),
+      ],
+    });
+    expect(input.variations!.map((v) => v.attributeCombinations)).toEqual([
+      [
+        { id: 'SIZE', value_name: 'M' },
+        { id: 'VOLTAGE', value_name: '220V' },
+      ],
+      [
+        { id: 'SIZE', value_name: 'G' },
+        { id: 'VOLTAGE', value_name: '110V' },
+      ],
+    ]);
+  });
+
+  it('blocks siblings whose grupos give them DIFFERENT combination sets', () => {
+    // Pre-existing hazard the per-child checks could never see: one child is in
+    // two grupos, its sibling in one. ML rejects the item, not the variation.
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Camiseta M Preta' },
+            variacoesUid: [
+              'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+              'documents/grupoDeVariacoes/g-cor/variacoes/v-preto',
+            ],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+          {
+            produto: { ...produto, id: 'child-2', nome: 'Camiseta G' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+            availableQuantity: 2,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/não combinam os MESMOS atributos/);
+  });
+
+  it('blocks TWO children each varying by a DIFFERENT single custom characteristic', () => {
+    // One custom apiece passes any per-child count, but the ITEM varies by two.
+    const doisCustoms: PublishGrupoVariacao[] = [
+      { grupoId: 'g-a', nome: 'Sabor', tipo: 0, variacoes: [{ id: 'v-a', nome: 'Menta' }] },
+      { grupoId: 'g-b', nome: 'Estampa', tipo: 0, variacoes: [{ id: 'v-b', nome: 'Onça' }] },
+    ];
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        grupos: doisCustoms,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Menta' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-a/variacoes/v-a'],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+          {
+            produto: { ...produto, id: 'child-2', nome: 'Onça' },
+            variacoesUid: ['documents/grupoDeVariacoes/g-b/variacoes/v-b'],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/apenas UMA característica personalizada/);
+  });
+
+  it('blocks a child varying by TWO custom characteristics — ML allows one', () => {
+    const doisCustoms: PublishGrupoVariacao[] = [
+      { grupoId: 'g-a', nome: 'Sabor', tipo: 0, variacoes: [{ id: 'v-a', nome: 'Menta' }] },
+      { grupoId: 'g-b', nome: 'Estampa', tipo: 0, variacoes: [{ id: 'v-b', nome: 'Onça' }] },
+    ];
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        grupos: doisCustoms,
+        variations: [
+          {
+            produto: { ...produto, id: 'child-1', nome: 'Camiseta X' },
+            variacoesUid: [
+              'documents/grupoDeVariacoes/g-a/variacoes/v-a',
+              'documents/grupoDeVariacoes/g-b/variacoes/v-b',
+            ],
+            availableQuantity: 4,
+            mlVariationId: null,
+          },
+        ],
+      }),
+    ).toThrow(/apenas UMA característica personalizada/);
   });
 
   it('keeps the parent SELLER_SKU for a User-Products seller even with children', () => {

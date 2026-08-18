@@ -66,8 +66,19 @@ describe('summarizePedidoErrors', () => {
 });
 
 describe('pedidoTabs', () => {
-  it('saída shows every tab in display order (plus the read-only estoque)', () => {
-    expect(pedidoTabs(false)).toEqual([...PEDIDO_TABS.map((t) => t.value), 'estoque']);
+  it('saída shows every tab in display order (plus the two read-only ones)', () => {
+    // `estoque` and `modificacoes` are deliberately NOT in PEDIDO_TABS: that
+    // array is the error-routing table, and neither tab owns a form field.
+    expect(pedidoTabs(false)).toEqual([
+      ...PEDIDO_TABS.map((t) => t.value),
+      'estoque',
+      'modificacoes',
+    ]);
+  });
+
+  it('shows the Modificações tab for BOTH directions (an entrada has history too)', () => {
+    expect(pedidoTabs(false)).toContain('modificacoes');
+    expect(pedidoTabs(true)).toContain('modificacoes');
   });
 
   it('entrada keeps the Pagamento tab (the pedido payment component is reused)', () => {
@@ -77,13 +88,14 @@ describe('pedidoTabs', () => {
     expect(pedidoTabs(true)).toContain('pagamento');
   });
 
-  it('entrada excludes exactly the three saída-only tabs, preserving order', () => {
+  it('entrada excludes exactly the four saída-only tabs, preserving order', () => {
     const saida = pedidoTabs(false);
     const entrada = pedidoTabs(true);
     expect(saida.filter((v) => !entrada.includes(v))).toEqual([
       'link-pgto',
       'incidentes',
       'devolucao',
+      'checkout',
     ]);
     // Entrada is a strict, order-preserving subset of saída.
     expect(entrada).toEqual(saida.filter((v) => entrada.includes(v)));

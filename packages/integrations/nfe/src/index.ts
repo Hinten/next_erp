@@ -123,7 +123,13 @@ export {
 } from './xsd';
 
 // Safety guard
-export { NFeProductionGuardError, assertSafeTpAmb, tpAmbFromAmbiente, type TpAmb } from './safety';
+export {
+  NFeProductionGuardError,
+  assertSafeTpAmb,
+  assertSafeTpAmbForTransport,
+  tpAmbFromAmbiente,
+  type TpAmb,
+} from './safety';
 
 // Generator
 export {

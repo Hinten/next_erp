@@ -16,14 +16,25 @@
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import {
+  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  CONFIG_IA_MODELO_PADRAO,
+  PROVEDOR_IA,
+} from '@delfrance/schemas';
 
+import { AlreadyRunningError, resolveModelo, runSingleFlight } from '@delfrance/ai';
 import {
   AiNotConfiguredError,
   AiUnparseableAnswerError,
   createVertexGenerateFn,
-} from '@/lib/ai/provider';
-import { loadProdutoImage } from '@/lib/ai/produtoImage';
-import { AlreadyRunningError, runSingleFlight } from '@/lib/ai/singleFlight';
+  createVertexListModelsFn,
+  getAiModelosCached,
+  loadConfigIa,
+  loadFotoImage,
+  modelosParaValidacao,
+} from '@delfrance/ai/admin';
+
+import { MAX_ANTERIOR, normalizarAnterior } from '@/lib/ai/revisao';
 import { ProdutoNotFoundError, suggestAttributes } from '@/lib/ai/suggestAttributes';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminBucket, getAdminFirestore } from '@/lib/firebase/admin';
@@ -42,13 +53,17 @@ export const runtime = 'nodejs';
  * well past a normal Flash-Lite answer and well short of a hung request.
  */
 const AI_TIMEOUT_MS = 45_000;
+/** The operator's correction is a sentence; anything longer is a prompt-bill risk. */
+const MAX_FEEDBACK = 1_000;
 
 /**
- * The shipped default. Overridable per deployment today, and from the settings
- * page once `configIa` exists (A3), whose resolution order is
- * config doc → this env var → this constant.
+ * ⚠️ The shipped default now lives in `packages/schemas` as
+ * {@link CONFIG_IA_MODELO_PADRAO}, because the settings page and this route must
+ * agree on the last link of the chain. Resolution order:
+ * **`configIa` doc → `MERCADO_LIVRE_AI_MODEL` → that constant**, then
+ * re-validated against the live model list so a stored model the provider has
+ * retired cannot 500 this route.
  */
-const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
 export async function POST(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.integracao.write);
@@ -66,7 +81,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return NextResponse.json({ error: 'Corpo inválido: objeto esperado.' }, { status: 400 });
   }
-  const { integracaoId, produtoId, categoryId } = body as Record<string, unknown>;
+  const { integracaoId, produtoId, categoryId, feedback, anterior } = body as Record<
+    string,
+    unknown
+  >;
   if (typeof integracaoId !== 'string' || integracaoId === '') {
     return NextResponse.json({ error: 'integracaoId é obrigatório.' }, { status: 400 });
   }
@@ -76,11 +94,73 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (typeof categoryId !== 'string' || categoryId === '') {
     return NextResponse.json({ error: 'categoryId é obrigatório.' }, { status: 400 });
   }
+  // ⚠️ The revise turn. Capped because it is free text that lands in a prompt:
+  // an unbounded field is an unbounded token bill on a per-click path, and the
+  // operator's correction is a sentence, not a document.
+  if (feedback !== undefined && typeof feedback !== 'string') {
+    return NextResponse.json({ error: 'feedback deve ser texto.' }, { status: 400 });
+  }
+  if (typeof feedback === 'string' && feedback.length > MAX_FEEDBACK) {
+    return NextResponse.json(
+      { error: `feedback deve ter no máximo ${String(MAX_FEEDBACK)} caracteres.` },
+      { status: 400 },
+    );
+  }
+  if (anterior !== undefined && !Array.isArray(anterior)) {
+    return NextResponse.json({ error: 'anterior deve ser uma lista.' }, { status: 400 });
+  }
+  if (Array.isArray(anterior) && anterior.length > MAX_ANTERIOR) {
+    return NextResponse.json(
+      { error: `anterior deve ter no máximo ${String(MAX_ANTERIOR)} itens.` },
+      { status: 400 },
+    );
+  }
+  // ⚠️ `anterior` is CLIENT input and reaches the prompt, so it is normalized
+  // rather than cast: the builder maps `a.id`/`a.value_name` over it, and a
+  // single `null` entry in a hand-made body used to turn this route into a 500.
+  //
+  // The feedback is what decides there IS a revision — an EMPTY `anterior` is
+  // legitimate and must stay accepted: when the model answers with nothing the
+  // operator's "não achou nada, tente pelo código" is exactly the correction
+  // worth sending, and the empty prior turn is an honest record of what it said.
+  const revisao =
+    typeof feedback === 'string' && feedback.trim() !== ''
+      ? { feedback, anterior: normalizarAnterior(anterior) }
+      : null;
 
   const db = getAdminFirestore();
 
+  // Read the agent's settings BEFORE claiming the single-flight slot: the kill
+  // switch must be able to decline without occupying it, or one disabled-agent
+  // click would block the operator's next attempt for no reason.
+  const config = await loadConfigIa(db, CONFIG_IA_ML_ATRIBUTOS_DOC_ID);
+  if (!config.ativo) {
+    return NextResponse.json(
+      {
+        error: 'A sugestão por IA está desativada nas configurações.',
+        code: 'AI_DESATIVADA',
+      },
+      { status: 409 },
+    );
+  }
+  // ⚠️ Only Vertex is wired — `createVertexGenerateFn()` below runs
+  // unconditionally. Without this check `provedor` was a WRITE-ONLY field: an
+  // operator could select "Google AI", save, get a green confirmation, and every
+  // suggestion would still run on Vertex with nothing anywhere saying so.
+  // Declining turns a silent no-op into a diagnosable one, and gives a future
+  // second provider a place that fails loudly until it is actually wired.
+  if (config.provedor !== PROVEDOR_IA.vertex) {
+    return NextResponse.json(
+      {
+        error: `O provedor "${config.provedor}" ainda não está implementado. Selecione Vertex AI nas configurações de IA.`,
+        code: 'AI_PROVEDOR_NAO_SUPORTADO',
+      },
+      { status: 409 },
+    );
+  }
+
   try {
-    return await runSingleFlight(auth.caller.uid, async () => {
+    return await runSingleFlight(`atributos:${auth.caller.uid}`, async () => {
       const ctx = await loadMercadoLivreContext(db, integracaoId);
       const channelCtx = await ctx.resolveChannelContext();
       const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
@@ -90,7 +170,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           db,
           generate: createVertexGenerateFn(),
           loadImage: (fotos) =>
-            loadProdutoImage(
+            loadFotoImage(
               {
                 db,
                 download: async (path) => {
@@ -108,7 +188,20 @@ export async function POST(req: Request): Promise<NextResponse> {
             const attrs = await getCategoriaAtributosCached(api, id);
             return { leaf: true, atributos: projectCategoriaAtributos(attrs, 'item').atributos };
           },
-          model: process.env.MERCADO_LIVRE_AI_MODEL ?? DEFAULT_MODEL,
+          model: resolveModelo({
+            stored: config.modelo,
+            env: process.env.MERCADO_LIVRE_AI_MODEL ?? null,
+            padrao: CONFIG_IA_MODELO_PADRAO,
+            // ⚠️ `modelosParaValidacao`, NOT `.modelos`. The cached result is
+            // never empty (it falls back to the shipped list), so validating
+            // against it would treat a `models.list` outage as proof that the
+            // stored model is retired — and silently swap it.
+            disponiveis: modelosParaValidacao(await getAiModelosCached(createVertexListModelsFn())),
+          }).modelo,
+          systemInstruction: config.promptSistema,
+          revisao,
+          temperature: config.temperatura,
+          maxOutputTokens: config.maxOutputTokens,
           signal: AbortSignal.timeout(AI_TIMEOUT_MS),
         },
         { produtoId, categoryId },

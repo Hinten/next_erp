@@ -5,13 +5,24 @@
  * account and returns it as JSON. The browser then navigates there. The
  * Bearer token (PERM.integracao.write) authorizes minting the state; the state
  * itself is the integrity guarantee the public callback verifies.
+ *
+ * #821: the state's `nonce` and (when PKCE is on) the `code_verifier` are also
+ * recorded server-side, which is what lets the callback redeem the attempt
+ * exactly once. Persist BEFORE handing out the URL — a consent completed
+ * against a record that was never written is a connect that fails closed.
  */
 import { NextResponse } from 'next/server';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import {
+  codeChallengeS256,
+  createCodeVerifier,
+  signState,
+} from '@delfrance/data/admin/oauth-state';
+
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { signState } from '@/lib/marketplace/state';
+import { mercadoLivreOauthState, pkceEnabled } from '@/lib/marketplace/oauthState';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
 
 export const dynamic = 'force-dynamic';
@@ -37,8 +48,15 @@ export async function GET(req: Request): Promise<NextResponse> {
   const db = getAdminFirestore();
   try {
     const ctx = await loadMercadoLivreContext(db, integracaoId);
-    const state = signState(integracaoId, secret);
-    const authorizeUrl = ctx.channel.oauthFlow.start(state);
+    const { state, nonce } = signState(integracaoId, secret);
+    const codeVerifier = pkceEnabled() ? createCodeVerifier() : null;
+    await mercadoLivreOauthState.put(db, integracaoId, { nonce, codeVerifier });
+    const authorizeUrl = ctx.channel.oauthFlow.start(
+      state,
+      codeVerifier
+        ? { codeChallenge: codeChallengeS256(codeVerifier), codeChallengeMethod: 'S256' }
+        : undefined,
+    );
     return NextResponse.json({ authorizeUrl });
   } catch (err) {
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);

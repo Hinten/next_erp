@@ -260,6 +260,101 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('server-owned metodo_pgto.user_id (meta.serverOwnedFields) — #1034', () => {
+    // The Mercado Pago sibling of the `integracao` case below: `user_id` is the
+    // COLLECTOR id an inbound payment notification resolves the account by, so a
+    // client able to write it could repoint another seller's payment stream —
+    // and the money with it. Only the OAuth exchange writes it, via the Admin SDK.
+    //
+    // ⚠️ `metodo_pgto` is validator-whitelisted, so the emitted guard is ANDed
+    // with `v_metodo_pgto(...)` rather than standing alone as `integracao`'s
+    // does. These cases pin that the composition still denies.
+    const writer = () => db({ d_metodoPagamento: 2 });
+
+    it('allows a create carrying the field only as null (client parse default)', async () => {
+      await assertSucceeds(
+        setDoc(doc(writer(), 'metodo_pgto/mp-null'), { nome: 'MP', tipo: 1, user_id: null }),
+      );
+      await assertSucceeds(setDoc(doc(writer(), 'metodo_pgto/mp-absent'), { nome: 'MP', tipo: 1 }));
+    });
+
+    it('denies a create forging a collector id', async () => {
+      await assertFails(
+        setDoc(doc(writer(), 'metodo_pgto/mp-forge'), { nome: 'MP', tipo: 1, user_id: 123456789 }),
+      );
+    });
+
+    it('denies any update touching the field — set, clear, or delete', async () => {
+      await seed('metodo_pgto/mp-upd', { nome: 'MP', tipo: 1, user_id: 111 });
+      // The hijack: repoint this account at another collector.
+      await assertFails(updateDoc(doc(writer(), 'metodo_pgto/mp-upd'), { user_id: 222 }));
+      await assertFails(updateDoc(doc(writer(), 'metodo_pgto/mp-upd'), { user_id: null }));
+      await assertFails(updateDoc(doc(writer(), 'metodo_pgto/mp-upd'), { user_id: deleteField() }));
+    });
+
+    it('allows updates that leave the field untouched', async () => {
+      await seed('metodo_pgto/mp-other', { nome: 'MP', tipo: 1, user_id: 111 });
+      await assertSucceeds(updateDoc(doc(writer(), 'metodo_pgto/mp-other'), { nome: 'MP 2' }));
+    });
+
+    it('does not yield to the super-user claim (server-owned beats su)', async () => {
+      await seed('metodo_pgto/mp-su', { nome: 'MP', tipo: 1, user_id: 111 });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(updateDoc(doc(su, 'metodo_pgto/mp-su'), { user_id: 222 }));
+    });
+  });
+
+  describe('server-owned integracao.user_id (meta.serverOwnedFields) — #821/T4', () => {
+    // `user_id` is the Mercado Livre webhook ROUTING key: an inbound
+    // notification finds its account with `where('user_id','==',…)`. A client
+    // able to write it could repoint another seller's notification stream at
+    // its own integração, or break routing outright. The only legitimate writer
+    // is the OAuth exchange, through the rules-bypassing Admin SDK.
+    const writer = () => db({ d_integracao: 2 });
+
+    it('allows a create carrying the field only as null (client parse default)', async () => {
+      await assertSucceeds(
+        setDoc(doc(writer(), 'integracao/uid-null'), {
+          nome: 'ML',
+          tipo: 'mercadoLivre',
+          user_id: null,
+        }),
+      );
+      await assertSucceeds(
+        setDoc(doc(writer(), 'integracao/uid-absent'), { nome: 'ML', tipo: 'mercadoLivre' }),
+      );
+    });
+
+    it('denies a create forging a seller id', async () => {
+      await assertFails(
+        setDoc(doc(writer(), 'integracao/uid-forge'), {
+          nome: 'ML',
+          tipo: 'mercadoLivre',
+          user_id: 123456789,
+        }),
+      );
+    });
+
+    it('denies any update touching the field — set, clear, or delete', async () => {
+      await seed('integracao/uid-upd', { nome: 'ML', tipo: 'mercadoLivre', user_id: 111 });
+      // The hijack: repoint this account at another seller's stream.
+      await assertFails(updateDoc(doc(writer(), 'integracao/uid-upd'), { user_id: 222 }));
+      await assertFails(updateDoc(doc(writer(), 'integracao/uid-upd'), { user_id: null }));
+      await assertFails(updateDoc(doc(writer(), 'integracao/uid-upd'), { user_id: deleteField() }));
+    });
+
+    it('allows updates that leave the field untouched', async () => {
+      await seed('integracao/uid-other', { nome: 'ML', tipo: 'mercadoLivre', user_id: 111 });
+      await assertSucceeds(updateDoc(doc(writer(), 'integracao/uid-other'), { nome: 'ML 2' }));
+    });
+
+    it('does not yield to the super-user claim (server-owned beats su)', async () => {
+      await seed('integracao/uid-su', { nome: 'ML', tipo: 'mercadoLivre', user_id: 111 });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(updateDoc(doc(su, 'integracao/uid-su'), { user_id: 222 }));
+    });
+  });
+
   describe('server-owned produtos/historicoDeModificacoes (meta.serverOwned)', () => {
     // Written EXCLUSIVELY by the onProdutoChanged trigger (Admin SDK, which
     // bypasses rules entirely). Reads follow the ordinary produto read bit;
@@ -283,10 +378,19 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
       await assertSucceeds(getDocs(collection(reader, 'produtos/p-hist/historicoDeModificacoes')));
     });
 
-    it('the produto read bit collection-group-reads across produtos', async () => {
-      await assertSucceeds(
-        getDocs(collectionGroup(db({ d_produto: 1 }), 'historicoDeModificacoes')),
-      );
+    it('denies the collection-group read entirely, for every domain', async () => {
+      // `noCollectionGroupRead` on BOTH metas, so no `{path=**}` block is
+      // emitted for this leaf at all.
+      //
+      // It used to be emitted, and `d_produto` used to pass here. That stopped
+      // being safe the moment `pedidos/{id}/historicoDeModificacoes` joined the
+      // same leaf name: `emit.ts` makes a group block's read check the UNION of
+      // every owning collection's read claim, so the block would have granted
+      // `d_produto` reads over every PEDIDO's edit history (and `d_pedido` over
+      // every produto's custo/precos changes). Nothing in the app ever issued
+      // this query — every read resolves a concrete `{ produtoId }` /
+      // `{ pedidoId }` — so removing it costs nothing and closes the widening.
+      await assertFails(getDocs(collectionGroup(db({ d_produto: 1 }), 'historicoDeModificacoes')));
       await assertFails(getDocs(collectionGroup(db({ d_pedido: 7 }), 'historicoDeModificacoes')));
     });
 
@@ -308,6 +412,54 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
         updateDoc(doc(su, 'produtos/p-hist/historicoDeModificacoes/evt-1'), { campos: [] }),
       );
       await assertFails(deleteDoc(doc(su, 'produtos/p-hist/historicoDeModificacoes/evt-1')));
+    });
+  });
+
+  describe('server-owned pedidos/historicoDeModificacoes (meta.serverOwned)', () => {
+    // The pedido twin of the block above: same schema, same serverOwned posture,
+    // its OWN permission domain. Written by the pedido trigger family; rows for
+    // `pagamentos` / `incidentes` land here too, tagged by `subcolecao`.
+    const entry = {
+      path: 'pedidos/ped-hist/pagamentos/pag-1',
+      subcolecao: 'pagamentos',
+      docId: 'pag-1',
+      kind: 'update',
+      campos: ['status_pagamento'],
+      changes: { status_pagamento: { old: 1, new: 3 } },
+      timestamp: 1_700_000_000_000_000,
+      eventId: 'evt-p1',
+    };
+
+    it('the pedido read bit reads a single entry and lists the subcollection', async () => {
+      await seed('pedidos/ped-hist/historicoDeModificacoes/evt-p1', entry);
+      const reader = db({ d_pedido: 1 });
+      await assertSucceeds(getDoc(doc(reader, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1')));
+      await assertSucceeds(getDocs(collection(reader, 'pedidos/ped-hist/historicoDeModificacoes')));
+    });
+
+    it('a produto claim does NOT read the pedido history', async () => {
+      // The whole point of `noCollectionGroupRead` on both metas: sharing a leaf
+      // name must not share a read claim.
+      await assertFails(
+        getDocs(collection(db({ d_produto: 7 }), 'pedidos/ped-hist/historicoDeModificacoes')),
+      );
+    });
+
+    it('denies every client write, even with the pedido write bit', async () => {
+      const writer = db({ d_pedido: 2 });
+      await assertFails(
+        setDoc(doc(writer, 'pedidos/ped-hist/historicoDeModificacoes/evt-p2'), entry),
+      );
+      await assertFails(
+        updateDoc(doc(writer, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1'), { campos: [] }),
+      );
+      await assertFails(deleteDoc(doc(writer, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1')));
+    });
+
+    it('denies every write even for a superuser (no su bypass)', async () => {
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(setDoc(doc(su, 'pedidos/ped-hist/historicoDeModificacoes/evt-p3'), entry));
+      await assertFails(deleteDoc(doc(su, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1')));
     });
   });
 

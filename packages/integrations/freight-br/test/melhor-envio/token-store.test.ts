@@ -97,6 +97,11 @@ describe('getOrRefreshAccessToken', () => {
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MelhorEnvioReauthRequiredError);
     expect((err as MelhorEnvioReauthRequiredError).reason).toBe('refresh_failed');
+    // ⚠️ status/body come from the REJECTING response, at the only production
+    // throw site. Adding the field without passing it here left it permanently
+    // null — the class advertised diagnostics it never carried.
+    expect((err as MelhorEnvioReauthRequiredError).status).toBe(401);
+    expect((err as MelhorEnvioReauthRequiredError).body).toEqual({ error: 'invalid_grant' });
   });
 
   it('falls back to a concurrently-refreshed token on a 401 (no re-auth)', async () => {

@@ -85,6 +85,78 @@ describe("OutroCheckoutModal — reprints target the row's OWN pedido", () => {
     );
   });
 
+  /**
+   * The user-visible half of the deadline work.
+   *
+   * ⚠️ These exist because the reporting path can fail SILENTLY: `reportEtiqueta`
+   * / `reportDanfe` only fire a toast, so a missing `case` is invisible to both
+   * `tsc` and lint (this repo enables no switch-exhaustiveness rule). Asserting
+   * the returned `{status:'timeout'}` object — which the `reprintCheckout` unit
+   * tests already do — proves nothing about whether the operator is told. A
+   * timeout that produces no toast IS the "it froze" symptom, reached a
+   * different way.
+   */
+  it('tells the operator WHICH stage timed out on the frete button', async () => {
+    h.reprintCheckoutEtiqueta.mockResolvedValue({
+      status: 'timeout',
+      stage: 'carregar o pedido',
+      message: 'A etapa "carregar o pedido" não respondeu em 30s.',
+    });
+    renderModal(makeRow({ pedidoId: 'PEDA' }));
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+
+    await waitFor(() =>
+      expect(h.showErrorNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Etiqueta',
+          // The stage name is the payload — a bare "timed out" would be no
+          // better than the spinner it replaced.
+          message: expect.stringContaining('carregar o pedido'),
+        }),
+      ),
+    );
+    expect(h.showCopyableNotification).not.toHaveBeenCalled();
+  });
+
+  it('tells the operator WHICH stage timed out on the NF-e button too', async () => {
+    // The sibling shares `usePrintInFlight`, so an unreported stall here spins
+    // BOTH buttons — the asymmetry a review caught in the first draft.
+    h.reprintCheckoutDanfe.mockResolvedValue({
+      status: 'timeout',
+      stage: 'carregar a NF-e',
+      message: 'A etapa "carregar a NF-e" não respondeu em 30s.',
+    });
+    renderModal(makeRow({ pedidoId: 'PEDB' }));
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir NF-e/ }));
+
+    await waitFor(() =>
+      expect(h.showErrorNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'NF-e',
+          message: expect.stringContaining('carregar a NF-e'),
+        }),
+      ),
+    );
+    expect(h.showCopyableNotification).not.toHaveBeenCalled();
+  });
+
+  it('releases the print mutex after a timeout, so the operator can retry', async () => {
+    // The wedge is the actual harm: a timeout that left `inFlight` true would
+    // produce the toast AND keep both buttons disabled — still no way forward.
+    h.reprintCheckoutEtiqueta.mockResolvedValue({
+      status: 'timeout',
+      stage: 'carregar o pedido',
+      message: 'A etapa "carregar o pedido" não respondeu em 30s.',
+    });
+    renderModal(makeRow());
+    const btn = screen.getByRole('button', { name: /Reimprimir Frete/ });
+
+    fireEvent.click(btn);
+    await waitFor(() => expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(1));
+    fireEvent.click(btn);
+    await waitFor(() => expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(2));
+  });
+
   it('hides Reimprimir Frete when the checkout snapshot is sem frete (modalidade 9)', () => {
     renderModal(
       makeRow({

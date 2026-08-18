@@ -7,8 +7,12 @@ import { e2eUserEmail } from './_helpers/run-id';
 /**
  * Playwright globalTeardown: removes all e2e fixtures from staging.
  *
- *  - `runTeardown()` deletes every collection prefixed with this run's
- *    namespace (e.g. `e2e_local_grupoEconomico`).
+ *  - `runTeardown()` deletes this run's rules probe, `e2e_probe/<runId>` — one
+ *    keyed delete, no `listCollections()` and no query. Normally already a
+ *    no-op: `verifyE2ENamespaceAccess` deletes the probe inline, seconds after
+ *    writing it. Cross-run reclaim is NOT this function's job; it belongs to
+ *    `sweepStaleE2EProbes` at globalSetup, which runs even when a job is killed
+ *    before any teardown.
  *  - `sweepCurrentRunFixtures()` sweeps this run's docs out of the real
  *    collections, for every target in `E2E_FIXTURE_TARGETS` — the same registry
  *    the start-of-run orphan sweep uses. It replaces a hardcoded six-collection

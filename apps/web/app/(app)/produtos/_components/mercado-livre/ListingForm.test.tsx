@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -7,13 +7,24 @@ import type { Firestore } from 'firebase/firestore';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
+import { MercadoLivreClientNetworkError } from '@/lib/mercado-livre/client';
 
 const h = vi.hoisted(() => ({
   /** Every patch a save handed to the port, in order. */
   writes: [] as Array<Record<string, unknown>>,
   /** What the transaction re-read sees; swap per test to simulate a racer. */
   remote: null as ProdutoMercadoLivreLink | null,
+  /**
+   * The ML client. `null` by default so the existing tests keep running without
+   * a backend (the attributes query is gated on it) — the test-data tests set it.
+   */
+  client: null as Record<string, unknown> | null,
 }));
+
+vi.mock('@/lib/mercado-livre/client', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
+  return { ...actual, useMercadoLivreClient: () => h.client };
+});
 
 vi.mock('@/lib/mercado-livre/listingPort', () => ({
   createClientListingPort: () => ({
@@ -40,29 +51,51 @@ function renderForm(
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
     </MantineProvider>
   );
-  render(
+  const node = (l: ProdutoMercadoLivreLink) => (
     <ListingForm
       produtoId="prod-1"
       linkDocId="ML-DOC-1"
       integracaoId="conta-1"
       produtoNome="Camiseta Básica"
-      link={link}
+      produtoEhUsado={false}
+      produtoCondicao={null}
+      link={l}
       db={{} as Firestore}
       canWrite
       onDirtyChange={onDirtyChange}
       registerFlush={registerFlush}
       {...props}
-    />,
-    { wrapper },
+    />
   );
-  return { onDirtyChange, registerFlush, link };
+  const { rerender } = render(node(link), { wrapper });
+  /** Re-render with a NEW link, the way a live snapshot update arrives. */
+  const update = (next: Partial<ProdutoMercadoLivreLink>) =>
+    rerender(node(linkFixture({ ...over, ...next })));
+  return { onDirtyChange, registerFlush, link, update };
 }
 
 function type(label: string | RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
+/**
+ * Drive the save the way `MercadoLivreEditor` does now.
+ *
+ * "Salvar anúncio" moved out of this component into the editor's action group
+ * (beside Publicar), so the save is reached through the closure this form
+ * registers rather than through a button in its own subtree. The save LOGIC is
+ * unchanged — only its trigger moved — so these tests invoke the closure.
+ */
+async function save(registerFlush: ReturnType<typeof vi.fn>, mode: 'button' | 'flush' = 'button') {
+  const calls = registerFlush.mock.calls.filter((c) => typeof c[1] === 'function');
+  const fn = calls.at(-1)![1] as (m: 'button' | 'flush') => Promise<void>;
+  await act(async () => {
+    await fn(mode);
+  });
+}
+
 beforeEach(() => {
+  h.client = null;
   h.writes = [];
   h.remote = linkFixture();
 });
@@ -101,9 +134,17 @@ describe('ListingForm', () => {
     expect(screen.getByLabelText('Título do anúncio')).toHaveProperty('disabled', false);
   });
 
-  it('keeps "Salvar anúncio" disabled until something is edited', () => {
+  it('renders NO save button of its own — the editor owns it', () => {
+    // "Salvar anúncio" moved beside "Publicar no Mercado Livre" in
+    // `MercadoLivreEditor`, which gates it on `dirtyIds` (attribute edits
+    // included). A second button here would be a second, RHF-only gate.
     renderForm();
-    expect(screen.getByRole('button', { name: 'Salvar anúncio' })).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('button', { name: /Salvar anúncio/ })).toBeNull();
+  });
+
+  it('registers a save the editor can invoke in either mode', () => {
+    const { registerFlush } = renderForm();
+    expect(registerFlush).toHaveBeenCalledWith('ML-DOC-1', expect.any(Function));
   });
 
   it('reports dirtiness upward instead of guarding navigation itself', async () => {
@@ -117,9 +158,9 @@ describe('ListingForm', () => {
   });
 
   it('writes only the edited key', async () => {
-    renderForm({ title: 'Camiseta Básica' });
+    const { registerFlush } = renderForm({ title: 'Camiseta Básica' });
     type('Título do anúncio', 'Camiseta Premium');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(h.writes).toHaveLength(1);
@@ -131,9 +172,9 @@ describe('ListingForm', () => {
   });
 
   it('never writes a server-owned key', async () => {
-    renderForm();
+    const { registerFlush } = renderForm();
     type('Título do anúncio', 'Novo');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(h.writes).toHaveLength(1);
@@ -144,9 +185,9 @@ describe('ListingForm', () => {
   });
 
   it('refuses to save a blank title', async () => {
-    renderForm();
+    const { registerFlush } = renderForm();
     type('Título do anúncio', '   ');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(screen.getByText('Informe o título do anúncio.')).toBeDefined();
@@ -162,9 +203,9 @@ describe('ListingForm', () => {
       title: 'Alterado por outra pessoa',
       ultimaModificacao: (link.ultimaModificacao ?? 0) + 5_000,
     });
-    renderForm({ title: 'Original' });
+    const { registerFlush } = renderForm({ title: 'Original' });
     type('Título do anúncio', 'Meu texto');
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar anúncio' }));
+    await save(registerFlush);
 
     await waitFor(() => {
       expect(screen.getByText('Anúncio alterado')).toBeDefined();
@@ -182,5 +223,392 @@ describe('ListingForm', () => {
     renderForm({}, { canWrite: false });
     expect(screen.getByLabelText('Título do anúncio')).toHaveProperty('disabled', true);
     expect(screen.getByLabelText('Descrição')).toHaveProperty('disabled', true);
+  });
+});
+
+describe('Condição comes from the produto', () => {
+  it('renders the produto value read-only, with no editable control', () => {
+    // Whether a product is used is a fact about the PRODUCT, not about one of
+    // its listings — two editable copies could only disagree.
+    renderForm({}, { produtoEhUsado: true });
+    expect(screen.getByText('Usado')).toBeDefined();
+    expect(screen.queryByRole('combobox', { name: 'Condição' })).toBeNull();
+  });
+
+  it('follows the produto flag', () => {
+    renderForm({}, { produtoEhUsado: false });
+    expect(screen.getByText('Novo')).toBeDefined();
+  });
+
+  it('warns on a PUBLISHED listing that ML fixes condition at creation', async () => {
+    // ⚠️ The honest part. `condition` is create-only in `buildItemPayload`, so
+    // flipping "Produto usado" now changes what a FUTURE publish would send and
+    // nothing at Mercado Livre. Without this note the operator flips the switch,
+    // watches this field change, and reasonably assumes it propagated.
+    renderForm({ id: 'MLB777' }, { produtoEhUsado: true });
+    expect(screen.getByText(/fixa a condição na criação/i)).toBeDefined();
+  });
+
+  it('says where to change it on a listing that is not published yet', () => {
+    renderForm({ id: null }, { produtoEhUsado: false });
+    expect(screen.getByText(/Produto usado/)).toBeDefined();
+  });
+
+  // ⚠️ THE display↔payload bug. `resolveCondicaoAnuncio` reads THREE inputs and
+  // this field used to mirror only `ehUsado`, so a produto marked
+  // **Recondicionado** in Dados extras rendered "Novo" here while the first
+  // publish sent `used`. Same two-copies-that-disagree failure this field was
+  // introduced to remove, just moved to where one side is a screen.
+  it('shows Usado for a produto marked recondicionado in Dados extras', () => {
+    renderForm({ id: null }, { produtoEhUsado: false, produtoCondicao: 3 });
+    expect(screen.getByText('Usado')).toBeDefined();
+  });
+
+  it('names Dados extras when that is the field that decided', () => {
+    // Pointing at "Produto usado" would send the operator to a switch that is
+    // already off and cannot explain what they see.
+    renderForm({ id: null }, { produtoEhUsado: false, produtoCondicao: 2 });
+    expect(screen.getByText(/Dados extras/)).toBeDefined();
+  });
+
+  it('leaves novo to the next tier rather than deciding', () => {
+    // 1 is the schema DEFAULT — treating it as an answer would make the stored
+    // listing condition unreachable for every produto that never set it.
+    renderForm({ id: null, condition: 'used' }, { produtoEhUsado: false, produtoCondicao: 1 });
+    expect(screen.getByText('Usado')).toBeDefined();
+  });
+
+  it('never writes condition, even though the doc still holds one', async () => {
+    const { registerFlush } = renderForm({ title: 'Antigo', condition: 'used' });
+    type('Título do anúncio', 'Novo título');
+    await save(registerFlush);
+
+    await waitFor(() => {
+      expect(h.writes).toHaveLength(1);
+    });
+    expect(h.writes[0]).not.toHaveProperty('condition');
+  });
+});
+
+describe('Descrição is collapsed until it has something to show', () => {
+  it('starts collapsed when the listing has no descrição', () => {
+    renderForm({ descricao: null });
+    expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
+  });
+
+  it('starts OPEN when the listing already has one', () => {
+    // A hidden non-empty field is a field nobody remembers to check.
+    renderForm({ descricao: 'Texto existente' });
+    expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+  });
+
+  it('opens on click', async () => {
+    renderForm({ descricao: null });
+    fireEvent.click(screen.getByRole('button', { name: /Descrição do anúncio/ }));
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+    });
+  });
+
+  it('OPENS when a descrição arrives from the snapshot on a clean form', async () => {
+    // ⚠️ The hole a once-only seed left. The reset effect re-seeds the whole
+    // form from the live snapshot whenever nothing is pending, so a descrição
+    // written by a second tab, a colleague, or an import filled a textarea that
+    // stayed `display: none`. Nothing is lost (`buildListingPatch` writes only
+    // dirty keys) but "a hidden non-empty field is one nobody remembers to
+    // check" is the whole point of the disclosure — and this app is never the
+    // only writer (root CLAUDE.md rule 7).
+    const { update } = renderForm({ descricao: null });
+    expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
+
+    update({ descricao: 'Texto que chegou do servidor' });
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+    });
+  });
+
+  it('does NOT re-open under someone who collapsed it mid-edit', async () => {
+    // The re-open is gated on the same `isDirty` edge as the reset effect, so a
+    // snapshot cannot yank the disclosure open while the operator is typing.
+    const { update } = renderForm({ descricao: 'Texto existente' });
+    fireEvent.click(screen.getByRole('button', { name: /Ocultar descrição/ }));
+    type('Título do anúncio', 'Editando agora');
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
+    });
+
+    update({ descricao: 'Outro texto remoto' });
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('false');
+    });
+  });
+
+  it('stays open while the operator clears the text they are editing', async () => {
+    // The open state is seeded ONCE. Deriving it from the current value would
+    // collapse the field the instant it was emptied — mid-edit.
+    renderForm({ descricao: 'Texto existente' });
+    type('Descrição', '');
+    await waitFor(() => {
+      expect(screen.getByTestId('ml-descricao-wrapper').dataset.open).toBe('true');
+    });
+  });
+
+  it('KEEPS the typed text when collapsed again, and still saves it', async () => {
+    // ⚠️ The reason the field is hidden with CSS rather than unmounted: an
+    // unmounted `Controller` is one RHF `shouldUnregister` default away from
+    // silently discarding what the operator wrote.
+    const { registerFlush } = renderForm({ descricao: null });
+    fireEvent.click(screen.getByRole('button', { name: /Descrição do anúncio/ }));
+    type('Descrição', 'Texto novo');
+    fireEvent.click(screen.getByRole('button', { name: /Ocultar descrição/ }));
+    await save(registerFlush);
+
+    await waitFor(() => {
+      expect(h.writes).toHaveLength(1);
+    });
+    expect(h.writes[0]).toMatchObject({ descricao: 'Texto novo' });
+  });
+});
+
+describe('Preencher com dados de teste', () => {
+  // ⚠️ The button ships in DEVELOPMENT builds only — publishing a test listing
+  // creates a real listing on the real marketplace. Under vitest `NODE_ENV` is
+  // `'test'`, so without this every assertion below would fail on a button that
+  // is correctly absent. `vi.stubEnv` works only because the component reads
+  // `process.env.NODE_ENV` inline rather than into a module-level const.
+  beforeEach(() => {
+    vi.stubEnv('NODE_ENV', 'development');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function setClient(over: Partial<Record<string, unknown>> = {}) {
+    h.client = {
+      categoriaAtributos: vi.fn(async () => ({ leaf: true, atributos: [], omitidos: [] })),
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        categoriaPath: ['Outros', 'Outros'],
+        categoriaMotivo: null,
+        listingTypeId: 'free',
+        conta: { nickname: 'TEST0548', ehContaDeTeste: true },
+      })),
+      ...over,
+    };
+  }
+
+  it('fills the form with ML’s documented test data without saving anything', async () => {
+    // Pre-fill only. #799's rule is that things are OFFERED, not applied, and a
+    // button that published straight to a live marketplace would be the sharpest
+    // possible violation of it.
+    setClient();
+    renderForm({ id: null, title: 'Camiseta' });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Título do anúncio')).toHaveProperty(
+        'value',
+        'Item de Teste – Por favor, NÃO OFERTAR!',
+      );
+    });
+    expect(h.writes).toHaveLength(0);
+  });
+
+  it('WARNS when the target is not a test account', async () => {
+    // ⚠️ The point of the feature. ML has no sandbox, so this creates a real
+    // listing on a real marketplace, and ML's docs forbid test listings on a
+    // real seller account.
+    setClient({
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        listingTypeId: 'free',
+        conta: { nickname: 'VESTEFRANCE', ehContaDeTeste: false },
+      })),
+    });
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/não é uma conta de teste/i)).toBeDefined();
+    });
+    expect(screen.getByText(/VESTEFRANCE/)).toBeDefined();
+    expect(screen.getByText(/usuário de teste/i)).toBeDefined();
+  });
+
+  it('stays quiet about the account when it IS a test user', async () => {
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+    expect(screen.queryByText(/não é uma conta de teste/i)).toBeNull();
+  });
+
+  it('says so when the category could not be resolved, instead of guessing one', async () => {
+    // A hardcoded "Outros" id would file a test listing into a real category.
+    setClient({
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: null,
+        categoriaPath: null,
+        // ⚠️ The case that actually happened: MLB has no root named "Outros".
+        categoriaMotivo: 'sem-raiz',
+        listingTypeId: null,
+        conta: { nickname: 'TEST1', ehContaDeTeste: true },
+      })),
+    });
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      // ⚠️ Asserts it reads as ABNORMAL, not as a routine "pick one yourself".
+      // The only way we learn ML renamed the tree is someone noticing this line
+      // and the matching `console.error` — a neutral message gets shrugged at.
+      expect(screen.getByText(/árvore de categorias mudou/i)).toBeDefined();
+    });
+    // ⚠️ And NOT the listing-type message. The route never queries types without
+    // a category, so `listingTypeId` is null here for a reason that has nothing
+    // to do with the types available — telling the operator "nenhum tipo nesta
+    // categoria" about a category that was never resolved blames the wrong
+    // field, right beside the message naming the real one.
+    expect(screen.queryByText(/evite Premium/i)).toBeNull();
+  });
+
+  it('warns about the listing type only once a category DID resolve', async () => {
+    setClient({
+      anuncioTeste: vi.fn(async () => ({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        listingTypeId: null,
+        conta: { nickname: 'TEST1', ehContaDeTeste: true },
+      })),
+    });
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/evite Premium/i)).toBeDefined();
+    });
+    expect(screen.queryByText(/categoria “Outros” automaticamente/i)).toBeNull();
+  });
+
+  it('is not offered on a listing that is already published', async () => {
+    // Nothing to pre-fill: the listing exists at ML, and title/condition are
+    // already fixed there.
+    setClient();
+    renderForm({ id: 'MLB777' });
+    expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('is not offered without write permission', async () => {
+    setClient();
+    renderForm({ id: null }, { canWrite: false });
+    expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('does NOT ship in a production build', async () => {
+    // ⚠️ The gate that matters. ML has no sandbox, so publishing a test listing
+    // creates a REAL listing on the real marketplace — the affordance has no
+    // business existing in a deployed app. `NODE_ENV` is a build-time constant,
+    // so the branch is stripped rather than merely hidden.
+    vi.stubEnv('NODE_ENV', 'production');
+    setClient();
+    renderForm({ id: null });
+    expect(screen.queryByRole('button', { name: /dados de teste/i })).toBeNull();
+  });
+
+  it('MOVES the category and reloads the attributes on an existing draft', async () => {
+    // ⚠️ Lucas's exact report: a produto with a draft listing that ALREADY has a
+    // category. The whole point of the fix is that the field moves off it and
+    // the attribute grid re-queries for the new one — and until now nothing
+    // asserted either, so the client half of this path was untested.
+    //
+    // The attributes query key is `['ml','atributos',integracaoId,categoryId]`,
+    // so a re-fetch with the new id IS the grid reloading.
+    setClient();
+    const atributos = h.client!.categoriaAtributos as ReturnType<typeof vi.fn>;
+    // The fixture's category is MLB31447; the fill answers MLB5672.
+    renderForm({ id: null, category_id: 'MLB31447' });
+
+    await waitFor(() => {
+      expect(atributos).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'MLB31447' }));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(atributos).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 'MLB5672' }));
+    });
+  });
+
+  it('names the category it actually chose', async () => {
+    // The field shows a bare `MLB…` id until the path resolves, and which leaf
+    // under "Outros" the route landed on is not guessable from it.
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Categoria definida/)).toBeDefined();
+    });
+    expect(screen.getByText('Outros › Outros')).toBeDefined();
+  });
+
+  it('does not leave a stale success alert above a FAILED fill', async () => {
+    // ⚠️ The half a close button cannot fix. `preencherTeste`'s catch reports its
+    // failure as a toast and returns without touching `testeConta`, so the
+    // previous run's "Dados de teste preenchidos" — naming a `Categoria definida`
+    // that was never applied — survived on screen above a fill that did not
+    // happen. Clearing at the START of every run makes the alert strictly a
+    // report of the LATEST run.
+    const anuncioTeste = vi
+      .fn()
+      .mockResolvedValueOnce({
+        title: 'Item de Teste – Por favor, NÃO OFERTAR!',
+        descricao: 'Anúncio de teste.',
+        categoryId: 'MLB5672',
+        categoriaPath: ['Outros', 'Outros'],
+        listingTypeId: 'free',
+        conta: { nickname: 'TEST0548', ehContaDeTeste: true },
+      })
+      .mockRejectedValueOnce(new MercadoLivreClientNetworkError('sem rede'));
+    setClient({ anuncioTeste });
+    renderForm({ id: null });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+    await waitFor(() => {
+      expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
+    });
+    expect(screen.queryByText(/Categoria definida/)).toBeNull();
+  });
+
+  it('can be dismissed, and stays dismissed', async () => {
+    // ⚠️ `setTesteConta` was only ever called on success and never reset, so the
+    // alert outlived even a later FAILED click — leaving a stale "preenchidos"
+    // banner above a fill that did not happen.
+    setClient();
+    renderForm({ id: null });
+    fireEvent.click(screen.getByRole('button', { name: /dados de teste/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Dados de teste preenchidos')).toBeDefined();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar aviso' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
+    });
   });
 });

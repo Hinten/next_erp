@@ -26,7 +26,12 @@ export {
   onMetodoPagamentoDeleted,
 } from './cascades/caroGenericoTriggers';
 export { onNfeDeleted } from './nfe/onNfeDeleted';
-export { onPedidoEstadoChanged } from './pedidos/registrarEstadoPedido';
+export { onPedidoChanged } from './pedidos/registrarHistoricoPedido';
+// Pedido modification history for the two covered subcollections; the pedido
+// document's own entry rides `onPedidoChanged` above (one observer, one
+// write per event).
+export { onPagamentoChanged } from './pedidos/onPagamentoChanged';
+export { onIncidenteChanged } from './pedidos/onIncidenteChanged';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
 export {
   onPedidoEstoqueSync,

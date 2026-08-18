@@ -21,24 +21,25 @@ export const PEDIDO_TABS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'link-pgto', label: 'Link Pgto' },
   { value: 'incidentes', label: 'Incidentes' },
   { value: 'devolucao', label: 'Devolução' },
+  { value: 'checkout', label: 'Checkout' },
   { value: 'estado', label: 'Estado/Histórico' },
 ];
 
 /**
  * Saída-only tabs — hidden on an entrada (inbound order): payment links,
- * incidents and returns are sale-side flows the legacy app never showed for
- * an entrada.
+ * incidents, returns and the dispatch checkout are sale-side flows the legacy
+ * app never showed for an entrada.
  */
-const SAIDA_ONLY_TABS: ReadonlyArray<string> = ['link-pgto', 'incidentes', 'devolucao'];
+const SAIDA_ONLY_TABS: ReadonlyArray<string> = ['link-pgto', 'incidentes', 'devolucao', 'checkout'];
 
 /**
  * Visible pedido-form tab values in display order for the given direction.
- * `estoque` (read-only, outside the error routing in PEDIDO_TABS) renders
- * last for both directions. PedidoForm drives both `Tabs.Tab` and
+ * `estoque` and `modificacoes` (both read-only, so both outside the error
+ * routing in PEDIDO_TABS) render last, for both directions. PedidoForm drives both `Tabs.Tab` and
  * `Tabs.Panel` rendering from this list.
  */
 export function pedidoTabs(isEntrada: boolean): string[] {
-  const all = [...PEDIDO_TABS.map((t) => t.value), 'estoque'];
+  const all = [...PEDIDO_TABS.map((t) => t.value), 'estoque', 'modificacoes'];
   if (!isEntrada) return all;
   return all.filter((value) => !SAIDA_ONLY_TABS.includes(value));
 }
@@ -65,7 +66,6 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   descontoTotal: 'principal',
   observacoesInternas: 'principal',
   valorCobrado: 'principal',
-  valorCusto: 'principal',
   // Fiscal
   enderecoFiscalOuterRef: 'fiscal',
   infCpl: 'fiscal',
@@ -73,8 +73,6 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   chNFeReferenciadas: 'fiscal',
   // Frete
   freteInicial: 'frete',
-  valorFreteInicial: 'frete',
-  custoFreteInicial: 'frete',
   // Preview-only fields rendered read-only in their tabs via PlaceholderTab —
   // map them so a stray validation error marks the right tab instead of being
   // reported as "fora do formulário".

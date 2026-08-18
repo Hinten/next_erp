@@ -9,6 +9,7 @@ import {
   MercadoLivreImportError,
   assembleImportPlan,
   assembleVariationChildPlan,
+  resolveVariationCombo,
 } from './importCore';
 
 function mapped(over: Partial<MappedMlItem> = {}): MappedMlItem {
@@ -528,6 +529,64 @@ function childArgs(over: Partial<VariationChildAssembleArgs> = {}): VariationChi
     ...over,
   };
 }
+
+describe('resolveVariationCombo (#801)', () => {
+  it('keeps only the entries whose attrKey this variation actually carries', () => {
+    const combo = resolveVariationCombo(mappedVariation().combos, [
+      taxonomiaResolution(), // COLOR|123 — this variation's own
+      taxonomiaResolution({
+        attrKey: 'SIZE|9',
+        grupoId: 'g-tam',
+        varianteId: 'v-m',
+        grupoUid: 'g-tam',
+        varianteFake: 'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+      }), // a SIBLING variation's combo — must not leak in
+    ]);
+    expect(combo).toEqual({
+      grupoUids: ['g-cor'],
+      varianteFakes: ['documents/grupoDeVariacoes/g-cor/variacoes/v-azul'],
+    });
+  });
+
+  it('nothing matched → both null, which is what makes the dedup skip this variation', () => {
+    expect(resolveVariationCombo(mappedVariation().combos, [])).toEqual({
+      grupoUids: null,
+      varianteFakes: null,
+    });
+    expect(resolveVariationCombo([], [taxonomiaResolution()])).toEqual({
+      grupoUids: null,
+      varianteFakes: null,
+    });
+  });
+
+  it('de-dupes two combos that resolved onto the same grupo/variante', () => {
+    const combos = [
+      { id: 'COLOR', value_id: '123', value_name: 'Azul', name: 'Cor' },
+      { id: 'COLOR', value_id: '123', value_name: 'Azul', name: 'Cor' },
+    ];
+    expect(resolveVariationCombo(combos, [taxonomiaResolution()])).toEqual({
+      grupoUids: ['g-cor'],
+      varianteFakes: ['documents/grupoDeVariacoes/g-cor/variacoes/v-azul'],
+    });
+  });
+
+  it('is the SAME derivation assembleVariationChildPlan writes (the two must never diverge)', () => {
+    const taxonomia = [
+      taxonomiaResolution(),
+      taxonomiaResolution({
+        attrKey: 'SIZE|9',
+        grupoId: 'g-tam',
+        varianteId: 'v-m',
+        grupoUid: 'g-tam',
+        varianteFake: 'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+      }),
+    ];
+    const plan = assembleVariationChildPlan(childArgs({ taxonomia }));
+    const combo = resolveVariationCombo(mappedVariation().combos, taxonomia);
+    expect(plan.produto?.data.grupoDeVariacoesUid).toEqual(combo.grupoUids);
+    expect(plan.produto?.data.variacoesUid).toEqual(combo.varianteFakes);
+  });
+});
 
 describe('assembleVariationChildPlan — create', () => {
   it('writes a full child doc: paiId/nome/sku/publicado/kit flags mirror the parent', () => {

@@ -9,7 +9,7 @@ import {
 import type { z, ZodTypeAny } from 'zod';
 import { nowMicros, nowMillis } from '@delfrance/core/datetime';
 import { type CollectionHandle, type PathContext } from '@delfrance/data';
-import { isEmpty, pickDirty } from './diff';
+import { isEmpty, pickDirty, valuesEqual } from './diff';
 
 /**
  * A sibling document write that must ride the SAME transaction as the main
@@ -51,6 +51,15 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
    * — can target the right path. The main-record write is SKIPPED when its patch
    * is empty but siblings exist (so a save that only touched a sibling still
    * commits it); `NothingChangedError` is thrown only when BOTH are empty.
+   *
+   * ⚠️ A `type: 'set'` sibling is an UPSERT, and deliberately so — it is what
+   * creates the singleton on a record's first save. It therefore RESURRECTS a
+   * sibling another operator deleted in the meantime. What {@link
+   * SaveRecordInput.baseline} does cover is the case that actually orphans data:
+   * the PARENT being deleted mid-edit, which now aborts the whole transaction
+   * before any sibling is written. A sibling deleted on its own, under a parent
+   * that still exists, is still an upsert; a call site that must not recreate
+   * one should pass `type: 'update'`, which fails NOT_FOUND instead.
    */
   siblingWrites?: (id: string) => TransactionWrite[];
   /**
@@ -74,6 +83,28 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
    * auto-detects from the schema descriptors).
    */
   createdAtField?: string | false;
+  /**
+   * The record as it was LOADED into the form — the ADR 0011 **tier 3**
+   * baseline. When present (and this is an update), the transaction re-reads the
+   * doc and refuses with {@link RecordConflictError} if anyone changed a field
+   * this save also writes.
+   *
+   * ⚠️ It must come from **server truth**, not from a Firestore cache paint. A
+   * baseline taken from the IndexedDB snapshot is stale by construction right
+   * after an edit, so the guard fires on every save and the operator learns to
+   * click through it. `ObjectView` seeds it only from a `fromCache === false`
+   * snapshot for exactly this reason.
+   *
+   * Omit to keep the previous last-write-wins behaviour (creates always do).
+   */
+  baseline?: Record<string, unknown>;
+  /**
+   * Fields a remote change to which must NOT raise a conflict — server-written
+   * values the operator could not have authored, so interrupting them over one
+   * would be noise. The stamp fields are added automatically; pass domain
+   * additions (a `<domain>Meta.serverOwnedFields`, a trigger's write-back).
+   */
+  ignoreFields?: ReadonlySet<string>;
 }
 
 export interface SaveRecordResult<T> {
@@ -87,6 +118,60 @@ export class NothingChangedError extends Error {
     super('Nenhuma alteração para salvar');
     this.name = 'NothingChangedError';
   }
+}
+
+/**
+ * ADR 0011 **tier 3** — the record changed underneath the operator on a field
+ * this save would overwrite, so a human decides instead of one write silently
+ * winning.
+ *
+ * Carries the remote document so the UI can show the diff and offer an override
+ * that RE-BASELINES on the version the operator just reviewed (never a blind
+ * force-write: a third change arriving meanwhile must raise this again).
+ *
+ * `fields` is empty when the document was deleted outright — `missing` says so.
+ */
+export class RecordConflictError extends Error {
+  constructor(
+    readonly current: Record<string, unknown> | null,
+    readonly fields: string[],
+    readonly missing = false,
+  ) {
+    super(
+      missing
+        ? 'Este registro foi excluído por outra pessoa enquanto você o editava.'
+        : 'Este registro foi alterado por outra pessoa desde que você o abriu.',
+    );
+    this.name = 'RecordConflictError';
+  }
+}
+
+/**
+ * Keys whose value the operator never types, so a remote change to one is not
+ * worth interrupting them over. Mirrors `CONCURRENCY_IGNORE` in
+ * `@delfrance/data/pedido`, minus the pedido-specific entries — the caller adds
+ * those through `ignoreFields`.
+ */
+const ALWAYS_IGNORED = ['ultimaModificacao', 'timestamp', 'dataCadastro', 'lastMarketplaceUpdate'];
+
+/**
+ * Fields whose stored value differs from the baseline AND which this save would
+ * overwrite.
+ *
+ * Compared against `patch`'s own keys rather than the whole document: an
+ * untouched field is not in the dirty patch, so it is not written, so it cannot
+ * lose a race it never entered. That is the tier-0-by-disjointness half, and it
+ * is what keeps the guard quiet on screens whose docs a trigger writes back to.
+ */
+function conflictingFields(
+  baseline: Record<string, unknown>,
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>,
+  ignored: ReadonlySet<string>,
+): string[] {
+  return Object.keys(patch).filter(
+    (key) => !ignored.has(key) && !valuesEqual(baseline[key], current[key]),
+  );
 }
 
 /** Keys that must never be used as dynamic object property names. */
@@ -185,7 +270,28 @@ export async function saveRecord<
     }
   }
 
+  // ADR 0011 tier 3. Tier 1 is unreachable here — this is the browser SDK,
+  // which has no `lastUpdateTime` precondition (`apps/web/CLAUDE.md` rule 3) —
+  // and tier 0 does not apply: a form field is neither commutative nor
+  // monotonic. So the doc is re-read inside the transaction and compared
+  // against what the form was seeded with.
+  //
+  // ⚠️ Reading it also FIXES a second, quieter problem: without a `tx.get` this
+  // transaction has an EMPTY READ SET, so there is no version for Firestore to
+  // check at commit and it can never abort. It was a `WriteBatch` with extra
+  // latency. The read alone restores real OCC, before any comparison.
+  const guarded = isUpdate && input.baseline != null;
+  const ignored = new Set([...ALWAYS_IGNORED, ...(input.ignoreFields ?? [])]);
+
   await runTransaction(input.db, async (tx: Transaction) => {
+    if (guarded) {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) throw new RecordConflictError(null, [], true);
+      const current = snap.data() as Record<string, unknown>;
+      const fields = conflictingFields(input.baseline!, current, patch, ignored);
+      if (fields.length > 0) throw new RecordConflictError(current, fields);
+    }
+
     if (writeMainDoc) {
       if (isUpdate) {
         // tx.update bypasses the Firestore converter (only set/add invoke it).

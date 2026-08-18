@@ -30,23 +30,31 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
   pull_request:
-    # The prefix entries cover stacked PRs — see ci.yml.
-    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
-    paths:
-      - 'apps/nfe/**'
-      - 'packages/integrations/nfe/**'
-      - 'packages/config-vitest/**'
-      - 'packages/schemas/src/nfe.ts'
-      - 'packages/schemas/src/nfeConfig.ts'
-      - 'packages/schemas/src/enviNfeMsg.ts'
-      # `pedido.ts`/`pagamento.ts` moved under `src/pedido/` and `frete.ts` under
-      # `src/shared/`; the old root paths matched nothing, so this lane silently
-      # stopped running on the very schemas the XML builder reads.
-      - 'packages/schemas/src/pedido/**'
-      - 'packages/schemas/src/shared/frete.ts'
-      - 'packages/schemas/src/integracao.ts'
-      - 'pnpm-lock.yaml'
-      - '.github/workflows/ci-nfe.yml'
+    # The prefix entries cover stacked PRs — see ci.yml. `production` is the
+    # release base (main → production); without it this lane reports no check at
+    # all on the PR that actually ships, and a required check that never reports
+    # blocks the merge forever.
+    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    # ⚠️ NO `paths:` here, deliberately. A `paths:` that does not match means
+    # GitHub never instantiates the workflow, so it publishes NO check run at all
+    # — not a failure, not a skip, nothing — and a required status check that is
+    # never reported cannot gate anything.
+    #
+    # This lane has already been burned by the list itself, twice over. The
+    # comment that used to sit here recorded the first time: `pedido.ts` moved
+    # under `src/pedido/` and the stale root path matched nothing, so the lane
+    # silently stopped running on the very schemas the XML builder reads. The
+    # second is why it is going now: the list never contained `packages/data`,
+    # which `@delfrance/integrations-nfe` depends on — and `ci.yml` excludes that
+    # package from `turbo run test`, so its tests ran NOWHERE on a data-only PR.
+    #
+    # Scope now lives in the `changes` job below, derived from the workspace
+    # dependency graph, where the lane still reports either way.
+    #
+    # `push:` above KEEPS its `paths:` on purpose: nothing on the push path is a
+    # required check, and the `changes` job short-circuits to run=true on non-PR
+    # events, so removing it would run the full live SEFAZ pipeline on every merge
+    # to main for no gating benefit.
   workflow_dispatch:
   # No cron here on purpose: the scheduled (weekly) FATAL run of the SVC
   # live suite lives in nfe-epec-scheduled.yml's `svc-live` job instead,
@@ -59,9 +67,213 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nfe-build-test:
-    name: Lint / typecheck / unit / build (offline)
+  # ~20s. Reads the workspace manifests and asks whether anything this lane
+  # actually depends on changed. No `pnpm install` — plain Node reading
+  # package.json files.
+  changes:
+    name: CI scope (nfe)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # `run_e2e` keeps its historical name — it is the wire format of
+      # e2e-affected.mjs, shared with the three e2e lanes. Read it as "run this lane".
+      run_e2e: ${{ steps.decide.outputs.run_e2e || steps.collect.outputs.run_e2e }}
+      reason: ${{ steps.decide.outputs.reason || steps.collect.outputs.reason }}
+      # ⚠️ These fall back to `collect`'s OWN live outputs, never to `run_e2e`.
+      # `run_e2e` is `true` in every short-circuit path — including the two PR
+      # fail-safes — so reusing it here would emit at SEFAZ on a transient API
+      # error. See the note on `decided()` below.
+      run_live: ${{ steps.decide-live.outputs.run_e2e || steps.collect.outputs.run_live }}
+      live_reason: ${{ steps.decide-live.outputs.reason || steps.collect.outputs.live_reason }}
+      live_enabled: ${{ steps.live.outputs.live_enabled }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Only the workspace manifests are read, never history.
+          fetch-depth: 1
+
+      - name: Collect the changed paths
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          FILES="$RUNNER_TEMP/changed-files.txt"
+          : > "$FILES"
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+          # decided <reason> <force_live>
+          #
+          # ⚠️ The two arguments must not be collapsed. The LANE fails safe by
+          # running (a wrong skip ships unverified code); the LIVE suite fails safe
+          # by NOT running (the offline suite already ran and the gate names the
+          # skip, while an unnecessary emission spends SEFAZ quota against an API
+          # that rate-limits). So `run_live` gets its own value here rather than
+          # falling back to `run_e2e` — otherwise a transient `gh api` hiccup or a
+          # 3000-path truncation on an unrelated PR would emit at SEFAZ.
+          #
+          # `workflow_dispatch` / `push` genuinely should force live: a human asked,
+          # or main moved. Those pass `true`; the two fail-safes pass `false`.
+          decided() {
+            {
+              echo "decided=true"
+              echo "run_e2e=true"
+              echo "reason=$1"
+              echo "run_live=$2"
+              echo "live_reason=$3"
+            } >> "$GITHUB_OUTPUT"
+            echo "run_e2e=true run_live=$2 :: $1"
+          }
+
+          # A human asked for this run, or main moved; there is no diff to narrow
+          # it with, so the live suite runs too.
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            decided "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the lane." \
+                    true \
+                    "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the live suite."
+            exit 0
+          fi
+
+          # `.previous_filename` exists only on renames; including it means moving
+          # a file OUT of a dependency directory still counts as touching it.
+          if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
+                 --jq '.[] | .filename, (.previous_filename // empty)' > "$FILES"
+          then
+            decided "could not list the PR's files — running the lane (fail safe)." \
+                    false \
+                    "the PR's file list could not be read, so the live suite was NOT run — a transient API failure must never cost SEFAZ quota. Re-run this workflow to retry."
+            exit 0
+          fi
+
+          n=$(wc -l < "$FILES" | tr -d ' ')
+          # That endpoint caps at 3000 entries. At the cap we cannot know what was
+          # truncated, so we refuse to classify rather than guess.
+          if [ "$n" -ge 3000 ]; then
+            decided "the API returned $n path(s) — truncated. Running the lane (fail safe)." \
+                    false \
+                    "the PR's file list was truncated at $n paths, so the live suite was NOT run — an unclassifiable diff must never cost SEFAZ quota. Re-run via \`workflow_dispatch\` if the live suite is needed."
+            exit 0
+          fi
+          echo "Collected $n changed path(s)."
+
+      - name: Decide whether this lane must run
+        id: decide
+        if: steps.collect.outputs.decided != 'true'
+        # ⚠️ The `if !` fallback is load-bearing, not defensive noise. This YAML comes
+        # from the merge ref while the checkout above is the PR head, so on a branch
+        # older than the script node exits 1 (`Cannot find module`) before the
+        # script's own fail-safe can fire — killing `changes` and reddening a gate
+        # that only a rebase could clear. Degrade to RUNNING the lane. See the
+        # VERSION SKEW note in e2e-affected.mjs; enforced by ci-lane-gates.test.js.
+        #
+        # ⚠️ The LIVE step below inverts this, exactly as `decided()` does. Do not
+        # copy this fallback there.
+        run: |
+          if ! node .github/scripts/e2e-affected.mjs \
+                 --kind CI \
+                 --lane nfe \
+                 --roots @delfrance/nfe-app @delfrance/integrations-nfe \
+                 --self .github/workflows/ci-nfe.yml \
+                 --files "${{ steps.collect.outputs.files }}"
+          then
+            {
+              echo "run_e2e=true"
+              echo "reason=the scope script could not run at this PR's head commit — it is older than the workflow invoking it. Running the lane (fail safe). Merge \`main\` into this branch for a real scope decision."
+            } >> "$GITHUB_OUTPUT"
+            echo "::warning title=CI scope (nfe)::the scope script is missing from this PR's head commit — running the offline lane (fail safe). Merge main into the branch."
+          fi
+
+      - name: Decide whether the LIVE SEFAZ suite must run
+        id: decide-live
+        if: steps.collect.outputs.decided != 'true'
+        # ⚠️ Literal paths, NOT the dependency closure — the one place in this repo
+        # where that is correct. `nfe-live` emits real documents at SEFAZ
+        # homologação, which rate-limits (cStat=656), so running it unnecessarily is
+        # the expensive mistake and skipping is cheap: the offline suite has already
+        # run and the gate says out loud when live did not.
+        #
+        # Measured over 30 merged PRs: the closure of @delfrance/integrations-nfe
+        # fires on 14 of them (it depends on schemas + core, which change
+        # constantly) versus 3 for this list — so the closure is useless as a
+        # narrowing device here. See decideByPaths() in the script.
+        #
+        # ⚠️ This list must stay a SUPERSET of the NF-e-relevant entries the old
+        # `paths:` filter carried, minus the ones that cannot change the emitted
+        # XML. `packages/schemas/src/pedido/**` in particular is load-bearing: the
+        # XML builder reads those schemas, and a comment in the old filter recorded
+        # that this lane once silently stopped running on exactly them. Adding the
+        # three schema paths back costs nothing measurable — still 3/30 over the
+        # same window — so there is no reason to trade them away.
+        #
+        # Deliberately NOT here (they cannot change what SEFAZ receives):
+        # `packages/config-vitest/**`, `pnpm-lock.yaml`, and this workflow file —
+        # all three still trigger the OFFLINE job through the dependency graph.
+        #
+        # ⚠️ THE FALLBACK BELOW IS INVERTED, and that is the whole point. Every other
+        # scope step in the repo degrades to RUNNING; this one degrades to NOT
+        # running, for the same reason `decided()` above takes the lane verdict and
+        # the live verdict as two separate arguments. A scope decision we could not
+        # make must never spend SEFAZ quota — the offline job has already run and the
+        # gate states out loud that live did not. `NFE_CI_LIVE_ENABLED=true` on this
+        # repo, so this is a real emission path, not a hypothetical one.
+        #
+        # The script's own catch applies the same rule (it keys off `--only-paths`);
+        # this covers the case where the script cannot start at all, which on a branch
+        # older than it is `Cannot find module`. See e2e-affected.mjs's VERSION SKEW
+        # note, and note that `run_live` reads this step's `run_e2e` output.
+        run: |
+          if ! node .github/scripts/e2e-affected.mjs \
+                 --kind CI \
+                 --lane 'nfe (live)' \
+                 --only-paths \
+                   packages/integrations/nfe \
+                   apps/nfe \
+                   packages/schemas/src/nfe.ts \
+                   packages/schemas/src/nfeConfig.ts \
+                   packages/schemas/src/enviNfeMsg.ts \
+                   packages/schemas/src/pedido \
+                   packages/schemas/src/shared/frete.ts \
+                   packages/schemas/src/integracao.ts \
+                 --files "${{ steps.collect.outputs.files }}"
+          then
+            {
+              echo "run_e2e=false"
+              echo "reason=the scope script could not run at this PR's head commit — it is older than the workflow invoking it. The live suite was NOT run: an unclassifiable diff must never cost SEFAZ quota. Merge \`main\` into this branch, or re-run via workflow_dispatch if the live suite is needed."
+            } >> "$GITHUB_OUTPUT"
+            echo "::warning title=CI scope (nfe)::the scope script is missing from this PR's head commit — the LIVE SEFAZ suite was skipped (fail safe). Merge main into the branch."
+          fi
+
+      - name: Record the live-lane switch
+        id: live
+        # `vars.*` IS readable from the gate, but it is LIVE repo state while
+        # `github.*` is a frozen snapshot of the event. Read it ONCE here and thread
+        # it, so `nfe-live`'s `if:` and the gate's explanation quote the same string
+        # instead of two reads that can disagree minutes apart.
+        env:
+          NFE_CI_LIVE_ENABLED: ${{ vars.NFE_CI_LIVE_ENABLED }}
+        run: |
+          if [ "${NFE_CI_LIVE_ENABLED:-}" = "true" ]; then
+            echo "live_enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "live_enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "NFE_CI_LIVE_ENABLED=${NFE_CI_LIVE_ENABLED:-<unset>}"
+
+  nfe-build-test:
+    name: NFe offline (lint + typecheck + unit + build)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    # Observed max across 15 successful runs: 2.4 min. Generous headroom, but a
+    # bound: with no `timeout-minutes` the only limit is GitHub's 6-hour default,
+    # and once this lane's gate is a required check a hung job blocks main all day.
+    timeout-minutes: 20
     # Skip Next.js telemetry collection + its build-time notice in CI.
     env:
       NEXT_TELEMETRY_DISABLED: '1'
@@ -159,12 +371,28 @@ jobs:
         run: pnpm --filter @delfrance/nfe-app build
 
   nfe-live:
-    name: Live SEFAZ + staging Firestore tests
+    name: NFe live (SEFAZ homologacao + staging Firestore)
     runs-on: ubuntu-latest
-    needs: nfe-build-test
-    # Live tests are env-gated — they skip cleanly when secrets aren't
-    # available (e.g. on forked-PR builds that can't see repo secrets).
-    if: ${{ vars.NFE_CI_LIVE_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
+    # Observed max across 15 successful runs: 3.4 min. The wide margin is for the
+    # ~7-minute TCP timeout windows the SEFAZ/SERPRO hosts can produce.
+    timeout-minutes: 25
+    needs: [changes, nfe-build-test]
+    # Four conditions, each one the gate can account for and name:
+    #   - the lane is in scope           -> otherwise the gate reds an unexplained skip
+    #   - the LIVE paths changed         -> gate guard `live_scope`
+    #   - the live switch is on          -> gate guard `live_enabled`
+    #   - not a fork (cannot see secrets)-> gate guard `not_fork`
+    # The fork guard is new: without it a fork PR reaches "Verify live-test
+    # secrets", fails on secrets it can never have, and reds a lane the
+    # contributor has no way to fix.
+    if: >-
+      ${{ needs.changes.outputs.run_e2e == 'true' &&
+          (github.event_name == 'workflow_dispatch' ||
+           (needs.changes.outputs.run_live == 'true' &&
+            needs.changes.outputs.live_enabled == 'true' &&
+            github.event.pull_request.head.repo.fork == false)) }}
+    outputs:
+      advisory: ${{ steps.advisory.outputs.failed }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -377,6 +605,26 @@ jobs:
         run: |
           echo "::warning::RTC (Reforma Tributária) live suite failed — ADVISORY on PR/push runs. Expected while the IBS/CBS cClassTrib/CST codes are best-guess (Anexo III not vendored). Check the step log for the SEFAZ cStat+xMotivo, refine the codes in test/helpers/homologacao-fixture.ts (impostoCsosn102ComRtc), then re-run via workflow_dispatch (fatal there) to confirm. #313."
 
+      - name: Record advisory step outcomes
+        id: advisory
+        # The two steps above are `continue-on-error` on PR/push, so a failure
+        # there leaves this job GREEN by design and can never red the gate. That
+        # is the intended posture — but it must not be INVISIBLE in the one check
+        # a human pins. Promote the outcomes to a job output the gate can quote.
+        #
+        # Derived from `steps.*.outcome`, deliberately NOT from the jobs API's
+        # per-step conclusion: how that API reports a continue-on-error step is
+        # not something a gate should depend on.
+        if: always()
+        env:
+          RTC: ${{ steps.rtc-live.outcome }}
+          SVC: ${{ steps.svc-live.outcome }}
+        run: |
+          failed=""
+          if [ "${RTC:-}" = "failure" ]; then failed="$failed RTC (Reforma Tributaria);"; fi
+          if [ "${SVC:-}" = "failure" ]; then failed="$failed SVC contingency;"; fi
+          echo "failed=${failed# }" >> "$GITHUB_OUTPUT"
+
       - name: Save SEFAZ chains to cache (last-known-good)
         # Refresh the fallback with whatever this run ended up with —
         # freshly fetched chains when SEFAZ was reachable, the restored
@@ -396,8 +644,14 @@ jobs:
   report-consumo-indevido:
     name: Detect Consumo Indevido Shield (cStat=656)
     needs: [nfe-live]
-    if: failure() && github.event_name == 'pull_request'
+    # Fork guard added for consistency with ci.yml and ci-freight.yml: this job
+    # holds `pull-requests: write`, which a fork run's read-only token cannot
+    # exercise — it would 403 and mask the original failure.
+    if: >-
+      ${{ failure() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
@@ -409,13 +663,20 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           PR: ${{ github.event.pull_request.number }}
+          # ⚠️ This was `select(.name | test("Live SEFAZ"))` — a SUBSTRING regex
+          # against the job's `name:`. Renaming nfe-live would have made it match
+          # nothing, and the failure mode is silent: the grep finds no job, this
+          # step exits 0, and the 🛡️ shield comment simply never appears again.
+          # Exact match against the name, supplied here so the two stay in sync,
+          # and pinned by ci-lane-gates.test.js.
+          LIVE_JOB_NAME: NFe live (SEFAZ homologacao + staging Firestore)
         run: |
           set -uo pipefail
           # Find the nfe-live job's id, fetch its log, and grep for the
           # shield marker (literal `[CONSUMO_INDEVIDO_SHIELD]` defined
           # in packages/integrations/nfe/src/state/consumo-indevido.ts).
           job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
-            --jq '.jobs[] | select(.name | test("Live SEFAZ")) | .id' | head -n1)
+            --jq '.jobs[] | select(.name == env.LIVE_JOB_NAME) | .id' | head -n1)
           if [[ -z "$job_id" ]]; then
             echo "Could not locate nfe-live job — skipping shield report."
             exit 0
@@ -438,10 +699,16 @@ jobs:
           fi
 
   report-failure:
-    name: Post failure logs on PR
-    needs: [nfe-build-test, nfe-live]
-    if: failure() && github.event_name == 'pull_request'
+    # Renamed: `Post failure logs on PR` collided byte-for-byte with ci.yml's
+    # reporter, and three lanes shared `Post failure note on PR`. A check-run name
+    # carries no workflow prefix, so those were indistinguishable in the PR list.
+    name: NFe failure note
+    needs: [changes, nfe-build-test, nfe-live]
+    if: >-
+      ${{ failure() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
@@ -458,11 +725,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          # Keep in sync with report-consumo-indevido and with nfe-live's `name:`.
+          # See the ⚠️ note there: a substring regex here fails SILENTLY on rename.
+          LIVE_JOB_NAME: NFe live (SEFAZ homologacao + staging Firestore)
         run: |
           set -uo pipefail
           handled=false
           job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
-            --jq '.jobs[] | select(.name | test("Live SEFAZ")) | .id' | head -n1)
+            --jq '.jobs[] | select(.name == env.LIVE_JOB_NAME) | .id' | head -n1)
           if [[ -n "$job_id" ]] \
              && gh api "repos/$REPO/actions/jobs/$job_id/logs" > /tmp/nfe-live.log 2>/dev/null \
              && grep -q '\[CONSUMO_INDEVIDO_SHIELD\]' /tmp/nfe-live.log; then
@@ -485,3 +755,214 @@ jobs:
             await github.rest.issues.createComment({
               owner, repo, issue_number: prNumber, body,
             });
+
+  # THE pinnable check for this lane. Everything above can legitimately be
+  # skipped; this cannot.
+  #
+  # ⚠️ `if: always()` and NOTHING else, on purpose. A job skipped by `if:` still
+  # publishes a check run, with conclusion `skipped`, and GitHub's required-
+  # status-check evaluation treats `skipped` as SATISFYING the requirement. A gate
+  # carrying any other condition would go green in exactly the cases it exists to
+  # report on. Do not add one.
+  #
+  # ⚠️ `needs:` lists the CERTIFIABLE jobs only. The report-* jobs are `skipped` on
+  # every green run, so needing them would make this gate permanently red.
+  gate:
+    name: CI gate (nfe)
+    needs: [changes, nfe-build-test, nfe-live]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          LANE: CI gate (nfe)
+          SCOPE_JOB: CI scope (nfe)
+          PR: ${{ github.event.pull_request.number }}
+
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_LANE: ${{ needs.changes.outputs.run_e2e }}
+          REASON: ${{ needs.changes.outputs.reason }}
+
+          # --- recorded guards. ONLY these can excuse a skip. ------------------
+          GUARD_LIVE_SCOPE: ${{ needs.changes.outputs.run_live }}
+          GUARD_LIVE_SCOPE_REASON: ${{ needs.changes.outputs.live_reason }}
+          GUARD_LIVE_ENABLED: ${{ needs.changes.outputs.live_enabled }}
+          GUARD_LIVE_VAR: NFE_CI_LIVE_ENABLED
+          GUARD_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          GUARD_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+
+          # --- per-job results -------------------------------------------------
+          RESULT_OFFLINE: ${{ needs.nfe-build-test.result }}
+          RESULT_LIVE: ${{ needs.nfe-live.result }}
+          ADVISORY_LIVE: ${{ needs.nfe-live.outputs.advisory }}
+
+          # --- the manifest. One row per certified job:
+          #       <result env var>|required|optional:<guard>[+<guard>]|<published check-run name>
+          #     The check-run name must match the job's `name:` byte for byte — it
+          #     is how the anti-vacuity lock finds the job in the jobs API.
+          JOBS: |
+            RESULT_OFFLINE|required|NFe offline (lint + typecheck + unit + build)
+            RESULT_LIVE|optional:live_scope+live_enabled+not_fork|NFe live (SEFAZ homologacao + staging Firestore)
+        run: |
+          set -uo pipefail
+          ROWS="$RUNNER_TEMP/gate-rows.md";        : > "$ROWS"
+          NOTES="$RUNNER_TEMP/gate-notes.md";      : > "$NOTES"
+          CERTIFY="$RUNNER_TEMP/gate-certify.txt"; : > "$CERTIFY"
+
+          row()  { printf '| `%s` | `%s` | %s |\n' "$1" "$2" "$3" >> "$ROWS"; }
+          note() { printf '%s\n\n' "$1" >> "$NOTES"; }
+
+          report() {
+            {
+              echo "### $LANE — $1"
+              echo
+              echo "$2"
+              echo
+              echo "| check run | result | verdict |"
+              echo "| --- | --- | --- |"
+              cat "$ROWS"
+              echo
+              echo "Scope (\`$SCOPE_JOB\`): \`run=${RUN_LANE:-<empty>}\` — ${REASON:-<none recorded>}"
+              echo
+              cat "$NOTES"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          fail() { report "NOT verified" "$1"; echo "::error title=$LANE::$1";  exit 1; }
+          # Mirror a PASS into the log too: otherwise a green gate is visible only
+          # in the step summary, which is not part of what the failure reporters
+          # collect, so a green gate could never be audited from the logs.
+          pass() { report "verified"     "$1"; echo "::notice title=$LANE::$1"; exit 0; }
+
+          # (1) The decider must have concluded. "We do not know" is never green.
+          [ "$CHANGES_RESULT" = "success" ] || \
+            fail "The scope job concluded \`$CHANGES_RESULT\`, so nothing decided whether this lane had to run."
+
+          # (2) ...and it must have produced a verdict.
+          case "$RUN_LANE" in
+            true|false) : ;;
+            *) fail "The scope job produced no verdict (\`run=${RUN_LANE:-<empty>}\`)." ;;
+          esac
+
+          # explain_skip <guard-spec>: 0 + sets WHY when a RECORDED input accounts
+          # for the skip, 1 otherwise. This is the whole trick — the gate re-derives
+          # the predicate that should have caused the skip instead of trusting the
+          # job's declared class. An `if:` clause nobody taught this function about
+          # matches no guard, so the skip goes RED.
+          explain_skip() {
+            WHY=""
+            if [ "$GUARD_DISPATCH" = "true" ]; then return 1; fi
+            local g
+            local IFS='+'
+            for g in $1; do
+              case "$g" in
+                live_scope)
+                  if [ "${GUARD_LIVE_SCOPE:-}" != "true" ]; then
+                    WHY="${GUARD_LIVE_SCOPE_REASON:-nothing under the NF-e XML/SOAP paths changed}. **Nothing was sent to SEFAZ on this PR.**"
+                    return 0
+                  fi ;;
+                live_enabled)
+                  if [ "${GUARD_LIVE_ENABLED:-}" != "true" ]; then
+                    WHY="the repo variable \`$GUARD_LIVE_VAR\` is not \`true\`, so the live suite is switched off. **Nothing was sent to SEFAZ on this PR.**"
+                    return 0
+                  fi ;;
+                not_fork)
+                  if [ "${GUARD_FORK:-}" = "true" ]; then
+                    WHY="this PR comes from a fork, and fork PRs cannot read repo secrets. A maintainer can verify from an in-repo branch: \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\`."
+                    return 0
+                  fi ;;
+                *) return 1 ;;
+              esac
+            done
+            return 1
+          }
+
+          # (3) Walk the manifest.
+          #     `done <<< "$JOBS"` is a HERESTRING, not a pipe: a pipe would run the
+          #     loop in a subshell and every RED/BROKEN assignment would be
+          #     discarded, making this gate unconditionally green.
+          RED=""; BROKEN=""
+          while IFS='|' read -r var class check; do
+            case "${var:-}" in ''|'#'*) continue ;; esac
+            result="${!var:-}"
+
+            case "$class" in
+              required)   guards='' ;;
+              optional:*) guards="${class#optional:}" ;;
+              *) fail "Gate manifest error: \`$check\` declares an unknown class \`$class\`. Refusing to certify a lane whose own manifest this gate cannot parse." ;;
+            esac
+
+            case "$result" in
+              success)
+                printf '%s\n' "$check" >> "$CERTIFY"
+                row "$check" "$result" "ran and passed"
+                ;;
+              skipped)
+                if [ -n "$BROKEN" ]; then
+                  row "$check" "$result" "not reached — \`$BROKEN\` did not succeed"
+                elif [ "$RUN_LANE" = "false" ]; then
+                  row "$check" "$result" "not required — nothing this lane depends on changed"
+                elif [ -n "$guards" ] && explain_skip "$guards"; then
+                  row "$check" "$result" "**DID NOT RUN** — $WHY"
+                  note "**\`$check\` did not run on this PR** — $WHY"
+                  echo "::warning title=$LANE::\`$check\` did not run — $WHY"
+                else
+                  row "$check" "$result" "**UNEXPLAINED SKIP**"
+                  RED="${RED}\`$check\` was skipped and this gate cannot explain why: the lane is in scope and no recorded guard (${guards:-none, this job is required}) accounts for it. Someone added an \`if:\` without teaching the gate about it. "
+                fi
+                ;;
+              '')
+                row "$check" "$result" "**NO RESULT**"
+                RED="${RED}This gate has no result for \`$check\` — its \`needs:\` list and its manifest disagree. "
+                ;;
+              *)
+                row "$check" "$result" "**NOT a pass**"
+                # `cancelled` covers concurrency cancel-in-progress AND the job
+                # timeout, and is deliberately red: a suite that was killed proved
+                # nothing.
+                RED="${RED}\`$check\` concluded \`$result\`. "
+                BROKEN="$check"
+                ;;
+            esac
+          done <<< "$JOBS"
+
+          # (4) Positive proof, not merely the absence of failure — the e2e gate's
+          #     anti-vacuity lock generalised to N jobs. `needs.<job>.result` reports
+          #     what the runner thinks; it does not assert a job of that name ever
+          #     existed. Ask the API, once.
+          if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+                 --jq '.jobs[] | [.name, (.conclusion // "pending")] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
+          then
+            fail "Could not list this run's jobs, so this gate cannot prove the certified jobs actually ran. Refusing to certify on \`needs.*.result\` alone."
+          fi
+
+          while IFS= read -r check; do
+            [ -n "$check" ] || continue
+            # Last match wins, mirroring the e2e gate's `| last`: re-running a single
+            # job appends a second entry under the same name.
+            actual=$(awk -F'\t' -v n="$check" '$1 == n { c = $2 } END { print (c == "" ? "missing" : c) }' "$RUNNER_TEMP/jobs.tsv")
+            if [ "$actual" != "success" ]; then
+              RED="${RED}\`needs\` reported success for \`$check\`, but the job of that name in this run concluded \`$actual\`. Refusing to certify a lane whose job cannot be found. "
+            fi
+          done < "$CERTIFY"
+
+          # (5) Advisory outcomes never red the gate — that is the designed PR
+          #     posture — but they must not be invisible in it either.
+          if [ -n "${ADVISORY_LIVE:-}" ]; then
+            note "**Advisory (non-fatal on PR/push) step failures inside the live suite:** $ADVISORY_LIVE Re-run via \`workflow_dispatch\`, where they are FATAL, to confirm."
+            echo "::warning title=$LANE::advisory step failure(s) in nfe-live: $ADVISORY_LIVE"
+          fi
+
+          [ -z "$RED" ] || fail "$RED"
+
+          if [ ! -s "$CERTIFY" ]; then
+            pass "No run was required — $REASON See the \`$SCOPE_JOB\` job summary for the full path attribution."
+          fi
+          pass "Every required job for this lane concluded \`success\`. Scope: $REASON"

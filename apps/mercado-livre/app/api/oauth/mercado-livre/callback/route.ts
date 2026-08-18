@@ -3,15 +3,27 @@
  *
  * The OAuth redirect target registered in the Mercado Livre application. **No
  * Bearer token** — it's a browser redirect from ML — so the signed `state` is
- * the only trust anchor: verify it, resolve the `integracao` account, exchange
- * the code for tokens, persist (single-token), and redirect the browser back
- * into the web app. Mirrors apps/melhor-envio's OAuth callback.
+ * the only trust anchor: verify it, redeem the attempt it names, resolve the
+ * `integracao` account, exchange the code for tokens, persist (single-token),
+ * and redirect the browser back into the web app. Mirrors apps/melhor-envio's
+ * OAuth callback.
+ *
+ * ⚠️ #821: verifying the signature is NOT enough. A signed state stays valid for
+ * its whole freshness window, so a captured one could be replayed to drive a
+ * second consent and overwrite the account's credential. `consumeOauthState` is
+ * the anchor that makes the state single-use, and it also yields the PKCE
+ * `code_verifier` for the exchange. It runs BEFORE the exchange and its failure
+ * is a `bad_state`, not an `exchange` error — nothing about the ML `code` can
+ * rescue an attempt we have no record of. Note the two failure vocabularies are
+ * deliberately disjoint: a state/attempt problem is `bad_state`, and only a
+ * genuine exchange failure reaches {@link exchangeFailureReason} (#1014).
  */
 import { NextResponse } from 'next/server';
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
   MercadoLivreReauthRequiredError,
+  MercadoLivreValidationError,
 } from '@delfrance/integrations-mercado-livre';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -21,7 +33,9 @@ import {
   loadMercadoLivreContext,
   mercadoLivreRedirectUri,
 } from '@/lib/marketplace/mercadoLivre';
-import { MarketplaceStateError, verifyState } from '@/lib/marketplace/state';
+import { OauthStateError, verifyState } from '@delfrance/data/admin/oauth-state';
+
+import { mercadoLivreOauthState } from '@/lib/marketplace/oauthState';
 import { isMercadoLivreError } from '@/lib/marketplace/respond';
 
 export const dynamic = 'force-dynamic';
@@ -58,8 +72,31 @@ function exchangeFailureReason(err: unknown): string {
   if (err instanceof MercadoLivreContaNotConfiguredError) return 'conta';
   if (err instanceof MercadoLivreReauthRequiredError) return 'codigo_invalido';
   if (err instanceof MercadoLivreHttpError) return 'ml_rejeitou';
+  if (err instanceof MercadoLivreValidationError) return 'resposta_invalida';
   if (err instanceof MercadoLivreNetworkError) return 'rede';
   return 'exchange';
+}
+
+/**
+ * Zod issue PATHS and codes — never the issue objects themselves.
+ *
+ * A Zod issue can carry the offending input, and the value under inspection here
+ * is a TOKEN RESPONSE: logging the raw issues risks putting a live access_token
+ * into Cloud Logging. `refresh_token: invalid_type` is the whole diagnostic value
+ * and carries nothing sensitive.
+ */
+function validationPaths(issues: unknown): readonly string[] {
+  if (!Array.isArray(issues)) return [];
+  return issues.map((issue) => {
+    // ⚠️ Guard the ELEMENT, not just the array. `issues` is typed `unknown`, and
+    // destructuring a `null` entry throws a TypeError — from inside the catch
+    // block, where it would replace the redirect with a 500. A helper whose whole
+    // job is to make a failure legible must not be able to cause a worse one.
+    if (typeof issue !== 'object' || issue === null) return '(desconhecido)';
+    const { path, code } = issue as { path?: unknown; code?: unknown };
+    const caminho = Array.isArray(path) && path.length > 0 ? path.join('.') : '(raiz)';
+    return `${caminho}: ${typeof code === 'string' ? code : 'desconhecido'}`;
+  });
 }
 
 /**
@@ -68,9 +105,19 @@ function exchangeFailureReason(err: unknown): string {
  * this change (it previously dropped status + body for `invalid_grant`, which is
  * the single most likely code-exchange failure).
  */
-function errorDetail(err: unknown): { status?: number | null; body?: unknown } {
+function errorDetail(err: unknown): {
+  status?: number | null;
+  body?: unknown;
+  camposInvalidos?: readonly string[];
+} {
   if (err instanceof MercadoLivreHttpError) return { status: err.status, body: err.body };
   if (err instanceof MercadoLivreReauthRequiredError) return { status: err.status, body: err.body };
+  // A 200 whose body did not parse. This is the arm that catches an application
+  // missing the `offline_access` scope: ML answers OK but omits `refresh_token`,
+  // which `tokenResponseSchema` requires. Without the failing field names the log
+  // says only "formato inesperado" — true, and useless.
+  if (err instanceof MercadoLivreValidationError)
+    return { camposInvalidos: validationPaths(err.issues) };
   return {};
 }
 
@@ -97,19 +144,24 @@ export async function GET(req: Request): Promise<NextResponse> {
   if (!secret) return backToList({ ml: 'error', reason: 'config' });
   if (!code || !state) return backToList({ ml: 'error', reason: 'missing_params' });
 
+  const db = getAdminFirestore();
+
   let integracaoId: string;
+  let codeVerifier: string | null;
   try {
-    integracaoId = verifyState(state, secret).integracaoId;
+    const verified = verifyState(state, secret);
+    integracaoId = verified.id;
+    // Single-use: a replay of this same state finds the attempt consumed and
+    // lands here as `bad_state`, before anything touches the credential.
+    ({ codeVerifier } = await mercadoLivreOauthState.consume(db, integracaoId, verified.nonce));
   } catch (err) {
-    if (err instanceof MarketplaceStateError)
-      return backToList({ ml: 'error', reason: 'bad_state' });
+    if (err instanceof OauthStateError) return backToList({ ml: 'error', reason: 'bad_state' });
     throw err;
   }
 
-  const db = getAdminFirestore();
   try {
     const ctx = await loadMercadoLivreContext(db, integracaoId);
-    await ctx.exchangeAndPersist(code);
+    await ctx.exchangeAndPersist(code, codeVerifier ?? undefined);
     return backToAccount(integracaoId, { ml: 'connected' });
   } catch (err) {
     if (isMercadoLivreError(err)) {

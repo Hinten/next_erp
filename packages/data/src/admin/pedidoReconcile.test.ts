@@ -107,8 +107,8 @@ type PedidoTrail = 'historicoEstadoPedido' | 'historicoFtIni';
 
 /**
  * Rows a reconcile wrote into one of the pedido audit trails. BOTH trails are
- * written solely by the `onPedidoEstadoChanged` trigger
- * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which observes the
+ * written solely by the `onPedidoChanged` trigger
+ * (`apps/functions/src/pedidos/registrarHistoricoPedido.ts`), which observes the
  * pedido write the reconcile makes and derives the rows from the before/after
  * snapshots. No trigger runs against this fake db, so every call below must
  * leave both empty — and an append hand-rolled into `pedidoReconcile.ts` would
@@ -187,7 +187,7 @@ describe('reconcilePedidoFromPagamento', () => {
     // First-seen dataCadastro stamped on create.
     expect(typeof store['pedidos/p1/pagamentos/pay1']!.dataCadastro).toBe('number');
 
-    // No history row from here in EITHER trail — the onPedidoEstadoChanged
+    // No history row from here in EITHER trail — the onPedidoChanged
     // trigger observes the pedido write above and records both the estado
     // transition and the freteInicial one. This is precisely the case where a
     // hand-rolled frete append would be tempting: the reconcile DID flip
@@ -522,7 +522,7 @@ describe('reconcilePedidoEstado', () => {
     });
     // No pagamento doc was touched — this reconcile only reads them.
     expect(writes.sets.filter((w) => w.path.includes('/pagamentos/'))).toHaveLength(0);
-    // No row in either trail from here either — the onPedidoEstadoChanged
+    // No row in either trail from here either — the onPedidoChanged
     // trigger observes the pedido write above and records both the estado
     // transition and the freteInicial flip that rides along with it.
     expect(trailWrites(writes, 'historicoEstadoPedido')).toEqual([]);
@@ -607,7 +607,7 @@ describe('reconcilePedidoEstado', () => {
     expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
     // A downgrade never re-authorizes dispatch, so `freteInicial` is left alone.
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'despachoAutorizado' });
-    // No row in either trail from here — the onPedidoEstadoChanged trigger
+    // No row in either trail from here — the onPedidoChanged trigger
     // records the downgrade off the pedido write, and no trigger runs against
     // this fake db. The frete trail stays empty for a second reason too: a
     // downgrade leaves `freteInicial` alone, so there is no frete transition to

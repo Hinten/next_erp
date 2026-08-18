@@ -7,24 +7,55 @@ skills in `.claude/skills/`, the ADRs under `apps/docs/`, and package READMEs.
 
 `@delfrance/erp-next` (Apache-2.0) — a multi-app Next.js/Turborepo monorepo, the
 OSS rewrite of the Delfrance Flutter ERP at feature parity on the same Firebase
-backend. See `README.md` and `CONTRIBUTING.md`. The Flutter app is a separate
+backend. See `README.md` and `.github/CONTRIBUTING.md`. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
-`ci.yml` and `e2e-emulator.yml` are the two workflows with no path filter, so
-every PR gets both; `ci.yml` excludes the nfe/freight/storage/functions tests,
-which the domain pipelines `ci-{nfe,freight,storage,rules}.yml` own.
+CI — the nine lanes in `.github/workflows/` run **concurrently**, gated on
+nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
+from the workspace dependency graph and reports through one unskippable check;
+`ci.yml` excludes the nfe/freight/storage/functions/mercado-livre tests, which
+the domain pipelines `ci-{nfe,freight,storage,rules,mercado-livre}.yml` own —
+**an exclusion is a promise that the owning lane runs them, so when that lane
+skips they run nowhere.** `ci.yml` still lints, typechecks and builds the full
+graph unfiltered. **Touching `.github/workflows/` → the `ci-lanes` skill**, which
+carries the whole design.
 
-⚠️ Every other workflow is **`paths:`-filtered**, the staging e2e lanes included
-(apps/web, packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR
-touching only `packages/integrations/**` or `apps/nfe/**` runs **no e2e** —
-those checks show *skipped*, not failed. "CI green" ≠ "e2e passed".
+Five rules you must not break without reading it first:
+
+1. ⚠️ **Never put a `paths:` on a lane's `pull_request:`, and never pin a check
+   that can be skipped.** A non-matching `paths:` publishes **no check at all** —
+   not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
+   GitHub counts as **satisfying** a required check. Both are silent passes.
+2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
+   unique repo-wide. The pinnable ones are `E2E gate (cadastros|vendas|emulator)`,
+   `CI gate (nfe|freight|mercado-livre|storage|rules)` and `lint-typecheck-test`.
+3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
+   downstream job makes it run even after its upstream failed. Let `needs:` carry
+   the skip instead.
+4. ⚠️ The `push:` triggers **keep** their `paths:` deliberately; only
+   `pull_request:` goes without.
+5. ⚠️ **The workflow YAML comes from the MERGE REF, the checkout from the PR
+   HEAD — so a scope step must degrade to running the lane, never to failing
+   the job.** The caller is always at least as new as
+   `.github/scripts/e2e-affected.mjs` and never older, so on a branch older than
+   the script `node` exits 1 (`Cannot find module`) *before* the script's own
+   fail-safe can fire, killing `changes` and reddening a required check that only
+   a rebase clears. Every invocation is wrapped in
+   `if ! node …; then <emit the verdict>; fi`. ⚠️ **The direction depends on the
+   mode**: `--roots` degrades to `run_e2e=true` (a wrong skip ships unverified
+   code), `--only-paths` to `run_e2e=false` — that mode serves `nfe-live` alone,
+   which emits at SEFAZ homologação against a rate-limited endpoint, and
+   `NFE_CI_LIVE_ENABLED` is `true`. Same rule inside the script's `catch`.
+
+Enforced by `packages/config-eslint/rules/ci-lane-gates.test.js` — every workflow
+must be a registered lane or an explicitly excused one, and no scope invocation
+may go unguarded.
 
 Every `pull_request` base filter is
-`[master, main, 'claude/**', 'feat/**', 'fix/**']`. That key matches the PR's
-**base**, so a **stacked PR** must sit on one of those prefixes — on anything
-else (`chore/`, `docs/`, …) it reports zero checks, not failures.
+`[master, main, production, 'claude/**', 'feat/**', 'fix/**']`. That key matches
+the PR's **base**, so a **stacked PR** must sit on one of those prefixes — on
+anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 
 ## Critical rules
 
@@ -65,9 +96,15 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 4. **Emulators only in named carve-outs.** Default target is the staging
    Firebase project (`FIREBASE_PROJECT_ID`; the carve-outs point the same var at
    the offline `demo-erp`), with seed/teardown in `tools/test-fixtures`. The
-   carve-outs are `ci-storage.yml`, `ci-rules.yml`, and `e2e-emulator.yml`
+   carve-outs are `ci-storage.yml`, `ci-rules.yml`, `ci-mercado-livre.yml`
+   (**two** configs: `firebase.mercado-livre.json`, firestore only, for every
+   `apps/mercado-livre/**/*.firestore.test.ts` — the lane where the ML backend
+   meets a real Firestore; and `firebase.mercado-livre.tasks.json`,
+   firestore+functions+tasks, which serves the ML functions artifact so
+   `*.tasks.test.ts` can drive receiver → enqueue → the real `onTaskDispatched`
+   → Firestore), and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
-   `*.emulator.e2e.spec.ts` — five today. Every other e2e spec hits staging. Do
+   `*.emulator.e2e.spec.ts` — six today. Every other e2e spec hits staging. Do
    **not** add a local-dev emulator mode: `NEXT_PUBLIC_USE_FIREBASE_EMULATOR`
    exists for that CI lane only and is off by default.
 5. **`apps/web` is client-first.** Default to `'use client'` — the ERP is behind
@@ -113,7 +150,14 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    interchangeable** — `ultimaModificacao` is µs on pedido/pagamento/produto but
    **ms** on the ML links, and `historicoFtIni.data` is ms while
    `historicoEstadoPedido.data` is µs, so a cross-unit comparison is a guard that
-   never fires. See ADR 0011.
+   never fires. See ADR 0011. ⚠️ There is deliberately **no lint rule** for this —
+   the property is semantic and every syntactic proxy was measured and rejected
+   (#776). The backstop is
+   `packages/config-eslint/rules/firestore-transaction-inventory.test.js`: every
+   source file running a `runTransaction` is inventoried with its class (**A**
+   self-contained · **B** outside decision + a named guard · **C** network I/O in
+   the window), and a new or renamed call site reds CI until it says which it is.
+   A class-B/C site with no guard is a finding, not an inventory line.
 8. **The production data has not moved yet — everything here runs on staging.**
    The real data still sits in the legacy Flutter project on Firestore
    **Standard**, with the Flutter app live-writing to it. It moves exactly once,
@@ -130,10 +174,12 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    issue, and open it only once you have a yes** — the migration queue is
    curated, not a place agents append to unasked. When approved, label it
    `needs-migration-window` plus a `task:` label (usually `ops-deploy`) and match
-   the shape of the two that exist, **#856** and **#869**: why the timing is
-   load-bearing, the exact commands, how you verify it worked. ⚠️ A Firestore
-   **import fires no Cloud Functions triggers** — nothing is recomputed on
-   arrival, so any state a trigger would derive must already be in the export.
+   the shape of the ones already on that label — it carries 30-plus issues, of
+   which **#899**–**#908** are the deploy-shaped template and **#869** the
+   backfill-shaped one: why the timing is load-bearing, the exact commands, how
+   you verify it worked. ⚠️ A Firestore **import fires no Cloud Functions
+   triggers** — nothing is recomputed on arrival, so any state a trigger would
+   derive must already be in the export.
 
 ## Layout
 
@@ -143,7 +189,8 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 - `integrations` (:3001) — generic webhook/OAuth scaffolding; per-channel routes
   have moved out to their own apps.
 - `webchat` (:3002) static-export chat widget · `docs` (:3003) Astro Starlight
-  (hosts the ADRs) · `example` OSS demo (`pnpm demo`, no dev server).
+  (hosts the ADRs) · `example` OSS demo — **not** Next either, a plain `tsx`
+  script: `pnpm --filter @delfrance/example demo`, no dev server.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
   `mercado-pago` (:3007) · `whatsapp` (:3008) — API-only App Hosting backends,
   **one deployable per channel**, each importing its logic from the matching
@@ -158,14 +205,32 @@ pnpm workspace members — the parent app's tsconfig/eslint/vitest cover them.
 truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `TableView`/`ObjectView` derived from the schemas) · `core` · `auth` ·
 `storage` · `plugin-sdk` · `rules-gen` · `config-{eslint,tsconfig,vitest}` ·
-`integrations/<channel>`, of which only nfe, mercado-livre, mercado-pago,
-freight-br and whatsapp-cloud-api are implemented — the other five throw
-`NotImplemented`.
+`ai` (the shared model runtime — ⚠️ its ROOT entry is browser-safe because
+`apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
+be imported only behind `./admin`; enforced by
+`packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
+breaking it fails nothing) · `integrations/<channel>`, of which only nfe,
+mercado-livre, mercado-pago, freight-br and whatsapp-cloud-api are implemented —
+the other five throw `<Channel>NotConfiguredError`.
 
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
-`migrations`. Firebase configs: `firebase.json` (prod), `firebase.staging.json`,
-emulator-only `firebase.{functions,rules,e2e}.json`, and five deploy-isolated
-`firebase.<codebase>.deploy.json`.
+`migrations` · `cmun-table` (moves the legacy `CMUN` CEP-faixa → IBGE table
+between projects, #785) · `deploy-env` (**the** source of truth for which `.env*`
+files a Functions deploy artifact may contain — shared by all five
+`prepare-deploy.mjs`, and what keeps `.env.secrets` out of `gcf-sources-*`).
+Firebase configs: `firebase.json` (prod), `firebase.staging.json`,
+emulator-only `firebase.{functions,rules,e2e}.json` plus
+`firebase.mercado-livre{,.tasks}.json`, and five deploy-isolated
+`firebase.<codebase>.deploy.json`. ⚠️ **Three** `firebase.mercado-livre*.json`
+now sit one dot apart, and only one of them deploys:
+`firebase.mercado-livre.json` (emulator, firestore only) and
+`firebase.mercado-livre.tasks.json` (emulator, firestore+functions+tasks) vs
+`firebase.mercado-livre.deploy.json` (the ML functions codebase). Read the whole
+filename before any deploy. The two emulator ones are safe by construction —
+neither declares a rules or indexes path, and the `.tasks` one's `functions.source`
+points at the **generated** `.deploy/mercado-livre-functions` artifact, which
+exists only after `prepare-deploy.mjs` runs — so a stray deploy against either
+can push nothing.
 
 ## Common commands
 
@@ -226,7 +291,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   Don't do it and don't leave a TODO — surface it, **ask whether to open the
   tracking issue**, and open it only on a yes. Then label it
   **`needs-migration-window`** (plus a `task:` label, usually `ops-deploy`), link
-  it from the PR, and say in the issue *why earlier is wrong*. Shape: #856, #869.
+  it from the PR, and say in the issue *why earlier is wrong*. Shape: whatever
+  is already on the label — #899–#908 for a deploy, #869 for a backfill.
   Rule 8 / ADR 0013.
 - **Changing the shape of data that already exists? Write a one-time migration
   script — do not migrate gradually.** A one-time `tools/migrations` script beats
@@ -290,17 +356,22 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Eight custom lint rules in `packages/config-eslint/rules/`:
+- Ten custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
   `no-optional-without-nullable`, `no-client-estado-history-write`,
   `no-env-secrets-access` and
-  `prefer-schema-enum` (error), `no-inline-admin-collection` and
-  `no-error-as-sole-instanceof` (warn). `no-env-secrets-access` bans any literal
+  `prefer-schema-enum` (error), `no-inline-admin-collection`,
+  `no-lossy-date-parse`, `no-ambient-timezone` and
+  `no-error-as-sole-instanceof` (warn). `no-ambient-timezone` bans reading the
+  ambient process timezone on a SERVER surface: `apps/nfe` runs
+  `TZ=America/Sao_Paulo` while every other backend is UTC, so the same code
+  answers three hours apart depending on which service ran it — and the test
+  runner's own third zone hides it. `no-env-secrets-access` bans any literal
   naming `.env.secrets` — the repo's credential template, which nothing automated
   may read; its non-JS half (workflows, firebase configs, shell) is the
   `env-secrets-no-copy` backstop test, since ESLint parses neither. `no-client-estado-history-write` guards
   BOTH server-owned pedido audit trails — `historicoEstadoPedido` and
-  `historicoFtIni` — whose sole writer is the `onPedidoEstadoChanged` trigger.
+  `historicoFtIni` — whose sole writer is the `onPedidoChanged` trigger.
   `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside
   `typeAware(...)` rather than the base block: it flags a raw string sitting in
   a position typed as a Zod enum (`estado === 'pago'` → `ESTADO_PEDIDO.pago`).
@@ -367,7 +438,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 - **Turbo is the only test aggregator — there is no root vitest config.** Each
   workspace owns a `vitest.config.ts` and a `test` script; `pnpm test`
   (= `turbo run test`) fans out across them with caching, and `ci.yml` filters
-  out the six workspaces needing live creds or emulators. Do not re-add a
+  out the eight workspaces needing live creds or emulators. Do not re-add a
   `vitest.workspace.ts`: Vitest 4 **removed** workspace files, so the one that
   used to sit at the root was inert — `vitest --project <name>` matched nothing
   and a bare root `vitest` just globbed the repo with the root config, failing on

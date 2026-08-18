@@ -149,6 +149,10 @@ function makeApi(overrides: Partial<Record<keyof MercadoLivreApi, unknown>> = {}
     getCategory: vi.fn(async () => ({ id: 'MLB31447', settings: null })),
     uploadPicture: vi.fn(async () => ({ id: 'PIC-NEW' })),
     setItemDescription: vi.fn(async () => ({ plain_text: 'ok' })),
+    // #798: a FIRST publish probes `GET /users/me` for the `user_product_seller`
+    // tag. Untagged by default — every fixture in this file is a legacy-model
+    // listing, and an accidental UP resolution would change the payload shape.
+    getMe: vi.fn(async () => ({ id: 9, tags: [] as string[] })),
     ...overrides,
   } as Record<string, ReturnType<typeof vi.fn>>;
   return { api: mocks as unknown as MercadoLivreApi, mocks };
@@ -201,6 +205,9 @@ function makeDeps(db: FakeDb, api: MercadoLivreApi): PublishDeps {
     integracaoId: CONTA,
     tabelaNormalOuterRef: 'documents/listaDePrecos/lista-1',
     depositoOuterRef: null,
+    // The conta's ML user id, as the route reads it — the removed-variation
+    // sweep needs it to enumerate a family (#798).
+    sellerUserId: 9,
     listingTypeId: 'gold_special',
     fetchImpl: vi.fn(async () => ({
       ok: true,
@@ -964,5 +971,676 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(arquivo.externalIds).toEqual([
       { externalId: 'PIC-OTHER', integracaoPath: 'documents/integracao/outra-conta' },
     ]);
+  });
+});
+
+describe('publishProduto — kit-aware stock (#797 E5)', () => {
+  /** seedBase gives the parent 10 − 2 reservada = 8 of its own. */
+  const OWN_DISPONIVEL = 8;
+
+  function seedKit(db: FakeDb, produtoPatch: DocData): void {
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    Object.assign(db.docs('produtos').get(PROD)!, produtoPatch);
+  }
+
+  it('a kit publishes its component-min, not its own stock', async () => {
+    const db = new FakeDb();
+    seedKit(db, {
+      ehKit: true,
+      componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+    });
+    db.seed('produtos', 'comp-a', { nome: 'Malha', paiId: null });
+    db.seed('produtos/comp-a/estoques', 'est-a', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 5,
+      quantidadeReservada: 0,
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // 5 units of a component consumed 2-at-a-time build 2 kits. Before #797 E5
+    // this published the kit's OWN 8 — an oversell of four.
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.available_quantity).toBe(2);
+    expect(payload.available_quantity).not.toBe(OWN_DISPONIVEL);
+  });
+
+  it('a component with no estoque at all counts as ZERO, never as unconstrained', async () => {
+    const db = new FakeDb();
+    seedKit(db, {
+      ehKit: true,
+      componentesKit: { 'comp-sem-estoque': { quantidade: 1, limitarEstoque: true } },
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.available_quantity).toBe(0);
+  });
+
+  it('a VIRTUAL kit still sends a quantity — POST /items requires one', async () => {
+    const db = new FakeDb();
+    seedKit(db, {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { 'comp-a': { quantidade: 1, limitarEstoque: true } },
+    });
+    db.seed('produtos', 'comp-a', { nome: 'Malha', paiId: null });
+    db.seed('produtos/comp-a/estoques', 'est-a', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 3,
+      quantidadeReservada: 0,
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // The sweep's `quantidadeParaEnvio` returns null here meaning "do not push a
+    // stock update". Publish must NOT read that as "omit the field": this port
+    // never creates a real ML virtual kit (those are User-Products-only), so ML
+    // receives a plain POST /items and rejects one with no available_quantity.
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).toHaveProperty('available_quantity');
+    expect(payload.available_quantity).toBe(3);
+  });
+
+  it('a plain produto still publishes its own stock', async () => {
+    const db = new FakeDb();
+    seedKit(db, {});
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.available_quantity).toBe(OWN_DISPONIVEL);
+  });
+});
+
+describe('publishProduto — per-variation pictures (#797 E7)', () => {
+  const AZUL = 'documents/grupoDeVariacoes/g-cor/variacoes/v-azul';
+  const PRETO = 'documents/grupoDeVariacoes/g-cor/variacoes/v-preto';
+
+  function seedCores(db: FakeDb): void {
+    seedBase(db, {
+      externalIds: [
+        { externalId: 'PIC-GENERICA', integracaoPath: `documents/integracao/${CONTA}` },
+      ],
+    });
+    // Parent gallery: one untagged photo plus one per colour.
+    db.docs('produtos').get(PROD)!.fotos = [
+      { arquivoOuterRef: 'arquivos/arq-1' },
+      { arquivoOuterRef: 'arquivos/arq-azul', variantePath: AZUL },
+      { arquivoOuterRef: 'arquivos/arq-preto', variantePath: PRETO },
+    ];
+    for (const [arq, pic] of [
+      ['arq-azul', 'PIC-AZUL'],
+      ['arq-preto', 'PIC-PRETO'],
+    ]) {
+      db.seed('arquivos', arq!, {
+        filename: `${arq}.jpg`,
+        contentType: 'image/jpeg',
+        url: `https://storage/${arq}.jpg`,
+        externalIds: [{ externalId: pic!, integracaoPath: `documents/integracao/${CONTA}` }],
+      });
+    }
+    db.seed('grupoDeVariacoes', 'g-cor', {
+      nome: 'Cor',
+      tipo: 2,
+      variacoes: [
+        { id: 'v-azul', nome: 'Azul' },
+        { id: 'v-preto', nome: 'Preto' },
+      ],
+    });
+    for (const [id, nome, uid, ordem] of [
+      ['child-azul', 'Camiseta Azul', AZUL, 0],
+      ['child-preto', 'Camiseta Preta', PRETO, 1],
+    ] as const) {
+      db.seed('produtos', id, { nome, sku: `SKU-${id}`, paiId: PROD, ordem, variacoesUid: [uid] });
+      db.seed(`produtos/${id}/estoques`, 'est', {
+        depositoOuterRef: 'documents/depositos/dep-1',
+        quantidade: 3,
+        quantidadeReservada: 0,
+      });
+    }
+  }
+
+  it('each variation gets the photos tagged for ITS variante', async () => {
+    const db = new FakeDb();
+    seedCores(db);
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    const variations = payload.variations as Array<Record<string, unknown>>;
+    // Before #797 E7 `pictureIds` was never populated, so BOTH of these were
+    // the parent set — and a republish overwrote the correct per-variation
+    // picture_ids ML already held.
+    expect(variations[0]!.picture_ids).toEqual(['PIC-AZUL']);
+    expect(variations[1]!.picture_ids).toEqual(['PIC-PRETO']);
+    expect(variations[0]!.picture_ids).not.toEqual(variations[1]!.picture_ids);
+    // The item gallery is untouched — the variation ids are NOT unioned in.
+    expect(payload.pictures).toEqual([
+      { id: 'PIC-GENERICA' },
+      { id: 'PIC-AZUL' },
+      { id: 'PIC-PRETO' },
+    ]);
+  });
+
+  it('an untagged catalogue still falls back to the parent gallery', async () => {
+    const db = new FakeDb();
+    seedCores(db);
+    // Strip the per-colour tags: nothing matches, so rung 3 applies.
+    db.docs('produtos').get(PROD)!.fotos = [{ arquivoOuterRef: 'arquivos/arq-1' }];
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const variations = (mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>)
+      .variations as Array<Record<string, unknown>>;
+    // ML requires every variation to carry a picture.
+    expect(variations[0]!.picture_ids).toEqual(['PIC-GENERICA']);
+    expect(variations[1]!.picture_ids).toEqual(['PIC-GENERICA']);
+  });
+
+  it('resolves each arquivo ONCE per publish, however many children share it', async () => {
+    const db = new FakeDb();
+    seedCores(db);
+    db.docs('produtos').get(PROD)!.fotos = [{ arquivoOuterRef: 'arquivos/arq-1' }];
+    // No cached external id → the shared photo must be uploaded exactly once,
+    // not once per child (parent + 2 children would be three uploads).
+    db.docs('arquivos').get('arq-1')!.externalIds = null;
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.uploadPicture).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * #798 — the publishing MODEL is decided before anything is uploaded, and a
+ * User-Products family fans out to ONE ML ITEM PER VARIATION.
+ *
+ * ML runs two publishing models side by side during its migration.
+ * `buildItemPayload` DROPS the variations array for the UP one, so a family sent
+ * through it would collapse into a single variation-less item — which is why a
+ * family never goes through it at all.
+ */
+describe('publishProduto — User-Products model resolution (#798)', () => {
+  /** Parent + one variation child. */
+  function seedFamily(db: FakeDb): void {
+    seedBase(db);
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+    });
+    db.seed('produtos/child-1/estoques', 'est-c', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 4,
+      quantidadeReservada: 0,
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+  }
+
+  /** ...plus a second child, so a fan-out is observably more than one call. */
+  function seedFamilyOfTwo(db: FakeDb): void {
+    seedFamily(db);
+    db.seed('produtos', 'child-2', {
+      nome: 'Camiseta G',
+      sku: 'SKU-1-G',
+      paiId: PROD,
+      precos: { 'lista-1': { valor: 89.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+    });
+    db.seed('produtos/child-2/estoques', 'est-c2', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 7,
+      quantidadeReservada: 0,
+    });
+    db.docs('grupoDeVariacoes').get('g-tam')!.variacoes = [
+      { id: 'v-m', nome: 'M' },
+      { id: 'v-g', nome: 'G' },
+    ];
+  }
+
+  /** A tagged account whose createItem answers a distinct id per call. */
+  function upApi(overrides: Record<string, unknown> = {}) {
+    let n = 0;
+    return makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        id: `MLB90${++n}`,
+        family_id: 4260899048783356,
+      })),
+      // The orphan sweep's two hops. Membership == exactly what was published,
+      // so the default fixture closes nothing.
+      getUserProductFamily: vi.fn(async () => ({ user_products_ids: ['MLBU1', 'MLBU2'] })),
+      searchItemsByUserProduct: vi.fn(async () => ({ results: ['MLB901', 'MLB902'] })),
+      ...overrides,
+    });
+  }
+
+  type MlAttr = { id?: string; value_name?: string };
+  const valueOf = (attrs: MlAttr[], id: string): string | undefined =>
+    attrs.find((a) => a.id === id)?.value_name;
+
+  /** An established family: the FAMILY id on the parent, item ids on members. */
+  function seedPublishedFamily(db: FakeDb, publishedChildren: readonly string[]): void {
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...FLUTTER_LINK,
+      id: '4260899048783356',
+      isUserProductModel: true,
+      listing_type_id: 'gold_special',
+    });
+    publishedChildren.forEach((childId, i) => {
+      db.seed(`produtos/${childId}/variacaoMercadoLivre`, `var-${childId}`, {
+        itemId: `MLB90${i + 1}`,
+        produtoVariacaoOuterRef: `documents/produtos/${childId}`,
+        produtoMercadoLivreOuterRef: `documents/produtos/${PROD}/produtoMercadoLivre/ML-DOC-1`,
+        contaOuterRef: `documents/integracao/${CONTA}`,
+      });
+    });
+  }
+
+  it('publishes ONE ML item per variation, sharing a family_name', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api, mocks } = upApi();
+
+    const result = await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).toHaveBeenCalledTimes(2);
+    expect(result.itemIds).toEqual(['MLB901', 'MLB902']);
+    for (const call of mocks.createItem!.mock.calls) {
+      const payload = call[0] as Record<string, unknown>;
+      expect(payload.family_name).toBe('Camiseta Básica');
+      // Two hard ML rejections: a written title, and any variations array.
+      expect(payload.title).toBeUndefined();
+      expect(payload.variations).toBeUndefined();
+    }
+    // Each item IS one variation, so its identity rides the ordinary attributes
+    // (`attribute_combinations` does not exist on a User-Products write).
+    const attrsOf = (i: number) =>
+      (mocks.createItem!.mock.calls[i]![0] as { attributes: MlAttr[] }).attributes;
+    expect(valueOf(attrsOf(0), 'SIZE')).toBe('M');
+    expect(valueOf(attrsOf(1), 'SIZE')).toBe('G');
+    // ...and its own SKU and stock, not the parent's.
+    expect(valueOf(attrsOf(0), 'SELLER_SKU')).toBe('SKU-1-M');
+    expect(valueOf(attrsOf(1), 'SELLER_SKU')).toBe('SKU-1-G');
+    expect(
+      mocks.createItem!.mock.calls.map(
+        (c) => (c[0] as { available_quantity: number }).available_quantity,
+      ),
+    ).toEqual([4, 7]);
+  });
+
+  it('records every member itemId on its child link, and the FAMILY id on the parent', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi();
+
+    const result = await publishProduto(makeDeps(db, api), PROD);
+
+    // `itemId` is the field precoPlan/bulkEstoquePlan already read — until now
+    // only the importer ever wrote it.
+    const m1 = [...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0]!;
+    const m2 = [...db.docs('produtos/child-2/variacaoMercadoLivre').values()][0]!;
+    expect(m1).toMatchObject({
+      itemId: 'MLB901',
+      sku: 'SKU-1-M',
+      produtoVariacaoOuterRef: 'documents/produtos/child-1',
+      produtoMercadoLivreOuterRef: `documents/produtos/${PROD}/produtoMercadoLivre/ML-DOC-1`,
+      contaOuterRef: `documents/integracao/${CONTA}`,
+    });
+    expect(m2).toMatchObject({ itemId: 'MLB902', sku: 'SKU-1-G' });
+    // ⚠️ The legacy numeric variation id must stay null: there is no variation
+    // object under User Products, and a value here would make
+    // `variacaoLinkHasListing` report a legacy listing that does not exist.
+    expect(m1.id).toBeNull();
+
+    // The PARENT link carries the FAMILY id — never an item id, or the next
+    // republish would `PUT /items/{familyId}`.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      id: '4260899048783356',
+      isUserProductModel: true,
+      estado: 'p',
+      errors: [],
+    });
+    expect(result.itemId).toBe('4260899048783356');
+  });
+
+  it('a republish PUTs each member by ITS OWN itemId, without family_name or price', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    seedPublishedFamily(db, ['child-1', 'child-2']);
+    const { api, mocks } = upApi({
+      updateItem: vi.fn(async (id: string) => ({
+        ...ITEM_RESPONSE,
+        id,
+        family_id: 4260899048783356,
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem!.mock.calls.map((c) => c[0])).toEqual(['MLB901', 'MLB902']);
+    for (const call of mocks.updateItem!.mock.calls) {
+      const payload = call[1] as Record<string, unknown>;
+      // ML rejects editing family_name once the family has sales, and it feeds
+      // the family-id hash — a PUT carrying it could move the member elsewhere.
+      expect(payload.family_name).toBeUndefined();
+      // Prices belong to the manual price flow and its "baixar preços" guard.
+      expect(payload.price).toBeUndefined();
+      expect(payload.title).toBeUndefined();
+    }
+  });
+
+  it('a member added to an existing family POSTs, carrying category and price', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    seedPublishedFamily(db, ['child-1']); // child-2 has never been published
+    const { api, mocks } = upApi({
+      // Distinct id, so the sweep sees the family exactly as published and this
+      // test observes create-vs-update routing and nothing else.
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        id: 'MLB902',
+        family_id: 4260899048783356,
+      })),
+      updateItem: vi.fn(async (id: string) => ({
+        ...ITEM_RESPONSE,
+        id,
+        family_id: 4260899048783356,
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.updateItem!.mock.calls.map((c) => c[0])).toEqual(['MLB901']);
+    expect(mocks.createItem).toHaveBeenCalledOnce();
+    // ⚠️ The create-only fields key off the MEMBER, not the family: an
+    // established family is `isUpdate` at the listing level, and letting that
+    // decide would POST this new member with no category and earn a 400 the
+    // operator cannot read.
+    expect(mocks.createItem!.mock.calls[0]![0]).toMatchObject({
+      // The link's operator-authored title is the family name (#799 bug 4a).
+      family_name: 'Título antigo',
+      category_id: 'MLB31447',
+      listing_type_id: 'gold_special',
+      price: 79.9,
+    });
+  });
+
+  it('a failure mid fan-out keeps the members already confirmed', async () => {
+    // Legacy batched every member and committed after the loop, so a failure on
+    // the last one discarded the earlier ids while their ML items stayed live —
+    // and the retry POSTed them again, duplicating items inside the family.
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    let n = 0;
+    const { api } = upApi({
+      createItem: vi.fn(async () => {
+        n += 1;
+        if (n === 2) throw new MercadoLivreHttpError('atributo inválido', 400, null);
+        return { ...ITEM_RESPONSE, id: 'MLB901', family_id: 4260899048783356 };
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivreHttpError);
+
+    expect([...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0]).toMatchObject({
+      itemId: 'MLB901',
+    });
+    expect([...db.docs('produtos/child-2/variacaoMercadoLivre').values()]).toHaveLength(0);
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      estado: 'E',
+      errors: ['atributo inválido'],
+    });
+  });
+
+  it('sends the description to EVERY member, not just the first', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    db.seed(`produtos/${PROD}/extraData`, 'singleton', { descricao: 'Algodão 100%' });
+    const { api, mocks } = upApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // ML replicates title/attributes/pictures across a user product, but NOT
+    // the description — that one is per item.
+    expect(mocks.setItemDescription!.mock.calls.map((c) => c[0])).toEqual(['MLB901', 'MLB902']);
+  });
+
+  it('prices each member from its own tabela entry when propagation is off', async () => {
+    // The rule `precoPlan.buildPrecoDrafts` already applies. Publish has to
+    // agree with it, or a first publish lands a price the next price sync
+    // immediately overwrites.
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    db.docs('produtos').get(PROD)!.propagatePriceToChildren = false;
+    const { api, mocks } = upApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem!.mock.calls.map((c) => (c[0] as { price: number }).price)).toEqual([
+      79.9, 89.9,
+    ]);
+  });
+
+  it('does NOT clobber a concurrent write to a member link (rule 7)', async () => {
+    // `state.raw` is captured in the children loop, BEFORE the grupo reads, the
+    // size-chart binding, every picture upload and all N ML calls — so by the
+    // time the member link is written that snapshot is stale. Re-applying it
+    // wholesale reverts whatever the live Flutter app, `importVariations` or the
+    // UPtin takeover wrote in between; `parse` even fills defaults for what the
+    // snapshot lacks, so it is a clobber and not a merge.
+    const db = new FakeDb();
+    seedFamily(db); // child-1 only
+    seedPublishedFamily(db, ['child-1']);
+    const { api } = upApi({
+      updateItem: vi.fn(async (id: string, payload: Record<string, unknown>) => {
+        // A concurrent writer lands mid-publish, exactly inside the window
+        // between the children loop's read and this member's link write.
+        //
+        // ⚠️ Gated on the MEMBER payload. The orphan sweep also calls
+        // `updateItem` — with `{status}` bodies, and AFTER the link write — so an
+        // ungated mock re-applied the "concurrent" fields once more at the end
+        // and the assertion below passed under a full-clobber implementation.
+        if (!('status' in payload)) {
+          const doc = db.docs('produtos/child-1/variacaoMercadoLivre').get('var-child-1')!;
+          doc.attributes = [{ id: 'VOLTAGE', value_name: '220V' }];
+          doc.campoLegadoDesconhecido = 'preservar';
+        }
+        return { ...ITEM_RESPONSE, id, family_id: 4260899048783356 };
+      }),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const member = db.docs('produtos/child-1/variacaoMercadoLivre').get('var-child-1')!;
+    // Publish's own field landed...
+    expect(member.itemId).toBe('MLB901');
+    // ...and the concurrent writer's survived. `attributes` in particular is
+    // what Flutter rebuilds its next publish's combinations from.
+    expect(member.attributes).toEqual([{ id: 'VOLTAGE', value_name: '220V' }]);
+    expect(member.campoLegadoDesconhecido).toBe('preservar');
+  });
+
+  it('closes the ML item of a variation deleted in the ERP', async () => {
+    // "Camiseta G" was removed here; its MLB902 is still live on ML with no
+    // produto behind it — the stock sweep would never touch it again and an
+    // order for it would land with nothing to decrement.
+    const db = new FakeDb();
+    seedFamily(db); // child-1 only
+    seedPublishedFamily(db, ['child-1']);
+    const { api, mocks } = upApi({
+      updateItem: vi.fn(async (id: string) => ({
+        ...ITEM_RESPONSE,
+        id,
+        family_id: 4260899048783356,
+      })),
+    });
+
+    const result = await publishProduto(makeDeps(db, api), PROD);
+
+    expect(result.orfaosEncerrados).toEqual(['MLB902']);
+    // Pause first, then close — the surviving member is never touched.
+    expect(mocks.updateItem!.mock.calls).toEqual([
+      ['MLB901', expect.any(Object)],
+      ['MLB902', { status: 'paused' }],
+      ['MLB902', { status: 'closed' }],
+    ]);
+  });
+
+  it('a sweep failure never fails a publish that already succeeded', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi({
+      getUserProductFamily: vi.fn(async () => {
+        throw new MercadoLivreHttpError('indisponível', 503, null);
+      }),
+    });
+
+    const result = await publishProduto(makeDeps(db, api), PROD);
+
+    expect(result.itemIds).toEqual(['MLB901', 'MLB902']);
+    expect(result.orfaosEncerrados).toEqual([]);
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ estado: 'p', errors: [] });
+  });
+
+  it('prices every member from the anchor by default', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api, mocks } = upApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem!.mock.calls.map((c) => (c[0] as { price: number }).price)).toEqual([
+      79.9, 79.9,
+    ]);
+  });
+
+  it('the SAME family publishes normally on an untagged account', async () => {
+    const db = new FakeDb();
+    seedFamily(db);
+    const { api, mocks } = makeApi({
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        variations: [{ id: 555, seller_custom_field: 'child-1' }],
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).toHaveBeenCalledOnce();
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.title).toBe('Camiseta Básica');
+    expect(payload.family_name).toBeUndefined();
+    expect(payload.variations).toHaveLength(1);
+  });
+
+  it('a tagged account with NO children publishes in the UP shape', async () => {
+    // The other half of the bug: reading only the link doc resolved every first
+    // publish to 'legacy', so a simple produto went out with `title` and no
+    // `family_name` — which ML rejects once the seller is tagged.
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.family_name).toBe('Camiseta Básica');
+    expect(payload.title).toBeUndefined();
+    // ...and the resolution is PERSISTED, so the re-publish below needs no probe.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ isUserProductModel: true });
+  });
+
+  it('a PUBLISHED legacy listing never probes the account', async () => {
+    // Coexistence: an item published before the tag stays editable with the
+    // legacy payload. Probing here could only flip it to a shape ML refuses for
+    // an already-legacy item — so the call must not happen at all.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.getMe).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalledOnce();
+    const payload = mocks.updateItem!.mock.calls[0]![1] as Record<string, unknown>;
+    expect(payload.family_name).toBeUndefined();
+  });
+
+  it("estado 'am' (mid-UPtin) blocks the publish before any ML call", async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, estado: 'am' });
+    const { api, mocks } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(/UPtin/);
+
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.uploadPicture).not.toHaveBeenCalled();
+  });
+
+  it('a getMe failure surfaces as itself AND lands on the link doc', async () => {
+    // Two separate contracts. (1) A dead credential must reach the route's
+    // 409/502 mapping — swallowing it into a `legacy` guess would publish the
+    // wrong payload shape. (2) The module header: every ML failure leaves its
+    // reason ON THE DOC, so the ML tab shows why the last attempt failed. The
+    // probe is an ML call like any other, so it owes the same stamp.
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => {
+        throw new MercadoLivreHttpError('unauthorized', 401, null);
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivreHttpError);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      estado: 'E',
+      errors: ['unauthorized'],
+      // Untouched: the probe never learned the model, so the persisted value
+      // must survive rather than be guessed at.
+      isUserProductModel: false,
+    });
+  });
+
+  it('a PRE-FLIGHT refusal still writes nothing — it is not an ML failure', async () => {
+    // The distinction the stamp above must not blur: `estado: 'am'` is a
+    // validation block raised before any ML call, so the doc keeps its state.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, estado: 'am' });
+    const { api } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(/UPtin/);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ estado: 'am', errors: null });
   });
 });

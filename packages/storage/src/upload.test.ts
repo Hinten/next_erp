@@ -120,6 +120,8 @@ describe('uploadProductImage', () => {
       filepath: 'produtos/p1/originals',
       filename: 'x.png',
       url: 'https://dl/existing',
+      // Already resized — the ordinary dedup hit, which must write nothing.
+      resizeState: 'done',
     };
     mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => existing });
 
@@ -138,8 +140,78 @@ describe('uploadProductImage', () => {
   });
 });
 
+describe('putArquivo — healing the resize marker on a dedup hit', () => {
+  /** A doc stored before its owner was watched by the resize function. */
+  const legacy = {
+    filetype: 'image',
+    filepath: 'tabMedi/tm1/originals',
+    filename: 'x.png',
+    url: 'https://dl/existing',
+    resizeState: null,
+  };
+
+  it('stamps a null marker as pending, so the sweep generates the derivatives', async () => {
+    // The sequence this exists for: a size-chart photo uploaded before tabMedi
+    // was resized is removed, then re-added within the 1h delete grace. The
+    // dedup hit writes nothing, while the caller writes optimistic derivative
+    // refs — leaving the foto pointing at three docs that never appear.
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => legacy });
+
+    const result = await uploadTabMediImage({
+      storage,
+      db,
+      tabMediId: 'tm1',
+      bytes,
+      contentType: 'image/png',
+    });
+
+    expect(mocks.updateDoc).toHaveBeenCalledTimes(1);
+    expect(mocks.updateDoc.mock.calls[0]![1]).toEqual({ resizeState: 'pending' });
+    // The returned doc reflects the patch, so a caller reading it back is not
+    // told the marker is still null.
+    expect(result.arquivo.resizeState).toBe('pending');
+    // Still a dedup: no re-upload of identical bytes.
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+    expect(mocks.setDoc).not.toHaveBeenCalled();
+  });
+
+  it('heals a legacy PRODUTO original the same way', async () => {
+    // Flutter-written originals predate the marker entirely; they get the same
+    // treatment rather than a second mechanism.
+    mocks.getDoc.mockResolvedValue({
+      exists: () => true,
+      data: () => ({ ...legacy, filepath: 'produtos/p1/originals' }),
+    });
+
+    await uploadProductImage({ storage, db, produtoId: 'p1', bytes, contentType: 'image/png' });
+    expect(mocks.updateDoc.mock.calls[0]![1]).toEqual({ resizeState: 'pending' });
+  });
+
+  it("NEVER resets a 'done' marker back to pending", async () => {
+    // Re-adding an already-resized photo must not re-run the resize; that would
+    // turn every dedup hit into work the sweep then has to do again.
+    mocks.getDoc.mockResolvedValue({
+      exists: () => true,
+      data: () => ({ ...legacy, resizeState: 'done' }),
+    });
+
+    await uploadTabMediImage({ storage, db, tabMediId: 'tm1', bytes, contentType: 'image/png' });
+    expect(mocks.updateDoc).not.toHaveBeenCalled();
+  });
+
+  it('does NOT stamp an owner that is not resized at all', async () => {
+    // A video or generic file has no derivatives by design, so healing it would
+    // hand the sweep a doc it can never complete — it would stay 'pending'
+    // forever and be warned about on every run.
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => legacy });
+
+    await uploadProductVideo({ storage, db, produtoId: 'p1', bytes, contentType: 'video/mp4' });
+    expect(mocks.updateDoc).not.toHaveBeenCalled();
+  });
+});
+
 describe('uploadTabMediImage', () => {
-  it('uploads to the tabMedi-scoped path + id with NO resize marker', async () => {
+  it('uploads to the tabMedi-scoped path + id, marked for resize', async () => {
     const hash = await sha512Hex(bytes);
     const result = await uploadTabMediImage({
       storage,
@@ -155,8 +227,10 @@ describe('uploadTabMediImage', () => {
     expect(result.arquivo.filename).toBe(`${hash}.png`);
     expect(result.arquivo.filetype).toBe('image');
     expect(result.arquivo.url).toBe(`https://dl/${tabMediOriginalPath('tm1', hash, 'png')}`);
-    // Headline diff vs uploadProductImage: tabMedi photos are NOT resized.
-    expect(result.arquivo.resizeState).toBeNull();
+    // tabMedi photos ARE resized now, exactly like product images — the marker
+    // is what the 48h reconcile sweep queries, so a dropped trigger delivery
+    // heals instead of leaving a size chart the AI agent can never read.
+    expect(result.arquivo.resizeState).toBe('pending');
     // Still create-first + tracked for the phantom-doc sweep + finalize trigger.
     expect(result.arquivo.uploadState).toBe('pending');
 
@@ -179,7 +253,15 @@ describe('uploadTabMediImage', () => {
   });
 
   it('dedups: reuses an existing Arquivo and skips the upload', async () => {
-    const existing = { filetype: 'image', filepath: 'tabMedi/tm1/originals', filename: 'x.png' };
+    // `resizeState: 'done'` = an ordinary dedup hit. A null marker is the
+    // legacy case, and it is HEALED rather than passed through — see the
+    // "healing the resize marker" block below.
+    const existing = {
+      filetype: 'image',
+      filepath: 'tabMedi/tm1/originals',
+      filename: 'x.png',
+      resizeState: 'done',
+    };
     mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => existing });
 
     const result = await uploadTabMediImage({

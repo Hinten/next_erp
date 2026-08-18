@@ -6,6 +6,7 @@ import {
   ALL_DOMAINS,
   PRODUTO_SUBCOLLECTION_NAMES,
   historicoModificacaoMeta,
+  historicoModificacaoPedidoMeta,
 } from '@delfrance/schemas';
 import { GRUPO_ECONOMICO_COLLECTION_PATH } from '@delfrance/core/tenant';
 
@@ -44,6 +45,7 @@ const COVERED = new Set<string>([
 const PATH_IDENTIFIERS: Record<string, string> = {
   GRUPO_ECONOMICO_COLLECTION_PATH,
   'historicoModificacaoMeta.collectionPath': historicoModificacaoMeta.collectionPath,
+  'historicoModificacaoPedidoMeta.collectionPath': historicoModificacaoPedidoMeta.collectionPath,
 };
 
 const dataDir = dirname(fileURLToPath(import.meta.url));

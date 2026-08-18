@@ -14,6 +14,7 @@ import { offsetForUF } from './tz';
 import { buildDest, buildEmit } from './parties';
 import { serializeFragment, type XmlValue } from '../xml';
 import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
+import { assertSafeTpAmb, tpAmbFromAmbiente } from '../safety';
 import type { UF } from '@delfrance/schemas';
 
 import type { GeneratorInput, GeneratorOutput, TpEmis } from './types';
@@ -29,6 +30,20 @@ export class NFeGeneratorError extends Error {
 }
 
 export function generateNFe(input: GeneratorInput): GeneratorOutput {
+  // The generator boundary the safety module has always documented — "before any
+  // work" — and which, until now, was never actually wired: `assertSafeTpAmb` had
+  // zero production call sites, so building produção XML was unguarded while three
+  // docs (apphosting.yaml, apps/nfe/CLAUDE.md, this package's README) told readers
+  // it was not. `NFE_ALLOW_PRODUCAO=true` is already part of the produção deploy
+  // contract in `apps/nfe/apphosting.yaml`, so this only bites callers who set
+  // `ambiente: 'producao'` without it.
+  //
+  // ⚠️ Deliberately the PERMISSIVE variant. Nothing here opens a socket, and the
+  // generator's own tests build produção XML on purpose; the `NODE_ENV='test'`
+  // passthrough is correct at this boundary and wrong at transport, which is why
+  // `soap/index.ts` calls `assertSafeTpAmbForTransport` instead.
+  assertSafeTpAmb(tpAmbFromAmbiente(input.ambiente));
+
   validateInput(input);
 
   if (!input.filial.cnpj) {

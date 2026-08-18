@@ -20,8 +20,8 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * (`.old/packages/pedido/lib/src/models.dart:3889-3934`). One audit row per
  * `freteInicial.estado` transition of the parent pedido.
  *
- * Written EXCLUSIVELY by the `onPedidoEstadoChanged` Cloud Function
- * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which observes every
+ * Written EXCLUSIVELY by the `onPedidoChanged` Cloud Function
+ * (`apps/functions/src/pedidos/registrarHistoricoPedido.ts`), which observes every
  * `pedidos/{pedidoId}` write no matter who made it — the Melhor Envio
  * order-status webhook, the `comprar` etiqueta route, `saveCheckout`, the admin
  * pedido reconcile, the Mercado Livre importers, the web Frete tab, and the
@@ -105,7 +105,7 @@ export const historicoFreteInicialMeta: CollectionMetadata = {
   },
   // An audit trail the audited party can rewrite is not an audit trail: rules
   // deny every client create/update/delete (no `su` bypass), leaving the
-  // `onPedidoEstadoChanged` trigger as the sole writer. Read stays open to
+  // `onPedidoChanged` trigger as the sole writer. Read stays open to
   // `d_pedido` read. Same posture as `historicoEstadoPedido`.
   serverOwned: true,
   // The freight-history read: newest-first, one page. Declared here so the

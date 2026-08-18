@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import {
   type Foto,
-  buildOriginalFotoRef,
+  buildFotoRefsFromArquivoId,
   deriveFotosArquivosIds,
   tabelaDeMedidasSchema,
 } from '@delfrance/schemas';
@@ -86,8 +86,11 @@ export default function TabelaDeMedidasPage() {
             label: 'Fotos da Tabela de Medidas',
             section: 'Fotos',
             prepareForSave: stripMarkedForDeletion,
-            // Original-only upload (no resize for tabMedi) → buildOriginalFotoRef
-            // (null derivative refs); the thumbnail falls back to the original.
+            // Resized like product photos: the trigger writes the 200/400/jpeg
+            // derivatives, so the refs are built optimistically from the
+            // original's doc id. The thumbnail stops loading the full original,
+            // and the size-chart AI agent gets a `jpeg` variant it can read
+            // measurements from.
             renderInput: (p) => (
               <PhotoManager
                 db={db}
@@ -99,7 +102,7 @@ export default function TabelaDeMedidasPage() {
                     bytes: file,
                     contentType: file.type,
                     originalFilename: file.name,
-                  }).then(({ id }) => buildOriginalFotoRef(id))
+                  }).then(({ id }) => buildFotoRefsFromArquivoId(id))
                 }
                 value={(p.value as Foto[] | null) ?? null}
                 onChange={p.onChange}

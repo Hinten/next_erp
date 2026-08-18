@@ -72,9 +72,25 @@ afterEach(() => {
 });
 
 describe('mercadoPagoRedirectUri', () => {
+  const CAMINHO = '/api/oauth/mercado-pago/callback';
+
   it('builds the callback URI from MERCADO_PAGO_PUBLIC_URL (trailing slash trimmed)', () => {
     vi.stubEnv('MERCADO_PAGO_PUBLIC_URL', 'https://mp.example.com/');
-    expect(mercadoPagoRedirectUri()).toBe('https://mp.example.com/api/oauth/mercado-pago/callback');
+    expect(mercadoPagoRedirectUri()).toBe(`https://mp.example.com${CAMINHO}`);
+  });
+
+  it('falls back to localhost when the origin is unset', () => {
+    vi.stubEnv('MERCADO_PAGO_PUBLIC_URL', undefined);
+    expect(mercadoPagoRedirectUri()).toBe(`http://localhost:3007${CAMINHO}`);
+  });
+
+  it.each(['', '   '])('treats a blank origin (%j) as unset', (valor) => {
+    // The old `??` guarded only undefined/null, so a blank env var produced
+    // `base === ''` and sent the RELATIVE "/api/oauth/mercado-pago/callback" to MP
+    // as the redirect_uri — a 400 at the token step this app could not report.
+    // Same `??`-versus-empty-string hole #887 fixed for *_TASKS_REGION.
+    vi.stubEnv('MERCADO_PAGO_PUBLIC_URL', valor);
+    expect(mercadoPagoRedirectUri()).toBe(`http://localhost:3007${CAMINHO}`);
   });
 });
 
@@ -282,11 +298,12 @@ describe('loadMercadoPagoContext', () => {
       refresh_token: 'RT',
     });
     const ctx = await loadMercadoPagoContext({} as never, 'm1');
-    await ctx.exchangeAndPersist('auth-code', NOW);
+    await ctx.exchangeAndPersist('auth-code', undefined, NOW);
 
     expect(h.exchangeCode).toHaveBeenCalledWith(
       expect.objectContaining({ clientId: 'CID' }),
       'auth-code',
+      undefined,
     );
     expect(h.storeSave).toHaveBeenCalledWith({
       access_token: 'AT',
@@ -305,7 +322,7 @@ describe('loadMercadoPagoContext', () => {
       refresh_token: 'RT',
     });
     const ctx = await loadMercadoPagoContext({} as never, 'm1');
-    await ctx.exchangeAndPersist('auth-code', NOW);
+    await ctx.exchangeAndPersist('auth-code', undefined, NOW);
 
     expect(h.storeSave).toHaveBeenCalledTimes(1);
     expect(h.merge).not.toHaveBeenCalled();

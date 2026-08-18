@@ -25,6 +25,7 @@ import {
   type MlItemPrices,
   type MlListingPrices,
   type MlMigrationLiveListing,
+  type MlMissedFeeds,
   type MlOrder,
   type MlOrderSearch,
   type MlPack,
@@ -41,6 +42,7 @@ import {
   type MlSizeChartApi,
   type MlSizeChartDeleteResponse,
   type MlTechnicalSpecs,
+  type MlTestUser,
   type MlUser,
   type MlUserProductFamily,
   type MlUserProductItemsSearch,
@@ -60,6 +62,7 @@ import {
   mlClaimReasonSchema,
   mlClaimSchema,
   mlClaimSearchSchema,
+  mlMissedFeedsSchema,
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentInvoiceSchema,
@@ -76,6 +79,7 @@ import {
   sizeChartApiSchema,
   sizeChartDeleteResponseSchema,
   technicalSpecsSchema,
+  testUserSchema,
   tokenErrorSchema,
   userProductFamilySchema,
   userProductItemsSearchSchema,
@@ -139,6 +143,18 @@ export interface MlOrderResponse {
 export interface MercadoLivreApi {
   getMe(): Promise<MlUser>;
   getUser(id: number | string): Promise<MlUser>;
+  /**
+   * `POST /users/test_user` — mint a Mercado Livre **test user** on `siteId`.
+   *
+   * ML has no sandbox; this is the substitute. The caller's token must belong to
+   * the real account that owns the ML application, and that account is capped at
+   * **10 test users** with no endpoint that lists them and no password recovery.
+   *
+   * ⚠️ The response contains a **password shown exactly once**. This method
+   * deliberately bypasses the shared `parseOk` so no failure path can echo it —
+   * see {@link testUserSchema}. Persist the result before doing anything else.
+   */
+  criarUsuarioTeste(siteId: string): Promise<MlTestUser>;
   getItem(id: string): Promise<MlItem>;
   /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
   getPrices(itemId: string): Promise<MlItemPrices>;
@@ -227,10 +243,17 @@ export interface MercadoLivreApi {
   /**
    * `GET /users/{sellerId}/items/search?user_product_id=<csv>` — resolves a
    * batch of User-Product ids to their MLB item ids (#521 family fan-out).
+   *
+   * ⚠️ Without `page` this returns ML's DEFAULT first page, and the response
+   * gives no way to tell that from a complete answer unless you read
+   * `paging.total`. A caller that needs completeness — the publish orphan sweep
+   * decides what to CLOSE from this — must pass an explicit `limit`/`offset` and
+   * check `paging` (see `resolveFamilyItemIds`).
    */
   searchItemsByUserProduct(
     sellerId: number,
     userProductIds: readonly string[],
+    page?: { limit?: number; offset?: number },
   ): Promise<MlUserProductItemsSearch>;
   /**
    * `GET /items/{id}/migration_live_listing` — the new User-Products items a
@@ -347,6 +370,28 @@ export interface MercadoLivreApi {
    * api.dart:1533-1539). The `filename` ML issues is the download key.
    */
   downloadClaimAttachment(claimId: number, filename: string): Promise<MlClaimAttachmentDownload>;
+
+  /**
+   * `GET /missed_feeds?app_id=&limit=&offset=[&topic=]` (#812) — the
+   * notifications Mercado Livre gave up delivering to our callback. An entry is
+   * filed only after ML's **8th retry (~1h)** failed to get a 200, and is
+   * retained **2 days**.
+   *
+   * ⚠️ There is **no time filter** and **no consume/ack**: reading does not
+   * remove an entry, so the same one reappears until it expires. The caller
+   * must therefore be idempotent, and must NOT keep a `sent`-based cursor —
+   * an entry filed after a run would sit permanently below such a cursor.
+   *
+   * `topic` is ML's documented filter. It is exposed for diagnostics but the
+   * sweep deliberately does not use it: it cannot reduce the number of entries
+   * that must be read, only split them across one request per topic.
+   */
+  getMissedFeeds(params: {
+    appId: string;
+    topic?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<MlMissedFeeds>;
 }
 
 export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLivreApi {
@@ -582,6 +627,29 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
 
   return {
     getMe: () => request('GET', '/users/me', userSchema),
+    criarUsuarioTeste: async (siteId: string) => {
+      // Same auth + network-retry policy as `request`, but the success branch
+      // never reaches `parseOk`: see `parseTestUser` below.
+      const token = await config.getAccessToken();
+      const res = await fetchWithNetworkRetry(
+        buildUrl('/users/test_user'),
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${token}`,
+            'User-Agent': userAgent,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ site_id: siteId }),
+        },
+        'Falha de rede ao criar usuário de teste no Mercado Livre',
+      );
+      // A FAILED mint carries no password, so the shared error mapping is safe
+      // here — it is only the 2xx body that must never be echoed.
+      if (!res.ok) throw await toHttpError(res);
+      return parseTestUser(await res.text());
+    },
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
     getItem: (id) =>
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
@@ -641,9 +709,16 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
 
     getUserProductFamily: (familyId) =>
       request('GET', `/sites/MLB/user-products-families/${familyId}`, userProductFamilySchema),
-    searchItemsByUserProduct: (sellerId, userProductIds) =>
+    searchItemsByUserProduct: (sellerId, userProductIds, page) =>
       request('GET', `/users/${sellerId}/items/search`, userProductItemsSearchSchema, {
-        query: { user_product_id: userProductIds.join(',') },
+        query: {
+          user_product_id: userProductIds.join(','),
+          // Explicit, so a caller that needs COMPLETENESS can tell a short page
+          // from ML's silent default (`resolveFamilyItemIds`). Omitted entirely
+          // when the caller does not care, keeping the legacy request shape.
+          ...(page?.limit != null ? { limit: String(page.limit) } : {}),
+          ...(page?.offset != null ? { offset: String(page.offset) } : {}),
+        },
       }),
     getMigrationLiveListing: (itemId) =>
       request('GET', `/items/${itemId}/migration_live_listing`, migrationLiveListingSchema),
@@ -717,7 +792,55 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     searchClaims: (params) =>
       request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
     downloadClaimAttachment,
+
+    // `buildUrl` drops every `undefined` query value, so an omitted `topic` /
+    // `limit` / `offset` simply does not reach the URL — do NOT add `?? 0`
+    // defaults here, that would pin ML's own defaults to ours.
+    getMissedFeeds: ({ appId, topic, limit, offset }) =>
+      request('GET', '/missed_feeds', mlMissedFeedsSchema, {
+        query: { app_id: appId, topic, limit, offset },
+      }),
   };
+}
+
+/**
+ * `parseOk` for the ONE response that carries a password.
+ *
+ * ⚠️ The vector this closes is the **non-JSON branch**: `parseOk` puts the RAW
+ * BODY into `MercadoLivreValidationError`, so an ML error page — or a 200 whose
+ * body drifted — hands the credential to whatever logs the throw. That is the
+ * shape of #1015, where a Zod failure on the OAuth exchange turned out to be
+ * carrying the token response.
+ *
+ * The schema-mismatch branch was **measured, not assumed**: Zod 4 serializes
+ * `code`/`path`/`expected`/`message` and no input value, for a wrong type, a
+ * missing key, a `too_small`, or a non-object root — and `.passthrough()` keeps
+ * `unrecognized_keys` (which would name keys, never values) from firing at all.
+ * So `result.error.issues` is not itself a leak today. Reporting field names
+ * instead is defence-in-depth — Zod's issue contents are not a stability
+ * contract, and the message reads better — not a fix for a live bug.
+ */
+function parseTestUser(text: string): MlTestUser {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+    throw new MercadoLivreValidationError(
+      'Resposta não-JSON do Mercado Livre ao criar usuário de teste.',
+      // Deliberately NOT `text`: that is the whole point of this function.
+      null,
+    );
+  }
+  const result = testUserSchema.safeParse(body);
+  if (!result.success) {
+    const campos = [...new Set(result.error.issues.map((i) => i.path.join('.') || '(raiz)'))];
+    throw new MercadoLivreValidationError(
+      `Resposta inesperada do Mercado Livre ao criar usuário de teste. Campos inválidos: ${campos.join(', ')}.`,
+      campos,
+    );
+  }
+  return result.data;
 }
 
 async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {

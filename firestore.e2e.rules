@@ -28,6 +28,7 @@ service cloud.firestore {
       return (!c.hasAny(['cpf_cnpj']) || (d.get('cpf_cnpj', null) == null || d.get('cpf_cnpj', null) is string && d.get('cpf_cnpj', null).size() <= 18))
         && (!c.hasAny(['email']) || (d.get('email', null) == null || d.get('email', null) is string && d.get('email', null).size() <= 255))
         && (!c.hasAny(['idEstrangeiro']) || (d.get('idEstrangeiro', null) == null || d.get('idEstrangeiro', null) is string && d.get('idEstrangeiro', null).size() <= 20))
+        && (!c.hasAny(['idMercadoLivre']) || (d.get('idMercadoLivre', null) == null || d.get('idMercadoLivre', null) is string && d.get('idMercadoLivre', null).size() <= 32))
         && (!c.hasAny(['ie']) || (d.get('ie', null) == null || d.get('ie', null) is string && d.get('ie', null).size() <= 16))
         && (!c.hasAny(['imun']) || (d.get('imun', null) == null || d.get('imun', null) is string && d.get('imun', null).size() <= 15))
         && (!c.hasAny(['isUF']) || (d.get('isUF', null) == null || d.get('isUF', null) is string && d.get('isUF', null).size() <= 9))
@@ -57,7 +58,6 @@ service cloud.firestore {
       return (!c.hasAny(['bloquearEmissaoNFe']) || (d.get('bloquearEmissaoNFe', null) == null || d.get('bloquearEmissaoNFe', null) is bool))
         && (!c.hasAny(['chNFeReferenciadas']) || (d.get('chNFeReferenciadas', null) == null || d.get('chNFeReferenciadas', null) is list))
         && (!c.hasAny(['clientePedidoOuterRef']) || (d.get('clientePedidoOuterRef', null) == null || d.get('clientePedidoOuterRef', null) is string))
-        && (!c.hasAny(['custoFreteInicial']) || (d.get('custoFreteInicial', null) == null || d.get('custoFreteInicial', null) is number))
         && (!c.hasAny(['dataFinalExpedicao']) || (d.get('dataFinalExpedicao', null) == null || d.get('dataFinalExpedicao', null) is int))
         && (!c.hasAny(['dataIndisponivelEstoque']) || (d.get('dataIndisponivelEstoque', null) == null || d.get('dataIndisponivelEstoque', null) is int))
         && (!c.hasAny(['dataRemocaoEstoque']) || (d.get('dataRemocaoEstoque', null) == null || d.get('dataRemocaoEstoque', null) is int))
@@ -88,11 +88,7 @@ service cloud.firestore {
         && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['valorCobrado']) || (d.get('valorCobrado', null) == null || d.get('valorCobrado', null) is number))
         && (!c.hasAny(['valorComissoes']) || (d.get('valorComissoes', null) == null || d.get('valorComissoes', null) is number))
-        && (!c.hasAny(['valorCusto']) || (d.get('valorCusto', null) == null || d.get('valorCusto', null) is number))
-        && (!c.hasAny(['valorCustoDevolvidos']) || (d.get('valorCustoDevolvidos', null) == null || d.get('valorCustoDevolvidos', null) is number))
         && (!c.hasAny(['valorDespesasIncidentes']) || (d.get('valorDespesasIncidentes', null) == null || d.get('valorDespesasIncidentes', null) is number))
-        && (!c.hasAny(['valorDevolucao']) || (d.get('valorDevolucao', null) == null || d.get('valorDevolucao', null) is number))
-        && (!c.hasAny(['valorFreteInicial']) || (d.get('valorFreteInicial', null) == null || d.get('valorFreteInicial', null) is number))
         && (!c.hasAny(['valorFretesIncidentes']) || (d.get('valorFretesIncidentes', null) == null || d.get('valorFretesIncidentes', null) is number))
         && (!c.hasAny(['vendedorPedidoOuterRef']) || (d.get('vendedorPedidoOuterRef', null) == null || d.get('vendedorPedidoOuterRef', null) is string));
     }
@@ -240,6 +236,12 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /configIa/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /counters/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
@@ -296,7 +298,8 @@ service cloud.firestore {
 
     match /integracao/{docId} {
       allow read: if isSuperUser() || p('d_integracao', 1);
-      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow create: if (isSuperUser() || p('d_integracao', 2)) && (!request.resource.data.keys().hasAny(['user_id']) || request.resource.data.get('user_id', null) == null);
+      allow update: if (isSuperUser() || p('d_integracao', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['user_id']);
       allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 
@@ -326,8 +329,8 @@ service cloud.firestore {
 
     match /metodo_pgto/{docId} {
       allow read: if isSuperUser() || p('d_metodoPagamento', 1);
-      allow create: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.keys());
-      allow update: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
+      allow create: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['user_id']) || request.resource.data.get('user_id', null) == null);
+      allow update: if (isSuperUser() || p('d_metodoPagamento', 2)) && v_metodo_pgto(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['user_id']);
       allow delete: if isSuperUser() || p('d_metodoPagamento', 4);
     }
 
@@ -366,6 +369,12 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
       allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
+    match /pedidos/{pedidoId}/historicoDeModificacoes/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /pedidos/{pedidoId}/historicoEstadoPedido/{docId} {
@@ -553,9 +562,6 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/historicoDeCusto/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/historicoDeModificacoes/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/historicoDePrecos/{docId} {

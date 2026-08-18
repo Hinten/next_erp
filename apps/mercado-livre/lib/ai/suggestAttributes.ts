@@ -24,7 +24,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import type { Produto, ProdutoExtraData } from '@delfrance/schemas';
 
-import type { GenerateFn } from './provider';
+import type { GenerateFn } from '@delfrance/ai/admin';
 
 export interface SuggestAttributesDeps {
   db: Firestore;
@@ -35,6 +35,8 @@ export interface SuggestAttributesDeps {
   loadAtributos: (categoryId: string) => Promise<{ leaf: boolean; atributos: AiAttributeSpec[] }>;
   model: string;
   systemInstruction?: string | null;
+  /** The operator's correction plus the answer being corrected. */
+  revisao?: { feedback: string; anterior: AiAttributeSuggestion[] } | null;
   temperature?: number | null;
   maxOutputTokens?: number | null;
   signal?: AbortSignal;
@@ -89,6 +91,7 @@ export async function suggestAttributes(
     responseSchema,
     ...(image ? { image } : {}),
     systemInstruction: deps.systemInstruction ?? null,
+    revisao: deps.revisao ?? null,
   });
 
   const answer = await deps.generate({

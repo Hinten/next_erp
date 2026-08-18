@@ -16,6 +16,14 @@
  *   identity was rewritten with the buyer's. The NF-e would then be emitted
  *   against a cliente carrying the wrong CPF.
  *
+ * A fifth leg, `idMercadoLivre`, was added for the ML chat import. A pre-sale
+ * question carries none of the original four — no CPF, no phone, no e-mail — so
+ * every leg skipped and the cascade fell through to the blind create below,
+ * producing one junk cliente per question notification whose telefone/email
+ * legs then poisoned later order imports. The ML buyer id is the only identity
+ * such a contact has, and it is a STRONG key: a marketplace account, not a
+ * recycled phone number.
+ *
  * The cascade order is unchanged. What changed is that **every candidate must
  * pass `isSameCliente`** (`@delfrance/schemas`) before it may be merged into:
  * telefone and e-mail are signals, cpf_cnpj and idEstrangeiro are identity, and
@@ -83,6 +91,19 @@ export interface RejectedClienteCandidate {
   readonly matchedBy: ClienteMatchKey;
   readonly candidateCpfCnpj: string | null;
   readonly candidateIdEstrangeiro: string | null;
+  /**
+   * The third strong key. Present because `isSameCliente` gates on it, so a
+   * candidate can be rejected purely because its ML buyer id contradicts — and
+   * with only the two fiscal identifiers printed, that rejection logs as
+   * `{ candidateCpfCnpj: null, candidateIdEstrangeiro: null }`, which reads as a
+   * bug in the gate rather than the correct verdict it is.
+   *
+   * It is also becoming the COMMON rejection: an ML contact created from a
+   * pre-sale question has an ML id and a name and nothing else, so a later
+   * telefone or email hit on a different buyer contradicts here and nowhere
+   * else.
+   */
+  readonly candidateIdMercadoLivre: string | null;
 }
 
 export interface FindOrCreateClienteResult {
@@ -180,6 +201,23 @@ export function buildClienteUpdatePatch(
     patch.idEstrangeiro = fields.idEstrangeiro;
   }
 
+  // Fill-only-when-absent, like the two above. `isSameCliente` has already
+  // established the stored value is either absent or exactly equal, so the only
+  // write left to make is the one that ADDS the id — which is how a cliente
+  // first created from an order (cpf_cnpj, no ML id) gains one the next time
+  // that buyer asks a question.
+  //
+  // Stored TRIMMED, unlike `idEstrangeiro` above. That field is documented free
+  // text; this one is the key the next delivery looks itself up by, and the
+  // cascade leg queries `identityValue(...)`. Storing `' 301110805 '` raw while
+  // querying `'301110805'` means every later lookup misses — one junk cliente
+  // per question notification, which is the exact failure this key exists to
+  // prevent, reintroduced by whitespace.
+  const idMl = identityValue(fields.idMercadoLivre);
+  if (idMl != null && identityValue(old.idMercadoLivre) == null) {
+    patch.idMercadoLivre = idMl;
+  }
+
   // `isSameTelefone` treats the legacy raw 10/11-digit BR shape and the
   // normalized `55…` shape as ONE number, so a match never triggers a rewrite.
   const telefone = sanitizeTelefone(fields.telefone);
@@ -222,11 +260,11 @@ interface CascadeLeg {
 /**
  * Resolve the incoming record to an existing cliente, or create one.
  *
- * Dedup order — `cpf_cnpj` → `idEstrangeiro` → `telefone` (both wire shapes) →
- * `email` (typed and lowercased) — with `isSameCliente` gating EVERY leg, strong
- * ones included: one code path, one truth table. A candidate found by
- * `cpf_cnpj` is compatible on that key by construction, so the uniform gate
- * costs nothing.
+ * Dedup order — `cpf_cnpj` → `idEstrangeiro` → `idMercadoLivre` → `telefone`
+ * (both wire shapes) → `email` (typed and lowercased) — with `isSameCliente`
+ * gating EVERY leg, strong ones included: one code path, one truth table. A
+ * candidate found by `cpf_cnpj` is compatible on that key by construction, so
+ * the uniform gate costs nothing.
  *
  * `nowMs` stamps `timestamp` + `ultimaModificacao` on create, and
  * `ultimaModificacao` only on an update that actually changes a field.
@@ -263,6 +301,18 @@ export async function findOrCreateCliente(
       // canonical form to query. Normalizing here would miss every existing row.
       value: identityValue(fields.idEstrangeiro),
     },
+    {
+      key: CLIENTE_MATCH_KEY.idMercadoLivre,
+      op: '==',
+      // Also raw — an opaque marketplace account number, stored verbatim.
+      //
+      // Placed AFTER the two fiscal identifiers on purpose. For a pre-sale
+      // question this is the only leg with a value, so the order is moot; for an
+      // ML order both are present, and `cpf_cnpj` is the identity the NF-e is
+      // emitted against, so it stays the first thing we trust. Sitting here also
+      // means callers that never pass an ML id see byte-identical behaviour.
+      value: identityValue(fields.idMercadoLivre),
+    },
     // The legacy `userPath` dedup step is intentionally skipped — see
     // apps/mercado-livre/lib/marketplace/orderCliente.ts's header doc.
     {
@@ -295,6 +345,7 @@ export async function findOrCreateCliente(
         matchedBy: leg.key,
         candidateCpfCnpj: identityValue(candidate.data.cpf_cnpj),
         candidateIdEstrangeiro: identityValue(candidate.data.idEstrangeiro),
+        candidateIdMercadoLivre: identityValue(candidate.data.idMercadoLivre),
       });
     }
     if (matched) break;
@@ -323,6 +374,12 @@ export async function findOrCreateCliente(
     // value would not round-trip clienteSchema's `^[0-9A-Z]*$` at all.
     cpf_cnpj: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
     idEstrangeiro: fields.idEstrangeiro,
+    // `identityValue`, not a bare `?? null`: it trims (so the value round-trips
+    // the cascade leg, which queries the trimmed form) AND it collapses both
+    // `undefined` — the field is optional on `ClienteResolveFields` — and a
+    // blank string to `null`, which is what the Firebase SDK requires, since it
+    // rejects `undefined` in addDoc/setDoc.
+    idMercadoLivre: identityValue(fields.idMercadoLivre),
     ie: fields.ie,
     // `sanitizeTelefone`, not `normalizeTelefone`: a masked value (`11*****8888`)
     // would otherwise be stripped to 6 digits and throw a ZodError inside

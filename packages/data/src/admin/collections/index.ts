@@ -9,6 +9,7 @@
  * `delfrance/no-inline-admin-collection` ESLint rule (warn).
  */
 export { cmunCollection } from './cmunCollection';
+export { configIaCollection } from './configIaCollection';
 export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';
@@ -31,12 +32,19 @@ export {
 } from './balancoCollection';
 export { historicoEstoqueCollection } from './historicoEstoqueCollection';
 export { historicoModificacaoCollection } from './historicoModificacaoCollection';
+export { historicoModificacaoPedidoCollection } from './historicoModificacaoPedidoCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';
 export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
 export { integracaoCollection } from './integracaoCollection';
 export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
+export {
+  oauthStateCollection,
+  oauthStateIntFreteCollection,
+  oauthStateMetodoPgtoCollection,
+} from './oauthStateCollection';
 export { tokenDuravelCollection } from './tokenDuravelCollection';
+export { usuariosTesteCollection } from './usuariosTesteCollection';
 export {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
@@ -62,5 +70,6 @@ export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection
 export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
+export { missedFeedsMercadoLivreCollection } from './missedFeedsMercadoLivreCollection';
 export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
 export { envioPrecoMercadoLivreCollection } from './envioPrecoMercadoLivreCollection';

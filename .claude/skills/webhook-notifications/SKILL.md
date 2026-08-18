@@ -234,6 +234,19 @@ unifying them needs a runtime `firebase-admin/functions` import.
    (non-scalar → JSON text, reserved/empty field names dropped, byte budget) —
    an `INVALID_ARGUMENT` there is not a `ZodError`, so the receiver rethrows it
    as a 5xx and the provider disables the topic.
+
+   ⭐ **`docIdOf` returning null is a dedup hole, not a neutral default.** The
+   store falls back to an auto id, so `create`'s ALREADY_EXISTS collision — the
+   only thing stopping a failure doc from forking — never fires, and a
+   repeatedly-failing resource accumulates one dead document per attempt. That is
+   tolerable while every id comes off the provider's wire, and stops being
+   tolerable the moment the channel gains a producer that SYNTHESISES
+   notifications (a backfill sweep, a missed-deliveries replay): those carry no
+   provider event id by construction. Derive one — Mercado Livre uses
+   `<topic>:<resource>`, routed back through the same doc-id guard so a malformed
+   value still degrades to an auto id (**#807**). Put `topic` in the key when two
+   topics can share a resource, and use the WHOLE resource: a last-segment key
+   collides `/orders/7` with `/shipments/7`.
 5. **Receiver** — `apps/<canal>/app/api/webhooks/<canal>/route.ts`: verify the
    signature (read the raw body ONCE — a re-serialized JSON won't match the
    HMAC), parse, enqueue, ack 200. Catch enqueue failure → `persistNotificationFailure`
@@ -282,8 +295,49 @@ parks on its next re-drive) so retuning the horizon stays a one-constant edit.
 .update` that raises gRPC **5** for an absent doc — a `set`-based stand-in would
 pass a test that upserts a ghost in production.
 
-The emulator cannot run this end-to-end (Cloud Tasks isn't emulated) — unit
-tests against the fake are the contract.
+The **Cloud Tasks hop IS emulatable**, and Mercado Livre now covers it end to end
+(`ci-mercado-livre.yml`, `*.tasks.test.ts`): receiver → `enqueue()` → tasks
+emulator → the real `onTaskDispatched` → a real Firestore write.
+
+⚠️ Two earlier claims here were wrong, so do not re-derive them: there IS a
+`tasks` emulator (`firebase emulators:start --only tasks`), and the URI-format
+bug that would have blocked us —
+[firebase-admin-node#2725](https://github.com/firebase/firebase-admin-node/issues/2725),
+where the emulator 404'd `locations/<region>/functions/<name>` — was **closed
+2024-10-11 and fixed in firebase-admin 12.7.0**. This repo pins 14.2.0. So the
+region-qualified name every `{ml,mp,wa}Tasks.ts` uses is **both** the
+production-correct and the emulator-correct form; no seam or bare-name variant
+is needed.
+
+To emulate it: the **functions** emulator must run alongside `tasks` (it is what
+registers the queues from the trigger definitions), the enqueuer's region must
+match the region inlined into the functions bundle, and you must **not** pass
+`opts.uri` — under the emulator the Admin SDK deliberately sends an empty URL
+that the emulator back-fills, so a supplied uri ships the task to production.
+
+The one genuine residue is
+[firebase-tools#8254](https://github.com/firebase/firebase-tools/issues/8254)
+(**open**, triaged upstream as a feature request): the dispatch loop is pure
+FIFO with no `scheduleTime` predicate, so `scheduleDelaySeconds` is ignored.
+Assert that option statically off `__endpoint` and keep round-trip tests on a
+no-delay topic. `retryConfig` and `rateLimits` ARE emulated.
+
+⚠️ **Mercado Pago and WhatsApp have no such lane** — their schedulers are
+byte-identical copies of ML's, so the pattern ports directly.
+
+What the fake is no longer the only evidence for, **on Mercado Livre only**
+(`ci-mercado-livre.yml`, `*.firestore.test.ts`): the store's Firestore-level
+assumptions now run against a real Firestore — `create()` really raising
+ALREADY_EXISTS, `mergeIfExists` really getting NOT_FOUND rather than upserting a
+ghost, and the lane query's treatment of a missing vs a `null` `processedAt`
+(both excluded — range filters skip nulls, so the fake's `typeof v === 'number'`
+guard matches production). The receiver is exercised end to end through the
+`*_TASKS_DISABLED` valve into a real failure document.
+
+⚠️ **Mercado Pago and WhatsApp have no such lane** — their pipelines rest
+entirely on their fakes. If you are changing shared code in
+`@delfrance/data/admin/notifications`, the ML lane is the only place a real
+Firestore will contradict you.
 
 ## Reference
 

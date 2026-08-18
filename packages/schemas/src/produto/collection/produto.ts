@@ -84,14 +84,34 @@ export const produtoSchema = z
      * stamp a sale writes (ADR 0014) — because the channels that DO support
      * this upload shape consume that signal.
      *
-     * Mercado Livre has no proper support for it, which is why the ML sweep
-     * alone declines to send a quantity for a virtual kit
-     * (`quantidadeParaEnvio` → null). That is a per-channel limitation, **not**
-     * a property of virtual kits, and it must not be generalized into one.
+     * Mercado Livre has no usable form of it, which is why the ML **sweep**
+     * declines to send a quantity for a virtual kit (`quantidadeParaEnvio` →
+     * null). ML's own Virtual Kits do compute stock from the components, but
+     * they are User-Products-only (`POST /items/kits`, `bundle.components[]` of
+     * `user_product_id`s), immutable once published, and — because a component
+     * is already variation-level — cannot represent a produto that has
+     * variations, so this port never creates one.
+     *
+     * ⚠️ ML **publish** therefore does the opposite of the sweep: it sends the
+     * component-min like any other kit (`quantidadeParaPublicar`). `POST /items`
+     * requires `available_quantity`, so omitting it there does not make ML
+     * derive anything — it makes the produto unpublishable.
+     *
+     * That is a per-channel limitation, **not** a property of virtual kits, and
+     * it must not be generalized into one.
      */
     ehKitVirtual: z.boolean().default(false),
     publicado: z.boolean().default(false),
     ofereceFreteGratis: z.boolean().default(false),
+    /**
+     * ⚠️ **Slated for removal** — do not build on it.
+     *
+     * The legacy ML publish used it as a backorder floor: a produto at zero
+     * stock went out with `available_quantity: 1` instead of 0
+     * (`.old/.../models.dart:1487-1497`). That floor is deliberately NOT ported
+     * (#797 E5) precisely because the field is going away; ML publish reads the
+     * real availability and nothing else.
+     */
     permiteVendaSemEstoque: z.boolean().default(false),
     // "Produto usado" — Flutter reads `as bool?`, but we default to false like
     // the other flags so the ObjectView switch can't be left in an unclearable
@@ -122,7 +142,7 @@ export const produtoSchema = z
 
     /**
      * ⛔ DEAD WEIGHT — no query consumers, deleted at the Flutter decommission
-     * (#431 lock 3). Do not build on these three.
+     * (#992). Do not build on these three.
      *
      * "No query consumers" precisely: nothing in this repo filters, projects or
      * orders by them, and no code reads one to make a decision about anything
@@ -149,7 +169,11 @@ export const produtoSchema = z
      * The only real consumer was ever the deployed Flutter backend, which does
      * not survive the cutover — so as of the owner decision on 2026-08-10 these
      * have no consumer in any window. The writes are kept purely so the
-     * decommission can delete the whole cluster in one piece (#961).
+     * decommission can delete the whole cluster in one piece — tracked in
+     * **#992**, which carries the full removal list. (#431, which used to hold
+     * that job, is closed.) The `statusProdutosMarketplace` write in
+     * `importMigration.applyMarketplaceDeletion` is kept on the same grounds and
+     * for the same window — decided explicitly in #825, not by omission.
      *
      * ⚠️ And they are already unreliable, which is why nobody should try to
      * repair them: an entry is **never removed when a link doc is deleted** (no

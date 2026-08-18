@@ -37,8 +37,11 @@ const VALUES = {
   error: 'boom',
 } as unknown as Pedido;
 
-const ALL_CACHES = [
-  'valorCobrado',
+/** The caches `buildPedidoPatch` still persists — `valorCobrado` alone (#796). */
+const ALL_CACHES = ['valorCobrado'];
+
+/** Removed from `pedidoSchema`, still written by the live Flutter app. */
+const CACHES_REMOVIDOS = [
   'valorCusto',
   'valorFreteInicial',
   'custoFreteInicial',
@@ -187,6 +190,20 @@ describe('remotelyChangedFields', () => {
       expect(isIgnoredForConcurrency(field)).toBe(true);
     }
   });
+
+  it('ignores the removed money caches so Flutter cannot raise a phantom conflict', () => {
+    // #796. These five are gone from `pedidoSchema`, but `pedidoSchema` is
+    // `.passthrough()` and the still-live Flutter `Pedido.factory` recomputes
+    // them on every integral save — so they keep appearing in the raw diff with
+    // NOBODY on this side writing them. Without the ignore the operator gets a
+    // conflict modal naming a field that is not on their screen.
+    for (const field of CACHES_REMOVIDOS) {
+      expect(isIgnoredForConcurrency(field)).toBe(true);
+    }
+    const baseline = { numero: 'A', valorFreteInicial: 7, custoFreteInicial: 5 };
+    const current = { numero: 'A', valorFreteInicial: 12.5, custoFreteInicial: 9 };
+    expect(remotelyChangedFields(baseline, current)).toEqual([]);
+  });
 });
 
 describe('savePedido', () => {
@@ -277,7 +294,7 @@ describe('savePedido', () => {
 });
 
 describe('estado history', () => {
-  it('is never written from here — the onPedidoEstadoChanged trigger owns it', async () => {
+  it('is never written from here — the onPedidoChanged trigger owns it', async () => {
     const { port, written, committed } = fakePort({ estado: 'iniciado' }, 4242);
     await savePedido(port, {
       pedidoId: 'ped1',
@@ -463,7 +480,7 @@ describe('cancelarPedido', () => {
     expect(written()).toEqual({ estado: 'cancelado', ultimaModificacao: 777 });
   });
 
-  it('writes no história row — the onPedidoEstadoChanged trigger owns it', async () => {
+  it('writes no história row — the onPedidoChanged trigger owns it', async () => {
     const { port, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
     await cancelarPedido(port, { pedidoId: 'x' });
     // The subcollection is `meta.serverOwned`: a client append is denied by the

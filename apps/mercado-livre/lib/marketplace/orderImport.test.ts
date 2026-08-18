@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
@@ -19,7 +20,7 @@ import { OrderItemsIncompleteError } from './orderMapping';
 // cascade is covered by `orderProdutoResolve.test.ts`) — not their internals.
 
 vi.mock('./orderProdutoResolve', () => ({
-  resolveOrderLineProduto: vi.fn(async () => null),
+  resolveOrderLineProduto: vi.fn(async () => ({ produtoId: null, via: 'unresolved' })),
 }));
 vi.mock('./orderCliente', () => {
   class MlBillingInfoUnsupportedError extends Error {}
@@ -61,7 +62,7 @@ import {
   type OccOpKind,
   type OccTransaction,
   type OccWriteKind,
-} from './testing/occTransaction';
+} from '@delfrance/data/testing';
 import { makeItemEnsureUniqueId } from './orderIds';
 import type { MappedFreteInicialFields } from './orderShipmentMapping';
 import {
@@ -109,7 +110,7 @@ const ENDERECO_SP: EnderecoForcado = {
 // and a chained where/limit/get query).
 //
 // `runTransaction` delegates to the SHARED `OccEngine`
-// (`./testing/occTransaction`), which replaces the non-isolated stand-in this
+// (`@delfrance/data/testing`), which replaces the non-isolated stand-in this
 // file used to carry. That brings three things this file never had: a
 // reads-before-writes guard (the other three FakeDbs in this folder already had
 // one), an `opLog`, and `lastPatch` — plus the snapshot-read/retry semantics the
@@ -349,7 +350,11 @@ function stubViaCep(resposta: EnderecoViaCep | null): ViaCepClient {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(resolveOrderLineProduto).mockResolvedValue(null);
+  // `loadContaBag` now shares a module-scope cache keyed by the document PATH,
+  // so a fresh `FakeDb` per test does not isolate it and every test here seeds
+  // the same `conta-A`.
+  __resetAllReadCaches();
+  vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' });
   vi.mocked(resolvePrazoDespacho).mockResolvedValue(null);
   // The double CREATES the doc it reports having created. Every step after
   // `discoverPedidoMercadoLivre` patches that pedido, and the Admin SDK rejects
@@ -398,6 +403,10 @@ beforeEach(() => {
   // doesn't leak into whichever test runs next.
   vi.mocked(billingInfoToEnderecoFields).mockReturnValue(SEM_CEP);
   vi.mocked(shipmentToEnderecoFields).mockReturnValue(SEM_CEP);
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 /* ----------------------------------- tests --------------------------------- */
@@ -615,7 +624,7 @@ describe('importPedidoMercadoLivre — produto resolution per line (#792)', () =
     seedConta(db);
     const order = makeVariationOrder({ id: 90, variationId: 77, sku: 'SEM-VINCULO' });
     const api = makeApi({ getOrder: vi.fn(async () => order) });
-    vi.mocked(resolveOrderLineProduto).mockResolvedValue(null);
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' });
 
     await importPedidoMercadoLivre(deps(db, api), 90);
 
@@ -645,7 +654,7 @@ describe('importPedidoMercadoLivre — produto resolution per line (#792)', () =
     const db = new FakeDb();
     seedConta(db);
     const api = makeApi({ getOrder: vi.fn(async () => makeVariationOrder({ id: 94 })) });
-    vi.mocked(resolveOrderLineProduto).mockResolvedValue(null);
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' });
 
     await importPedidoMercadoLivre(deps(db, api), 94);
 
@@ -689,7 +698,7 @@ describe('importPedidoMercadoLivre — produto resolution per line (#792)', () =
       },
     });
     const api = makeApi({ getOrder: vi.fn(async () => order) });
-    vi.mocked(resolveOrderLineProduto).mockResolvedValue(null); // our cascade misses
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' }); // our cascade misses
 
     await importPedidoMercadoLivre(deps(db, api), 93);
 
@@ -701,7 +710,7 @@ describe('importPedidoMercadoLivre — produto resolution per line (#792)', () =
     seedConta(db);
     const order = makeVariationOrder({ id: 92, variationId: 12 });
     const api = makeApi({ getOrder: vi.fn(async () => order) });
-    vi.mocked(resolveOrderLineProduto).mockResolvedValue(null);
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' });
 
     await importPedidoMercadoLivre(deps(db, api), 92);
     const id = `ml-prod-${makeItemEnsureUniqueId(92, '12', 0)}`;
@@ -713,6 +722,123 @@ describe('importPedidoMercadoLivre — produto resolution per line (#792)', () =
     const incidentes = db.docs('pedidos/pedido-1/incidentes');
     expect(incidentes.size).toBe(1); // ALREADY_EXISTS swallowed, no duplicate
     expect(incidentes.get(id)!.timestamp).toBe(first.timestamp); // not re-dated
+  });
+
+  /**
+   * An AMBIGUOUS sku needs a different operator action from an absent one, so it
+   * gets its own `subtipo` and wording. `tipo` stays `outros` — the wire enum is
+   * shared with the Flutter app and must never be extended; a passthrough
+   * `subtipo` is the established extension point (four exist today).
+   */
+  it('records an AMBIGUOUS-sku incidente, distinct from the not-found one', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const order = makeVariationOrder({ id: 95, variationId: 77, sku: 'DUP-SKU' });
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({
+      produtoId: null,
+      via: 'ambiguous-sku',
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 95);
+
+    const args = vi.mocked(discoverPedidoMercadoLivre).mock.calls[0]![0];
+    expect(args.itensByOrderId.get(95)![0]!.produtoUid).toBeNull();
+
+    const incidentes = db.docs('pedidos/pedido-1/incidentes');
+    expect(incidentes.size).toBe(1);
+    const row = incidentes.get(`ml-prod-${makeItemEnsureUniqueId(95, '77', 0)}`)!;
+    expect(row.subtipo).toBe('ml-produto-sku-ambiguo');
+    expect(row.tipo).toBe(TIPO_INCIDENTE.outros);
+    expect(row.motivoDoIncidente).toContain('DUP-SKU');
+    expect(row.motivoDoIncidente).toContain('anúncio MLB95');
+    expect(row.motivoDoIncidente).toContain('variação 77');
+    // Both remedies: de-duplicating the cadastro alone does NOT re-bind this
+    // pedido, because the item merge is append-only.
+    expect(row.motivoDoIncidente).toContain('mais de um produto');
+    expect(row.motivoDoIncidente).toContain('corrija os SKUs duplicados');
+  });
+
+  it('leaves the not-found wording alone — the two branches must not converge', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const order = makeVariationOrder({ id: 96, variationId: 78, sku: 'SEM-VINCULO' });
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' });
+
+    await importPedidoMercadoLivre(deps(db, api), 96);
+
+    const row = db
+      .docs('pedidos/pedido-1/incidentes')
+      .get(`ml-prod-${makeItemEnsureUniqueId(96, '78', 0)}`)!;
+    expect(row.subtipo).toBe('ml-produto-nao-vinculado');
+    expect(row.motivoDoIncidente).toContain('não foi vinculado a nenhum produto do ERP');
+    expect(row.motivoDoIncidente).not.toContain('mais de um produto');
+  });
+
+  it('carries the ambiguity reason across a pack — the memo caches the whole verdict', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const initial = makeVariationOrder({ id: 83, packId: 801, itemId: 'MLB9', variationId: 5 });
+    const sibling = makeVariationOrder({ id: 84, packId: 801, itemId: 'MLB9', variationId: 5 });
+    const api = makeApi({
+      getOrder: vi.fn(async (id: number) => (id === 83 ? initial : sibling)),
+      getPack: vi.fn(async () => ({ id: 801, status: 'ready', orders: [{ id: 83 }, { id: 84 }] })),
+    });
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({
+      produtoId: null,
+      via: 'ambiguous-sku',
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 83);
+
+    // One resolve, two lines — and the SECOND line must not fall back to the
+    // generic wording just because it was served from the memo.
+    expect(resolveOrderLineProduto).toHaveBeenCalledTimes(1);
+    const incidentes = db.docs('pedidos/pedido-1/incidentes');
+    expect(incidentes.size).toBe(2);
+    for (const orderId of [83, 84]) {
+      const row = incidentes.get(`ml-prod-${makeItemEnsureUniqueId(orderId, '5', 0)}`)!;
+      expect(row.subtipo).toBe('ml-produto-sku-ambiguo');
+    }
+  });
+
+  it('keeps the FIRST verdict when a redelivery resolves differently (create-only, by design)', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const order = makeVariationOrder({ id: 98, variationId: 13, sku: 'DUP-SKU' });
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({
+      produtoId: null,
+      via: 'ambiguous-sku',
+    });
+    await importPedidoMercadoLivre(deps(db, api), 98);
+
+    // The duplicate SKU is fixed in the cadastro, then the sweep re-drives the
+    // same order — now the SKU matches nothing at all.
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' });
+    await importPedidoMercadoLivre({ ...deps(db, api), nowUs: NOW_US + 3_600_000_000 }, 98);
+
+    // `.create()` + swallow ALREADY_EXISTS means the row is frozen at the first
+    // verdict — the accepted cost of never re-dating an incidente on a replay.
+    // If this ever has to change, it is a decision about the write mode.
+    const incidentes = db.docs('pedidos/pedido-1/incidentes');
+    expect(incidentes.size).toBe(1);
+    expect(incidentes.get(`ml-prod-${makeItemEnsureUniqueId(98, '13', 0)}`)!.subtipo).toBe(
+      'ml-produto-sku-ambiguo',
+    );
+  });
+
+  it('records NO incidente when a SKU rung DID bind — the verdict is not the trigger', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const order = makeVariationOrder({ id: 97, variationId: 79, sku: 'OK' });
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+    vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: 'prod-ok', via: 'sku-any' });
+
+    await importPedidoMercadoLivre(deps(db, api), 97);
+
+    expect(db.docs('pedidos/pedido-1/incidentes').size).toBe(0);
   });
 });
 

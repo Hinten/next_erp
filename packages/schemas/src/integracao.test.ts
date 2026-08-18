@@ -15,6 +15,10 @@ import {
   token6hSchema,
   tokenDuravelMeta,
   tokenDuravelSchema,
+  USUARIO_TESTE_ROLE,
+  usuarioTesteMercadoLivreMeta,
+  usuarioTesteMercadoLivreSchema,
+  usuarioTesteRoleSchema,
 } from './integracao';
 import { ALL_DOMAINS } from './registry';
 
@@ -472,12 +476,24 @@ describe('integracao metas', () => {
     expect(integracaoMeta.cascade).toEqual([
       { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
       { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
+      // #821 — holds a live PKCE code_verifier.
+      { path: 'integracao/{integracaoId}/oauthState', onDelete: 'cascade' },
       // Dual-run ML pair (#829) — they hold a live refresh_token, and the legacy
       // Flutter `deleteCascade` on a conta already removed both, so leaving them
       // out would orphan a working credential.
       { path: 'integracao/{integracaoId}/token6h', onDelete: 'cascade' },
       { path: 'integracao/{integracaoId}/tokenDuravel', onDelete: 'cascade' },
+      // ML test-user store: unrecoverable passwords, freed for hygiene rather
+      // than to revoke anything live.
+      { path: 'integracao/{integracaoId}/usuariosTeste', onDelete: 'cascade' },
     ]);
+  });
+
+  it('makes user_id server-owned — it is the webhook routing key (#821/T4)', () => {
+    // `resolveIntegracaoByUserId` finds an account by this field, so a client
+    // able to write it could repoint another seller's notification stream. Its
+    // only legitimate writer is the OAuth exchange, via the Admin SDK.
+    expect(integracaoMeta.serverOwnedFields).toEqual(['user_id']);
   });
 
   it('credenciaisIntegracaoMeta targets the subcollection', () => {
@@ -565,11 +581,69 @@ describe('Mercado Livre dual-run token collections', () => {
   });
 
   it('does NOT relax the sibling credential stores', () => {
-    // The dual-run exception is ML-only. `credenciais` and `credenciaisWhatsapp`
-    // must stay deny-all and unregistered.
+    // The dual-run exception is ML-only. `credenciais`, `credenciaisWhatsapp`
+    // and `usuariosTeste` must stay deny-all and unregistered.
     const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
     expect(paths).not.toContain('integracao/{integracaoId}/credenciais');
     expect(paths).not.toContain('integracao/{integracaoId}/credenciaisWhatsapp');
+    expect(paths).not.toContain('integracao/{integracaoId}/usuariosTeste');
     expect(credenciaisWhatsappMeta.permissions).toEqual({ read: 0n, write: 0n, delete: 0n });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*             UsuariosTeste — Mercado Livre test-user store                   */
+/* -------------------------------------------------------------------------- */
+
+describe('Mercado Livre test-user collection', () => {
+  const minted = {
+    role: USUARIO_TESTE_ROLE.vendedor,
+    id: 120506781,
+    nickname: 'TESTUSER1234',
+    password: 'qatest328',
+    site_id: 'MLB',
+  };
+
+  it('parses the shape POST /users/test_user actually returns', () => {
+    // The mint response carries exactly id/nickname/password/site_status; the
+    // rest is stamped by this repo, so it must parse without them.
+    const parsed = usuarioTesteMercadoLivreSchema.parse({ ...minted, site_status: 'active' });
+    expect(parsed).toMatchObject({ ...minted, site_status: 'active' });
+    expect(parsed.email).toBeNull();
+    expect(parsed.createdAt).toBeNull();
+    expect(parsed.createdByUserId).toBeNull();
+  });
+
+  it('defaults every optional field to null, never undefined', () => {
+    // The Firebase SDK rejects `undefined` in a write — a field defaulting to
+    // undefined would throw at the one moment an unrecoverable credential is
+    // being persisted.
+    const parsed = usuarioTesteMercadoLivreSchema.parse(minted);
+    for (const key of ['site_status', 'email', 'createdAt', 'createdByUserId'] as const) {
+      expect(parsed[key]).toBeNull();
+    }
+  });
+
+  it('rejects an empty password', () => {
+    // A blank password parses as "stored" while being useless, and ML will not
+    // reissue it — fail at the write instead.
+    expect(() => usuarioTesteMercadoLivreSchema.parse({ ...minted, password: '' })).toThrow();
+  });
+
+  it('is admin-only / default-deny — it stores a password in the clear', () => {
+    expect(usuarioTesteMercadoLivreMeta.collectionPath).toBe(
+      'integracao/{integracaoId}/usuariosTeste',
+    );
+    expect(usuarioTesteMercadoLivreMeta.permissions).toEqual({
+      read: 0n,
+      write: 0n,
+      delete: 0n,
+    });
+  });
+
+  it('ships the role enum with its companion constant (#699)', () => {
+    // `prefer-schema-enum` identifies an enum by its companion constant; without
+    // one, a raw 'vendedor' string in app code goes unflagged.
+    expect(Object.values(USUARIO_TESTE_ROLE)).toEqual(usuarioTesteRoleSchema.options);
   });
 });

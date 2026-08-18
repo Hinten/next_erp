@@ -42,7 +42,7 @@ export const reconciliarPagamentoPedido = onCall(async (request) => {
 
   try {
     // No `usuarioRef`: the historicoEstadoPedido row comes from the
-    // `onPedidoEstadoChanged` trigger, which derives the actor from the pedido
+    // `onPedidoChanged` trigger, which derives the actor from the pedido
     // write's auth context. This reconcile writes via the Admin SDK, so the row
     // records a null usuário — an automatic, payment-driven transition is
     // system-caused. The operator is still captured in the log line below.

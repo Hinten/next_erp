@@ -23,8 +23,10 @@ async function selectFieldMatching(page: Page, label: string, option: RegExp): P
  *     `documents/...` STRINGS (Flutter `OuterRefField.toJson`);
  *   - motoboy `externalOptionId` is the Dart optionString with the
  *     mandatory `.0` on integral doubles;
- *   - the money caches (`valorFreteInicial` / `custoFreteInicial` /
- *     `valorCobrado`) follow the legacy `Pedido.total` / factory formulas.
+ *   - `valorCobrado` follows the legacy `Pedido.total` formula. It is the only
+ *     money cache still stored; `valorFreteInicial` / `custoFreteInicial` were
+ *     removed (#796), and the `frete.valorCobrado` / `.custoCalculado`
+ *     assertions below are what carried the real value all along.
  */
 test.describe.serial('Pedidos — aba Frete', () => {
   const prefix = e2ePrefix('pfr');
@@ -99,8 +101,6 @@ test.describe.serial('Pedidos — aba Frete', () => {
 
     const pedido = await createAndReadBack(page);
     expect(pedido.freteInicial).toBeNull();
-    expect(pedido.valorFreteInicial).toBe(0);
-    expect(pedido.custoFreteInicial).toBe(0);
     // valorCobrado = subtotal (10 × 1) − desconto 0 + frete 0.
     expect(pedido.valorCobrado).toBe(10);
   });
@@ -141,10 +141,7 @@ test.describe.serial('Pedidos — aba Frete', () => {
     expect(frete.ehReverso).toBe(false);
     expect(typeof frete.prazoDespacho).toBe('number');
     expect(frete.valorCobrado).toBe(12.5);
-    // Legacy caches: valorFreteInicial = frete.valorCobrado; valorCobrado =
-    // subtotal 100 − desconto 0 + frete 12.5.
-    expect(pedido.valorFreteInicial).toBe(12.5);
-    expect(pedido.custoFreteInicial).toBe(0);
+    // valorCobrado = subtotal 100 − desconto 0 + frete 12.5.
     expect(pedido.valorCobrado).toBe(112.5);
   });
 
@@ -210,9 +207,7 @@ test.describe.serial('Pedidos — aba Frete', () => {
     expect(typeof frete.prazoDespacho).toBe('number');
     expect(frete.enderecoFreteOuterReference).toBe(`documents/${fixtures.enderecoPath}`);
     expect(frete.integracaoFreteOuterRef).toBe(`documents/int_frete/${fixtures.motoboyId}`);
-    // Caches: subtotal 50 + frete 20; custo from custoCalculado.
-    expect(pedido.valorFreteInicial).toBe(20);
-    expect(pedido.custoFreteInicial).toBe(15);
+    // valorCobrado = subtotal 50 + frete 20.
     expect(pedido.valorCobrado).toBe(70);
   });
 

@@ -203,6 +203,21 @@ export {
 export { counter, counterSchema, counterMeta, type Counter } from './counter';
 
 export {
+  configIa,
+  configIaSchema,
+  configIaMeta,
+  provedorIaSchema,
+  PROVEDOR_IA,
+  CONFIG_IA_MODELO_PADRAO,
+  CONFIG_IA_ML_ATRIBUTOS_DOC_ID,
+  CONFIG_IA_ML_MEDIDAS_DOC_ID,
+  CONFIG_IA_AGENTES,
+  type ConfigIa,
+  type ConfigIaAgenteId,
+  type ProvedorIa,
+} from './configIa';
+
+export {
   conversa,
   conversaSchema,
   conversaMeta,
@@ -280,6 +295,13 @@ export {
   // ALL_DOMAINS; only its schema/meta/type are public.
   credenciaisWhatsappSchema,
   credenciaisWhatsappMeta,
+  // `usuariosTeste` mirrors them too: the Mercado Livre test-user store holds an
+  // UNRECOVERABLE password, so it is admin-only, default-deny and stays out of
+  // ALL_DOMAINS. The role enum ships its companion constant per #699.
+  usuarioTesteMercadoLivreSchema,
+  usuarioTesteMercadoLivreMeta,
+  usuarioTesteRoleSchema,
+  USUARIO_TESTE_ROLE,
   type Integracao,
   type IntegracaoTipo,
   type BrandShopee,
@@ -289,7 +311,22 @@ export {
   type Token6h,
   type TokenDuravel,
   type CredenciaisWhatsapp,
+  type UsuarioTesteMercadoLivre,
+  type UsuarioTesteRole,
 } from './integracao';
+
+// The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by
+// Mercado Livre, Melhor Envio and Mercado Pago. Admin-only and default-deny like
+// `credenciaisIntegracao`: not DomainSchemas, not in ALL_DOMAINS; only the
+// schema, the three metas and the types are public.
+export {
+  oauthStateSchema,
+  oauthStateIntegracaoMeta,
+  oauthStateIntFreteMeta,
+  oauthStateMetodoPgtoMeta,
+  type OauthState,
+  type OauthStateSchema,
+} from './oauthState';
 
 export {
   // ⚠️ The inbound webhook log. Unlike its Mercado Pago / WhatsApp siblings this
@@ -358,6 +395,17 @@ export {
   backfillPedidosMercadoLivreMeta,
   type BackfillPedidosMercadoLivre,
 } from './backfillPedidosMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
+  // for the flag-gated `missed_feeds` backstop sweep (#812). Bare schema+meta
+  // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // missedFeedsMercadoLivre.ts. Carries no cursor by design: ML's feed has no
+  // time filter, so retention vs schedule period is what guarantees coverage.
+  missedFeedsMercadoLivreSchema,
+  missedFeedsMercadoLivreMeta,
+  type MissedFeedsMercadoLivre,
+} from './missedFeedsMercadoLivre';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
@@ -788,22 +836,24 @@ export {
   DERIVATIVE_EXT,
   productOriginalPath,
   productDerivativePath,
+  ownedDerivativePath,
   productVideoPath,
   productAnexoPath,
   mediaPath,
   tabMediOriginalPath,
+  ownedArquivoId,
   productArquivoId,
   tabMediArquivoId,
   derivativeArquivoId,
-  parseProductOriginalPath,
-  isWatchedProductOriginal,
+  parseOwnedOriginalPath,
+  isWatchedOriginal,
   parseProductMediaDir,
   parseOwnedMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
   type VariantSpec,
-  type ParsedOriginalPath,
+  type ParsedOwnedOriginalPath,
   type ProductMediaKind,
   type ParsedProductMediaDir,
   type MediaOwnerCollection,
@@ -812,6 +862,7 @@ export {
 
 export {
   buildFotoRefs,
+  buildFotoRefsFromArquivoId,
   buildOriginalFotoRef,
   deriveFotosArquivosIds,
   fotoSchema,

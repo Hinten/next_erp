@@ -1,13 +1,17 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { arquivoCollection } from '@delfrance/data/admin/collections';
-import { parseProductOriginalPath, productArquivoId } from '@delfrance/schemas';
+import { ownedArquivoId, parseOwnedOriginalPath } from '@delfrance/schemas';
 
 /**
  * Map a finalized Storage object back to its owning `arquivos` doc id. Prefers
  * the `arquivoId` the client stamps in custom metadata (create-first uploads);
- * falls back to deriving it from a product-original path for objects that
+ * falls back to deriving it from an owner-original path for objects that
  * predate the marker. Returns `null` when neither resolves (a legacy
  * video/generic object with no metadata — nothing to stamp).
+ *
+ * The fallback is owner-aware for the same reason the resize guard is: an
+ * out-of-band `tabMedi/<id>/originals/<hash>` upload should resolve to its doc
+ * rather than to nothing.
  */
 export function arquivoIdForObject(
   name: string,
@@ -15,8 +19,8 @@ export function arquivoIdForObject(
 ): string | null {
   const fromMeta = metadata?.arquivoId;
   if (fromMeta) return fromMeta;
-  const parsed = parseProductOriginalPath(name);
-  return parsed ? productArquivoId(parsed.produtoId, parsed.hash) : null;
+  const parsed = parseOwnedOriginalPath(name);
+  return parsed ? ownedArquivoId(parsed.ownerId, parsed.hash) : null;
 }
 
 /**
