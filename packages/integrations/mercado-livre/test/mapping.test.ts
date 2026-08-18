@@ -10,7 +10,9 @@ import {
 import {
   ESTADO_PUBLICACAO,
   buildItemPayload,
+  buildUserProductItemPayload,
   estadoFromMlStatus,
+  userProductMemberInputs,
 } from '../src/mapping/itemPayload';
 
 describe('attributeToMercadoLivre', () => {
@@ -259,6 +261,148 @@ describe('buildItemPayload — User Products seller', () => {
     expect(data.title).toBeUndefined();
     expect(data.variations).toBeUndefined();
     expect(data.available_quantity).toBe(3);
+  });
+});
+
+describe('buildUserProductItemPayload', () => {
+  const member = {
+    produtoId: 'child-1',
+    availableQuantity: 4,
+    attributeCombinations: [attrColor('Azul')],
+    attributes: [attrSku('SKU-M')],
+  };
+  const base = {
+    familyName: 'Camiseta Básica',
+    condition: 'new' as const,
+    categoryId: 'MLB31447',
+    listingTypeId: 'gold_special',
+    price: 79.9,
+    attributes: [attrSku('SKU-PAI'), attrWeightKg(0.3)],
+    pictures: [{ id: 'PIC-PAI' }],
+    member,
+  };
+
+  it('a CREATE carries family_name, the create-only fields and the price', () => {
+    const data = buildUserProductItemPayload({ ...base, isUpdate: false });
+    expect(data).toMatchObject({
+      family_name: 'Camiseta Básica',
+      category_id: 'MLB31447',
+      condition: 'new',
+      site_id: 'MLB',
+      buying_mode: 'buy_it_now',
+      listing_type_id: 'gold_special',
+      currency_id: 'BRL',
+      price: 79.9,
+      available_quantity: 4,
+      // The back-reference is the CHILD produto, not the link doc — each item
+      // is one variation, and that is what an import matches on.
+      seller_custom_field: 'child-1',
+    });
+  });
+
+  it('never emits a title or a variations array', () => {
+    // Both are hard ML rejections under User Products: it computes the title
+    // itself, and the model has no variations array at all.
+    for (const isUpdate of [false, true]) {
+      const data = buildUserProductItemPayload({ ...base, isUpdate });
+      expect(data.title).toBeUndefined();
+      expect(data.variations).toBeUndefined();
+    }
+  });
+
+  it('an UPDATE drops family_name, the create-only fields AND the price', () => {
+    const data = buildUserProductItemPayload({ ...base, isUpdate: true });
+    // family_name is rejected once the family has sales, and it feeds the
+    // family-id hash — carrying it could move the member to another family.
+    expect(data.family_name).toBeUndefined();
+    expect(data.category_id).toBeUndefined();
+    expect(data.condition).toBeUndefined();
+    expect(data.listing_type_id).toBeUndefined();
+    // Prices belong to the manual price flow and its "baixar preços" guard.
+    expect(data.price).toBeUndefined();
+    // ...while the fields an edit exists to change still go.
+    expect(data.available_quantity).toBe(4);
+    expect(data.seller_custom_field).toBe('child-1');
+  });
+
+  it("the member's combination rides `attributes`, and its SKU beats the family's", () => {
+    const data = buildUserProductItemPayload({ ...base, isUpdate: false });
+    // `attribute_combinations` is a legacy-model field on the way in.
+    expect(data.attribute_combinations).toBeUndefined();
+    const attrs = data.attributes as Array<{ id: string; value_name: string }>;
+    expect(attrs.find((a) => a.id === 'COLOR')?.value_name).toBe('Azul');
+    // One SELLER_SKU, the member's — legacy `sku ?? pai.sku`.
+    expect(attrs.filter((a) => a.id === 'SELLER_SKU')).toHaveLength(1);
+    expect(attrs.find((a) => a.id === 'SELLER_SKU')?.value_name).toBe('SKU-M');
+    // Family attributes the member does not override still ship.
+    expect(attrs.find((a) => a.id === 'WEIGHT')).toBeDefined();
+  });
+
+  it('falls back to the family SKU when the member has none of its own', () => {
+    const data = buildUserProductItemPayload({
+      ...base,
+      isUpdate: false,
+      member: { ...member, attributes: [] },
+    });
+    const attrs = data.attributes as Array<{ id: string; value_name: string }>;
+    expect(attrs.find((a) => a.id === 'SELLER_SKU')?.value_name).toBe('SKU-PAI');
+  });
+
+  it('inherits the family gallery only when the member has no pictures', () => {
+    expect(buildUserProductItemPayload({ ...base, isUpdate: false }).pictures).toEqual([
+      { id: 'PIC-PAI' },
+    ]);
+    expect(
+      buildUserProductItemPayload({
+        ...base,
+        isUpdate: false,
+        member: { ...member, pictureIds: ['PIC-AZUL'] },
+      }).pictures,
+    ).toEqual([{ id: 'PIC-AZUL' }]);
+  });
+});
+
+describe('userProductMemberInputs', () => {
+  const input = {
+    isUpdate: false,
+    isUserProductSeller: true,
+    title: 'Camiseta Básica',
+    condition: 'new' as const,
+    sellerCustomField: 'link-doc-9',
+    categoryId: 'MLB31447',
+    listingTypeId: 'gold_special',
+    price: 50,
+    attributes: [attrWeightKg(0.3)],
+    pictures: [{ id: 'PIC-PAI' }],
+    variations: [
+      { produtoId: 'child-1', availableQuantity: 1, attributeCombinations: [attrColor('Azul')] },
+      {
+        produtoId: 'child-2',
+        availableQuantity: 2,
+        price: 65,
+        attributeCombinations: [attrColor('Verde')],
+      },
+    ],
+  };
+
+  it('projects one input per member, sharing the listing-level fields', () => {
+    const members = userProductMemberInputs(input);
+    expect(members).toHaveLength(2);
+    expect(members.map((m) => m.member.produtoId)).toEqual(['child-1', 'child-2']);
+    for (const m of members) {
+      expect(m.familyName).toBe('Camiseta Básica');
+      expect(m.categoryId).toBe('MLB31447');
+      expect(m.pictures).toEqual([{ id: 'PIC-PAI' }]);
+    }
+  });
+
+  it("a member's own price wins over the anchor's", () => {
+    // `propagatePriceToChildren: false` — the same rule the price sync applies.
+    expect(userProductMemberInputs(input).map((m) => m.price)).toEqual([50, 65]);
+  });
+
+  it('yields nothing for a produto with no variations', () => {
+    expect(userProductMemberInputs({ ...input, variations: [] })).toEqual([]);
   });
 });
 

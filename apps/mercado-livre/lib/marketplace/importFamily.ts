@@ -53,13 +53,18 @@ export async function resolveFamilySiblingIds(
   primaryItemId: string,
 ): Promise<FamilySiblingsResult> {
   try {
-    const family = await deps.api.getUserProductFamily(familyId);
-    // `user_products_ids`/`results` are schema-defaulted `string[]` (never
-    // null/undefined) — only an empty VALUE needs filtering, not the type.
-    const userProductIds = family.user_products_ids.filter((id) => id.length > 0);
+    const userProductIds = await familyUserProductIds(deps, familyId);
     if (userProductIds.length === 0) return { ids: [], capped: false, resolutionError: null };
 
-    const search = await deps.api.searchItemsByUserProduct(sellerUserId, userProductIds);
+    // ONE page, deliberately — import wants "enough", and `capped` is how it
+    // says the rest can wait. ⚠️ `limit` is what makes that flag reachable at
+    // all: without it ML applies its own default page size, so a family bigger
+    // than that came back short and `capped` could never go true against a real
+    // response. Asking for one MORE than the cap is what detects the overflow.
+    const search = await deps.api.searchItemsByUserProduct(sellerUserId, userProductIds, {
+      limit: MAX_FAMILY_SIBLINGS + 1,
+      offset: 0,
+    });
     const siblingIds = [...new Set(search.results)].filter(
       (id) => id.length > 0 && id !== primaryItemId,
     );
@@ -74,6 +79,120 @@ export async function resolveFamilySiblingIds(
     // to an empty family) so the caller can report it on the family block.
     if (err instanceof MercadoLivreError) {
       return { ids: [], capped: false, resolutionError: err.message };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Hop one of the fan-out: the family's member `user_products_ids`. Shared by
+ * both readers below, which differ only in how they resolve those to item ids.
+ * Throws `MercadoLivreError` for each caller's own best-effort boundary.
+ */
+async function familyUserProductIds(
+  deps: { api: MercadoLivreApi },
+  familyId: string,
+): Promise<string[]> {
+  const family = await deps.api.getUserProductFamily(familyId);
+  // `user_products_ids`/`results` are schema-defaulted `string[]` (never
+  // null/undefined) — only an empty VALUE needs filtering, not the type.
+  return family.user_products_ids.filter((id) => id.length > 0);
+}
+
+/** The full, UNCAPPED membership of a family. */
+export interface FamilyItemsResult {
+  /** Every MLB item id ML reports for the family, deduped. */
+  ids: string[];
+  /**
+   * The ML-API failure that aborted resolution; null on success. ⚠️ An error
+   * and an empty family are NOT interchangeable for a caller that acts on
+   * absence — see {@link resolveFamilyItemIds}.
+   */
+  resolutionError: string | null;
+}
+
+/** One page of `GET /users/{id}/items/search`. */
+export const FAMILY_ITEMS_PAGE_SIZE = 50;
+
+/**
+ * Pages read before giving up. 300 items is far past any real family (ML caps a
+ * user product at 30 sale conditions), so hitting it means something is wrong
+ * with the query, not with the catalogue.
+ */
+export const MAX_FAMILY_ITEM_PAGES = 6;
+
+/**
+ * The family's complete MLB item id set — the same two hops as
+ * {@link resolveFamilySiblingIds}, without the primary filter and without the
+ * import cap.
+ *
+ * ⚠️ **Complete or an error, never a silent prefix**, because the two callers
+ * want opposite things. Import reads membership to ADD work, so truncating is
+ * merely a cost cap: 60 is plenty and the rest can wait. The publish orphan
+ * sweep reads it to decide what to CLOSE, and there a truncated read is
+ * indistinguishable from "these members no longer exist".
+ *
+ * That distinction is why this pages explicitly. `GET /users/{id}/items/search`
+ * returns ML's first page by default — the endpoint takes `limit`/`offset` and
+ * answers with `paging.total`, none of which this function used to send or read.
+ * A family larger than one page therefore came back truncated with nothing able
+ * to tell, and the sweep's own "a member we just wrote is missing" guard turned
+ * that into a permanent, non-deterministic refusal: safe, but silently inert for
+ * exactly the big families the sweep exists to tidy.
+ *
+ * Completeness is asserted two ways, so a missing `paging` cannot fake it: a
+ * short page ends the walk, and `paging.total` (when ML sends it) must be
+ * reached. Anything else — including the page cap — is a `resolutionError`, the
+ * "we couldn't ask" fact the sweep already handles correctly.
+ */
+export async function resolveFamilyItemIds(
+  deps: { api: MercadoLivreApi },
+  familyId: string,
+  sellerUserId: number,
+): Promise<FamilyItemsResult> {
+  try {
+    const userProductIds = await familyUserProductIds(deps, familyId);
+    if (userProductIds.length === 0) return { ids: [], resolutionError: null };
+
+    const ids = new Set<string>();
+    let total: number | null = null;
+    for (let page = 0; page < MAX_FAMILY_ITEM_PAGES; page++) {
+      const search = await deps.api.searchItemsByUserProduct(sellerUserId, userProductIds, {
+        limit: FAMILY_ITEMS_PAGE_SIZE,
+        offset: page * FAMILY_ITEMS_PAGE_SIZE,
+      });
+      const sizeBefore = ids.size;
+      for (const id of search.results) if (id.length > 0) ids.add(id);
+      if (typeof search.paging?.total === 'number') total = search.paging.total;
+
+      // A short page is ML saying there is no more; `total` confirms it when
+      // present. Either alone is enough to stop, but only their AGREEMENT (or
+      // the absence of `total`) lets us call the result complete.
+      if (search.results.length < FAMILY_ITEMS_PAGE_SIZE) {
+        if (total != null && ids.size < total) {
+          return {
+            ids: [],
+            resolutionError: `a busca devolveu ${ids.size} de ${total} anúncios da família`,
+          };
+        }
+        return { ids: [...ids], resolutionError: null };
+      }
+      if (total != null && ids.size >= total) return { ids: [...ids], resolutionError: null };
+      // A full page that added NOTHING means `offset` is not advancing the
+      // window — no more ids are coming, and continuing to the cap would report
+      // a truncation that is not one.
+      if (ids.size === sizeBefore) return { ids: [...ids], resolutionError: null };
+    }
+
+    return {
+      ids: [],
+      resolutionError: `família com mais de ${MAX_FAMILY_ITEM_PAGES * FAMILY_ITEMS_PAGE_SIZE} anúncios`,
+    };
+  } catch (err) {
+    // Best-effort: SURFACED (not silently identical to an empty family) so the
+    // caller can tell "the family has no members" from "we couldn't ask".
+    if (err instanceof MercadoLivreError) {
+      return { ids: [], resolutionError: err.message };
     }
     throw err;
   }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   estadoLabel,
+  publishSummary,
   isStockLatched,
   listingModel,
   listingPermalink,
@@ -87,5 +88,46 @@ describe('listingPermalink', () => {
     expect(listingPermalink({ id: 'MLB1', isUserProductModel: true })).toBeNull();
     // A UP family id is NOT an MLB item id — never build a product URL from it.
     expect(listingPermalink({ id: 'sem-digitos', isUserProductModel: false })).toBeNull();
+  });
+});
+
+describe('publishSummary (#798)', () => {
+  it('a single item keeps naming it', () => {
+    expect(publishSummary({ itemId: 'MLB1', estado: 'p', itemIds: ['MLB1'] })).toBe(
+      'Anúncio MLB1 — Publicado.',
+    );
+  });
+
+  it('a User-Products family reports the COUNT, not a family id', () => {
+    // `itemId` is the family id there, which means nothing to an operator — and
+    // the child links carrying the real item ids are not on screen.
+    expect(
+      publishSummary({ itemId: '4260899048783356', estado: 'p', itemIds: ['MLB1', 'MLB2'] }),
+    ).toBe('2 anúncios (1 por variação) — Publicado.');
+  });
+
+  it('reports closed listings, singular and plural', () => {
+    expect(
+      publishSummary({
+        itemId: 'F1',
+        estado: 'p',
+        itemIds: ['MLB1', 'MLB2'],
+        orfaosEncerrados: ['MLB9'],
+      }),
+    ).toMatch(/1 anúncio encerrado \(variação removida\)\.$/);
+    expect(
+      publishSummary({
+        itemId: 'F1',
+        estado: 'p',
+        itemIds: ['MLB1'],
+        orfaosEncerrados: ['MLB9', 'MLB8'],
+      }),
+    ).toMatch(/2 anúncios encerrados \(variação removida\)\.$/);
+  });
+
+  it('degrades to the old sentence when the backend predates #798', () => {
+    // apps/web calls the DEPLOYED channel backend, not this checkout — a
+    // revision without the new fields must not render "undefined anúncios".
+    expect(publishSummary({ itemId: 'MLB1', estado: 'pa' })).toBe('Anúncio MLB1 — Pausado.');
   });
 });

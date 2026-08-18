@@ -57,6 +57,15 @@ export interface PublishProduto {
   profundidadeCm: number | null;
   precos: Record<string, { valor: number }> | null;
   ordem?: number | null;
+  /**
+   * Parent only. `false` prices each User-Products member from its OWN `precos`
+   * entry instead of the anchor's — the rule `precoPlan.buildPrecoDrafts`
+   * already applies, and publish must agree with it or a first publish lands a
+   * price the very next price sync overwrites. Undefined/true = anchor,
+   * matching the schema default. Meaningless under the legacy model, where ML
+   * requires one uniform price for the whole family.
+   */
+  propagatePriceToChildren?: boolean | null;
 }
 
 /** The subset of the `produtoMercadoLivre` link doc the assembly reads. */
@@ -184,10 +193,12 @@ export function resolveListingModel(
  * way the assembly does.
  */
 export function publishModeIssues(args: {
-  produtoNome: string;
   /** The link doc's `estado`, or null on a first publish. */
   estado: string | null;
+  /** The resolved model — a family id is only possible under User Products. */
   model: ListingModel;
+  /** The link doc's `id`, or null when the listing was never published. */
+  linkId: string | null;
   /** How many variation children this produto owns. */
   childrenCount: number;
 }): string[] {
@@ -204,16 +215,29 @@ export function publishModeIssues(args: {
     );
   }
 
-  // ⛔ Removed by the fan-out (#798 PR-B). Until then a loud block is strictly
-  // better than the alternative: `buildItemPayload` drops the variations array
-  // for a User-Products seller, so publishing here would flatten a whole listing
-  // family into ONE variation-less item.
-  if (args.model === 'user-products' && args.childrenCount > 0) {
+  // A User-Products family whose variations were ALL deleted. `link.id` holds a
+  // FAMILY id, and with no children the fan-out does not engage — so the publish
+  // would fall through to `PUT /items/{familyId}`, the one call this whole model
+  // forbids, and earn a 4xx the operator cannot read. The orphan sweep lives
+  // inside the fan-out too, so the family's members would stay live and selling
+  // with no produto behind any of them.
+  //
+  // ⚠️ Detected by the SHAPE of the id, not by `childrenCount` alone: a produto
+  // that never had variations is also `isUserProductModel` with zero children,
+  // and there `link.id` is a real item id that must keep republishing normally.
+  // An ML item id always carries its site prefix (`MLB…`); a family id is the
+  // bare integer ML computes (`import.ts:193` stringifies it). All-digits is
+  // therefore the one form that cannot be an item.
+  if (
+    args.model === 'user-products' &&
+    args.childrenCount === 0 &&
+    args.linkId != null &&
+    /^\d+$/.test(args.linkId)
+  ) {
     issues.push(
-      `produto "${args.produtoNome}" tem ${args.childrenCount} ${
-        args.childrenCount === 1 ? 'variação' : 'variações'
-      } e a conta usa o modelo User Products: cada variação vira um anúncio próprio, ` +
-        'e essa publicação ainda não está implementada — publicar assim criaria UM anúncio sem variações',
+      'este anúncio é uma família User Products (o vínculo aponta para a família, não para um ' +
+        'anúncio) e o produto não tem mais variações — recadastre as variações ou encerre os ' +
+        'anúncios da família no Mercado Livre',
     );
   }
 
@@ -559,10 +583,17 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
   if (!args.produto.nome?.trim()) issues.push('produto sem nome');
   const price = resolvePrice(args.produto, args.priceListId, issues);
   const isUpdate = args.link?.id != null;
-  if (!isUpdate && !args.categoryId) {
+  // ⚠️ A User-Products FAMILY needs both unconditionally, however published the
+  // listing already is: `isUpdate` there says the FAMILY exists, and a family
+  // that gains a variation still POSTs that member as a brand-new item. Letting
+  // the create-only rule stand would send that POST with no category and earn a
+  // 400 the operator cannot read. (Both are written back on every publish, so
+  // for an established family this costs nothing.)
+  const memberCreatePossible = args.isUserProductSeller && args.variations.length > 0;
+  if ((!isUpdate || memberCreatePossible) && !args.categoryId) {
     issues.push('categoria do Mercado Livre não definida (category_id)');
   }
-  if (!isUpdate && !args.listingTypeId) {
+  if ((!isUpdate || memberCreatePossible) && !args.listingTypeId) {
     issues.push('tipo de anúncio não definido (listing_type_id)');
   }
   if (args.pictures.length === 0) issues.push('produto sem fotos');
@@ -608,6 +639,16 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       produtoId: child.produto.id,
       order: child.produto.ordem ?? null,
       availableQuantity: child.availableQuantity,
+      // User-Products only (the legacy branch ignores it and copies the
+      // anchor's price down — ML requires a uniform family price there). Same
+      // rule `precoPlan.buildPrecoDrafts` applies, so publish and the price
+      // sync cannot disagree about what a member should cost. Resolved only in
+      // the branch that uses it: a child with no own `precos` entry is a
+      // blocking issue there and irrelevant everywhere else.
+      price:
+        args.isUserProductSeller && args.produto.propagatePriceToChildren === false
+          ? resolvePrice(child.produto, args.priceListId, issues)
+          : null,
       pictureIds: child.pictureIds,
       attributeCombinations: finalCombos,
       attributes: attrs,

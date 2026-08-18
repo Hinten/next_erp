@@ -68,44 +68,70 @@ describe('resolveListingModel', () => {
 });
 
 describe('publishModeIssues', () => {
-  const base = { produtoNome: 'Camiseta Básica', estado: null, childrenCount: 0 } as const;
+  // A published LEGACY listing: an item id, no children. The baseline every
+  // case below deviates from in exactly one dimension.
+  const base = {
+    estado: 'p' as string | null,
+    model: 'legacy' as const,
+    linkId: 'MLB111' as string | null,
+    childrenCount: 0,
+  };
 
-  it('passes a legacy listing with children and a User-Products listing without', () => {
-    expect(publishModeIssues({ ...base, model: 'legacy', childrenCount: 3 })).toEqual([]);
-    expect(publishModeIssues({ ...base, model: 'user-products' })).toEqual([]);
-  });
-
-  it("estado 'am' (mid-UPtin) blocks either model", () => {
-    for (const model of ['legacy', 'user-products'] as const) {
-      expect(publishModeIssues({ ...base, estado: 'am', model })).toEqual([
-        expect.stringContaining('migração para o modelo User Products'),
-      ]);
-    }
+  it("estado 'am' (mid-UPtin) blocks the publish", () => {
+    expect(publishModeIssues({ ...base, estado: 'am' })).toEqual([
+      expect.stringContaining('migração para o modelo User Products'),
+    ]);
   });
 
   it('every OTHER estado publishes normally', () => {
-    for (const estado of ['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
-      expect(publishModeIssues({ ...base, estado, model: 'legacy' })).toEqual([]);
+    // Including null (a first publish) — the block must not fire on a listing
+    // that has no state yet.
+    for (const estado of [null, 'r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
+      expect(publishModeIssues({ ...base, estado })).toEqual([]);
     }
   });
 
-  it('User Products + variation children is blocked, naming the produto and the count', () => {
-    const issues = publishModeIssues({ ...base, model: 'user-products', childrenCount: 3 });
+  it('a User-Products family that lost every variation is blocked', () => {
+    // `linkId` is a FAMILY id and there are no children, so the fan-out does not
+    // engage and the publish would fall through to `PUT /items/{familyId}` — the
+    // one call this model forbids. Reachable from the normal flow: publish a
+    // family, delete every variation, republish.
+    const issues = publishModeIssues({
+      ...base,
+      model: 'user-products',
+      linkId: '4260899048783356',
+    });
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toContain('Camiseta Básica');
-    expect(issues[0]).toContain('3 variações');
+    expect(issues[0]).toContain('família User Products');
   });
 
-  it('pluralises a single variation', () => {
-    expect(publishModeIssues({ ...base, model: 'user-products', childrenCount: 1 })[0]).toContain(
-      '1 variação',
+  it('a User-Products produto that NEVER had variations still publishes', () => {
+    // ⚠️ The case the guard must not claim. It is also `isUserProductModel` with
+    // zero children — the only difference is that its `linkId` is a real item
+    // id, which is why the guard tests the id's SHAPE and not the child count.
+    expect(publishModeIssues({ ...base, model: 'user-products', linkId: 'MLB2631229629' })).toEqual(
+      [],
     );
   });
 
-  it('aggregates both blocks rather than reporting the first', () => {
+  it('the same family id is fine while the variations still exist', () => {
+    // With children the fan-out engages and never touches `link.id`.
     expect(
-      publishModeIssues({ ...base, estado: 'am', model: 'user-products', childrenCount: 2 }),
-    ).toHaveLength(2);
+      publishModeIssues({
+        ...base,
+        model: 'user-products',
+        linkId: '4260899048783356',
+        childrenCount: 2,
+      }),
+    ).toEqual([]);
+  });
+
+  it('a legacy listing is never judged by its id shape, and a first publish never is', () => {
+    // The guard is scoped to User Products: only that model ever stores a family
+    // id here, so a numeric legacy id (however unlikely) is not ours to reject.
+    expect(publishModeIssues({ ...base, linkId: '123456' })).toEqual([]);
+    // Nothing published yet ⇒ no id to misread.
+    expect(publishModeIssues({ ...base, model: 'user-products', linkId: null })).toEqual([]);
   });
 });
 
@@ -340,6 +366,37 @@ describe('assemblePublishInput', () => {
     listingTypeId: 'gold_special',
     isUserProductSeller: false,
   };
+
+  it('a PUBLISHED User-Products family still requires category and listing type', () => {
+    // `isUpdate` says the FAMILY exists — it says nothing about its members, and
+    // a family that gains a variation POSTs that member as a brand-new item.
+    // Letting the ordinary create-only rule stand would send that POST with no
+    // category and earn a 400 the operator cannot read.
+    const upFamily = {
+      ...baseArgs,
+      isUserProductSeller: true,
+      categoryId: null,
+      listingTypeId: null,
+      // `id` here is the FAMILY id, which is what makes this an update.
+      link: { docId: 'link-doc-1', id: '4260899048783356', isUserProductModel: true },
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M', sku: 'SKU-1-M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+      ],
+    };
+    expect(() => assemblePublishInput(upFamily)).toThrowError(/category_id/);
+
+    // The same listing WITHOUT children is one plain item — an update there
+    // genuinely needs neither, so the rule must not widen to every UP listing.
+    expect(() => assemblePublishInput({ ...upFamily, variations: [] })).not.toThrow();
+    // ...and neither does a published LEGACY listing with children: ML takes
+    // its variations inside the one PUT, so no member is ever created alone.
+    expect(() => assemblePublishInput({ ...upFamily, isUserProductSeller: false })).not.toThrow();
+  });
 
   it('assembles a create input with variations end-to-end', () => {
     const input = assemblePublishInput({

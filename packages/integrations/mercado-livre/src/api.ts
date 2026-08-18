@@ -229,10 +229,17 @@ export interface MercadoLivreApi {
   /**
    * `GET /users/{sellerId}/items/search?user_product_id=<csv>` — resolves a
    * batch of User-Product ids to their MLB item ids (#521 family fan-out).
+   *
+   * ⚠️ Without `page` this returns ML's DEFAULT first page, and the response
+   * gives no way to tell that from a complete answer unless you read
+   * `paging.total`. A caller that needs completeness — the publish orphan sweep
+   * decides what to CLOSE from this — must pass an explicit `limit`/`offset` and
+   * check `paging` (see `resolveFamilyItemIds`).
    */
   searchItemsByUserProduct(
     sellerId: number,
     userProductIds: readonly string[],
+    page?: { limit?: number; offset?: number },
   ): Promise<MlUserProductItemsSearch>;
   /**
    * `GET /items/{id}/migration_live_listing` — the new User-Products items a
@@ -665,9 +672,16 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
 
     getUserProductFamily: (familyId) =>
       request('GET', `/sites/MLB/user-products-families/${familyId}`, userProductFamilySchema),
-    searchItemsByUserProduct: (sellerId, userProductIds) =>
+    searchItemsByUserProduct: (sellerId, userProductIds, page) =>
       request('GET', `/users/${sellerId}/items/search`, userProductItemsSearchSchema, {
-        query: { user_product_id: userProductIds.join(',') },
+        query: {
+          user_product_id: userProductIds.join(','),
+          // Explicit, so a caller that needs COMPLETENESS can tell a short page
+          // from ML's silent default (`resolveFamilyItemIds`). Omitted entirely
+          // when the caller does not care, keeping the legacy request shape.
+          ...(page?.limit != null ? { limit: String(page.limit) } : {}),
+          ...(page?.offset != null ? { offset: String(page.offset) } : {}),
+        },
       }),
     getMigrationLiveListing: (itemId) =>
       request('GET', `/items/${itemId}/migration_live_listing`, migrationLiveListingSchema),
