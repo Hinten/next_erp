@@ -51,7 +51,11 @@ export {
   type DevolucaoOperacaoInfo,
   type DevolucaoSavePrepared,
 } from './devolucao';
-export { DUPLICAR_PEDIDO_STRIP_KEYS, buildDuplicarPedidoSeed } from './duplicar';
+export {
+  DUPLICAR_PEDIDO_STRIP_KEYS,
+  FRETE_QUOTE_RESET_KEYS,
+  buildDuplicarPedidoSeed,
+} from './duplicar';
 export {
   CAMPOS_ESTOQUE_SYNC,
   calcularAlteracoesEstoque,
