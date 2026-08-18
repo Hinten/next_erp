@@ -25,6 +25,16 @@ export async function bundle(outfile) {
   // FUNCTIONS_REGION so the analyzed endpoint carries the real database id.
   // Mirrors apps/whatsapp/functions/build.mjs.
   const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
+  // ⚠️ Cloud Tasks and Cloud Scheduler DO NOT EXIST in us-east5, so the eleven
+  // onTaskDispatched/onSchedule functions cannot live in the codebase region —
+  // `firebase deploy` fails them all while the four Firestore triggers succeed.
+  // They are pinned to us-east1 instead (the nearest region offering both).
+  // Inlined for the same reason as FUNCTIONS_REGION: their `region:` option is
+  // read during codebase analysis, before any env is available.
+  // ⚠️ This is also the ENQUEUER's region — apps/mercado-livre/lib/marketplace/
+  // mlTasks.ts builds a region-qualified queue name from the same variable, and
+  // a mismatch makes the Admin SDK target us-central1 and SILENTLY DROP the task.
+  const tasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION || 'us-east1';
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,
@@ -42,6 +52,7 @@ export async function bundle(outfile) {
     ],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.MERCADO_LIVRE_TASKS_REGION': JSON.stringify(tasksRegion),
       'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId),
     },
     // ESM output has no `require`, but bundled CommonJS deps may call it
