@@ -12,6 +12,7 @@ import {
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { UsuariosTesteDevPanel } from './UsuariosTesteDevPanel';
 import { mercadoLivreQueryErrorMessage } from './mercadoLivreJobErrors';
 import { useMercadoLivreCallbackToast } from './mercadoLivreOAuthErrors';
 
@@ -121,6 +122,14 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
             </Text>
           )}
         </Group>
+
+        {/*
+          Mounted inside the conta card because it acts ON this conta — and, on
+          success, disconnects it. Renders nothing in a production build, and
+          nothing at all against a backend without
+          MERCADO_LIVRE_TEST_USERS_ENABLED (it 404s).
+        */}
+        <UsuariosTesteDevPanel integracaoId={integracaoId} />
       </Stack>
     </Card>
   );

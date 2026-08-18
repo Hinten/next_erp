@@ -295,6 +295,13 @@ export {
   // ALL_DOMAINS; only its schema/meta/type are public.
   credenciaisWhatsappSchema,
   credenciaisWhatsappMeta,
+  // `usuariosTeste` mirrors them too: the Mercado Livre test-user store holds an
+  // UNRECOVERABLE password, so it is admin-only, default-deny and stays out of
+  // ALL_DOMAINS. The role enum ships its companion constant per #699.
+  usuarioTesteMercadoLivreSchema,
+  usuarioTesteMercadoLivreMeta,
+  usuarioTesteRoleSchema,
+  USUARIO_TESTE_ROLE,
   type Integracao,
   type IntegracaoTipo,
   type BrandShopee,
@@ -304,6 +311,8 @@ export {
   type Token6h,
   type TokenDuravel,
   type CredenciaisWhatsapp,
+  type UsuarioTesteMercadoLivre,
+  type UsuarioTesteRole,
 } from './integracao';
 
 // The per-attempt OAuth connect record (#821, #1034) — ONE shape shared by

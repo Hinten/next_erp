@@ -368,6 +368,43 @@ export interface MercadoLivreAnuncioTeste {
   };
 }
 
+/**
+ * One Mercado Livre test user, as stored by the backend.
+ *
+ * ⚠️ `password` is a live credential ML shows exactly once and never reissues.
+ * Render it, let the operator copy it — do not log it, and do not put it in a
+ * query string or an analytics event.
+ */
+export interface MercadoLivreUsuarioTeste {
+  role: 'vendedor' | 'comprador';
+  id: number;
+  nickname: string;
+  password: string;
+  site_id: string;
+  site_status: string | null;
+  email: string | null;
+  createdAt: number | null;
+  createdByUserId: number | null;
+  /**
+   * ML's e-mail verification code for this account — the trailing digits of
+   * `id`, in both lengths ML may ask for. There is no inbox to check, so
+   * without these the operator cannot get past a verification prompt.
+   */
+  codigosVerificacaoEmail: { quatro: string; seis: string };
+}
+
+/** Result of the dev-only mint. */
+export interface MercadoLivreUsuariosTesteResult {
+  usuarios: MercadoLivreUsuarioTeste[];
+  /** Roles minted on this run — each consumed one of the account's ten slots. */
+  criados: ('vendedor' | 'comprador')[];
+  /** Roles already stored, reused instead of re-minted. */
+  reaproveitados: ('vendedor' | 'comprador')[];
+  /** Credential docs deleted from the bootstrap conta — it is now disconnected. */
+  credenciaisRemovidas: number;
+  conta: { id: number; nickname: string | null };
+}
+
 /** One model the AI settings page may offer. */
 export interface MercadoLivreIaModelo {
   id: string;
@@ -706,6 +743,27 @@ export interface MercadoLivreClient {
    * deliberate click.
    */
   anuncioTeste(integracaoId: string): Promise<MercadoLivreAnuncioTeste>;
+  /**
+   * The Mercado Livre test users stored for this conta (PERM.integracao.read).
+   *
+   * The subcollection is admin-only, so this route is the only way the browser
+   * can reach them — and ML never reissues a password, so it is also the only
+   * way to see one again after the mint.
+   *
+   * Both this and {@link criarUsuariosTeste} answer **404** unless the backend
+   * sets `MERCADO_LIVRE_TEST_USERS_ENABLED=1`. Callers treat that as "the
+   * feature is off here", not as an error worth surfacing.
+   */
+  usuariosTeste(integracaoId: string): Promise<{ usuarios: MercadoLivreUsuarioTeste[] }>;
+  /**
+   * Mint the seller/buyer test-user pair (PERM.integracao.write).
+   *
+   * ⚠️ **Destructive.** On success the backend deletes every OAuth credential of
+   * the conta it used — that is the point (the bootstrap account is a real
+   * seller account and must not stay wired to the ERP), but it means this must
+   * never be called without an explicit confirmation naming that conta.
+   */
+  criarUsuariosTeste(integracaoId: string): Promise<MercadoLivreUsuariosTesteResult>;
   /**
    * Models the AI settings page may offer, plus what a suggestion would actually
    * use right now (PERM.integracao.read).
@@ -1056,6 +1114,18 @@ export function createMercadoLivreClient(config: {
     anuncioTeste: (integracaoId) =>
       call<MercadoLivreAnuncioTeste>(
         `/api/marketplace/mercado-livre/anuncio-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+      ),
+    usuariosTeste: (integracaoId) =>
+      call<{ usuarios: MercadoLivreUsuarioTeste[] }>(
+        `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+      ),
+    criarUsuariosTeste: (integracaoId) =>
+      // `{}` is what makes this a POST — `call` picks the method from the
+      // presence of a body. The id stays in the query string so both verbs read
+      // it the same way.
+      call<MercadoLivreUsuariosTesteResult>(
+        `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+        {},
       ),
     iaModelos: (agenteId) =>
       call<MercadoLivreIaModelos>(

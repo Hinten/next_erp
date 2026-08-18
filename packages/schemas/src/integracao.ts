@@ -391,12 +391,15 @@ export const integracaoMeta: CollectionMetadata = {
   // Flutter `deleteCascade` on a conta already deleted both, so omitting them
   // here would orphan a working credential (drop these two with #829).
   // `oauthState` holds a live PKCE `code_verifier`, so it frees on delete too.
+  // `usuariosTeste` holds Mercado Livre test-user passwords — unrecoverable, so
+  // it cascades for hygiene rather than to free a live credential.
   cascade: [
     { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/oauthState', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/token6h', onDelete: 'cascade' },
     { path: 'integracao/{integracaoId}/tokenDuravel', onDelete: 'cascade' },
+    { path: 'integracao/{integracaoId}/usuariosTeste', onDelete: 'cascade' },
   ],
   // The `integracao` collection holds every channel type; each channel screen
   // (e.g. Balcão) lists a single `tipo` slice supplied via TableView's
@@ -692,3 +695,105 @@ export const credenciaisWhatsappMeta: CollectionMetadata = {
 // `credenciaisWhatsappMeta`, mirroring `credenciaisIntegracaoMeta`). The admin
 // collection handle consumes the path + schema directly; the server-side
 // cascade on `integracao` delete frees the subcollection without a rules block.
+
+/* -------------------------------------------------------------------------- */
+/*          UsuariosTeste (subcollection) — Mercado Livre test users           */
+/* -------------------------------------------------------------------------- */
+
+/** Which side of a test transaction a Mercado Livre test user plays. */
+export const usuarioTesteRoleSchema = z.enum(['vendedor', 'comprador']);
+export type UsuarioTesteRole = z.infer<typeof usuarioTesteRoleSchema>;
+
+/**
+ * Companion constant for {@link usuarioTesteRoleSchema}. Doubles as the DOC ID
+ * of each record — one test user per role per integração, so a re-run of the
+ * mint flow overwrites rather than minting a second one (see below).
+ */
+export const USUARIO_TESTE_ROLE = {
+  vendedor: 'vendedor',
+  comprador: 'comprador',
+} as const satisfies Record<string, UsuarioTesteRole>;
+
+/**
+ * A Mercado Livre **test user** — `integracao/{integracaoId}/usuariosTeste`.
+ *
+ * ML has no sandbox; it hands out throwaway production accounts through
+ * `POST /users/test_user` instead, and the response is the ONLY time the
+ * credential is ever shown:
+ *
+ *  - «Você pode criar até 10 usuários de teste com sua conta de Mercado Livre.
+ *    (quando o usuário de teste é criado, as credenciais devem ser salvas, **não
+ *    temos um recurso que mostre os usuários de teste criados e suas
+ *    credenciais**.)»
+ *  - «Se você perder a senha da conta de teste, não é possível recuperar, sendo
+ *    assim é necessário criar uma nova conta.»
+ *
+ * — `realizacao-de-testes` (pt_br, rev. 2025-12-30).
+ *
+ * ⚠️ Read those two together and this collection stops being a convenience: a
+ * dropped write is an **unrecoverable** credential that has permanently consumed
+ * one of ten slots. That is why `password` is stored in the clear here rather
+ * than shown once and discarded, and why the mint flow persists each user before
+ * minting the next (`apps/mercado-livre/lib/marketplace/testUsers.ts`).
+ *
+ * **Admin-only / default-deny** — same posture as `credenciaisIntegracao` and
+ * `credenciaisWhatsapp`: deliberately left OUT of `ALL_DOMAINS`, so rules-gen
+ * emits no match block and Firestore default-denies every client. The browser
+ * reads these back through the `usuarios-teste` route (Admin SDK), never
+ * directly. The server-side cascade on `integracao` delete frees them.
+ *
+ * ⚠️ The password must never reach a log or an error body. ML returns it in the
+ * same response shape a failed `.parse()` would echo — the exact way #1015 leaked
+ * an OAuth token response into Cloud Logging.
+ */
+export const usuarioTesteMercadoLivreSchema = z
+  .object({
+    /** Which side of the test transaction this account plays. */
+    role: usuarioTesteRoleSchema,
+    /** ML user id — the numeric `id` from `POST /users/test_user`. */
+    id: z.number().int(),
+    /** ML nickname, e.g. `TESTUSER1234` / `TETE8127263`. */
+    nickname: z.string().min(1),
+    /**
+     * ML-generated password. Unrecoverable: ML exposes no endpoint that returns
+     * it again, so this field IS the record of record.
+     */
+    password: z.string().min(1),
+    /** Site the user operates on — always `MLB` for this repo. */
+    site_id: z.string().min(1),
+    /** `active` on a healthy account; ML may return others. */
+    site_status: z.string().nullable().default(null),
+    /**
+     * ML's synthetic address for the account, when the mint response carries
+     * one. Useful because the e-mail verification code is the last 4–6 digits of
+     * {@link id}, not something delivered to a real inbox.
+     */
+    email: z.string().nullable().default(null),
+    /** When this repo minted the user, ms since epoch. */
+    createdAt: millisSinceEpoch().nullable().default(null),
+    /**
+     * ML `user_id` of the account whose token minted this one. Recorded because
+     * the mint flow then WIPES that account's credential, so this is the only
+     * remaining trace of which conta consumed one of its ten slots.
+     */
+    createdByUserId: z.number().int().nullable().default(null),
+  })
+  .passthrough();
+export type UsuarioTesteMercadoLivre = z.infer<typeof usuarioTesteMercadoLivreSchema>;
+
+export const usuarioTesteMercadoLivreMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/usuariosTeste',
+  // No client domain grants these bits — placeholder values, exactly as in
+  // `credenciaisWhatsappMeta`. NOT registered in `ALL_DOMAINS`, so rules-gen
+  // emits nothing and Firestore default-denies every client read/write.
+  permissions: {
+    read: 0n,
+    write: 0n,
+    delete: 0n,
+  },
+};
+
+// NOTE: as with `credenciaisIntegracao`/`credenciaisWhatsapp` above —
+// intentionally NOT exported as a `{ schema, meta }` DomainSchema and NOT added
+// to `ALL_DOMAINS`. Registering it would emit a client match block over a stored
+// password. The admin collection handle consumes the path + schema directly.
