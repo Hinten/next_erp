@@ -29,6 +29,7 @@ service cloud.firestore {
       return (!c.hasAny(['cpf_cnpj']) || (d.get('cpf_cnpj', null) == null || d.get('cpf_cnpj', null) is string && d.get('cpf_cnpj', null).size() <= 18))
         && (!c.hasAny(['email']) || (d.get('email', null) == null || d.get('email', null) is string && d.get('email', null).size() <= 255))
         && (!c.hasAny(['idEstrangeiro']) || (d.get('idEstrangeiro', null) == null || d.get('idEstrangeiro', null) is string && d.get('idEstrangeiro', null).size() <= 20))
+        && (!c.hasAny(['idMercadoLivre']) || (d.get('idMercadoLivre', null) == null || d.get('idMercadoLivre', null) is string && d.get('idMercadoLivre', null).size() <= 32))
         && (!c.hasAny(['ie']) || (d.get('ie', null) == null || d.get('ie', null) is string && d.get('ie', null).size() <= 16))
         && (!c.hasAny(['imun']) || (d.get('imun', null) == null || d.get('imun', null) is string && d.get('imun', null).size() <= 15))
         && (!c.hasAny(['isUF']) || (d.get('isUF', null) == null || d.get('isUF', null) is string && d.get('isUF', null).size() <= 9))
