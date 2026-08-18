@@ -11,6 +11,7 @@ import {
 } from '../../lib/marketplace/massImport';
 import { createMlMassImportScheduler } from '../../lib/marketplace/mlMassImportTasks';
 import { getDb } from './lib/admin';
+import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * Cloud Tasks dispatcher for the ML mass-import job (Step 8, #621). The
@@ -41,6 +42,8 @@ import { getDb } from './lib/admin';
  */
 export const processMercadoLivreMassImport = onTaskDispatched(
   {
+    // Cloud Tasks does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
     retryConfig: {
       maxAttempts: MASS_IMPORT_MAX_ATTEMPTS,
       minBackoffSeconds: 30,

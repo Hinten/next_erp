@@ -12,11 +12,32 @@ if (!region) {
   );
 }
 
-// Any enqueue from INSIDE a function (e.g. a future self-re-enqueue) targets the
-// notification queue in THIS function's region — default the enqueuer's region
-// to the inlined one so the region-qualified queue name resolves correctly.
-process.env.MERCADO_LIVRE_TASKS_REGION =
-  (process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || undefined) ?? region;
+/**
+ * Region for every `onTaskDispatched` and `onSchedule` function in this codebase.
+ *
+ * ⚠️ **Cloud Tasks and Cloud Scheduler do not exist in `us-east5`.** Neither
+ * service lists it (Cloud Tasks locations / Cloud Scheduler locations both stop
+ * at `us-east4` in the eastern US), so deploying the codebase wholesale into the
+ * ML backend's region fails all eleven queue/schedule functions at once while
+ * the four Firestore triggers deploy cleanly — the exact signature seen on the
+ * first ML functions deploy. They are pinned to `us-east1`, which offers both.
+ *
+ * ⚠️ This is also what the ENQUEUER must target. `mlTasks.ts` on the App Hosting
+ * backend builds a region-qualified queue name from `MERCADO_LIVRE_TASKS_REGION`;
+ * point it anywhere else and the Admin SDK resolves `us-central1` and the task is
+ * SILENTLY DROPPED. Set the same value on the backend env.
+ *
+ * Inlined at build time by `build.mjs` for the same reason as `region` — the
+ * `region:` option is read during codebase analysis, before any env exists.
+ */
+export const TASKS_SCHEDULER_REGION = process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || 'us-east1';
+
+// ⚠️ Do NOT assign back to `process.env.MERCADO_LIVRE_TASKS_REGION` here. The
+// build `define`s that expression, so every read of it — including the one in
+// the bundled `mlTasks.ts` enqueuer — is already the inlined literal, and the
+// assignment esbuild sees is `"us-east1" = "us-east1"` (it warns, rightly).
+// An enqueue from INSIDE a function therefore resolves the same region as the
+// task functions themselves, which is exactly where the queues live.
 
 setGlobalOptions({
   region,

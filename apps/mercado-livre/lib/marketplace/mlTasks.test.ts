@@ -52,15 +52,14 @@ describe('createMlTaskScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload, undefined);
   });
 
-  it('defaults the region to us-east5 when nothing is configured', async () => {
+  it('defaults the region to us-east1 when nothing is configured', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     // Truly unset (not empty) so the `?? default` chain falls through.
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
-    vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMlTaskScheduler();
     await scheduler.enqueue(payload);
     expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processMercadoLivreNotification',
+      'locations/us-east1/functions/processMercadoLivreNotification',
     );
   });
 
@@ -68,11 +67,26 @@ describe('createMlTaskScheduler', () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     // Empty string should be treated as unset
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', '');
-    vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMlTaskScheduler();
     await scheduler.enqueue(payload);
     expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processMercadoLivreNotification',
+      'locations/us-east1/functions/processMercadoLivreNotification',
+    );
+  });
+
+  it('IGNORES FUNCTIONS_REGION — the queue does not live in the codebase region', async () => {
+    // The queue functions are pinned to us-east1 because Cloud Tasks does not
+    // exist in us-east5, while the Firestore triggers stay in the data region.
+    // A FUNCTIONS_REGION fallback used to sit in this resolver; on a backend
+    // where that variable names the data region it would resolve a queue that
+    // does not exist, and the Admin SDK would silently target us-central1.
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', 'us-east5');
+    const scheduler = createMlTaskScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east1/functions/processMercadoLivreNotification',
     );
   });
 
