@@ -58,6 +58,18 @@ const KEYWORD_RULES: KeywordRule[] = [
   { match: /produto sem fotos/i, scope: 'produto', produtoSection: 'Fotos' },
   { match: /produto sem nome/i, scope: 'produto', produtoSection: 'Dados gerais' },
   { match: /é uma variação/i, scope: 'produto' },
+  // #798 — the two pre-flight blocks are whole-listing STATES: nothing in the
+  // integração form fixes either, so they must be caught above the generic
+  // `user products` rule below (which would scope them to the account).
+  //
+  // ⚠️ Both patterns are anchored on their User-Products context on purpose. A
+  // bare /ainda não está implementada/ would claim any future "not implemented"
+  // string the server grows, from anywhere in `publishCore.ts`, and silently
+  // decide its scope — while an unmatched issue already falls back to this same
+  // listing banner. These rules only earn their keep by beating the
+  // `/user products/i` rule below, so they must match no more than that.
+  { match: /em migração para o modelo user products/i, scope: 'listing' },
+  { match: /modelo user products:.*ainda não está implementada/i, scope: 'listing' },
   { match: /user products|user_product_seller/i, scope: 'integracao' },
 ];
 

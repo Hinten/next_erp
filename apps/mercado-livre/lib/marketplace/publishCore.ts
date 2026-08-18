@@ -17,6 +17,10 @@
  *    grupoDeVariacoes docs — see {@link combinationForVariante} for the id
  *    rules, and {@link mergeStoredCombinations} for the ones a Flutter user
  *    configured that no grupo can rebuild.
+ *
+ * {@link resolveListingModel} and {@link publishModeIssues} sit apart from that
+ * pipeline: they are the PRE-FLIGHT decisions `publish.ts` makes before it
+ * uploads a single picture (#798).
  */
 import {
   type BuildItemPayloadInput,
@@ -67,6 +71,8 @@ export interface PublishLink {
   isUserProductModel?: boolean | null;
   attributes?: MlAttribute[] | null;
   video_id?: string | null;
+  /** `estadoPublicacaoMl` wire code — only `'am'` (mid-UPtin) is read here. */
+  estado?: string | null;
 }
 
 /** A grupoDeVariacoes doc slice for combination mapping. */
@@ -128,6 +134,90 @@ export interface AssemblePublishArgs {
    * parity — ML itself rejects chart-required domains).
    */
   sizeChart?: ResolvedSizeChart | null;
+}
+
+/* ------------------------- publishing model + guards ------------------------ */
+
+/**
+ * Which of ML's two coexisting publishing models a listing must use.
+ *
+ * `'legacy'` sends `title` + a `variations[]` array; `'user-products'` sends
+ * `family_name`, no title, and one ML ITEM PER VARIATION.
+ */
+export type ListingModel = 'user-products' | 'legacy';
+
+/**
+ * Pick the model for this listing.
+ *
+ * Once a seller carries the `user_product_seller` tag, **new** items must go out
+ * in the User-Products shape or ML answers 400 — but items already published
+ * under the legacy model and not yet migrated stay editable with the legacy
+ * payload for the whole migration. So the two inputs are not interchangeable and
+ * their precedence is load-bearing (legacy parity —
+ * `.old/lib/canaisDeVenda/mercadoLivre/exportarProdutos.dart:149-151` branches on
+ * the persisted flag, never on the account tag):
+ *
+ *  - **already published** (`link.id != null`) → the link's persisted
+ *    `isUserProductModel` wins. It is set by the importer (`family_name != null`)
+ *    and flipped by the UPtin takeover; publish only ever echoes it back.
+ *  - **never published** (`link.id == null`) → the ACCOUNT tag decides, because
+ *    there is no listing yet whose shape could constrain us.
+ *
+ * ⚠️ Reading only the link — which is what publish did before #798 — means every
+ * first publish on a tagged account resolves to `'legacy'`, since a draft link
+ * doc is created with `isUserProductModel: false`.
+ */
+export function resolveListingModel(
+  link: PublishLink | null,
+  sellerIsUserProduct: boolean,
+): ListingModel {
+  if (link?.id != null) return link.isUserProductModel === true ? 'user-products' : 'legacy';
+  return sellerIsUserProduct ? 'user-products' : 'legacy';
+}
+
+/**
+ * Pre-flight blocks, raised BEFORE any ML call and before the picture uploads —
+ * unlike {@link assemblePublishInput}'s issues, which are only reached after the
+ * whole graph (and every picture) has been resolved.
+ *
+ * Returns the issues rather than throwing so the caller aggregates them the same
+ * way the assembly does.
+ */
+export function publishModeIssues(args: {
+  produtoNome: string;
+  /** The link doc's `estado`, or null on a first publish. */
+  estado: string | null;
+  model: ListingModel;
+  /** How many variation children this produto owns. */
+  childrenCount: number;
+}): string[] {
+  const issues: string[] = [];
+
+  // Mid-UPtin: ML is mid-flight creating one item per variation and rejects any
+  // change to the source item (404 while migrating). The stock planner, the
+  // price planner and the items status-sync all have this rung already; publish
+  // was the only writer without it. Legacy blocked the whole export here, above
+  // the UP/legacy fork (`exportarProdutos.dart:141-147`).
+  if (args.estado === 'am') {
+    issues.push(
+      'anúncio em migração para o modelo User Products (UPtin) — aguarde a conclusão antes de publicar',
+    );
+  }
+
+  // ⛔ Removed by the fan-out (#798 PR-B). Until then a loud block is strictly
+  // better than the alternative: `buildItemPayload` drops the variations array
+  // for a User-Products seller, so publishing here would flatten a whole listing
+  // family into ONE variation-less item.
+  if (args.model === 'user-products' && args.childrenCount > 0) {
+    issues.push(
+      `produto "${args.produtoNome}" tem ${args.childrenCount} ${
+        args.childrenCount === 1 ? 'variação' : 'variações'
+      } e a conta usa o modelo User Products: cada variação vira um anúncio próprio, ` +
+        'e essa publicação ainda não está implementada — publicar assim criaria UM anúncio sem variações',
+    );
+  }
+
+  return issues;
 }
 
 /** Resolve the selling price from the integração's tabela normal — or fail. */

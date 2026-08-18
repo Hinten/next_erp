@@ -2,7 +2,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { E2E_FIXTURE_TARGETS, prefixEnd, sweepOrphanedE2EFixtures } from './stale-sweep';
+import {
+  E2E_FIXTURE_TARGETS,
+  prefixEnd,
+  sweepOrphanedE2EFixtures,
+  sweepStaleE2EProbes,
+} from './stale-sweep';
 
 /**
  * Drift backstop for the orphan sweep (#712).
@@ -158,8 +163,10 @@ function fakeDb(
   previousRunId: string,
   /** Subcollections a swept doc owns, keyed by doc path. Drives `listCollections()`. */
   subcollections: Record<string, Record<string, readonly string[]>> = {},
-  /** Every `select(...)` the sweep built, paired with its `where` fields. */
-  projections: Array<{ wheres: unknown[]; selected: unknown[] }> = [],
+  /** Every `select(...)` the sweep built, paired with its path and `where` fields. */
+  projections: Array<{ path: string; wheres: unknown[]; selected: unknown[] }> = [],
+  /** Document field values, keyed by full doc path. Drives `snap.get(field)`. */
+  docFields: Record<string, Record<string, unknown>> = {},
 ) {
   const oneDayAgo = () => Date.now() - 24 * 60 * 60 * 1000;
 
@@ -203,6 +210,7 @@ function fakeDb(
         id,
         ref: docRef(`${path}/${id}`),
         createTime: { toMillis: oneDayAgo },
+        get: (field: string) => docFields[`${path}/${id}`]?.[field],
       })),
     };
   };
@@ -231,7 +239,7 @@ function fakeDb(
       limit: (take: number) => query(path, { ...state, take }),
       startAfter: (cursor: { id?: string }) => query(path, { ...state, after: cursor?.id }),
       select: (...fields: unknown[]) => {
-        projections.push({ wheres: [...state.wheres], selected: fields });
+        projections.push({ path, wheres: [...state.wheres], selected: fields });
         return query(path, { ...state, fields });
       },
       get: () => {
@@ -353,14 +361,17 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
    */
   it('projects the ordered field on a field-range query, so the keyset cursor is valid', async () => {
     stubCiEnv();
-    const projections: Array<{ wheres: unknown[]; selected: unknown[] }> = [];
+    const projections: Array<{ path: string; wheres: unknown[]; selected: unknown[] }> = [];
 
     await sweepOrphanedE2EFixtures(
       true,
       fakeDb(noWrites(), staleDocs, '111', staleSubcollections, projections) as never,
     );
 
-    const fieldRanges = projections.filter((p) =>
+    // Pass C is not a prefix range — it reads one hardcoded collection with no
+    // `where` at all — so its projection is not part of this invariant.
+    const fixtureRanges = projections.filter((p) => p.path !== 'e2e_probe');
+    const fieldRanges = fixtureRanges.filter((p) =>
       p.wheres.some((w) => typeof w === 'string' && w.length > 0),
     );
     expect(fieldRanges.length).toBeGreaterThan(0);
@@ -370,7 +381,7 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     }
     // …and the id range stays keys-only: a document key is always on the
     // snapshot, so projecting a field there would be pure scanned-data waste.
-    const idRanges = projections.filter(
+    const idRanges = fixtureRanges.filter(
       (p) => !p.wheres.some((w) => typeof w === 'string' && w.length > 0),
     );
     expect(idRanges.length).toBeGreaterThan(0);
@@ -462,6 +473,162 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     );
 
     expect(report.byCollection.depositos).toBe(301);
+  });
+});
+
+/**
+ * Pass C — stale rules probes in the FIXED `e2e_probe` collection, keyed by run
+ * id. The whole point of moving the run id out of the collection name and into
+ * the document key is that reclaiming another run's leftovers no longer needs a
+ * root `listCollections()`; these tests pin both that behaviour and the two gates
+ * that keep it from deleting a LIVE run's probe.
+ */
+describe('sweepStaleE2EProbes', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const noWrites = (): Writes => ({
+    batchDeletes: [],
+    commits: 0,
+    recursiveDeletes: [],
+    sets: [],
+  });
+
+  const ts = (ms: number) => ({ toMillis: () => ms });
+  const HOURS = 60 * 60 * 1000;
+
+  /** A probe collection holding `ids`, each stamped `startedAt` ms ago. */
+  function probes(entries: Record<string, number | undefined>) {
+    const fields: Record<string, Record<string, unknown>> = {};
+    for (const [id, agoMs] of Object.entries(entries)) {
+      fields[`e2e_probe/${id}`] = agoMs === undefined ? {} : { startedAt: ts(Date.now() - agoMs) };
+    }
+    return { docs: { e2e_probe: Object.keys(entries) }, fields };
+  }
+
+  function run(
+    writes: Writes,
+    entries: Record<string, number | undefined>,
+    opts: { dryRun?: boolean } = {},
+  ) {
+    const { docs, fields } = probes(entries);
+    return sweepStaleE2EProbes({
+      dryRun: opts.dryRun,
+      database: fakeDb(writes, docs, 'unused', {}, [], fields) as never,
+    });
+  }
+
+  it('reclaims a dead run’s probe', async () => {
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    const writes = noWrites();
+
+    const report = await run(writes, { '111': 24 * HOURS });
+
+    expect(writes.batchDeletes).toEqual(['e2e_probe/111']);
+    expect(report.probesReclaimed).toBe(1);
+    expect(report.byCollection.e2e_probe).toBe(1);
+  });
+
+  /**
+   * The re-run gate, and the reason it is not redundant with the age gate.
+   * GitHub reuses `GITHUB_RUN_ID` across attempts (only `GITHUB_RUN_ATTEMPT`
+   * moves), so attempt 2 of a job re-run a day later meets its own day-old doc.
+   * Age alone would delete the probe of the very run doing the sweeping.
+   */
+  it('never deletes the current run’s own probe, however old it looks', async () => {
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    const writes = noWrites();
+
+    const report = await run(writes, { '222': 24 * HOURS });
+
+    expect(writes.batchDeletes).toEqual([]);
+    expect(report.probesReclaimed).toBe(0);
+  });
+
+  /**
+   * The age gate, and the reason IT is not redundant either: a sibling lane is a
+   * DIFFERENT run id, so the run-id gate cannot see it. Deleting a live probe
+   * between its PATCH and its GET fails that run's `globalSetup` with a 404 —
+   * strictly worse than the leak this pass exists to fix.
+   */
+  it('never deletes a live sibling lane’s fresh probe', async () => {
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    const writes = noWrites();
+
+    const report = await run(writes, { '333': 2 * 60 * 1000 });
+
+    expect(writes.batchDeletes).toEqual([]);
+    expect(report.keptFresh).toBe(1);
+  });
+
+  it('never deletes a probe of unknown age', async () => {
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    const writes = noWrites();
+
+    const report = await run(writes, { '444': undefined });
+
+    expect(writes.batchDeletes).toEqual([]);
+    expect(report.keptUnknownAge).toBe(1);
+    expect(report.probesReclaimed).toBe(0);
+  });
+
+  it('reports what it would delete under dryRun without writing', async () => {
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    const writes = noWrites();
+
+    const report = await run(writes, { '111': 24 * HOURS }, { dryRun: true });
+
+    expect(report.probesReclaimed).toBe(1);
+    expect(writes).toEqual(noWrites());
+  });
+
+  /**
+   * Cost-regression tripwire, in the spirit of the `recursiveDelete` one above.
+   * The pass must touch exactly ONE hardcoded collection: no root enumeration
+   * (which is what made the old `e2e_<runId>_probe` shape unreclaimable), and no
+   * per-doc subtree walk (a probe is a leaf that only `PATCH` ever writes).
+   */
+  it('reads one hardcoded collection and walks no subtrees', async () => {
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    const projections: Array<{ path: string; wheres: unknown[]; selected: unknown[] }> = [];
+    const writes = noWrites();
+    const { docs, fields } = probes({ '111': 24 * HOURS });
+
+    await sweepStaleE2EProbes({
+      database: fakeDb(writes, docs, 'unused', {}, projections, fields) as never,
+    });
+
+    expect(projections).toEqual([{ path: 'e2e_probe', wheres: [], selected: ['startedAt'] }]);
+    expect(writes.recursiveDeletes).toEqual([]);
+  });
+
+  /**
+   * Without the reserve carved out of the shared budget, a saturated fixture
+   * sweep would eat all 60s every run and the probe backlog would never clear —
+   * silently, since nothing else reports on it.
+   */
+  it('still runs when the fixture passes have spent the whole budget', async () => {
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    // Pass A pinned OFF so the only passes in play are B (fixtures) and C.
+    vi.stubEnv('GITHUB_WORKFLOW', '');
+    vi.stubEnv('GITHUB_REF', '');
+    const writes = noWrites();
+    const { fields } = probes({ '111': 24 * HOURS });
+    const docs = { depositos: ['e2e-111-dep-001'], e2e_probe: ['111'] };
+
+    // Total budget SHORTER than the reserve, so the fixture deadline is already
+    // in the past while pass C's is not. Without the reserve both share one
+    // deadline, pass B consumes it, and pass C never runs — silently, forever.
+    const report = await sweepOrphanedE2EFixtures(
+      false,
+      fakeDb(writes, docs, 'unused', {}, [], fields) as never,
+      Date.now() + 5_000,
+    );
+
+    expect(writes.batchDeletes).not.toContain('depositos/e2e-111-dep-001');
+    expect(report.probesReclaimed).toBe(1);
+    expect(writes.batchDeletes).toContain('e2e_probe/111');
   });
 });
 

@@ -149,6 +149,10 @@ function makeApi(overrides: Partial<Record<keyof MercadoLivreApi, unknown>> = {}
     getCategory: vi.fn(async () => ({ id: 'MLB31447', settings: null })),
     uploadPicture: vi.fn(async () => ({ id: 'PIC-NEW' })),
     setItemDescription: vi.fn(async () => ({ plain_text: 'ok' })),
+    // #798: a FIRST publish probes `GET /users/me` for the `user_product_seller`
+    // tag. Untagged by default — every fixture in this file is a legacy-model
+    // listing, and an accidental UP resolution would change the payload shape.
+    getMe: vi.fn(async () => ({ id: 9, tags: [] as string[] })),
     ...overrides,
   } as Record<string, ReturnType<typeof vi.fn>>;
   return { api: mocks as unknown as MercadoLivreApi, mocks };
@@ -1152,5 +1156,167 @@ describe('publishProduto — per-variation pictures (#797 E7)', () => {
     await publishProduto(makeDeps(db, api), PROD);
 
     expect(mocks.uploadPicture).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * #798 — the publishing MODEL is decided before anything is uploaded.
+ *
+ * ML runs two publishing models side by side during its User-Products
+ * migration, and `buildItemPayload` DROPS the variations array for the UP one
+ * (`itemPayload.ts`): publishing a family through it would collapse the whole
+ * listing into one variation-less item. Until the fan-out lands, that case is
+ * refused — and the refusal has to happen before the picture uploads, not after.
+ */
+describe('publishProduto — User-Products model resolution (#798)', () => {
+  /** The parent + one variation child, the shape the UP block exists for. */
+  function seedFamily(db: FakeDb): void {
+    seedBase(db);
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+    });
+    db.seed('produtos/child-1/estoques', 'est-c', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 4,
+      quantidadeReservada: 0,
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+  }
+
+  it('a tagged account + variation children is REFUSED, and nothing reaches ML', async () => {
+    const db = new FakeDb();
+    seedFamily(db);
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(/modelo User Products/i);
+
+    // The whole point of blocking this early: no item, and no picture upload
+    // burned on a publish that was never going to be correct.
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+    expect(mocks.uploadPicture).not.toHaveBeenCalled();
+    // The refusal is pre-flight, so the link doc keeps its rascunho state —
+    // this is NOT the `estado: 'E'` an ML failure stamps.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ estado: 'r', id: null });
+  });
+
+  it('the SAME family publishes normally on an untagged account', async () => {
+    const db = new FakeDb();
+    seedFamily(db);
+    const { api, mocks } = makeApi({
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        variations: [{ id: 555, seller_custom_field: 'child-1' }],
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).toHaveBeenCalledOnce();
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.title).toBe('Camiseta Básica');
+    expect(payload.family_name).toBeUndefined();
+    expect(payload.variations).toHaveLength(1);
+  });
+
+  it('a tagged account with NO children publishes in the UP shape', async () => {
+    // The other half of the bug: reading only the link doc resolved every first
+    // publish to 'legacy', so a simple produto went out with `title` and no
+    // `family_name` — which ML rejects once the seller is tagged.
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.family_name).toBe('Camiseta Básica');
+    expect(payload.title).toBeUndefined();
+    // ...and the resolution is PERSISTED, so the re-publish below needs no probe.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ isUserProductModel: true });
+  });
+
+  it('a PUBLISHED legacy listing never probes the account', async () => {
+    // Coexistence: an item published before the tag stays editable with the
+    // legacy payload. Probing here could only flip it to a shape ML refuses for
+    // an already-legacy item — so the call must not happen at all.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.getMe).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalledOnce();
+    const payload = mocks.updateItem!.mock.calls[0]![1] as Record<string, unknown>;
+    expect(payload.family_name).toBeUndefined();
+  });
+
+  it("estado 'am' (mid-UPtin) blocks the publish before any ML call", async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, estado: 'am' });
+    const { api, mocks } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(/UPtin/);
+
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.uploadPicture).not.toHaveBeenCalled();
+  });
+
+  it('a getMe failure surfaces as itself AND lands on the link doc', async () => {
+    // Two separate contracts. (1) A dead credential must reach the route's
+    // 409/502 mapping — swallowing it into a `legacy` guess would publish the
+    // wrong payload shape. (2) The module header: every ML failure leaves its
+    // reason ON THE DOC, so the ML tab shows why the last attempt failed. The
+    // probe is an ML call like any other, so it owes the same stamp.
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => {
+        throw new MercadoLivreHttpError('unauthorized', 401, null);
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivreHttpError);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      estado: 'E',
+      errors: ['unauthorized'],
+      // Untouched: the probe never learned the model, so the persisted value
+      // must survive rather than be guessed at.
+      isUserProductModel: false,
+    });
+  });
+
+  it('a PRE-FLIGHT refusal still writes nothing — it is not an ML failure', async () => {
+    // The distinction the stamp above must not blur: `estado: 'am'` is a
+    // validation block raised before any ML call, so the doc keeps its state.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, estado: 'am' });
+    const { api } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(/UPtin/);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ estado: 'am', errors: null });
   });
 });

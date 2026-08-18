@@ -8,7 +8,9 @@ import {
   buildParentAttributes,
   combinationsFromVariacoes,
   mergeStoredCombinations,
+  publishModeIssues,
   resolveCondition,
+  resolveListingModel,
   resolvePrice,
 } from './publishCore';
 
@@ -38,6 +40,74 @@ const grupos: PublishGrupoVariacao[] = [
   { grupoId: 'g-cor', nome: 'Cor', tipo: 2, variacoes: [{ id: 'v-preto', nome: 'Preto' }] },
   { grupoId: 'g-out', nome: 'Estampa Especial', tipo: null, variacoes: [{ id: 'v-x', nome: 'X' }] },
 ];
+
+describe('resolveListingModel', () => {
+  // ⚠️ Every case makes the two inputs DISAGREE, so a test can only pass by
+  // reading the one the precedence rule names.
+  it('a PUBLISHED listing follows its persisted flag, never the account tag', () => {
+    const published = { docId: 'link-1', id: 'MLB123' };
+    expect(resolveListingModel({ ...published, isUserProductModel: true }, false)).toBe(
+      'user-products',
+    );
+    expect(resolveListingModel({ ...published, isUserProductModel: false }, true)).toBe('legacy');
+  });
+
+  it('a listing that was NEVER published follows the account tag', () => {
+    // The draft link doc apps/web creates carries `isUserProductModel: false`,
+    // so reading it here — what publish did before #798 — resolves every first
+    // publish on a tagged account to 'legacy' and ML answers 400.
+    const draft = { docId: 'link-1', id: null, isUserProductModel: false };
+    expect(resolveListingModel(draft, true)).toBe('user-products');
+    expect(resolveListingModel(draft, false)).toBe('legacy');
+  });
+
+  it('no link doc at all still follows the account tag', () => {
+    expect(resolveListingModel(null, true)).toBe('user-products');
+    expect(resolveListingModel(null, false)).toBe('legacy');
+  });
+});
+
+describe('publishModeIssues', () => {
+  const base = { produtoNome: 'Camiseta Básica', estado: null, childrenCount: 0 } as const;
+
+  it('passes a legacy listing with children and a User-Products listing without', () => {
+    expect(publishModeIssues({ ...base, model: 'legacy', childrenCount: 3 })).toEqual([]);
+    expect(publishModeIssues({ ...base, model: 'user-products' })).toEqual([]);
+  });
+
+  it("estado 'am' (mid-UPtin) blocks either model", () => {
+    for (const model of ['legacy', 'user-products'] as const) {
+      expect(publishModeIssues({ ...base, estado: 'am', model })).toEqual([
+        expect.stringContaining('migração para o modelo User Products'),
+      ]);
+    }
+  });
+
+  it('every OTHER estado publishes normally', () => {
+    for (const estado of ['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
+      expect(publishModeIssues({ ...base, estado, model: 'legacy' })).toEqual([]);
+    }
+  });
+
+  it('User Products + variation children is blocked, naming the produto and the count', () => {
+    const issues = publishModeIssues({ ...base, model: 'user-products', childrenCount: 3 });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('Camiseta Básica');
+    expect(issues[0]).toContain('3 variações');
+  });
+
+  it('pluralises a single variation', () => {
+    expect(publishModeIssues({ ...base, model: 'user-products', childrenCount: 1 })[0]).toContain(
+      '1 variação',
+    );
+  });
+
+  it('aggregates both blocks rather than reporting the first', () => {
+    expect(
+      publishModeIssues({ ...base, estado: 'am', model: 'user-products', childrenCount: 2 }),
+    ).toHaveLength(2);
+  });
+});
 
 describe('resolvePrice', () => {
   it('reads the tabela-normal price', () => {
