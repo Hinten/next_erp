@@ -21,6 +21,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: null,
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    temEnvio: false,
   },
   // facebook — limite 2000 (L1006), maximoAnexos 1 (L1073), formats L1089,
   // size 25 MB (L1105).
@@ -31,6 +32,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt', 'aac', 'mp4', 'mmpeg', 'amr', 'ogg', '3gp'],
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    temEnvio: false,
   },
   // comentario — limite 2000 (L1008), maximoAnexos default 5, formats throw →
   // null, size throw → 25 MB fallback, isHtml false.
@@ -41,6 +43,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: null,
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    temEnvio: false,
   },
   // whatsapp — limite 2000 (L1010), maximoAnexos 1 (L1075), formats L1091 (same
   // list as facebook, incl. the legacy `'mmpeg'` typo), size 25 MB (L1107).
@@ -51,6 +54,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt', 'aac', 'mp4', 'mmpeg', 'amr', 'ogg', '3gp'],
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    temEnvio: true,
   },
   // mlperg — limite 2000 (L1012), permiteAnexo FALSE (L1059) so maximoAnexos 0
   // (L1066), formats [] (L1082), size 0 (L1098); isHtml true (L1026).
@@ -61,16 +65,18 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: [],
     maxTamanhoAnexoBytes: 0,
     isHtml: true,
+    temEnvio: false,
   },
-  // mlped — limite 300 (L1014), maximoAnexos 1 (L1069), formats L1085,
+  // mlped — limite 350 (corrected from legacy 300 at L1014), maximoAnexos 1 (L1069), formats L1085,
   // size 25 MB (L1101), isHtml true (L1028).
   mlped: {
-    limiteCaracteres: 300,
+    limiteCaracteres: 350,
     permiteAnexo: true,
     maximoAnexos: 1,
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt'],
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: true,
+    temEnvio: false,
   },
   // mlclaims — limite 300 (L1016), maximoAnexos 3 (L1071), formats L1087,
   // size 25 MB (L1103), isHtml true (L1030).
@@ -78,9 +84,10 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     limiteCaracteres: 300,
     permiteAnexo: true,
     maximoAnexos: 3,
-    formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt'],
-    maxTamanhoAnexoBytes: 25_000_000,
+    formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf'],
+    maxTamanhoAnexoBytes: 5_000_000,
     isHtml: true,
+    temEnvio: false,
   },
 };
 
@@ -109,6 +116,30 @@ describe('ORIGEM_RULES', () => {
     expect(ORIGEM_RULES.mlperg.maximoAnexos).toBe(0);
     expect(ORIGEM_RULES.mlperg.formatosAnexo).toEqual([]);
     expect(ORIGEM_RULES.mlperg.maxTamanhoAnexoBytes).toBe(0);
+  });
+
+  it('WhatsApp is the only channel that can transmit today (#817)', () => {
+    const comEnvio = origemConversaSchema.options.filter((o) => ORIGEM_RULES[o].temEnvio);
+    expect(comEnvio).toEqual(['whatsapp']);
+  });
+
+  it('corrects mlped to ML’s real 350-character seller cap, not the legacy 300', () => {
+    // Legacy models.dart:1014 said 300. ML's post-sale reference says 350 and
+    // returns the live value as `seller_max_message_length` per thread, so this
+    // is the fallback for a thread nobody has read yet.
+    expect(ORIGEM_RULES.mlped.limiteCaracteres).toBe(350);
+  });
+
+  it('corrects mlclaims attachments to the CLAIMS endpoint limits, not the post-sale ones', () => {
+    // Claim attachments are a different ML endpoint: 5 MB and no `txt`. The
+    // legacy source applied the 25 MB post-sale limits to both surfaces, so a
+    // 10 MB PDF passed the composer and was rejected by ML.
+    expect(ORIGEM_RULES.mlclaims.maxTamanhoAnexoBytes).toBe(5_000_000);
+    expect(ORIGEM_RULES.mlclaims.formatosAnexo).toEqual(['jpg', 'jpeg', 'png', 'pdf']);
+    // ...and mlped keeps the post-sale limits, which ML still documents as 25 MB
+    // with txt allowed. The two must not be "unified".
+    expect(ORIGEM_RULES.mlped.maxTamanhoAnexoBytes).toBe(25_000_000);
+    expect(ORIGEM_RULES.mlped.formatosAnexo).toContain('txt');
   });
 });
 

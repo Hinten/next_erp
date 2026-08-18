@@ -9,12 +9,18 @@ import { mediaSubObject, tipoForFiletype } from './mediaKind';
  *     `whatsapp`-origem conversa → the trigger sends it.
  *
  * ── PRESERVE the text shape byte-for-byte ──────────────────────────────────────
- * {@link buildTextMensagem} returns the identical 16-field object the original
+ * {@link buildTextMensagem} returns the identical 17-field object the original
  * `MensagemThread.handleSend` wrote (`mid:null, conteudo, tipo:'c', canal:0,
  * estadoEnvio:salva, user_id, timestamp, resposta:null, usarioMensagemOuterRef:
  * null, urlAvatar:null, midGroup:null, error:null, visualizado:null,
- * transcription:null, anexo:null, anexo_url:null`). Do not reorder/rename keys —
+ * transcription:null, anexo:null, anexo_url:null`), plus
+ * `clienteMensagemOuterRef:null`. Do not reorder/rename keys —
  * `MensagemThread.test.tsx` asserts on this write shape.
+ *
+ * ⚠️ `clienteMensagemOuterRef` is ALWAYS null here and that is not an omission:
+ * these builders produce OPERATOR-authored messages, and the field identifies a
+ * message whose author is the contact. `user_id` stays the operator's uid, which
+ * is also what makes `MensagemBubble` render these on the outbound side.
  *
  * ── resolveSendSpec dual-write (media) ─────────────────────────────────────────
  * The #529 sender's `resolveSendSpec` (apps/whatsapp/lib/whatsapp/outbound.ts)
@@ -55,6 +61,8 @@ export function buildTextMensagem(input: {
     timestamp: input.now,
     resposta: null,
     usarioMensagemOuterRef: null,
+    // Operator-authored: the contact-author ref is for INBOUND messages.
+    clienteMensagemOuterRef: null,
     urlAvatar: null,
     midGroup: null,
     error: null,
@@ -92,6 +100,8 @@ export function buildMediaMensagem(input: {
     timestamp: input.now,
     resposta: null,
     usarioMensagemOuterRef: null,
+    // Operator-authored: the contact-author ref is for INBOUND messages.
+    clienteMensagemOuterRef: null,
     urlAvatar: null,
     midGroup: input.midGroup ?? null,
     error: null,

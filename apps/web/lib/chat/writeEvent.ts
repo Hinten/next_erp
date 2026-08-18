@@ -44,6 +44,9 @@ export function writeEvent(
     user_id: actor?.uid ?? null,
     resposta: null,
     usarioMensagemOuterRef: actor ? `documents/usuarios/${actor.uid}` : null,
+    // An event is authored by an OPERATOR (a real `usuarios` doc) or by the
+    // system — never by the contact, so the cliente-author ref is always null.
+    clienteMensagemOuterRef: null,
     urlAvatar: null,
     midGroup: null,
     error: null,

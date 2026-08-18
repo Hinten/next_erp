@@ -17,6 +17,11 @@ describe('buildTextMensagem (#529 outbound text shape)', () => {
       timestamp: now,
       resposta: null,
       usarioMensagemOuterRef: null,
+      // Always null on this path: these builders produce OPERATOR-authored
+      // messages, and the field identifies one whose author is the contact.
+      // `user_id` above stays the operator's uid, which is what keeps the #529
+      // sender's discriminator and the bubble's outbound side both unchanged.
+      clienteMensagemOuterRef: null,
       urlAvatar: null,
       midGroup: null,
       error: null,
@@ -25,6 +30,17 @@ describe('buildTextMensagem (#529 outbound text shape)', () => {
       anexo: null,
       anexo_url: null,
     });
+  });
+
+  it('still matches the #529 sender discriminator exactly', () => {
+    // The pin above is `toEqual`, so it fails on ANY added key — including a
+    // harmless one. That is the point, but it means the assertion that actually
+    // protects the WhatsApp sender should be stated separately rather than
+    // inferred from a shape snapshot: salva + tipo not in {'e','!'} + mid null.
+    const w = buildTextMensagem({ text: 'x', uid: 'op1', now: 1 });
+    expect(w.estadoEnvio).toBe(ESTADO_ENVIO.salva);
+    expect(['e', '!']).not.toContain(w.tipo);
+    expect(w.mid).toBeNull();
   });
 });
 
