@@ -764,6 +764,36 @@ describe('importProduto — ERP-first variation children (#801)', () => {
   const childrenOf = (db: FakeDb, parentId: string) =>
     [...db.docs('produtos').entries()].filter(([, d]) => d.paiId === parentId);
 
+  /**
+   * {@link ITEM} with ONE SELLER_SKU across both variations — the collision the ERP
+   * itself produces: a child's SKU is `parentSku + variante.codigo`, and these
+   * variantes carry no `codigo`, so both children are born holding the parent's.
+   */
+  const ITEM_SKU_COMPARTILHADO: DocData = {
+    ...ITEM,
+    variations: (ITEM.variations as DocData[]).map((v) => ({
+      ...v,
+      attributes: [{ id: 'SELLER_SKU', value_name: 'ERP-PAI' }],
+    })),
+  };
+
+  /**
+   * {@link ITEM} with NON-NUMERIC variation ids. `itemVariationSchema` accepts them
+   * ("ML has sent numeric and (rarely) string ids over time"), and they are what makes
+   * `numericVariationId` — and therefore the link's `id` field — come out `null`.
+   */
+  const ITEM_ID_NAO_NUMERICO: DocData = {
+    ...ITEM,
+    variations: (ITEM.variations as DocData[]).map((v, i) => ({ ...v, id: i === 0 ? 'A' : 'B' })),
+  };
+
+  /** The one `variacaoMercadoLivre` link under a child — fails loudly if there isn't exactly one. */
+  const soleLink = (db: FakeDb, childId: string): DocData => {
+    const links = db.docs(`produtos/${childId}/variacaoMercadoLivre`);
+    expect([...links.keys()]).toHaveLength(1);
+    return [...links.values()][0]!;
+  };
+
   it('reuses the ERP children carrying the same variação combination — no duplicates, no ML link, no matching SKU', async () => {
     const db = new FakeDb();
     seedTaxonomia(db);
@@ -979,6 +1009,176 @@ describe('importProduto — ERP-first variation children (#801)', () => {
 
     expect(second.variations).toEqual({ total: 2, created: 0 });
     expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'paiId')).toEqual([]);
+  });
+
+  /**
+   * Rule 2 had NO coverage before this block — the fixture above deliberately gives
+   * ML child SKUs the ERP does not carry, so the SKU rule stayed blind and the
+   * combination rule was the thing under test.
+   *
+   * ⚠️ Assert BINDINGS, not counts. `FakeDb.limit` slices after filtering a `Map`, so
+   * `db.seed` order is what `limit(1)` used to return — but with the guard removed
+   * most of these still report the same `{total, created}` and the same produto
+   * count. What actually changes is WHICH child holds a link, what that link's `id`
+   * says, and which child got a stock row.
+   */
+  describe('an ambiguous SKU never decides the binding (#1067)', () => {
+    it.each([
+      ['G seeded first', ['erp-filho-G', 'erp-filho-M']],
+      ['M seeded first', ['erp-filho-M', 'erp-filho-G']],
+    ] as const)(
+      'two siblings sharing one SKU each bind to their OWN variation (%s)',
+      async (_rotulo, ordemDeSeed) => {
+        const db = new FakeDb();
+        seedTaxonomia(db);
+        seedParent(db);
+        const combos: Record<string, string[]> = {
+          'erp-filho-G': COMBO_G,
+          'erp-filho-M': COMBO_M,
+        };
+        for (const childId of ordemDeSeed) seedChild(db, childId, 'ERP-PAI', combos[childId]!);
+
+        const res = await importProduto(deps(db, makeApi(ITEM_SKU_COMPARTILHADO)), 'MLB999');
+
+        expect(res.variations).toEqual({ total: 2, created: 0 });
+        expect(db.docs('produtos').size).toBe(3);
+        // Running BOTH seed orders is the point: it proves the outcome is order-
+        // INDEPENDENT rather than asserting whatever order the double happens to have.
+        // Under `limit(1)` both variations landed on whichever was seeded first — its
+        // link got repointed in place and the other child kept no link and no stock.
+        expect(soleLink(db, 'erp-filho-G').id).toBe(111);
+        expect(soleLink(db, 'erp-filho-M').id).toBe(222);
+        expect([...db.docs('produtos/erp-filho-M/estoques').values()][0]).toMatchObject({
+          quantidade: 7,
+        });
+      },
+    );
+
+    it('a UNIQUE SKU match still binds even when its combination contradicts', async () => {
+      const db = new FakeDb();
+      seedTaxonomia(db);
+      seedParent(db);
+      // Variation 111's SELLER_SKU sits on the child holding 222's combination. Only
+      // one child carries that SKU, so the SKU decides. Rejecting on disagreement
+      // would re-open #801's duplication for every catalogue whose grupos the
+      // taxonomy resolver cannot match — there the fake paths differ, so rule 3 misses
+      // too and the SKU is the only rung that still binds anything.
+      seedChild(db, 'erp-filho-contraditorio', 'ML-000111', COMBO_M);
+
+      const res = await importProduto(deps(db, makeApi(ITEM)), 'MLB999');
+
+      expect(soleLink(db, 'erp-filho-contraditorio').id).toBe(111);
+      // 222 finds it by combination, but it is spoken for now, so 222 mints its own.
+      expect(res.variations).toEqual({ total: 2, created: 1 });
+    });
+
+    it('a UNIQUE SKU match with no combination of its own binds and gets one backfilled', async () => {
+      const db = new FakeDb();
+      seedTaxonomia(db);
+      seedParent(db);
+      // Flutter-era child: `variacoesUid` absent entirely, so rule 3 can never claim
+      // it and rule 2 is the only thing keeping it out of a duplicate set.
+      db.seed('produtos', 'erp-filho-flutter', {
+        nome: 'Camiseta G',
+        sku: 'ML-000111',
+        paiId: PARENT_ID,
+      });
+
+      const res = await importProduto(deps(db, makeApi(ITEM)), 'MLB999');
+
+      expect(res.variations).toEqual({ total: 2, created: 1 });
+      expect(soleLink(db, 'erp-filho-flutter').id).toBe(111);
+      expect(db.docs('produtos').get('erp-filho-flutter')).toMatchObject({
+        variacoesUid: COMBO_G,
+      });
+    });
+
+    it('an ambiguous SKU whose siblings carry no combination mints instead of guessing', async () => {
+      const db = new FakeDb();
+      seedTaxonomia(db);
+      seedParent(db);
+      seedChild(db, 'erp-filho-a', 'ERP-PAI', []);
+      seedChild(db, 'erp-filho-b', 'ERP-PAI', []);
+
+      const res = await importProduto(deps(db, makeApi(ITEM_SKU_COMPARTILHADO)), 'MLB999');
+
+      // Nothing can disambiguate — shared SKU, no combination on either side. Minting
+      // is the non-destructive branch: binding an arbitrary one would repoint a link
+      // and replace a price table on a coin flip.
+      expect(res.variations).toEqual({ total: 2, created: 2 });
+      expect(db.docs('produtos/erp-filho-a/variacaoMercadoLivre').size).toBe(0);
+      expect(db.docs('produtos/erp-filho-b/variacaoMercadoLivre').size).toBe(0);
+    });
+
+    it('a UNIQUE SKU match already linked to a DIFFERENT variation is left alone', async () => {
+      const db = new FakeDb();
+      seedTaxonomia(db);
+      seedParent(db);
+      db.seed('produtos', 'erp-filho-flutter', {
+        nome: 'Camiseta G',
+        sku: 'ML-000111',
+        paiId: PARENT_ID,
+      });
+      // Spoken for by variation 999. `assembleVariationChildPlan` overwrites a link's
+      // naming field unconditionally, so adopting this one would repoint it in place
+      // and strand 999 — the harm rule 3 has always guarded and rule 2 did not.
+      db.seed('produtos/erp-filho-flutter/variacaoMercadoLivre', 'link-999', {
+        id: 999,
+        produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+        produtoVariacaoOuterRef: 'documents/produtos/erp-filho-flutter',
+      });
+
+      const res = await importProduto(deps(db, makeApi(ITEM)), 'MLB999');
+
+      expect(res.variations).toEqual({ total: 2, created: 2 });
+      expect(soleLink(db, 'erp-filho-flutter')).toMatchObject({ id: 999 });
+    });
+
+    it('an unambiguous SKU match terminates at rule 2 — no sibling scan', async () => {
+      const db = new FakeDb();
+      seedTaxonomia(db);
+      seedParent(db);
+      seedChild(db, 'erp-filho-G', 'ML-000111', COMBO_G);
+      seedChild(db, 'erp-filho-M', 'ML-000222', COMBO_M);
+
+      const res = await importProduto(deps(db, makeApi(ITEM)), 'MLB999');
+
+      expect(res.variations).toEqual({ total: 2, created: 0 });
+      // `limit(2)` costs one extra DOCUMENT, never an extra QUERY: rule 2 answered
+      // both variations, so rule 3's lazy `paiId ==` scan must stay unpaid.
+      expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'paiId')).toEqual([]);
+      expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'sku')).toHaveLength(2);
+    });
+
+    /**
+     * A link's naming field is `numericVariationId(variationId)`, i.e. **`null` for a
+     * non-numeric ML variation id** — a shape THIS importer writes, not just a
+     * Flutter-era artefact. "Names nothing readable" therefore cannot mean "claimed by
+     * someone else", or every re-import would decline the link it wrote a moment ago
+     * and mint a duplicate. Both rules re-import the same listing three times here;
+     * the produto count is the whole assertion.
+     */
+    it.each([
+      ['rule 2 — SKUs ML knows', 'ML-000111', 'ML-000222'],
+      ['rule 3 — SKUs ML does not know', 'ERP-G', 'ERP-M'],
+    ])('a null-id link stays adoptable across re-imports (%s)', async (_rotulo, skuG, skuM) => {
+      const db = new FakeDb();
+      seedTaxonomia(db);
+      seedParent(db);
+      seedChild(db, 'erp-filho-G', skuG, COMBO_G);
+      seedChild(db, 'erp-filho-M', skuM, COMBO_M);
+
+      for (let i = 0; i < 3; i += 1) {
+        await importProduto(deps(db, makeApi(ITEM_ID_NAO_NUMERICO)), 'MLB999');
+      }
+
+      expect(db.docs('produtos').size).toBe(3);
+      expect(
+        childrenOf(db, PARENT_ID)
+          .map(([id]) => id)
+          .sort(),
+      ).toEqual(['erp-filho-G', 'erp-filho-M']);
+    });
   });
 });
 
