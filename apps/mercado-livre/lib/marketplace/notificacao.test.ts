@@ -6,13 +6,16 @@ import {
   MAX_TENTATIVAS,
   MAX_TENTATIVAS_DEFERRED,
   TASK_MAX_ATTEMPTS,
+  TOPIC_DISPOSITION,
   handleNotificationTask,
+  isIgnoredTopic,
   isKnownTopic,
   parseNotificationBody,
   redriveDeferredForUserId,
   reprocessDeferredNotifications,
   reprocessNotifications,
   resolveIntegracaoByUserId,
+  shouldEnqueueTopic,
   userIdResolvivel,
 } from './notificacao';
 
@@ -230,17 +233,36 @@ function seedConta(db: FakeDb, id: string, userId: number, ativo = true): void {
   db.seed('integracao', id, { tipo: 1, user_id: userId, ativo, nome: id });
 }
 /**
+ * The topic these fixtures use to exercise the generic `ack` dispatch fallback:
+ * recognised, resolves an account, does no work and persists nothing.
+ *
+ * ⚠️ `items_prices` is the ONLY correct choice, and it is correct by
+ * construction rather than by luck. It is the one topic `TOPIC_DISPOSITION`
+ * marks `ack` **permanently** — #803 settled that the ERP owns both price
+ * tables, and `notificacao.ts` says in as many words not to attach a handler.
+ * Every other inert-looking topic is a handler waiting to happen:
+ * `questions`/`messages` are `park` today and become `handled` in #532, and
+ * `stock-location` is one stock feature away from the same fate. Pointing these
+ * fixtures at a topic that later grows a branch is how ~20 unrelated tests
+ * suddenly assert the wrong thing (which is exactly what this move repaired).
+ *
+ * The guard below pins it. Do not repoint these fixtures at a `handled` or
+ * `park` topic.
+ */
+const INERT_TOPIC = 'items_prices';
+const INERT_RESOURCE = '/items/MLB123/prices';
+
+/**
  * A lean ML-wire payload (what the receiver enqueues / the sweep rebuilds).
- * Default topic is `questions` — a KNOWN but permanently-postponed topic (see
- * `notificacao.ts`'s module doc) — so a bare `payloadOf()` exercises the
- * generic no-op dispatch fallback, not the Step 9 order-import branch that now
- * owns `orders_v2`/`orders` (see the dedicated describe block below).
+ * Uses {@link INERT_TOPIC}, so a bare `payloadOf()` exercises the generic
+ * dispatch fallback, not the Step 9 order-import branch that owns
+ * `orders_v2`/`orders` (see the dedicated describe block below).
  */
 function payloadOf(over: DocData = {}): DocData {
   return {
     id: 'N1',
-    resource: '/questions/123',
-    topic: 'questions',
+    resource: INERT_RESOURCE,
+    topic: INERT_TOPIC,
     user_id: 55,
     application_id: 999,
     attempts: 1,
@@ -251,15 +273,14 @@ function payloadOf(over: DocData = {}): DocData {
 }
 /**
  * A persisted `failed` notification doc (what the sweep re-drives). Same
- * generic-inert-topic default as `payloadOf` — tests below that only override
- * `resource` (for dedup/aging) keep exercising the no-op fallback, not order
- * import.
+ * inert-topic default as `payloadOf` — tests below that only override
+ * `resource` (for dedup/aging) keep exercising the fallback, not order import.
  */
 function seedFailed(db: FakeDb, id: string, over: DocData = {}): void {
   db.seed(NOTIF, id, {
     id,
-    resource: '/questions/1',
-    topic: 'questions',
+    resource: INERT_RESOURCE,
+    topic: INERT_TOPIC,
     user_id: 55,
     application_id: 999,
     attempts: 1,
@@ -433,8 +454,70 @@ describe('isKnownTopic', () => {
   it('knows the ML topics; unknown ones are not', () => {
     expect(isKnownTopic('orders_v2')).toBe(true);
     expect(isKnownTopic('payments')).toBe(true);
-    expect(isKnownTopic('public_offers')).toBe(false);
+    // Recognised as of #813 — previously absent, which is what made every
+    // delivery park a permanent document.
+    expect(isKnownTopic('public_offers')).toBe(true);
     expect(isKnownTopic('nonsense')).toBe(false);
+  });
+});
+
+describe('TOPIC_DISPOSITION', () => {
+  it('marks the three routinely-delivered nuisance topics as ignore', () => {
+    expect(isIgnoredTopic('public_offers')).toBe(true);
+    expect(isIgnoredTopic('public_candidates')).toBe(true);
+    expect(isIgnoredTopic('user-products-families')).toBe(true);
+  });
+
+  it('never ignores a data-bearing or handled topic', () => {
+    for (const [topic, disposition] of Object.entries(TOPIC_DISPOSITION)) {
+      expect(isIgnoredTopic(topic)).toBe(disposition === 'ignore');
+    }
+  });
+
+  it('keeps ignored topics out of BOTH enqueue producers', () => {
+    // The receiver and the missed_feeds sweep share this gate.
+    expect(shouldEnqueueTopic('public_offers')).toBe(false);
+    expect(shouldEnqueueTopic('orders_v2')).toBe(true);
+    // An UNKNOWN topic still enqueues — parking it is the only signal that a
+    // new ML topic appeared.
+    expect(shouldEnqueueTopic('nonsense')).toBe(true);
+  });
+
+  it('every `handled` topic really reaches its dispatch branch', async () => {
+    // `handled` used to be pure documentation: the final fallback caught every
+    // known non-`park` topic, so deleting or renaming a branch made its topic
+    // silently return `done` — no failure doc, no parked doc, no warn line, i.e.
+    // #813 reintroduced through the table meant to prevent it.
+    //
+    // The discriminator is an UNPARSEABLE resource. Every handled branch parses
+    // the resource id first, so it must answer `dropped` (malformed-resource).
+    // A branch that has gone missing cannot: it falls through to the fallback,
+    // which now parks (`handler-pendente`). So `dropped` proves the branch ran,
+    // and both failure modes — `parked` from the fallback, `done` from the old
+    // silent ack — fail this assertion.
+    const handled = Object.entries(TOPIC_DISPOSITION)
+      .filter(([, d]) => d === 'handled')
+      .map(([t]) => t);
+    expect(handled.length).toBeGreaterThan(0);
+
+    for (const topic of handled) {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ topic, resource: '/nao-parseavel' }),
+        0,
+      );
+      expect(r.outcome, `topic '${topic}' did not reach its dispatch branch`).toBe('dropped');
+    }
+  });
+
+  it('pins the inert fixture topic — it must stay recognised and do nothing', () => {
+    // ~20 tests in this file lean on INERT_TOPIC being a no-op. If it ever
+    // gains a handler (or joins the ignore list) they start asserting something
+    // else entirely, silently. See the INERT_TOPIC docblock.
+    expect(isKnownTopic(INERT_TOPIC)).toBe(true);
+    expect(TOPIC_DISPOSITION[INERT_TOPIC]).toBe('ack');
   });
 });
 
@@ -464,18 +547,45 @@ describe('handleNotificationTask', () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
     const r = await handleNotificationTask(asDb(db), payloadOf(), 0);
-    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'questions' });
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: INERT_TOPIC });
     expect(db.docs(NOTIF).size).toBe(0);
   });
 
   it('unknown topic → parked (terminal), persisted', async () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
-    const r = await handleNotificationTask(asDb(db), payloadOf({ topic: 'public_offers' }), 0);
+    // A topic genuinely absent from TOPIC_DISPOSITION. `public_offers` used to
+    // stand in here and no longer can — it is recognised and ignored now.
+    const r = await handleNotificationTask(asDb(db), payloadOf({ topic: 'algum_topico_novo' }), 0);
     expect(r.outcome).toBe('parked');
     const doc = db.docs(NOTIF).get('N1')!;
     expect(doc.status).toBe('parked');
     expect(typeof doc.processedAt).toBe('number');
+  });
+
+  it('ignored topic → dropped, persists NOTHING, and never resolves an account', async () => {
+    const db = new FakeDb();
+    // Deliberately NO conta seeded: an ignored topic must settle before the
+    // account lookup, so an unconnected seller cannot make it DEFER a document
+    // for a topic we have decided not to care about.
+    const r = await handleNotificationTask(asDb(db), payloadOf({ topic: 'public_offers' }), 0);
+    expect(r.outcome).toBe('dropped');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a data-bearing topic with no importer yet PARKS — never a silent done', async () => {
+    // The #813 headline: acking `questions`/`messages` makes them
+    // indistinguishable from processed work, so the cutover loses them with no
+    // failure doc, no parked doc and no warn line.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ topic: 'questions', resource: '/questions/123' }),
+      0,
+    );
+    expect(r.outcome).toBe('parked');
+    expect(db.docs(NOTIF).get('N1')!.status).toBe('parked');
   });
 
   it('no active account → DEFERRED, not failed: the seller may connect tomorrow (#808)', async () => {
@@ -487,7 +597,7 @@ describe('handleNotificationTask', () => {
     // roughly 6h, so a next-business-day connect lost everything.
     expect(doc.status).toBe('deferred');
     expect(doc.tentativas).toBe(0);
-    expect(doc.resource).toBe('/questions/123'); // ML wire fields persisted
+    expect(doc.resource).toBe(INERT_RESOURCE); // ML wire fields persisted
   });
 
   it('no user_id at all → parked: nothing can ever make it resolvable', async () => {
@@ -583,8 +693,8 @@ describe('handleNotificationTask', () => {
    * `deferred` doc through the same `docIdOf` path a `failed` one takes.
    */
   describe('failure-doc id when ML sent no id (#807)', () => {
-    /** What `payloadOf`'s defaults derive to: topic `questions` + `/questions/123`. */
-    const DERIVED = 'questions:questions_123';
+    /** What `payloadOf`'s defaults derive to: `<topic>:<resource, slashes to _>`. */
+    const DERIVED = 'items_prices:items_MLB123_prices';
 
     it('an id-less payload lands on a DERIVED doc id, not an auto one', async () => {
       const db = new FakeDb();
@@ -1642,7 +1752,7 @@ function seedDeferred(db: FakeDb, id: string, over: DocData = {}): void {
 describe('reprocessDeferredNotifications', () => {
   it('re-drives a deferred doc once its seller connects, and deletes it on success', async () => {
     const db = new FakeDb();
-    seedDeferred(db, 'N1', { processedAt: 1_000, resource: '/questions/1' });
+    seedDeferred(db, 'N1', { processedAt: 1_000, resource: '/items/MLB1/prices' });
     seedConta(db, 'conta-A', 77); // the seller connected meanwhile
 
     const res = await reprocessDeferredNotifications(asDb(db), { now: 10_000, olderThanMs: 100 });
@@ -1653,10 +1763,10 @@ describe('reprocessDeferredNotifications', () => {
 
   it('holds a still-unconnected seller for MAX_TENTATIVAS_DEFERRED days, then parks', async () => {
     const db = new FakeDb();
-    seedDeferred(db, 'N1', { processedAt: 1_000, resource: '/questions/1', tentativas: 0 });
+    seedDeferred(db, 'N1', { processedAt: 1_000, resource: '/items/MLB1/prices', tentativas: 0 });
     seedDeferred(db, 'N2', {
       processedAt: 1_000,
-      resource: '/questions/2',
+      resource: '/items/MLB2/prices',
       tentativas: MAX_TENTATIVAS_DEFERRED - 1,
     });
 
@@ -1684,10 +1794,10 @@ describe('reprocessDeferredNotifications', () => {
 describe('redriveDeferredForUserId', () => {
   it('moves only THAT seller’s deferred docs into the hot lane', async () => {
     const db = new FakeDb();
-    seedDeferred(db, 'N1', { resource: '/questions/1', user_id: 77 });
-    seedDeferred(db, 'N2', { resource: '/questions/2', user_id: 77 });
-    seedDeferred(db, 'N3', { resource: '/questions/3', user_id: 88 }); // another seller
-    seedFailed(db, 'N4', { resource: '/questions/4', user_id: 77 }); // already hot
+    seedDeferred(db, 'N1', { resource: '/items/MLB1/prices', user_id: 77 });
+    seedDeferred(db, 'N2', { resource: '/items/MLB2/prices', user_id: 77 });
+    seedDeferred(db, 'N3', { resource: '/items/MLB3/prices', user_id: 88 }); // another seller
+    seedFailed(db, 'N4', { resource: '/items/MLB4/prices', user_id: 77 }); // already hot
 
     const res = await redriveDeferredForUserId(asDb(db), 77);
 
@@ -1716,8 +1826,8 @@ describe('redriveDeferredForUserId', () => {
 
   it('reports truncation rather than silently dropping the tail', async () => {
     const db = new FakeDb();
-    seedDeferred(db, 'N1', { resource: '/questions/1', user_id: 77 });
-    seedDeferred(db, 'N2', { resource: '/questions/2', user_id: 77 });
+    seedDeferred(db, 'N1', { resource: '/items/MLB1/prices', user_id: 77 });
+    seedDeferred(db, 'N2', { resource: '/items/MLB2/prices', user_id: 77 });
 
     const res = await redriveDeferredForUserId(asDb(db), 77, 1);
 
