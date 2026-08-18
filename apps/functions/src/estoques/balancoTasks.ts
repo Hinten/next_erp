@@ -41,7 +41,7 @@ export const BALANCO_QUEUE = 'processarBalanco';
 export const BALANCO_MAX_ATTEMPTS = 5;
 
 function balancoTasksRegion(): string {
-  return process.env.BALANCO_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east1';
+  return process.env.BALANCO_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5';
 }
 
 /**

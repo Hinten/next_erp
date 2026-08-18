@@ -16,7 +16,7 @@ back to the App Hosting app, no OIDC. This is a **separate codebase from
 
 ## Deploy lane (manual & coordinated — see root `CLAUDE.md`, Critical rules)
 
-One command, with `FUNCTIONS_REGION` (default `us-east1`) and the app's base
+One command, with `FUNCTIONS_REGION` (default `us-east5`) and the app's base
 config set. **Ask the user before running it.**
 
 ```bash
@@ -113,7 +113,7 @@ gcloud iam service-accounts add-iam-policy-binding "$FN_RUNTIME_SA" --project="$
 
 Emit a **≥2-pedido** lote → the request returns `aguardandoResposta` instantly →
 the `reconciliarNfe` function fires at ~`tMed` and drains the lote to `aprovada`
-(check `gcloud tasks queues describe reconciliarNfe --location=us-east1` depth
+(check `gcloud tasks queues describe reconciliarNfe --location=us-east5` depth
 rise+drain). Confirm the function reads `./ca` + `./schemas` (XSD validation
 succeeds — a missing-schema error means the copy/`NFE_SCHEMA_DIR` wiring is off).
 

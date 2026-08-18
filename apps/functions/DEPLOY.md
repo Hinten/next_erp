@@ -15,7 +15,7 @@ the lane; it does not run in CI.
 - A clean `pnpm install` (workspace deps resolved).
 
 No secrets are needed to build/deploy. The only build-time value is the function
-region, a non-secret constant that `build.mjs` defaults to `us-east1` (the Storage
+region, a non-secret constant that `build.mjs` defaults to `us-east5` (the Storage
 bucket region); **`.env.local` is never read by the deploy** — it holds secrets that
 must not reach the build/deploy process. Override the region only for another
 environment via the `FUNCTIONS_REGION` env var.
@@ -124,7 +124,7 @@ watch for: `sharp` native-binary platform resolution in the Cloud Build image; t
 gen2 (Eventarc) trigger requiring the Eventarc / Pub/Sub APIs enabled and the
 runtime service account having the right roles (a first-deploy `storage.buckets.get`
 403 right after those APIs are enabled is usually IAM-propagation lag — re-run);
-and the region: the bundle inlines `us-east1` by default, which **must match the
+and the region: the bundle inlines `us-east5` by default, which **must match the
 Storage bucket's region** — if the bucket is elsewhere, deploy with
 `FUNCTIONS_REGION=<bucket-region>` set. Surface any of these back as a follow-up
 rather than forcing the deploy.

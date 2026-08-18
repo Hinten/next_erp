@@ -19,7 +19,7 @@ page is the **map** to verify nothing falls through the cracks.
 - **Product-scoped**: every product file lives under `produtos/<produtoId>/…` with a
   product-scoped doc id, so there is no cross-product sharing — deletion is
   owner-scoped and needs no refcount table.
-- Five Cloud Functions own the server side (codebase `storage`, region `us-east1`):
+- Five Cloud Functions own the server side (codebase `storage`, region `us-east5`):
 
 | Function | Trigger | Job |
 | --- | --- | --- |

@@ -194,7 +194,7 @@ const url = snap.data?.data?.url ?? originalSnap.data?.data?.url ?? null;
 `onArquivoDeleted` trigger frees the Storage object (and cascades derivatives).
 Deleting a Storage object directly leaves a dangling doc — don't.
 
-Five Cloud Functions own the server side (codebase `storage`, region `us-east1`,
+Five Cloud Functions own the server side (codebase `storage`, region `us-east5`,
 `apps/functions/src/index.ts`):
 
 | Function | Trigger | Job |

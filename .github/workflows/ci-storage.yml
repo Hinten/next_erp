@@ -169,7 +169,7 @@ jobs:
     # Inlined into the functions bundle at build time (build.mjs); the build
     # fails without it. Must match the Storage bucket region.
     env:
-      FUNCTIONS_REGION: us-east1
+      FUNCTIONS_REGION: us-east5
     steps:
       - uses: actions/checkout@v6
         with:
@@ -239,7 +239,7 @@ jobs:
     needs: [changes, storage-build-test]
     # Inlined into the functions bundle at build time (build.mjs).
     env:
-      FUNCTIONS_REGION: us-east1
+      FUNCTIONS_REGION: us-east5
     steps:
       - uses: actions/checkout@v6
         with:
@@ -277,7 +277,7 @@ jobs:
         # Demo-project mode → no real credentials, nothing touches staging. The
         # functions emulator fires the Storage trigger; the *.storage.test.ts
         # suite asserts the resize round-trip. The function region resolves from
-        # the FUNCTIONS_REGION param default (us-east1) — no env needed here.
+        # the FUNCTIONS_REGION param default (us-east5) — no env needed here.
         run: |
           firebase emulators:exec \
             --config firebase.functions.json \

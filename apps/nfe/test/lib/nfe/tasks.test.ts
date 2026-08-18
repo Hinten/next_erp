@@ -68,7 +68,7 @@ describe('createTaskScheduler', () => {
     expect(opts?.scheduleTime?.getTime()).toBe(at);
   });
 
-  it('defaults the queue region to us-east1 when NFE_TASKS_REGION is unset', async () => {
+  it('defaults the queue region to us-east5 when NFE_TASKS_REGION is unset', async () => {
     await createTaskScheduler().enqueueConsulta({
       filialId: 'F',
       nRec: 'R',
@@ -76,7 +76,7 @@ describe('createTaskScheduler', () => {
       attempt: 0,
       scheduleAtMs: Date.now(),
     });
-    expect(taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/reconciliarNfe');
+    expect(taskQueue).toHaveBeenCalledWith('locations/us-east5/functions/reconciliarNfe');
   });
 
   it('treats blank NFE_TASKS_REGION as unset and falls through to default', async () => {
@@ -88,7 +88,7 @@ describe('createTaskScheduler', () => {
       attempt: 0,
       scheduleAtMs: Date.now(),
     });
-    expect(taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/reconciliarNfe');
+    expect(taskQueue).toHaveBeenCalledWith('locations/us-east5/functions/reconciliarNfe');
   });
 
   it('noopTaskScheduler.enqueueConsulta resolves without side effects', async () => {

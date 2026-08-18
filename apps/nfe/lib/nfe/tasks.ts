@@ -20,7 +20,7 @@
  * Config:
  *   - `NFE_TASKS_DISABLED=1` → `noopTaskScheduler` (local dev / deliberate
  *     sweep-only opt-out; the backstop sweep still reconciles).
- *   - `NFE_TASKS_REGION` (default `us-east1`) → the region the `reconciliarNfe`
+ *   - `NFE_TASKS_REGION` (default `us-east5`) → the region the `reconciliarNfe`
  *     function + its queue are deployed to (must match the functions' region).
  */
 import { z } from 'zod';
@@ -43,7 +43,7 @@ import { safeLog } from './log';
  */
 export const RECONCILE_FUNCTION = 'reconciliarNfe';
 /** Region the reconcile function/queue live in (must match the functions' FUNCTIONS_REGION). */
-const reconcileRegion = (): string => process.env.NFE_TASKS_REGION?.trim() || 'us-east1';
+const reconcileRegion = (): string => process.env.NFE_TASKS_REGION?.trim() || 'us-east5';
 
 /**
  * JSON body the queue delivers to the reconcile function. Shared between the

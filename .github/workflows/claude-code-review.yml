@@ -98,7 +98,7 @@ jobs:
       # every task hash. Set to ci.yml's value so a scoped `turbo run` the
       # reviewer fires can hit the restored cache rather than miss on a hash
       # mismatch.
-      FUNCTIONS_REGION: us-east1
+      FUNCTIONS_REGION: us-east5
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       # An issue_comment event carries no PR ref, so a bare checkout would hand

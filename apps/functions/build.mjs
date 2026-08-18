@@ -6,8 +6,9 @@ import { dirname, join } from 'node:path';
 // Firebase can't read `process.env`/params/`.env` during codebase analysis (where
 // setGlobalOptions runs), so the region is baked into the bundle here.
 //
-// The region is a non-secret project constant: the Storage bucket lives in
-// us-east1 and the gen2 trigger must match it. It is deliberately NOT sourced
+// The region is a non-secret project constant: every Functions codebase in this
+// repo standardises on us-east5, so the Storage bucket MUST be created there too
+// — the gen2 Eventarc trigger has to sit in the bucket's region. It is deliberately NOT sourced
 // from `.env.local` — that file holds secrets that must never be loaded into the
 // deploy/build process. It defaults to the bucket region and can be overridden
 // via FUNCTIONS_REGION for another environment.
@@ -24,7 +25,7 @@ const pkgDir = dirname(fileURLToPath(import.meta.url));
  * bundled in, so the deployed package needs just those three runtime deps.
  */
 export async function bundle(outfile) {
-  const region = process.env.FUNCTIONS_REGION || 'us-east1';
+  const region = process.env.FUNCTIONS_REGION || 'us-east5';
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,

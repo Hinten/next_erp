@@ -56,10 +56,12 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
    `gcloud firestore databases create --database=default --edition=enterprise --location=<region>`.
    The id is literally `default`, not `(default)` — see the root `CLAUDE.md`
    Critical rule 1, and everything that passes it explicitly to `getFirestore()`.
-   ⚠️ The region is effectively permanent, and the **Storage bucket region must
-   match `apps/functions`' `us-east1`** or the gen2 Eventarc storage triggers
-   break silently. The three channel Functions codebases sit in `us-east5`; that
-   is fine, it is only the bucket-adjacent codebase that has to agree.
+   ⚠️ The region is effectively permanent, and the **Storage bucket must be
+   created in `us-east5`** or the gen2 Eventarc storage triggers break silently.
+   **Every** Functions codebase in this repo standardises on `us-east5` — the
+   three channel ones and the bucket-adjacent `storage`/`nfe` pair alike — so
+   there is one region to get right, and the bucket is the piece that cannot be
+   moved afterwards.
 3. **Deploy `firestore.indexes.json` before any data lands.** Enterprise
    auto-creates zero indexes and an unindexed query does not fail — it full-scans
    and bills data scanned, so the mistake surfaces on the invoice. Set **TTL

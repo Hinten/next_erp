@@ -52,13 +52,13 @@ describe('createBalancoScheduler', () => {
     expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-west1/functions/${BALANCO_QUEUE}`);
   });
 
-  it('defaults the region to us-east1 when nothing is configured', async () => {
+  it('defaults the region to us-east5 when nothing is configured', async () => {
     vi.stubEnv('BALANCO_TASKS_DISABLED', '');
     // Truly unset (not blank) — the plain fall-through.
     vi.stubEnv('BALANCO_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     await createBalancoScheduler().enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-east1/functions/${BALANCO_QUEUE}`);
+    expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-east5/functions/${BALANCO_QUEUE}`);
   });
 
   // #887: `??` does NOT fall through on '', so a declared-but-blank var used to
@@ -70,7 +70,7 @@ describe('createBalancoScheduler', () => {
     vi.stubEnv('BALANCO_TASKS_REGION', '');
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     await createBalancoScheduler().enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-east1/functions/${BALANCO_QUEUE}`);
+    expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-east5/functions/${BALANCO_QUEUE}`);
   });
 
   it('treats a whitespace-only BALANCO_TASKS_REGION as unset too', async () => {

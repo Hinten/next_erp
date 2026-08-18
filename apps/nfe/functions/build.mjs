@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 
 export async function bundle(outfile) {
-  const region = process.env.FUNCTIONS_REGION || 'us-east1';
+  const region = process.env.FUNCTIONS_REGION || 'us-east5';
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,

@@ -95,9 +95,9 @@ export function getFirebaseFirestore(): Firestore {
 export function getFirebaseFunctions(): Functions {
   if (functions) return functions;
   // Region MUST match the Cloud Functions deploy region (apps/functions
-  // build.mjs defaults to us-east1 — the Storage bucket region the gen2 triggers
+  // build.mjs defaults to us-east5 — the Storage bucket region the gen2 triggers
   // are pinned to). Kept in an env var so client + functions stay in sync.
-  const region = process.env.NEXT_PUBLIC_FUNCTIONS_REGION ?? 'us-east1';
+  const region = process.env.NEXT_PUBLIC_FUNCTIONS_REGION ?? 'us-east5';
   functions = getFunctions(getFirebaseApp(), region);
   if (USE_FIREBASE_EMULATOR) {
     connectFunctionsEmulator(functions, EMULATOR_HOST, 5001);

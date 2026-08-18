@@ -27,7 +27,7 @@ jobs:
     # `turbo run build` compiles apps/functions, whose build.mjs inlines
     # FUNCTIONS_REGION and fails without it. Must match the Storage bucket region.
     env:
-      FUNCTIONS_REGION: us-east1
+      FUNCTIONS_REGION: us-east5
       # Skip Next.js telemetry collection + its build-time notice in CI.
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
