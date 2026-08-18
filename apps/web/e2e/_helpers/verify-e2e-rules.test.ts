@@ -28,6 +28,7 @@ describe('verifyE2ENamespaceAccess — #172 staging ruleset pre-flight guard', (
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('throws without making any request when the client Firebase env is missing', async () => {
@@ -103,6 +104,96 @@ describe('verifyE2ENamespaceAccess — #172 staging ruleset pre-flight guard', (
     await expect(verifyE2ENamespaceAccess('e2e@example.com', 'pw')).rejects.toThrow(
       /unexpected 500/,
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Transport-failure retry (observed 2026-08-18).
+  //
+  // A TCP reset is not a rules verdict. This probe runs from `globalSetup`, so a
+  // throw here kills the whole Playwright invocation before a single spec runs
+  // and reds the required `E2E gate (cadastros)` check for a reason unrelated to
+  // the PR — run 32156961332 attempt 1 died with `TypeError: fetch failed` /
+  // `read ECONNRESET` and zero tests executed, and attempt 2 passed unchanged.
+  //
+  // The line the retry must NOT cross: an HTTP *response* is never retried.
+  // ---------------------------------------------------------------------------
+
+  it('retries a transport-level rejection on sign-in, then succeeds', async () => {
+    vi.useFakeTimers();
+    fetchMock
+      // Exactly what undici throws on a reset: a TypeError wrapping the cause.
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(jsonResponse(200, { idToken: 'tok' }))
+      .mockResolvedValue(jsonResponse(200, {}));
+
+    const pending = expect(
+      verifyE2ENamespaceAccess('e2e@example.com', 'pw'),
+    ).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await pending;
+
+    // 3 sign-in attempts (2 reset, 1 answered), then write + read + delete.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    for (const i of [0, 1, 2]) {
+      expect(String(fetchMock.mock.calls[i]![0])).toContain('identitytoolkit.googleapis.com');
+    }
+    expect(String(fetchMock.mock.calls[3]![0])).toContain('firestore.googleapis.com');
+  });
+
+  // The Firestore legs are as exposed as sign-in — the retry belongs to the
+  // request helper, not to one call site.
+  it('retries a transport-level rejection on the Firestore probe too', async () => {
+    vi.useFakeTimers();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { idToken: 'tok' }))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValue(jsonResponse(200, {}));
+
+    const pending = expect(
+      verifyE2ENamespaceAccess('e2e@example.com', 'pw'),
+    ).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await pending;
+
+    // sign-in + (reset write, retried write) + read + delete.
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('gives up after a bounded number of transport attempts', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    const pending = expect(verifyE2ENamespaceAccess('e2e@example.com', 'pw')).rejects.toThrow(
+      TypeError,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await pending;
+
+    // Bounded, not a spin: a network that is genuinely gone still fails the run.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT retry an HTTP response — a 403 rules denial fails on the FIRST answer', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { idToken: 'tok' }))
+      // Persistent, not `...Once`: were the retry policy to wrongly cover HTTP
+      // responses, the call count below would climb instead of stopping at the
+      // first answer — turning a real ruleset regression into a slow one.
+      .mockResolvedValue(jsonResponse(403, { error: { status: 'PERMISSION_DENIED' } }));
+
+    await expect(verifyE2ENamespaceAccess('e2e@example.com', 'pw')).rejects.toThrow(
+      /does not cover e2e namespaces \(write denied\).*gen:rules:e2e/s,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT retry a non-transport throw — only a TypeError is a reset', async () => {
+    const bug = new RangeError('programming bug, not a reset');
+    fetchMock.mockRejectedValue(bug);
+
+    await expect(verifyE2ENamespaceAccess('e2e@example.com', 'pw')).rejects.toBe(bug);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('writes, reads and DELETES a probe keyed by the run id, in a fixed collection', async () => {

@@ -8,6 +8,48 @@ interface SignInWithPasswordResponse {
 }
 
 /**
+ * Attempts per probe request, and the base of the exponential backoff between
+ * them (250ms, then 500ms) — the same shape the Mercado Livre client uses.
+ */
+const PROBE_MAX_ATTEMPTS = 3;
+const PROBE_RETRY_BASE_MS = 250;
+
+/**
+ * `fetch` with a bounded retry for TRANSPORT failures only.
+ *
+ * This runs from `globalSetup`, so anything thrown here fails the whole
+ * Playwright invocation **before a single spec runs** — and `E2E gate
+ * (cadastros)` is a required check, so one TCP reset reds a PR for a reason
+ * that has nothing to do with the PR. Observed 2026-08-18 on run 32156961332
+ * attempt 1: `TypeError: fetch failed` / `[cause]: read ECONNRESET`, zero specs
+ * executed; attempt 2 passed unchanged, which is the proof it was transient.
+ *
+ * Only a fetch THROW retries. `fetch` rejects exactly when no HTTP exchange
+ * completed at all (connection reset, DNS, TLS), which Node's undici surfaces
+ * as a `TypeError`. Every HTTP RESPONSE resolves and is handed straight back on
+ * the FIRST answer — a 403 rules denial, a 400 sign-in failure, a 500 — because
+ * those are precisely the signals this probe exists to surface. Retrying one
+ * would only turn a real ruleset regression into a slow real ruleset
+ * regression, so `assertRuleCoverage` always sees the first response.
+ */
+async function fetchWithTransportRetry(url: string, init?: RequestInit): Promise<Response> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      // Narrowed on `TypeError`, never on `Error` — `Error` is the parent of
+      // every exception, so retrying on it would silently re-run genuine
+      // programming bugs too (root CLAUDE.md critical rule 6). Anything else
+      // rethrows on the spot.
+      if (!(err instanceof TypeError) || attempt >= PROBE_MAX_ATTEMPTS) throw err;
+      // The global `setTimeout`, not `node:timers/promises`: only the global one
+      // is patched by the unit test's fake timers.
+      await new Promise((resolve) => setTimeout(resolve, PROBE_RETRY_BASE_MS * 2 ** (attempt - 1)));
+    }
+  }
+}
+
+/**
  * Fails fast, before any Playwright spec runs (and before the login-retry loop
  * below it in `globalSetup`), when the DEPLOYED staging Firestore ruleset does
  * not grant the `e2e_`-prefixed namespace — instead of a confusing per-test
@@ -54,7 +96,7 @@ export async function verifyE2ENamespaceAccess(email: string, password: string):
     `/documents/${E2E_PROBE_COLLECTION}/${encodeURIComponent(e2eRunId())}`;
   const headers = { Authorization: `Bearer ${idToken}`, 'Content-Type': 'application/json' };
 
-  const writeRes = await fetch(probeUrl, {
+  const writeRes = await fetchWithTransportRetry(probeUrl, {
     method: 'PATCH',
     headers,
     body: JSON.stringify({
@@ -69,15 +111,15 @@ export async function verifyE2ENamespaceAccess(email: string, password: string):
   });
   await assertRuleCoverage(writeRes, 'write');
 
-  const readRes = await fetch(probeUrl, { headers });
+  const readRes = await fetchWithTransportRetry(probeUrl, { headers });
   await assertRuleCoverage(readRes, 'read');
 
-  const deleteRes = await fetch(probeUrl, { method: 'DELETE', headers });
+  const deleteRes = await fetchWithTransportRetry(probeUrl, { method: 'DELETE', headers });
   await assertRuleCoverage(deleteRes, 'delete');
 }
 
 async function signInForIdToken(email: string, password: string, apiKey: string): Promise<string> {
-  const res = await fetch(`${IDENTITY_TOOLKIT_SIGN_IN_URL}?key=${apiKey}`, {
+  const res = await fetchWithTransportRetry(`${IDENTITY_TOOLKIT_SIGN_IN_URL}?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password, returnSecureToken: true }),
