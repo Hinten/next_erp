@@ -23,7 +23,6 @@ import {
 } from '@delfrance/schemas';
 
 import { AlreadyRunningError, resolveModelo, runSingleFlight } from '@delfrance/ai';
-import type { AiAttributeSuggestion } from '@delfrance/integrations-mercado-livre';
 import {
   AiNotConfiguredError,
   AiUnparseableAnswerError,
@@ -35,6 +34,7 @@ import {
   modelosParaValidacao,
 } from '@delfrance/ai/admin';
 
+import { MAX_ANTERIOR, normalizarAnterior } from '@/lib/ai/revisao';
 import { ProdutoNotFoundError, suggestAttributes } from '@/lib/ai/suggestAttributes';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminBucket, getAdminFirestore } from '@/lib/firebase/admin';
@@ -109,11 +109,23 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (anterior !== undefined && !Array.isArray(anterior)) {
     return NextResponse.json({ error: 'anterior deve ser uma lista.' }, { status: 400 });
   }
-  // Both halves or neither: a correction with nothing to correct would have the
-  // model re-derive from the same facts and repeat itself.
+  if (Array.isArray(anterior) && anterior.length > MAX_ANTERIOR) {
+    return NextResponse.json(
+      { error: `anterior deve ter no máximo ${String(MAX_ANTERIOR)} itens.` },
+      { status: 400 },
+    );
+  }
+  // ⚠️ `anterior` is CLIENT input and reaches the prompt, so it is normalized
+  // rather than cast: the builder maps `a.id`/`a.value_name` over it, and a
+  // single `null` entry in a hand-made body used to turn this route into a 500.
+  //
+  // The feedback is what decides there IS a revision — an EMPTY `anterior` is
+  // legitimate and must stay accepted: when the model answers with nothing the
+  // operator's "não achou nada, tente pelo código" is exactly the correction
+  // worth sending, and the empty prior turn is an honest record of what it said.
   const revisao =
     typeof feedback === 'string' && feedback.trim() !== ''
-      ? { feedback, anterior: (anterior ?? []) as AiAttributeSuggestion[] }
+      ? { feedback, anterior: normalizarAnterior(anterior) }
       : null;
 
   const db = getAdminFirestore();
