@@ -40,12 +40,34 @@ import {
  * (a confirmation naming the account, and a checkbox that must be ticked); the
  * third and authoritative one is the backend's `MERCADO_LIVRE_TEST_USERS_ENABLED`.
  *
- * ⚠️ The `NODE_ENV` check below is for DISCOVERABILITY ONLY and protects
- * nothing: `apps/web` in local dev calls the DEPLOYED channel backend, so the
- * browser's notion of "dev" says nothing about which backend answers. A backend
- * without the flag returns 404 and this panel renders nothing at all.
+ * ⚠️ The `NODE_ENV` check is for DISCOVERABILITY ONLY and is not a security
+ * guard: `apps/web` in local dev calls the DEPLOYED channel backend, so the
+ * browser's notion of "dev" says nothing about which backend answers. It does
+ * still have to be correct — see the wrapper below for why its POSITION matters.
+ * A backend without the flag returns 404 and this panel renders nothing at all.
+ */
+/**
+ * Build-time constant: Next inlines `process.env.NODE_ENV`, so the check in the
+ * wrapper below folds to a constant rather than being evaluated per render.
+ */
+const IS_DEV = process.env.NODE_ENV !== 'production';
+
+/**
+ * No hooks in this wrapper — deliberately.
+ *
+ * ⚠️ The env check used to sit AFTER the hooks, which does not do what it looks
+ * like it does: hooks run before any early return, so a deployed `apps/web`
+ * (always `NODE_ENV=production`) still fired `GET /usuarios-teste` at the channel
+ * backend on **every** Mercado Livre conta page — a request that can only 404 and
+ * whose result can never be rendered. Returning before the hooks exist is what
+ * actually makes "renders nothing in a production build" true.
  */
 export function UsuariosTesteDevPanel({ integracaoId }: { integracaoId: string }) {
+  if (!IS_DEV) return null;
+  return <UsuariosTestePanel integracaoId={integracaoId} />;
+}
+
+function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
   const client = useMercadoLivreClient();
   const queryClient = useQueryClient();
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
@@ -96,9 +118,9 @@ export function UsuariosTesteDevPanel({ integracaoId }: { integracaoId: string }
   });
 
   // A backend without the flag answers 404 on both verbs — render nothing, so
-  // the panel simply does not exist where the feature is off.
+  // the panel simply does not exist where the feature is off. (The production
+  // check lives in the wrapper above, where it can run BEFORE the hooks.)
   if (query.error instanceof MercadoLivreClientHttpError && query.error.status === 404) return null;
-  if (process.env.NODE_ENV === 'production') return null;
 
   const usuarios = query.data?.usuarios ?? [];
 
