@@ -109,10 +109,7 @@ test.describe.serial('Pedidos e2e — Devolução', () => {
 
   // Each test starts from a clean returns map on the edited pedido.
   test.beforeEach(async () => {
-    await db()
-      .collection('pedidos')
-      .doc(pedidoId)
-      .update({ itensDevolvidos: null, valorDevolucao: 0 });
+    await db().collection('pedidos').doc(pedidoId).update({ itensDevolvidos: null });
   });
 
   test.afterAll(async () => {
@@ -157,17 +154,19 @@ test.describe.serial('Pedidos e2e — Devolução', () => {
         async () => {
           const data = (await db().collection('pedidos').doc(pedidoId).get()).data();
           const dev = data?.itensDevolvidos as
-            | Record<string, Record<string, Array<{ quantidade?: number }>>>
+            | Record<string, Record<string, Array<{ quantidade?: number; precoDeVenda?: number }>>>
             | null
             | undefined;
-          return {
-            qty: dev?.[originId]?.[produtoId]?.[0]?.quantidade ?? null,
-            valorDevolucao: data?.valorDevolucao ?? null,
-          };
+          const item = dev?.[originId]?.[produtoId]?.[0];
+          // The money is asserted at its SOURCE, not through a cache: the
+          // pedido-level `valorDevolucao` was removed (#796) because it was a
+          // pure function of these items. `derivePedidoTotals` still computes it
+          // for the footer, and `totals.test.ts` pins that arithmetic.
+          return { qty: item?.quantidade ?? null, preco: item?.precoDeVenda ?? null };
         },
         { timeout: 15_000 },
       )
-      .toEqual({ qty: 1, valorDevolucao: 10 });
+      .toEqual({ qty: 1, preco: 10 });
   });
 
   test('Mode B — adds an avulso produto and persists it under NONE', async ({ page }) => {
