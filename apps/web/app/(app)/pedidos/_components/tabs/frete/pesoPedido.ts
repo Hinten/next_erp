@@ -105,17 +105,33 @@ export function volumePadrao(pesoBruto = 1): VolumeFormState {
  * mounting the form. Port of the legacy ME widget's "seed only when volumes
  * is empty" init behavior (`_adicionarVolumeInicial`,
  * `.old/lib/integracoes_frete/melhor_envios/widgets.dart:87`), generalized to
- * every tipo per #371: fires once frete is active, volumes is still empty,
- * and the weight lookup has resolved (loading or not-yet-active never
- * seeds).
+ * every tipo per #371 — with two guards the legacy single-tipo widget didn't
+ * need:
+ *
+ * - `pendingActivation` — true only for a frete-just-turned-on transition
+ *   THIS mount (the caller latches it the moment `temFrete` flips false→true
+ *   from a live `onModalidadeChange`, e.g. picking a modalidade on a fresh
+ *   pedido). An already-active pedido loaded straight from Firestore with
+ *   `volumes` empty (a legacy data gap, or a volume the operator removed and
+ *   saved on purpose) never gets one fabricated back on a later open — only a
+ *   genuine same-session activation seeds, so the seed's `shouldDirty: true`
+ *   always reflects a real user action, never a passive-mount side effect
+ *   that could race the page's post-load server-truth correction (a dirty
+ *   form is never repainted with server truth).
+ * - `marketplaceOwned` — a marketplace-imported freteInicial is owned
+ *   entirely by the order importer (`MarketplaceReadOnly` renders no editor
+ *   at all); this must never inject a locally-fabricated Volume into it.
  */
 export function shouldSeedVolume(input: {
-  temFrete: boolean;
+  /** A false→true `temFrete` transition happened this mount and is unresolved. */
+  pendingActivation: boolean;
+  marketplaceOwned: boolean;
   volumes: readonly VolumeFormState[] | null | undefined;
   /** `undefined` = the batched produto weight lookup is still in flight. */
   produtoPesoById: Readonly<Record<string, ProdutoPesoInfo | null>> | undefined;
 }): boolean {
-  if (!input.temFrete) return false;
+  if (!input.pendingActivation) return false;
+  if (input.marketplaceOwned) return false;
   if (input.volumes && input.volumes.length > 0) return false;
   if (input.produtoPesoById === undefined) return false;
   return true;

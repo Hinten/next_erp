@@ -130,28 +130,34 @@ describe('volumePadrao', () => {
 });
 
 describe('shouldSeedVolume', () => {
-  it('does not seed when frete is not active', () => {
-    expect(shouldSeedVolume({ temFrete: false, volumes: null, produtoPesoById: {} })).toBe(false);
+  function base(over: Partial<Parameters<typeof shouldSeedVolume>[0]> = {}) {
+    return {
+      pendingActivation: true,
+      marketplaceOwned: false,
+      volumes: null,
+      produtoPesoById: {},
+      ...over,
+    };
+  }
+
+  it('does not seed without a same-session activation transition', () => {
+    expect(shouldSeedVolume(base({ pendingActivation: false }))).toBe(false);
+  });
+
+  it('does not seed into a marketplace-owned freteInicial', () => {
+    expect(shouldSeedVolume(base({ marketplaceOwned: true }))).toBe(false);
   });
 
   it('does not seed when volumes already has entries', () => {
-    expect(
-      shouldSeedVolume({
-        temFrete: true,
-        volumes: [volumePadrao()],
-        produtoPesoById: {},
-      }),
-    ).toBe(false);
+    expect(shouldSeedVolume(base({ volumes: [volumePadrao()] }))).toBe(false);
   });
 
   it('does not seed while the produto weight batch is still loading', () => {
-    expect(shouldSeedVolume({ temFrete: true, volumes: null, produtoPesoById: undefined })).toBe(
-      false,
-    );
+    expect(shouldSeedVolume(base({ produtoPesoById: undefined }))).toBe(false);
   });
 
-  it('seeds when frete is active, volumes is empty and weights resolved', () => {
-    expect(shouldSeedVolume({ temFrete: true, volumes: null, produtoPesoById: {} })).toBe(true);
-    expect(shouldSeedVolume({ temFrete: true, volumes: [], produtoPesoById: {} })).toBe(true);
+  it('seeds on a pending activation with empty volumes, resolved weights, not marketplace-owned', () => {
+    expect(shouldSeedVolume(base())).toBe(true);
+    expect(shouldSeedVolume(base({ volumes: [] }))).toBe(true);
   });
 });

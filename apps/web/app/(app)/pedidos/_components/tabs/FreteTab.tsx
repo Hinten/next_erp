@@ -61,40 +61,6 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
 
   const clientePedidoOuterRef = form.watch('clientePedidoOuterRef');
 
-  // Auto-weight + default Volume (#371, port of the legacy ME widget's
-  // seed-if-empty init). Fires at most once per mount: the moment frete is
-  // active, `volumes` is still empty and the batched produto weight lookup
-  // has resolved, seed one `volumePadrao(pesoPedido(...))` volume so freight
-  // can be quoted without manual volume entry. A user who later empties the
-  // list on purpose does not get it seeded back.
-  const itensFlat = form.watch('_itensFlat') ?? [];
-  const produtoUidsForPeso = useMemo(
-    () => itensFlat.filter((i) => !i._delete && !!i.produtoUid).map((i) => i.produtoUid as string),
-    [itensFlat],
-  );
-  const produtoPesoById = useProdutoPesoMap(db, produtoUidsForPeso);
-  const autoSeededVolumeRef = useRef(false);
-  useEffect(() => {
-    if (autoSeededVolumeRef.current) return;
-    if (produtoPesoById === undefined) return; // batch still in flight
-    const currentVolumes = form.getValues(fretePath('volumes')) as VolumeFormState[] | null;
-    if (!shouldSeedVolume({ temFrete, volumes: currentVolumes, produtoPesoById })) return;
-    autoSeededVolumeRef.current = true;
-    const peso = pesoPedido(
-      itensFlat
-        .filter((i) => !i._delete)
-        .map((i) => ({
-          produtoUid: i.produtoUid,
-          quantidade: i.quantidade,
-        })),
-      produtoPesoById,
-    );
-    form.setValue(fretePath('volumes'), [volumePadrao(peso)], {
-      shouldDirty: true,
-      shouldValidate: true,
-    });
-  }, [temFrete, itensFlat, produtoPesoById, form]);
-
   // Surface every invalid `freteInicial` field — including derived/cache fields
   // with no rendered input, which only mark the tab and never show inline
   // (#218). Reading `formState.errors` here subscribes the tab to error changes.
@@ -197,6 +163,61 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const marketplaceOwned = isFreteMarketplaceOwned(tipo);
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
+
+  // Auto-weight + default Volume (#371, port of the legacy ME widget's
+  // seed-if-empty init). Only fetches/considers seeding when there's a real
+  // chance of it: frete active, not marketplace-owned (that block is
+  // importer-owned end to end — never inject a fabricated Volume into it),
+  // and no volume already stored. `pendingActivationRef` further latches to a
+  // genuine same-session `temFrete` false→true transition (a live
+  // `onModalidadeChange`, not the initial load of an already-active pedido)
+  // so the seed's `shouldDirty: true` is always a real user action — it never
+  // races the page's post-load server-truth correction, which only repaints
+  // a still-clean form, nor re-fabricates a Volume an operator removed and
+  // saved on purpose.
+  const itensFlat = form.watch('_itensFlat') ?? [];
+  const hasStoredVolumes = !!freteInicial?.volumes && freteInicial.volumes.length > 0;
+  const produtoUidsForPeso = useMemo(
+    () =>
+      temFrete && !marketplaceOwned && !hasStoredVolumes
+        ? itensFlat.filter((i) => !i._delete && !!i.produtoUid).map((i) => i.produtoUid as string)
+        : [],
+    [temFrete, marketplaceOwned, hasStoredVolumes, itensFlat],
+  );
+  const produtoPesoById = useProdutoPesoMap(db, produtoUidsForPeso);
+  const wasTemFreteRef = useRef(temFrete);
+  const pendingActivationRef = useRef(false);
+  const autoSeededVolumeRef = useRef(false);
+  useEffect(() => {
+    const wasTemFrete = wasTemFreteRef.current;
+    wasTemFreteRef.current = temFrete;
+    if (!wasTemFrete && temFrete) pendingActivationRef.current = true;
+
+    if (autoSeededVolumeRef.current) return;
+    if (produtoPesoById === undefined) return; // batch still in flight
+    const currentVolumes = form.getValues(fretePath('volumes')) as VolumeFormState[] | null;
+    const shouldSeed = shouldSeedVolume({
+      pendingActivation: pendingActivationRef.current,
+      marketplaceOwned,
+      volumes: currentVolumes,
+      produtoPesoById,
+    });
+    if (!shouldSeed) return;
+    autoSeededVolumeRef.current = true;
+    const peso = pesoPedido(
+      itensFlat
+        .filter((i) => !i._delete)
+        .map((i) => ({
+          produtoUid: i.produtoUid,
+          quantidade: i.quantidade,
+        })),
+      produtoPesoById,
+    );
+    form.setValue(fretePath('volumes'), [volumePadrao(peso)], {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+  }, [temFrete, marketplaceOwned, itensFlat, produtoPesoById, form]);
 
   function renderTipoFields() {
     if (!integracaoRef) return <GenericFreteFields form={form} disabled={disabled} />;
