@@ -66,7 +66,6 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   descontoTotal: 'principal',
   observacoesInternas: 'principal',
   valorCobrado: 'principal',
-  valorCusto: 'principal',
   // Fiscal
   enderecoFiscalOuterRef: 'fiscal',
   infCpl: 'fiscal',
@@ -74,8 +73,6 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   chNFeReferenciadas: 'fiscal',
   // Frete
   freteInicial: 'frete',
-  valorFreteInicial: 'frete',
-  custoFreteInicial: 'frete',
   // Preview-only fields rendered read-only in their tabs via PlaceholderTab —
   // map them so a stray validation error marks the right tab instead of being
   // reported as "fora do formulário".

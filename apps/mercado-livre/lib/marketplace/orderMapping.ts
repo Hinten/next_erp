@@ -32,11 +32,56 @@
  * Deviations from the legacy source (see the Step 9 task's "Approved
  * deviations" + notes below for the full rationale):
  *  - legacy's own `toPedido()` has its `valorFreteInicial:` constructor arg
- *    commented out (dead code) even though the local variable is computed —
- *    this port actively returns/persists it (the new `pedidoSchema` has the
- *    field) and rounds it with `roundReais` for consistency with the other two
- *    money outputs, even though legacy never rounded it (there was no
- *    round-point to port, since the assignment was dead);
+ *    commented out (dead code) even though the local variable is computed.
+ *    ⚠️ **DECISION #796/O9 — the field is GONE, so neither side of that
+ *    question survives.** The audit read the commented-out line as a design and
+ *    concluded the port double-counts freight; the truth was the opposite (the
+ *    line was a hole — legacy's own `Pedido.factory` fills the same cache on
+ *    every manually-created pedido), and the real defect was that the cache
+ *    DRIFTED from the block it caches. Rather than patch the drift, the cache
+ *    was deleted: `pedido.valorFreteInicial` and `custoFreteInicial` were pure
+ *    functions of `freteInicial.valorCobrado` / `.custoCalculado ?? .custoFinal`
+ *    on the SAME document, had no reader, no query, no index and no legacy
+ *    Flutter consumer, so they could not be made correct more cheaply than by
+ *    not existing. **`freteInicial.valorCobrado` is the freight value.** This
+ *    function therefore no longer returns a pedido-level freight figure — the
+ *    Σ `payments[].shipping_cost` sum below survives only as a term of
+ *    `valorCobrado`, which is a genuine stored field (it backs a server-side
+ *    `orderBy` + currency filter on `/pedidos` and two indexes).
+ *    ⚠️ Do not reintroduce a pedido-level freight cache to "make reports
+ *    easier". Reports sum `pedidoTotal` = Σ item subtotals
+ *    (`apps/web/lib/reports/aggregations.ts`), NF-e reads `frete.valorCobrado`
+ *    directly, and the pedido footer derives live from watched form state;
+ *  - `ordem` is the 0-based `index` of the line within ITS ML order, where
+ *    legacy leaves the `ItemDoPedido` constructor default of **1**
+ *    (`.old/packages/pedido/lib/src/models.dart:160`; `_makeItemDoPedido` never
+ *    sets it). ⚠️ **DECISION #796/O8 — keep 0-based; "restoring parity" would
+ *    be a regression.** A constant 1 on every line makes all three legacy sorts
+ *    inert (`models.dart:191`, `:2671`, `:3595`), i.e. legacy ML pedidos have no
+ *    line order at all; `index` gives them one. Every consumer treats the value
+ *    as a RELATIVE sort key — `flattenPedidoItens`
+ *    (`packages/schemas/src/pedido/pureLogic/itens.ts`), the web form's copy
+ *    (`apps/web/app/(app)/pedidos/_components/flattenItens.ts`) and the print
+ *    model (`apps/web/lib/pedido-print/assemble.ts`). NF-e does NOT read it:
+ *    `det/@nItem` is the flatten index
+ *    (`apps/nfe/lib/nfe/orchestrator/generator-input.ts`). The accepted cost is
+ *    cosmetic and single-site: the `#` column renders `ordem` raw
+ *    (`apps/web/app/(app)/pedidos/_components/tabs/PrincipalTab.tsx`), so an ML
+ *    pedido's first line shows `0` where a manual pedido's shows `1` (the schema
+ *    default is 1, `packages/schemas/src/pedido/collection/pedido.ts`, and the
+ *    manual editor allocates `max(ordem) + 1`).
+ *    ⚠️ **The numbering is PER ML ORDER, and packs therefore COLLIDE.**
+ *    `buildItensByOrderId` (`orderImport.ts`) restarts the counter at 0 for each
+ *    sibling order and `orderPedidoTx.ts` appends the lines without renumbering,
+ *    so a pack pedido holds duplicate `ordem` values and the sort INTERLEAVES
+ *    the siblings instead of appending them. That is a separate defect from the
+ *    0-vs-1 question, recorded here and deliberately not fixed under #796; the
+ *    fix is a continuous 1..N renumber at append time inside `orderPedidoTx`'s
+ *    transaction.
+ *    ⚠️ `index` also feeds `makeItemEnsureUniqueId(orderId, mktplaceId, index)`,
+ *    which IS load-bearing (dedup, append-only merge, incidente doc ids). The
+ *    two uses are independent — changing `ordem` must not change what reaches
+ *    that function;
  *  - timestamps convert ISO → **microseconds** (project policy — see
  *    `packages/schemas/src/pedido/collection/pedido.ts:119-124`), not the
  *    legacy `DateTime` object;
@@ -108,7 +153,6 @@ export interface PedidoCoreFields {
   numero: string;
   descontoTotal: number;
   valorCobrado: number;
-  valorFreteInicial: number;
   timestamp: number | null;
   ultimaModificacao: number | null;
   observacoesInternas: string | null;
@@ -142,7 +186,6 @@ export function mlOrderToPedidoCoreFields(args: {
     numero: String(packId ?? order.id),
     descontoTotal: roundReais(descontoTotal),
     valorCobrado: roundReais(total),
-    valorFreteInicial: roundReais(valorFreteInicial),
     timestamp: coerceToMicros(order.date_created),
     ultimaModificacao: coerceToMicros(order.last_updated),
     observacoesInternas: comment ?? null,
