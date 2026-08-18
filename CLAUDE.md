@@ -371,7 +371,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   may read; its non-JS half (workflows, firebase configs, shell) is the
   `env-secrets-no-copy` backstop test, since ESLint parses neither. `no-client-estado-history-write` guards
   BOTH server-owned pedido audit trails — `historicoEstadoPedido` and
-  `historicoFtIni` — whose sole writer is the `onPedidoEstadoChanged` trigger.
+  `historicoFtIni` — whose sole writer is the `onPedidoChanged` trigger.
   `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside
   `typeAware(...)` rather than the base block: it flags a raw string sitting in
   a position typed as a Zod enum (`estado === 'pago'` → `ESTADO_PEDIDO.pago`).

@@ -17,8 +17,8 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * `estado` transition of the parent pedido: the new state, who changed it,
  * and when.
  *
- * Written EXCLUSIVELY by the `onPedidoEstadoChanged` Cloud Function
- * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which observes every
+ * Written EXCLUSIVELY by the `onPedidoChanged` Cloud Function
+ * (`apps/functions/src/pedidos/registrarHistoricoPedido.ts`), which observes every
  * `pedidos/{pedidoId}` write from every writer — the web editor, the Mercado
  * Pago webhook, Mercado Livre order import, scripts — and appends one row per
  * transition. Nothing appends rows at the call site any more, and
@@ -60,7 +60,7 @@ export const historicoEstadoPedidoMeta: CollectionMetadata = {
   },
   // An audit trail the audited party can rewrite is not an audit trail: rules
   // deny every client create/update/delete (no `su` bypass), leaving the
-  // `onPedidoEstadoChanged` trigger as the sole writer. Read stays open to
+  // `onPedidoChanged` trigger as the sole writer. Read stays open to
   // `d_pedido` read. Same posture as `historicoDeModificacoes`.
   serverOwned: true,
   // The estado-history read (`EstadoHistoricoTab`): newest-first, one page.
