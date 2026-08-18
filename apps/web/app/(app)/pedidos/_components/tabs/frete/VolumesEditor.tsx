@@ -13,26 +13,7 @@ import {
 import type { VolumeFormState } from '../../types';
 import type { PedidoFormHandle } from './fields';
 import { fretePath } from './fields';
-
-/**
- * `Volume.padrao(1)` — `.old/packages/pedido/lib/src/models.dart:1021-1033`:
- * 1kg gross / 0.9kg net 'Pacote' at 10×10×10cm. The legacy callbacks that
- * derived the weight from the pedido's produtos arrive with the Melhor
- * Envio phase; until then new volumes start from the same default the
- * legacy app used without callbacks.
- */
-function volumePadrao(): VolumeFormState {
-  return {
-    quantidade: 1,
-    especie: 'Pacote',
-    marca: null,
-    numero: null,
-    pesoBruto: 1,
-    pesoLiquido: 0.9,
-    dimensoes: { altura: 10, largura: 10, comprimento: 10 },
-    lacres: null,
-  };
-}
+import { volumePadrao } from './pesoPedido';
 
 export interface VolumesEditorProps {
   form: PedidoFormHandle;

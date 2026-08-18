@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Alert, Divider, Group, Select, Skeleton, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle } from '@tabler/icons-react';
@@ -20,10 +20,12 @@ import { ClientePicker } from '@/components/pickers/ClientePicker';
 import { EnderecoPicker, useEnderecoFromRef } from '@/components/pickers/EnderecoPicker';
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import type { FreteInicialFormState } from '../types';
+import type { FreteInicialFormState, VolumeFormState } from '../types';
 import { collectFreteErrors } from '../freteErrors';
 import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
 import { seedFreteInicial } from './frete/seedFreteInicial';
+import { pesoPedido, shouldSeedVolume, volumePadrao } from './frete/pesoPedido';
+import { useProdutoPesoMap } from './frete/useProdutoPesoMap';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
@@ -58,6 +60,40 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const ehSaida = form.watch('ehSaida') ?? true;
 
   const clientePedidoOuterRef = form.watch('clientePedidoOuterRef');
+
+  // Auto-weight + default Volume (#371, port of the legacy ME widget's
+  // seed-if-empty init). Fires at most once per mount: the moment frete is
+  // active, `volumes` is still empty and the batched produto weight lookup
+  // has resolved, seed one `volumePadrao(pesoPedido(...))` volume so freight
+  // can be quoted without manual volume entry. A user who later empties the
+  // list on purpose does not get it seeded back.
+  const itensFlat = form.watch('_itensFlat') ?? [];
+  const produtoUidsForPeso = useMemo(
+    () => itensFlat.filter((i) => !i._delete && !!i.produtoUid).map((i) => i.produtoUid as string),
+    [itensFlat],
+  );
+  const produtoPesoById = useProdutoPesoMap(db, produtoUidsForPeso);
+  const autoSeededVolumeRef = useRef(false);
+  useEffect(() => {
+    if (autoSeededVolumeRef.current) return;
+    if (produtoPesoById === undefined) return; // batch still in flight
+    const currentVolumes = form.getValues(fretePath('volumes')) as VolumeFormState[] | null;
+    if (!shouldSeedVolume({ temFrete, volumes: currentVolumes, produtoPesoById })) return;
+    autoSeededVolumeRef.current = true;
+    const peso = pesoPedido(
+      itensFlat
+        .filter((i) => !i._delete)
+        .map((i) => ({
+          produtoUid: i.produtoUid,
+          quantidade: i.quantidade,
+        })),
+      produtoPesoById,
+    );
+    form.setValue(fretePath('volumes'), [volumePadrao(peso)], {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+  }, [temFrete, itensFlat, produtoPesoById, form]);
 
   // Surface every invalid `freteInicial` field — including derived/cache fields
   // with no rendered input, which only mark the tab and never show inline
