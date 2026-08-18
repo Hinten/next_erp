@@ -199,3 +199,79 @@ describe('ChatComposer — "Entrar na conversa" gate', () => {
     expect(event.conteudo).toBe('Operador X entrou na conversa.');
   });
 });
+
+describe('ChatComposer — send capability (#817)', () => {
+  /** An ML claim thread: the inbox surface a buyer expects an answer on. */
+  const conversaMlClaims: Conversa = conversaSchema.parse({
+    usuarios: ['op1'],
+    estadoConversa: 1,
+    origem: 'mlclaims',
+    nome: 'Reclamação',
+  });
+
+  it('renders a read-only notice instead of the input on a channel with no sender', () => {
+    // The reported bug: this rendered a fully enabled composer, the operator
+    // typed a reply, it appeared in the thread, and Mercado Livre never received
+    // it — no error, no hint, while ML's SLA clock ran.
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaMlClaims}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('composer-somente-leitura')).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/mensagem/i)).toBeNull();
+  });
+
+  it('offers no "Entrar na conversa" escape hatch either', () => {
+    // That button flips estadoConversa to emResposta, which would land the
+    // operator on a full composer — the same bug behind one extra click.
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaSchema.parse({
+          usuarios: [],
+          estadoConversa: 2,
+          origem: 'mlperg',
+          nome: 'Pergunta',
+        })}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('composer-somente-leitura')).toBeTruthy();
+    expect(screen.queryByText('Entrar na conversa')).toBeNull();
+  });
+
+  it('shows the channel-supplied reason verbatim for a blocked thread', () => {
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaSchema.parse({
+          usuarios: ['op1'],
+          estadoConversa: 1,
+          origem: 'whatsapp',
+          nome: 'Cliente',
+          respostaBloqueada: 'Prazo de resposta encerrado',
+        })}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Prazo de resposta encerrado')).toBeTruthy();
+  });
+
+  it('leaves WhatsApp untouched — the composer still renders', () => {
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaFull}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('composer-somente-leitura')).toBeNull();
+  });
+});

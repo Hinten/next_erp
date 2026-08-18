@@ -66,7 +66,7 @@ const GATEWAY_OWNED = [
  * no transition applies.
  *
  * The `historicoEstadoPedido` audit row is NOT written here: the
- * `onPedidoEstadoChanged` trigger observes the pedido write below and records
+ * `onPedidoChanged` trigger observes the pedido write below and records
  * the transition. Both callers run on the Admin SDK, so that row carries a null
  * usuário — but for DIFFERENT reasons, and only one of them is "there is no
  * operator": {@link reconcilePedidoFromPagamento} serves the Mercado Pago
@@ -158,7 +158,7 @@ function applyEstadoTransition(
  *     `ultimaModificacao` (µs).
  *
  * The `historicoEstadoPedido` audit row for a transition is written by the
- * `onPedidoEstadoChanged` trigger observing the pedido write, with a null
+ * `onPedidoChanged` trigger observing the pedido write, with a null
  * usuário — this path runs on the Admin SDK and has no end user behind it.
  *
  * Returns the new estado (or `null` when the pagamento was written but no estado
@@ -266,7 +266,7 @@ export async function reconcilePedidoFromPagamento(
  * real staging Cloud Functions).
  *
  * Takes NO `usuarioRef`: the `historicoEstadoPedido` row is written by the
- * `onPedidoEstadoChanged` trigger from the pedido write's auth context, and this
+ * `onPedidoChanged` trigger from the pedido write's auth context, and this
  * runs on the Admin SDK — so the transition is recorded with a null usuário even
  * though the calling operator is known to the callable. That is deliberate: an
  * automatic, payment-driven transition is system-caused, not user-caused.

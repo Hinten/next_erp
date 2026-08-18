@@ -14,7 +14,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconLogin2, IconPaperclip, IconSend } from '@tabler/icons-react';
+import { IconInfoCircle, IconLogin2, IconPaperclip, IconSend } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { setDoc, writeBatch } from 'firebase/firestore';
 import {
@@ -72,10 +72,18 @@ export function ChatComposer({
     usuarios: conversa.usuarios,
     estadoConversa: conversa.estadoConversa,
     uid,
+    origem: conversa.origem,
+    respostaBloqueada: conversa.respostaBloqueada,
   });
 
-  if (gate === 'no-uid') return null;
-  if (gate === 'enter') {
+  if (gate.kind === 'no-uid') return null;
+  // Say WHY rather than rendering nothing — and note this arm also suppresses
+  // "Entrar na conversa", which would otherwise reopen a dead thread into a
+  // fully enabled composer (#817).
+  if (gate.kind === 'somente-leitura') {
+    return <SomenteLeitura motivo={gate.motivo} />;
+  }
+  if (gate.kind === 'enter') {
     return <EntrarNaConversa conversaId={conversaId} />;
   }
   return (
@@ -86,6 +94,30 @@ export function ChatComposer({
       addOptimistic={addOptimistic}
       markOptimisticError={markOptimisticError}
     />
+  );
+}
+
+/* ------------------------------ read-only notice --------------------------- */
+
+/**
+ * Shown in place of the composer when nothing we write could reach the contact.
+ *
+ * The whole point of #817 is that the previous behaviour was a fully enabled
+ * composer whose messages sat at `estadoEnvio: 'salva'` forever while the
+ * provider's SLA clock ran — no error, no hint. An explicit notice is the fix;
+ * silently hiding the input would only replace one confusion with another.
+ */
+function SomenteLeitura({ motivo }: { motivo: string }) {
+  return (
+    <Alert
+      variant="light"
+      color="gray"
+      icon={<IconInfoCircle size={16} />}
+      data-testid="composer-somente-leitura"
+      styles={{ root: { borderRadius: 0 } }}
+    >
+      {motivo}
+    </Alert>
   );
 }
 

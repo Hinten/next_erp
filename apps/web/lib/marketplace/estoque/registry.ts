@@ -1,5 +1,6 @@
 import { INTEGRACAO_TIPO_LABELS, type IntegracaoTipo } from '@delfrance/schemas';
 
+import { buildProviderMap } from '../push/types';
 import { mercadoLivreStockProvider } from './providers/mercadoLivre';
 import { unsupportedChannelStockProvider } from './providers/unsupportedChannel';
 import type { StockPushChannelResult, StockPushInput, StockPushProvider } from './types';
@@ -15,24 +16,7 @@ import type { StockPushChannelResult, StockPushInput, StockPushProvider } from '
  * Modelled on `lib/checkout/etiqueta/registry.ts`.
  */
 export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, StockPushProvider>>> =
-  buildProviderMap([mercadoLivreStockProvider]);
-
-function buildProviderMap(
-  providers: readonly StockPushProvider[],
-): Partial<Record<IntegracaoTipo, StockPushProvider>> {
-  const map: Partial<Record<IntegracaoTipo, StockPushProvider>> = {};
-  for (const provider of providers) {
-    for (const tipo of provider.tipos) {
-      if (map[tipo] !== undefined) {
-        // Two providers claiming the same tipo is a wiring bug — fail loud at
-        // module load rather than silently letting registration order decide.
-        throw new Error(`Stock push provider conflict for tipo "${String(tipo)}".`);
-      }
-      map[tipo] = provider;
-    }
-  }
-  return map;
-}
+  buildProviderMap([mercadoLivreStockProvider], 'Stock push');
 
 /**
  * An exact tipo match wins; ANY other tipo falls back to the

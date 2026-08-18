@@ -51,10 +51,21 @@ export interface MercadoLivreConta {
 }
 
 export interface MercadoLivrePublicarResult {
+  /** The parent link's external id — a FAMILY id under User Products (#798). */
   itemId: string;
   /** Old-shape estado code, 1–2 chars ('p' publicado, 'pa' pausado, 'E' erro, …). */
   estado: string;
   permalink: string | null;
+  /**
+   * Every ML item the publish wrote: one normally, one PER VARIATION for a
+   * User-Products family.
+   *
+   * ⚠️ Optional because this app talks to the DEPLOYED channel backend, not the
+   * one in this checkout — a revision predating #798 answers without it.
+   */
+  itemIds?: string[];
+  /** Items closed because their ERP variação no longer exists (UP only). */
+  orfaosEncerrados?: string[];
 }
 
 export interface MercadoLivreReverificarResult {
@@ -187,6 +198,50 @@ export interface MercadoLivreEnvioEstoqueResult {
 }
 
 /**
+ * One listing's outcome from an on-demand PRICE push (#804).
+ *
+ * Channel-NEUTRAL on purpose (`anuncioId`, not `itemId`): the second
+ * marketplace's `/api/marketplace/<canal>/enviar-precos` answers with the same
+ * envelope, and `lib/marketplace/preco` dispatches without knowing which one
+ * replied.
+ *
+ * ⚠️ `motivo` is UPPER_SNAKE here and kebab on the stock envelope. That is not
+ * an oversight — these are the price stack's own codes, the same ones the
+ * account-wide job persists in its `skips` list. Nothing in this layer reads
+ * them; `mensagem` is what gets rendered.
+ */
+export interface MercadoLivreEnvioPrecoListing {
+  produtoId: string;
+  produtoNome: string | null;
+  variacaoProdutoId: string | null;
+  anuncioId: string | null;
+  linkDocId: string | null;
+  outcome: 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
+  /** Machine code; null only on `'enviado'`. */
+  motivo: string | null;
+  /** Operator-facing pt-BR text — the BACKEND owns this wording. */
+  mensagem: string;
+  /** The price actually sent; null when nothing was sent. */
+  preco: number | null;
+  /** What the listing carried before, when the run got far enough to read it. */
+  precoAnterior: number | null;
+  variacoes: number | null;
+}
+
+export interface MercadoLivreEnvioPrecoResult {
+  canal: 'mercado-livre';
+  integracaoId: string;
+  contaNome: string | null;
+  solicitados: number;
+  familias: number;
+  resumo: { enviados: number; pulados: number; falhas: number; naoTentados: number };
+  listings: MercadoLivreEnvioPrecoListing[];
+  produtosSemEnvio: MercadoLivreEnvioEstoqueSemEnvio[];
+  /** ISO-8601 — set when ML rate-limited the conta. */
+  pausadoAte: string | null;
+}
+
+/**
  * The RUNNING jobs of both bulk flows for a set of contas
  * (`GET jobs-em-andamento`). Each entry carries the `jobId` the caller then
  * polls through the per-flow `…Status` methods, plus the `integracaoId` that
@@ -313,6 +368,43 @@ export interface MercadoLivreAnuncioTeste {
   };
 }
 
+/**
+ * One Mercado Livre test user, as stored by the backend.
+ *
+ * ⚠️ `password` is a live credential ML shows exactly once and never reissues.
+ * Render it, let the operator copy it — do not log it, and do not put it in a
+ * query string or an analytics event.
+ */
+export interface MercadoLivreUsuarioTeste {
+  role: 'vendedor' | 'comprador';
+  id: number;
+  nickname: string;
+  password: string;
+  site_id: string;
+  site_status: string | null;
+  email: string | null;
+  createdAt: number | null;
+  createdByUserId: number | null;
+  /**
+   * ML's e-mail verification code for this account — the trailing digits of
+   * `id`, in both lengths ML may ask for. There is no inbox to check, so
+   * without these the operator cannot get past a verification prompt.
+   */
+  codigosVerificacaoEmail: { quatro: string; seis: string };
+}
+
+/** Result of the dev-only mint. */
+export interface MercadoLivreUsuariosTesteResult {
+  usuarios: MercadoLivreUsuarioTeste[];
+  /** Roles minted on this run — each consumed one of the account's ten slots. */
+  criados: ('vendedor' | 'comprador')[];
+  /** Roles already stored, reused instead of re-minted. */
+  reaproveitados: ('vendedor' | 'comprador')[];
+  /** Credential docs deleted from the bootstrap conta — it is now disconnected. */
+  credenciaisRemovidas: number;
+  conta: { id: number; nickname: string | null };
+}
+
 /** One model the AI settings page may offer. */
 export interface MercadoLivreIaModelo {
   id: string;
@@ -378,6 +470,32 @@ export interface MercadoLivreMedidasFatos {
 }
 
 /** `POST /sugerir-medidas` — staged suggestions, never applied server-side. */
+/**
+ * One attribute the model proposes, in the shape the listing's rows already use.
+ *
+ * ⚠️ Redeclared here rather than imported. `@delfrance/integrations-mercado-livre`
+ * is server-only at its root (its OAuth core holds the app clientSecret), which
+ * is why every ML wire type in this file is a local declaration.
+ */
+export interface MercadoLivreAtributoSugestao {
+  id: string;
+  /** ML's enumerated value id, the `-1` N/A sentinel, or null for free text. */
+  value_id: string | null;
+  value_name: string;
+  unit_id: string | null;
+}
+
+/** `POST /sugerir-atributos` — suggestions to STAGE, never applied by the server. */
+export interface MercadoLivreAtributosSugestao {
+  /** False ⇒ a mid-tree category; no model call was made. */
+  leaf: boolean;
+  /** How many attributes were offered to the model. */
+  atributos: number;
+  sugestoes: MercadoLivreAtributoSugestao[];
+  /** Whether a produto photo reached the model at all. */
+  comFoto: boolean;
+}
+
 export interface MercadoLivreMedidasSugestao {
   sugestoes: MercadoLivreMedidaSugestao[];
   /** How many cells were offered to the model. */
@@ -581,6 +699,28 @@ export interface MercadoLivreClient {
     signal?: AbortSignal;
   }): Promise<MercadoLivreEnvioEstoqueResult>;
   /**
+   * Push the CURRENT price of up to 50 produtos to their ML listings, right now
+   * (PERM.integracao.write) — the produto-scoped twin of `startPriceSync`
+   * (#804), restoring the legacy produtos-table row action.
+   *
+   * SYNCHRONOUS: it returns one outcome per LISTING, not a job id. Per-listing
+   * failure is DATA — a valid request answers 200 even when every listing
+   * failed — so only conta-level refusals throw: 400 `ML_SELECAO_EXCEDE_LIMITE`
+   * (an oversize selection is rejected, never truncated) and 400
+   * `ML_CONTA_SEM_TABELA_NORMAL`.
+   *
+   * `baixarPreco` allows the send to LOWER a listing's price. The produtos
+   * table defaults it ON, unlike the account-wide job: hand-picking produtos IS
+   * the explicit intent, and it is what the legacy per-produto action did
+   * unconditionally. Unticked, a decrease skips `PRECO_ANTIGO_MAIOR`.
+   */
+  enviarPrecos(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    baixarPreco?: boolean;
+    signal?: AbortSignal;
+  }): Promise<MercadoLivreEnvioPrecoResult>;
+  /**
    * The RUNNING mass-import and price-sync jobs across a set of contas, in one
    * round trip (PERM.integracao.read) — how the channel list re-attaches its
    * pollers after a reload, since a `jobId` only ever lived in React state.
@@ -630,6 +770,27 @@ export interface MercadoLivreClient {
    */
   anuncioTeste(integracaoId: string): Promise<MercadoLivreAnuncioTeste>;
   /**
+   * The Mercado Livre test users stored for this conta (PERM.integracao.read).
+   *
+   * The subcollection is admin-only, so this route is the only way the browser
+   * can reach them — and ML never reissues a password, so it is also the only
+   * way to see one again after the mint.
+   *
+   * Both this and {@link criarUsuariosTeste} answer **404** unless the backend
+   * sets `MERCADO_LIVRE_TEST_USERS_ENABLED=1`. Callers treat that as "the
+   * feature is off here", not as an error worth surfacing.
+   */
+  usuariosTeste(integracaoId: string): Promise<{ usuarios: MercadoLivreUsuarioTeste[] }>;
+  /**
+   * Mint the seller/buyer test-user pair (PERM.integracao.write).
+   *
+   * ⚠️ **Destructive.** On success the backend deletes every OAuth credential of
+   * the conta it used — that is the point (the bootstrap account is a real
+   * seller account and must not stay wired to the ERP), but it means this must
+   * never be called without an explicit confirmation naming that conta.
+   */
+  criarUsuariosTeste(integracaoId: string): Promise<MercadoLivreUsuariosTesteResult>;
+  /**
    * Models the AI settings page may offer, plus what a suggestion would actually
    * use right now (PERM.integracao.read).
    *
@@ -678,6 +839,22 @@ export interface MercadoLivreClient {
    * record. Each field falls back to the stored one individually, so omitting
    * `fatos` entirely keeps the old behaviour.
    */
+  /**
+   * Ask the agent to fill this listing's category attributes
+   * (PERM.integracao.write). Returns suggestions to STAGE — the server writes
+   * nothing, and the review modal applies only what the operator ticked.
+   *
+   * `feedback` + `anterior` are the revise turn: the operator says what is wrong
+   * and the previous answer rides along so the model corrects rather than
+   * restarts.
+   */
+  sugerirAtributos(input: {
+    integracaoId: string;
+    produtoId: string;
+    categoryId: string;
+    feedback?: string;
+    anterior?: MercadoLivreAtributoSugestao[];
+  }): Promise<MercadoLivreAtributosSugestao>;
   sugerirMedidas(input: {
     tabMediId: string;
     rows: MercadoLivreMedidaRow[];
@@ -936,6 +1113,16 @@ export function createMercadoLivreClient(config: {
         },
         input.signal,
       ),
+    enviarPrecos: (input) =>
+      call<MercadoLivreEnvioPrecoResult>(
+        '/api/marketplace/mercado-livre/enviar-precos',
+        {
+          integracaoId: input.integracaoId,
+          produtoIds: input.produtoIds,
+          baixarPreco: input.baixarPreco ?? false,
+        },
+        input.signal,
+      ),
     priceSyncStatus: (input) =>
       call<MercadoLivrePriceSyncStatus>(
         `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
@@ -970,6 +1157,18 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreAnuncioTeste>(
         `/api/marketplace/mercado-livre/anuncio-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
       ),
+    usuariosTeste: (integracaoId) =>
+      call<{ usuarios: MercadoLivreUsuarioTeste[] }>(
+        `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+      ),
+    criarUsuariosTeste: (integracaoId) =>
+      // `{}` is what makes this a POST — `call` picks the method from the
+      // presence of a body. The id stays in the query string so both verbs read
+      // it the same way.
+      call<MercadoLivreUsuariosTesteResult>(
+        `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+        {},
+      ),
     iaModelos: (agenteId) =>
       call<MercadoLivreIaModelos>(
         '/api/marketplace/mercado-livre/ia/modelos' +
@@ -981,6 +1180,11 @@ export function createMercadoLivreClient(config: {
       ),
     sizeChartSpecs: (input) =>
       call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
+    sugerirAtributos: (input) =>
+      call<MercadoLivreAtributosSugestao>(
+        '/api/marketplace/mercado-livre/sugerir-atributos',
+        input,
+      ),
     sugerirMedidas: ({ fatos, ...rest }) =>
       // `fatos` → `facts` on the wire: the route's own vocabulary is English,
       // and renaming here keeps the browser-facing API consistent with the rest

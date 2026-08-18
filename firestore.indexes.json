@@ -1261,6 +1261,16 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "idMercadoLivre",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "clientes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "telefone",
           "order": "ASCENDING"
         }

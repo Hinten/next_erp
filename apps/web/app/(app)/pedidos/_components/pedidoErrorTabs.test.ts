@@ -66,8 +66,19 @@ describe('summarizePedidoErrors', () => {
 });
 
 describe('pedidoTabs', () => {
-  it('saída shows every tab in display order (plus the read-only estoque)', () => {
-    expect(pedidoTabs(false)).toEqual([...PEDIDO_TABS.map((t) => t.value), 'estoque']);
+  it('saída shows every tab in display order (plus the two read-only ones)', () => {
+    // `estoque` and `modificacoes` are deliberately NOT in PEDIDO_TABS: that
+    // array is the error-routing table, and neither tab owns a form field.
+    expect(pedidoTabs(false)).toEqual([
+      ...PEDIDO_TABS.map((t) => t.value),
+      'estoque',
+      'modificacoes',
+    ]);
+  });
+
+  it('shows the Modificações tab for BOTH directions (an entrada has history too)', () => {
+    expect(pedidoTabs(false)).toContain('modificacoes');
+    expect(pedidoTabs(true)).toContain('modificacoes');
   });
 
   it('entrada keeps the Pagamento tab (the pedido payment component is reused)', () => {

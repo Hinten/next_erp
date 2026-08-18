@@ -183,6 +183,17 @@ const ESTADOS_ANTES_DO_CHECKOUT: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>
  * it). We return the preserved estado, which is what both the legacy branch
  * and the port plan ("preserving dispatch authorization") intend; a regressed
  * estado would re-block dispatch/labels the app already authorized.
+ *
+ * ⚠️ **DECISION #796/O10 — only the `despachoAutorizado` arm above is a
+ * deviation. The `checkFinalizado` arm is DEPLOYED LEGACY BEHAVIOUR.** The
+ * audit read `FreteDoPedido.update` in isolation and concluded that legacy
+ * takes `other.estado` unconditionally; that is true of the METHOD and false of
+ * every ML call site, each of which wraps it with an explicit
+ * `copyWith(estado: ESTADOS_FRETE.checkFinalizado)` —
+ * `.old/packages/canais_de_venda/mercado_livre/lib/src/tasks.dart:597-604`
+ * (order import), `:646-651` (shipment refresh) and `:1311-1312` (this
+ * function's own source). So the two apps do NOT disagree on
+ * `freteInicial.estado` for the same shipment; there is nothing here to restore.
  */
 export function mergeEstadoFretePreservando(
   oldEstado: EstadoFrete,

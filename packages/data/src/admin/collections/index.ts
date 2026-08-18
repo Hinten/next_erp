@@ -32,6 +32,7 @@ export {
 } from './balancoCollection';
 export { historicoEstoqueCollection } from './historicoEstoqueCollection';
 export { historicoModificacaoCollection } from './historicoModificacaoCollection';
+export { historicoModificacaoPedidoCollection } from './historicoModificacaoPedidoCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';
 export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
@@ -43,6 +44,7 @@ export {
   oauthStateMetodoPgtoCollection,
 } from './oauthStateCollection';
 export { tokenDuravelCollection } from './tokenDuravelCollection';
+export { usuariosTesteCollection } from './usuariosTesteCollection';
 export {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,

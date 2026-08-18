@@ -17,6 +17,7 @@ vi.mock('./tabs', () => {
     CheckoutTab: Empty,
     EstadoHistoricoTab: Empty,
     EstoqueSyncTab: Empty,
+    ModificacoesTab: Empty,
     // Mirror the REAL PlaceholderTab copy so that if the Pagamento panel ever
     // regresses to `<PlaceholderTab name="Pagamento" />`, the "em breve" / "app
     // antigo" wording reappears and the assertions below fail.

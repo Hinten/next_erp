@@ -76,16 +76,16 @@ runConfig:
 
 env:
   - variable: MERCADO_LIVRE_CLIENT_ID
-    secret: mercado-livre-client-id
+    secret: MERCADO_LIVRE_CLIENT_ID
     availability:
       - RUNTIME
 
   - variable: MERCADO_LIVRE_CLIENT_SECRET
-    secret: mercado-livre-client-secret
+    secret: MERCADO_LIVRE_CLIENT_SECRET
     availability:
       - RUNTIME
 
   - variable: MERCADO_LIVRE_STATE_SECRET
-    secret: mercado-livre-state-secret
+    secret: MERCADO_LIVRE_STATE_SECRET
     availability:
       - RUNTIME

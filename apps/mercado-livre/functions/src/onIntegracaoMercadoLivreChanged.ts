@@ -84,7 +84,7 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
       ? (event.data.after.data() as Record<string, unknown>)
       : null;
     // `data` comes from the event, never `Date.now()` — a redelivery must reproduce
-    // the original stamp (`registrarEstadoPedido.ts`'s rule).
+    // the original stamp (`registrarHistoricoPedido.ts`'s rule).
     const parsed = Date.parse(event.time);
     const eventTimeMs = Number.isNaN(parsed) ? Date.now() : parsed;
 

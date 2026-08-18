@@ -124,7 +124,7 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
 
    ⚠️ **An import fires no Cloud Functions triggers.** (Snapshot listeners *do*
    see the writes.) That is mostly a relief — no trigger storm, no double-charged
-   side effects, no `onPedidoEstadoChanged` re-deriving history for every pedido
+   side effects, no `onPedidoChanged` re-deriving history for every pedido
    at once. But it cuts the other way too: **nothing is recomputed on arrival**,
    so any state a trigger would normally derive has to already be in the export.
    Cost: one read per document exported, one write per document imported.

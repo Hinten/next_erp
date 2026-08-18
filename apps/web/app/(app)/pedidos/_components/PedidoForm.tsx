@@ -37,6 +37,7 @@ import {
   FiscalTab,
   FreteTab,
   IncidentesTab,
+  ModificacoesTab,
   PlaceholderTab,
   PrincipalTab,
 } from './tabs';
@@ -129,11 +130,6 @@ const EMPTY_DEFAULTS: PedidoFormState = {
   freteInicial: null,
   valorCobrado: null,
   descontoTotal: 0,
-  valorCusto: null,
-  valorFreteInicial: null,
-  custoFreteInicial: null,
-  valorDevolucao: null,
-  valorCustoDevolvidos: null,
   valorDespesasIncidentes: null,
   valorFretesIncidentes: null,
   valorComissoes: null,
@@ -159,13 +155,15 @@ const baseResolver = zodResolver(pedidoSchema) as unknown as AnyResolver;
 /**
  * Custom resolver. Regroups the flat `_itensFlat` array back into
  * `itens: Record<produtoUid, ItemDoPedido[]>` (stripping the synthetic
- * `_rowId` keys), normalizes `freteInicial` and derives the legacy money
- * caches before delegating to zodResolver — validation and the saved doc
- * see the same values (validate-what-you-save):
+ * `_rowId` keys), normalizes `freteInicial` and derives `valorCobrado` before
+ * delegating to zodResolver — validation and the saved doc see the same value
+ * (validate-what-you-save):
  *
- *   - `valorCobrado` = legacy `Pedido.total` (subtotal − desconto + frete);
- *   - `valorFreteInicial` / `custoFreteInicial` = the `Pedido.factory`
- *     reporting caches.
+ *   - `valorCobrado` = legacy `Pedido.total` (subtotal − desconto + frete).
+ *     It is the ONLY money cache still persisted; the other five Flutter wrote
+ *     were removed (#796) because each was a pure function of `itens` or
+ *     `freteInicial` on the same document. `PedidoFooter` still shows them —
+ *     derived live from watched form state, never from the doc.
  *
  * The synthetic `_itensFlat` field is dropped so it never reaches
  * Firestore.
@@ -209,11 +207,6 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
     itensIds,
     freteInicial,
     valorCobrado: totals.valorCobrado,
-    valorCusto: totals.valorCusto,
-    valorFreteInicial: totals.valorFreteInicial,
-    custoFreteInicial: totals.custoFreteInicial,
-    valorDevolucao: totals.valorDevolucao,
-    valorCustoDevolvidos: totals.valorCustoDevolvidos,
   };
   type ResolverResult = Awaited<ReturnType<Resolver<PedidoFormState, unknown, Pedido>>>;
   const result = (await baseResolver(merged, context, options)) as ResolverResult;
@@ -539,6 +532,8 @@ export function PedidoForm({
             </Tabs.Tab>
             {/* Read-only (#408): no tabErrorProps — nothing here validates. */}
             <Tabs.Tab value="estoque">Estoque</Tabs.Tab>
+            {/* Read-only audit feed: no tabErrorProps — it owns no form field. */}
+            <Tabs.Tab value="modificacoes">Modificações</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
@@ -636,6 +631,10 @@ export function PedidoForm({
 
           <Tabs.Panel value="estoque" pt="md">
             <EstoqueSyncTab pedidoId={pedidoId} />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="modificacoes" pt="md">
+            <ModificacoesTab pedidoId={pedidoId} />
           </Tabs.Panel>
         </Tabs>
       </div>

@@ -10,6 +10,11 @@
  * `MercadoLivrePublishError` BEFORE any ML call; an ML API failure after that
  * stamps `estado: 'E'` + `errors: [message]` on the link doc and rethrows, so
  * the UI shows the reason and a later retry overwrites it.
+ *
+ * ⚠️ Which of ML's two publishing models applies is decided here, not by the
+ * link doc alone — see `resolveListingModel` in `publishCore.ts`. A first
+ * publish costs one `GET /users/me` to read the `user_product_seller` tag; a
+ * re-publish costs none.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
@@ -17,10 +22,18 @@ import {
   MercadoLivreError,
   MercadoLivreHttpError,
   type MlAttribute,
+  type MlItem,
+  type MlUser,
   buildItemPayload,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
 import type { Arquivo, Foto, ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  type PublishUserProductResult,
+  type UserProductMember,
+  publishUserProductMembers,
+  sweepRemovedMembers,
+} from './publishUserProduct';
 import type { ComponentesKit } from '@delfrance/schemas';
 import {
   INTEGRACAO_TIPO,
@@ -53,7 +66,9 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   assemblePublishInput,
+  publishModeIssues,
   resolveCondition,
+  resolveListingModel,
 } from './publishCore';
 import { quantidadeParaEnvio } from './bulkEstoquePlan';
 import {
@@ -83,16 +98,37 @@ export interface PublishDeps {
   /** From the integração doc (parsed upstream by loadMercadoLivreContext). */
   tabelaNormalOuterRef: string | null;
   depositoOuterRef: string | null;
+  /**
+   * The conta's ML `user_id` — the seller whose items the removed-variation
+   * sweep searches. Null disables the sweep (it cannot enumerate a family
+   * without it), never anything else.
+   */
+  sellerUserId?: number | null;
   /** Listing type for FIRST publishes (link doc value wins on re-publish). */
   listingTypeId?: string | null;
   /** Injectable for tests — downloads image bytes from `arquivo.url`. */
   fetchImpl?: typeof globalThis.fetch;
+  /**
+   * The User-Products capability probe seam — defaults to `api.getMe()`
+   * (`GET /users/me`), the same shape the stock sweep's multiorigin guard uses.
+   * Called at most ONCE per publish, and only on a FIRST publish (see
+   * {@link resolveListingModel}).
+   */
+  getMe?: (api: MercadoLivreApi) => Promise<MlUser>;
 }
 
 export interface PublishResult {
+  /** The parent link's external id — a FAMILY id under User Products. */
   itemId: string;
   estado: string;
   permalink: string | null;
+  /**
+   * Every ML item this publish wrote: one entry normally, one PER VARIATION for
+   * a User-Products family.
+   */
+  itemIds: string[];
+  /** Items closed because their ERP variation no longer exists (UP only). */
+  orfaosEncerrados: string[];
 }
 
 export async function publishProduto(deps: PublishDeps, produtoId: string): Promise<PublishResult> {
@@ -143,75 +179,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         isUserProductModel: linkDoc.data.isUserProductModel ?? false,
         attributes: linkDoc.data.attributes ?? null,
         video_id: linkDoc.data.video_id ?? null,
+        estado: linkDoc.data.estado ?? null,
       }
     : null;
   const linkDocId = linkDoc?.docId ?? produtoMercadoLivreLinkCollection.newDocId(db, { produtoId });
-
-  // ---- Stock (integração's depósito when set; else every depósito) -------
-  // Kit-aware (#797 E5): a kit publishes what its components can assemble, not
-  // its own — usually zero — stock.
-  //
-  // ⚠️ No `permiteVendaSemEstoque` floor: the legacy lifted a backorder produto
-  // at zero to 1 (models.dart:1487-1497), but that field is being retired — see
-  // the note on `produtoSchema`.
-  const depositoId = deps.depositoOuterRef ? idFromRef(deps.depositoOuterRef) : null;
-  const componentDisponivel = await loadComponentDisponivel(
-    db,
-    [produto, ...children.map((c) => c.data)],
-    depositoId,
-  );
-  const availableQuantity = quantidadeParaPublicar(
-    produto,
-    await loadDisponivel(db, produtoId, depositoId),
-    componentDisponivel,
-  );
-  const variations: PublishVariationChild[] = [];
-  for (const child of children) {
-    const childAvailable = quantidadeParaPublicar(
-      child.data,
-      await loadDisponivel(db, child.id, depositoId),
-      componentDisponivel,
-    );
-    // No parent link for THIS integração yet ⇒ the child cannot have a
-    // legitimate existing variation on this listing (any variacao docs it
-    // holds belong to other accounts).
-    const existingVar = linkDoc ? await findVariacaoLink(db, child.id, linkDoc.docId) : null;
-    variations.push({
-      produto: toPublishProduto(child.id, child.data),
-      variacoesUid: child.data.variacoesUid ?? [],
-      availableQuantity: childAvailable,
-      mlVariationId: existingVar?.mlId ?? null,
-      storedCombinations: storedCombinationsOf(existingVar?.raw),
-    });
-  }
-
-  // ---- Variation groups ---------------------------------------------------
-  const grupoIds = new Set<string>();
-  for (const v of variations) {
-    for (const uid of v.variacoesUid) {
-      const parsed = parseFakePath(uid);
-      if (parsed) grupoIds.add(parsed.grupoId);
-    }
-  }
-  const grupos: PublishGrupoVariacao[] = [];
-  for (const grupoId of grupoIds) {
-    const snap = await grupoDeVariacoesCollection.docRef(db, {}, grupoId).get();
-    if (!snap.exists) continue; // reported as a per-variation issue downstream
-    const g = grupoDeVariacoesCollection.parseRead(
-      snap.data(),
-      grupoDeVariacoesCollection.docPath({}, grupoId),
-    );
-    grupos.push({
-      grupoId,
-      nome: g.nome,
-      tipo: g.tipo ?? null,
-      variacoes: (g.variacoes ?? []).map((v) => ({
-        id: v.id,
-        nome: v.nome,
-        mlValueId: resolveMlValueId(v, integracaoId),
-      })),
-    });
-  }
 
   // ---- Category -----------------------------------------------------------
   // The link doc is the ONLY source. Publish used to fall back to
@@ -286,6 +257,119 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     });
   };
 
+  // ---- Publishing model + pre-flight blocks (#798) ------------------------
+  // Both happen HERE, before the stock reads, the grupo reads and above all
+  // before a single picture is uploaded to ML — a refusal must not cost a
+  // round trip per photo. `assemblePublishInput`'s issues run much later.
+  //
+  // The account probe is skipped entirely on a re-publish: there the persisted
+  // `isUserProductModel` is authoritative, so `GET /users/me` would be a wasted
+  // call whose only possible effect is to break a publish that would work.
+  //
+  // ⚠️ It is an ML call, so it is bound by the module's header contract exactly
+  // like the chart binding's `getCategory` below: a dead credential or a
+  // transient 5xx must leave its reason ON THE DOC, not only in the HTTP
+  // response. Without this the ML tab would show a listing still sitting at
+  // `estado: 'r'` with no `errors`, i.e. no trace of why the last attempt
+  // failed. (This is what the stamping closures above are hoisted for.)
+  let sellerIsUserProduct = false;
+  if (link?.id == null) {
+    try {
+      const user = await (deps.getMe ?? defaultGetMe)(api);
+      sellerIsUserProduct = (user.tags ?? []).includes('user_product_seller');
+    } catch (err) {
+      if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err.message);
+      throw err;
+    }
+  }
+  const listingModel = resolveListingModel(link, sellerIsUserProduct);
+  /** A User-Products family: N ML items sharing a `family_name`, not one item. */
+  const isUserProductFamily = listingModel === 'user-products' && children.length > 0;
+  const modeIssues = publishModeIssues({
+    estado: link?.estado ?? null,
+    model: listingModel,
+    linkId: link?.id ?? null,
+    childrenCount: children.length,
+  });
+  if (modeIssues.length > 0) throw new MercadoLivrePublishError(modeIssues);
+
+  // ---- Stock (integração's depósito when set; else every depósito) -------
+  // Kit-aware (#797 E5): a kit publishes what its components can assemble, not
+  // its own — usually zero — stock.
+  //
+  // ⚠️ No `permiteVendaSemEstoque` floor: the legacy lifted a backorder produto
+  // at zero to 1 (models.dart:1487-1497), but that field is being retired — see
+  // the note on `produtoSchema`.
+  const depositoId = deps.depositoOuterRef ? idFromRef(deps.depositoOuterRef) : null;
+  const componentDisponivel = await loadComponentDisponivel(
+    db,
+    [produto, ...children.map((c) => c.data)],
+    depositoId,
+  );
+  const availableQuantity = quantidadeParaPublicar(
+    produto,
+    await loadDisponivel(db, produtoId, depositoId),
+    componentDisponivel,
+  );
+  const variations: PublishVariationChild[] = [];
+  /** Each child's existing ML state, for the User-Products fan-out. */
+  const upMembers: UserProductMember[] = [];
+  for (const child of children) {
+    const childAvailable = quantidadeParaPublicar(
+      child.data,
+      await loadDisponivel(db, child.id, depositoId),
+      componentDisponivel,
+    );
+    // No parent link for THIS integração yet ⇒ the child cannot have a
+    // legitimate existing variation on this listing (any variacao docs it
+    // holds belong to other accounts).
+    const existingVar = linkDoc ? await findVariacaoLink(db, child.id, linkDoc.docId) : null;
+    upMembers.push({
+      produtoId: child.id,
+      varLinkDocId: existingVar?.docId ?? null,
+      // ⚠️ The member's OWN item id decides create vs update — the parent link's
+      // `id` is the family id for a UP family and would PUT into a 4xx.
+      itemId: typeof existingVar?.raw.itemId === 'string' ? existingVar.raw.itemId : null,
+      raw: existingVar?.raw ?? {},
+      sku: typeof existingVar?.raw.sku === 'string' ? existingVar.raw.sku : null,
+    });
+    variations.push({
+      produto: toPublishProduto(child.id, child.data),
+      variacoesUid: child.data.variacoesUid ?? [],
+      availableQuantity: childAvailable,
+      mlVariationId: existingVar?.mlId ?? null,
+      storedCombinations: storedCombinationsOf(existingVar?.raw),
+    });
+  }
+
+  // ---- Variation groups ---------------------------------------------------
+  const grupoIds = new Set<string>();
+  for (const v of variations) {
+    for (const uid of v.variacoesUid) {
+      const parsed = parseFakePath(uid);
+      if (parsed) grupoIds.add(parsed.grupoId);
+    }
+  }
+  const grupos: PublishGrupoVariacao[] = [];
+  for (const grupoId of grupoIds) {
+    const snap = await grupoDeVariacoesCollection.docRef(db, {}, grupoId).get();
+    if (!snap.exists) continue; // reported as a per-variation issue downstream
+    const g = grupoDeVariacoesCollection.parseRead(
+      snap.data(),
+      grupoDeVariacoesCollection.docPath({}, grupoId),
+    );
+    grupos.push({
+      grupoId,
+      nome: g.nome,
+      tipo: g.tipo ?? null,
+      variacoes: (g.variacoes ?? []).map((v) => ({
+        id: v.id,
+        nome: v.nome,
+        mlValueId: resolveMlValueId(v, integracaoId),
+      })),
+    });
+  }
+
   // ---- Size chart (tabela de medidas) binding -----------------------------
   let tabela: TabelaBinding;
   try {
@@ -347,17 +431,31 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     linkDocId,
     categoryId,
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
-    isUserProductSeller: link?.isUserProductModel ?? false,
+    isUserProductSeller: listingModel === 'user-products',
     sizeChart: tabela.resolved,
   });
-  const payload = buildItemPayload(input);
 
   const now = Date.now();
-  let item;
+  let item: MlItem;
+  /** Non-null exactly when this publish went out as a User-Products family. */
+  let family: PublishUserProductResult | null = null;
   try {
-    item = input.isUpdate
-      ? await api.updateItem(link!.id!, payload)
-      : await api.createItem(payload);
+    if (isUserProductFamily) {
+      family = await publishUserProductMembers(
+        { db, api, integracaoId, produtoId, parentLinkDocId: linkDocId },
+        input,
+        upMembers,
+      );
+      // The first member stands for the family on the parent link — the same
+      // "primary member" convention the importer uses. There is no family-level
+      // status in ML to read instead, and legacy simply hardcoded `publicado`.
+      item = family.items[0]!;
+    } else {
+      const payload = buildItemPayload(input);
+      item = input.isUpdate
+        ? await api.updateItem(link!.id!, payload)
+        : await api.createItem(payload);
+    }
   } catch (err) {
     if (err instanceof MercadoLivreError) {
       // Old-app parity: a purged ML picture id in the cache would otherwise
@@ -367,6 +465,9 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     }
     throw err;
   }
+
+  /** What the parent link's `id` carries: a FAMILY id under UP, else the item. */
+  const parentExternalId = family ? (family.familyId ?? family.itemIds[0]!) : item.id;
 
   // ---- Persist the link docs from the response ---------------------------
   const estado = estadoFromMlStatus(item.status);
@@ -382,8 +483,16 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     // a cycle. They are the same two fields applyItemStatusToLink maintains.
     status: item.status ?? null,
     sub_status: item.sub_status ?? null,
-    id: item.id,
-    precoPublicado: item.price ?? null,
+    // ⚠️ A FAMILY id under User Products, an item id otherwise — the convention
+    // the importer already writes (`import.ts:193`) and the reason nothing may
+    // `PUT /items/{link.id}` for a UP family. Members carry their own item ids
+    // on `variacaoMercadoLivre.itemId`.
+    id: parentExternalId,
+    // Members are priced independently under UP (`propagatePriceToChildren`),
+    // so a single family-level `precoPublicado` would be whichever member was
+    // sent first — `precoSync` skips the same stamp on `variationItem` drafts
+    // for exactly this reason.
+    precoPublicado: family ? null : (item.price ?? null),
     freteGratis: item.shipping?.free_shipping ?? false,
     isUserProductModel: input.isUserProductSeller,
     // #799 bug 7: the attributes we just sent, minus the ones rebuilt from
@@ -441,13 +550,34 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // place, same as the old app, which committed this batch before sending the
   // description. Tracked removal: #992.
   await produtoCollection.docRef(db, {}, produtoId).update({
-    marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: item.id }),
-    marketplaceIds: FieldValue.arrayUnion(item.id),
+    marketplace: FieldValue.arrayUnion({
+      integracaoUid: integracaoId,
+      externalId: parentExternalId,
+    }),
+    marketplaceIds: FieldValue.arrayUnion(parentExternalId),
   });
+
+  // Under User Products the child links are written INSIDE the fan-out, one at
+  // a time as ML confirms each member (see `publishUserProduct.ts`). All that
+  // is left here is the same dead-weight denorm the legacy variations branch
+  // stamps below — with the family id where a legacy child carries the parent
+  // ITEM id, and the member's own item id where it carries a variation id
+  // (`exportarProdutos.dart:267-286`, the identical shape).
+  if (family?.familyId != null) {
+    for (const member of family.written) {
+      await stampChildMarketplace(
+        db,
+        integracaoId,
+        family.familyId,
+        member.produtoId,
+        member.itemId,
+      );
+    }
+  }
 
   // Variation links live under each CHILD produto, keyed back to the parent
   // link doc — matched by seller_custom_field (= the child produto id).
-  for (const respVar of item.variations ?? []) {
+  for (const respVar of family ? [] : (item.variations ?? [])) {
     const childId = respVar.seller_custom_field;
     if (!childId) continue;
     const child = variations.find((v) => v.produto.id === childId);
@@ -495,16 +625,25 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       ? `${baseDescricao}\n\n${tabelaDescricao}`
       : (baseDescricao ?? tabelaDescricao);
   if (descricao) {
+    // Under User Products the description is per ITEM, and ML does not replicate
+    // it across a user product the way it replicates title/attributes/pictures
+    // — so every member gets its own call, POST for the ones this run created
+    // and PUT-replace for the rest (`exportarProdutos.dart:413-424`).
+    const targets: Array<{ itemId: string; created: boolean }> = family
+      ? family.written.map((m) => ({ itemId: m.itemId, created: m.created }))
+      : [{ itemId: item.id, created: !input.isUpdate }];
     try {
-      try {
-        await api.setItemDescription(item.id, descricao, { replace: input.isUpdate });
-      } catch (err) {
-        // A fresh item can already carry a description (ML auto-creates one for
-        // some categories) — POST then 400s; the PUT replace variant fixes it.
-        if (err instanceof MercadoLivreHttpError && err.status === 400 && !input.isUpdate) {
-          await api.setItemDescription(item.id, descricao, { replace: true });
-        } else {
-          throw err;
+      for (const target of targets) {
+        try {
+          await api.setItemDescription(target.itemId, descricao, { replace: !target.created });
+        } catch (err) {
+          // A fresh item can already carry a description (ML auto-creates one for
+          // some categories) — POST then 400s; the PUT replace variant fixes it.
+          if (err instanceof MercadoLivreHttpError && err.status === 400 && target.created) {
+            await api.setItemDescription(target.itemId, descricao, { replace: true });
+          } else {
+            throw err;
+          }
         }
       }
     } catch (err) {
@@ -518,7 +657,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         // can find. The fallback path recreates a schema-complete doc, so the
         // item id has to ride the patch.
         await writeLinkDoc({
-          id: item.id,
+          id: parentExternalId,
           estado: 'E',
           errors: [err.message],
           ultimaModificacao: Date.now(),
@@ -528,10 +667,48 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     }
   }
 
-  return { itemId: item.id, estado, permalink: item.permalink ?? null };
+  // ---- Removed-variation sweep (User Products only) -----------------------
+  // Runs LAST, and only once every member published: a partial pass would see
+  // the members it never reached as "removed" and close live siblings. Fully
+  // best-effort — the listing is already correct by this point.
+  let orfaosEncerrados: string[] = [];
+  if (family) {
+    const sweep = await sweepRemovedMembers(
+      { api },
+      {
+        familyId: family.familyId,
+        sellerUserId: deps.sellerUserId ?? null,
+        keptItemIds: family.itemIds,
+      },
+    );
+    orfaosEncerrados = sweep.closed;
+    if (sweep.skipped != null) {
+      console.warn('[mercado-livre] publish: varredura de variações removidas não executada', {
+        produtoId,
+        integracaoId,
+        motivo: sweep.skipped,
+      });
+    }
+  }
+
+  return {
+    itemId: parentExternalId,
+    estado,
+    permalink: item.permalink ?? null,
+    itemIds: family ? family.itemIds : [item.id],
+    orfaosEncerrados,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The default User-Products capability probe — one `GET /users/me` per FIRST
+ * publish (`estoqueSweep`'s `defaultGetMe`, same seam, different tag).
+ */
+async function defaultGetMe(api: MercadoLivreApi): Promise<MlUser> {
+  return api.getMe();
+}
 
 function toPublishProduto(
   id: string,
@@ -546,6 +723,7 @@ function toPublishProduto(
     profundidadeCm?: number | null;
     precos?: Record<string, { valor: number }> | null;
     ordem?: number | null;
+    propagatePriceToChildren?: boolean | null;
   },
 ): PublishProduto {
   return {
@@ -560,6 +738,7 @@ function toPublishProduto(
     profundidadeCm: p.profundidadeCm ?? null,
     precos: p.precos ?? null,
     ordem: p.ordem ?? null,
+    propagatePriceToChildren: p.propagatePriceToChildren ?? null,
   };
 }
 

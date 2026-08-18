@@ -47,6 +47,7 @@ import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/
 import {
   estadoLabel,
   isStockLatched,
+  publishSummary,
   refMatchesIntegracao,
 } from '@/lib/mercado-livre/listingLinks';
 import { enviarEstoqueParaIntegracao } from '@/lib/marketplace/estoque/registry';
@@ -160,7 +161,16 @@ export function MercadoLivreEditor({
   // than asserting "novo" for a beat and flipping.
   const produtoCondicao = extraDataSnap.data?.data.condicao ?? null;
 
-  const [publishing, setPublishing] = useState<string | null>(null);
+  /**
+   * The publish in flight, if any. Carries `withPrices` so only the button that
+   * was actually clicked spins — the two publish actions share one handler, and
+   * a bare conta id would light both up and leave the operator unable to tell
+   * which one is running.
+   */
+  const [publishing, setPublishing] = useState<{
+    contaId: string;
+    withPrices: boolean;
+  } | null>(null);
   /** The conta whose draft is being created, if any. */
   const [preparing, setPreparing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
@@ -269,6 +279,60 @@ export function MercadoLivreEditor({
    * reaches Mercado Livre until Publicar. The live `useSnapshot` above swaps the
    * card over to the full editor as soon as the write lands.
    */
+  /**
+   * Push this produto's price through the shared marketplace price rail (#804) —
+   * the same `POST /enviar-precos` the produtos table's row action uses, not the
+   * account-wide `atualizar-precos` job. Synchronous and bounded, so it reports a
+   * per-listing outcome instead of a job id, and it cannot collide with a running
+   * bulk job the way a second job-doc would.
+   *
+   * `baixarPreco: true` matches that rail's own default for a hand-picked
+   * selection: naming the produto IS the explicit intent, and it is what the
+   * legacy per-produto action did unconditionally.
+   */
+  async function pushPrices(integracaoId: string) {
+    if (!client) return;
+    try {
+      const result = await client.enviarPrecos({
+        integracaoId,
+        produtoIds: [produtoId],
+        baixarPreco: true,
+      });
+      // ⚠️ Per-listing failure is DATA on this rail, not an HTTP error: a 200 can
+      // carry nothing but failures, so the toast has to read the envelope rather
+      // than treat "no throw" as success.
+      const { enviados, pulados, falhas } = result.resumo;
+      const total = enviados + pulados + falhas;
+      notifications.show({
+        color: enviados > 0 ? 'green' : 'yellow',
+        title: enviados > 0 ? 'Preços atualizados' : 'Nenhum preço enviado',
+        message:
+          total === 0
+            ? 'Nenhum anúncio elegível para atualização de preço.'
+            : `${enviados} de ${total} anúncio(s) — reduções incluídas.` +
+              (falhas > 0 ? ` ${falhas} com falha.` : ''),
+      });
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Anúncio publicado, preços não',
+          message: err.message,
+        });
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Anúncio publicado, preços não',
+          message: 'Não foi possível contatar o serviço do Mercado Livre.',
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+
   async function handlePreparar(integracaoId: string) {
     setPreparing(integracaoId);
     try {
@@ -296,9 +360,23 @@ export function MercadoLivreEditor({
     }
   }
 
-  async function handlePublish(integracaoId: string, needsListingType: boolean) {
+  /**
+   * Publish, optionally followed by a price push for THIS produto.
+   *
+   * The two are separate calls on purpose. A publish deliberately does not carry
+   * prices — the PUT it sends per listing omits them (#798), so a republish to
+   * fix a photo, a title or an attribute cannot silently bypass the price flow's
+   * "Permitir baixar preços" guard, and cannot 400 on an item whose seller opted
+   * it into ML's own price automation. `withPrices` is the operator saying they
+   * meant the price too.
+   */
+  async function handlePublish(
+    integracaoId: string,
+    needsListingType: boolean,
+    withPrices = false,
+  ) {
     if (!client) return;
-    setPublishing(integracaoId);
+    setPublishing({ contaId: integracaoId, withPrices });
     setBlockedIssues((prev) => ({ ...prev, [integracaoId]: [] }));
     try {
       const result = await client.publicar({
@@ -311,8 +389,11 @@ export function MercadoLivreEditor({
       notifications.show({
         color: 'green',
         title: 'Publicado no Mercado Livre',
-        message: `Anúncio ${result.itemId} — ${estadoLabel(result.estado)}.`,
+        message: publishSummary(result),
       });
+      // Only after the publish SUCCEEDED: pricing a listing that failed to
+      // publish either 404s or updates the stale version.
+      if (withPrices) await pushPrices(integracaoId);
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {
         if (err.code === 'ML_PUBLISH_BLOCKED' && err.issues && err.issues.length > 0) {
@@ -515,8 +596,8 @@ export function MercadoLivreEditor({
               disabled: Boolean(disabled),
               canPublish,
               hasClient: client != null,
-              publishingThisConta: publishing === conta.id,
-              publishingOtherConta: publishing !== null && publishing !== conta.id,
+              publishingThisConta: publishing?.contaId === conta.id,
+              publishingOtherConta: publishing != null && publishing.contaId !== conta.id,
               produtoDirty,
               contaDirty,
               missingCategoria,
@@ -705,10 +786,45 @@ export function MercadoLivreEditor({
                             type="button"
                             variant={isFirstPublish ? 'filled' : 'light'}
                             onClick={() => handlePublish(conta.id, false)}
-                            loading={publishing === conta.id}
+                            loading={publishing?.contaId === conta.id && !publishing.withPrices}
                             disabled={publishReason != null}
                           >
                             {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    )}
+                    {/* The paired action (#798). A publish never carries prices,
+                        so without this the operator has no way to say "and the
+                        price too" from the produto screen. Shares `publishReason`
+                        — it is the same publish with one extra call, so every
+                        guard that blocks one blocks the other by definition.
+
+                        Absent while the conta has NO link doc at all (there is no
+                        category_id, so publish 422s before writing anything and
+                        there would be nothing to price). A rascunho — a link doc
+                        with `id == null` — DOES get it: pairing a first publish
+                        with a price push is legitimate. */}
+                    {!needsListingType && (
+                      <Tooltip
+                        label={publishReason}
+                        disabled={publishReason == null}
+                        withArrow
+                        position="bottom"
+                        multiline
+                        w={260}
+                      >
+                        <span style={{ display: 'inline-block' }}>
+                          <Button
+                            type="button"
+                            variant="light"
+                            onClick={() => handlePublish(conta.id, false, true)}
+                            loading={publishing?.contaId === conta.id && publishing.withPrices}
+                            disabled={publishReason != null}
+                          >
+                            {isFirstPublish
+                              ? 'Publicar e atualizar preços'
+                              : 'Republicar e atualizar preços'}
                           </Button>
                         </span>
                       </Tooltip>

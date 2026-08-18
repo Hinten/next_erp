@@ -378,10 +378,19 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
       await assertSucceeds(getDocs(collection(reader, 'produtos/p-hist/historicoDeModificacoes')));
     });
 
-    it('the produto read bit collection-group-reads across produtos', async () => {
-      await assertSucceeds(
-        getDocs(collectionGroup(db({ d_produto: 1 }), 'historicoDeModificacoes')),
-      );
+    it('denies the collection-group read entirely, for every domain', async () => {
+      // `noCollectionGroupRead` on BOTH metas, so no `{path=**}` block is
+      // emitted for this leaf at all.
+      //
+      // It used to be emitted, and `d_produto` used to pass here. That stopped
+      // being safe the moment `pedidos/{id}/historicoDeModificacoes` joined the
+      // same leaf name: `emit.ts` makes a group block's read check the UNION of
+      // every owning collection's read claim, so the block would have granted
+      // `d_produto` reads over every PEDIDO's edit history (and `d_pedido` over
+      // every produto's custo/precos changes). Nothing in the app ever issued
+      // this query — every read resolves a concrete `{ produtoId }` /
+      // `{ pedidoId }` — so removing it costs nothing and closes the widening.
+      await assertFails(getDocs(collectionGroup(db({ d_produto: 1 }), 'historicoDeModificacoes')));
       await assertFails(getDocs(collectionGroup(db({ d_pedido: 7 }), 'historicoDeModificacoes')));
     });
 
@@ -403,6 +412,54 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
         updateDoc(doc(su, 'produtos/p-hist/historicoDeModificacoes/evt-1'), { campos: [] }),
       );
       await assertFails(deleteDoc(doc(su, 'produtos/p-hist/historicoDeModificacoes/evt-1')));
+    });
+  });
+
+  describe('server-owned pedidos/historicoDeModificacoes (meta.serverOwned)', () => {
+    // The pedido twin of the block above: same schema, same serverOwned posture,
+    // its OWN permission domain. Written by the pedido trigger family; rows for
+    // `pagamentos` / `incidentes` land here too, tagged by `subcolecao`.
+    const entry = {
+      path: 'pedidos/ped-hist/pagamentos/pag-1',
+      subcolecao: 'pagamentos',
+      docId: 'pag-1',
+      kind: 'update',
+      campos: ['status_pagamento'],
+      changes: { status_pagamento: { old: 1, new: 3 } },
+      timestamp: 1_700_000_000_000_000,
+      eventId: 'evt-p1',
+    };
+
+    it('the pedido read bit reads a single entry and lists the subcollection', async () => {
+      await seed('pedidos/ped-hist/historicoDeModificacoes/evt-p1', entry);
+      const reader = db({ d_pedido: 1 });
+      await assertSucceeds(getDoc(doc(reader, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1')));
+      await assertSucceeds(getDocs(collection(reader, 'pedidos/ped-hist/historicoDeModificacoes')));
+    });
+
+    it('a produto claim does NOT read the pedido history', async () => {
+      // The whole point of `noCollectionGroupRead` on both metas: sharing a leaf
+      // name must not share a read claim.
+      await assertFails(
+        getDocs(collection(db({ d_produto: 7 }), 'pedidos/ped-hist/historicoDeModificacoes')),
+      );
+    });
+
+    it('denies every client write, even with the pedido write bit', async () => {
+      const writer = db({ d_pedido: 2 });
+      await assertFails(
+        setDoc(doc(writer, 'pedidos/ped-hist/historicoDeModificacoes/evt-p2'), entry),
+      );
+      await assertFails(
+        updateDoc(doc(writer, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1'), { campos: [] }),
+      );
+      await assertFails(deleteDoc(doc(writer, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1')));
+    });
+
+    it('denies every write even for a superuser (no su bypass)', async () => {
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(setDoc(doc(su, 'pedidos/ped-hist/historicoDeModificacoes/evt-p3'), entry));
+      await assertFails(deleteDoc(doc(su, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1')));
     });
   });
 

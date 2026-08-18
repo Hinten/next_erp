@@ -18,17 +18,10 @@
  *      same daily over the ones waiting on a seller to connect.
  *
  * Disposition (`handleNotificationTask`):
- *  - `done`     — a known topic was processed: NOTHING is persisted. The `items`
- *                 topic runs the status-sync (#440); `orders_v2`/`orders` run the
- *                 Step 9 order→pedido import (see `runOrderImport` below);
- *                 `payments`/`shipments` run the Step 9 PR 3 payment/shipment
- *                 sync onto an already-imported pedido (see `runPaymentImport`/
- *                 `runShipmentImport` below); `claims` runs the Step 14 claim →
- *                 incidente/conversa import (see `runClaimImport` below); the
- *                 remaining topics (items_prices/orders_feedback/questions/
- *                 messages/stock-location) are no-ops — `items_prices`
- *                 PERMANENTLY so (#803, see `KNOWN_TOPICS`), the rest until
- *                 their per-topic handlers land in later steps;
+ *  - `done`     — the work was performed (or the topic is `ack`): NOTHING is
+ *                 persisted. **Which topic does what is stated ONCE, in
+ *                 {@link TOPIC_DISPOSITION}** — restating it here is how this
+ *                 header and that table drifted apart in the first place;
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
@@ -44,10 +37,16 @@
  *                 `user_id` lands on an active integração. It used to be `failed`,
  *                 which parked it ~6h in and lost every notification a
  *                 next-business-day connect would have imported;
- *  - `parked`   — an unsupported topic, or a notification with no `user_id` at all
- *                 (nothing can ever make it resolvable) — terminal, never re-driven;
- *  - `dropped`  — a malformed task payload (a coding/enqueue bug — logged, no
- *                 persist, no retry).
+ *  - `parked`   — terminal, never re-driven. Three causes: a topic absent from
+ *                 {@link TOPIC_DISPOSITION}; a `park` topic (data-bearing, importer
+ *                 pending); or a notification with no `user_id` at all, which
+ *                 nothing can ever make resolvable;
+ *  - `dropped`  — two very different things, told apart by the outcome LABEL.
+ *                 Unlabelled: a malformed task payload — a coding/enqueue bug,
+ *                 logged, no persist, no retry. Labelled `ignorado`: an `ignore`
+ *                 topic, which is neither a bug nor logged. Reading a bare
+ *                 `dropped` as "coding bug" is exactly the misreading the
+ *                 `ack`/`ignore` split exists to prevent.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
@@ -118,36 +117,102 @@ export type { ReprocessOptions, ReprocessResult };
 export const REDRIVE_PAGE_LIMIT = 500;
 
 /**
- * The ML notification topics the pipeline recognizes. A known topic is processed
- * (no-op until its handler exists); a genuinely-unknown topic parks.
- * (`questions`/`messages` are recognized but postponed per the port plan.)
+ * **Every ML notification topic and what this channel does with it — one table,
+ * one place** (#813). Four dispositions, each meaning something an operator can
+ * act on differently:
  *
- * ⚠️ `items_prices` MUST stay in this set even though it has no handler and,
- * per #803, never will: **the ERP owns both price tables** — Mercado Livre is
- * not a writer of `produto.precos`. Membership here is what makes an
- * `items_prices` delivery ack `done` and persist NOTHING; dropping it from the
- * set instead routes it to `unknown-topic`, which PARKS a
- * `notificacaoMercadoLivre` document on EVERY delivery. Unsubscribing the topic
- * in the ML application manager stops the traffic at the source, but it is a
- * panel checkbox anyone can flip back (and `missed_feeds` replays), so this arm
- * is the durable half of the fix. Do not re-attach a handler here.
+ * | disposition | writes | means |
+ * |---|---|---|
+ * | `handled` | per handler | a real branch below imports it |
+ * | `ack`     | nothing | recognised, and there is genuinely nothing to do |
+ * | `park`    | one doc  | data-bearing, handler not written yet — keep a replayable record |
+ * | `ignore`  | nothing | ML delivers it routinely, the business decided not to care |
+ *
+ * The distinction that motivated this table is `ack` vs `ignore`. Both persist
+ * nothing, but `ack` reports as `done` — indistinguishable from a notification
+ * we actually processed — while `ignore` reports as `dropped/ignorado`, so the
+ * outcome counters stop lying about how much work the channel is doing.
+ *
+ * ⚠️ `items_prices` is `ack` and must STAY in this table even though it has no
+ * handler and, per #803, never will: **the ERP owns both price tables** — ML is
+ * not a writer of `produto.precos`. Membership is what makes a delivery persist
+ * NOTHING; removing it routes the topic to `unknown-topic`, which PARKS a
+ * document on EVERY delivery. Do not re-attach a handler.
+ *
+ * ⚠️ The three `ignore` topics were the expensive half of #813: absent from this
+ * table they parked one permanent Firestore document per delivery, and
+ * `user-products-families` fires on every family change for a User-Products
+ * seller. Unsubscribing them in the ML application manager stops the traffic at
+ * the source, but that is a panel checkbox anyone can flip back — and
+ * `missed_feeds` replays regardless — so this table is the durable half.
+ *
+ * ⚠️ A topic ABSENT from this table still parks, deliberately. That is the audit
+ * trail for a genuinely new ML topic, and the only signal that one appeared.
  */
-export const KNOWN_TOPICS: ReadonlySet<string> = new Set([
-  'orders_v2',
-  'orders',
-  'items',
-  'shipments',
-  'payments',
-  'items_prices',
-  'claims',
-  'orders_feedback',
-  'questions',
-  'messages',
-  'stock-location',
-]);
+export const TOPIC_DISPOSITION = {
+  orders_v2: 'handled',
+  orders: 'handled',
+  items: 'handled',
+  shipments: 'handled',
+  payments: 'handled',
+  claims: 'handled',
+
+  // Recognised, nothing to do.
+  //
+  // ⚠️ The line between `ack` and `park` is NOT "does a handler exist yet" — it
+  // is **does the notification carry content that is lost if we drop it**.
+  // A question or a buyer message is a one-time payload: miss the delivery and
+  // the text is gone from our side forever, which is why they `park`. The three
+  // below announce STATE we can re-read from ML at any time, so a dropped
+  // delivery costs nothing but freshness.
+  items_prices: 'ack', // #803 — the ERP owns both price tables; nothing to read back
+  orders_feedback: 'ack', // legacy's handler was `return;` before any work — dead code
+  // Announces that a user_product's stock moved. The quantity is always
+  // re-readable at `/user-products/{id}/stock`, and the ERP is the source of
+  // truth that PUSHES stock to ML in the first place — so this is a hint about
+  // state, not an event carrying content. If a stock feature ever consumes it,
+  // it becomes `handled`; it never needs to become `park`.
+  'stock-location': 'ack',
+
+  // Data-bearing, handler pending (#532/#533). NOT `ack`: acking these is the
+  // data loss #813 was filed about — at the callback cutover they would stop
+  // being ingested with no failure doc, no parked doc and no warn line. Parking
+  // costs a document per delivery and buys a replayable record until the
+  // importers land; the whole stack deploys together, so that window is a
+  // review cycle, not production time.
+  questions: 'park',
+  messages: 'park',
+
+  // Delivered routinely, deliberately not our business.
+  public_offers: 'ignore',
+  public_candidates: 'ignore',
+  'user-products-families': 'ignore',
+} as const satisfies Record<string, 'handled' | 'ack' | 'park' | 'ignore'>;
+
+export type TopicDisposition = (typeof TOPIC_DISPOSITION)[keyof typeof TOPIC_DISPOSITION];
+
+/** Topics this channel recognises at all — the table's keys. */
+export const KNOWN_TOPICS: ReadonlySet<string> = new Set(Object.keys(TOPIC_DISPOSITION));
 
 export function isKnownTopic(topic: string): boolean {
   return KNOWN_TOPICS.has(topic);
+}
+
+/** Recognised AND deliberately uninteresting — never enqueued, never persisted. */
+export function isIgnoredTopic(topic: string): boolean {
+  return TOPIC_DISPOSITION[topic as keyof typeof TOPIC_DISPOSITION] === 'ignore';
+}
+
+/**
+ * Whether a delivery is worth a Cloud Task at all.
+ *
+ * Used by BOTH producers — the webhook receiver and the `missed_feeds` sweep —
+ * because a dispatch-only ignore still pays for the enqueue, the function
+ * invocation and the conta lookup before deciding to do nothing. An UNKNOWN
+ * topic still enqueues: parking it is how a new ML topic becomes visible.
+ */
+export function shouldEnqueueTopic(topic: string): boolean {
+  return !isIgnoredTopic(topic);
 }
 
 /**
@@ -738,6 +803,8 @@ export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
+  | { kind: 'ignored-topic' } // TOPIC_DISPOSITION says `ignore` — no account resolved, nothing written
+  | { kind: 'handler-pendente'; integracaoId: string } // TOPIC_DISPOSITION says `park` — data-bearing, importer not written yet
   | { kind: 'malformed-resource'; integracaoId: string } // items/orders_v2/orders/payments/shipments/claims resource had no parseable id
   | { kind: 'ml-500'; integracaoId: string; message: string }; // known routine ML 500 (N7) — non-retryable
 
@@ -775,6 +842,13 @@ export async function processNotificationPayload(
   const paymentImportRunner = runners.paymentImportRunner ?? runPaymentImport;
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
   const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
+
+  // Ignored topics settle BEFORE the account lookup — the cheapest possible
+  // answer to "this is not our business". Resolving the conta first would cost a
+  // Firestore read on every `user-products-families` delivery, and for a seller
+  // who has not connected yet it would return `no-account` and DEFER, writing a
+  // document for a topic we have decided to ignore entirely.
+  if (isIgnoredTopic(payload.topic)) return { kind: 'ignored-topic' };
 
   // The query above stays uncached and directly unit-tested;
   // `resolveContaAtivaPorUserId` wraps it with the shared conta cache and the
@@ -918,18 +992,27 @@ export async function processNotificationPayload(
     return { kind: 'done', integracaoId };
   }
 
-  // Other known topics, acked with NOTHING persisted. Two different reasons:
+  // Data-bearing, importer not written yet (#532/#533). Parked rather than
+  // acked so the delivery leaves a replayable record: the alternative is the
+  // silent `done` that #813 was filed about, which at the callback cutover
+  // stops ingesting questions and messages with no failure doc, no parked doc
+  // and no warn line — indistinguishable from working.
   //
-  //  - `items_prices` is a PERMANENT no-op (#803). The ERP owns both price
-  //    tables — Mercado Livre is not a writer of `produto.precos` — so there is
-  //    nothing to do with a price notification. It stays a KNOWN topic purely
-  //    so it lands here instead of parking a document per delivery; see
-  //    `KNOWN_TOPICS`. Do not add a handler for it.
-  //  - orders_feedback/questions/messages/stock-location: their per-topic
-  //    handlers land in later steps; here the foundation acks them so the
-  //    pipeline is exercisable end-to-end. A future handler MUST THROW on a
-  //    transient failure (so the queue/sweep retry) and be idempotent keyed by
-  //    the ML resource id — it must never fall through to a silent success.
+  // ⚠️ When the importer lands, its branch goes ABOVE this line and its topic
+  // flips to `handled` in TOPIC_DISPOSITION. That handler MUST THROW on a
+  // transient failure (so the queue and sweep retry) and be idempotent keyed by
+  // the ML resource id — it must never fall through to a silent success.
+  // Only `ack` may reach the end of this function. A `handled` topic that gets
+  // here has LOST ITS BRANCH — renamed, deleted, or never written — and acking
+  // it would reintroduce #813 through the very table meant to prevent it: no
+  // failure doc, no parked doc, no warn line, and an outcome indistinguishable
+  // from the import having run. Park instead, so the delivery survives.
+  const disposition = TOPIC_DISPOSITION[payload.topic as keyof typeof TOPIC_DISPOSITION];
+  if (disposition !== 'ack') {
+    return { kind: 'handler-pendente', integracaoId };
+  }
+
+  // `ack` — recognised, and there is genuinely nothing to do. Persists nothing.
   return { kind: 'done', integracaoId };
 }
 
@@ -1027,6 +1110,27 @@ function pipelineFor(runners: NotificationRunners = {}) {
       if (outcome.kind === 'unknown-topic') {
         return { kind: 'park', reason: `tópico não suportado: ${payload.topic}` };
       }
+      if (outcome.kind === 'ignored-topic') {
+        // `drop`, not `resolve`: both persist nothing in the task and both
+        // delete in the sweep, but the outcome LABEL is the whole point. As
+        // `done` an ignored delivery is indistinguishable from a processed one
+        // in the operator counters, which is half of what #813 reports.
+        return { kind: 'drop', label: 'ignorado' };
+      }
+      if (outcome.kind === 'handler-pendente') {
+        // Two causes, and the reason has to distinguish them for an operator:
+        // a `park` topic is waiting on work we know is unwritten, while a
+        // `handled` topic reaching here means a dispatch branch went missing —
+        // a regression, not a plan.
+        const disposition = TOPIC_DISPOSITION[payload.topic as keyof typeof TOPIC_DISPOSITION];
+        return {
+          kind: 'park',
+          reason:
+            disposition === 'handled'
+              ? `tópico marcado como 'handled' mas sem branch de dispatch: ${payload.topic}`
+              : `tópico com dados e sem importador ainda: ${payload.topic} (#532)`,
+        };
+      }
       if (outcome.kind === 'malformed-resource') {
         if (phase === 'sweep') {
           return { kind: 'park', reason: `resource malformado: ${payload.resource}` };
@@ -1084,9 +1188,14 @@ export async function handleNotificationTask(
 ): Promise<TaskResult> {
   const r = await pipelineFor(runners).handleTask(db, data, retryCount);
   // `payload` is absent only on the schema-parse drop, where there is no topic
-  // to report; `result` is absent on the transient-failure path. `no-account`
-  // carries no integração id — it is precisely the outcome where none resolved.
-  const integracaoId = r.result && r.result.kind !== 'no-account' ? r.result.integracaoId : null;
+  // to report; `result` is absent on the transient-failure path.
+  //
+  // Two outcomes carry no integração id, for opposite reasons: `no-account` is
+  // where none resolved, and `ignored-topic` is where we never looked. A
+  // structural `in` check covers both and keeps covering any future arm —
+  // enumerating the exceptions is what made this a type error when
+  // `ignored-topic` was added.
+  const integracaoId = r.result && 'integracaoId' in r.result ? r.result.integracaoId : null;
   return {
     outcome: r.outcome,
     ...(integracaoId != null ? { integracaoId } : {}),

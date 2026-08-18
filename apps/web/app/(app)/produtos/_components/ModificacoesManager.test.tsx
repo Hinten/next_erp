@@ -46,6 +46,15 @@ vi.mock('@/lib/produtos/revert', () => ({
   checkRevert: h.checkRevert,
   isRevertible: h.isRevertible,
 }));
+// The actor column reads `usuarios` behind a permission gate — a whole
+// dependency chain (auth claims, TanStack, a second collection handle) that
+// this suite is not about. Its own behaviour is covered in
+// `components/UsuarioNome.test.tsx`.
+vi.mock('@/components/UsuarioNome', () => ({
+  UsuarioNome: () => null,
+  useUsuarioNomes: () => ({}),
+  uidFromUsuarioRef: () => null,
+}));
 
 import { ModificacoesManager } from './ModificacoesManager';
 

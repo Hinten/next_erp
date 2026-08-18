@@ -49,7 +49,11 @@ import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { parseNotificationBody, persistNotificationFailure } from '@/lib/marketplace/notificacao';
+import {
+  parseNotificationBody,
+  persistNotificationFailure,
+  shouldEnqueueTopic,
+} from '@/lib/marketplace/notificacao';
 import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
 import { checkApplicationId, logWebhookHeaders } from '@/lib/marketplace/webhookOrigin';
 
@@ -114,6 +118,17 @@ export async function POST(req: Request): Promise<NextResponse> {
   const payload = parseNotificationBody(body);
   if (!payload) {
     return NextResponse.json({ ok: true, accepted: false });
+  }
+
+  // Topics the business decided to ignore never become a Cloud Task (#813).
+  // The dispatch also drops them — that arm is the belt-and-braces for a
+  // `missed_feeds` replay or an already-queued task — but stopping here is what
+  // actually saves the money: an enqueue, a function invocation and a conta
+  // lookup, on a topic like `user-products-families` that fires on every family
+  // change for a User-Products seller. An UNKNOWN topic still enqueues, so it
+  // parks and stays visible.
+  if (!shouldEnqueueTopic(payload.topic)) {
+    return NextResponse.json({ ok: true, accepted: false, ignored: true });
   }
 
   // Enqueue the lean payload; the queue processes it out-of-band at a bounded

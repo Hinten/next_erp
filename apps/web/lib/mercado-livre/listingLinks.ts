@@ -94,3 +94,31 @@ function mlbProductUrl(itemId: string): string | null {
   const digits = itemId.replace(/\D/g, '');
   return digits ? `https://produto.mercadolivre.com.br/MLB-${digits}` : null;
 }
+
+/**
+ * The success-toast line for a publish (#798).
+ *
+ * A User-Products family is N ML items, not one, and the operator has no other
+ * way to learn how many went out or that a removed variação's listing was
+ * closed — the parent link shows a single family id and the child links are not
+ * on screen.
+ *
+ * ⚠️ `itemIds`/`orfaosEncerrados` are optional on the wire: this app calls the
+ * DEPLOYED channel backend, so a revision predating #798 answers without them
+ * and must still produce the old single-item sentence.
+ */
+export function publishSummary(result: {
+  itemId: string;
+  estado: string;
+  itemIds?: string[];
+  orfaosEncerrados?: string[];
+}): string {
+  const count = result.itemIds?.length ?? 1;
+  const head =
+    count > 1
+      ? `${count} anúncios (1 por variação) — ${estadoLabel(result.estado)}.`
+      : `Anúncio ${result.itemId} — ${estadoLabel(result.estado)}.`;
+  const closed = result.orfaosEncerrados?.length ?? 0;
+  if (closed === 0) return head;
+  return `${head} ${closed} ${closed === 1 ? 'anúncio encerrado' : 'anúncios encerrados'} (variação removida).`;
+}

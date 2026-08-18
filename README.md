@@ -62,7 +62,7 @@ pnpm --filter @delfrance/test-fixtures seed:nfe --clean # remove NFe docs, keep 
 
 ## Contributing
 
-See `CONTRIBUTING.md`. Code of conduct: `CODE_OF_CONDUCT.md`. Security disclosures: `SECURITY.md`.
+See `.github/CONTRIBUTING.md`. Code of conduct: `.github/CODE_OF_CONDUCT.md`. Security disclosures: `SECURITY.md`.
 
 ## License
 

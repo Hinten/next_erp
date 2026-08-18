@@ -8,6 +8,9 @@ const base = {
   docId: 'p1',
   eventId: 'evt1',
   eventTimeMicros: 1_000_000,
+  // Required, not defaulted: every caller must decide who acted. `null` is the
+  // Admin-SDK answer ("Sistema"), which is what these pure-diff cases model.
+  usuarioOuterRef: null,
 };
 
 describe('buildModificationEntry — kind', () => {
@@ -107,6 +110,7 @@ describe('buildModificationEntry — path/subcolecao/docId/eventId/timestamp thr
       docId: 'e1',
       eventId: 'evt-xyz',
       eventTimeMicros: 424_242_000,
+      usuarioOuterRef: 'documents/usuarios/AbCdEf0123456789AbCdEf01',
     });
     expect(entry).toMatchObject({
       path: 'produtos/p1/estoques/e1',
@@ -114,7 +118,23 @@ describe('buildModificationEntry — path/subcolecao/docId/eventId/timestamp thr
       docId: 'e1',
       eventId: 'evt-xyz',
       timestamp: 424_242_000,
+      usuarioOuterRef: 'documents/usuarios/AbCdEf0123456789AbCdEf01',
     });
+  });
+
+  it('threads a null actor through as null (an Admin-SDK write, never absent)', () => {
+    // The schema's third state (key ABSENT) means "row predates the field", so a
+    // row written by the trigger must always carry the key — even when there is
+    // no end user behind the write.
+    const entry = buildModificationEntry({
+      ...base,
+      before: { nome: 'A' },
+      after: { nome: 'B' },
+      ignore: [],
+    });
+    expect(entry).not.toBeNull();
+    expect(entry && 'usuarioOuterRef' in entry).toBe(true);
+    expect(entry?.usuarioOuterRef).toBeNull();
   });
 
   it('threads a null subcolecao unchanged (document IS the produto)', () => {

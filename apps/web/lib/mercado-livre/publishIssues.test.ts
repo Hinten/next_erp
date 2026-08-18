@@ -38,6 +38,33 @@ describe('mapPublishIssue', () => {
     ).toMatchObject({ scope: 'variacao' });
   });
 
+  it('keeps the mid-UPtin block on the LISTING, not the integração', () => {
+    // It names "User Products", which the generic account-capability rule below
+    // it would otherwise scope to `integracao` — pointing the operator at a form
+    // that cannot fix a listing ML is mid-migrating. It is a listing state.
+    expect(
+      mapPublishIssue(
+        'anúncio em migração para o modelo User Products (UPtin) — aguarde a conclusão antes de publicar',
+      ),
+    ).toMatchObject({ scope: 'listing', field: null });
+  });
+
+  it('does NOT claim an unrelated "não está implementada" string', () => {
+    // The rule that used to match one fell with the block it described. Nothing
+    // may claim this generic phrasing — an unmatched issue already lands on the
+    // same banner, so a rule here would only mis-scope future prose.
+    expect(mapPublishIssue('exportação de kits ainda não está implementada')).toMatchObject({
+      scope: 'listing',
+      field: null,
+    });
+  });
+
+  it('a genuine account-capability issue still routes to the integração', () => {
+    expect(mapPublishIssue('a conta não está habilitada para user_product_seller')).toMatchObject({
+      scope: 'integracao',
+    });
+  });
+
   it('falls back to a whole-listing banner rather than guessing', () => {
     // Every issue is ALSO rendered verbatim in the alert, so a miss loses
     // nothing — it just doesn't highlight a control.

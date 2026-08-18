@@ -599,7 +599,6 @@ export async function discoverPedidoMercadoLivre(
         freteInicial: null,
         descontoTotal: core.descontoTotal,
         valorCobrado: core.valorCobrado,
-        valorFreteInicial: core.valorFreteInicial,
         timestamp: core.timestamp,
         ultimaModificacao: nowUs,
         lastMarketplaceUpdate: relogioFinal,

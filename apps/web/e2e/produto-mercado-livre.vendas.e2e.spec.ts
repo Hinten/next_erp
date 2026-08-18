@@ -59,7 +59,15 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(card.getByText(`Anúncio ${mlItemId}`)).toBeVisible();
     // A bound listing re-publishes — no listing-type choice (the link doc's
     // persisted `listing_type_id` wins).
-    await expect(card.getByRole('button', { name: 'Republicar' })).toBeVisible();
+    //
+    // ⚠️ `exact` is load-bearing: Playwright matches an accessible name by
+    // SUBSTRING, so a plain 'Republicar' also matches the sibling
+    // "Republicar e atualizar preços" (#804 S6) and the locator resolves to two
+    // elements. Both buttons are asserted here so neither can silently vanish.
+    await expect(card.getByRole('button', { name: 'Republicar', exact: true })).toBeVisible();
+    await expect(
+      card.getByRole('button', { name: 'Republicar e atualizar preços', exact: true }),
+    ).toBeVisible();
     await expect(card.getByLabel('Tipo de anúncio')).toHaveCount(0);
   });
 
@@ -118,7 +126,9 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // Firestore write and never touches the backend under test here.
     const card = page.getByTestId(`ml-conta-${contaLinked}`);
     await expect(card).toBeVisible({ timeout: 30_000 });
-    await card.getByRole('button', { name: 'Republicar' }).click();
+    // Exact: the sibling "Republicar e atualizar preços" would match a
+    // substring locator too (see the note in the status test above).
+    await card.getByRole('button', { name: 'Republicar', exact: true }).click();
 
     await expect(
       page.getByText('Não foi possível contatar o serviço do Mercado Livre.'),

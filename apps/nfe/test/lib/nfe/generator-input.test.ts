@@ -382,6 +382,77 @@ describe('indTot — compoeValorTotalDaNFe (#398)', () => {
   });
 });
 
+/**
+ * ⚠️ FISCAL GUARD — freight must NOT enter the nota unless the ISSUER paid it.
+ *
+ * `buildGeneratorInput` computes `vFrete` only for `modalidade='0'` (CIF,
+ * contratação por conta do emitente). Every other modalidade — above all `'1'`
+ * (destinatário) and `'2'` (terceiros), which is how every marketplace order is
+ * imported — must contribute NOTHING: no `det.prod.vFrete`, `ICMSTot.vFrete`
+ * 0.00, and no term in `vNF = vProd + … + vFrete + … − vDesc`.
+ *
+ * Emitting it anyway makes the store pay tax on freight a third party charged —
+ * on ICMS via the item base, and again on every `vNF`-derived figure. That is
+ * the single most expensive way this file can be wrong, and until these cases
+ * existed it was UNPINNED: deleting the `modalidade === cif` condition left the
+ * whole apps/nfe suite green (measured, 2026-08-14).
+ *
+ * The freight is still DECLARED — `<transp><modFrete>` carries the real code —
+ * it is simply not CHARGED. Do not "simplify" the condition away.
+ */
+describe('vFrete only for frete por conta do emitente (fiscal guard)', () => {
+  const NAO_EMITENTE = [
+    ['1', 'destinatário (FOB) — how marketplace orders are imported'],
+    ['2', 'terceiros — the carrier is contracted by the marketplace'],
+    ['3', 'transporte próprio por conta do remetente'],
+    ['4', 'transporte próprio por conta do destinatário'],
+    ['9', 'sem ocorrência de transporte'],
+  ] as const;
+
+  for (const [modalidade, why] of NAO_EMITENTE) {
+    it(`modalidade='${modalidade}' (${why}) keeps a R$ 20 frete out of the nota`, () => {
+      const bundle = fullBundle({
+        pagamentos: [],
+        frete: { modalidade, valorCobrado: 20 } as unknown as FreteDoPedido,
+      });
+      const out = buildGeneratorInput(
+        bundle,
+        [item({ precoDeVenda: 100, quantidade: 1 })],
+        7,
+        1,
+        'homologacao',
+      );
+
+      // Item level: nothing stamped on any det.
+      expect(out.itens.every((g) => g.vFrete === undefined)).toBe(true);
+      // NF-e level: the totals bag reports zero...
+      expect(out.totalXml).toContain('<vFrete>0.00</vFrete>');
+      // ...and vNF is the goods alone — NOT 120.00.
+      expect(out.totalXml).toContain('<vNF>100.00</vNF>');
+      // But the nota still DECLARES who contracted the carrier.
+      expect(out.transpXml).toContain(`<modFrete>${modalidade}</modFrete>`);
+    });
+  }
+
+  it("modalidade='0' (emitente) is the ONLY case that charges it — the contrast that makes the guard meaningful", () => {
+    const bundle = fullBundle({
+      pagamentos: [],
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
+    });
+    const out = buildGeneratorInput(
+      bundle,
+      [item({ precoDeVenda: 100, quantidade: 1 })],
+      7,
+      1,
+      'homologacao',
+    );
+
+    expect(out.itens[0]!.vFrete).toBe(20);
+    expect(out.totalXml).toContain('<vFrete>20.00</vFrete>');
+    expect(out.totalXml).toContain('<vNF>120.00</vNF>');
+  });
+});
+
 describe('frete-emitente with no composing item (review fix)', () => {
   it('throws instead of stamping vFrete on an indTot=0 det', () => {
     const bundle = fullBundle({

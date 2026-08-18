@@ -40,7 +40,12 @@ import {
   PAGE_LIMIT,
   runMissedFeedsSweep,
 } from './missedFeedsSweep';
-import { KNOWN_TOPICS, handleNotificationTask, reprocessNotifications } from './notificacao';
+import {
+  KNOWN_TOPICS,
+  handleNotificationTask,
+  reprocessNotifications,
+  shouldEnqueueTopic,
+} from './notificacao';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Trimmed copy of orderBackfill.test.ts's FakeDb, plus `orderBy` (the shared
@@ -386,20 +391,47 @@ describe('runMissedFeedsSweep — preconditions', () => {
 });
 
 describe('runMissedFeedsSweep — topic filtering', () => {
-  it('enqueues EVERY member of KNOWN_TOPICS (no private topic list)', async () => {
+  it('enqueues EVERY enqueueable topic (no private topic list)', async () => {
     const db = new FakeDb();
     seedConta(db, 'INT-A', SELLER);
     const { scheduler, enqueue } = makeScheduler();
-    const topics = [...KNOWN_TOPICS];
+    const enqueueable = [...KNOWN_TOPICS].filter((t) => shouldEnqueueTopic(t));
     wireApi({
-      'INT-A': [page(topics.map((t, i) => feed({ _id: `f-${i}`, topic: t, resource: `/x/${i}` })))],
+      'INT-A': [
+        page(enqueueable.map((t, i) => feed({ _id: `f-${i}`, topic: t, resource: `/x/${i}` }))),
+      ],
     });
 
     const res = await run(db, scheduler);
 
     // Anti-drift: if the sweep ever re-declares its own topic set instead of
     // importing the shared one, nothing else in the repo reds.
-    expect(enqueue).toHaveBeenCalledTimes(topics.length);
+    expect(enqueue).toHaveBeenCalledTimes(enqueueable.length);
+    expect(res.contas[0]!.skippedTopic).toBe(0);
+  });
+
+  it('an IGNORED topic is skipped here too — the sweep is the second producer', async () => {
+    // Without this the 05:00 replay would re-enqueue every ignored delivery
+    // ML filed as missed, every morning, undoing the receiver's gate (#813).
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', SELLER);
+    const { scheduler, enqueue } = makeScheduler();
+    wireApi({
+      'INT-A': [
+        page([
+          feed({ _id: 'f-0', topic: 'public_offers', resource: '/seller-promotions/offers/1' }),
+          feed({ _id: 'f-1', topic: 'orders_v2', resource: '/orders/1' }),
+        ]),
+      ],
+    });
+
+    const res = await run(db, scheduler);
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    // Counted apart from `skippedTopic`: an unknown topic means a new ML topic
+    // needs classifying (act on it), an ignored one means the list worked
+    // (noise). Summed, the number that should prompt action is buried.
+    expect(res.contas[0]!.skippedIgnorado).toBe(1);
     expect(res.contas[0]!.skippedTopic).toBe(0);
   });
 

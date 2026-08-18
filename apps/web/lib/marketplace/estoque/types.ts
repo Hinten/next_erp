@@ -1,5 +1,6 @@
 import type { IntegracaoTipo } from '@delfrance/schemas';
-import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
+
+import type { PushDeps, PushIntegracao, PushOutcome, PushRowBase } from '../push/types';
 
 /**
  * The marketplace stock-push contract (#819) — the port of the legacy
@@ -10,10 +11,13 @@ import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
  * `POST /api/marketplace/<canal>/enviar-estoque` with the same envelope, so this
  * layer never learns which marketplace replied. See `README.md` for what adding
  * a second channel costs.
+ *
+ * Everything an operation-agnostic layer can own now lives in `../push/types`;
+ * what stays here is the stock payload and this operation's own vocabulary.
  */
 
 /** How one listing ended up. Mirrors the backend's `PushEstoqueOutcome`. */
-export type StockPushOutcome = 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
+export type StockPushOutcome = PushOutcome;
 
 /**
  * One listing's outcome, as the dialog renders it.
@@ -23,21 +27,7 @@ export type StockPushOutcome = 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
  * see #781), so the legacy dialog's one-row-per-(produto, integração) shape
  * would hide a latched sibling completely.
  */
-export interface StockPushRow {
-  /** Stable React key: `${produtoId}:${integracaoId}:${anuncioId ?? '-'}`. */
-  key: string;
-  produtoId: string;
-  produtoNome: string | null;
-  integracaoId: string | null;
-  integracaoNome: string | null;
-  anuncioId: string | null;
-  /** The link doc id — what the inline "Reverificar anúncio" button needs. */
-  linkDocId: string | null;
-  outcome: StockPushOutcome;
-  /** Machine code (`anuncio-em-erro`, `sem-anuncio`, …). Null on success. */
-  motivo: string | null;
-  /** Operator-facing pt-BR text. The BACKEND owns this wording — see README. */
-  mensagem: string;
+export interface StockPushRow extends PushRowBase {
   quantidade: number | null;
 }
 
@@ -49,18 +39,10 @@ export interface StockPushChannelResult {
 }
 
 /** The account a push targets, resolved by the orchestrator before dispatch. */
-export interface StockPushIntegracao {
-  id: string;
-  nome: string;
-  tipo: IntegracaoTipo;
-  ativo: boolean;
-}
+export type StockPushIntegracao = PushIntegracao;
 
 /** Clients a provider may reach for. One field per channel, added as they land. */
-export interface StockPushDeps {
-  /** Null while logged out — a provider returns an error row, never throws. */
-  mercadoLivre: MercadoLivreClient | null;
-}
+export type StockPushDeps = PushDeps;
 
 export interface StockPushInput {
   integracao: StockPushIntegracao;

@@ -6,7 +6,7 @@
  * `github.ref`, so each push to a PR kills that PR's in-flight run mid-suite.
  * Nothing else reclaims another run's leftovers: the per-spec sweeps are scoped
  * to the current prefix, `globalTeardown` scopes itself to `e2e-<thisRunId>-`,
- * and `runTeardown()` clears only `e2e_<thisRunId>_*`.
+ * and `runTeardown()` deletes only `e2e_probe/<thisRunId>`.
  *
  * The leak is not cosmetic. Every list is bounded at 50 rows (all 16
  * `defaultQuery` declarations carry `limit: 50`, and TableView falls back to 50
@@ -15,7 +15,8 @@
  * push the row a test just created off page 1. That is exactly how
  * `logistica.vendas.e2e.spec.ts` started failing deterministically.
  *
- * Two passes, because an age gate alone cannot fix it:
+ * Three passes. The first two share the `e2e-` (HYPHEN) fixture axis, where an
+ * age gate alone cannot fix it; the third owns the `e2e_` (UNDERSCORE) probe:
  *
  *  - **Pass A, predecessor reclaim.** The dominant orphan producer is a run
  *    cancelled *minutes* ago, so any cutoff long enough to be safe also skips
@@ -28,6 +29,12 @@
  *    local runs, force-killed runners, history predating the marker, and the
  *    `E2E-` pedidos the UI mints (which carry no run id at all, so the age gate
  *    is their only isolation from a concurrent lane).
+ *  - **Pass C, stale rules probes.** ONE query over the single hardcoded
+ *    `e2e_probe` collection, keyed by run id. This exists because the probe used
+ *    to live in a per-run COLLECTION (`e2e_<runId>_probe`), which made every
+ *    orphan permanent: reclaiming one needed a root `listCollections()`, and no
+ *    pass here does that. With the run id in the KEY it is a plain query and a
+ *    keyed delete.
  *
  * Pass A never reads a timestamp, so the fix for the reported bug keeps working
  * even if `createTime` is ever unavailable.
@@ -45,7 +52,7 @@
  */
 import { FieldPath, type Firestore, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { deleteDocumentSubtree } from '@delfrance/data/admin';
-import { db } from '@delfrance/test-fixtures';
+import { E2E_PROBE_COLLECTION, db, e2eRunId } from '@delfrance/test-fixtures';
 import { requiresAuthEnv } from '../helpers/env';
 import { getRunId } from './run-id';
 
@@ -74,6 +81,26 @@ const MAX_DELETES_PER_COLLECTION = 500;
 
 /** Wall-clock budget. This runs before the suite, inside a 30-minute job. */
 const SWEEP_BUDGET_MS = 60_000;
+
+/**
+ * Reserved out of {@link SWEEP_BUDGET_MS} for the probe pass, which runs last.
+ *
+ * "Last" alone is not enough: a saturated fixture sweep would eat the whole
+ * budget every run and the probe backlog would never clear — a starvation bug
+ * with no signal, exactly the shape this file guards against elsewhere. Ten
+ * seconds is ample for one query over a collection that holds single digits.
+ */
+const PROBE_RESERVE_MS = 10_000;
+
+/** Docs deleted per `WriteBatch`. Firestore caps a batch at 500 ops. */
+const BATCH_DELETE_SIZE = 400;
+
+/**
+ * Read ceiling for the probe pass, applied as a `limit()` so the query itself is
+ * bounded — cheaper than paging a collection that should hold one doc per LIVE
+ * run. A truncated read is warned about, never silent.
+ */
+const MAX_PROBES_PER_SWEEP = 500;
 
 /** Marker docs keyed by CI concurrency group. `e2e_`-prefixed, so it is never a real collection. */
 const RUN_MARKERS_COLLECTION = 'e2e_runMarkers';
@@ -177,11 +204,24 @@ export interface SweepReport {
   keptUnknownAge: number;
   /** Candidates left behind because a cap or the wall-clock budget was hit. */
   remaining: number;
+  /**
+   * Rules probes reclaimed from dead runs. Broken out of `deleted` because a
+   * probe count folded into a fixture total is invisible — "deleted 40" reads as
+   * a fixture backlog when it may be 40 orphaned probes and no fixtures at all.
+   */
+  probesReclaimed: number;
   byCollection: Record<string, number>;
 }
 
 function emptyReport(): SweepReport {
-  return { deleted: 0, keptFresh: 0, keptUnknownAge: 0, remaining: 0, byCollection: {} };
+  return {
+    deleted: 0,
+    keptFresh: 0,
+    keptUnknownAge: 0,
+    remaining: 0,
+    probesReclaimed: 0,
+    byCollection: {},
+  };
 }
 
 function mergeReports(a: SweepReport, b: SweepReport): SweepReport {
@@ -194,6 +234,7 @@ function mergeReports(a: SweepReport, b: SweepReport): SweepReport {
     keptFresh: a.keptFresh + b.keptFresh,
     keptUnknownAge: a.keptUnknownAge + b.keptUnknownAge,
     remaining: a.remaining + b.remaining,
+    probesReclaimed: a.probesReclaimed + b.probesReclaimed,
     byCollection,
   };
 }
@@ -522,8 +563,117 @@ export async function sweepStaleFixtures(
 }
 
 /**
- * Both passes, with a one-line summary. Safe to call concurrently: the two e2e
- * lanes run this at the same time, and deleting an already-deleted doc is a
+ * Milliseconds off a duck-typed Firestore `Timestamp`, or `null`.
+ *
+ * Duck-typed rather than `instanceof Timestamp` to match {@link docAgeMs} and to
+ * stay reachable from the fake Firestore the tests inject. A missing or
+ * malformed value yields `null`, and `null` is never deleted.
+ */
+function timestampFieldMs(snap: QueryDocumentSnapshot, field: string): number | null {
+  const value: unknown = snap.get(field);
+  if (value === null || typeof value !== 'object') return null;
+  const toMillis = (value as { toMillis?: unknown }).toMillis;
+  if (typeof toMillis !== 'function') return null;
+  const ms: unknown = (toMillis as () => unknown).call(value);
+  return typeof ms === 'number' ? ms : null;
+}
+
+/**
+ * Pass C. Rules probes (`e2e_probe/<runId>`) left behind by runs that never
+ * reached a teardown.
+ *
+ * `verifyE2ENamespaceAccess` deletes its own probe inline and `runTeardown()`
+ * deletes it again by key, so reaching this pass means the process died in the
+ * ~1s window between write and delete AND no teardown ran either — a runner OOM
+ * or an infra kill. Rare, but permanent without this, which is the whole reason
+ * the run id moved out of the collection name: the id is the KEY, so reclaiming
+ * another run's leftovers is one query over ONE hardcoded collection. No
+ * `listCollections()`, no root enumeration, no collection-name regex — and
+ * therefore no way to reach `e2e_runMarkers` or a real collection by accident.
+ *
+ * Two gates, and neither is redundant:
+ *  - **Run id.** Never touch our own doc, including a re-run attempt (GitHub
+ *    reuses `GITHUB_RUN_ID` and only bumps `GITHUB_RUN_ATTEMPT`).
+ *  - **Age, off `startedAt`.** A sibling lane is a DIFFERENT run id, so only the
+ *    age gate keeps this from deleting a live run's probe mid-verification — a
+ *    404 there fails that run's `globalSetup` outright, which is worse than the
+ *    leak. `startedAt` is rewritten on every probe write, deliberately unlike
+ *    `createTime`, which a re-attempt's overwrite PRESERVES and which would
+ *    therefore make a live re-run look days stale.
+ */
+export async function sweepStaleE2EProbes(
+  options: {
+    dryRun?: boolean;
+    database?: Firestore;
+    deadline?: number;
+    maxAgeMs?: number;
+  } = {},
+): Promise<SweepReport> {
+  const database = options.database ?? db();
+  const deadline = options.deadline ?? Date.now() + SWEEP_BUDGET_MS;
+  const maxAgeMs = options.maxAgeMs ?? STALE_E2E_FIXTURE_AGE_MS;
+  const report = emptyReport();
+
+  if (Date.now() > deadline) {
+    console.warn('[sweep] budget spent before the probe pass — left for the next run');
+    report.remaining += 1;
+    return report;
+  }
+
+  const snap = await database
+    .collection(E2E_PROBE_COLLECTION)
+    .select('startedAt')
+    .limit(MAX_PROBES_PER_SWEEP)
+    .get();
+  if (snap.size === MAX_PROBES_PER_SWEEP) {
+    console.warn(
+      `[sweep] ${E2E_PROBE_COLLECTION}: read ceiling (${MAX_PROBES_PER_SWEEP}) hit — ` +
+        'any remainder is left for the next run',
+    );
+  }
+
+  const mine = e2eRunId();
+  const now = Date.now();
+  const doomed: FirebaseFirestore.DocumentReference[] = [];
+  for (const doc of snap.docs) {
+    if (doc.id === mine) continue;
+    const startedAt = timestampFieldMs(doc, 'startedAt');
+    if (startedAt === null) report.keptUnknownAge += 1;
+    else if (now - startedAt < maxAgeMs) report.keptFresh += 1;
+    else doomed.push(doc.ref);
+  }
+
+  if (doomed.length === 0) return report;
+
+  if (options.dryRun) {
+    report.deleted += doomed.length;
+    report.probesReclaimed += doomed.length;
+    report.byCollection[E2E_PROBE_COLLECTION] = doomed.length;
+    return report;
+  }
+
+  for (let i = 0; i < doomed.length; i += BATCH_DELETE_SIZE) {
+    if (Date.now() > deadline) {
+      const left = doomed.length - i;
+      console.warn(`[sweep] budget reached mid-probe-delete — ${left} left for the next run`);
+      report.remaining += left;
+      break;
+    }
+    const chunk = doomed.slice(i, i + BATCH_DELETE_SIZE);
+    const batch = database.batch();
+    for (const ref of chunk) batch.delete(ref);
+    await batch.commit();
+    report.deleted += chunk.length;
+    report.probesReclaimed += chunk.length;
+  }
+  report.byCollection[E2E_PROBE_COLLECTION] = report.probesReclaimed;
+
+  return report;
+}
+
+/**
+ * All three passes, with a one-line summary. Safe to call concurrently: the two
+ * e2e lanes run this at the same time, and deleting an already-deleted doc is a
  * no-op.
  */
 export async function sweepOrphanedE2EFixtures(
@@ -537,12 +687,18 @@ export async function sweepOrphanedE2EFixtures(
    */
   deadline: number = Date.now() + SWEEP_BUDGET_MS,
 ): Promise<SweepReport> {
-  // Both passes take the same flags. Forwarding to only one of them is what made
+  // Every pass takes the same flags. Forwarding to only one of them is what made
   // `sweep:e2e` delete while reporting "would delete".
   const options = { dryRun, database, deadline };
+  // The fixture passes are the ones that actually break tests, so they go first
+  // — but they must not be able to starve the probe pass, hence the reserve.
+  const fixtureOptions = { ...options, deadline: deadline - PROBE_RESERVE_MS };
   const report = mergeReports(
-    await reclaimPredecessorRun(options),
-    await sweepStaleFixtures(options),
+    mergeReports(
+      await reclaimPredecessorRun(fixtureOptions),
+      await sweepStaleFixtures(fixtureOptions),
+    ),
+    await sweepStaleE2EProbes(options),
   );
   const summary = Object.entries(report.byCollection)
     .map(([collection, count]) => `${collection}:${count}`)
@@ -550,6 +706,7 @@ export async function sweepOrphanedE2EFixtures(
   // eslint-disable-next-line no-console
   console.log(
     `[sweep] ${dryRun ? 'would delete' : 'deleted'} ${report.deleted} orphaned fixture(s)` +
+      `${report.probesReclaimed > 0 ? ` (incl. ${report.probesReclaimed} stale probe(s))` : ''}` +
       `${summary ? ` — ${summary}` : ''}; kept ${report.keptFresh} fresh, ` +
       `${report.keptUnknownAge} of unknown age, ${report.remaining} left for the next run`,
   );

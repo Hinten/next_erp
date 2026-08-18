@@ -45,7 +45,7 @@ export function useCancelarPedidoPrompt(): UseCancelarPedidoPromptResult {
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       // Do not assert the pedido stayed unchanged: the estado write may well
-      // have landed, and the `onPedidoEstadoChanged` trigger appends the
+      // have landed, and the `onPedidoChanged` trigger appends the
       // história row from it. Just point the operator at the pedido.
       notifications.show({
         color: 'yellow',

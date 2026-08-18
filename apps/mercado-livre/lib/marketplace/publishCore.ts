@@ -17,6 +17,10 @@
  *    grupoDeVariacoes docs — see {@link combinationForVariante} for the id
  *    rules, and {@link mergeStoredCombinations} for the ones a Flutter user
  *    configured that no grupo can rebuild.
+ *
+ * {@link resolveListingModel} and {@link publishModeIssues} sit apart from that
+ * pipeline: they are the PRE-FLIGHT decisions `publish.ts` makes before it
+ * uploads a single picture (#798).
  */
 import {
   type BuildItemPayloadInput,
@@ -53,6 +57,15 @@ export interface PublishProduto {
   profundidadeCm: number | null;
   precos: Record<string, { valor: number }> | null;
   ordem?: number | null;
+  /**
+   * Parent only. `false` prices each User-Products member from its OWN `precos`
+   * entry instead of the anchor's — the rule `precoPlan.buildPrecoDrafts`
+   * already applies, and publish must agree with it or a first publish lands a
+   * price the very next price sync overwrites. Undefined/true = anchor,
+   * matching the schema default. Meaningless under the legacy model, where ML
+   * requires one uniform price for the whole family.
+   */
+  propagatePriceToChildren?: boolean | null;
 }
 
 /** The subset of the `produtoMercadoLivre` link doc the assembly reads. */
@@ -67,6 +80,8 @@ export interface PublishLink {
   isUserProductModel?: boolean | null;
   attributes?: MlAttribute[] | null;
   video_id?: string | null;
+  /** `estadoPublicacaoMl` wire code — only `'am'` (mid-UPtin) is read here. */
+  estado?: string | null;
 }
 
 /** A grupoDeVariacoes doc slice for combination mapping. */
@@ -128,6 +143,105 @@ export interface AssemblePublishArgs {
    * parity — ML itself rejects chart-required domains).
    */
   sizeChart?: ResolvedSizeChart | null;
+}
+
+/* ------------------------- publishing model + guards ------------------------ */
+
+/**
+ * Which of ML's two coexisting publishing models a listing must use.
+ *
+ * `'legacy'` sends `title` + a `variations[]` array; `'user-products'` sends
+ * `family_name`, no title, and one ML ITEM PER VARIATION.
+ */
+export type ListingModel = 'user-products' | 'legacy';
+
+/**
+ * Pick the model for this listing.
+ *
+ * Once a seller carries the `user_product_seller` tag, **new** items must go out
+ * in the User-Products shape or ML answers 400 — but items already published
+ * under the legacy model and not yet migrated stay editable with the legacy
+ * payload for the whole migration. So the two inputs are not interchangeable and
+ * their precedence is load-bearing (legacy parity —
+ * `.old/lib/canaisDeVenda/mercadoLivre/exportarProdutos.dart:149-151` branches on
+ * the persisted flag, never on the account tag):
+ *
+ *  - **already published** (`link.id != null`) → the link's persisted
+ *    `isUserProductModel` wins. It is set by the importer (`family_name != null`)
+ *    and flipped by the UPtin takeover; publish only ever echoes it back.
+ *  - **never published** (`link.id == null`) → the ACCOUNT tag decides, because
+ *    there is no listing yet whose shape could constrain us.
+ *
+ * ⚠️ Reading only the link — which is what publish did before #798 — means every
+ * first publish on a tagged account resolves to `'legacy'`, since a draft link
+ * doc is created with `isUserProductModel: false`.
+ */
+export function resolveListingModel(
+  link: PublishLink | null,
+  sellerIsUserProduct: boolean,
+): ListingModel {
+  if (link?.id != null) return link.isUserProductModel === true ? 'user-products' : 'legacy';
+  return sellerIsUserProduct ? 'user-products' : 'legacy';
+}
+
+/**
+ * Pre-flight blocks, raised BEFORE any ML call and before the picture uploads —
+ * unlike {@link assemblePublishInput}'s issues, which are only reached after the
+ * whole graph (and every picture) has been resolved.
+ *
+ * Returns the issues rather than throwing so the caller aggregates them the same
+ * way the assembly does.
+ */
+export function publishModeIssues(args: {
+  /** The link doc's `estado`, or null on a first publish. */
+  estado: string | null;
+  /** The resolved model — a family id is only possible under User Products. */
+  model: ListingModel;
+  /** The link doc's `id`, or null when the listing was never published. */
+  linkId: string | null;
+  /** How many variation children this produto owns. */
+  childrenCount: number;
+}): string[] {
+  const issues: string[] = [];
+
+  // Mid-UPtin: ML is mid-flight creating one item per variation and rejects any
+  // change to the source item (404 while migrating). The stock planner, the
+  // price planner and the items status-sync all have this rung already; publish
+  // was the only writer without it. Legacy blocked the whole export here, above
+  // the UP/legacy fork (`exportarProdutos.dart:141-147`).
+  if (args.estado === 'am') {
+    issues.push(
+      'anúncio em migração para o modelo User Products (UPtin) — aguarde a conclusão antes de publicar',
+    );
+  }
+
+  // A User-Products family whose variations were ALL deleted. `link.id` holds a
+  // FAMILY id, and with no children the fan-out does not engage — so the publish
+  // would fall through to `PUT /items/{familyId}`, the one call this whole model
+  // forbids, and earn a 4xx the operator cannot read. The orphan sweep lives
+  // inside the fan-out too, so the family's members would stay live and selling
+  // with no produto behind any of them.
+  //
+  // ⚠️ Detected by the SHAPE of the id, not by `childrenCount` alone: a produto
+  // that never had variations is also `isUserProductModel` with zero children,
+  // and there `link.id` is a real item id that must keep republishing normally.
+  // An ML item id always carries its site prefix (`MLB…`); a family id is the
+  // bare integer ML computes (`import.ts:193` stringifies it). All-digits is
+  // therefore the one form that cannot be an item.
+  if (
+    args.model === 'user-products' &&
+    args.childrenCount === 0 &&
+    args.linkId != null &&
+    /^\d+$/.test(args.linkId)
+  ) {
+    issues.push(
+      'este anúncio é uma família User Products (o vínculo aponta para a família, não para um ' +
+        'anúncio) e o produto não tem mais variações — recadastre as variações ou encerre os ' +
+        'anúncios da família no Mercado Livre',
+    );
+  }
+
+  return issues;
 }
 
 /** Resolve the selling price from the integração's tabela normal — or fail. */
@@ -469,10 +583,17 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
   if (!args.produto.nome?.trim()) issues.push('produto sem nome');
   const price = resolvePrice(args.produto, args.priceListId, issues);
   const isUpdate = args.link?.id != null;
-  if (!isUpdate && !args.categoryId) {
+  // ⚠️ A User-Products FAMILY needs both unconditionally, however published the
+  // listing already is: `isUpdate` there says the FAMILY exists, and a family
+  // that gains a variation still POSTs that member as a brand-new item. Letting
+  // the create-only rule stand would send that POST with no category and earn a
+  // 400 the operator cannot read. (Both are written back on every publish, so
+  // for an established family this costs nothing.)
+  const memberCreatePossible = args.isUserProductSeller && args.variations.length > 0;
+  if ((!isUpdate || memberCreatePossible) && !args.categoryId) {
     issues.push('categoria do Mercado Livre não definida (category_id)');
   }
-  if (!isUpdate && !args.listingTypeId) {
+  if ((!isUpdate || memberCreatePossible) && !args.listingTypeId) {
     issues.push('tipo de anúncio não definido (listing_type_id)');
   }
   if (args.pictures.length === 0) issues.push('produto sem fotos');
@@ -518,6 +639,16 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       produtoId: child.produto.id,
       order: child.produto.ordem ?? null,
       availableQuantity: child.availableQuantity,
+      // User-Products only (the legacy branch ignores it and copies the
+      // anchor's price down — ML requires a uniform family price there). Same
+      // rule `precoPlan.buildPrecoDrafts` applies, so publish and the price
+      // sync cannot disagree about what a member should cost. Resolved only in
+      // the branch that uses it: a child with no own `precos` entry is a
+      // blocking issue there and irrelevant everywhere else.
+      price:
+        args.isUserProductSeller && args.produto.propagatePriceToChildren === false
+          ? resolvePrice(child.produto, args.priceListId, issues)
+          : null,
       pictureIds: child.pictureIds,
       attributeCombinations: finalCombos,
       attributes: attrs,

@@ -7,6 +7,7 @@ import type { Firestore } from 'firebase/firestore';
 import { ESTADO_PUBLICACAO_ML, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
+import { MercadoLivreClientHttpError } from '@/lib/mercado-livre/client';
 
 type ListingSaveOutcome = 'saved' | 'invalid' | 'conflict' | 'failed';
 type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
@@ -21,6 +22,12 @@ const h = vi.hoisted(() => ({
   /** Lets a test mark one listing dirty, the way a real edit would. */
   markDirty: null as null | ((linkDocId: string, dirty: boolean) => void),
   notify: vi.fn(),
+  /**
+   * What `useMercadoLivreClient()` answers. Empty by default — most tests here
+   * assert on rendering and gating, not on calls — and populated per test by
+   * the ones that drive an action.
+   */
+  client: {} as Record<string, unknown>,
 }));
 
 vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
@@ -54,7 +61,7 @@ vi.mock('@delfrance/data/hooks', () => ({
 vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: true }) }));
 vi.mock('@/lib/mercado-livre/client', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
-  return { ...actual, useMercadoLivreClient: () => ({}) };
+  return { ...actual, useMercadoLivreClient: () => h.client };
 });
 vi.mock('@/lib/data/integracaoCollection', () => ({ integracaoCollection: { ref: () => ({}) } }));
 vi.mock('@/lib/data/produtoCollection', () => ({ produtoCollection: { docRef: () => ({}) } }));
@@ -121,6 +128,7 @@ beforeEach(() => {
   h.outcomes = new Map();
   h.markDirty = null;
   h.notify.mockClear();
+  h.client = {};
 });
 
 describe('Enviar estoque is offered only for a PUBLISHED listing', () => {
@@ -300,5 +308,159 @@ describe('the publication facts come before the editable form', () => {
     const publicacao = screen.getByText('Publicação');
     // 4 = DOCUMENT_POSITION_FOLLOWING: the form follows the Publicação legend.
     expect(publicacao.compareDocumentPosition(form) & 4).toBeTruthy();
+  });
+});
+
+/**
+ * #798 — publish and price are two calls, and this button is the only thing that
+ * makes that split invisible to the operator.
+ *
+ * A publish deliberately omits `price` from the PUT it sends per listing, so a
+ * republish (to fix a photo, a title, an attribute) cannot silently bypass the
+ * price flow's "Permitir baixar preços" guard nor 400 on an item with an active
+ * ML price automation. The price half rides the SHARED marketplace price rail
+ * (#804's `POST /enviar-precos`), not the account-wide job — synchronous, so it
+ * reports a per-listing outcome and cannot collide with a running bulk job.
+ */
+describe('Republicar e atualizar preços', () => {
+  const PUBLISHED = { itemId: 'MLB1', estado: 'p', permalink: null, itemIds: ['MLB1'] };
+  const PRICED = {
+    canal: 'mercado-livre',
+    integracaoId: 'conta-1',
+    contaNome: null,
+    solicitados: 1,
+    familias: 1,
+    resumo: { enviados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+    listings: [],
+    produtosSemEnvio: [],
+    pausadoAte: null,
+  };
+
+  function wireClient(over: Record<string, unknown> = {}) {
+    const publicar = vi.fn(async () => PUBLISHED);
+    const enviarPrecos = vi.fn(async () => PRICED);
+    h.client = { publicar, enviarPrecos, ...over };
+    return { publicar, enviarPrecos };
+  }
+
+  it('publishes and THEN prices, through the shared rail, scoped to this produto', async () => {
+    h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+    const { publicar, enviarPrecos } = wireClient();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Republicar e atualizar preços' }));
+    });
+
+    await waitFor(() => expect(enviarPrecos).toHaveBeenCalled());
+    expect(publicar).toHaveBeenCalledOnce();
+    // `baixarPreco: true` matches the rail's own default for a hand-picked
+    // selection — naming the produto IS the explicit intent.
+    expect(enviarPrecos).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      produtoIds: ['prod-1'],
+      baixarPreco: true,
+    });
+  });
+
+  it('does NOT price when the publish failed', async () => {
+    // Pricing a listing that failed to publish either 404s or updates the stale
+    // version — neither is what the operator asked for.
+    h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+    const { enviarPrecos } = wireClient({
+      publicar: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('falha no Mercado Livre', 500, null);
+      }),
+    });
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Republicar e atualizar preços' }));
+    });
+
+    await waitFor(() => expect(h.notify).toHaveBeenCalled());
+    expect(enviarPrecos).not.toHaveBeenCalled();
+  });
+
+  it('a 200 carrying only failures is reported as a failure, not a success', async () => {
+    // ⚠️ Per-listing failure is DATA on this rail. Treating "no throw" as success
+    // would tell the operator the price went out when nothing did.
+    h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+    wireClient({
+      enviarPrecos: vi.fn(async () => ({
+        ...PRICED,
+        resumo: { enviados: 0, pulados: 0, falhas: 1, naoTentados: 0 },
+      })),
+    });
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Republicar e atualizar preços' }));
+    });
+
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ color: 'yellow', title: 'Nenhum preço enviado' }),
+      ),
+    );
+  });
+
+  it('plain Republicar never touches prices', async () => {
+    h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+    const { publicar, enviarPrecos } = wireClient();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Republicar' }));
+    });
+
+    await waitFor(() => expect(publicar).toHaveBeenCalled());
+    expect(enviarPrecos).not.toHaveBeenCalled();
+  });
+
+  it('spins ONLY the button that was clicked', async () => {
+    // Both actions share one handler, so a bare conta id in the loading state lit
+    // up both and the operator could not tell which was running.
+    h.links = [link('link-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+    let release!: () => void;
+    wireClient({
+      publicar: vi.fn(async () => {
+        await new Promise<void>((r) => (release = r));
+        return PUBLISHED;
+      }),
+    });
+    renderEditor();
+
+    const paired = screen.getByRole('button', { name: 'Republicar e atualizar preços' });
+    const plain = screen.getByRole('button', { name: 'Republicar' });
+    fireEvent.click(paired);
+
+    await waitFor(() => expect(paired.getAttribute('data-loading')).toBe('true'));
+    expect(plain.getAttribute('data-loading')).not.toBe('true');
+
+    await act(async () => {
+      release();
+    });
+  });
+
+  it('is absent until the conta has a link doc at all', async () => {
+    // With NO link doc there is no `category_id`, so publish 422s before writing
+    // anything and there would be nothing to price. A rascunho (a link doc with
+    // `id == null`) DOES get it — see the next case.
+    h.links = [];
+    wireClient();
+    renderEditor();
+
+    expect(screen.queryByRole('button', { name: /atualizar preços/i })).toBeNull();
+  });
+
+  it('a rascunho offers the paired action as a FIRST publish', async () => {
+    h.links = [link('link-1', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    wireClient();
+    renderEditor();
+
+    expect(screen.getByRole('button', { name: 'Publicar e atualizar preços' })).toBeInstanceOf(
+      HTMLButtonElement,
+    );
   });
 });

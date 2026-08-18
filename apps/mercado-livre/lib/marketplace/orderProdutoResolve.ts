@@ -48,7 +48,11 @@ import {
 import { resolveExistingProduto } from './import';
 import { refMatchesIntegracao } from './linkRefs';
 
-/** Which rung of the cascade answered — diagnostic only, never persisted. */
+/**
+ * Which rung of the cascade answered. Diagnostic for a HIT, but a MISS kind is
+ * persisted — it picks the incidente's `subtipo` and message in
+ * `recordItensSemProduto`, so these strings are not free to rename.
+ */
 export type OrderLineMatchKind =
   | 'parent-link'
   | 'variation-link'
@@ -57,11 +61,16 @@ export type OrderLineMatchKind =
   | 'sku-root'
   | 'sku-any';
 
-export interface ResolvedOrderLineProduto {
+/** Why nothing bound. `ambiguous-sku` = the SKU named more than one produto. */
+export type OrderLineMissKind = 'ambiguous-sku' | 'unresolved';
+
+/**
+ * Discriminated on `produtoId` so `via: 'sku-child'` can never coexist with a
+ * null produto: narrowing on `produtoId != null` gives the caller both halves.
+ */
+export type ResolvedOrderLineProduto =
   /** The produto the order line binds to — the CHILD for a variation sale. */
-  produtoId: string;
-  via: OrderLineMatchKind;
-}
+  { produtoId: string; via: OrderLineMatchKind } | { produtoId: null; via: OrderLineMissKind };
 
 export interface OrderLineProdutoQuery {
   /** `order_items[].item.id` — the LISTING id (parent for `variations[]`). */
@@ -81,16 +90,27 @@ export interface OrderLineProdutoQuery {
  *     SCOPED to the parent link (a variation id is only unique within its item);
  *  3. no `variation_id` but the line is a User-Products member → the
  *     `variacaoMercadoLivre` link with `itemId == item.id`;
- *  4. SKU, most specific scope first (child of the known parent → root → any);
- *  5. null — the caller keeps `produtoUid: null` and records an incidente.
+ *  4. SKU, most specific scope first (child of the known parent → root → any),
+ *     each rung binding only when the SKU names EXACTLY ONE produto;
+ *  5. `produtoId: null` — the caller keeps `produtoUid: null` and records an
+ *     incidente, whose wording depends on the miss kind.
  *
  * A simple listing short-circuits at (1) and is byte-identical to the previous
  * behaviour, including which produto wins.
+ *
+ * The SKU rungs are the only inexact ones, and they used to guess: sibling and
+ * root SKUs are legally non-unique in this data, so `limit(1)` with no `orderBy`
+ * silently bound whichever document the index returned first. That line then
+ * moved stock, possibly off the wrong size/colour, and the ML stock sweep pushed
+ * the result back to ML. Now an ambiguous SKU binds nothing and says so — the
+ * pedido is still created and every other `ItemDoPedido` field is still filled
+ * from the ML payload, since `mlOrderItemToItemDoPedido` derives none of them
+ * from the produto.
  */
 export async function resolveOrderLineProduto(
   db: Firestore,
   query: OrderLineProdutoQuery,
-): Promise<ResolvedOrderLineProduto | null> {
+): Promise<ResolvedOrderLineProduto> {
   const { itemId, variationId, sku, integracaoId } = query;
 
   // (1) Parent/simple link. `sku: null` selects EXACTLY the link step of the
@@ -134,46 +154,62 @@ export async function resolveOrderLineProduto(
     return { produtoId: parent.produtoId, via: 'parent-link' };
   }
 
-  // (4) SKU, narrowest scope first.
+  // (4) SKU, narrowest scope first. Each rung binds only when the SKU names
+  // EXACTLY ONE produto; two hits end the whole stage — see `probeSkuUnico`.
+  // Ending rather than widening costs nothing: a rung with >=1 hit already
+  // returned, so the later rungs were unreachable in that state anyway.
   if (sku) {
+    const ambiguo = (rung: OrderLineMatchKind, ids: string[]): ResolvedOrderLineProduto => {
+      // The only surface that names both colliding produtos — the incidente
+      // message is operator-facing and must stay short.
+      console.warn('[mercado-livre] SKU do item corresponde a mais de um produto — não vinculado', {
+        itemId,
+        variationId,
+        sku,
+        rung,
+        produtoIds: ids,
+      });
+      return { produtoId: null, via: 'ambiguous-sku' };
+    };
+
     if (parent) {
-      const childBySku = await firstProdutoId(
+      const childBySku = await probeSkuUnico(
         produtoCollection
           .ref(db, {})
           .where('sku', '==', sku)
-          .where('paiId', '==', parent.produtoId)
-          .limit(1),
+          .where('paiId', '==', parent.produtoId),
       );
-      if (childBySku) return { produtoId: childBySku, via: 'sku-child' };
+      if (childBySku.kind === 'many') return ambiguo('sku-child', childBySku.ids);
+      if (childBySku.kind === 'one') return { produtoId: childBySku.produtoId, via: 'sku-child' };
     }
 
     // Root-only — today's shape, kept ahead of the unscoped step so a simple
     // listing's SKU fallback still resolves to the same produto it always did.
-    const rootBySku = await firstProdutoId(
-      produtoCollection.ref(db, {}).where('sku', '==', sku).where('paiId', '==', null).limit(1),
+    const rootBySku = await probeSkuUnico(
+      produtoCollection.ref(db, {}).where('sku', '==', sku).where('paiId', '==', null),
     );
-    if (rootBySku) return { produtoId: rootBySku, via: 'sku-root' };
+    if (rootBySku.kind === 'many') return ambiguo('sku-root', rootBySku.ids);
+    if (rootBySku.kind === 'one') return { produtoId: rootBySku.produtoId, via: 'sku-root' };
 
     // Unscoped — legacy parity (`sku__isEqualTo(sku).first()` had no `paiId`
     // filter) and the only rung that can match a variation child of a DIFFERENT
     // parent. Neither account- nor parent-verified, hence the warning.
-    const anyBySku = await firstProdutoId(
-      produtoCollection.ref(db, {}).where('sku', '==', sku).limit(1),
-    );
-    if (anyBySku) {
+    const anyBySku = await probeSkuUnico(produtoCollection.ref(db, {}).where('sku', '==', sku));
+    if (anyBySku.kind === 'many') return ambiguo('sku-any', anyBySku.ids);
+    if (anyBySku.kind === 'one') {
       console.warn('[mercado-livre] produto do item resolvido apenas pelo SKU (sem vínculo)', {
         itemId,
         variationId,
         sku,
-        produtoId: anyBySku,
+        produtoId: anyBySku.produtoId,
       });
-      return { produtoId: anyBySku, via: 'sku-any' };
+      return { produtoId: anyBySku.produtoId, via: 'sku-any' };
     }
   }
 
   // (5) Unresolved. The caller keeps `produtoUid: null` — inert for stock
   // (`calcularAlteracoesEstoque` skips null/'NONE') — and records an incidente.
-  return null;
+  return { produtoId: null, via: 'unresolved' };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -221,10 +257,35 @@ async function resolveUpMemberChild(
   return null;
 }
 
-/** First matching `produtos` doc id, or null. */
-async function firstProdutoId(query: FirebaseFirestore.Query): Promise<string | null> {
-  const snap = await query.get();
-  return snap.docs[0]?.id ?? null;
+/**
+ * One SKU rung's verdict — same three-way shape as `queryContaId`
+ * (`apps/whatsapp`) and the Mercado Pago collector lookup, which both park
+ * rather than guess. `many` carries the ids: the only place they ever surface.
+ */
+type SkuProbe =
+  | { kind: 'one'; produtoId: string }
+  | { kind: 'none' }
+  | { kind: 'many'; ids: string[] };
+
+/**
+ * Run one SKU rung under `limit(2)`. The second document is never a candidate,
+ * it is the AMBIGUITY SIGNAL: sibling and root SKUs are legally non-unique here
+ * (a child's SKU is derived as `parentSku + variante.codigo`, so two variantes
+ * without a `codigo` collide), and with `limit(1)` and no `orderBy` these rungs
+ * bound whichever document the index happened to return first — a coin flip that
+ * then moved stock off the wrong produto. Same limit-2-as-a-detector trick as
+ * `resolveSkuBalanco.ts` and rule 2 of `importVariations.ts` (#1067).
+ *
+ * ⚠️ `docs.length`, NOT `snap.size` — the Admin `QuerySnapshot` has both, but the
+ * unit-test double exposes only `docs`, and `undefined > 1` is `false`, which
+ * would report every ambiguous rung as a clean bind. The limit lives HERE, once,
+ * so no rung can be added without it.
+ */
+async function probeSkuUnico(query: FirebaseFirestore.Query): Promise<SkuProbe> {
+  const snap = await query.limit(2).get();
+  if (snap.docs.length === 0) return { kind: 'none' };
+  if (snap.docs.length === 1) return { kind: 'one', produtoId: snap.docs[0]!.id };
+  return { kind: 'many', ids: snap.docs.map((d) => d.id) };
 }
 
 /**
