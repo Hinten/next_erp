@@ -85,6 +85,10 @@ import {
 } from './itemsStatusSync';
 import { type ClaimImportResult, importClaimMercadoLivre } from './claimImport';
 import { type QuestionImportResult, importQuestionMercadoLivre } from './questionImport';
+import {
+  type OrderMessageImportResult,
+  importOrderMessageMercadoLivre,
+} from './orderMessageImport';
 import { resolveContaAtivaPorUserId } from './contaCache';
 import { handleUptinMigration } from './importMigration';
 import { lastSegment, parseItemIdFromResource } from './linkRefs';
@@ -182,7 +186,7 @@ export const TOPIC_DISPOSITION = {
   // importers land; the whole stack deploys together, so that window is a
   // review cycle, not production time.
   questions: 'handled',
-  messages: 'park',
+  messages: 'handled',
 
   // Delivered routinely, deliberately not our business.
   public_offers: 'ignore',
@@ -237,6 +241,16 @@ const mlNotificationWireSchema = z
     attempts: z.number().int().nullable().default(null),
     sent: z.number().nullable().default(null),
     received: z.number().nullable().default(null),
+    /**
+     * The SUBTOPIC array on ML's typed topics — `messages` sends
+     * `["created"]` or `["read"]`, `post_purchase` sends `["claims"]`.
+     *
+     * ⚠️ Typed HERE rather than left to `.passthrough()` because the
+     * remainder path would mangle it: `scalarize` JSON-stringifies any
+     * non-scalar, so an untyped `actions` reaches the dispatch as the STRING
+     * `'["created"]'` and every array check silently fails.
+     */
+    actions: z.array(z.string()).nullable().default(null),
   })
   .passthrough();
 export type MlNotificationPayload = z.infer<typeof mlNotificationWireSchema>;
@@ -280,6 +294,7 @@ function asString(v: unknown): string | null {
 /** The wire keys this module owns outright — everything else is the remainder. */
 const KNOWN_WIRE_KEYS: ReadonlySet<string> = new Set([
   '_id',
+  'actions',
   'id',
   'resource',
   'topic',
@@ -455,6 +470,33 @@ function derivedDocId(p: MlNotificationPayload): string | null {
  * an auto id instead, silently destroying redelivery dedup. `_id` is dropped
  * afterwards rather than kept in the remainder — it is pure duplication.
  */
+/**
+ * Coerce ML's `actions` subtopic array.
+ *
+ * Accepts BOTH shapes on purpose. A fresh webhook delivers a real array; a
+ * notification document persisted before `actions` was a known wire key has it
+ * stringified in the remainder (`scalarize` JSON-encodes non-scalars), and the
+ * sweep re-parses those docs through this very function. Rejecting the string
+ * form would make every previously-parked `messages` delivery undiagnosable on
+ * re-drive.
+ */
+function asActions(v: unknown): string[] | null {
+  const raw =
+    typeof v === 'string' && v.startsWith('[')
+      ? (() => {
+          try {
+            return JSON.parse(v) as unknown;
+          } catch (err) {
+            if (err instanceof SyntaxError) return null;
+            throw err;
+          }
+        })()
+      : v;
+  if (!Array.isArray(raw)) return null;
+  const out = raw.filter((x): x is string => typeof x === 'string');
+  return out.length > 0 ? out : null;
+}
+
 function normalizeMlWire(o: Record<string, unknown>): Record<string, unknown> {
   const remainder: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(o)) {
@@ -470,6 +512,7 @@ function normalizeMlWire(o: Record<string, unknown>): Record<string, unknown> {
     attempts: asInt(o.attempts),
     sent: asMillis(o.sent),
     received: asMillis(o.received),
+    actions: asActions(o.actions),
   };
 }
 
@@ -724,6 +767,18 @@ const runShipmentImport: ShipmentImportRunner = async (db, integracaoId, resourc
  * ML question id parsed from the notification's `resource`
  * (`/questions/123` → `123`).
  */
+/**
+ * The #532 post-sale message seam invoked for `messages` notifications.
+ *
+ * ⚠️ `resourceId` is a STRING here, unlike every other runner's numeric id: a
+ * `messages` notification's `resource` is a bare 32-char HEX message id.
+ */
+export type OrderMessageImportRunner = (
+  db: Firestore,
+  integracaoId: string,
+  resourceId: string,
+) => Promise<OrderMessageImportResult>;
+
 export type QuestionImportRunner = (
   db: Firestore,
   integracaoId: string,
@@ -755,6 +810,26 @@ export type ClaimImportRunner = (
  * and never the incidente/pedido side, which is µs. There is deliberately no
  * µs twin here to pick the wrong one from.
  */
+/** The production #532 post-sale message importer. Milliseconds only. */
+const runOrderMessageImport: OrderMessageImportRunner = async (db, integracaoId, resourceId) => {
+  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  const channelCtx = await ctx.resolveChannelContext();
+  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  return importOrderMessageMercadoLivre(
+    {
+      db,
+      api,
+      integracaoId,
+      conta: {
+        userId: asNumberOrNull(ctx.conta.user_id),
+        cor: asNumberOrNull(ctx.conta.cor),
+      },
+      nowMs: Date.now(),
+    },
+    resourceId,
+  );
+};
+
 const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourceId) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
@@ -806,6 +881,20 @@ const runClaimImport: ClaimImportRunner = async (db, integracaoId, resourceId) =
  * ML-side anomaly, never seen in practice — is malformed: the caller drops it
  * rather than dispatching a bogus import.
  */
+/**
+ * A `messages` notification's `resource` — a BARE 32-char hex message id
+ * (`3f6da1e35ac84f70a24af7360d24c7bc`), with no path and no numeric form.
+ *
+ * ⚠️ This exists because `parseOrderResourceId` would reject every one of them:
+ * it matches digits only, so reusing it would classify the entire `messages`
+ * topic as `malformed-resource` and silently drop it in the task phase — the
+ * exact class of failure #813 was filed about.
+ */
+export function parseMessageResourceId(resource: string): string | null {
+  const bruto = lastSegment(resource).trim();
+  return /^[0-9a-f]{8,64}$/i.test(bruto) ? bruto : null;
+}
+
 function parseOrderResourceId(resource: string): number | null {
   const last = lastSegment(resource);
   if (!/^\d+$/.test(last)) return null;
@@ -863,6 +952,7 @@ export interface NotificationRunners {
   shipmentImportRunner?: ShipmentImportRunner;
   claimImportRunner?: ClaimImportRunner;
   questionImportRunner?: QuestionImportRunner;
+  orderMessageImportRunner?: OrderMessageImportRunner;
 }
 
 /**
@@ -884,6 +974,7 @@ export async function processNotificationPayload(
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
   const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
   const questionImportRunner = runners.questionImportRunner ?? runQuestionImport;
+  const orderMessageImportRunner = runners.orderMessageImportRunner ?? runOrderMessageImport;
 
   // Ignored topics settle BEFORE the account lookup — the cheapest possible
   // answer to "this is not our business". Resolving the conta first would cost a
@@ -1049,6 +1140,35 @@ export async function processNotificationPayload(
     }
     if (result.skipped) {
       console.warn('[mercado-livre] question import skipped', {
+        integracaoId,
+        resourceId,
+        skipped: result.skipped,
+      });
+    }
+    return { kind: 'done', integracaoId };
+  }
+
+  // `messages` — a post-sale buyer message (#532).
+  //
+  // ⚠️ `messages` is a SUBTOPIC topic: ML sends `actions: ["created"]` for new
+  // content and `["read"]` for a read receipt. A receipt carries nothing to
+  // import, and acting on it would spend two ML calls (and a slice of the
+  // 500 rpm post-sale budget) to write nothing.
+  if (payload.topic === 'messages') {
+    const acoes = payload.actions ?? [];
+    if (acoes.length > 0 && !acoes.includes('created')) {
+      return { kind: 'done', integracaoId };
+    }
+    const resourceId = parseMessageResourceId(payload.resource);
+    if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
+    const result = await wrapImportRunner(integracaoId, () =>
+      orderMessageImportRunner(db, integracaoId, resourceId),
+    );
+    if (result.skipped === 'ML_500') {
+      return { kind: 'ml-500', integracaoId, message: result.message };
+    }
+    if (result.skipped) {
+      console.warn('[mercado-livre] order message import skipped', {
         integracaoId,
         resourceId,
         skipped: result.skipped,

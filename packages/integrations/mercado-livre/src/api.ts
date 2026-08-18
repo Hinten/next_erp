@@ -16,6 +16,7 @@ import {
   type MlCategoryAttribute,
   type MlCategoryListingType,
   type MlClaim,
+  type MlPackMessages,
   type MlQuestion,
   type MlClaimMessage,
   type MlClaimReason,
@@ -62,6 +63,7 @@ import {
   mlClaimMessagesSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
+  mlPackMessagesSchema,
   mlQuestionSchema,
   mlClaimSearchSchema,
   mlMissedFeedsSchema,
@@ -352,6 +354,28 @@ export interface MercadoLivreApi {
    * the contact on that id, so the older shape would silently lose it.
    */
   getQuestion(questionId: number): Promise<MlQuestion>;
+
+  /**
+   * `GET /messages/{messageId}?tag=post_sale` — ONE post-sale message, used to
+   * resolve a `messages` notification's bare id to the pack it belongs to
+   * (#532).
+   *
+   * ⚠️ `mark_as_read=false` is deliberate. The plain GET MARKS THE THREAD READ
+   * as a side effect, and an importer must not silently clear the buyer's
+   * unread state — that is an operator decision, and ML surfaces unread
+   * counts the seller relies on.
+   */
+  getMessage(messageId: string): Promise<MlPackMessages>;
+
+  /**
+   * `GET /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale` — a pack's
+   * whole thread, WITH the `conversation_status` that says whether we can
+   * still reply (#532). Same `mark_as_read=false` reasoning as above.
+   *
+   * When a pack id is absent ML accepts the ORDER id in the same position,
+   * keeping the `/packs/` path — that fallback is the caller's to apply.
+   */
+  getPackMessages(packId: string, sellerId: string): Promise<MlPackMessages>;
 
   /** `GET /post-purchase/v1/claims/{claimId}` — one claim (claims import, Step 14). */
   getClaim(claimId: number): Promise<MlClaim>;
@@ -795,6 +819,19 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCatalogDomain: (domainId) =>
       request('GET', `/catalog_domains/${domainId}`, catalogDomainSchema),
 
+    getMessage: (messageId) =>
+      request(
+        'GET',
+        `/messages/${encodeURIComponent(messageId)}?tag=post_sale&mark_as_read=false`,
+        mlPackMessagesSchema,
+      ),
+    getPackMessages: (packId, sellerId) =>
+      request(
+        'GET',
+        `/messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(sellerId)}` +
+          '?tag=post_sale&mark_as_read=false',
+        mlPackMessagesSchema,
+      ),
     getQuestion: (questionId) =>
       request('GET', `/questions/${questionId}?api_version=4`, mlQuestionSchema),
     getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),
