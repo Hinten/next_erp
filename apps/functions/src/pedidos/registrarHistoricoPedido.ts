@@ -6,7 +6,9 @@ import {
   historicoEstadoPedidoCollection,
   historicoFreteInicialCollection,
 } from '@delfrance/data/admin/collections';
+import { CAMPOS_ESTOQUE_SYNC } from '@delfrance/data/pedido';
 import {
+  PEDIDO_ITENS_EXPAND,
   type EstadoFrete,
   type EstadoPedido,
   estadoFreteSchema,
@@ -15,13 +17,27 @@ import {
 } from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
+import { resolveUsuarioOuterRef } from '../lib/authContext';
+import { PEDIDO_HISTORY_ROOT } from '../lib/historyRoots';
+import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
 
 /**
- * Pedido audit trails, both derived from the same `pedidos/{pedidoId}` write:
- * the estado trail (`…/historicoEstadoPedido`) and the frete trail
- * (`…/historicoFtIni`).
+ * ALL of a pedido's audit trails, derived from the same `pedidos/{pedidoId}`
+ * write:
+ *  - the estado trail (`…/historicoEstadoPedido`),
+ *  - the frete trail (`…/historicoFtIni`), tracking the EMBEDDED
+ *    `freteInicial.estado`, and
+ *  - the unified field-level history (`…/historicoDeModificacoes`), which
+ *    records every other change to the document — and, on a delete, a
+ *    tombstone.
  *
- * This trigger is the SOLE writer of BOTH subcollections. It replaces the
+ * Three trails, ONE trigger, because they all observe the same document: a
+ * second trigger on `pedidos/{pedidoId}` would double the event cost to record
+ * the same write. (The pedido's `pagamentos` and `incidentes` feed the same
+ * history collection from their own triggers, since they are different
+ * documents.)
+ *
+ * This trigger is the SOLE writer of all three subcollections. It replaces the
  * hand-written appends that used to sit at the call sites (the web editor's
  * `recordEstadoChange`, the client pagamento reconcile, and the Mercado Pago
  * webhook's admin reconcile), which between them covered only 3 of the ~12 code
@@ -35,63 +51,43 @@ import { getDb } from '../lib/admin';
  * Targets the NAMED `default` database (gotcha #8).
  */
 
-/** Auth types that can never correspond to an end user. */
-const NON_USER_AUTH_TYPES: ReadonlySet<string> = new Set([
-  'service_account',
-  'system',
-  'unauthenticated',
-]);
+// `resolveUsuarioOuterRef` moved to `../lib/authContext` when the
+// modification-history factory became a second consumer. Re-exported here so
+// this file stays the readable entry point for the pedido trails.
+export { resolveUsuarioOuterRef } from '../lib/authContext';
 
 /**
- * Firebase Auth uids: 28 alphanumeric chars from the standard providers, but a
- * uid set explicitly via the Admin SDK (`createUser({ uid })`) or an imported
- * user may also carry `_` and `-`, up to 128 chars. Both are accepted so a real
- * actor is never dropped to `null`.
+ * Fields whose churn is a stamp, a watermark, or state a trigger owns — never
+ * an operator edit — so they must not produce a modification-history row.
  *
- * Every call site in this repo currently lets Firebase generate the uid
- * (`apps/integrations/.../admin/users/route.ts`, `tools/test-fixtures`), so the
- * wider class costs nothing today — it just removes a silent trap if a custom
- * uid ever appears.
+ * The rule (borrowed from `CONCURRENCY_IGNORE`, which exists for the same
+ * reason): a field is ignored iff no interactive editor in this app can author
+ * it.
  *
- * The class stays strict about what it EXCLUDES, which is the whole point: no
- * `@` and no `.`, so emails never pass. That is what rejects Firebase-console
- * writes (operator email), service-account identifiers, and the emulator's
- * hardcoded `fake-auth-id@gmail.com`. The 20-char floor keeps short junk out;
- * every uid this project mints is 28.
+ * ⚠️ `CAMPOS_ESTOQUE_SYNC` is IMPORTED, never retyped. `sincronizarEstoquePedido`
+ * writes those three fields back onto the pedido seconds after the save that
+ * caused them and deliberately does NOT stamp `ultimaModificacao` — so without
+ * this, every stock-moving save would produce TWO rows: the operator's edit,
+ * then a phantom `estoqueAplicado` row attributed to "Sistema". Same failure
+ * `CONCURRENCY_IGNORE` was extended for (#972); one list means the writer and
+ * both guards cannot drift.
+ *
+ * Deliberately NOT ignored: `estado`, `freteInicial`, `itens`, `numero`,
+ * `observacoesInternas`, `infCpl`, every `*OuterRef`, and the derived money
+ * caches. The caches echo an item edit, but they are one row each and are
+ * exactly what an auditor wants to see move — a price change that did NOT come
+ * from an item edit is only visible through them.
  */
-const UID_PATTERN = /^[A-Za-z0-9_-]{20,128}$/;
-
-/**
- * Map a Firestore event's auth context to the repo's `documents/usuarios/<uid>`
- * outer-ref, or `null` when no end user can be established.
- *
- * `authId` only carries a uid when the write came straight from a signed-in
- * client SDK. Everything else — the Mercado Pago webhook, Mercado Livre import,
- * other functions, scripts — reaches Firestore through the Admin SDK and has no
- * end user, which is exactly when this must return `null`.
- *
- * Three reasons this cannot simply trust `authType`:
- *  - the `AuthType` union has NO `user` literal (it is
- *    `service_account | api_key | system | unauthenticated | unknown`), and
- *    client-SDK writes arrive as `api_key` while Firebase-console writes arrive
- *    as `unknown` carrying an EMAIL in `authId`;
- *  - the Firestore emulator hardcodes `authId` to `'fake-auth-id@gmail.com'`
- *    (firebase-tools#7609, closed as not-planned), so the emulator lane must
- *    resolve to `null` rather than to a bogus ref;
- *  - a service account's id is an email too.
- *
- * Hence the shape guard: anything that is not uid-shaped yields `null`. Storing
- * nothing is always better than storing the wrong actor in an audit trail.
- */
-export function resolveUsuarioOuterRef(
-  authType: string | undefined,
-  authId: string | undefined,
-): string | null {
-  if (!authId) return null;
-  if (authType && NON_USER_AUTH_TYPES.has(authType)) return null;
-  if (!UID_PATTERN.test(authId)) return null;
-  return `documents/usuarios/${authId}`;
-}
+export const PEDIDO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
+  // Pure projection of `Object.keys(itens)` — cannot move without `itens`
+  // moving, so recording it only doubles the noise.
+  'itensIds',
+  // The Mercado Livre order-clock watermark, advanced on every accepted poll.
+  'lastMarketplaceUpdate',
+  'timestamp',
+  'ultimaModificacao',
+  ...CAMPOS_ESTOQUE_SYNC,
+];
 
 /**
  * Everything both row builders need from one pedido write. Shared so the
@@ -258,7 +254,7 @@ export async function recordFreteHistory(
  * No self-retrigger: the writes land in SUBcollections, and document triggers
  * on `pedidos/{pedidoId}` do not fire for subcollection writes.
  */
-export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
+export const onPedidoChanged = onDocumentWrittenWithAuthContext(
   {
     document: `${pedidoMeta.collectionPath}/{pedidoId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
@@ -296,10 +292,45 @@ export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
 
     const estadoEntry = buildEstadoHistoryEntry(input);
     const freteEntry = buildFreteHistoryEntry(input);
-    // Fast path: neither trail moved → no getDb(), no reads, no writes, no next
-    // event. This is the overwhelmingly common case (every pedido edit that is
-    // not a state change), so it must stay free.
-    if (estadoEntry === null && freteEntry === null) return;
+
+    /**
+     * The unified field-level entry, recorded for the SAME pedido write.
+     *
+     * ⚠️ Unlike the produto counterpart, a DELETE is recorded rather than
+     * skipped. `onProdutoChanged` returns early on delete because
+     * `onProdutoDeleted` sweeps the produto's subtree moments later, so the row
+     * would be swept or orphaned either way. `pedidos` declares a cascade and
+     * deliberately has NO delete trigger (owner call, 2026-08 — `nfev4` holds
+     * emitted fiscal documents), so nothing sweeps here and the row survives:
+     * it is then the ONLY record that the order existed and who removed it.
+     * `buildModificationEntry` gives a `kind: 'delete'` tombstone carrying every
+     * non-ignored field's pre-delete value.
+     *
+     * This also closes a real gap — both trail builders above bail on a delete
+     * ("the row would outlive its parent"), so until now a deleted pedido left
+     * no trace anywhere.
+     */
+    const modificationEntry = buildModificationEntry({
+      before,
+      after,
+      ignore: PEDIDO_HISTORY_IGNORE_FIELDS,
+      path: `pedidos/${pedidoId}`,
+      subcolecao: null,
+      docId: pedidoId,
+      eventId: event.id,
+      eventTimeMicros: input.eventTimeMicros,
+      // Only `itens` is expanded: a one-line quantity edit would otherwise store
+      // both whole maps, and past ~121 lines both sides truncate to a sentinel
+      // and the entry says nothing at all.
+      expand: { itens: PEDIDO_ITENS_EXPAND },
+      usuarioOuterRef: input.usuarioOuterRef,
+    });
+
+    // Fast path: nothing moved → no getDb(), no reads, no writes, no next
+    // event. Still the common case (an edit touching only ignored fields — the
+    // estoque sync's own write-back is the loudest example), so it must stay
+    // free.
+    if (estadoEntry === null && freteEntry === null && modificationEntry === null) return;
 
     const db = getDb();
     // Both rows may be keyed on the SAME `event.id` — one `tx.update` can move
@@ -313,20 +344,25 @@ export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
     // write lands and the other throws, the redelivery rewrites the first
     // content-identically and completes the second. A partially-written pair is
     // self-healing, so atomicity buys nothing and costs a batch commit.
-    const writes: Array<Promise<void>> = [];
+    const writes: Array<Promise<unknown>> = [];
     if (estadoEntry !== null) writes.push(recordEstadoHistory(db, pedidoId, estadoEntry));
     if (freteEntry !== null) writes.push(recordFreteHistory(db, pedidoId, freteEntry));
+    if (modificationEntry !== null) {
+      // No `requireParentExists`: nothing sweeps a pedido's subtree, so a row
+      // that outlives its pedido is the point, not a leak (see the entry above).
+      writes.push(recordModification(db, PEDIDO_HISTORY_ROOT, pedidoId, modificationEntry));
+    }
     await Promise.all(writes);
 
     if (estadoEntry !== null) {
       logger.info(
-        `onPedidoEstadoChanged: pedido ${pedidoId} → ${estadoEntry.estado}` +
+        `onPedidoChanged: pedido ${pedidoId} → ${estadoEntry.estado}` +
           ` (por ${estadoEntry.usuarioHistoricoEstadosPedidoOuterRef ?? 'sistema'})`,
       );
     }
     if (freteEntry !== null) {
       logger.info(
-        `onPedidoEstadoChanged: frete do pedido ${pedidoId} → ${freteEntry.estado}` +
+        `onPedidoChanged: frete do pedido ${pedidoId} → ${freteEntry.estado}` +
           ` (por ${freteEntry.usuarioHistoricoFreteInicialOuterRef ?? 'sistema'})`,
       );
     }

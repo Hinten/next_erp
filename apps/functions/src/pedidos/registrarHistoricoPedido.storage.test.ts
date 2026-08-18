@@ -9,7 +9,7 @@ import {
   buildFreteHistoryEntry,
   recordEstadoHistory,
   recordFreteHistory,
-} from './registrarEstadoPedido';
+} from './registrarHistoricoPedido';
 
 // Integration test — requires the Firebase emulators. Two layers:
 //
@@ -19,7 +19,7 @@ import {
 //  2. the REAL trigger end-to-end (needs the functions emulator too, as
 //     `resizeProductImage.storage.test.ts` does).
 //
-// Layer 2 exists because `onPedidoEstadoChanged` is this repo's first
+// Layer 2 exists because `onPedidoChanged` is this repo's first
 // `onDocumentWrittenWithAuthContext`. That variant registers a DIFFERENT
 // Eventarc event type than plain `onDocumentWritten`, and a mis-registration
 // would satisfy every unit test and every core-level assertion here while
@@ -65,7 +65,7 @@ async function freteHistoryRows(db: Firestore, pedidoId: string) {
   return snap.docs;
 }
 
-describe.skipIf(!EMULATED)('registrarEstadoPedido core (emulator)', () => {
+describe.skipIf(!EMULATED)('registrarHistoricoPedido core (emulator)', () => {
   it('writes one row per transition, keyed by the event id', async () => {
     const db = getDb();
     const pedidoId = freshId();
@@ -258,7 +258,7 @@ async function waitFor<T>(
  *
  * A ONE-SHOT read is not sound here, and the difference is exactly the bug this
  * guards. The handler launches both trails' writes concurrently (`Promise.all`
- * in `registrarEstadoPedido.ts`), so observing ONE trail's row proves the
+ * in `registrarHistoricoPedido.ts`), so observing ONE trail's row proves the
  * trigger RAN for that CloudEvent — it does NOT prove the other trail's `set()`
  * has settled. A regressed builder's row could land a moment later, and a single
  * read would miss it: the assertion would pass in precisely the broken case it
@@ -290,7 +290,7 @@ async function expectNoRowForEvent(
  * `onDocumentWrittenWithAuthContext` registration actually delivers events; the
  * core-level tests above cannot.
  */
-describe.skipIf(!EMULATED)('onPedidoEstadoChanged trigger (emulator, end-to-end)', () => {
+describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () => {
   it('records the opening estado when a pedido is created', async () => {
     const db = getDb();
     const pedidoId = freshId();

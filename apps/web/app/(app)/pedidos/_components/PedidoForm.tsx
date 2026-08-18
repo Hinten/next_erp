@@ -37,6 +37,7 @@ import {
   FiscalTab,
   FreteTab,
   IncidentesTab,
+  ModificacoesTab,
   PlaceholderTab,
   PrincipalTab,
 } from './tabs';
@@ -539,6 +540,8 @@ export function PedidoForm({
             </Tabs.Tab>
             {/* Read-only (#408): no tabErrorProps — nothing here validates. */}
             <Tabs.Tab value="estoque">Estoque</Tabs.Tab>
+            {/* Read-only audit feed: no tabErrorProps — it owns no form field. */}
+            <Tabs.Tab value="modificacoes">Modificações</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
@@ -636,6 +639,10 @@ export function PedidoForm({
 
           <Tabs.Panel value="estoque" pt="md">
             <EstoqueSyncTab pedidoId={pedidoId} />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="modificacoes" pt="md">
+            <ModificacoesTab pedidoId={pedidoId} />
           </Tabs.Panel>
         </Tabs>
       </div>

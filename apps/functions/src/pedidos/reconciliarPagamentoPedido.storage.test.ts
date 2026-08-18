@@ -29,7 +29,7 @@ function pedidoRef(db: Firestore, pedidoId: string) {
  * ─── The two audit trails ────────────────────────────────────────────────────
  *
  * Neither trail is written by the reconcile any more: the
- * `onPedidoEstadoChanged` trigger observes the pedido write and appends to BOTH
+ * `onPedidoChanged` trigger observes the pedido write and appends to BOTH
  * — `historicoEstadoPedido` for the pedido's `estado`, `historicoFtIni` for the
  * embedded `freteInicial.estado` — asynchronously, so the rows land AFTER
  * `reconcilePedidoEstado` resolves. Hence the pollers below.
@@ -52,7 +52,7 @@ async function freteHistoricos(db: Firestore, pedidoId: string) {
 }
 
 /**
- * Neither trail is written by the reconcile: the `onPedidoEstadoChanged` trigger
+ * Neither trail is written by the reconcile: the `onPedidoChanged` trigger
  * observes the pedido write and appends asynchronously, so the rows land AFTER
  * `reconcilePedidoEstado` resolves.
  *
@@ -109,7 +109,7 @@ async function waitForFreteRow(
  * re-reading across `windowMs`.
  *
  * Why not a single read. The trigger launches both trails' writes concurrently
- * (`Promise.all` in `registrarEstadoPedido.ts`), so seeing the `pago` row proves
+ * (`Promise.all` in `registrarHistoricoPedido.ts`), so seeing the `pago` row proves
  * the trigger RAN for that CloudEvent — it does NOT prove that a (wrongly
  * emitted) frete row for the same event has finished landing. A one-shot read
  * could slip between the two `set()`s and pass in exactly the regressed case

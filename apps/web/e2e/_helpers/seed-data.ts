@@ -1959,7 +1959,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
 /**
  * Teardown for `seedPedidoFreteFixtures`. The marketplace fixture pedido is
  * seeded with a NON-null `freteInicial` already at `postado`, so the
- * `onPedidoEstadoChanged` trigger appends a `historicoFtIni` row for it — and,
+ * `onPedidoChanged` trigger appends a `historicoFtIni` row for it — and,
  * because that same trigger records an opening row on create, a
  * `historicoEstadoPedido` row too. Both are swept BEFORE
  * `cleanupPedidoFixtures` deletes the parents, which never cascades.
@@ -3577,7 +3577,7 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
  *  - `historicoFtIni` — every fixture pedido here is seeded with a NON-null
  *    `freteInicial` (`checkoutFrete`, estado `emSeparacao`) and `saveCheckout`
  *    drives it to `checkFinalizado` on EVERY conference, so
- *    `onPedidoEstadoChanged` appends a freight-audit row per pedido per run;
+ *    `onPedidoChanged` appends a freight-audit row per pedido per run;
  *  - `historicoEstadoPedido` — the SAME trigger records an opening row on
  *    create, and every fixture pedido here is seeded at `pago`, so each run
  *    also mints one estado row per pedido. Leaking since #697; swept here

@@ -34,12 +34,12 @@ const SAIDA_ONLY_TABS: ReadonlyArray<string> = ['link-pgto', 'incidentes', 'devo
 
 /**
  * Visible pedido-form tab values in display order for the given direction.
- * `estoque` (read-only, outside the error routing in PEDIDO_TABS) renders
- * last for both directions. PedidoForm drives both `Tabs.Tab` and
+ * `estoque` and `modificacoes` (both read-only, so both outside the error
+ * routing in PEDIDO_TABS) render last, for both directions. PedidoForm drives both `Tabs.Tab` and
  * `Tabs.Panel` rendering from this list.
  */
 export function pedidoTabs(isEntrada: boolean): string[] {
-  const all = [...PEDIDO_TABS.map((t) => t.value), 'estoque'];
+  const all = [...PEDIDO_TABS.map((t) => t.value), 'estoque', 'modificacoes'];
   if (!isEntrada) return all;
   return all.filter((value) => !SAIDA_ONLY_TABS.includes(value));
 }

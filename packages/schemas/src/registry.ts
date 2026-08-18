@@ -22,6 +22,7 @@ import {
   checkout,
   historicoEstadoPedido,
   historicoFtIni,
+  historicoModificacaoPedido,
   orderML,
 } from './pedido';
 import { counter } from './counter';
@@ -77,6 +78,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   checkout,
   historicoEstadoPedido,
   historicoFtIni,
+  historicoModificacaoPedido,
   orderML,
   counter,
   configIa,
