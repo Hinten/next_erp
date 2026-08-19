@@ -154,8 +154,8 @@ export interface MissedFeedsContaResult {
  * Which scoping `GET /missed_feeds` appears to use — ML does not document
  * whether the response covers the whole application or only the token's seller.
  * The sweep is correct either way (attribution rides each entry's `user_id`),
- * so rather than guessing we OBSERVE it, the way `logWebhookHeaders` settles the
- * signature question empirically. Once this reads `'app-wide'` for a week, a
+ * so rather than guessing we OBSERVE it — the same move that settled the webhook
+ * signature question from live traffic instead of from the docs. Once this reads `'app-wide'` for a week, a
  * follow-up can collapse to one call on the first healthy conta's token.
  */
 export type MissedFeedsEscopo = 'app-wide' | 'per-seller' | 'indeterminado';

@@ -14,9 +14,10 @@
  * a Firestore create on the failure path, up to 5 sweep re-drives and one
  * rate-limited ML API call per POST). It fails OPEN when unconfigured or when
  * the field is absent — see lib/marketplace/webhookOrigin.ts for why, and for
- * why ML's published source-IP list was declined. `logWebhookHeaders` runs first
- * so the migration window produces evidence of whether ML ever sends a signature
- * header; that verdict decides the follow-up (real check vs secret path segment).
+ * why ML's published source-IP list was declined. A header-inventory probe used
+ * to run first, to settle from live traffic whether ML ever sends a signature
+ * header; the first live run answered NO and the probe was removed, so the
+ * remaining follow-up is a secret path segment on the callback URL.
  *
  * The receiver must answer `200` FAST so ML stops retrying, and do the heavy
  * work asynchronously. Step 6 (#290/#360): validate the body and ENQUEUE the
@@ -46,6 +47,7 @@
  * or every notification is double-processed.
  */
 import { NextResponse } from 'next/server';
+import { logger } from 'firebase-functions/logger';
 import { ZodError } from 'zod';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -57,7 +59,7 @@ import {
 } from '@/lib/marketplace/notificacao';
 import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
 import { mlTasksRegion } from '@/lib/marketplace/mlTasksRegion';
-import { checkApplicationId, logWebhookHeaders } from '@/lib/marketplace/webhookOrigin';
+import { checkApplicationId } from '@/lib/marketplace/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -100,15 +102,29 @@ const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
  * `user_id` and the outcome are what a human actually needs, and `resource` is
  * already a bare path like `/items/MLB123`.
  *
- * `console.info` (not `warn`) so the failure warnings around it stay findable —
- * this is the boring line you filter FOR, not one you filter out.
+ * ⚠️ **`logger`, not `console`** — and this is the ONLY route in the repo that
+ * crosses that line, so the reason is written down rather than left to look like
+ * an accident. `console.x(msg, obj)` goes through Node's `util.inspect`, which
+ * wraps at a ~128-char break length; this context object is past it, so Cloud
+ * Run split ONE delivery across several Cloud Logging entries and `regiao` could
+ * land apart from the `topic` it belongs to. The repo's 100-odd
+ * `console.warn('[prefix]', {…})` calls are fine only because their context
+ * objects are small — the convention has a size limit nobody had hit yet.
+ * `firebase-functions/logger` writes a single structured JSON line instead, so
+ * the entry count no longer depends on how long the payload happens to be, the
+ * severity is real INFO rather than a `no-console` compromise, and the fields
+ * land in `jsonPayload` where they can be filtered:
+ * `jsonPayload.regiao != "us-east1"` finds every misrouted enqueue directly.
+ *
+ * ⚠️ Import the `firebase-functions/logger` SUBPATH, never the package root —
+ * the root pulls the Functions runtime into an App Hosting server bundle.
  */
 function logDelivery(
   disposition: 'enfileirado' | 'persistido' | 'ignorado' | 'ruido' | 'descartado',
   payload: { topic: string; resource: string; user_id?: number | null } | null,
   extra?: Readonly<Record<string, unknown>>,
 ): void {
-  console.info('[mercado-livre/webhook] entrega', {
+  logger.info('[mercado-livre/webhook] entrega', {
     disposition,
     topic: payload?.topic ?? null,
     resource: payload?.resource ?? null,
@@ -119,9 +135,6 @@ function logDelivery(
 
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();
-
-  // Before any rejection, so a refused request's headers are still captured.
-  logWebhookHeaders(req);
 
   let body: unknown;
   try {

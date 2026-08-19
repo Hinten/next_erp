@@ -17,6 +17,16 @@
  * `roles/cloudtasks.enqueuer` + `roles/iam.serviceAccountUser` on the functions
  * runtime SA) is in functions/DEPLOY.md.
  *
+ * ⚠️ Minting that token is NOT the same as being allowed to use it, and
+ * this docblock used to stop one sentence too early. The token's principal is
+ * the enqueuer's own identity (nothing here overrides it), and a gen2 function
+ * is a Cloud Run service - so that identity ALSO needs `roles/run.invoker` on
+ * the target service. Without it the task is created and dispatched and the
+ * service answers 403 `run.routes.invoke`, which this code never observes: the
+ * enqueue SUCCEEDED, so no failure document is written and the notification
+ * dies inside Cloud Tasks leaving no trace in Firestore. Found on the first
+ * live run; all three roles are now in functions/DEPLOY.md.
+ *
  * Config:
  *   - `MERCADO_LIVRE_TASKS_DISABLED=1` → `enqueue()` throws `MlTasksDisabledError`;
  *     the receiver falls back to persisting the notification as `failed` so the

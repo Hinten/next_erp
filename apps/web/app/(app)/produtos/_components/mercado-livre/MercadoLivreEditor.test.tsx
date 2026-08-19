@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
@@ -21,6 +21,10 @@ const h = vi.hoisted(() => ({
   outcomes: new Map<string, string>(),
   /** Lets a test mark one listing dirty, the way a real edit would. */
   markDirty: null as null | ((linkDocId: string, dirty: boolean) => void),
+  /** Lets a test hold one listing's attribute metadata in flight. */
+  markLoading: null as null | ((linkDocId: string, loading: boolean) => void),
+  /** The produto doc snapshot's `loading` — it resolves AFTER the buttons render. */
+  produtoLoading: false,
   notify: vi.fn(),
   /**
    * What `useMercadoLivreClient()` answers. Empty by default — most tests here
@@ -53,7 +57,10 @@ vi.mock('@delfrance/data/hooks', () => ({
   })(),
   useDocSnapshot: () => ({
     data: { id: 'prod-1', data: { nome: 'Camiseta Básica', fotos: ['a'], ehUsado: false } },
-    loading: false,
+    // Unlike the two `useSnapshot` queries above, this one does NOT hold back the
+    // render — the editor paints its buttons and resolves this afterwards, which
+    // is the window a publish could be fired in.
+    loading: h.produtoLoading,
     error: null,
   }),
 }));
@@ -84,13 +91,16 @@ vi.mock('./ListingForm', () => ({
   ListingForm: ({
     linkDocId,
     onDirtyChange,
+    onLoadingChange,
     registerFlush,
   }: {
     linkDocId: string;
     onDirtyChange: (id: string, dirty: boolean) => void;
+    onLoadingChange: (id: string, loading: boolean) => void;
     registerFlush: (id: string, save: ListingSaveFn | null) => void;
   }) => {
     h.markDirty = onDirtyChange;
+    h.markLoading = onLoadingChange;
     if (!h.saves.has(linkDocId))
       h.saves.set(
         linkDocId,
@@ -127,6 +137,8 @@ beforeEach(() => {
   h.saves = new Map();
   h.outcomes = new Map();
   h.markDirty = null;
+  h.markLoading = null;
+  h.produtoLoading = false;
   h.notify.mockClear();
   h.client = {};
 });
@@ -312,6 +324,72 @@ describe('the publication facts come before the editable form', () => {
 });
 
 /**
+ * The write actions were live while the page was still loading.
+ *
+ * The editor already withholds its whole render until the contas and links
+ * snapshots resolve, which made the remaining gap easy to miss: the produto doc,
+ * its extraData, the tenant claims and each listing's category attributes all
+ * land AFTER the buttons are on screen. A publish fired in that window is built
+ * from data nobody saw — and the attribute grid is the worst of them, because it
+ * renders EMPTY rather than absent, so a half-loaded form looks complete.
+ */
+describe('write actions wait for the data they act on', () => {
+  // ⚠️ Anchored regexes so neither locator can claim the sibling button, and
+  // `.disabled` rather than `toBeEnabled` — this suite loads no jest-dom, so the
+  // DOM matchers silently do not exist (`Invalid Chai property`).
+  const btn = (name: RegExp) => screen.getByRole('button', { name }) as HTMLButtonElement;
+  const publicar = () => btn(/^Republicar$/);
+  const comPrecos = () => btn(/^Republicar e atualizar preços$/);
+
+  beforeEach(() => {
+    h.links = [link('ML-DOC-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+  });
+
+  it('disables BOTH publish buttons while the produto doc is still loading', async () => {
+    h.produtoLoading = true;
+    renderEditor();
+    await waitFor(() => expect(publicar().disabled).toBe(true));
+    expect(comPrecos().disabled).toBe(true);
+  });
+
+  it('enables them once everything has settled', async () => {
+    renderEditor();
+    await waitFor(() => expect(publicar().disabled).toBe(false));
+    expect(comPrecos().disabled).toBe(false);
+  });
+
+  it('disables them while a listing reports its attributes in flight', async () => {
+    renderEditor();
+    await waitFor(() => expect(publicar().disabled).toBe(false));
+
+    act(() => h.markLoading!('ML-DOC-1', true));
+    await waitFor(() => expect(publicar().disabled).toBe(true));
+    expect(comPrecos().disabled).toBe(true);
+
+    // ...and RELEASES. A gate that never opens is worse than the race it fixes.
+    act(() => h.markLoading!('ML-DOC-1', false));
+    await waitFor(() => expect(publicar().disabled).toBe(false));
+  });
+
+  it('holds the sibling write actions too, not just publish', async () => {
+    // They act on the same half-arrived data; gating only publish would leave
+    // the same bug one button over. (`Reverificar anúncio` is not asserted here
+    // — it renders only for a stock-latched listing, which a published one is
+    // not; it takes the same `contaLoading` through `ListingStatusStrip`.)
+    h.produtoLoading = true;
+    renderEditor();
+    await waitFor(() => expect(btn(/^Enviar estoque$/).disabled).toBe(true));
+  });
+
+  it('holds Reverificar too, on the latched listing that offers it', async () => {
+    h.links = [link('ML-DOC-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.erro })];
+    h.produtoLoading = true;
+    renderEditor();
+    await waitFor(() => expect(btn(/^Reverificar anúncio$/).disabled).toBe(true));
+  });
+});
+
+/**
  * #798 — publish and price are two calls, and this button is the only thing that
  * makes that split invisible to the operator.
  *
@@ -462,5 +540,120 @@ describe('Republicar e atualizar preços', () => {
     expect(screen.getByRole('button', { name: 'Publicar e atualizar preços' })).toBeInstanceOf(
       HTMLButtonElement,
     );
+  });
+});
+
+describe('"ver no Mercado Livre" for a User-Products listing', () => {
+  /** A published UP family: `id` is the family id, which addresses no page. */
+  const FAMILIA = { id: '6264141844942250', isUserProductModel: true };
+
+  /**
+   * `window.open` is what a real click grants and jsdom does not implement.
+   * Returning a handle lets the assertions cover the whole point of the flow:
+   * the tab is claimed BEFORE the await, then navigated.
+   */
+  function stubWindowOpen() {
+    const aba = { opener: {} as unknown, location: { replace: vi.fn() }, close: vi.fn() };
+    const open = vi.fn(() => aba as unknown as Window);
+    vi.stubGlobal('open', open);
+    return { aba, open };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resolves the URL from the backend and sends the tab there', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    const linkAnuncio = vi.fn(async () => ({ url: 'https://www.mercadolivre.com.br/up/MLBU1' }));
+    h.client = { linkAnuncio };
+    const { aba, open } = stubWindowOpen();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    expect(linkAnuncio).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      produtoId: 'prod-1',
+      linkDocId: 'link-1',
+    });
+    // ⚠️ The tab is claimed with a blank URL at click time — a `window.open`
+    // issued after the await has lost the user activation and is popup-blocked.
+    // The ORDER is the assertion: opening with the right args proves nothing if
+    // it happens once the resolution has already come back.
+    expect(open).toHaveBeenCalledWith('', '_blank');
+    expect(open.mock.invocationCallOrder[0]!).toBeLessThan(
+      linkAnuncio.mock.invocationCallOrder[0]!,
+    );
+    expect(aba.location.replace).toHaveBeenCalledWith('https://www.mercadolivre.com.br/up/MLBU1');
+    // Severed by hand: the blank-target form cannot carry `noopener` (that flag
+    // makes it return null, and the handle is what navigates the tab).
+    expect(aba.opener).toBeNull();
+  });
+
+  it('turns into a plain anchor afterwards, so a second click costs nothing', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    const linkAnuncio = vi.fn(async () => ({ url: 'https://www.mercadolivre.com.br/up/MLBU1' }));
+    h.client = { linkAnuncio };
+    stubWindowOpen();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    const anchor = await screen.findByRole('link', { name: 'ver no Mercado Livre' });
+    expect(anchor.getAttribute('href')).toBe('https://www.mercadolivre.com.br/up/MLBU1');
+    expect(linkAnuncio).toHaveBeenCalledOnce();
+  });
+
+  it('closes the tab and reports the failure instead of leaving it blank', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    h.client = {
+      linkAnuncio: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('O anúncio não existe mais.', 404, null);
+      }),
+    };
+    const { aba } = stubWindowOpen();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    expect(aba.close).toHaveBeenCalledOnce();
+    expect(aba.location.replace).not.toHaveBeenCalled();
+    expect(h.notify).toHaveBeenCalledWith({ color: 'red', message: 'O anúncio não existe mais.' });
+  });
+
+  it('still resolves when the browser refused the tab, leaving an anchor to click', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    h.client = {
+      linkAnuncio: vi.fn(async () => ({ url: 'https://www.mercadolivre.com.br/up/MLBU1' })),
+    };
+    vi.stubGlobal(
+      'open',
+      vi.fn(() => null),
+    );
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    expect(await screen.findByRole('link', { name: 'ver no Mercado Livre' })).toBeDefined();
+  });
+
+  it('a legacy listing needs no round trip at all', async () => {
+    h.links = [link('link-1', { id: 'MLB777', isUserProductModel: false })];
+    const linkAnuncio = vi.fn();
+    h.client = { linkAnuncio };
+    renderEditor();
+
+    const anchor = await screen.findByRole('link', { name: 'ver no Mercado Livre' });
+    expect(anchor.getAttribute('href')).toBe('https://produto.mercadolivre.com.br/MLB-777');
+    expect(linkAnuncio).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,7 @@ import { publishDisabledReason, type PublishDisabledInput } from './publishDisab
 
 function input(over: Partial<PublishDisabledInput> = {}): PublishDisabledInput {
   return {
+    loading: false,
     disabled: false,
     canPublish: true,
     hasClient: true,
@@ -21,6 +22,47 @@ describe('publishDisabledReason', () => {
     expect(publishDisabledReason(input())).toBeNull();
   });
 
+  /**
+   * The publish buttons were clickable while the produto doc, its extraData, the
+   * tenant claims and the category attribute grid were all still in flight — so
+   * a publish could go out built from data nobody had seen.
+   */
+  describe('loading outranks every other reason', () => {
+    it('says the data is still arriving', () => {
+      expect(publishDisabledReason(input({ loading: true }))).toMatch(/carregando/i);
+    });
+
+    it('⚠️ beats a FALSE permission denial, which is why it must come first', () => {
+      // `usePermission` answers `allowed: false` while it loads, so with the
+      // old ordering an operator with full rights was told they lacked
+      // permission on every ordinary page load.
+      expect(publishDisabledReason(input({ loading: true, canPublish: false }))).toMatch(
+        /carregando/i,
+      );
+    });
+
+    it('beats every remaining reason too — none of them is trustworthy yet', () => {
+      const outranked: Array<Partial<PublishDisabledInput>> = [
+        { hasClient: false },
+        { disabled: true },
+        { publishingThisConta: true },
+        { publishingOtherConta: true },
+        { produtoDirty: true },
+        { contaDirty: true },
+        { missingCategoria: true },
+      ];
+      for (const over of outranked) {
+        expect(publishDisabledReason(input({ loading: true, ...over }))).toMatch(/carregando/i);
+      }
+    });
+
+    it('gets out of the way once the data lands', () => {
+      // The gate must RELEASE — a permanently-loading signal is a dead button,
+      // which is worse than the race it replaces.
+      expect(publishDisabledReason(input({ loading: false }))).toBeNull();
+    });
+  });
+
   // ⚠️ The two that said NOTHING on screen. An operator hitting either saw a
   // dead button and no explanation anywhere on the page.
   it('explains the produto form not being editable', () => {
@@ -29,6 +71,27 @@ describe('publishDisabledReason', () => {
 
   it('explains a missing client, which means an unauthenticated session', () => {
     expect(publishDisabledReason(input({ hasClient: false }))).toMatch(/autenticada/i);
+  });
+
+  /**
+   * A logged-out operator arrives here with BOTH flags down, because no Firebase
+   * user means no claims: `useTenant` answers a userless session with
+   * `claims: null, loading: false`, so `usePermission` reports
+   * `allowed: false`. Ranking `canPublish` first therefore made the `hasClient`
+   * branch unreachable in practice and told someone who merely needs to sign in
+   * again that they lack permission — a dead end, since only an admin can grant
+   * that. It also contradicted this function's own "most-actionable first" rule.
+   */
+  it('⚠️ tells a logged-out operator to sign in, NOT that they lack permission', () => {
+    const reason = publishDisabledReason(input({ hasClient: false, canPublish: false }));
+    expect(reason).toMatch(/autenticada/i);
+    expect(reason).not.toMatch(/permissão/i);
+  });
+
+  it('still reports a real permission gap once the session is authenticated', () => {
+    expect(publishDisabledReason(input({ hasClient: true, canPublish: false }))).toMatch(
+      /permissão/i,
+    );
   });
 
   it('explains a publish running on ANOTHER conta', () => {

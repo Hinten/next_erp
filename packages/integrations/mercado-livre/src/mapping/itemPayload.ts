@@ -4,14 +4,18 @@
  *
  *  - User-Products sellers send `family_name` (ML titles the listing) and NO
  *    variations array; legacy sellers send `title` + `variations[]`.
+ *    ⚠️ `family_name` is CREATE-ONLY — see the note on the assignment itself —
+ *    so a User-Products UPDATE carries no name field at all, while a legacy one
+ *    still carries `title` (a rename is legitimate there).
  *    ⚠️ A User-Products produto that HAS variations does not come through here
  *    at all: each variation is its own ML item, built one at a time by
  *    {@link buildUserProductItemPayload}. This function only serves a UP produto
  *    with no children (one item, one implicit user product).
- *  - Create-only fields: `category_id`, `currency_id: 'BRL'`, `condition`,
- *    `site_id: 'MLB'`, `buying_mode: 'buy_it_now'`, `listing_type_id`, and
- *    `seller_custom_field` = the Firestore link-doc id (the back-reference the
- *    import/notification flows use).
+ *  - Create-only fields: `family_name` (User Products only), `category_id`,
+ *    `currency_id: 'BRL'`, `condition`, `site_id: 'MLB'`,
+ *    `buying_mode: 'buy_it_now'`, `listing_type_id`, and `seller_custom_field`
+ *    = the Firestore link-doc id (the back-reference the import/notification
+ *    flows use).
  *  - Update: `status: 'active'` (reactivates a paused listing on edit).
  *  - Legacy variations move `available_quantity`/`price` down to each
  *    variation, carry `seller_custom_field` = the variation produto doc id,
@@ -84,7 +88,10 @@ export interface ItemVariationInput {
 export interface BuildItemPayloadInput {
   /** PUT (existing ML item) vs POST (first publish). */
   isUpdate: boolean;
-  /** New User-Products seller → `family_name`, no variations array. */
+  /**
+   * User-Products seller → `family_name` instead of `title`, and no variations
+   * array. ⚠️ That name field is CREATE-ONLY — see {@link buildItemPayload}.
+   */
   isUserProductSeller: boolean;
   title: string;
   condition: 'new' | 'used';
@@ -106,7 +113,16 @@ export function buildItemPayload(input: BuildItemPayloadInput): Record<string, u
   const data: Record<string, unknown> = {};
 
   if (input.isUserProductSeller) {
-    data.family_name = input.title;
+    // ⚠️ CREATE-ONLY, for the two reasons spelled out on
+    // {@link buildUserProductItemPayload} below: ML rejects editing
+    // `family_name` once any condition of the family has sales, and the value
+    // feeds the family-id hash. This branch is the SINGLE-ITEM half of the same
+    // model (a User-Products produto with no children), and it used to send the
+    // field on every republish — `ML 400 BODY_INVALID_FIELDS` / `The field
+    // family name is invalid`, the exact rejection the sibling already avoids.
+    // So an update sends no name field at all: never a `title` either, since ML
+    // derives that from `family_name` + the attributes.
+    if (!input.isUpdate) data.family_name = input.title;
   } else {
     data.title = input.title;
   }

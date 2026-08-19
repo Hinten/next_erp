@@ -81,6 +81,15 @@ gcloud projects add-iam-policy-binding <project-id> \
 gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
   --member="serviceAccount:<apphosting-runtime-sa>" \
   --role="roles/iam.serviceAccountUser"
+# ⚠ THE THIRD ROLE, and the one everyone forgets. Enqueuing is only half the
+# trip: Cloud Tasks then DISPATCHES the task, presenting an OIDC token whose
+# principal is the enqueuer's own identity - and a gen2 function is a Cloud Run
+# service, so that principal needs run.invoker ON THE SERVICE. Without it the
+# task is created and delivered and the service answers 403 run.routes.invoke,
+# with NO failure document written anywhere.
+gcloud run services add-iam-policy-binding processMercadoPagoNotification --region=<region> \
+  --member="serviceAccount:<apphosting-runtime-sa>" \
+  --role="roles/run.invoker"
 ```
 
 Until this is granted the enqueue fails; the receiver then **falls back** to

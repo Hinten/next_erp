@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { __resetWebhookHeaderLog, checkApplicationId, logWebhookHeaders } from './webhookOrigin';
+import { __resetWebhookOriginState, checkApplicationId } from './webhookOrigin';
 
 /** A realistic ML application id (from the Notificações reference examples). */
 const APP_ID = '2069392825111111';
@@ -15,7 +15,7 @@ function req(headers: Record<string, string> = {}): Request {
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
-  __resetWebhookHeaderLog();
+  __resetWebhookOriginState();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -95,118 +95,5 @@ describe('checkApplicationId', () => {
     ])('reports a body that is %s as absent', (_label, body) => {
       expect(checkApplicationId(body)).toBe('absent');
     });
-  });
-});
-
-describe('logWebhookHeaders', () => {
-  it('logs the sorted header names', () => {
-    logWebhookHeaders(req({ 'x-zulu': '1', 'x-alpha': '2' }));
-
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre/webhook] header-inventory',
-      expect.objectContaining({ names: ['x-alpha', 'x-zulu'] }),
-    );
-  });
-
-  it.each(['x-signature', 'x-hub-signature-256', 'x-meli-signature', 'x-content-digest'])(
-    'logs the value of the signature candidate %s — the whole point of the exercise',
-    (name) => {
-      logWebhookHeaders(req({ [name]: 'ts=1,v1=abc' }));
-
-      expect(console.warn).toHaveBeenCalledWith(
-        '[mercado-livre/webhook] header-inventory',
-        expect.objectContaining({ values: { [name]: 'ts=1,v1=abc' } }),
-      );
-    },
-  );
-
-  it('does NOT log the value of an ordinary header', () => {
-    logWebhookHeaders(req({ 'content-type': 'application/json' }));
-
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre/webhook] header-inventory',
-      expect.objectContaining({ names: ['content-type'], values: {} }),
-    );
-  });
-
-  it('reduces a credential header to its scheme', () => {
-    logWebhookHeaders(req({ authorization: 'Bearer super-secret-token' }));
-
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre/webhook] header-inventory',
-      expect.objectContaining({ values: { authorization: '<Bearer>' } }),
-    );
-  });
-
-  // `meli`/`mercado` are broad enough to match a credential-shaped name, so the
-  // credential deny-list has to win over the signature-candidate allow-list.
-  it.each([
-    'x-meli-token',
-    'x-mercado-secret',
-    'x-meli-api-key',
-    'x-mercado-auth',
-    'x-meli-cookie',
-  ])('redacts the value of the credential-shaped candidate %s', (name) => {
-    logWebhookHeaders(req({ [name]: 'super-secret-value' }));
-
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre/webhook] header-inventory',
-      // The NAME still surfaces — that alone answers "does ML send this?".
-      expect.objectContaining({ names: [name], values: { [name]: '<redacted>' } }),
-    );
-  });
-
-  it('no longer value-logs a plain token header', () => {
-    logWebhookHeaders(req({ 'x-auth-token': 'super-secret-value' }));
-
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre/webhook] header-inventory',
-      expect.objectContaining({ names: ['x-auth-token'], values: {} }),
-    );
-  });
-
-  it('truncates a long candidate value', () => {
-    logWebhookHeaders(req({ 'x-signature': 'a'.repeat(400) }));
-
-    const { values } = vi.mocked(console.warn).mock.calls[0]![1] as {
-      values: Record<string, string>;
-    };
-    expect(values['x-signature']).toHaveLength(256);
-  });
-
-  describe('log budget', () => {
-    it('logs a header shape once, then stays quiet', () => {
-      logWebhookHeaders(req({ 'content-type': 'application/json' }));
-      logWebhookHeaders(req({ 'content-type': 'application/json' }));
-      logWebhookHeaders(req({ 'content-type': 'text/plain' })); // same NAMES, new value
-
-      expect(console.warn).toHaveBeenCalledOnce();
-    });
-
-    it('logs each new shape, then stops after the per-instance cap', () => {
-      for (let i = 0; i < 25; i += 1) logWebhookHeaders(req({ [`x-shape-${i}`]: '1' }));
-
-      expect(console.warn).toHaveBeenCalledTimes(20);
-    });
-
-    it('MERCADO_LIVRE_WEBHOOK_LOG_HEADERS=all logs every request', () => {
-      vi.stubEnv('MERCADO_LIVRE_WEBHOOK_LOG_HEADERS', 'all');
-
-      logWebhookHeaders(req({ 'content-type': 'application/json' }));
-      logWebhookHeaders(req({ 'content-type': 'application/json' }));
-
-      expect(console.warn).toHaveBeenCalledTimes(2);
-    });
-
-    it.each(['off', 'OFF', ' off '])(
-      'MERCADO_LIVRE_WEBHOOK_LOG_HEADERS=%j disables logging',
-      (value) => {
-        vi.stubEnv('MERCADO_LIVRE_WEBHOOK_LOG_HEADERS', value);
-
-        logWebhookHeaders(req({ 'x-signature': 'ts=1,v1=abc' }));
-
-        expect(console.warn).not.toHaveBeenCalled();
-      },
-    );
   });
 });

@@ -9,9 +9,12 @@ const h = vi.hoisted(() => ({
   docRef: vi.fn(),
   parse: vi.fn((f: unknown) => f),
   newDocId: vi.fn(() => 'auto-id'),
+  loggerInfo: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
+
+vi.mock('firebase-functions/logger', () => ({ logger: { info: h.loggerInfo } }));
 
 vi.mock('@/lib/marketplace/mlTasks', () => ({
   createMlTaskScheduler: () => ({ enqueue: h.enqueue }),
@@ -39,7 +42,7 @@ vi.mock('@delfrance/data/admin/collections', () => ({
 }));
 
 const { POST } = await import('./route');
-const { __resetWebhookHeaderLog } = await import('@/lib/marketplace/webhookOrigin');
+const { __resetWebhookOriginState } = await import('@/lib/marketplace/webhookOrigin');
 
 /** Our registered ML application id, as `MERCADO_LIVRE_CLIENT_ID` would carry it. */
 const APP_ID = 2069392825111111;
@@ -55,9 +58,8 @@ function req(body: unknown, headers: Record<string, string> = {}): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.spyOn(console, 'info').mockImplementation(() => {});
-  // The header-inventory budget is module-level, so it leaks between tests.
-  __resetWebhookHeaderLog();
+  // The CLIENT_ID malformation warning is once-per-instance, so it leaks.
+  __resetWebhookOriginState();
   vi.unstubAllEnvs();
 });
 
@@ -235,29 +237,11 @@ describe('POST /api/webhooks/mercado-livre — origin gate', () => {
     expect(h.enqueue).toHaveBeenCalledOnce();
   });
 
-  it('logs the header inventory BEFORE rejecting, so a refused request is still evidence', async () => {
-    vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', String(APP_ID));
-
-    const res = await POST(req(notification(9999999999999), { 'x-signature': 'ts=1,v1=abc' }));
-
-    expect(res.status).toBe(403);
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre/webhook] header-inventory',
-      expect.objectContaining({
-        names: expect.arrayContaining(['x-signature']),
-        values: expect.objectContaining({ 'x-signature': 'ts=1,v1=abc' }),
-      }),
-    );
-  });
-
-  it('logs the header inventory even when the body is unparseable', async () => {
+  it('acks 200 on an unparseable body, so ML stops retrying a body that will never parse', async () => {
     const res = await POST(req('not json'));
 
     expect(res.status).toBe(200);
-    expect(console.warn).toHaveBeenCalledWith(
-      '[mercado-livre/webhook] header-inventory',
-      expect.anything(),
-    );
+    expect(h.enqueue).not.toHaveBeenCalled();
   });
 });
 
@@ -271,7 +255,7 @@ describe('POST /api/webhooks/mercado-livre — delivery log', () => {
   it('reports `enfileirado` with the queue and region on the happy path', async () => {
     const res = await POST(req({ topic: 'items', resource: '/items/MLB1' }));
     expect(res.status).toBe(200);
-    expect(console.info).toHaveBeenCalledWith(
+    expect(h.loggerInfo).toHaveBeenCalledWith(
       '[mercado-livre/webhook] entrega',
       expect.objectContaining({
         disposition: 'enfileirado',
@@ -284,7 +268,7 @@ describe('POST /api/webhooks/mercado-livre — delivery log', () => {
 
   it('reports `ignorado` for a topic refused at the receiver (#813)', async () => {
     await POST(req({ topic: 'user-products-families', resource: '/user-products-families/1' }));
-    expect(console.info).toHaveBeenCalledWith(
+    expect(h.loggerInfo).toHaveBeenCalledWith(
       '[mercado-livre/webhook] entrega',
       expect.objectContaining({ disposition: 'ignorado', topic: 'user-products-families' }),
     );
@@ -293,7 +277,7 @@ describe('POST /api/webhooks/mercado-livre — delivery log', () => {
   it('reports `persistido` when the enqueue failed but the sweep now owns it', async () => {
     h.enqueue.mockRejectedValueOnce(new Error('IAM'));
     await POST(req({ topic: 'items', resource: '/items/MLB2' }));
-    expect(console.info).toHaveBeenCalledWith(
+    expect(h.loggerInfo).toHaveBeenCalledWith(
       '[mercado-livre/webhook] entrega',
       expect.objectContaining({ disposition: 'persistido' }),
     );
@@ -301,7 +285,7 @@ describe('POST /api/webhooks/mercado-livre — delivery log', () => {
 
   it('reports `ruido` for a body with no topic+resource', async () => {
     await POST(req({ hello: 'world' }));
-    expect(console.info).toHaveBeenCalledWith(
+    expect(h.loggerInfo).toHaveBeenCalledWith(
       '[mercado-livre/webhook] entrega',
       expect.objectContaining({ disposition: 'ruido', topic: null }),
     );

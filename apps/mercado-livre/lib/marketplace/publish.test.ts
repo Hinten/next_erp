@@ -1784,6 +1784,30 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     expect(payload.family_name).toBeUndefined();
   });
 
+  it('a PUBLISHED User-Products listing with NO children republishes without family_name', async () => {
+    // The reported bug: a UP produto that never had variations does NOT go
+    // through the family fan-out (`publishModeIssues` lets it past precisely
+    // because `link.id` is a real item id, not a family id), so it republishes
+    // through `buildItemPayload` — which used to carry `family_name` on the PUT
+    // and earned `ML 400 BODY_INVALID_FIELDS / The field family name is
+    // invalid` on every attempt.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, isUserProductModel: true });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalledOnce();
+    const payload = mocks.updateItem!.mock.calls[0]![1] as Record<string, unknown>;
+    expect(payload.family_name).toBeUndefined();
+    // Nor a `title`: ML derives it from the family name and the attributes.
+    expect(payload.title).toBeUndefined();
+    // ...and the edit itself still goes out.
+    expect(payload.status).toBe('active');
+  });
+
   it("estado 'am' (mid-UPtin) blocks the publish before any ML call", async () => {
     const db = new FakeDb();
     seedBase(db);

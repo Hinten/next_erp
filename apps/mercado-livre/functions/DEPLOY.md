@@ -183,36 +183,38 @@ gcloud projects add-iam-policy-binding <project-id> \
 gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
   --member="serviceAccount:<apphosting-runtime-sa>" \
   --role="roles/iam.serviceAccountUser"
+# ⚠ THE THIRD ROLE, and the one everyone forgets. Enqueuing is only half the
+# trip: Cloud Tasks then DISPATCHES the task, presenting an OIDC token whose
+# principal is the enqueuer's own identity - and a gen2 function is a Cloud Run
+# service, so that principal needs run.invoker ON THE SERVICE. Without it the
+# task is created and delivered and the service answers 403 run.routes.invoke,
+# with NO failure document written anywhere.
+for FN in processMercadoLivreNotification processMercadoLivreMassImport sendMercadoLivreStock processMercadoLivrePriceSync processMercadoLivreNfeUpload; do
+  gcloud run services add-iam-policy-binding "$FN" --region=us-east1 \
+    --member="serviceAccount:<apphosting-runtime-sa>" \
+    --role="roles/run.invoker"
+done
 ```
 
-Until this is granted the enqueue fails; the receiver then **falls back** to
-persisting the notification as `failed` (the reprocess sweep drains it) and still
-acks 200 — so notifications are not lost, but the intended rate-limited queue path
-is inactive. Verify the queue exists after the first deploy:
+⚠️ **The grants fail in different places, and only one of them leaves a trace.**
+
+| Missing grant                                | Fails at     | What you see                                                                                                                                                                                                                                                       |
+| -------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cloudtasks.enqueuer` / `serviceAccountUser` | **enqueue**  | the receiver logs `persistido`, writes a `failed` doc and still acks 200. Nothing is lost — the reprocess sweep drains it — but the rate-limited queue path is inactive.                                                                                           |
+| **`run.invoker`**                            | **dispatch** | the receiver logs `enfileirado` and looks perfectly healthy. The task is created, delivered, and 403s at the function. **No failure document is written**, `notificacoesMercadoLivre` stays empty, and the only evidence is a WARNING in the _function's own_ log. |
+
+That second row is why an empty failures collection is not proof of health: on this
+path our code never sees the failure, so it cannot record one. Read the function's
+log, not just the receiver's.
+
+Verify the queue exists after the first deploy:
 `gcloud tasks queues describe processMercadoLivreNotification --location=<region>`.
+Verify the binding took:
+`gcloud run services get-iam-policy processMercadoLivreNotification --region=<region>`.
 
-⚠️ **Those two grants cover the ENQUEUE leg only — the DISPATCH leg needs a
-third.** `firebase-admin` puts an OIDC token on every task it creates, minted
-for whatever `findServiceAccountEmail` resolves — on App Hosting, the **backend's
-own runtime SA**, not the functions runtime SA. Cloud Tasks then calls the
-function's Cloud Run service as that identity, and `firebase deploy` grants
-`run.invoker` to the _functions_ SA, so on any project where the two differ every
-dispatch is rejected:
-
-```bash
-# Once per task function (5 of them), or once at project level:
-gcloud run services add-iam-policy-binding processmercadolivremassimport \
-  --region=<tasks-region> --project=<project-id> \
-  --member="serviceAccount:<apphosting-runtime-sa>" \
-  --role="roles/run.invoker"
-```
-
-This failure looks nothing like the enqueue one: **the task IS created and then
-never delivered**, retrying to exhaustion with a 403/401 on each attempt. Read the
-task's last-attempt response code in the Cloud Tasks console — that number is the
-diagnosis, and it is the only place it appears.
-
-⚠️ **Also verify the queue's LOCATION equals the function's region.** They are
+⚠️ **A missing `run.invoker` is not the only way a task can be created and never
+delivered — verify the queue's LOCATION equals the function's region too.** They
+are
 not independently configured — `firebase-admin` builds the task's target URL as
 `https://{location}-{project}.cloudfunctions.net/{fn}` from the SAME location as
 the queue path it enqueues onto (`FIREBASE_FUNCTION_URL_FORMAT` in
