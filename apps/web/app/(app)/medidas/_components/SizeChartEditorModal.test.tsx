@@ -23,6 +23,37 @@ const DOMAINS = { domains: [{ domain_id: 'MLB-T_SHIRTS', name: 'Camisetas' }] };
 const networkError = () =>
   new MercadoLivreClientNetworkError('failed to fetch', new TypeError('fetch failed'));
 
+/**
+ * The smallest domain `?section=grids` response that renders ONE free-text
+ * chart-level question: BRAND is a `grid_template_required` string, so
+ * `attributeKind` types it `text` and the modal draws an `Autocomplete` rather
+ * than a closed `Select`.
+ */
+const BRAND_TEMPLATE_SPEC = {
+  input: {
+    groups: [
+      {
+        id: 'SIZE_CHART',
+        components: [
+          {
+            component: 'COMBO',
+            label: 'Marca',
+            attributes: [
+              {
+                id: 'BRAND',
+                name: 'Marca',
+                value_type: 'string',
+                tags: ['grid_template_required'],
+                values: [{ id: '14671', name: 'Nike' }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+};
+
 function show(client: Partial<MercadoLivreClient>) {
   const qc = new QueryClient({
     // ⚠️ NOT `retry: false` — the queries set their own `retry` predicate, which
@@ -132,5 +163,56 @@ describe('SizeChartEditorModal — failed domain load', () => {
       expect(screen.getByText(/reconecte em Canais de venda/)).toBeTruthy();
     });
     expect(screen.queryByRole('button', { name: /Tentar novamente/ })).toBeNull();
+  });
+});
+
+describe('SizeChartEditorModal — chart-level free-text attributes', () => {
+  /** Answer the domain question so the BRAND template renders. */
+  async function openWithBrandTemplate() {
+    show({
+      sizeChartDomains: vi.fn().mockResolvedValue(DOMAINS),
+      sizeChartSpecs: vi.fn().mockResolvedValue(BRAND_TEMPLATE_SPEC),
+    });
+
+    // By ROLE: a Mantine combobox labels its input AND its listbox, so
+    // `getByLabelText` matches two elements and throws.
+    const domain = await screen.findByRole('combobox', { name: /Domínio/ });
+    fireEvent.click(domain);
+    fireEvent.click(await screen.findByText('Camisetas (MLB-T_SHIRTS)'));
+
+    return (await screen.findByRole('combobox', { name: /Marca/ })) as HTMLInputElement;
+  }
+
+  it('KEEPS a trailing space while the operator types', async () => {
+    // The reported bug: resolving on the change path trimmed the text the input
+    // renders back, so the space was gone before the caret moved.
+    const marca = await openWithBrandTemplate();
+    fireEvent.change(marca, { target: { value: 'Nike ' } });
+    expect(marca.value).toBe('Nike ');
+  });
+
+  it('lets a value be typed PAST a known option of the same name', async () => {
+    // The second stripper, which a trim alone does not fix: "Nike " matched ML's
+    // own "Nike" and snapped back to it, eating the space again — so "Nike Air"
+    // was unreachable however slowly you typed it.
+    const marca = await openWithBrandTemplate();
+    fireEvent.change(marca, { target: { value: 'Nike' } });
+    // ⚠️ The load-bearing assertion is THIS one, not the last. `fireEvent.change`
+    // replaces the whole value, so jumping straight to "Nike Air" passes even
+    // against the snapping version — the defect only shows in the keystroke the
+    // operator has to pass THROUGH.
+    fireEvent.change(marca, { target: { value: 'Nike ' } });
+    expect(marca.value).toBe('Nike ');
+    fireEvent.change(marca, { target: { value: 'Nike Air' } });
+    expect(marca.value).toBe('Nike Air');
+  });
+
+  it('snaps to ML’s own value on blur, so the id still goes up', async () => {
+    const marca = await openWithBrandTemplate();
+    fireEvent.change(marca, { target: { value: '  nike  ' } });
+    fireEvent.blur(marca);
+    await waitFor(() => {
+      expect(marca.value).toBe('Nike');
+    });
   });
 });

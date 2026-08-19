@@ -42,6 +42,7 @@ import {
   type ChartSpecValue,
   chartLevelAttributes,
   detectMeasureTypes,
+  draftChartAttributeValue,
   extractColumns,
   extractGridTemplates,
   mainAttributeCandidates,
@@ -487,7 +488,14 @@ export function SizeChartEditorModal({
   function buildChart(): MlSizeChart {
     // `chartLevel` is already deduplicated by id, so no second pass is needed.
     const attributes = chartLevel.flatMap((t) => {
-      const picked = templateValues[t.id];
+      const draft = templateValues[t.id];
+      if (!draft) return [];
+      // A free-text draft is still RAW here: the field keeps what the operator
+      // typed so a space is typeable, and blur resolving it is only a
+      // convenience — sending from an unblurred field would otherwise ship the
+      // untrimmed text. An id-bearing pick came from the Select and is already
+      // ML's own value.
+      const picked = draft.id === '' ? resolveChartAttributeValue(t, draft.name) : draft;
       if (!picked) return [];
       // A free-text value carries no id — sending an invented `value_id` is
       // rejected, so it goes up as a name only.
@@ -734,8 +742,17 @@ export function SizeChartEditorModal({
                   }
                   data={template.values.map((v) => v.name)}
                   value={templateValues[template.id]?.name ?? ''}
+                  // Raw while typing, resolved on blur — resolving on change
+                  // rewrites the text under the caret and eats every space.
                   onChange={(typed) => {
-                    setValue(resolveChartAttributeValue(template, typed));
+                    setValue(draftChartAttributeValue(typed));
+                  }}
+                  onBlur={() => {
+                    const current = templateValues[template.id];
+                    if (!current || current.id !== '') return; // nothing typed / already an ML value
+                    const resolved = resolveChartAttributeValue(template, current.name);
+                    if (resolved?.id === current.id && resolved.name === current.name) return;
+                    setValue(resolved);
                   }}
                   disabled={sent}
                   required={template.required}

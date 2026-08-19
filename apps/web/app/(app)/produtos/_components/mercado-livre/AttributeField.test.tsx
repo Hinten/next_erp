@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
@@ -48,6 +49,38 @@ function renderField(
   return onChange;
 }
 
+/**
+ * The field as the real screen wires it: the reported row feeds straight back in
+ * as the `row` prop.
+ *
+ * The spy above cannot see the reported bug at all. It never updates `row`, so
+ * the input keeps re-rendering the row it was given and the very rewrite under
+ * test — state going back out to the DOM — never happens. Anything about what
+ * the operator SEES while typing has to run through this one.
+ */
+function renderControlled(a: MercadoLivreCategoriaAtributo, initial?: AttrRow) {
+  const reported = vi.fn();
+  function Harness() {
+    const [row, setRow] = useState<AttrRow>(initial ?? { ...EMPTY, id: a.id });
+    return (
+      <AttributeField
+        attr={a}
+        row={row}
+        onChange={(next) => {
+          reported(next);
+          setRow(next);
+        }}
+      />
+    );
+  }
+  render(
+    <MantineProvider env="test">
+      <Harness />
+    </MantineProvider>,
+  );
+  return reported;
+}
+
 describe('AttributeField', () => {
   it('lets free text through for a string attribute', () => {
     // ML ships known values for these but still accepts anything; a hard Select
@@ -62,19 +95,70 @@ describe('AttributeField', () => {
     });
   });
 
-  it('resolves a typed name to ML’s value id, ignoring accents and case', () => {
+  it('resolves a typed name to ML’s value id ON BLUR, ignoring accents and case', () => {
     // The legacy compared raw strings, so "Algodao" fell through to free text
-    // where "Algodão" was a real option — and ML rejected the listing.
-    const onChange = renderField(
+    // where "Algodão" was a real option — and ML rejected the listing. The match
+    // still happens, just not while the caret is in the field.
+    const reported = renderControlled(
       attr({ id: 'MATERIAL', name: 'Material', values: [{ id: 'M1', name: 'Algodão' }] }),
     );
     fireEvent.change(combo('Material'), { target: { value: 'algodao' } });
-    expect(onChange).toHaveBeenCalledWith({
+    expect(reported).toHaveBeenLastCalledWith({
+      id: 'MATERIAL',
+      value_id: null,
+      value_name: 'algodao',
+      unit_id: null,
+    });
+
+    fireEvent.blur(combo('Material'));
+    expect(reported).toHaveBeenLastCalledWith({
       id: 'MATERIAL',
       value_id: 'M1',
       value_name: 'Algodão',
       unit_id: null,
     });
+    expect(combo('Material')).toHaveProperty('value', 'Algodão');
+  });
+
+  it('KEEPS a trailing space in the box while the operator types', () => {
+    // The reported bug. Resolving on change trimmed the text the input renders
+    // back, so the space was gone before the caret moved.
+    renderControlled(attr({ values: [{ id: 'B1', name: 'Hering' }] }));
+    fireEvent.change(combo('Marca'), { target: { value: 'Nike ' } });
+    expect(combo('Marca')).toHaveProperty('value', 'Nike ');
+  });
+
+  it('lets a value be typed PAST a known option of the same name', () => {
+    // The second stripper, and the one a trim alone does not fix: on a category
+    // shipping "Nike", the canonical snap matched "Nike " straight back to
+    // "Nike" and ate the space again, so "Nike Air" was unreachable.
+    renderControlled(attr({ values: [{ id: 'B1', name: 'Nike' }] }));
+    const box = combo('Marca');
+    fireEvent.change(box, { target: { value: 'Nike' } });
+    fireEvent.change(box, { target: { value: 'Nike ' } });
+    expect(box).toHaveProperty('value', 'Nike ');
+    fireEvent.change(box, { target: { value: 'Nike Air' } });
+    expect(box).toHaveProperty('value', 'Nike Air');
+  });
+
+  it('leaves a leading space alone too', () => {
+    renderControlled(attr());
+    fireEvent.change(combo('Marca'), { target: { value: ' ' } });
+    expect(combo('Marca')).toHaveProperty('value', ' ');
+  });
+
+  it('reports NOTHING when an untouched field is blurred', () => {
+    // `onBlur` fires on every focus loss and the parent turns any report into a
+    // new rows array, which ListingForm reads as an edit — so tabbing past a
+    // field must not raise unsaved changes on a listing nobody touched.
+    const reported = renderControlled(attr({ values: [{ id: 'B1', name: 'Nike' }] }), {
+      id: 'BRAND',
+      value_id: 'B1',
+      value_name: 'Nike',
+      unit_id: null,
+    });
+    fireEvent.blur(combo('Marca'));
+    expect(reported).not.toHaveBeenCalled();
   });
 
   it('stores the id AND the name when an enumerated option is chosen', () => {
