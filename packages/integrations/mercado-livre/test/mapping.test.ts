@@ -262,6 +262,36 @@ describe('buildItemPayload — User Products seller', () => {
     expect(data.variations).toBeUndefined();
     expect(data.available_quantity).toBe(3);
   });
+
+  it('an UPDATE sends NO name field — neither family_name nor title', () => {
+    // The single-item half of User Products: a UP produto with no children
+    // republishes through here, and `family_name` on that PUT is the
+    // `ML 400 BODY_INVALID_FIELDS / The field family name is invalid` that made
+    // every republish fail. `buildUserProductItemPayload` (the family half) has
+    // always stripped it; this is the same rule on the same model.
+    const data = buildItemPayload({
+      isUpdate: true,
+      isUserProductSeller: true,
+      title: 'Camiseta UP',
+      condition: 'new',
+      sellerCustomField: 'link-doc-9',
+      categoryId: 'MLB31447',
+      price: 30,
+      availableQuantity: 3,
+      attributes: [attrSku('SKU-UP')],
+      pictures: [{ id: 'IMG1' }],
+    });
+
+    expect(data.family_name).toBeUndefined();
+    // Not a fallback either: ML derives the title from `family_name` + the
+    // attributes, so writing one is its own bad request.
+    expect(data.title).toBeUndefined();
+    // ...while everything an edit exists to change still goes out.
+    expect(data.status).toBe('active');
+    expect(data.available_quantity).toBe(3);
+    expect(data.attributes).toEqual([{ id: 'SELLER_SKU', value_name: 'SKU-UP' }]);
+    expect(data.pictures).toEqual([{ id: 'IMG1' }]);
+  });
 });
 
 describe('buildUserProductItemPayload', () => {
