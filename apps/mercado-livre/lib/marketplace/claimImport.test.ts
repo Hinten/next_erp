@@ -62,6 +62,15 @@ import {
 
 type DocData = Record<string, unknown>;
 
+interface FakeRef {
+  id: string;
+  __col: Map<string, DocData>;
+}
+interface FakeTx {
+  get: (ref: FakeRef) => Promise<{ exists: boolean; id: string; data: () => DocData | undefined }>;
+  set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => void;
+}
+
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
 
@@ -85,12 +94,39 @@ class FakeDb {
     return {
       doc: (id: string) => ({
         id,
+        __col: col,
         get: async () => ({ exists: col.has(id), id, data: () => col.get(id) }),
         set: async (data: DocData, opts?: { merge?: boolean }) => {
           col.set(id, opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data });
         },
       }),
     };
+  }
+
+  /** How many transactions ran — pins that the conversa write uses one. */
+  transacoes = 0;
+
+  /**
+   * Enough of a transaction for the out-of-order guard: reads see current
+   * state, writes apply immediately. It does NOT model OCC contention, so it
+   * proves the guard READS INSIDE the transaction and drops an older
+   * snapshot — not that two writers serialise, which is Firestore's job.
+   */
+  async runTransaction<T>(fn: (tx: FakeTx) => Promise<T>): Promise<T> {
+    this.transacoes += 1;
+    return fn({
+      get: async (ref: FakeRef) => ({
+        exists: ref.__col.has(ref.id),
+        id: ref.id,
+        data: () => ref.__col.get(ref.id),
+      }),
+      set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => {
+        ref.__col.set(
+          ref.id,
+          opts?.merge ? { ...(ref.__col.get(ref.id) ?? {}), ...data } : { ...data },
+        );
+      },
+    });
   }
 
   collectionGroup(groupId: string) {
@@ -164,7 +200,9 @@ function makeClaim(over: DocData = {}): MlClaim {
     // own `getClaimMessages` stub the moment the actionability gate existed.
     type: 'mediations',
     stage: 'claim',
-    status: 'closed',
+    // ⚠️ OPEN, and it has to be: this fixture also carries a send action, and a
+    // closed claim listing one is a state ML does not produce.
+    status: 'opened',
     parent_id: null,
     client_id: 3728194611110859,
     resource_id: ORDER_ID,
@@ -326,7 +364,7 @@ describe('importClaimMercadoLivre — happy create path', () => {
       origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
       tipo: TIPO_INCIDENTE.mediacaoDoMarketplace,
       motivoDoIncidente: 'O produto chegou danificado',
-      comentarios: 'order 2000004048276990(5142940410) - Fechada Reclamação',
+      comentarios: 'order 2000004048276990(5142940410) - Aberta Reclamação',
       timestamp: DATE_CREATED_MS * 1000,
       ultimaModificacao: LAST_UPDATED_MS * 1000,
       externalId: String(CLAIM_ID),
@@ -338,9 +376,10 @@ describe('importClaimMercadoLivre — happy create path', () => {
     expect(conversa).toMatchObject({
       origem: ORIGEM_CONVERSA.mercadoLivreReclamacoes,
       id: String(CLAIM_ID),
-      nome: 'Pedido 2000004048276990(5142940410) - Reclamação Fechada',
+      nome: 'Pedido 2000004048276990(5142940410) - Reclamação Aberta',
       sender_id: String(BUYER_ID),
-      atendido: true,
+      // The seller still holds a send action, so the thread is NOT handled.
+      atendido: false,
       cor_etiqueta: 7,
       estadoConversa: ESTADO_CONVERSA.naoRespondido,
       data_cadastro: DATE_CREATED_MS,
@@ -482,14 +521,17 @@ describe('importClaimMercadoLivre — redelivery idempotency', () => {
     expect(incidente.resolucao).toBeNull();
   });
 
-  it('a STALE stored conversa (newer ultima_modificacao) skips the merge AND the reason mensagem; claim messages still overwrite', async () => {
+  it('a STALE stored conversa (newer provider watermark) skips the merge AND the reason mensagem; claim messages still overwrite', async () => {
     const db = new FakeDb();
     seedPedido(db);
     seedOrderMl(db);
     db.seed('chat', CONVERSA_ID, {
       nome: 'nome local',
       estadoConversa: ESTADO_CONVERSA.emResposta,
-      ultima_modificacao: LAST_UPDATED_MS + 60_000, // NEWER than the claim's
+      // ⚠️ The guard reads `ultimaModificacaoIntegracao`, NOT
+      // `ultima_modificacao` — the latter is a mixed clock operators also
+      // write, so an edited conversa looked permanently newer than the wire.
+      ultimaModificacaoIntegracao: LAST_UPDATED_MS + 60_000, // NEWER than the claim's
       data_cadastro: 12345,
     });
     const message = makeMessage();
@@ -501,7 +543,7 @@ describe('importClaimMercadoLivre — redelivery idempotency', () => {
     const conversa = db.docs('chat').get(CONVERSA_ID)!;
     expect(conversa.nome).toBe('nome local'); // merge skipped
     expect(conversa.estadoConversa).toBe(ESTADO_CONVERSA.emResposta);
-    expect(conversa.ultima_modificacao).toBe(LAST_UPDATED_MS + 60_000);
+    expect(conversa.ultimaModificacaoIntegracao).toBe(LAST_UPDATED_MS + 60_000);
     // Reason mensagem gated on the conversa create/update — NOT written.
     expect(db.docs(MENSAGENS_PATH).has('PDD9545')).toBe(false);
     // Claim message still set at its deterministic id (legacy forceAdd parity).
@@ -515,7 +557,7 @@ describe('importClaimMercadoLivre — redelivery idempotency', () => {
     db.seed('chat', CONVERSA_ID, {
       nome: 'nome antigo',
       estadoConversa: ESTADO_CONVERSA.atendimentoFinalizado, // operator triage state
-      ultima_modificacao: 1_000, // OLDER than the claim's
+      ultimaModificacaoIntegracao: 1_000, // OLDER than the claim's
       data_cadastro: 12345, // set once on create — never merged
     });
 
@@ -523,27 +565,27 @@ describe('importClaimMercadoLivre — redelivery idempotency', () => {
 
     expect(result.skipped).toBeNull();
     const conversa = db.docs('chat').get(CONVERSA_ID)!;
-    expect(conversa.nome).toBe('Pedido 2000004048276990(5142940410) - Reclamação Fechada');
-    expect(conversa.ultima_modificacao).toBe(LAST_UPDATED_MS);
+    expect(conversa.nome).toBe('Pedido 2000004048276990(5142940410) - Reclamação Aberta');
+    expect(conversa.ultimaModificacaoIntegracao).toBe(LAST_UPDATED_MS);
     expect(conversa.estadoConversa).toBe(ESTADO_CONVERSA.atendimentoFinalizado); // preserved
     expect(conversa.data_cadastro).toBe(12345); // preserved
     expect(db.docs(MENSAGENS_PATH).has('PDD9545')).toBe(true);
   });
 
-  it('a stored conversa with a NULL ultima_modificacao always merges (legacy ?? true)', async () => {
+  it('a stored conversa with a NULL provider watermark always merges', async () => {
     const db = new FakeDb();
     seedPedido(db);
     seedOrderMl(db);
     db.seed('chat', CONVERSA_ID, {
       nome: 'nome antigo',
-      ultima_modificacao: null,
+      ultimaModificacaoIntegracao: null,
       data_cadastro: 12345,
     });
 
     await importClaimMercadoLivre(deps(db, makeApi()), CLAIM_ID);
 
     expect(db.docs('chat').get(CONVERSA_ID)!.nome).toBe(
-      'Pedido 2000004048276990(5142940410) - Reclamação Fechada',
+      'Pedido 2000004048276990(5142940410) - Reclamação Aberta',
     );
   });
 });
@@ -980,7 +1022,7 @@ describe('importClaimMercadoLivre — the conversa actionability gate (#768)', (
     const conversaId = makeConversaIdClaim(CONTA_ID, ORDER_ID, CLAIM_ID);
     db.seed('chat', conversaId, {
       origem: 'mlclaims',
-      ultima_modificacao: Date.parse(WIRE_LAST_UPDATED) + 60_000, // NEWER than the wire
+      ultimaModificacaoIntegracao: Date.parse(WIRE_LAST_UPDATED) - 60_000, // older than the wire
       estadoConversa: ESTADO_CONVERSA.emResposta,
       respostaBloqueada: null,
     });
@@ -998,28 +1040,84 @@ describe('importClaimMercadoLivre — the conversa actionability gate (#768)', (
     expect(db.docs(MENSAGENS).get('antiga')).toBeDefined();
   });
 
-  it('closes a STALE conversa even though the freshness gate would skip it', async () => {
-    // ⚠️ The reason the close runs outside `isFresh`. ML does not reliably bump
-    // `last_updated` when the seller\u2019s actions drain away, so a dead thread can
-    // look stale — and the composer would stay open on a claim nobody can
-    // answer. Proven by a stored timestamp far NEWER than the incoming one.
+  it('closes on an EQUAL watermark — ML does not always move last_updated', async () => {
+    // ⚠️ Why the gate is `>=` and not `>`. When the seller's actions drain away
+    // without ML bumping `last_updated`, a strict comparison would refuse the
+    // close forever and leave an open composer on a dead claim. This is the case
+    // the old out-of-band escape hatch existed for; the `>=` gate covers it
+    // without a second, unguarded write path.
     const db = new FakeDb();
     seedPedido(db);
     seedOrderMl(db);
     const conversaId = makeConversaIdClaim(CONTA_ID, ORDER_ID, CLAIM_ID);
     db.seed('chat', conversaId, {
       origem: 'mlclaims',
-      ultima_modificacao: Date.parse(WIRE_LAST_UPDATED) + 10_000_000,
-      nome: 'nome que o operador escolheu',
+      ultimaModificacaoIntegracao: Date.parse(WIRE_LAST_UPDATED), // EXACTLY equal
       respostaBloqueada: null,
     });
     const api = makeApi({ getClaim: vi.fn(async () => claimComAcoes([], { status: 'closed' })) });
 
     await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
 
+    expect(db.docs('chat').get(conversaId)!.respostaBloqueada).toBe(
+      'Reclamação encerrada no Mercado Livre',
+    );
+  });
+
+  it('REOPENS a closed thread when the seller gets a send action back', async () => {
+    // ⚠️ The direction the old escape hatch could not do at all: it only ever
+    // closed, so a claim that regained a send action stayed blocked forever.
+    // Both directions now ride the same guarded patch.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const conversaId = makeConversaIdClaim(CONTA_ID, ORDER_ID, CLAIM_ID);
+    db.seed('chat', conversaId, {
+      origem: 'mlclaims',
+      ultimaModificacaoIntegracao: Date.parse(WIRE_LAST_UPDATED) - 60_000,
+      respostaBloqueada: 'Reclamação encerrada no Mercado Livre',
+      atendido: true,
+    });
+    const api = makeApi({
+      getClaim: vi.fn(async () => claimComAcoes(['send_message_to_complainant'])),
+    });
+
+    await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
     const stored = db.docs('chat').get(conversaId)!;
-    expect(stored.respostaBloqueada).toBe('Reclamação encerrada no Mercado Livre');
-    // ...and ONLY the closing fields moved: the stale merge did not run.
-    expect(stored.nome).toBe('nome que o operador escolheu');
+    expect(stored.respostaBloqueada).toBeNull();
+    expect(stored.atendido).toBe(false);
+  });
+
+  it('refuses BOTH directions from a strictly older snapshot', async () => {
+    // ⚠️ The race the guard exists for: a worker holding an older no-action
+    // response must not close a thread another worker just reopened — and the
+    // mirror image must not reopen one another worker just closed.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const conversaId = makeConversaIdClaim(CONTA_ID, ORDER_ID, CLAIM_ID);
+    db.seed('chat', conversaId, {
+      origem: 'mlclaims',
+      // A NEWER snapshot already decided this thread is answerable.
+      ultimaModificacaoIntegracao: Date.parse(WIRE_LAST_UPDATED) + 60_000,
+      respostaBloqueada: null,
+      atendido: false,
+    });
+    const api = makeApi({ getClaim: vi.fn(async () => claimComAcoes([], { status: 'closed' })) });
+
+    await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    const stored = db.docs('chat').get(conversaId)!;
+    expect(stored.respostaBloqueada).toBeNull();
+    expect(stored.atendido).toBe(false);
+  });
+
+  it('runs the conversa write inside a TRANSACTION', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    await importClaimMercadoLivre(deps(db, makeApi()), CLAIM_ID);
+    expect(db.transacoes).toBeGreaterThan(0);
   });
 });

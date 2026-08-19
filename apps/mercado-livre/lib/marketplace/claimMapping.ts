@@ -283,6 +283,8 @@ export interface ConversaFromClaimContext {
   incidenteId: string;
   /** Null while the seller can still message; otherwise why they cannot. */
   respostaBloqueada: string | null;
+  /** Whether the seller still holds a send action — drives `atendido`. */
+  podeResponder: boolean;
 }
 
 /**
@@ -307,7 +309,16 @@ export function buildConversaFromClaim(
     id: String(claim.id),
     nome: `${resourceDisplay} ${claim.resource_id}(${claim.id}) - ${stageDisplay} ${statusDisplay}`.trim(),
     sender_id: String(ctx.buyerUserId),
-    atendido: claim.status === CLAIM_STATUS_CLOSED,
+    // ⚠️ The ACTIONABILITY, not `status === closed` — same rule as the other two
+    // ML importers. An OPEN claim whose seller holds only non-message actions is
+    // unanswerable too, and leaving it `atendido: false` put a blocked thread
+    // back in the operator queue with a reason but no closure.
+    //
+    // `status === closed` is not OR-ed in on purpose: ML empties
+    // `available_actions` when a claim closes, so it already implies this — while
+    // a closed claim that somehow DOES still list a send action would otherwise
+    // be marked handled and given a live composer at the same time.
+    atendido: !ctx.podeResponder,
     cor_etiqueta: ctx.contaCor ?? 0,
     data_cadastro: coerceToMillis(claim.date_created),
     ultima_modificacao: coerceToMillis(claim.last_updated ?? claim.date_created),
@@ -316,6 +327,9 @@ export function buildConversaFromClaim(
     // WhatsApp still write, and `useClienteLink` falls back to it for those.
     clienteOuterRef: ctx.clienteOuterRef,
     respostaBloqueada: ctx.respostaBloqueada,
+    // The PROVIDER clock the out-of-order guard compares, kept apart from
+    // `ultima_modificacao`, which operators also write (rename, etiqueta).
+    ultimaModificacaoIntegracao: coerceToMillis(claim.last_updated ?? claim.date_created),
     integracaoOuterRef: toOuterRef(`integracao/${ctx.contaId}`),
     pedidoOuterRef: toOuterRef(`pedidos/${ctx.pedidoId}`),
     incidenteOuterRef: toOuterRef(`pedidos/${ctx.pedidoId}/incidentes/${ctx.incidenteId}`),
@@ -435,8 +449,19 @@ export function buildAttachmentMensagem(args: {
   // the PARENT's direction. Legacy stamped every one `salva`, which rendered
   // the buyer's photos as drafts of ours.
   const doVendedor = claimMessageDoVendedor(args.parentMessage);
+  // ⚠️ ...and the parent's DELIVERY too. An attachment on a message ML
+  // rejected was never seen either, so showing it as `enviado` while the
+  // message itself correctly reads `erro` presents the same failed delivery
+  // as two different outcomes.
+  const naoEntregue = STATUS_NAO_ENTREGUE.has(
+    (args.parentMessage.status ?? '').trim().toLowerCase(),
+  );
   return {
-    estadoEnvio: doVendedor ? ESTADO_ENVIO.enviado : ESTADO_ENVIO.recebido,
+    estadoEnvio: doVendedor
+      ? naoEntregue
+        ? ESTADO_ENVIO.erro
+        : ESTADO_ENVIO.enviado
+      : ESTADO_ENVIO.recebido,
     tipo: TIPO_MENSAGEM.comum,
     mid: args.filename,
     midGroup: args.parentMessageDocId,

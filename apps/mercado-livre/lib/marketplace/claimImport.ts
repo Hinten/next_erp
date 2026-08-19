@@ -55,7 +55,7 @@
  * ⚠️ UNITS: incidente datetimes are MICROSECONDS; conversa/mensagem datetimes
  * are MILLISECONDS (`claimMapping.ts` owns the conversions).
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
   type MercadoLivreApi,
@@ -382,41 +382,66 @@ export async function importClaimMercadoLivre(
     pedidoId,
     incidenteId,
     respostaBloqueada: acao.motivo,
+    podeResponder: acao.podeResponder,
   });
-  let atualizouConversa = false;
-  if (!conversaSnap.exists) {
-    // Full doc — estadoConversa fills from the schema default (naoRespondido).
-    await conversaCollection.set(db, {}, conversaId, conversaFields);
-    atualizouConversa = true;
-  } else {
-    const stored = conversaCollection.parseRead(
-      conversaSnap.data(),
-      conversaCollection.docPath({}, conversaId),
-    );
-    const incomingMs = conversaFields.ultima_modificacao as number | null;
-    const isFresh =
-      stored.ultima_modificacao == null ||
-      (incomingMs != null && stored.ultima_modificacao < incomingMs);
-    if (isFresh) {
-      // parseMerge (never a full parse: defaults would clobber stored fields),
-      // WITHOUT data_cadastro (set once on create) — estadoConversa is already
-      // absent from the mapped fields (see buildConversaFromClaim).
-      const { data_cadastro: _dataCadastro, ...patch } = conversaFields;
-      await conversaCollection.merge(db, {}, conversaId, patch);
-      atualizouConversa = true;
-    } else if (!acao.podeResponder && stored.respostaBloqueada !== acao.motivo) {
-      // ⚠️ Closing runs OUTSIDE the freshness gate on purpose. ML does not
-      // always bump `last_updated` when the seller's actions drain away, so a
-      // thread can become unanswerable while looking stale — and the composer
-      // would stay open on a claim nobody can reply to. Only the two closing
-      // fields are touched; `estadoConversa` remains the operator's.
-      await conversaCollection.merge(db, {}, conversaId, {
-        respostaBloqueada: acao.motivo,
-        atendido: true,
-        ultima_modificacao: nowMs,
-      });
+
+  // ⚠️ ONE transaction, gated on a PROVIDER watermark (root CLAUDE.md rule 7,
+  // tier 2) — the same shape the post-sale message import and the WhatsApp
+  // inbound guard use.
+  //
+  // This replaced a `ultima_modificacao` freshness check plus an out-of-band
+  // close, and both halves of that were wrong. `ultima_modificacao` is a MIXED
+  // clock — operators write it on every rename and etiqueta change — so an
+  // edited conversa looked permanently "newer" than the wire. And the escape
+  // hatch only ever CLOSED: a claim that regained a send action without moving
+  // `last_updated` stayed blocked forever, while a worker holding an older
+  // no-action response could close a thread another worker had just reopened.
+  //
+  // `ultimaModificacaoIntegracao` carries `claim.last_updated` and nothing else,
+  // so the comparison is provider-vs-provider. The patch reconciles BOTH
+  // directions because `respostaBloqueada` and `atendido` simply ride it, and
+  // the gate is `>=`: when ML does not move `last_updated`, an equal snapshot
+  // still applies, which is what the old escape hatch existed for.
+  const atualizouConversa = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(conversaCollection.docRef(db, {}, conversaId));
+    if (!snap.exists) {
+      // Full doc — estadoConversa fills from the schema default (naoRespondido).
+      tx.set(
+        conversaCollection.docRef(db, {}, conversaId),
+        conversaCollection.parse(conversaFields) as DocumentData,
+      );
+      return true;
     }
-  }
+
+    // Re-derived from the tx snapshot, never from the read above — that one is
+    // stale by the time we get here, which is the whole point.
+    const stored = snap.data() as Record<string, unknown> | undefined;
+    const armazenado =
+      typeof stored?.ultimaModificacaoIntegracao === 'number'
+        ? stored.ultimaModificacaoIntegracao
+        : null;
+    const entrante = conversaFields.ultimaModificacaoIntegracao as number | null;
+
+    if (armazenado != null && entrante != null && entrante < armazenado) {
+      console.warn('[mercado-livre] claim: snapshot mais antigo ignorado', {
+        conversaId,
+        armazenado,
+        entrante,
+      });
+      return false;
+    }
+
+    // parseMerge (never a full parse: defaults would clobber stored fields),
+    // WITHOUT data_cadastro (set once on create) — estadoConversa is already
+    // absent from the mapped fields (see buildConversaFromClaim).
+    const { data_cadastro: _dataCadastro, ...patch } = conversaFields;
+    tx.set(
+      conversaCollection.docRef(db, {}, conversaId),
+      conversaCollection.parseMerge(patch) as DocumentData,
+      { merge: true },
+    );
+    return true;
+  });
 
   /* --------------------------- (j) mensagens (ms) ---------------------------- */
   const messages = await api.getClaimMessages(claimId);

@@ -7,19 +7,28 @@
  * hangs off a pedido, and the pedido carries `clientePedidoOuterRef`. So there
  * is nothing to find-or-create here — only one thing worth writing back.
  *
- * ⚠️ **Stamping `idMercadoLivre` is the whole point of this module.** A buyer
- * who asks a pre-sale question is resolved BY that id (`questionImport.ts`),
- * while an order-imported cliente is resolved by CPF/e-mail/telefone and carries
- * no ML id at all. Without this write the same person forks into two clientes —
- * one from their question, one from their order — and neither ever converges.
- * The claim is the first place both facts are in hand at once.
+ * ⚠️ **This stamps an identity key; it does NOT merge clientes.** A buyer can
+ * already own a second doc: `questionImport.ts` resolves a pre-sale asker BY
+ * `idMercadoLivre`, while `orderImport.ts` may create a different cliente from
+ * the billing identity on the same person's order. Writing the ML id onto the
+ * pedido's cliente when another doc already claims it would leave **two strong
+ * owners of one identity**, and `findOrCreateCliente`'s match leg could then
+ * return either — the ambiguity #1067 exists to prevent, manufactured here.
  *
- * ⚠️ **Fill-only-when-absent**, never overwrite. A stored id that disagrees is
- * either a cliente shared by two ML accounts or an earlier mistake; silently
- * rewriting it would move the identity under whichever claim arrived last —
- * root `CLAUDE.md` rule 7, tier 3. It is logged and left alone.
+ * So the stamp is refused whenever the id already belongs to a different
+ * cliente, and the split is logged for a human. Merging two clientes moves
+ * pedidos, conversas and endereços; that is a migration, not a webhook's job.
+ *
+ * ⚠️ **Fill-only-when-absent, and the write carries a precondition.** The
+ * decision is made from a snapshot, so an unguarded merge would be
+ * last-write-wins: two claim deliveries carrying different buyer ids can both
+ * observe an empty field, and the later write would silently replace the first
+ * while this file claims it never overwrites. `lastUpdateTime` (root
+ * `CLAUDE.md` rule 7, tier 1 — Admin-only) makes the loser fail loudly and
+ * re-read instead.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { isFailedPrecondition } from '@delfrance/data/admin';
 import { clienteCollection } from '@delfrance/data/admin/collections';
 import { idFromRef } from '@delfrance/schemas';
 
@@ -28,23 +37,51 @@ export interface VincularClienteResult {
   readonly clienteOuterRef: string;
   /** True when this run wrote the ML id onto a cliente that had none. */
   readonly carimbouIdMercadoLivre: boolean;
+  /**
+   * Set when the id already belonged to a DIFFERENT cliente. The stamp is
+   * refused and this names the other doc, so the split is visible in the result
+   * as well as in the log.
+   */
+  readonly clienteConflitante?: string;
 }
 
 /**
- * Record the buyer's ML user id on the pedido's cliente, when it has none.
+ * Any OTHER cliente already carrying this ML id.
+ *
+ * ⚠️ `limit(2)` on purpose: one hit that is the cliente we are about to stamp is
+ * fine, so the query has to be able to see a second. It is index-backed by the
+ * same single-field `clientes(idMercadoLivre)` index `findOrCreateCliente`'s
+ * match leg needs — no new index.
+ */
+async function outroDonoDoId(
+  db: Firestore,
+  idMercadoLivre: string,
+  clienteId: string,
+): Promise<string | null> {
+  const snap = await clienteCollection
+    .ref(db, {})
+    .where('idMercadoLivre', '==', idMercadoLivre)
+    .limit(2)
+    .get();
+  const outro = snap.docs.find((d) => d.id !== clienteId);
+  return outro?.id ?? null;
+}
+
+/**
+ * Record the buyer's ML user id on the pedido's cliente, when it has none and
+ * no one else already owns it.
  *
  * Never creates a cliente: on this path one always exists (the caller has
  * already refused a pedido without `clientePedidoOuterRef`). A cliente doc that
- * has since been deleted is a no-op, not an error — the conversa still imports,
- * it just carries a ref to a gone document, exactly as it would have with the
- * old usuario path.
+ * has since been deleted is a no-op, not an error.
  */
 export async function vincularClienteMercadoLivre(
   db: Firestore,
   args: { clienteOuterRef: string; buyerUserId: number },
 ): Promise<VincularClienteResult> {
   const clienteId = idFromRef(args.clienteOuterRef);
-  const snap = await clienteCollection.docRef(db, {}, clienteId).get();
+  const ref = clienteCollection.docRef(db, {}, clienteId);
+  const snap = await ref.get();
   if (!snap.exists) {
     console.warn('[mercado-livre] claim: cliente do pedido não existe mais', {
       clienteOuterRef: args.clienteOuterRef,
@@ -70,6 +107,38 @@ export async function vincularClienteMercadoLivre(
     return { clienteOuterRef: args.clienteOuterRef, carimbouIdMercadoLivre: false };
   }
 
-  await clienteCollection.merge(db, {}, clienteId, { idMercadoLivre: desejado });
+  // ⚠️ Before creating a second owner of this identity, check whether one
+  // exists. A pre-sale question resolves its asker BY this key, so the buyer's
+  // question-cliente and their order-cliente are routinely different docs.
+  const conflito = await outroDonoDoId(db, desejado, clienteId);
+  if (conflito != null) {
+    console.warn(
+      '[mercado-livre] claim: idMercadoLivre já pertence a outro cliente — não vinculado',
+      {
+        clienteDoPedido: clienteId,
+        clienteExistente: conflito,
+        idMercadoLivre: desejado,
+      },
+    );
+    return {
+      clienteOuterRef: args.clienteOuterRef,
+      carimbouIdMercadoLivre: false,
+      clienteConflitante: conflito,
+    };
+  }
+
+  try {
+    // Tier 1: the patch is derived from `snap`, so the write only lands if the
+    // doc has not moved since. A concurrent delivery that filled the field
+    // first makes this fail rather than silently overwrite it.
+    await ref.update({ idMercadoLivre: desejado }, { lastUpdateTime: snap.updateTime });
+  } catch (err) {
+    if (!isFailedPrecondition(err)) throw err;
+    console.warn('[mercado-livre] claim: cliente mudou durante a vinculação — carimbo descartado', {
+      clienteId,
+      idMercadoLivre: desejado,
+    });
+    return { clienteOuterRef: args.clienteOuterRef, carimbouIdMercadoLivre: false };
+  }
   return { clienteOuterRef: args.clienteOuterRef, carimbouIdMercadoLivre: true };
 }

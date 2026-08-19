@@ -98,6 +98,8 @@ const CONVERSA_CTX = {
   pedidoId: 'ped-1',
   incidenteId: 'inc-1',
   respostaBloqueada: null,
+  // CLAIM_SAMPLE is `status: closed` — ML empties available_actions on close.
+  podeResponder: false,
 };
 
 /* ------------------------------ enum mappings ------------------------------ */
@@ -301,6 +303,7 @@ describe('buildConversaFromClaim', () => {
       ultima_modificacao: LAST_UPDATED_MS,
       clienteOuterRef: 'documents/clientes/cli-1',
       respostaBloqueada: null,
+      ultimaModificacaoIntegracao: LAST_UPDATED_MS,
       integracaoOuterRef: 'documents/integracao/conta_abc123',
       pedidoOuterRef: 'documents/pedidos/ped-1',
       incidenteOuterRef: 'documents/pedidos/ped-1/incidentes/inc-1',
@@ -335,6 +338,7 @@ describe('buildConversaFromClaim', () => {
     const conversa = buildConversaFromClaim(makeClaim({ status: 'opened', last_updated: null }), {
       ...CONVERSA_CTX,
       contaCor: null,
+      podeResponder: true,
     });
     expect(conversa.atendido).toBe(false);
     expect(conversa.cor_etiqueta).toBe(0);
@@ -498,5 +502,71 @@ describe('buildAttachmentMensagem', () => {
     });
     expect(mensagem.estadoEnvio).toBe(ESTADO_ENVIO.enviado);
     expect(mensagem.clienteMensagemOuterRef).toBeNull();
+  });
+});
+
+describe('atendido follows the ACTIONABILITY, not the claim status', () => {
+  it('marks an OPEN claim handled when the seller holds no send action', () => {
+    // ⚠️ The gap the status-only rule left: an open claim whose seller can only
+    // refund or allow a return is unanswerable, and leaving it `atendido: false`
+    // put a blocked thread back in the operator queue carrying a reason but no
+    // closure — a composer that explains why it cannot send, in the work list.
+    const conversa = buildConversaFromClaim(makeClaim({ status: 'opened' }), {
+      ...CONVERSA_CTX,
+      podeResponder: false,
+      respostaBloqueada: 'Sem envio nesta etapa',
+    });
+    expect(conversa.atendido).toBe(true);
+  });
+
+  it('leaves a CLOSED claim unhandled if ML still offers a send action', () => {
+    // The mirror case, and why `status === closed` is not OR-ed in. ML empties
+    // `available_actions` on close, so this shape should not occur — but if it
+    // does, marking it handled while the composer is live is the contradiction.
+    const conversa = buildConversaFromClaim(makeClaim({ status: 'closed' }), {
+      ...CONVERSA_CTX,
+      podeResponder: true,
+    });
+    expect(conversa.atendido).toBe(false);
+  });
+});
+
+describe('an attachment inherits the parent’s DELIVERY, not just its direction', () => {
+  it('marks an attachment on a rejected seller message as erro', () => {
+    // ⚠️ The parent message already lands `erro` — ML never delivered it. The
+    // attachment is part of that same rejected message, so showing it as
+    // `enviado` presented one failed delivery as two different outcomes.
+    for (const status of ['rejected', 'moderated']) {
+      const mensagem = buildAttachmentMensagem({
+        filename: 'nota.pdf',
+        parentMessage: makeMessage({ sender_role: 'respondent', status }),
+        parentMessageDocId: 'digest-abc',
+        arquivoOuterRef: 'documents/arquivos/arq-1',
+        clienteOuterRef: 'documents/clientes/cli-1',
+      });
+      expect(mensagem.estadoEnvio, status).toBe(ESTADO_ENVIO.erro);
+    }
+  });
+
+  it('leaves a delivered seller attachment as enviado', () => {
+    const mensagem = buildAttachmentMensagem({
+      filename: 'nota.pdf',
+      parentMessage: makeMessage({ sender_role: 'respondent', status: 'available' }),
+      parentMessageDocId: 'digest-abc',
+      arquivoOuterRef: 'documents/arquivos/arq-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
+    });
+    expect(mensagem.estadoEnvio).toBe(ESTADO_ENVIO.enviado);
+  });
+
+  it('a rejected INBOUND attachment stays recebido — it reached us', () => {
+    const mensagem = buildAttachmentMensagem({
+      filename: 'foto.jpg',
+      parentMessage: makeMessage({ sender_role: 'complainant', status: 'rejected' }),
+      parentMessageDocId: 'digest-abc',
+      arquivoOuterRef: 'documents/arquivos/arq-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
+    });
+    expect(mensagem.estadoEnvio).toBe(ESTADO_ENVIO.recebido);
   });
 });
