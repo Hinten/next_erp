@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
+import { ML_POST_SALE_AGENT_USER_ID, postSaleAgentUserId } from '../src/types';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -176,5 +177,108 @@ describe('getMessage', () => {
       { id: '000011122344', name: 'packs' },
       { id: '475684066', name: 'sellers' },
     ]);
+  });
+});
+
+describe('sendPackMessage', () => {
+  function sendMock() {
+    return vi.fn(async (_u: string | URL | Request, _i?: RequestInit) => jsonResponse({}, 200));
+  }
+  function bodyOf(fetchMock: FetchMock): Record<string, unknown> {
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    return JSON.parse(String(init.body)) as Record<string, unknown>;
+  }
+
+  it('posts to the pack/seller URL with tag=post_sale', async () => {
+    const fetchMock = sendMock();
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.sendPackMessage('2000000089077943', '415458330', {
+      text: 'Enviado hoje!',
+      toUserId: ML_POST_SALE_AGENT_USER_ID.MLB,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(
+      'https://api.mercadolibre.com/messages/packs/2000000089077943/sellers/415458330?tag=post_sale',
+    );
+    expect((init as RequestInit).method).toBe('POST');
+  });
+
+  it('addresses the AGENT and sends BOTH ids as strings, per ML’s documented body', async () => {
+    // ⚠️ The single easiest thing to get silently wrong. Since 02/02/2026 the
+    // agent IS the delivery path on MLB, so a message addressed to the buyer's
+    // real id does not reach them — and ML answers 200 either way. Nothing but
+    // this assertion stands between that and a seller whose replies vanish.
+    const fetchMock = sendMock();
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.sendPackMessage('pack-1', '415458330', {
+      text: 'Enviado hoje!',
+      toUserId: postSaleAgentUserId('MLB'),
+    });
+
+    expect(bodyOf(fetchMock)).toEqual({
+      from: { user_id: '415458330' },
+      to: { user_id: '3037675074' },
+      text: 'Enviado hoje!',
+    });
+  });
+
+  it('omits the attachments key entirely when there are none', async () => {
+    // An empty array is not the same as an absent key here: ML validates the
+    // attachment ids it is given, so sending [] invites a 400 for nothing.
+    const fetchMock = sendMock();
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.sendPackMessage('p', 's', { text: 'oi', toUserId: 1, attachments: [] });
+
+    expect(bodyOf(fetchMock)).not.toHaveProperty('attachments');
+  });
+
+  it('includes attachments when the caller supplies them', async () => {
+    const fetchMock = sendMock();
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.sendPackMessage('p', 's', { text: 'oi', toUserId: 1, attachments: ['a1', 'a2'] });
+
+    expect(bodyOf(fetchMock).attachments).toEqual(['a1', 'a2']);
+  });
+
+  it('surfaces a refusal as MercadoLivreHttpError rather than resolving', async () => {
+    // A blocked thread, an open mediation and an undelivered ME Full order all
+    // answer 403. The route turns that into an operator-facing message, which
+    // it can only do if the rejection actually reaches it.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'conversation blocked' }, 403),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await expect(api.sendPackMessage('p', 's', { text: 'oi', toUserId: 1 })).rejects.toMatchObject({
+      name: 'MercadoLivreHttpError',
+      status: 403,
+    });
+  });
+});
+
+describe('postSaleAgentUserId', () => {
+  it('maps every site ML published an agent for', () => {
+    expect(postSaleAgentUserId('MLA')).toBe(3037674934);
+    expect(postSaleAgentUserId('MLC')).toBe(3020819166);
+    expect(postSaleAgentUserId('MCO')).toBe(3037204123);
+    expect(postSaleAgentUserId('MLM')).toBe(3037204279);
+    expect(postSaleAgentUserId('MLU')).toBe(3037204685);
+  });
+
+  it('defaults an unknown, empty or missing site to MLB', () => {
+    // This ERP sells in Brazil; a missing site_id field is a field ML did not send,
+    // not evidence of a different marketplace.
+    for (const site of [null, undefined, '', '   ', 'MLZ']) {
+      expect(postSaleAgentUserId(site), String(site)).toBe(ML_POST_SALE_AGENT_USER_ID.MLB);
+    }
+  });
+
+  it('is case- and whitespace-insensitive, because the field comes off the wire', () => {
+    expect(postSaleAgentUserId(' mla ')).toBe(3037674934);
   });
 });

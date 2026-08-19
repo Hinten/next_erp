@@ -134,3 +134,82 @@ describe('getQuestion', () => {
     await expect(api.getQuestion(1)).rejects.toBeInstanceOf(MercadoLivreReauthRequiredError);
   });
 });
+
+describe('answerQuestion / deleteQuestion / blockUserFromQuestions', () => {
+  function bodyOf(fetchMock: FetchMock): Record<string, unknown> {
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    return JSON.parse(String(init.body)) as Record<string, unknown>;
+  }
+
+  it('answers with the flat { question_id, text } body ML documents', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 998, status: 'ACTIVE', text: 'Temos sim!' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const r = await api.answerQuestion(11751825075, 'Temos sim!');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/answers');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(bodyOf(fetchMock)).toEqual({ question_id: 11751825075, text: 'Temos sim!' });
+    expect(r.status).toBe('ACTIVE');
+  });
+
+  it('tolerates an answer response ML shapes differently', async () => {
+    // The body is passthrough and every field defaults to null: nothing in the
+    // reply path reads it, so an ML field rename must not turn a SUCCESSFUL
+    // public answer into a thrown validation error.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ campo_novo: 1 }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await expect(api.answerQuestion(1, 'x')).resolves.toMatchObject({ id: null, status: null });
+  });
+
+  it('deletes a question with DELETE /questions/{id}', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({}, 200),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.deleteQuestion(11751825075);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/questions/11751825075');
+    expect((init as RequestInit).method).toBe('DELETE');
+  });
+
+  it('blocks a buyer on the SELLER’s blacklist, with the BUYER in the body', async () => {
+    // ⚠️ The two ids are not interchangeable and both are plain integers, so a
+    // swap is a well-formed request that blocks the wrong person — the seller
+    // from their own listings.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({}, 201),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.blockUserFromQuestions(415458330, 56801932);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/users/415458330/questions_blacklist');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(bodyOf(fetchMock)).toEqual({ user_id: 56801932 });
+  });
+
+  it('surfaces a refusal on each of the three, instead of resolving quietly', async () => {
+    const fail = () =>
+      createMercadoLivreApi(
+        cfg(
+          vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+            jsonResponse({ message: 'nope' }, 400),
+          ),
+        ),
+      );
+
+    await expect(fail().answerQuestion(1, 'x')).rejects.toMatchObject({ status: 400 });
+    await expect(fail().deleteQuestion(1)).rejects.toMatchObject({ status: 400 });
+    await expect(fail().blockUserFromQuestions(1, 2)).rejects.toMatchObject({ status: 400 });
+  });
+});

@@ -123,6 +123,29 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   that helper puts the RAW BODY into `MercadoLivreValidationError`, and `respond.ts`
   logs a validation error's payload straight to the log stream — the exact route #1015
   leaked an OAuth token response by.
+- `app/api/marketplace/mercado-livre/chat/{responder,pergunta-acao}` +
+  `lib/marketplace/chatOutbound.ts` — **#533**: answering a pergunta or a post-sale
+  thread from the unified inbox, plus ML's two question-moderation actions.
+  ⚠️ **HTTP, not a Firestore trigger, and that is the design.** WhatsApp sends by
+  writing a mensagem and letting `sendOutbound` transmit it, which buys free retries —
+  worth it when failures are TRANSIENT. ML's are not: a reply is single-shot and its
+  refusals are terminal and operator-actionable (already answered, thread blocked,
+  mediation open, grant dead), so the operator must see the real reason with their
+  text still on screen. A refusal is `ChatOutboundRefusedError` → **409 carrying its
+  own code**, which the composer renders verbatim.
+  ⚠️ `conversa.respostaBloqueada` is a UI hint written by the importer and STALE BY
+  CONSTRUCTION — a question can be answered on ML's own site between the last import
+  and the click. The spine never trusts it: it re-reads the question or the pack and
+  that read is the authority (it is also where the LIVE `seller_max_message_length`
+  comes from, so nothing hardcodes 350).
+  ⚠️ **Send FIRST, write second.** A mensagem written before the ML call leaves a
+  phantom reply whenever ML refuses — #817 inverted: instead of a message that never
+  sends, a message that never existed.
+  ⚠️ `pergunta-acao` is gated on **`PERM.mensagem.delete`**, not `.write`: a deleted
+  question leaves the listing for everyone and a blocked buyer cannot ask on any of
+  the seller's items, and neither is undoable from here. Neither action writes to the
+  thread — ML changes the question's `status` and the importer is the one writer of
+  that state.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see

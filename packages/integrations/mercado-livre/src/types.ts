@@ -1428,3 +1428,46 @@ export const mlPackMessagesSchema = z
   })
   .passthrough();
 export type MlPackMessages = z.infer<typeof mlPackMessagesSchema>;
+
+/**
+ * ML's post-sale **messaging Agent** user id, per site.
+ *
+ * ⚠️ Since **02/02/2026** ML intermediates buyer↔seller post-sale conversations
+ * with an AI Agent, starting with Fulfillment logistics and rolling forward.
+ * A seller message must be addressed to the AGENT, not to the buyer — and on a
+ * read, `from.user_id` is the agent's id rather than the buyer's.
+ *
+ * Sending to the real buyer id is not a soft failure: the agent is the delivery
+ * path, so a message addressed around it does not reach the buyer.
+ */
+export const ML_POST_SALE_AGENT_USER_ID = {
+  MLB: 3037675074,
+  MLA: 3037674934,
+  MLC: 3020819166,
+  MCO: 3037204123,
+  MLM: 3037204279,
+  MLU: 3037204685,
+} as const satisfies Record<string, number>;
+
+export type MlPostSaleAgentSite = keyof typeof ML_POST_SALE_AGENT_USER_ID;
+
+/**
+ * The agent for a site, defaulting to **MLB** — this ERP sells in Brazil, and a
+ * `null`/unknown `site_id` on a message is far more likely to be a field ML did
+ * not send than a genuinely different marketplace.
+ */
+export function postSaleAgentUserId(siteId: string | null | undefined): number {
+  const key = (siteId ?? '').trim().toUpperCase();
+  return ML_POST_SALE_AGENT_USER_ID[key as MlPostSaleAgentSite] ?? ML_POST_SALE_AGENT_USER_ID.MLB;
+}
+
+/** `POST /answers` — the shape ML accepts for answering a question. */
+export const mlAnswerResultSchema = z
+  .object({
+    id: z.union([z.number(), z.string()]).nullable().default(null),
+    status: z.string().nullable().default(null),
+    text: z.string().nullable().default(null),
+    date_created: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlAnswerResult = z.infer<typeof mlAnswerResultSchema>;
