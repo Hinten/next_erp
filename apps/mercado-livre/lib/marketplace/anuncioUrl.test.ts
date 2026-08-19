@@ -114,6 +114,19 @@ describe('resolveAnuncioUrl', () => {
     );
   });
 
+  it('treats an EMPTY permalink as no permalink', async () => {
+    // `??` alone rejects only null/undefined, so `''` would be returned as the
+    // answer and the route would reply 200 {"url": ""} — which a browser opens as
+    // the current page, i.e. a link that silently does nothing.
+    const { api } = makeApi({
+      getItem: vi.fn(async () => ({ id: 'MLB999', permalink: '', user_product_id: '' })),
+    });
+
+    expect(await resolveAnuncioUrl({ api }, { id: 'MLB999', isUserProductModel: true })).toBe(
+      'https://produto.mercadolivre.com.br/MLB-999',
+    );
+  });
+
   it('answers null for a family ML no longer knows', async () => {
     const { api, mocks } = makeApi({
       getUserProductFamily: vi.fn(async () => {

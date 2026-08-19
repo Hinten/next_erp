@@ -84,8 +84,14 @@ function isFamilyId(id: string): boolean {
   return /^\d+$/.test(id);
 }
 
-/** ML's `user_product_id` when it is actually usable. */
-function upIdOf(value: unknown): string | null {
+/**
+ * A string ML may answer with as null, absent OR empty — all three unusable.
+ *
+ * The empty case is the one worth a helper: `?? ` alone rejects only null and
+ * undefined, so an empty `permalink` would sail through as the answer and the
+ * route would reply `200 {"url": ""}`, which a browser opens as the current page.
+ */
+function nonEmpty(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
@@ -132,9 +138,9 @@ async function familyUrl(api: AnuncioUrlApi, familyId: string): Promise<string |
 async function upItemUrl(api: AnuncioUrlApi, id: string): Promise<string | null> {
   try {
     const item = await api.getItem(id);
-    const upId = upIdOf(item.user_product_id);
+    const upId = nonEmpty(item.user_product_id);
     if (upId != null) return upProductUrl(upId);
-    return item.permalink ?? mlbProductUrl(id);
+    return nonEmpty(item.permalink) ?? mlbProductUrl(id);
   } catch (err) {
     // The listing is gone — there is no page to open, and saying so beats a
     // link that lands on a 404.
