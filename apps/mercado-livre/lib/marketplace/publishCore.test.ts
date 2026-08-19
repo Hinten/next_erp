@@ -161,6 +161,24 @@ describe('resolvePrice', () => {
     expect(resolvePrice(produto, { id: 'lista-x', nome: null }, issues)).toBeNull();
     expect(issues).toEqual(['produto "Camiseta Básica" sem preço na tabela lista-x']);
   });
+
+  it('falls back to the id alone for a blank/whitespace nome — a soft-parsed legacy doc, not "unresolved"', () => {
+    // listaDePrecosCache.ts's reader soft-parses on schema mismatch, so a
+    // malformed doc can hand back "" or "   " despite the declared type.
+    for (const blank of ['', '   ']) {
+      const issues: string[] = [];
+      expect(resolvePrice(produto, { id: 'lista-x', nome: blank }, issues)).toBeNull();
+      expect(issues).toEqual(['produto "Camiseta Básica" sem preço na tabela lista-x']);
+    }
+  });
+
+  it('falls back to the id alone for a non-string nome — the soft-parse escape hatch defeats the declared type', () => {
+    const issues: string[] = [];
+    // @ts-expect-error — exercising exactly what parseSoftRead can hand back
+    // at runtime despite `nome`'s declared `string | null` type.
+    expect(resolvePrice(produto, { id: 'lista-x', nome: 42 }, issues)).toBeNull();
+    expect(issues).toEqual(['produto "Camiseta Básica" sem preço na tabela lista-x']);
+  });
 });
 
 describe('resolveCondition', () => {

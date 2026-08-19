@@ -271,7 +271,15 @@ export function resolvePrice(
   }
   const valor = produto.precos?.[priceList.id]?.valor;
   if (valor == null || valor <= 0) {
-    const tabela = priceList.nome != null ? `"${priceList.nome}" (${priceList.id})` : priceList.id;
+    // `nome` is read through a soft-parse cache (listaDePrecosCache.ts) that
+    // returns RAW data on schema mismatch (packages/data/src/zodParse.ts's
+    // `parseSoftRead`) — so despite the declared type, a legacy/malformed doc
+    // can hand back a blank, whitespace-only, or even non-string `nome`.
+    // Treat anything but a genuinely usable label as unresolved, so the
+    // message truly falls back to the id-only pre-fix form instead of
+    // showing `tabela "" (id)`.
+    const nome = typeof priceList.nome === 'string' ? priceList.nome.trim() : '';
+    const tabela = nome !== '' ? `"${nome}" (${priceList.id})` : priceList.id;
     issues.push(`produto "${produto.nome}" sem preço na tabela ${tabela}`);
     return null;
   }
