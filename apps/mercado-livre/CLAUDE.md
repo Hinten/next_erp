@@ -32,9 +32,11 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   There is no signature to verify (confirmed against the 03/08/2026 Notificações reference:
   no `x-signature`, no manifest, no shared secret — the `ts=…,v1=…` scheme people find is
   **Mercado Pago**), so this is an `application_id` comparison against `MERCADO_LIVRE_CLIENT_ID`
-  (foreign ⇒ 403 before any enqueue or write) plus `logWebhookHeaders`, a self-silencing
-  header-name inventory that settles the signature question empirically during the migration
-  window. It fails OPEN when unconfigured or when `application_id` is absent — a misconfigured
+  (foreign ⇒ 403 before any enqueue or write). A self-silencing header-name inventory
+  rode along until the first live run (2026-08-19) settled the signature question from real
+  traffic — **no signature header of any kind**, matching the written reference — after which
+  it was removed. ⚠️ Do not re-add it: the question is answered, and the remaining follow-up
+  is a secret path segment on the callback URL. It fails OPEN when unconfigured or when `application_id` is absent — a misconfigured
   backend must not be able to stall the stream, since ML disables a topic after ~1h of non-200.
   ML's published notification source IPs were considered and **declined** (an undocumented
   rotation would reject every genuine notification). Follow-up if the logs show no signature
@@ -288,8 +290,8 @@ repo convention, #730) + `apphosting.yaml`. App-wide ML app credentials
 Manager — one registered ML app serves every connected account (so
 `MERCADO_LIVRE_CLIENT_ID` is also the `application_id` every notification carries,
 which is what the webhook origin check compares against). The optional
-`MERCADO_LIVRE_WEBHOOK_LOG_HEADERS` and `MERCADO_LIVRE_PKCE_ENABLED` are plain env
-vars, not secrets — see the PKCE ⚠️ above before flipping the latter. `ALLOWED_ADMIN_ORIGINS`
+`MERCADO_LIVRE_PKCE_ENABLED` is a plain env var, not a secret — see the PKCE ⚠️ above
+before flipping it. `ALLOWED_ADMIN_ORIGINS`
 became REQUIRED in production with #821/T5: localhost is no longer implicitly allowed,
 so an unset value leaves the CORS allow-list empty and every browser call fails.
 The per-account OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection

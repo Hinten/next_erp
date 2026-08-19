@@ -10,17 +10,20 @@
  * here in `apps/mercado-pago/lib/signatures/hmac.ts`.) Hence this file rather
  * than a `verifyMlSignature` next to `lib/signatures/hmac.ts`.
  *
- * What is left is one weak in-body check plus an evidence-gatherer:
+ * What is left is one weak in-body check: `checkApplicationId` rejects payloads
+ * announcing an application that is not ours, before anything is enqueued or
+ * written. `application_id` is attacker-controlled body content, so this stops
+ * scanners and casual abuse — the amplification #811 is actually about — not a
+ * targeted forger who has seen one of our OAuth consent URLs (they carry
+ * `client_id` in the query).
  *
- *   - `checkApplicationId` rejects payloads announcing an application that is not
- *     ours, before anything is enqueued or written. `application_id` is
- *     attacker-controlled body content, so this stops scanners and casual abuse
- *     — the amplification #811 is actually about — not a targeted forger who has
- *     seen one of our OAuth consent URLs (they carry `client_id` in the query).
- *   - `logWebhookHeaders` records what ML actually puts on the wire, so the
- *     migration window settles empirically whether a signature header exists.
- *     If one shows up, we implement the real check; if none does, the follow-up
- *     is a secret path segment on the registered callback URL.
+ * ⚠️ **The empirical question is settled — do not re-add the probe.** A
+ * `logWebhookHeaders` inventory rode along on every delivery precisely to answer
+ * "does ML sign anything?" from live traffic rather than from the docs. The
+ * first live run (2026-08-19) answered it: **no signature header of any kind**,
+ * matching the written reference. It was removed once it had done its job.
+ * The remaining follow-up, if this ever needs hardening, is a secret path
+ * segment on the registered callback URL — not a signature check.
  *
  * ML's published notification source IPs were considered and **declined**: an
  * undocumented rotation on their side would reject every genuine notification,
@@ -28,7 +31,6 @@
  */
 
 const CLIENT_ID_ENV_VAR = 'MERCADO_LIVRE_CLIENT_ID';
-const LOG_HEADERS_ENV_VAR = 'MERCADO_LIVRE_WEBHOOK_LOG_HEADERS';
 
 /**
  * - `ok`      — the payload names our application.
@@ -95,8 +97,8 @@ function configuredApplicationId(): string | null {
  * the genuine notification stream. A missing `application_id` yields `absent`,
  * which the receiver accepts: ML's docs carry the field in every documented
  * topic, but rejecting on absent would trade a trivial bypass-closure for a real
- * outage risk. `logWebhookHeaders` plus the `absent` warn are how we would find
- * out it ever happens; tightening afterwards is a one-line change.
+ * outage risk. The `absent` warn below is how we would find out it ever happens;
+ * tightening afterwards is a one-line change.
  */
 export function checkApplicationId(body: unknown): ApplicationIdVerdict {
   const configured = configuredApplicationId();
@@ -110,84 +112,7 @@ export function checkApplicationId(body: unknown): ApplicationIdVerdict {
   return received === configured ? 'ok' : 'foreign';
 }
 
-/** Headers whose value is logged in full (truncated) — the signature candidates. */
-const VALUE_LOGGED_HEADER = /signature|signed|hmac|digest|hub|meli|mercado/i;
-/**
- * Credential indicators — NEVER value-logged, even when the name also looks like
- * a signature candidate. This wins over `VALUE_LOGGED_HEADER` because `meli` and
- * `mercado` are deliberately broad and would otherwise match `x-meli-token` or
- * `x-mercado-secret`. The inventory only needs the NAME to answer "does ML sign
- * anything?", so redacting the value costs nothing and keeps credentials out of
- * Cloud Logging — which ML's own security guide requires.
- */
-const CREDENTIAL_HEADER = /token|secret|key|auth|cookie|credential|password/i;
-/** Headers logged as their auth scheme only — never their credential. */
-const SCHEME_ONLY_HEADERS = new Set(['authorization', 'proxy-authorization']);
-const MAX_LOGGED_VALUE_CHARS = 256;
-/**
- * Per-instance log budget. Distinct header shapes are rare (ML sends one), so
- * this is spent during warm-up and the instance then goes quiet — bounded volume
- * without a flag to flip mid-migration. App Hosting runs `minInstances: 0`, so
- * fresh instances re-log naturally.
- */
-const MAX_LOGGED_SHAPES = 20;
-
-const loggedShapes = new Set<string>();
-
-function authSchemeOf(value: string | null): string {
-  if (!value) return 'empty';
-  const scheme = value.split(' ', 1)[0] ?? '';
-  return scheme.length > 0 && scheme.length <= 32 ? scheme : 'unknown';
-}
-
-/**
- * Log the inbound header inventory — the migration-window evidence for whether
- * Mercado Livre signs anything.
- *
- * Header NAMES are always safe to log and are the whole point; values are not,
- * and ML's own security guide requires masked logs — so values are emitted only
- * for the signature-candidate names, truncated, with `authorization` reduced to
- * its scheme and any credential-looking name (`token`, `secret`, `key`, …)
- * redacted outright.
- *
- * `MERCADO_LIVRE_WEBHOOK_LOG_HEADERS=all` logs every request (a focused window);
- * `=off` disables it entirely. Grep Cloud Logging for `header-inventory`.
- */
-export function logWebhookHeaders(req: Request): void {
-  const mode = process.env[LOG_HEADERS_ENV_VAR]?.trim().toLowerCase();
-  if (mode === 'off') return;
-
-  const names: string[] = [];
-  for (const [name] of req.headers) names.push(name.toLowerCase());
-  names.sort();
-  const shape = names.join(',');
-
-  if (mode !== 'all') {
-    if (loggedShapes.has(shape)) return;
-    if (loggedShapes.size >= MAX_LOGGED_SHAPES) return; // budget spent — stay quiet
-    loggedShapes.add(shape);
-  }
-
-  const values: Record<string, string> = {};
-  for (const name of names) {
-    if (SCHEME_ONLY_HEADERS.has(name)) {
-      values[name] = `<${authSchemeOf(req.headers.get(name))}>`;
-    } else if (VALUE_LOGGED_HEADER.test(name)) {
-      // The name still surfaces in `names` either way — a credential-ish
-      // signature candidate is reported as present, never quoted.
-      values[name] = CREDENTIAL_HEADER.test(name)
-        ? '<redacted>'
-        : (req.headers.get(name) ?? '').slice(0, MAX_LOGGED_VALUE_CHARS);
-    }
-  }
-
-  // `warn`, not `info`: the repo's lint config allows only warn/error, and
-  // warn-level is what the rest of this receiver logs at.
-  console.warn('[mercado-livre/webhook] header-inventory', { names, values });
-}
-
-/** Test seam — clears the per-instance log budget. */
-export function __resetWebhookHeaderLog(): void {
-  loggedShapes.clear();
+/** Test seam — clears the once-per-instance `CLIENT_ID` malformation warning. */
+export function __resetWebhookOriginState(): void {
   warnedAboutClientId = false;
 }

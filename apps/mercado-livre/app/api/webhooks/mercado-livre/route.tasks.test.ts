@@ -39,7 +39,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { __resetWebhookHeaderLog } from '@/lib/marketplace/webhookOrigin';
+import { __resetWebhookOriginState } from '@/lib/marketplace/webhookOrigin';
 
 import { POST } from './route';
 
@@ -83,7 +83,7 @@ async function waitForDoc(
 }
 
 beforeEach(async () => {
-  __resetWebhookHeaderLog();
+  __resetWebhookOriginState();
   vi.unstubAllEnvs();
   // NOT setting MERCADO_LIVRE_TASKS_DISABLED — the whole point is that the real
   // scheduler runs. Pin the origin gate so the test owns its own outcome.
