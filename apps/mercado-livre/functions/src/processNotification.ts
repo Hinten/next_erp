@@ -48,10 +48,29 @@ export const processMercadoLivreNotification = onTaskDispatched(
   },
   async (req) => {
     const result = await handleNotificationTask(getDb(), req.data, req.retryCount ?? 0);
+    // ⚠️ `outcome` alone is not enough, and that gap is not theoretical: on the
+    // first live run this line reported a bare success for every delivery while
+    // the listing status never changed, because `done` is the disposition for
+    // BOTH "synced the listing" and "found no link and did nothing".
+    //
+    // `kind` separates a processed topic from an ignored one; `detail` carries
+    // the handler's own outcome (the items sync returns one of seven values);
+    // `resource` names the listing, which `topic` does not; and `user_id`
+    // matters most on `deferred`, where the reason naming it is written to
+    // Firestore and would otherwise never reach a log.
+    //
+    // ONE call on purpose - the fields land in `jsonPayload` and are filterable
+    // (`jsonPayload.detail="no-link"`), so more fields beat more lines.
+    const payload = req.data as { resource?: unknown; user_id?: unknown } | null;
     logger.info('[mercado-livre] processed notification task', {
       queue: MERCADO_LIVRE_NOTIFICATION_QUEUE,
       outcome: result.outcome,
+      kind: result.kind ?? null,
+      detail: result.detail ?? null,
       topic: result.topic,
+      resource: typeof payload?.resource === 'string' ? payload.resource : null,
+      user_id: typeof payload?.user_id === 'number' ? payload.user_id : null,
+      integracaoId: result.integracaoId ?? null,
       retryCount: req.retryCount ?? 0,
       // CUMULATIVE for this instance — a notification has no tick to bracket.
       // The three-reads-into-one collapse is what this line makes visible.
