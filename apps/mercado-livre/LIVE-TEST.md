@@ -375,3 +375,150 @@ inside this run** — the run's job is evidence.
 | #957 — shipments `x-format-new` | evidence captured — §9          |        |
 | #706 — multiorigin contas       | determined at §2.3              |        |
 | #898, #1083, #1072, #707        | observed only — record evidence |        |
+
+---
+
+## 12. Appendix — deployment blockers hit on the first production deploy
+
+Recorded 2026-08-19, on `veste-france-debug`. Every one of these was hit for real, in this
+order, before a single ML API call was made. **Work through them before starting §1** —
+and re-check them after the Firebase project migration (ADR 0013), because three of the
+four are project-level configuration that does not travel with the code.
+
+### 12.1 — 11 of 15 functions fail to deploy
+
+```
+Functions deploy had errors with the following functions:
+        mercado-livre:importMercadoLivreOrders(us-east5)
+        … 10 more
+```
+
+**Cause: Cloud Tasks and Cloud Scheduler do not exist in `us-east5`.** The failing set is
+exactly the 5 `onTaskDispatched` + 6 `onSchedule` functions; the 4 `onDocumentWritten`
+Firestore triggers deploy cleanly, and that asymmetry **is** the diagnosis.
+
+**Fix:** the two-region split — queues and schedules in `us-east1`, Firestore triggers in
+the data region. See `functions/DEPLOY.md`.
+
+### 12.2 — the container will not start, and the browser calls it a CORS error
+
+Symptom: `apps/web` on localhost reports a CORS failure against the deployed backend.
+
+**Do not start debugging CORS.** Check `/api/health` first:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}
+" "https://<backend>.hosted.app/api/health"
+```
+
+That route imports nothing but `NextResponse` and returns a static object — it cannot fail
+on its own. A `500` there means the **container is not serving at all**, and the body will
+be Google's `envoy` error page rather than a Next.js one. A 500 carries no
+`Access-Control-Allow-Origin` header, and a missing ACAO is what the browser reports as
+CORS. The real error is upstream of CORS every time.
+
+**Cause:** App Hosting could not resolve the Secret Manager references in
+`apphosting.yaml`:
+
+```
+Error resolving secret version with name=projects/<project>/secrets/MERCADO_LIVRE_CLIENT_ID/versions/latest
+```
+
+The secrets existed and were `ENABLED` — **existence is not access.** The backend's service
+account had no `secretmanager.secretAccessor`.
+
+**Fix:**
+
+```bash
+firebase apphosting:secrets:grantaccess MERCADO_LIVRE_CLIENT_ID,MERCADO_LIVRE_CLIENT_SECRET,MERCADO_LIVRE_STATE_SECRET --backend mercado-livre --project <project-id>
+```
+
+Then roll out again — a failed rollout does not retry itself. ⚠️ Re-run `grantaccess` for
+every secret added later, and once per backend: the grant is per-secret, per-service-account.
+
+### 12.3 — CORS, for real this time
+
+Once the container is healthy, the preflight still fails.
+
+**Cause:** `ALLOWED_ADMIN_ORIGINS` is **not** in `apphosting.yaml`'s `env:` block — only the
+three secrets are — so it is unset on the deployed backend. On a deployed backend
+`NODE_ENV === 'production'`, and `proxy.ts` then makes the allow-list **exactly**
+`ALLOWED_ADMIN_ORIGINS`; localhost is not implicitly allowed (#821/T5). Unset allows _no_
+origin at all.
+
+**Fix:** set it in Firebase console → App Hosting → Environment variables, then roll out
+(env changes need a rollout):
+
+```
+ALLOWED_ADMIN_ORIGINS=http://localhost:3000
+```
+
+⚠️ That exclusion is deliberate — "a page served from a developer machine has no business
+making credentialed cross-origin calls to a production backend". Allowing localhost is
+acceptable on a debug project; **do not carry the value to real production.**
+
+Verify with the preflight:
+
+```bash
+curl -s -i -X OPTIONS "https://<backend>.hosted.app/api/marketplace/mercado-livre/conta" -H "Origin: http://localhost:3000" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization"
+```
+
+`204` + `access-control-allow-origin` = good. `204` with no ACAO = the variable is still
+missing. `500` = back to §12.2.
+
+### 12.4 — `cloudtasks.tasks.create` denied
+
+```
+The principal lacks IAM permission "cloudtasks.tasks.create" for the resource
+"projects/<project>/locations/us-east5/queues/processMercadoLivreMassImport"
+(or the resource may not exist).
+```
+
+**Read the region in that path.** It is the _second_ half of the message that matters —
+Cloud Tasks does not exist in `us-east5`, so the queue **cannot** exist. Granting IAM fixes
+nothing. Each queue is auto-provisioned by its function's deploy, and those deploys failed
+in §12.1.
+
+**Fix, in order:** deploy the functions to a region that has Cloud Tasks → redeploy the App
+Hosting backend (the enqueuer `mlTasks.ts` lives there) or set `MERCADO_LIVRE_TASKS_REGION`
+to match → **then** grant the one-time IAM from `functions/DEPLOY.md`:
+
+```bash
+gcloud projects add-iam-policy-binding <project-id> --member="serviceAccount:<apphosting-runtime-sa>" --role="roles/cloudtasks.enqueuer"
+```
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> --member="serviceAccount:<apphosting-runtime-sa>" --role="roles/iam.serviceAccountUser"
+```
+
+Verify: `gcloud tasks queues list --location=<region> --project=<project-id>` should list
+`processMercadoLivreMassImport`, `processMercadoLivreNotification`, `sendMercadoLivreStock`,
+`processMercadoLivrePriceSync` and `processMercadoLivreNfeUpload`.
+
+⚠️ Notifications fail **soft** here — a failed enqueue is persisted as `failed`, the sweep
+drains it, and the receiver still acks 200. So a missing grant is invisible on the webhook
+path and surfaces first on a button with no fallback, like "Importar todos os anúncios".
+
+### 12.5 — ⚠️ For the migration: only two Americas regions have every service
+
+This is the finding that outlives the run. **The region is effectively permanent**, and the
+platform's own availability tables rule out most candidates:
+
+| Service                                                                       | Americas availability                                                                                                 | `us-east5`?   | `us-east1`?   |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------- | ------------- |
+| [App Hosting](https://firebase.google.com/docs/app-hosting/about-app-hosting) | **only 6 regions worldwide** — `us-central1`, `us-east4`, `us-east5`, `asia-east1`, `asia-southeast1`, `europe-west4` | ✅            | ❌ **absent** |
+| [Cloud Tasks](https://cloud.google.com/tasks/docs/locations)                  | `us-central1`, `us-east1`, `us-east4`, `us-west1…4`, `northamerica-northeast1`, `southamerica-east1`                  | ❌ **absent** | ✅            |
+| [Cloud Scheduler](https://cloud.google.com/scheduler/docs/locations)          | same, plus `us-south1`                                                                                                | ❌ **absent** | ✅            |
+
+**The intersection in the Americas is exactly two regions: `us-central1` and `us-east4`.**
+
+- `us-east5` — no Tasks, no Scheduler. The trap this appendix documents.
+- `us-east1` — no App Hosting, and 7 apps deploy there.
+- `southamerica-east1` — no App Hosting, despite being latency-optimal for Brazil.
+
+⚠️ Storage triggers add one more hard constraint: a gen2 storage trigger runs through
+Eventarc and **must** sit in the bucket's region, so the bucket has to be created in the
+chosen region too. (Firestore triggers are only a latency consideration, not a hard match.)
+
+Picking one of those two regions for the new project removes the cross-region split
+entirely.
