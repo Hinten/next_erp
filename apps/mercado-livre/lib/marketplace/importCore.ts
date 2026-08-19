@@ -23,6 +23,7 @@ import type {
 } from '@delfrance/integrations-mercado-livre';
 import { CONDICAO_PRODUTO, makeEstoqueUid, reservaEfetiva, toOuterRef } from '@delfrance/schemas';
 import type { TaxonomiaResolution } from './taxonomiaCore';
+import { clearFalha } from './publishFalhas';
 
 /** Import blocked by unusable item data — maps to HTTP 422. */
 export class MercadoLivreImportError extends Error {
@@ -318,7 +319,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     isUserProductModel: mapped.isUserProductModel,
     video_id: mapped.videoId,
     attributes: mapped.attributes,
-    errors: [],
+    ...clearFalha(),
     ultimaModificacao: now,
     dataCadastro: (existingLink.dataCadastro as number | undefined) ?? now,
   };

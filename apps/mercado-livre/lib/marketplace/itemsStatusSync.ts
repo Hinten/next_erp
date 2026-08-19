@@ -62,6 +62,7 @@ import { loadMercadoLivreContext } from './mercadoLivre';
 import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { refMatchesIntegracao } from './linkRefs';
 import type { UptinSourceLink } from './importMigration';
+import { clearFalha } from './publishFalhas';
 
 /** The minimal ML API surface the status-sync needs (injectable for tests). */
 export interface ItemsSyncApi {
@@ -213,7 +214,7 @@ export async function syncItemStatus(
       // The denorm is a COARSE-transition-only write (legacy gate) — skip it when
       // only status/sub_status/errors moved.
       skipDenorm: !estadoChanged,
-      extra: errorsToClear ? { errors: [] } : {},
+      extra: errorsToClear ? clearFalha() : {},
     },
   );
 

@@ -34,6 +34,7 @@ import {
   publishUserProductMembers,
   sweepRemovedMembers,
 } from './publishUserProduct';
+import { type EscopoFalha, falhaPatch } from './publishFalhas';
 import type { ComponentesKit } from '@delfrance/schemas';
 import {
   INTEGRACAO_TIPO,
@@ -71,6 +72,7 @@ import {
   resolveListingModel,
 } from './publishCore';
 import { quantidadeParaEnvio } from './bulkEstoquePlan';
+import { readListaDePrecos } from './listaDePrecosCache';
 import {
   type ResolvedSizeChart,
   type SizeChartRowBinding,
@@ -244,7 +246,26 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // Every ML API failure from here on stamps `estado: 'E'` + `errors` on the
   // link doc (the module's header contract; legacy's `on MLError` catch
   // covered the category-detail call of the chart binding too).
-  const stampErrorLinkDoc = async (message: string): Promise<void> => {
+  //
+  // It takes the ERROR, not a message: ML explains a rejected write in the
+  // body's `cause[]`, and `api.ts` collapses that to `ML 400: Validation error`
+  // on `err.message`. Persisting the message alone left the operator a screen
+  // saying only that something was invalid, with no way to learn what — so
+  // `causas` carries the parsed causes (already resolved to form controls) and
+  // `errors` carries one readable line each, for the Flutter reader and for
+  // anyone reading the raw doc.
+  //
+  // `attributesSent` is what makes a POSITIONAL `item.attributes[3]` resolvable
+  // — it counts the array we sent, including the derived attributes the editor
+  // never shows. Null at the sites that have no payload yet; the message scan
+  // still covers ML's bracketed-id messages there.
+  const stampErrorLinkDoc = async (
+    err: unknown,
+    fallbackMessage: string,
+    escopo: EscopoFalha,
+    attributesSent: readonly MlAttribute[] | null = null,
+  ): Promise<void> => {
+    const { errors, causas } = falhaPatch(err, fallbackMessage, escopo, attributesSent);
     await writeLinkDoc({
       sku: produto.sku ?? null,
       condition: resolveCondition(link, pubProduto, condicao),
@@ -252,7 +273,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       listing_type_id: linkDoc?.data.listing_type_id ?? deps.listingTypeId ?? null,
       estado: 'E',
       isUserProductModel: link?.isUserProductModel ?? false,
-      errors: [message],
+      errors,
+      causas,
       ultimaModificacao: Date.now(),
     });
   };
@@ -278,7 +300,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       const user = await (deps.getMe ?? defaultGetMe)(api);
       sellerIsUserProduct = (user.tags ?? []).includes('user_product_seller');
     } catch (err) {
-      if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err.message);
+      // `GET /users/me` — not an item call, so its body stays off the doc.
+      if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err, err.message, 'nao-item');
       throw err;
     }
   }
@@ -377,7 +400,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   } catch (err) {
     // The binding's category-detail call is an ML API call — a failure (stale
     // category_id → 404, transient 5xx) must land on the doc like any other.
-    if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err.message);
+    // `/categories/{id}`, not an item call — headline only.
+    if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err, err.message, 'nao-item');
     throw err;
   }
 
@@ -419,10 +443,22 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   }
 
   // ---- Assemble + call ML -------------------------------------------------
+  // The price-list NAME is read only to enrich resolvePrice's blocked-publish
+  // message with a human-readable label alongside the raw id — the price
+  // VALUE that gates the publish still comes from produto.precos, uncached,
+  // below. Cached (listaDePrecosCache.ts): tabelaNormalOuterRef is a property
+  // of the INTEGRAÇÃO, so this id is identical for every produto published
+  // under this conta.
+  const priceListId = deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null;
+  const priceListNome = priceListId
+    ? ((await readListaDePrecos(db, priceListId))?.nome ?? null)
+    : null;
+
   const input = assemblePublishInput({
     produto: pubProduto,
     condicao,
-    priceListId: deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null,
+    priceListId,
+    priceListNome,
     availableQuantity,
     pictures,
     variations,
@@ -439,6 +475,13 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   let item: MlItem;
   /** Non-null exactly when this publish went out as a User-Products family. */
   let family: PublishUserProductResult | null = null;
+  /**
+   * The attribute array as ML received it — hoisted out of the try purely so the
+   * catch can resolve a positional `item.attributes[N]` reference against it.
+   * `buildItemPayload` prunes the combination ids from `input.attributes`, so
+   * the two arrays are NOT interchangeable and the indices differ.
+   */
+  let attributesSent: readonly MlAttribute[] | null = null;
   try {
     if (isUserProductFamily) {
       family = await publishUserProductMembers(
@@ -452,6 +495,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       item = family.items[0]!;
     } else {
       const payload = buildItemPayload(input);
+      attributesSent = (payload.attributes as MlAttribute[] | undefined) ?? null;
       item = input.isUpdate
         ? await api.updateItem(link!.id!, payload)
         : await api.createItem(payload);
@@ -461,7 +505,16 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       // Old-app parity: a purged ML picture id in the cache would otherwise
       // fail every retry identically — strip it so the next publish re-uploads.
       await pruneDeadPictures(db, err, pictureSources);
-      await stampErrorLinkDoc(err.message);
+      // ⚠️ `attributesSent` stays NULL on the User-Products path, and must.
+      // `buildUserProductItemPayload` sends
+      // `attributesWithValue(input.attributes).filter(not a member override)`
+      // plus the member's own attributes, so every valueless or overridden entry
+      // SHIFTS the indices: resolving `item.attributes[0]` against
+      // `input.attributes` pins the error to a healthy row and leaves the guilty
+      // one clean. Null means only the bracketed-id message scan resolves, which
+      // is positional-independent — and an unmapped cause renders above the form,
+      // which the `campos` docblock names as the safe outcome.
+      await stampErrorLinkDoc(err, err.message, 'item', attributesSent);
     }
     throw err;
   }
@@ -506,6 +559,9 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       (a): a is MlAttribute & { id: string } => a.id != null && !ML_DERIVED_ATTRIBUTE_IDS.has(a.id),
     ),
     errors: [],
+    // Cleared WITH `errors`: a surviving falha paints a red field on a listing
+    // that just published successfully, which reads exactly like a rejection.
+    causas: [],
     ultimaModificacao: now,
   });
 
@@ -656,10 +712,13 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         // key-only ghost holding an error and no `id` — a live listing nothing
         // can find. The fallback path recreates a schema-complete doc, so the
         // item id has to ride the patch.
+        // `/items/{id}/description` — an item endpoint.
+        const { errors, causas } = falhaPatch(err, err.message, 'item', attributesSent);
         await writeLinkDoc({
           id: parentExternalId,
           estado: 'E',
-          errors: [err.message],
+          errors,
+          causas,
           ultimaModificacao: Date.now(),
         });
       }

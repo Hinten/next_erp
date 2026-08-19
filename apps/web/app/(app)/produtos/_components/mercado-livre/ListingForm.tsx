@@ -57,6 +57,7 @@ import {
   type ListingFormInput,
   type ListingFormValues,
 } from '@/lib/mercado-livre/listingForm';
+import { erroDoCampo, errosDeAtributos } from '@/lib/mercado-livre/listingCausas';
 import { createClientListingPort } from '@/lib/mercado-livre/listingPort';
 import type { ListingSaveOutcome } from '@/lib/mercado-livre/listingSaveOutcome';
 import {
@@ -95,6 +96,16 @@ export interface ListingFormProps {
   db: Firestore;
   canWrite: boolean;
   disabled?: boolean;
+  /**
+   * Server-side errors keyed by control — Mercado Livre's own rejection
+   * (`link.causas`, split by `splitCausas`) and the pre-flight 422 issues.
+   *
+   * ⚠️ Displayed, never pushed through `form.setError`. These are DERIVED from
+   * Firestore, and a manual RHF error is wiped by the next resolver run, so
+   * pushing them into form state would make them disappear on an unrelated blur
+   * while the listing is still rejected.
+   */
+  serverErrors?: Record<string, string[]>;
   /** Reported on every change so the page's leave-guard can see ML edits. */
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   /**
@@ -206,9 +217,12 @@ export function ListingForm({
   db,
   canWrite,
   disabled,
+  serverErrors,
   onDirtyChange,
   registerFlush,
 }: ListingFormProps) {
+  /** A control shows its own validation first; the server's when it has none. */
+  const erroServidor = (campo: string): string | undefined => erroDoCampo(serverErrors, campo);
   const client = useMercadoLivreClient();
   const form = useForm<ListingFormInput, unknown, ListingFormValues>({
     resolver: zodResolver(listingFormSchema),
@@ -422,14 +436,17 @@ export function ListingForm({
   const attrRows = attrDirty ? edited.rows : seededRows;
 
   const attrErrors = useMemo(() => {
-    const out: Record<string, string> = {};
+    // Server causes first, local validation on top: what the operator can see
+    // is wrong right now beats what ML said about the last attempt, and a local
+    // rule firing means the row changed since that rejection anyway.
+    const out: Record<string, string> = errosDeAtributos(serverErrors ?? {});
     const byId = new Map(attrRows.map((r) => [r.id, r]));
     for (const attr of attrs) {
       const message = validateAttr(attr, byId.get(attr.id));
       if (message != null) out[attr.id] = message;
     }
     return out;
-  }, [attrs, attrRows]);
+  }, [attrs, attrRows, serverErrors]);
 
   // ---- AI attribute suggestion (#799 A4) ---------------------------------
   // ⚠️ Staged, never applied. The route answers with suggestions and the modal
@@ -683,7 +700,7 @@ export function ListingForm({
                   maxLength={TITLE_MAX_LENGTH}
                   description={`${(field.value ?? '').length}/${TITLE_MAX_LENGTH}`}
                   disabled={readOnly || !titleRule.editable}
-                  error={fieldState.error?.message}
+                  error={fieldState.error?.message ?? erroServidor('title')}
                 />
               </Tooltip>
             )}
@@ -709,7 +726,7 @@ export function ListingForm({
                 value={field.value === '' ? null : field.value}
                 onChange={field.onChange}
                 disabled={readOnly}
-                error={fieldState.error?.message}
+                error={fieldState.error?.message ?? erroServidor('category_id')}
               />
             )}
           />
@@ -760,7 +777,7 @@ export function ListingForm({
                     minRows={3}
                     maxRows={10}
                     disabled={readOnly}
-                    error={fieldState.error?.message}
+                    error={fieldState.error?.message ?? erroServidor('descricao')}
                   />
                 )}
               />
@@ -792,7 +809,7 @@ export function ListingForm({
                   onChange={(v) => field.onChange(v ?? '')}
                   onBlur={field.onBlur}
                   disabled={readOnly}
-                  error={fieldState.error?.message}
+                  error={fieldState.error?.message ?? erroServidor('listing_type_id')}
                 />
               )}
             />

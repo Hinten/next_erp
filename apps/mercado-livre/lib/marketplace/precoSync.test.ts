@@ -752,7 +752,17 @@ describe('processPriceSyncJob — PUT dispositions', () => {
     seedLink(db, 'BAD');
     const api = makeApi({ BAD: mlItem('BAD') });
     api.updateItem.mockRejectedValue(
-      new MercadoLivreHttpError('preço inválido', 400, { error: 'validation_error' }),
+      new MercadoLivreHttpError('ML 400: Validation error', 400, {
+        message: 'Validation error',
+        error: 'validation_error',
+        cause: [
+          {
+            type: 'error',
+            code: 'item.price.invalid',
+            message: 'Price must be less than 9999999999.',
+          },
+        ],
+      }),
     );
     const deps = runDeps(db, api);
 
@@ -761,7 +771,11 @@ describe('processPriceSyncJob — PUT dispositions', () => {
     expect(outcome).toBe('done');
     expect(db.docs(linkPath('prod-BAD')).get('lnk-BAD')).toMatchObject({
       estado: 'E',
-      errors: ['preço inválido'],
+      // The price sender shares the publish diagnosis: ML's `cause[]` lands on
+      // the link doc here too, even though nothing is watching an HTTP response.
+      errors: ['error · item.price.invalid — Price must be less than 9999999999.'],
+      // No control in the listing form owns `price`, so this renders above it.
+      causas: [expect.objectContaining({ code: 'item.price.invalid', campos: [] })],
       ultimaModificacao: CLOCK_NOW,
     });
     const job = db.docs(JOBS_PATH).get('job10')!;

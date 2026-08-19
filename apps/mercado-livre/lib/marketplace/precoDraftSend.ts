@@ -55,6 +55,7 @@ import {
 import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
 import { podeEnviarPreco } from './precoPlan';
+import { falhaPatch } from './publishFalhas';
 
 /** ML `tags` prefix marking an in-progress User-Products migration — both known
  * tags (`variations_migration_source` / `variations_migration_uptin`, the
@@ -257,7 +258,7 @@ export async function enviarPrecoDraft(
           db,
           { produtoId: draft.produtoId },
           draft.linkDocId,
-          { estado: 'E', errors: [err.message], ultimaModificacao: nowMs },
+          { estado: 'E', ...falhaPatch(err, err.message, 'item'), ultimaModificacao: nowMs },
         );
         return {
           kind: 'falha',

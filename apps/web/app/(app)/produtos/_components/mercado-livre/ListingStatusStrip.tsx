@@ -13,6 +13,7 @@ import {
   listingPermalink,
   parseEstado,
 } from '@/lib/mercado-livre/listingLinks';
+import { splitCausas, textoDaCausa } from '@/lib/mercado-livre/listingCausas';
 
 /** Badge colour per old-shape estado code. */
 const ESTADO_COLORS: Record<EstadoPublicacaoMl, string> = {
@@ -70,6 +71,9 @@ export function ListingStatusStrip({
   const persistedErrors = (link.errors ?? []).filter(
     (e): e is string => typeof e === 'string' && e.length > 0,
   );
+  // The structured half of the same diagnosis. `gerais` is what has no control
+  // to sit on; per-field causes are rendered BY the control, inside ListingForm.
+  const { gerais, avisos, temCausas } = splitCausas(link);
   const subStatus = (link.sub_status ?? []).filter(
     (s): s is string => typeof s === 'string' && s.length > 0,
   );
@@ -111,11 +115,63 @@ export function ListingStatusStrip({
         </Text>
       )}
 
-      {persistedErrors.length > 0 && (
-        <Alert color="red" variant="light" title="Última falha do Mercado Livre">
+      {/* Structured causes when we have them; the raw `errors` strings otherwise
+          — a doc written by the Flutter app, or by this app before #1109, has
+          `causas: null` and must keep showing what it does have. */}
+      {temCausas
+        ? gerais.length > 0 && (
+            <Alert
+              color="red"
+              variant="light"
+              title="Última falha do Mercado Livre"
+              data-testid="ml-causas-gerais"
+            >
+              <List size="sm">
+                {gerais.map((causa, i) => (
+                  <List.Item key={`${causa.code ?? 'sem-codigo'}-${String(i)}`}>
+                    {textoDaCausa(causa)}
+                    {causa.code != null && (
+                      <Text span size="xs" c="dimmed">
+                        {' '}
+                        · {causa.code}
+                      </Text>
+                    )}
+                  </List.Item>
+                ))}
+              </List>
+            </Alert>
+          )
+        : persistedErrors.length > 0 && (
+            <Alert color="red" variant="light" title="Última falha do Mercado Livre">
+              <List size="sm">
+                {/* Index-qualified: two identical messages are legal and a bare
+                    message key would collide. */}
+                {persistedErrors.map((e, i) => (
+                  <List.Item key={`${e}-${String(i)}`}>{e}</List.Item>
+                ))}
+              </List>
+            </Alert>
+          )}
+
+      {/* ML applied these itself (`type: 'warning'` — *Guia para produtos →
+          Validações*), so they are context, not work. Deliberately secondary:
+          a warning styled like a rejection sends the operator hunting for a
+          problem ML already solved. */}
+      {avisos.length > 0 && (
+        <Alert
+          color="yellow"
+          variant="light"
+          title="Avisos do Mercado Livre"
+          data-testid="ml-causas-avisos"
+        >
+          <Text size="xs" c="dimmed" mb={4}>
+            O Mercado Livre ajustou estes pontos automaticamente.
+          </Text>
           <List size="sm">
-            {persistedErrors.map((e) => (
-              <List.Item key={e}>{e}</List.Item>
+            {avisos.map((causa, i) => (
+              <List.Item key={`${causa.code ?? 'sem-codigo'}-${String(i)}`}>
+                {textoDaCausa(causa)}
+              </List.Item>
             ))}
           </List>
         </Alert>
