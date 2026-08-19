@@ -61,7 +61,32 @@ export interface QuestionImportDeps {
   readonly conta: { userId: number | null; cor: number | null };
   /** ONE clock read for the whole import, MILLISECONDS. */
   readonly nowMs: number;
+  /**
+   * The notification's own `sent` timestamp (ms), when it carried one — how
+   * a 404 is told apart from a race. See {@link JANELA_404_TRANSIENTE_MS}.
+   */
+  readonly notificacaoEnviadaMs?: number | null;
 }
+
+/**
+ * How long after ML SENT the notification a 404 is still treated as the
+ * read-your-writes race rather than as a deletion — and therefore RETRIED.
+ *
+ * ⚠️ This window exists because acking a 404 is not free. ML's question GET is
+ * eventually consistent (which is why the receiver already delays the task by
+ * 10s), so a genuinely new question can 404 on the first read. Acking that is
+ * SILENT PERMANENT LOSS: a real customer question never reaches the inbox and
+ * nothing anywhere records that it existed.
+ *
+ * Retrying a deleted question instead costs a handful of calls and then a
+ * parked document — visible, and cheap. The asymmetry decides it.
+ *
+ * 10 minutes comfortably covers the queue's whole retry envelope, so a fresh
+ * question gets every attempt; by the time the HOURLY sweep re-drives the
+ * failure doc, `sent` is far outside the window and a truly deleted question
+ * acks on that pass.
+ */
+export const JANELA_404_TRANSIENTE_MS = 10 * 60 * 1000;
 
 export type QuestionImportSkip =
   | 'question-404'
@@ -175,6 +200,20 @@ async function resolveClienteDaPergunta(
 }
 
 /**
+ * Whether a 404 on this delivery can be trusted to mean "deleted".
+ *
+ * True once the notification is older than {@link JANELA_404_TRANSIENTE_MS},
+ * and also when ML sent no `sent` at all — a payload with no freshness claim
+ * (a replay, a synthesised body) cannot be defended by a window, and looping
+ * on it forever would be worse than acking.
+ */
+function notificacao404EhDefinitivo(deps: QuestionImportDeps): boolean {
+  const enviada = deps.notificacaoEnviadaMs;
+  if (enviada == null || !Number.isFinite(enviada)) return true;
+  return deps.nowMs - enviada > JANELA_404_TRANSIENTE_MS;
+}
+
+/**
  * Import one Mercado Livre question into the chat inbox.
  *
  * THROWS on a transient failure (Firestore / ML network) so the queue and the
@@ -191,8 +230,17 @@ export async function importQuestionMercadoLivre(
   try {
     question = await api.getQuestion(questionId);
   } catch (err) {
-    // A deleted question 404s. Deterministic — ack rather than poison-retry.
-    if (err instanceof MercadoLivreHttpError && err.status === 404) return skip('question-404');
+    if (err instanceof MercadoLivreHttpError && err.status === 404) {
+      // ⚠️ NOT unconditionally deterministic. A question deleted long ago 404s
+      // forever, but so does one asked seconds ago that ML has not propagated
+      // yet — and acking THAT loses a real customer question with no record
+      // anywhere. Only a 404 on a notification old enough to rule the race out
+      // is acked; a fresh one throws so the queue and sweep retry it.
+      if (!notificacao404EhDefinitivo(deps)) {
+        throw err;
+      }
+      return skip('question-404');
+    }
     throw err;
   }
 

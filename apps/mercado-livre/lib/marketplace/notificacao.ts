@@ -728,6 +728,8 @@ export type QuestionImportRunner = (
   db: Firestore,
   integracaoId: string,
   resourceId: number,
+  /** The notification's `sent` (ms), so the importer can tell a 404 race from a deletion. */
+  enviadaMs: number | null,
 ) => Promise<QuestionImportResult>;
 
 export type ClaimImportRunner = (
@@ -755,7 +757,7 @@ export type ClaimImportRunner = (
  * and never the incidente/pedido side, which is µs. There is deliberately no
  * µs twin here to pick the wrong one from.
  */
-const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourceId) => {
+const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourceId, enviadaMs) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
@@ -769,6 +771,7 @@ const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourc
         cor: asNumberOrNull(ctx.conta.cor),
       },
       nowMs: Date.now(),
+      notificacaoEnviadaMs: enviadaMs,
     },
     resourceId,
   );
@@ -1042,7 +1045,7 @@ export async function processNotificationPayload(
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
     const result = await wrapImportRunner(integracaoId, () =>
-      questionImportRunner(db, integracaoId, resourceId),
+      questionImportRunner(db, integracaoId, resourceId, payload.sent ?? null),
     );
     if (result.skipped === 'ML_500') {
       return { kind: 'ml-500', integracaoId, message: result.message };
