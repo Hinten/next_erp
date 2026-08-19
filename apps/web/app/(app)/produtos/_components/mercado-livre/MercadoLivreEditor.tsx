@@ -180,6 +180,18 @@ export function MercadoLivreEditor({
   const [preparing, setPreparing] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
+  /** The link doc id whose public ML URL is being resolved, if any. */
+  const [abrindoAnuncio, setAbrindoAnuncio] = useState<string | null>(null);
+  /**
+   * Listing URLs resolved from ML this session, keyed by link doc id.
+   *
+   * Only User-Products listings ever land here — a legacy one is a pure string
+   * transform the strip does itself. It is component state and not a Firestore
+   * field on purpose: the Flutter app is a live concurrent writer and its
+   * `Model.save()` is an unmasked `set()` over a closed field list, so a cached
+   * URL written to the link doc would vanish on its next save.
+   */
+  const [urlPorLink, setUrlPorLink] = useState<Record<string, string>>({});
   /** The conta whose stock push is in flight (#819), if any. */
   const [sendingStock, setSendingStock] = useState<string | null>(null);
   /**
@@ -484,6 +496,52 @@ export function MercadoLivreEditor({
   }
 
   /**
+   * Open this listing's public Mercado Livre page in a new tab, resolving the
+   * URL from ML first — ported from the old Flutter screen's link button
+   * (`cadastroProdutoMLNew.dart:134-156`).
+   *
+   * Only reached for a **User-Products** listing: its link doc holds a FAMILY
+   * id, which addresses nothing public, so the strip has nothing to build an
+   * href from. A legacy listing already renders a plain anchor.
+   *
+   * ⚠️ The tab is opened SYNCHRONOUSLY, before the await. A `window.open` that
+   * runs after one has lost the user activation the click granted and is
+   * popup-blocked — the one hazard the Flutter original never had to handle.
+   * The blank tab is navigated once the URL lands, and closed if it never does.
+   *
+   * The answer is cached in `urlPorLink`, which turns the strip's control back
+   * into an ordinary anchor — so this runs at most once per listing, and a
+   * browser that refused the tab outright (`aba == null`) still leaves the
+   * operator that anchor to click.
+   */
+  async function handleAbrirAnuncio(integracaoId: string, linkDocId: string) {
+    if (!client) return;
+    const aba = window.open('', '_blank');
+    setAbrindoAnuncio(linkDocId);
+    try {
+      const { url } = await client.linkAnuncio({ integracaoId, produtoId, linkDocId });
+      setUrlPorLink((prev) => ({ ...prev, [linkDocId]: url }));
+      abrir(aba, url);
+    } catch (err) {
+      aba?.close();
+      if (err instanceof MercadoLivreClientHttpError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'red',
+          message: 'Não foi possível contatar o serviço do Mercado Livre.',
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setAbrindoAnuncio(null);
+    }
+  }
+
+  /**
    * Push this produto's CURRENT stock to every listing this conta holds on it
    * (#819) — the on-demand twin of the 15-minute sweep.
    *
@@ -684,6 +742,13 @@ export function MercadoLivreEditor({
                           disabled={Boolean(disabled) || rechecking !== null || contaLoading}
                           rechecking={rechecking === l.id}
                           onReverificar={() => handleReverificar(conta.id, l.id)}
+                          urlResolvida={urlPorLink[l.id] ?? null}
+                          abrindo={abrindoAnuncio === l.id}
+                          // Reading a public URL is a read: gated on having a
+                          // client at all, never on the publish permission.
+                          onAbrirAnuncio={
+                            client ? () => void handleAbrirAnuncio(conta.id, l.id) : undefined
+                          }
                         />
                         {stockResultByLink[l.id] && (
                           <Text
@@ -926,6 +991,20 @@ export function MercadoLivreEditor({
       )}
     </OuterFormDirty>
   );
+}
+
+/**
+ * Send a tab that was opened synchronously at click time to its destination.
+ *
+ * `window.open('', '_blank')` cannot carry `noopener`: that flag makes it return
+ * null, and the handle is exactly what is needed to navigate the tab once the
+ * URL arrives. The opener link is therefore severed by hand, before the
+ * destination loads.
+ */
+function abrir(aba: Window | null, url: string): void {
+  if (!aba) return;
+  aba.opener = null;
+  aba.location.replace(url);
 }
 
 /**
