@@ -147,6 +147,24 @@ describe('AttributeField', () => {
     expect(combo('Marca')).toHaveProperty('value', ' ');
   });
 
+  it('resolves what the INPUT holds, not what the row prop holds', () => {
+    // Blur is a separate event from change, so the prop agrees with the box only
+    // once React has re-rendered the last keystroke. Reading the prop makes the
+    // handler's correctness depend on that flush; a stale read overwrites the
+    // newest character with an older resolution. Here the two are made to
+    // DISAGREE outright — the prop is empty, the box says "algodao".
+    const onChange = renderField(
+      attr({ id: 'MATERIAL', name: 'Material', values: [{ id: 'M1', name: 'Algodão' }] }),
+    );
+    fireEvent.blur(combo('Material'), { target: { value: 'algodao' } });
+    expect(onChange).toHaveBeenCalledWith({
+      id: 'MATERIAL',
+      value_id: 'M1',
+      value_name: 'Algodão',
+      unit_id: null,
+    });
+  });
+
   it('reports NOTHING when an untouched field is blurred', () => {
     // `onBlur` fires on every focus loss and the parent turns any report into a
     // new rows array, which ListingForm reads as an edit — so tabbing past a

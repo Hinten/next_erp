@@ -103,7 +103,20 @@ export function AttributeField({ attr, row, onChange, disabled, error }: Attribu
           onChange={(typed) =>
             setValue(draftTypedValue(attr, isNumericAttr(attr) ? digitsOnly(typed) : typed))
           }
-          onBlur={() => setValue(resolveTypedValue(attr, row.value_name))}
+          // ⚠️ Resolve what the INPUT holds, not what the `row` prop holds. The
+          // two agree only once React has re-rendered with the last keystroke,
+          // and blur is a separate event from change — reading the prop makes
+          // this handler's correctness depend on that flush having happened, and
+          // a stale read here overwrites the newest character with an older
+          // resolution. The DOM node is the one source that is never behind.
+          onBlur={(e) =>
+            setValue(
+              resolveTypedValue(
+                attr,
+                isNumericAttr(attr) ? digitsOnly(e.currentTarget.value) : e.currentTarget.value,
+              ),
+            )
+          }
           maxLength={attr.valueMaxLength ?? undefined}
           inputMode={isNumericAttr(attr) ? 'numeric' : undefined}
           disabled={disabled || na}

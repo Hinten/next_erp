@@ -207,6 +207,17 @@ describe('SizeChartEditorModal — chart-level free-text attributes', () => {
     expect(marca.value).toBe('Nike Air');
   });
 
+  it('resolves what the INPUT holds, not the render snapshot', async () => {
+    // Same hazard as the produto field: reading `templateValues` at blur is only
+    // correct once React has re-rendered the last keystroke. Here state holds no
+    // answer at all while the box says "nike".
+    const marca = await openWithBrandTemplate();
+    fireEvent.blur(marca, { target: { value: 'nike' } });
+    await waitFor(() => {
+      expect(marca.value).toBe('Nike');
+    });
+  });
+
   it('snaps to ML’s own value on blur, so the id still goes up', async () => {
     const marca = await openWithBrandTemplate();
     fireEvent.change(marca, { target: { value: '  nike  ' } });

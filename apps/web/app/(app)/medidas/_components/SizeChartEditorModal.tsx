@@ -747,11 +747,16 @@ export function SizeChartEditorModal({
                   onChange={(typed) => {
                     setValue(draftChartAttributeValue(typed));
                   }}
-                  onBlur={() => {
+                  // ⚠️ Resolve what the INPUT holds, not the render snapshot of
+                  // `templateValues` — see the same note on AttributeField. A
+                  // stale read here would overwrite the newest keystroke.
+                  onBlur={(e) => {
+                    const resolved = resolveChartAttributeValue(template, e.currentTarget.value);
                     const current = templateValues[template.id];
-                    if (!current || current.id !== '') return; // nothing typed / already an ML value
-                    const resolved = resolveChartAttributeValue(template, current.name);
-                    if (resolved?.id === current.id && resolved.name === current.name) return;
+                    // Both undefined compares equal, so an untouched field that
+                    // was never answered writes nothing — and neither does an
+                    // already-resolved one, whose text resolves back to itself.
+                    if (resolved?.id === current?.id && resolved?.name === current?.name) return;
                     setValue(resolved);
                   }}
                   disabled={sent}
