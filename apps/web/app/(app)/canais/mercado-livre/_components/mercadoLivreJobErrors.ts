@@ -62,19 +62,3 @@ export function describePriceSyncStartError(err: unknown): JobErrorDescription |
   }
   return null;
 }
-
-/**
- * Read-path counterpart: the message for a failed status/lookup query. Unlike
- * the start path this never returns `null` — a poll that fails is displayed,
- * not rethrown, because the job itself is unaffected by our inability to read
- * it. The two fallbacks stay distinct so "the backend is unreachable" never
- * reads as "the job is in an unknown state".
- */
-export function mercadoLivreQueryErrorMessage(
-  err: unknown,
-  fallbacks: { readonly network: string; readonly unknown: string },
-): string {
-  if (err instanceof MercadoLivreClientHttpError) return err.message;
-  if (err instanceof MercadoLivreClientNetworkError) return fallbacks.network;
-  return fallbacks.unknown;
-}

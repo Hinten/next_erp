@@ -5,6 +5,7 @@ import { Alert, Badge, Group, Loader, Paper, SimpleGrid, Text } from '@mantine/c
 
 import type { AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
+import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { AttributeField } from './AttributeField';
 
 /**
@@ -31,6 +32,13 @@ export interface AtributosSectionProps {
   leaf: boolean;
   loading: boolean;
   failed: boolean;
+  /**
+   * Re-runs the attribute load. Omitted when the failure is one a retry cannot
+   * fix — without it the whole grid stayed replaced by the alert until the
+   * operator switched category away and back, or reloaded the page.
+   */
+  onRetry?: () => void;
+  retrying?: boolean;
   disabled?: boolean;
   /**
    * The "Preencher com IA" trigger, rendered in this section's header.
@@ -68,6 +76,8 @@ export function AtributosSection({
   leaf,
   loading,
   failed,
+  onRetry,
+  retrying,
   disabled,
   acaoIa,
 }: AtributosSectionProps) {
@@ -92,10 +102,11 @@ export function AtributosSection({
 
   if (failed) {
     return (
-      <Alert color="red" variant="light">
-        Não foi possível carregar os atributos desta categoria. Os atributos já salvos continuam
-        intactos.
-      </Alert>
+      <RetryAlert
+        message="Não foi possível carregar os atributos desta categoria. Os atributos já salvos continuam intactos."
+        onRetry={onRetry}
+        retrying={retrying}
+      />
     );
   }
 

@@ -68,6 +68,9 @@ import { usePermission } from '@/lib/auth';
 import { configIaCollection } from '@/lib/data/configIaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { isRetryableMercadoLivreError, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
+import { queryRetry } from '@/lib/query/queryRetry';
+import { RetryAlert } from '@/components/feedback/RetryAlert';
 
 /**
  * Raised when someone else saved this page while this form was open.
@@ -140,7 +143,12 @@ export function ConfigIaPanel({ agenteId, titulo, descricao }: ConfigIaPanelProp
     // this only avoids re-asking on every tab focus.
     staleTime: 30 * 60 * 1000,
     queryFn: () => client!.iaModelos(agenteId),
+    retry: mercadoLivreQueryRetry,
   });
+
+  const modelosRetry = queryRetry(modelosQuery);
+  const modelosRetryable =
+    modelosQuery.error != null && isRetryableMercadoLivreError(modelosQuery.error);
 
   const cfg = cfgQuery.data ?? null;
   // Defaults come from the schema so a new field cannot be forgotten here.
@@ -276,7 +284,12 @@ export function ConfigIaPanel({ agenteId, titulo, descricao }: ConfigIaPanelProp
         </Alert>
       )}
 
-      <EfetivoAlert lista={lista} loading={modelosQuery.isPending && client != null} />
+      <EfetivoAlert
+        lista={lista}
+        loading={modelosQuery.isPending && client != null}
+        onRetry={modelosRetryable ? modelosRetry.retry : undefined}
+        retrying={modelosRetry.retrying}
+      />
 
       <Select
         label="Modelo"
@@ -437,7 +450,11 @@ function PromptPadrao({
 function EfetivoAlert({
   lista,
   loading,
+  onRetry,
+  retrying,
 }: {
+  onRetry?: () => void;
+  retrying?: boolean;
   lista:
     | {
         fonte: 'live' | 'fallback';
@@ -450,10 +467,13 @@ function EfetivoAlert({
   if (loading) return <Loader size="xs" />;
   if (!lista) {
     return (
-      <Alert color="gray" title="Não foi possível consultar o backend do Mercado Livre">
-        A lista de modelos e o valor em uso não puderam ser lidos. As configurações abaixo ainda
-        podem ser salvas.
-      </Alert>
+      <RetryAlert
+        color="gray"
+        title="Não foi possível consultar o backend do Mercado Livre"
+        message="A lista de modelos e o valor em uso não puderam ser lidos. As configurações abaixo ainda podem ser salvas."
+        onRetry={onRetry}
+        retrying={retrying}
+      />
     );
   }
 

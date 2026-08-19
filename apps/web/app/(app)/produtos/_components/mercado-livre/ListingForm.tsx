@@ -43,6 +43,8 @@ import {
   type MercadoLivreAtributoSugestao,
   type MercadoLivreAtributosSugestao,
 } from '@/lib/mercado-livre/client';
+import { isRetryableMercadoLivreError, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
+import { queryRetry } from '@/lib/query/queryRetry';
 
 import {
   LISTING_TYPE_OPTIONS,
@@ -406,7 +408,13 @@ export function ListingForm({
     enabled: effectiveCategoryId != null && client != null,
     staleTime: METADATA_STALE_MS,
     queryFn: () => client!.categoriaAtributos({ integracaoId, categoryId: effectiveCategoryId! }),
+    retry: mercadoLivreQueryRetry,
   });
+  // Without this the whole attribute grid stayed replaced by an alert until the
+  // operator switched category away and back, or reloaded the page.
+  const atributosRetry = queryRetry(atributosQuery);
+  const atributosRetryable =
+    atributosQuery.error != null && isRetryableMercadoLivreError(atributosQuery.error);
   const attrs = useMemo(() => atributosQuery.data?.atributos ?? [], [atributosQuery.data]);
   const omitidos = useMemo(() => atributosQuery.data?.omitidos ?? [], [atributosQuery.data]);
 
@@ -810,6 +818,8 @@ export function ListingForm({
           leaf={atributosQuery.data?.leaf ?? true}
           loading={atributosQuery.isPending && effectiveCategoryId != null}
           failed={atributosQuery.isError}
+          onRetry={atributosRetryable ? atributosRetry.retry : undefined}
+          retrying={atributosRetry.retrying}
           disabled={readOnly}
           acaoIa={
             <Tooltip label="Preencher com IA" withArrow>

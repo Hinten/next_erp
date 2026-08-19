@@ -23,7 +23,7 @@
  *    shows up.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Badge, Stack, Text } from '@mantine/core';
+import { Badge, Button, Group, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 
 import {
@@ -165,9 +165,23 @@ export function MercadoLivreJobsPanel({
     // every page load whenever apps/mercado-livre is down.
     if (!collapsed && lookup.error != null) {
       return (
-        <Text size="xs" c="dimmed">
-          Não foi possível consultar os jobs em andamento.
-        </Text>
+        <Group gap="xs" wrap="nowrap">
+          <Text size="xs" c="dimmed">
+            Não foi possível consultar os jobs em andamento.
+          </Text>
+          {/* Quiet on purpose (see above), but no longer a dead end: without
+              this, a lookup that failed once left running jobs invisible until
+              the operator navigated away and back. */}
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            color="gray"
+            loading={lookup.isFetching}
+            onClick={() => void lookup.refetch()}
+          >
+            Tentar novamente
+          </Button>
+        </Group>
       );
     }
     return null;
