@@ -42,10 +42,9 @@ describe('composerGate — participation (unchanged behaviour)', () => {
 describe('composerGate — send capability (#817)', () => {
   it('is read-only on every origem with no outbound sender', () => {
     // The bug as reported was about Mercado Livre, but site/facebook/comentario
-    // have no sender either and were dropping replies the same way.
-    // mlperg and mlped gained the #533 responder route, so they are NO LONGER
-    // here. mlclaims still is — its respond flow is #768.
-    for (const origem of ['mlclaims', 'site', 'facebook', 'comentario'] as const) {
+    // have no sender either and were dropping replies the same way — and after
+    // #533 + #768 all three ML surfaces send, so these are the only ones left.
+    for (const origem of ['site', 'facebook', 'comentario'] as const) {
       expect(composerGate(base({ origem })), origem).toEqual({
         kind: 'somente-leitura',
         motivo: SEM_ENVIO_MOTIVO,

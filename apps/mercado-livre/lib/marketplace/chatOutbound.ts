@@ -35,6 +35,7 @@ import { postSaleAgentUserId, type MercadoLivreApi } from '@delfrance/integratio
 import { ANSWER_MENSAGEM_ID } from './questionIds';
 import { questionActionability } from './questionMapping';
 import { orderMessageActionability } from './orderMessageMapping';
+import { claimActionability, receiverRoleDaAcao } from './claimActionability';
 
 /**
  * A refusal the OPERATOR can act on — surfaced as a 409 with its reason, never
@@ -74,6 +75,13 @@ export interface ChatOutboundResult {
 
 /** ML's hard cap on an answer body. */
 export const LIMITE_RESPOSTA_PERGUNTA = 2000;
+/**
+ * The claim-message cap. ⚠️ ML's claims reference states NO explicit character
+ * limit, so this is the conservative legacy value rather than an invented
+ * larger one — a body ML truncates silently is worse than one we refuse.
+ */
+export const LIMITE_MENSAGEM_RECLAMACAO = 300;
+
 /** The fallback post-sale cap when ML did not return the live one. */
 export const LIMITE_MENSAGEM_PEDIDO_PADRAO = 350;
 
@@ -85,6 +93,7 @@ function refuse(codigo: ChatOutboundRefusedError['codigo'], motivo: string): nev
 const ORIGENS_COM_ENVIO: ReadonlySet<OrigemConversa> = new Set([
   ORIGEM_CONVERSA.mercadoLivrePerguntas,
   ORIGEM_CONVERSA.mercadoLivrePedido,
+  ORIGEM_CONVERSA.mercadoLivreReclamacoes,
 ]);
 
 /**
@@ -111,9 +120,13 @@ export async function responderConversaMercadoLivre(
     refuse('ML_ORIGEM_SEM_ENVIO', 'Esta conversa não envia mensagens pelo Mercado Livre.');
   }
 
-  return origem === ORIGEM_CONVERSA.mercadoLivrePerguntas
-    ? responderPergunta({ db, api, nowMs }, input.conversaId, conversa, texto)
-    : responderMensagemPedido({ db, api, conta, nowMs }, input.conversaId, conversa, texto);
+  if (origem === ORIGEM_CONVERSA.mercadoLivrePerguntas) {
+    return responderPergunta({ db, api, nowMs }, input.conversaId, conversa, texto);
+  }
+  if (origem === ORIGEM_CONVERSA.mercadoLivreReclamacoes) {
+    return responderReclamacao({ db, api, nowMs }, input.conversaId, conversa, texto);
+  }
+  return responderMensagemPedido({ db, api, conta, nowMs }, input.conversaId, conversa, texto);
 }
 
 /* ------------------------------- perguntas -------------------------------- */
@@ -234,6 +247,66 @@ async function responderMensagemPedido(
  */
 function makeLocalOutboundId(nowMs: number, packId: string): string {
   return `local-${packId}-${Math.floor(nowMs / 60_000)}`;
+}
+
+/* -------------------------------- reclamações ------------------------------ */
+
+/**
+ * Reply on a claim thread.
+ *
+ * ⚠️ The `receiver_role` is derived from the LIVE available action, never
+ * assumed: once a mediation opens ML routes the seller through the mediator and
+ * refuses a message aimed at the complainant. `claimActionability` already owns
+ * that precedence, so this re-reads the claim and asks it.
+ */
+async function responderReclamacao(
+  deps: Omit<ChatOutboundDeps, 'conta'>,
+  conversaId: string,
+  conversa: Record<string, unknown>,
+  texto: string,
+): Promise<ChatOutboundResult> {
+  const { db, api, nowMs } = deps;
+  const claimId = Number(conversa.id);
+  if (!Number.isSafeInteger(claimId) || claimId <= 0) {
+    refuse('ML_DADOS_INSUFICIENTES', 'A conversa não guarda o id da reclamação no Mercado Livre.');
+  }
+  if (texto.length > LIMITE_MENSAGEM_RECLAMACAO) {
+    refuse(
+      'ML_TEXTO_LONGO',
+      `A mensagem excede o limite do Mercado Livre (${LIMITE_MENSAGEM_RECLAMACAO} caracteres).`,
+    );
+  }
+
+  // The authority. A claim can close, or move into mediation, between the
+  // import and the operator pressing send.
+  const claim = await api.getClaim(claimId);
+  const acao = claimActionability(claim);
+  if (!acao.podeResponder || acao.acaoMensagem == null) {
+    refuse('ML_NAO_RESPONDIVEL', acao.motivo ?? 'Reclamação não aceita mais mensagens.');
+  }
+
+  await api.sendClaimMessage(claimId, {
+    receiverRole: receiverRoleDaAcao(acao.acaoMensagem),
+    message: texto,
+  });
+
+  // ML mints the message id and does not return it, so this bubble carries a
+  // LOCAL id and no `mid`. The next `claims` notification imports the real one
+  // at its own deterministic id; this doc is the operator’s feedback.
+  const mensagemId = makeLocalOutboundId(nowMs, String(claimId));
+  await mensagemCollection.set(db, { conversaId }, mensagemId, {
+    mid: null,
+    conteudo: texto,
+    tipo: TIPO_MENSAGEM.comum,
+    estadoEnvio: ESTADO_ENVIO.enviado,
+    canal: 0,
+    timestamp: nowMs,
+    data_cadastro: nowMs,
+  } as DocumentData);
+
+  await conversaCollection.merge(db, {}, conversaId, { ultima_modificacao: nowMs });
+
+  return { conversaId, mensagemId, respostaBloqueada: null };
 }
 
 /* ----------------------------- ações da pergunta --------------------------- */

@@ -219,12 +219,16 @@ describe('ChatComposer — "Entrar na conversa" gate', () => {
 });
 
 describe('ChatComposer — send capability (#817)', () => {
-  /** An ML claim thread: the inbox surface a buyer expects an answer on. */
+  /**
+   * A webchat thread. ⚠️ NOT an ML one: all three ML surfaces gained a sender
+   * (#533, #768), and this fixture has to be an origem that genuinely has none
+   * — the inert-fixture trap #813 named, hit three times in this stack.
+   */
   const conversaMlClaims: Conversa = conversaSchema.parse({
     usuarios: ['op1'],
     estadoConversa: 1,
-    origem: 'mlclaims',
-    nome: 'Reclamação',
+    origem: 'site',
+    nome: 'Visitante',
   });
 
   it('renders a read-only notice instead of the input on a channel with no sender', () => {
@@ -252,8 +256,8 @@ describe('ChatComposer — send capability (#817)', () => {
         conversa={conversaSchema.parse({
           usuarios: [],
           estadoConversa: 2,
-          origem: 'mlclaims',
-          nome: 'Reclamação',
+          origem: 'site',
+          nome: 'Visitante',
         })}
         addOptimistic={vi.fn()}
         markOptimisticError={vi.fn()}

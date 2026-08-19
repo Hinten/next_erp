@@ -87,7 +87,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf'],
     maxTamanhoAnexoBytes: 5_000_000,
     isHtml: true,
-    temEnvio: false,
+    temEnvio: true,
   },
 };
 
@@ -119,11 +119,12 @@ describe('ORIGEM_RULES', () => {
   });
 
   it('lists exactly the channels that can transmit today', () => {
-    // WhatsApp sends through the #529 Firestore trigger; the two ML surfaces
-    // through the #533 responder route. mlclaims is still false — its respond
-    // flow is #768 — and site/facebook/comentario have no sender at all.
+    // WhatsApp sends through the #529 Firestore trigger; all THREE ML surfaces
+    // through the responder route (#533 for perguntas and post-sale, #768 for
+    // claims). site/facebook/comentario still have no sender at all, which is
+    // the half of #817 nobody had noticed.
     const comEnvio = origemConversaSchema.options.filter((o) => ORIGEM_RULES[o].temEnvio);
-    expect(comEnvio.sort()).toEqual(['mlped', 'mlperg', 'whatsapp']);
+    expect(comEnvio.sort()).toEqual(['mlclaims', 'mlped', 'mlperg', 'whatsapp']);
   });
 
   it('corrects mlped to ML’s real 350-character seller cap, not the legacy 300', () => {

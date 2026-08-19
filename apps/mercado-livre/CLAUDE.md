@@ -179,6 +179,24 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   publishes a per-message `hash`. Re-keying would rewrite every already-imported
   message under a new id — a thread-wide duplication of history — to fix a collision
   case ML itself flags with `repeated`. The field is modelled, not used.
+- **Claim RESPOND** (#768) — `chatOutbound.ts` gained an `mlclaims` branch and
+  `packages/integrations/mercado-livre/src/incidentRespond.ts` implements
+  `respondIncident`, the last unimplemented `MarketplaceChannel` member.
+  ⚠️ Every action is gated on `players[role=respondent].available_actions`, read
+  LIVE on each call — ML decides what a seller may do from the stage and status,
+  and the list empties as the claim closes. An unavailable action is a 400, so
+  the gate refuses first and names what IS available.
+  ⚠️ **`receiver_role` is derived, never assumed.** Once a mediation opens ML
+  routes the seller through the mediator and REFUSES a message aimed at the
+  complainant, so `send_message_to_mediator` outranks
+  `send_message_to_complainant` wherever both appear.
+  ⚠️ **Partial refund is a PERCENTAGE off an allow-list, never an amount.** The
+  contract carries `refundAmount` in minor units like every other channel; ML
+  accepts only the percentages `GET …/partial-refund/available-offers` returns,
+  rejects 100% on that endpoint, and — the dangerous part — **defaults a MISSING
+  percentage to 50%**. So an amount with no exact offer is refused with the list
+  of real ones rather than rounded to the nearest: a refund is not a value worth
+  approximating.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see

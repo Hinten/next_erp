@@ -187,7 +187,9 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: FORMATS_ML_CLAIMS,
     maxTamanhoAnexoBytes: 5_000_000,
     isHtml: true,
-    temEnvio: false, // #768
+    // #768 — the ML chat responder route transmits this origem too, through
+    // the claim's own send-message action.
+    temEnvio: true,
   },
 };
 
