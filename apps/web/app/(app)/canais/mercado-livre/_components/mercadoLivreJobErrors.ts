@@ -72,6 +72,8 @@ export function describePriceSyncStartError(err: unknown): JobErrorDescription |
  * and the click. Neither is worth alarming copy; the next poll shows the real
  * terminal state either way.
  */
+export const MASS_IMPORT_CANCEL_ERRO_DESCONHECIDO = 'Não foi possível cancelar a importação.';
+
 export function describeMassImportCancelError(err: unknown): string | null {
   if (err instanceof MercadoLivreClientHttpError) {
     if (err.code === 'ML_MASS_IMPORT_NOT_RUNNING') return 'Esta importação já foi finalizada.';

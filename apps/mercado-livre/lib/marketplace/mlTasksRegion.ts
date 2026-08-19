@@ -2,15 +2,20 @@
  * The ONE region resolver every Mercado Livre Cloud Tasks queue in this app
  * shares, and the queue-path builder on top of it.
  *
- * ⚠️ This is NOT the codebase region and must never fall back to it. **Cloud
- * Tasks and Cloud Scheduler do not exist in `us-east5`** (both services stop at
- * `us-east4` in the eastern US), so the eleven `onTaskDispatched`/`onSchedule`
- * functions are pinned to `us-east1` via `TASKS_SCHEDULER_REGION`
- * (`functions/src/options.ts`) while the four Firestore triggers stay in the
- * data region. A `FUNCTIONS_REGION` fallback used to sit in each scheduler and
- * is actively harmful: on a backend where that variable names the data region,
- * every enqueue resolves a queue that does not exist, and the Admin SDK then
- * silently targets `us-central1`.
+ * ⚠️ **Cloud Tasks and Cloud Scheduler do not exist in `us-east5`** (both
+ * services stop at `us-east4` in the eastern US), which is why the ML functions
+ * codebase — all fifteen functions, the four Firestore triggers included —
+ * deploys to `us-east1` and not to the ML backend's own region. Queues and
+ * schedules could not live in `us-east5` at all; the triggers follow them
+ * because Firebase imposes no hard region match on a Firestore trigger, and one
+ * region for one codebase beats saving a cross-region hop on four of them.
+ *
+ * ⚠️ It must still never fall back to `FUNCTIONS_REGION`. The two normally hold
+ * the same value today, but they are set independently — only this one is read
+ * by the App Hosting backend — so a fallback would silently paper over a
+ * genuine mismatch. That is what it did before: on a backend whose
+ * `FUNCTIONS_REGION` named a region without Cloud Tasks, every enqueue resolved
+ * a queue that cannot exist, and the Admin SDK then targeted `us-central1`.
  *
  * ⚠️ It lives in its own module because it was previously copied into each
  * scheduler, and #1108 fixed exactly one of the five copies — the notification

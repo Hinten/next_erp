@@ -29,6 +29,8 @@ import {
 import { useQuery } from '@tanstack/react-query';
 
 import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
   type MercadoLivreMassImportStatus,
   type MercadoLivrePriceSyncSkip,
   type MercadoLivrePriceSyncStatus,
@@ -36,6 +38,7 @@ import {
 } from '@/lib/mercado-livre/client';
 import {
   describeMassImportCancelError,
+  MASS_IMPORT_CANCEL_ERRO_DESCONHECIDO,
   mercadoLivreQueryErrorMessage,
 } from './mercadoLivreJobErrors';
 import type { ContaRef } from './startJobsForContas';
@@ -94,9 +97,27 @@ function JobCardShell({
       // "Importação cancelada", which is the only confirmation the operator
       // gets that the click reached the server.
     } catch (err) {
-      const message = describeMassImportCancelError(err);
-      if (message == null) throw err;
-      setCancelErro(message);
+      // ⚠️ Nothing may rethrow out of here. This is an ASYNC click handler, so a
+      // throw becomes an unhandled promise rejection — React error boundaries do
+      // not catch those — and the operator would see the spinner stop with the
+      // modal still open and nothing said at all. The reachable case is
+      // `onCancel` throwing a plain Error when the client is null.
+      //
+      // The narrowing is spelled out here rather than left to
+      // `describeMassImportCancelError` (which does the same test internally)
+      // because a catch has to show its own guard — rule 6, and the lint rule
+      // that enforces it reads the catch body, not the helper.
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        setCancelErro(describeMassImportCancelError(err) ?? MASS_IMPORT_CANCEL_ERRO_DESCONHECIDO);
+      } else {
+        // Not ours: say something, and keep the original for the console so it
+        // is surfaced without being swallowed.
+        console.error('[mercado-livre] cancelamento da importação falhou', err);
+        setCancelErro(MASS_IMPORT_CANCEL_ERRO_DESCONHECIDO);
+      }
     } finally {
       setCancelling(false);
     }

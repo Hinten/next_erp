@@ -76,7 +76,8 @@ describe('createMlTaskScheduler', () => {
 
   it('IGNORES FUNCTIONS_REGION — the queue does not live in the codebase region', async () => {
     // The queue functions are pinned to us-east1 because Cloud Tasks does not
-    // exist in us-east5, while the Firestore triggers stay in the data region.
+    // exist in us-east5. The two variables normally agree, but they are set
+    // independently — only this one is read by the App Hosting backend.
     // A FUNCTIONS_REGION fallback used to sit in this resolver; on a backend
     // where that variable names the data region it would resolve a queue that
     // does not exist, and the Admin SDK would silently target us-central1.

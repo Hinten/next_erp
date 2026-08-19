@@ -57,9 +57,11 @@ runConfig:
 #                                ML functions codebase. ⚠️ REQUIRED in prod, and
 #                                deliberately NOT this backend's own region:
 #                                Cloud Tasks and Cloud Scheduler DO NOT EXIST in
-#                                us-east5, so the queue/schedule half of the
-#                                codebase deploys to us-east1 while the Firestore
-#                                triggers stay with the data (FUNCTIONS_REGION).
+#                                us-east5, so the whole ML functions codebase —
+#                                the four Firestore triggers included — deploys
+#                                to us-east1 instead (FUNCTIONS_REGION there
+#                                defaults to the same value; the two are set
+#                                independently and only THIS one is read here).
 #                                It must equal the TASK functions' region — a
 #                                mismatch either fails the enqueue outright (no
 #                                such queue) or, worse, produces a task whose

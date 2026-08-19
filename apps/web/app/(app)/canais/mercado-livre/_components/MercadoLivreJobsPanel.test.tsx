@@ -251,6 +251,27 @@ describe('MercadoLivreJobsPanel — o X de um job em andamento', () => {
     expect(dismiss).not.toHaveBeenCalled();
   });
 
+  it('um erro NÃO reconhecido ainda diz alguma coisa, em vez de morrer calado', async () => {
+    // `throw err` here used to be an unhandled promise rejection (async click
+    // handler), leaving the spinner stopped and the modal silent. The reachable
+    // case is the client being null — `onCancel` throws a plain Error, which no
+    // narrowing recognises.
+    const { dismiss } = await renderCartaoEmAndamento({
+      cancelMassImport: vi.fn(async () => {
+        throw new Error('not ready');
+      }),
+    });
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    await screen.findByText(AVISO);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar importação' }));
+    });
+
+    expect(await screen.findByText('Não foi possível cancelar a importação.')).toBeTruthy();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
   it('um job já terminado dispensa direto, sem confirmação', async () => {
     const dismiss = vi.fn();
     h.clientRef.current = {

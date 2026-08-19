@@ -66,13 +66,13 @@ describe('createMlMassImportScheduler', () => {
     );
   });
 
-  it('IGNORES FUNCTIONS_REGION — the queue does not live in the codebase region', async () => {
-    // Cloud Tasks does not exist in us-east5, so the queue functions are pinned
-    // to us-east1 while the Firestore triggers stay in the data region. This
-    // resolver used to carry a FUNCTIONS_REGION fallback; on a backend where
-    // that variable names the data region it resolved a queue that cannot
-    // exist, and the Admin SDK then silently targeted us-central1. #1108 fixed
-    // the notification scheduler and left this one behind.
+  it('IGNORES FUNCTIONS_REGION — the two are configured independently', async () => {
+    // The two normally agree, but only MERCADO_LIVRE_TASKS_REGION is read by the
+    // App Hosting backend, so a fallback would paper over a genuine mismatch
+    // instead of failing on it. That is what it did before: pointed at a region
+    // without Cloud Tasks (us-east5 has none), every enqueue resolved a queue
+    // that cannot exist and the Admin SDK silently targeted us-central1. #1108
+    // fixed the notification scheduler and left this one behind.
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', 'us-east5');
