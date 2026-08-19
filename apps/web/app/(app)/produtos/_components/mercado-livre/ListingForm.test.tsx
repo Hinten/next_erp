@@ -130,14 +130,17 @@ describe('ListingForm — server errors', () => {
     expect(screen.queryByText(/You should include/)).toBeNull();
   });
 
-  it('is DISPLAYED, not pushed into form state — editing the field is what clears it', () => {
+  it('is DISPLAYED, not pushed into form state — survives editing and re-render', () => {
     // Deliberately not `form.setError`: a manual RHF error is wiped by the next
     // resolver run, so it would vanish on an unrelated blur while ML still
     // rejects the listing. Typing here re-renders without touching the prop.
     const { update } = renderForm({ id: null }, { serverErrors: { title: ['ML recusou'] } });
     type('Título do anúncio', 'Outro título bem mais descritivo');
     expect(screen.getByText('ML recusou')).toBeDefined();
-    // …and it goes when the next publish attempt clears the stamp.
+    // Nor does a re-render of the LINK drop it: `serverErrors` is its own prop,
+    // derived from `causas`. What clears the message is the next publish
+    // stamping fresh `causas` — which is a change to THIS prop, not to the link
+    // fixture, and is covered by the `splitCausas` tests rather than here.
     update({ id: null });
     expect(screen.getByText('ML recusou')).toBeDefined();
   });
