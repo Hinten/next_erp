@@ -8,11 +8,11 @@
  * This script closes that loop for one listing, and prints the answer as a diff
  * instead of leaving it to be eyeballed in two browser tabs.
  *
- *   pnpm --filter @delfrance/mercado-livre-app inspect:anuncio -- \
+ *   pnpm --filter @delfrance/mercado-livre-app inspect:anuncio \
  *     --project <id> --integracaoId <id> --itemId MLB000000000
  *
  *   # …plus the raw ML bodies, for the fixture capture in #1087 §9
- *   pnpm --filter @delfrance/mercado-livre-app inspect:anuncio -- \
+ *   pnpm --filter @delfrance/mercado-livre-app inspect:anuncio \
  *     --project <id> --integracaoId <id> --itemId MLB000000000 --json
  *
  * It compares three things that are normally never put side by side:

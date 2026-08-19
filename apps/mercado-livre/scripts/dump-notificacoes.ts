@@ -8,7 +8,7 @@
  * (#807), the `items_prices` no-op (#803), the `missed_feeds` backstop (#812) —
  * is otherwise only visible by hand in the Firestore console.
  *
- *   pnpm --filter @delfrance/mercado-livre-app dump:notificacoes -- --project <id>
+ *   pnpm --filter @delfrance/mercado-livre-app dump:notificacoes --project <id>
  *   # one lane only, or one seller only
  *   … --status deferred          … --userId 123456789
  *   # what a topic is doing, at a glance

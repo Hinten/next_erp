@@ -177,7 +177,7 @@ There is today **no code that compares what we published against what ML returns
 is what `scripts/inspect-anuncio.ts` is for.
 
 ```bash
-pnpm --filter @delfrance/mercado-livre-app inspect:anuncio -- --integracaoId=<id> --itemId=MLB000000000
+pnpm --filter @delfrance/mercado-livre-app inspect:anuncio --project <project-id> --integracaoId <id> --itemId MLB000000000
 ```
 
 For **each** of L1 and L2:
@@ -241,7 +241,7 @@ Buy as the **buyer** test user with a
 the cardholder name drives the outcome — `APRO APRO` ⇒ approved.
 
 ```bash
-pnpm --filter @delfrance/mercado-livre-app inspect:pedido -- --pedidoId=abc123
+pnpm --filter @delfrance/mercado-livre-app inspect:pedido --project <project-id> --pedidoId <pedido-id>
 ```
 
 | #    | Step                                     | Assert                                                                   | Result |
@@ -305,7 +305,7 @@ never validates them, so a shape change is **silent**. Capture the real bodies (
 There is **no UI over `notificacoesMercadoLivre`**. Read it with:
 
 ```bash
-pnpm --filter @delfrance/mercado-livre-app dump:notificacoes -- --integracaoId=abc123
+pnpm --filter @delfrance/mercado-livre-app dump:notificacoes --project <project-id> --status failed
 ```
 
 | Signal                                       | Assert                                                                                                                                                        | Result |

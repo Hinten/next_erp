@@ -16,11 +16,11 @@
  * actually paid — which the import already mirrors to
  * `pedidos/{pedidoId}/orderML/{orderId}`.
  *
- *   pnpm --filter @delfrance/mercado-livre-app inspect:pedido -- \
+ *   pnpm --filter @delfrance/mercado-livre-app inspect:pedido \
  *     --project <id> --pedidoId <id>
  *
  *   # …plus the raw ML order body, for the fixture capture in #1087 §9
- *   pnpm --filter @delfrance/mercado-livre-app inspect:pedido -- \
+ *   pnpm --filter @delfrance/mercado-livre-app inspect:pedido \
  *     --project <id> --pedidoId <id> --json
  *
  * ⚠️ **Strictly read-only.** It calls no Mercado Livre endpoint at all — every
