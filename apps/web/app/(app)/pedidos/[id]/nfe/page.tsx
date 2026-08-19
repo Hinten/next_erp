@@ -45,11 +45,6 @@ import { useCancelarPedidoPrompt } from './_components/useCancelarPedidoPrompt';
 
 function estadoColor(estado: EstadoNFe): MantineColor {
   switch (estado) {
-    case ESTADO_NFE.gerado:
-    case ESTADO_NFE.enviando:
-    case ESTADO_NFE.aguardandoResposta:
-    case ESTADO_NFE.processamentoCompleto:
-    case ESTADO_NFE.processamentoCancelado:
     case ESTADO_NFE.aprovada:
     case ESTADO_NFE.epecAprovado:
       return 'green';
@@ -59,6 +54,11 @@ function estadoColor(estado: EstadoNFe): MantineColor {
     case ESTADO_NFE.cancelada:
     case ESTADO_NFE.numeracaoInutilizada:
       return 'gray';
+    case ESTADO_NFE.gerado:
+    case ESTADO_NFE.enviando:
+    case ESTADO_NFE.aguardandoResposta:
+    case ESTADO_NFE.processamentoCompleto:
+    case ESTADO_NFE.processamentoCancelado:
     default:
       return 'yellow';
   }
