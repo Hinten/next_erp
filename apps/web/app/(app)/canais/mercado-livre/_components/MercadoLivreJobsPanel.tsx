@@ -32,6 +32,7 @@ import {
   type MercadoLivrePriceSyncStatus,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { ContaJobErrorCard, MassImportJobCard, PriceSyncJobCard } from './MercadoLivreJobCards';
 import type { ContaJobOutcome, ContaRef } from './startJobsForContas';
 
@@ -107,7 +108,11 @@ export function MercadoLivreJobsPanel({
       return client.jobsEmAndamento({ integracaoIds: trackedIds });
     },
     enabled: Boolean(client) && trackedIds.length > 0,
-    retry: false,
+    // A one-shot lookup with no `refetchInterval`, so the reason the job CARDS
+    // keep `retry: false` (backoff stacking against POLL_MS) does not apply
+    // here — there is no next tick to serve as the retry. One blip would
+    // otherwise hide every running job until the operator clicked.
+    retry: mercadoLivreQueryRetry,
     staleTime: LOOKUP_STALE_MS,
   });
 
