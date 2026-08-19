@@ -93,6 +93,27 @@ describe('questionBuyerId', () => {
     );
     expect(questionBuyerId(question({ buyer_id: null, from: null }))).toBeNull();
   });
+
+  it('REFUSES an id JSON.parse could not have held exactly', () => {
+    // ⚠️ This id is the cliente identity key. ML warns that user ids outgrew
+    // Int32 and are now Int64, and `JSON.parse` silently ROUNDS past 2^53 — two
+    // distinct buyers can land on the same number, and stringifying afterwards
+    // cannot recover the digits. That merges two people into one cliente, the
+    // one failure this key exists to prevent. Ids today are ~1e9, six orders of
+    // magnitude clear of the limit; if that ever changes we want a loud skip
+    // and a warn, not a silent merge.
+    const inseguro = Number.MAX_SAFE_INTEGER + 2; // not representable exactly
+    expect(questionBuyerId(question({ buyer_id: inseguro }))).toBeNull();
+    expect(
+      questionBuyerId(question({ buyer_id: null, from: { id: inseguro, nickname: 'x' } })),
+    ).toBeNull();
+  });
+
+  it('still accepts the largest id that IS exact', () => {
+    expect(questionBuyerId(question({ buyer_id: Number.MAX_SAFE_INTEGER }))).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+  });
 });
 
 describe('questionExternalLink', () => {

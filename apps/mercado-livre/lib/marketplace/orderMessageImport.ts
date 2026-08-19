@@ -32,6 +32,9 @@ import {
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import type { MercadoLivreApi, MlPackMessages } from '@delfrance/integrations-mercado-livre';
 
+import { coerceToMillis } from '@delfrance/core/datetime';
+
+import { ack404EhSeguro } from './notificacaoFrescor';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { makeConversaIdOrderMessage, makeOrderMensagemId } from './orderMessageIds';
 import {
@@ -48,6 +51,13 @@ export interface OrderMessageImportDeps {
   readonly conta: { userId: number | null; cor: number | null };
   /** ONE clock read for the whole import, MILLISECONDS. */
   readonly nowMs: number;
+  /**
+   * The notification's own `sent` (ms), when it carried one. Tells a 404 that
+   * means "deleted" from a 404 that means "ML has not propagated this yet" —
+   * ML's reference is explicit that the by-id read 404s during that window and
+   * that integrators should retry. See `notificacaoFrescor.ts`.
+   */
+  readonly notificacaoEnviadaMs?: number | null;
 }
 
 export type OrderMessageImportSkip =
@@ -71,9 +81,66 @@ function outerRef(collection: string, id: string): string {
   return `documents/${collection}/${id}`;
 }
 
-/** A 404 is deterministic — ack it rather than burning the retry budget. */
 function is404(err: unknown): boolean {
   return err instanceof MercadoLivreHttpError && err.status === 404;
+}
+
+/**
+ * ML pages this endpoint at **10 by default**, so a bare read returns the ten
+ * newest messages and says nothing about the rest. Ask for the biggest page ML
+ * documents no ceiling on, then walk `paging.total`.
+ */
+const PAGINA_MENSAGENS = 100;
+
+/**
+ * Hard stop on the walk. GETs share a **500 rpm** post-sale budget across the
+ * whole application, so one pathological thread must not be able to spend it.
+ * Hitting this WARNS rather than truncating silently.
+ */
+const MAX_PAGINAS_MENSAGENS = 10;
+
+/**
+ * The whole thread, not just ML's first page.
+ *
+ * Returns the first page too (it is the one carrying `conversation_status` and
+ * `seller_max_message_length`), with `messages` accumulated across pages.
+ */
+async function lerThreadCompleta(
+  api: OrderMessageImportDeps['api'],
+  packOrOrderId: string,
+  sellerId: string,
+): Promise<MlPackMessages> {
+  const primeira = await api.getPackMessages(packOrOrderId, sellerId, {
+    limit: PAGINA_MENSAGENS,
+  });
+  const total = primeira.paging?.total ?? null;
+  const mensagens = [...primeira.messages];
+  if (total == null || mensagens.length >= total) return primeira;
+
+  let paginas = 1;
+  while (mensagens.length < total && paginas < MAX_PAGINAS_MENSAGENS) {
+    const proxima = await api.getPackMessages(packOrOrderId, sellerId, {
+      limit: PAGINA_MENSAGENS,
+      offset: mensagens.length,
+    });
+    // Defensive: ML returning an empty page while `total` still says otherwise
+    // would spin this loop until the cap for nothing.
+    if (proxima.messages.length === 0) break;
+    mensagens.push(...proxima.messages);
+    paginas += 1;
+  }
+
+  if (mensagens.length < total) {
+    // ⚠️ Never truncate quietly: a short thread and a capped one look identical
+    // in Firestore.
+    console.warn('[mercado-livre] thread pós-venda truncada no limite de páginas', {
+      packOrOrderId,
+      lidas: mensagens.length,
+      total,
+      maxPaginas: MAX_PAGINAS_MENSAGENS,
+    });
+  }
+  return { ...primeira, messages: mensagens };
 }
 
 /**
@@ -93,11 +160,18 @@ export async function importOrderMessageMercadoLivre(
   if (sellerId == null) return skip('sem-seller');
 
   // (a) the announced message → the pack it belongs to.
+  // ⚠️ A 404 here is usually the read-your-writes race, not a deletion. ML's own
+  // reference says so for this exact endpoint ("Mensagem não encontrada no
+  // servidor. Tente novamente em alguns segundos"), which is also why the
+  // receiver delays `messages` by 10s. Acking it loses a real customer message
+  // with no record anywhere, so only a 404 on a delivery old enough to rule the
+  // race out is acked.
+  const pode404 = ack404EhSeguro({ enviadaMs: deps.notificacaoEnviadaMs, nowMs });
   let porId: MlPackMessages;
   try {
     porId = await api.getMessage(messageId);
   } catch (err) {
-    if (is404(err)) return skip('message-404');
+    if (is404(err) && pode404) return skip('message-404');
     throw err;
   }
   const primeira = porId.messages[0];
@@ -109,9 +183,9 @@ export async function importOrderMessageMercadoLivre(
   // (b) the pack's whole thread, WITH the conversation_status.
   let pack: MlPackMessages;
   try {
-    pack = await api.getPackMessages(alvo.id, String(sellerId));
+    pack = await lerThreadCompleta(api, alvo.id, String(sellerId));
   } catch (err) {
-    if (is404(err)) return skip('message-404');
+    if (is404(err) && pode404) return skip('message-404');
     throw err;
   }
 
@@ -149,6 +223,15 @@ export async function importOrderMessageMercadoLivre(
     .filter((t): t is number => typeof t === 'number');
   const ultimaMensagemMs = carimbos.length > 0 ? Math.max(...carimbos) : null;
 
+  // ⚠️ The watermark the out-of-order guard compares. Both halves matter: a new
+  // message moves `ultimaMensagemMs`, while a thread going `blocked` usually
+  // moves only `status_date`.
+  const statusDateMs = coerceToMillis(pack.conversation_status?.status_date);
+  const relogioProvedorMs =
+    ultimaMensagemMs == null && statusDateMs == null
+      ? null
+      : Math.max(ultimaMensagemMs ?? 0, statusDateMs ?? 0);
+
   const fields = buildConversaFromPack({
     clienteOuterRef,
     integracaoOuterRef: outerRef('integracao', integracaoId),
@@ -159,16 +242,54 @@ export async function importOrderMessageMercadoLivre(
     packOrOrderId: alvo.id,
     pedidoNumero,
     ultimaMensagemMs,
+    relogioProvedorMs,
   });
 
-  if (existente.exists) {
-    await conversaCollection.merge(db, {}, conversaId, fields as DocumentData);
-  } else {
-    await conversaCollection.set(db, {}, conversaId, {
-      ...fields,
-      data_cadastro: ultimaMensagemMs ?? nowMs,
-    } as DocumentData);
-  }
+  // ⚠️ ONE transaction, re-reading inside it (root CLAUDE.md rule 7, tier 2).
+  // Two notifications for the same pack can be in flight at once — a new
+  // message and a status change, or a redelivery racing the sweep — and they
+  // fetch DIFFERENT ML snapshots. Without this, an older `active` snapshot
+  // finishing last overwrites `respostaBloqueada`/`atendido` and silently
+  // reopens a closed thread, handing the operator a composer that cannot send.
+  // Same shape as the WhatsApp inbound guard in `processMessages.ts`.
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(conversaRef);
+    if (!snap.exists) {
+      tx.set(
+        conversaRef,
+        conversaCollection.parse({
+          ...fields,
+          data_cadastro: ultimaMensagemMs ?? nowMs,
+        }) as DocumentData,
+      );
+      return;
+    }
+
+    // Re-derived from the tx snapshot, never from the read above — that one is
+    // stale by the time we get here, which is the whole point.
+    const stored = snap.data() as Record<string, unknown> | undefined;
+    const armazenado =
+      typeof stored?.ultimaModificacaoIntegracao === 'number'
+        ? stored.ultimaModificacaoIntegracao
+        : null;
+    const entrante = fields.ultimaModificacaoIntegracao ?? null;
+
+    if (armazenado != null && entrante != null && entrante < armazenado) {
+      // A strictly OLDER provider snapshot. Dropping the conversa patch is the
+      // point of the guard; the mensagens below are still written, because they
+      // are keyed by ML id and can only add history, never contradict it.
+      console.warn('[mercado-livre] thread pós-venda: snapshot mais antigo ignorado', {
+        conversaId,
+        armazenado,
+        entrante,
+      });
+      return;
+    }
+
+    tx.set(conversaRef, conversaCollection.parseMerge(fields) as DocumentData, {
+      merge: true,
+    });
+  });
 
   // Every message in the thread, at its ML id — an overwrite-set, so a
   // redelivery updates rather than duplicating.

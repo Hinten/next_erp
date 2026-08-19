@@ -45,6 +45,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 
 import { refMatchesIntegracao } from './linkRefs';
+import { JANELA_404_TRANSIENTE_MS, ack404EhSeguro } from './notificacaoFrescor';
 import { ANSWER_MENSAGEM_ID, makeConversaIdQuestion, makeQuestionMensagemId } from './questionIds';
 import {
   buildAnswerMensagem,
@@ -61,7 +62,19 @@ export interface QuestionImportDeps {
   readonly conta: { userId: number | null; cor: number | null };
   /** ONE clock read for the whole import, MILLISECONDS. */
   readonly nowMs: number;
+  /**
+   * The notification's own `sent` timestamp (ms), when it carried one — how
+   * a 404 is told apart from a race. See {@link JANELA_404_TRANSIENTE_MS}.
+   */
+  readonly notificacaoEnviadaMs?: number | null;
 }
+
+/**
+ * Re-exported from {@link notificacaoFrescor}. `messages` needs the identical
+ * policy — ML's own reference tells integrators to retry a 404 on the by-id
+ * message read — so the window and its reasoning live in ONE place.
+ */
+export { JANELA_404_TRANSIENTE_MS };
 
 export type QuestionImportSkip =
   | 'question-404'
@@ -174,6 +187,11 @@ async function resolveClienteDaPergunta(
   return res.clienteId;
 }
 
+/** Whether a 404 on this delivery can be trusted to mean "deleted". */
+function notificacao404EhDefinitivo(deps: QuestionImportDeps): boolean {
+  return ack404EhSeguro({ enviadaMs: deps.notificacaoEnviadaMs, nowMs: deps.nowMs });
+}
+
 /**
  * Import one Mercado Livre question into the chat inbox.
  *
@@ -191,8 +209,17 @@ export async function importQuestionMercadoLivre(
   try {
     question = await api.getQuestion(questionId);
   } catch (err) {
-    // A deleted question 404s. Deterministic — ack rather than poison-retry.
-    if (err instanceof MercadoLivreHttpError && err.status === 404) return skip('question-404');
+    if (err instanceof MercadoLivreHttpError && err.status === 404) {
+      // ⚠️ NOT unconditionally deterministic. A question deleted long ago 404s
+      // forever, but so does one asked seconds ago that ML has not propagated
+      // yet — and acking THAT loses a real customer question with no record
+      // anywhere. Only a 404 on a notification old enough to rule the race out
+      // is acked; a fresh one throws so the queue and sweep retry it.
+      if (!notificacao404EhDefinitivo(deps)) {
+        throw err;
+      }
+      return skip('question-404');
+    }
     throw err;
   }
 

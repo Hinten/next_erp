@@ -375,7 +375,24 @@ export interface MercadoLivreApi {
    * When a pack id is absent ML accepts the ORDER id in the same position,
    * keeping the `/packs/` path — that fallback is the caller's to apply.
    */
-  getPackMessages(packId: string, sellerId: string): Promise<MlPackMessages>;
+  /**
+   * `GET /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale&mark_as_read=false`
+   * — ONE page of a post-sale thread, plus `conversation_status` and the live
+   * `seller_max_message_length`.
+   *
+   * ⚠️ **Paginated, with a default page of 10.** Callers that need the whole
+   * thread must loop on `paging.total`; a bare call returns the first ten
+   * messages and nothing says so.
+   *
+   * ⚠️ `mark_as_read=false` is not optional. The plain GET marks the thread
+   * read as a side effect, and an importer must not clear the unread state the
+   * seller relies on.
+   */
+  getPackMessages(
+    packId: string,
+    sellerId: string,
+    paginacao?: { limit?: number; offset?: number },
+  ): Promise<MlPackMessages>;
 
   /** `GET /post-purchase/v1/claims/{claimId}` — one claim (claims import, Step 14). */
   getClaim(claimId: number): Promise<MlClaim>;
@@ -825,13 +842,24 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         `/messages/${encodeURIComponent(messageId)}?tag=post_sale&mark_as_read=false`,
         mlPackMessagesSchema,
       ),
-    getPackMessages: (packId, sellerId) =>
-      request(
+    getPackMessages: (packId, sellerId, paginacao) => {
+      // ML rejects a non-positive `limit` with a 400, so only send what the
+      // caller actually asked for.
+      const extra =
+        (paginacao?.limit != null && paginacao.limit > 0
+          ? `&limit=${String(paginacao.limit)}`
+          : '') +
+        (paginacao?.offset != null && paginacao.offset > 0
+          ? `&offset=${String(paginacao.offset)}`
+          : '');
+      return request(
         'GET',
         `/messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(sellerId)}` +
-          '?tag=post_sale&mark_as_read=false',
+          '?tag=post_sale&mark_as_read=false' +
+          extra,
         mlPackMessagesSchema,
-      ),
+      );
+    },
     getQuestion: (questionId) =>
       request('GET', `/questions/${questionId}?api_version=4`, mlQuestionSchema),
     getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),
