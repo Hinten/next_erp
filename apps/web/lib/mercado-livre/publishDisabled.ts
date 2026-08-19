@@ -57,8 +57,15 @@ export function publishDisabledReason(input: PublishDisabledInput): string | nul
   // lacked permission, on every ordinary page load, until the claims resolved.
   // Nothing here is actionable anyway — the only correct instruction is "wait".
   if (input.loading) return 'Carregando os dados do anúncio…';
-  if (!input.canPublish) return 'Requer permissão de escrita em integrações.';
+  // ⚠️ `hasClient` BEFORE `canPublish`, which is what the "most-actionable first"
+  // rule above always required: re-authenticating is something the operator can
+  // do right now, a permission grant needs an admin. Ordered the other way the
+  // `hasClient` branch was unreachable in practice AND said the wrong thing —
+  // no client means no Firebase user, and `useTenant` answers a userless session
+  // with `claims: null, loading: false` (`useTenant.ts`), so `canPublish` is
+  // false too and a merely logged-out operator was told they lacked permission.
   if (!input.hasClient) return 'Sessão não autenticada — recarregue a página e entre novamente.';
+  if (!input.canPublish) return 'Requer permissão de escrita em integrações.';
   if (input.disabled) return 'O formulário do produto não está em modo de edição.';
   if (input.publishingThisConta) return 'Publicação em andamento…';
   if (input.publishingOtherConta) return 'Aguarde a publicação em andamento em outra conta.';

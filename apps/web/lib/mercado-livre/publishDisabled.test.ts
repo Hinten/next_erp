@@ -73,6 +73,27 @@ describe('publishDisabledReason', () => {
     expect(publishDisabledReason(input({ hasClient: false }))).toMatch(/autenticada/i);
   });
 
+  /**
+   * A logged-out operator arrives here with BOTH flags down, because no Firebase
+   * user means no claims: `useTenant` answers a userless session with
+   * `claims: null, loading: false`, so `usePermission` reports
+   * `allowed: false`. Ranking `canPublish` first therefore made the `hasClient`
+   * branch unreachable in practice and told someone who merely needs to sign in
+   * again that they lack permission — a dead end, since only an admin can grant
+   * that. It also contradicted this function's own "most-actionable first" rule.
+   */
+  it('⚠️ tells a logged-out operator to sign in, NOT that they lack permission', () => {
+    const reason = publishDisabledReason(input({ hasClient: false, canPublish: false }));
+    expect(reason).toMatch(/autenticada/i);
+    expect(reason).not.toMatch(/permissão/i);
+  });
+
+  it('still reports a real permission gap once the session is authenticated', () => {
+    expect(publishDisabledReason(input({ hasClient: true, canPublish: false }))).toMatch(
+      /permissão/i,
+    );
+  });
+
   it('explains a publish running on ANOTHER conta', () => {
     // `publishing` is a global latch: while conta A publishes, every other card's
     // button goes flat-disabled with no spinner and no text of its own.
