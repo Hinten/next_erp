@@ -148,6 +148,11 @@ export interface ConversaFromPackContext {
    * which is our own write clock. Null when the pack came back empty.
    */
   readonly ultimaMensagemMs: number | null;
+  /**
+   * `max(ultimaMensagemMs, conversation_status.status_date)` — the value the
+   * out-of-order guard compares. Falls back to `ultimaMensagemMs`.
+   */
+  readonly relogioProvedorMs?: number | null;
 }
 
 /**
@@ -170,7 +175,12 @@ export function buildConversaFromPack(ctx: ConversaFromPackContext): Partial<Con
         : `MercadoLivre ${ctx.packOrOrderId}`,
     cor_etiqueta: ctx.corEtiqueta,
     ultima_modificacao: ctx.nowMs,
-    ultimaModificacaoIntegracao: ctx.ultimaMensagemMs ?? ctx.nowMs,
+    // ⚠️ The PROVIDER clock, and the out-of-order guard reads it. It is the max
+    // of the thread's newest message and `conversation_status.status_date`,
+    // NOT just the message time: a thread going `blocked` often carries no new
+    // message at all, and a message-only watermark would let a stale `active`
+    // snapshot land afterwards and reopen a closed thread.
+    ultimaModificacaoIntegracao: ctx.relogioProvedorMs ?? ctx.ultimaMensagemMs ?? ctx.nowMs,
     respostaBloqueada: ctx.acao.motivo,
     atendido: !ctx.acao.podeResponder,
   };

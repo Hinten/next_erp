@@ -1416,8 +1416,28 @@ export type MlPostSaleMessage = z.infer<typeof mlPostSaleMessageSchema>;
  * writing). Read it rather than trusting a constant — ML returns it on every
  * response precisely because it is not one.
  */
+/**
+ * The pack thread's paging block.
+ *
+ * ⚠️ **Load-bearing, and it used to ride `.passthrough()` untyped.** ML's
+ * default page is **10** — the reference's own example shows
+ * `paging: { limit: 10, offset: 0, total: 3 }` — so a thread with more than ten
+ * messages silently returned its first ten and the importer wrote only those.
+ * Most real post-sale threads clear ten easily.
+ */
+export const mlPagingSchema = z
+  .object({
+    limit: z.number().nullable().default(null),
+    offset: z.number().nullable().default(null),
+    total: z.number().nullable().default(null),
+  })
+  .passthrough();
+export type MlPaging = z.infer<typeof mlPagingSchema>;
+
 export const mlPackMessagesSchema = z
   .object({
+    /** Null on the by-id read, which returns no envelope. */
+    paging: mlPagingSchema.nullable().default(null),
     conversation_status: mlConversationStatusSchema.nullable().default(null),
     messages: z
       .array(mlPostSaleMessageSchema)

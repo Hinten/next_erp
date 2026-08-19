@@ -8,7 +8,7 @@ vi.mock('@delfrance/data/admin/clientes', () => ({
   findOrCreateCliente: findOrCreateClienteMock,
 }));
 
-import { importQuestionMercadoLivre } from './questionImport';
+import { JANELA_404_TRANSIENTE_MS, importQuestionMercadoLivre } from './questionImport';
 import { ANSWER_MENSAGEM_ID, makeConversaIdQuestion } from './questionIds';
 
 /* ------------------------------ fake Firestore ---------------------------- */
@@ -110,13 +110,21 @@ function api(over: Partial<MercadoLivreApi> = {}): MercadoLivreApi {
   } as unknown as MercadoLivreApi;
 }
 
-function deps(db: FakeDb, apiOver: Partial<MercadoLivreApi> = {}) {
+function deps(
+  db: FakeDb,
+  apiOver: Partial<MercadoLivreApi> = {},
+  over: { notificacaoEnviadaMs?: number | null } = {},
+) {
   return {
     db: asDb(db),
     api: api(apiOver),
     integracaoId: CONTA,
     conta: { userId: 179571326, cor: 7 },
     nowMs: NOW_MS,
+    // Default OLD, so a 404 in an unrelated test still means "deleted".
+    // Literal, not derived from the constant — see the boundary tests below.
+    notificacaoEnviadaMs: NOW_MS - 3_600_000,
+    ...over,
   };
 }
 
@@ -130,6 +138,21 @@ function resetCliente(id = 'cli1') {
     dropped: [],
   });
 }
+
+describe('JANELA_404_TRANSIENTE_MS', () => {
+  it('is ten minutes — pinned as a LITERAL, because the boundary tests cannot pin it', () => {
+    // ⚠️ The boundary cases feed timestamps derived from a literal offset. If
+    // they derived them from this constant instead, widening it would move the
+    // fixtures too and the pair would pass at ANY value — a test that cannot
+    // fail. This assertion is the other half: it fixes the number itself.
+    //
+    // The value has to outlast the QUEUE's whole retry envelope (so a freshly
+    // asked question gets every attempt) while staying far short of the HOURLY
+    // sweep (so a genuinely deleted question settles on the first sweep pass
+    // instead of retrying forever).
+    expect(JANELA_404_TRANSIENTE_MS).toBe(600_000);
+  });
+});
 
 describe('importQuestionMercadoLivre — the actionability gate', () => {
   it('imports an UNANSWERED question: conversa + the question mensagem', async () => {
@@ -283,6 +306,72 @@ describe('importQuestionMercadoLivre — identity and skips', () => {
           throw new MercadoLivreHttpError('ML 404: not found', 404, null, null);
         }),
       }),
+      QUESTION_ID,
+    );
+    expect(res.skipped).toBe('question-404');
+  });
+
+  it('RETHROWS a 404 on a FRESH notification — that is the read-your-writes race', async () => {
+    // ⚠️ The data-loss path. ML's question GET is eventually consistent (which
+    // is why the receiver delays the task 10s), so a question asked seconds ago
+    // can 404 on the first read. Acking it loses a real customer question
+    // permanently, with no failure doc, no parked doc and no warn — the exact
+    // silent-success shape #813 was filed about.
+    resetCliente();
+    const db = new FakeDb();
+    await expect(
+      importQuestionMercadoLivre(
+        deps(
+          db,
+          {
+            getQuestion: vi.fn(async () => {
+              throw new MercadoLivreHttpError('ML 404: not found', 404, null, null);
+            }),
+          },
+          { notificacaoEnviadaMs: NOW_MS - 5_000 },
+        ),
+        QUESTION_ID,
+      ),
+    ).rejects.toBeInstanceOf(MercadoLivreHttpError);
+  });
+
+  it('acks a 404 the moment the notification leaves the race window', async () => {
+    // The boundary itself: one millisecond past the window and a 404 is a
+    // deletion. By the time the HOURLY sweep re-drives a failure doc, every
+    // notification is far outside it — so a truly deleted question settles on
+    // that pass instead of retrying forever.
+    resetCliente();
+    const db = new FakeDb();
+    const fora = await importQuestionMercadoLivre(
+      deps(
+        db,
+        {
+          getQuestion: vi.fn(async () => {
+            throw new MercadoLivreHttpError('ML 404', 404, null, null);
+          }),
+        },
+        { notificacaoEnviadaMs: NOW_MS - 600_001 }, // 10 min + 1 ms
+      ),
+      QUESTION_ID,
+    );
+    expect(fora.skipped).toBe('question-404');
+  });
+
+  it('acks a 404 when ML sent no timestamp at all', async () => {
+    // A payload with no freshness claim (a replay, a synthesised body) cannot
+    // be defended by a window, and looping on it forever is worse than acking.
+    resetCliente();
+    const db = new FakeDb();
+    const res = await importQuestionMercadoLivre(
+      deps(
+        db,
+        {
+          getQuestion: vi.fn(async () => {
+            throw new MercadoLivreHttpError('ML 404', 404, null, null);
+          }),
+        },
+        { notificacaoEnviadaMs: null },
+      ),
       QUESTION_ID,
     );
     expect(res.skipped).toBe('question-404');
