@@ -70,8 +70,12 @@ export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorP
     } finally {
       setAdicionando(false);
     }
-    // Re-read across the await — the list may have changed while it ran.
+    // Re-read across the await — the list may have changed while it ran, e.g.
+    // the activation seed landing. `canAdd` was evaluated a render ago, so the
+    // cap has to be re-checked against the CURRENT list or a FOB block
+    // (maxVolumes 1) could end up with two.
     const atuais = (form.getValues(fretePath('volumes')) as VolumeFormState[] | null) ?? [];
+    if (maxVolumes != null && atuais.length >= maxVolumes) return;
     update([...atuais, volumePadrao(peso)]);
   }
 
