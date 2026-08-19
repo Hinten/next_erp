@@ -4,6 +4,7 @@ import { publishDisabledReason, type PublishDisabledInput } from './publishDisab
 
 function input(over: Partial<PublishDisabledInput> = {}): PublishDisabledInput {
   return {
+    loading: false,
     disabled: false,
     canPublish: true,
     hasClient: true,
@@ -19,6 +20,47 @@ function input(over: Partial<PublishDisabledInput> = {}): PublishDisabledInput {
 describe('publishDisabledReason', () => {
   it('returns null when nothing blocks publishing', () => {
     expect(publishDisabledReason(input())).toBeNull();
+  });
+
+  /**
+   * The publish buttons were clickable while the produto doc, its extraData, the
+   * tenant claims and the category attribute grid were all still in flight — so
+   * a publish could go out built from data nobody had seen.
+   */
+  describe('loading outranks every other reason', () => {
+    it('says the data is still arriving', () => {
+      expect(publishDisabledReason(input({ loading: true }))).toMatch(/carregando/i);
+    });
+
+    it('⚠️ beats a FALSE permission denial, which is why it must come first', () => {
+      // `usePermission` answers `allowed: false` while it loads, so with the
+      // old ordering an operator with full rights was told they lacked
+      // permission on every ordinary page load.
+      expect(publishDisabledReason(input({ loading: true, canPublish: false }))).toMatch(
+        /carregando/i,
+      );
+    });
+
+    it('beats every remaining reason too — none of them is trustworthy yet', () => {
+      const outranked: Array<Partial<PublishDisabledInput>> = [
+        { hasClient: false },
+        { disabled: true },
+        { publishingThisConta: true },
+        { publishingOtherConta: true },
+        { produtoDirty: true },
+        { contaDirty: true },
+        { missingCategoria: true },
+      ];
+      for (const over of outranked) {
+        expect(publishDisabledReason(input({ loading: true, ...over }))).toMatch(/carregando/i);
+      }
+    });
+
+    it('gets out of the way once the data lands', () => {
+      // The gate must RELEASE — a permanently-loading signal is a dead button,
+      // which is worse than the race it replaces.
+      expect(publishDisabledReason(input({ loading: false }))).toBeNull();
+    });
   });
 
   // ⚠️ The two that said NOTHING on screen. An operator hitting either saw a

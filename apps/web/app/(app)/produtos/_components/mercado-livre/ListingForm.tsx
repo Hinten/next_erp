@@ -109,6 +109,17 @@ export interface ListingFormProps {
   /** Reported on every change so the page's leave-guard can see ML edits. */
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   /**
+   * Reported while this listing's category attributes are still in flight, so the
+   * editor can hold its write actions until the form actually describes the
+   * listing.
+   *
+   * ⚠️ The grid is EMPTY, not absent, while the query loads: `seedRows` iterates
+   * the query result, so `attrRows` is `[]`, the "N obrigatório(s) sem valor"
+   * badge reads 0, and a half-loaded form is indistinguishable from a complete
+   * one. Publishing from that state sends attributes nobody saw.
+   */
+  onLoadingChange: (linkDocId: string, loading: boolean) => void;
+  /**
    * Hands the editor a closure that saves this listing, so **both** callers can
    * drive it: the produto's own "Salvar alterações" (`'flush'`) and the
    * "Salvar anúncio" button the editor now renders next to Publicar
@@ -219,6 +230,7 @@ export function ListingForm({
   disabled,
   serverErrors,
   onDirtyChange,
+  onLoadingChange,
   registerFlush,
 }: ListingFormProps) {
   /** A control shows its own validation first; the server's when it has none. */
@@ -535,6 +547,36 @@ export function ListingForm({
       onDirtyChange(linkDocId, false);
     },
     [linkDocId, onDirtyChange],
+  );
+
+  // ⚠️ `isLoading`, NOT `isPending`. In TanStack v5 a DISABLED query sits at
+  // `isPending: true` forever, and this query is disabled in two legitimate,
+  // permanent states — no category chosen, and `client == null` before auth
+  // resolves. Reporting `isPending` would mean "never ready" in both, leaving
+  // every write action dead for the whole session. `isLoading` is
+  // `isPending && isFetching`, so it is true only while a request is genuinely
+  // in flight, and an error settles it (a failed metadata call must not block
+  // publishing — `AtributosSection` promises the stored attributes survive).
+  //
+  // ⚠️ This is deliberately NOT the flag passed to `AtributosSection` below,
+  // which stays `isPending && effectiveCategoryId != null`. That one answers
+  // "should I show a spinner instead of the grid?", and with a category but no
+  // client the honest answer is yes; `isLoading` there would fall through to
+  // "Esta categoria não exige atributos." — the false negative that ladder
+  // exists to avoid. Two questions, two flags.
+  const atributosCarregando = atributosQuery.isLoading;
+  useEffect(() => {
+    onLoadingChange(linkDocId, atributosCarregando);
+  }, [linkDocId, atributosCarregando, onLoadingChange]);
+
+  useEffect(
+    () => () => {
+      // An unmount that left "still loading" behind would disable the editor's
+      // write actions FOREVER — the id would sit in its Set with nothing left
+      // to clear it.
+      onLoadingChange(linkDocId, false);
+    },
+    [linkDocId, onLoadingChange],
   );
 
   const runSave = useCallback(

@@ -43,6 +43,7 @@ function renderForm(
   props: Record<string, unknown> = {},
 ) {
   const onDirtyChange = vi.fn();
+  const onLoadingChange = vi.fn();
   const registerFlush = vi.fn();
   const link = linkFixture(over);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -63,15 +64,16 @@ function renderForm(
       db={{} as Firestore}
       canWrite
       onDirtyChange={onDirtyChange}
+      onLoadingChange={onLoadingChange}
       registerFlush={registerFlush}
       {...props}
     />
   );
-  const { rerender } = render(node(link), { wrapper });
+  const { rerender, unmount } = render(node(link), { wrapper });
   /** Re-render with a NEW link, the way a live snapshot update arrives. */
   const update = (next: Partial<ProdutoMercadoLivreLink>) =>
     rerender(node(linkFixture({ ...over, ...next })));
-  return { onDirtyChange, registerFlush, link, update };
+  return { onDirtyChange, onLoadingChange, registerFlush, link, update, unmount };
 }
 
 function type(label: string | RegExp, value: string) {
@@ -143,6 +145,85 @@ describe('ListingForm — server errors', () => {
     // fixture, and is covered by the `splitCausas` tests rather than here.
     update({ id: null });
     expect(screen.getByText('ML recusou')).toBeDefined();
+  });
+});
+
+/**
+ * The editor's write actions are held until every listing reports its category
+ * attributes settled. The grid is EMPTY, not absent, while that query is in
+ * flight, so a half-loaded form looks complete and a publish fired from it sends
+ * attributes nobody saw.
+ */
+describe('ListingForm — reports its attribute loading upward', () => {
+  const ATTR = { id: 'BRAND', name: 'Marca', required: false, valueType: 'string', values: [] };
+
+  const lastReport = (spy: ReturnType<typeof vi.fn>): boolean | undefined =>
+    spy.mock.calls.at(-1)?.[1] as boolean | undefined;
+
+  it('reports true while the query is in flight, then false once it lands', async () => {
+    let resolver: (v: unknown) => void = () => {};
+    h.client = {
+      categoriaAtributos: vi.fn(
+        () =>
+          new Promise((res) => {
+            resolver = res;
+          }),
+      ),
+    };
+    const { onLoadingChange } = renderForm({ category_id: 'MLB31447' });
+
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(true));
+    expect(onLoadingChange).toHaveBeenCalledWith('ML-DOC-1', true);
+
+    // The gate must RELEASE — a signal that never clears is a dead button.
+    await act(async () => {
+      resolver({ leaf: true, atributos: [ATTR], omitidos: [] });
+    });
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(false));
+  });
+
+  /**
+   * ⚠️ The two states a naive `isPending` gets wrong. TanStack v5 parks a
+   * DISABLED query at `isPending: true` forever, so reporting that would leave
+   * every write action dead for the whole session.
+   */
+  it('reports false when no category is chosen — the query never runs', async () => {
+    h.client = { categoriaAtributos: vi.fn() };
+    const { onLoadingChange } = renderForm({ category_id: null });
+    await waitFor(() => expect(onLoadingChange).toHaveBeenCalled());
+    expect(lastReport(onLoadingChange)).toBe(false);
+  });
+
+  it('reports false with no client — an unauthenticated session is not loading', async () => {
+    // `h.client` stays null (the harness default), which disables the query
+    // exactly as an unresolved auth session does.
+    const { onLoadingChange } = renderForm({ category_id: 'MLB31447' });
+    await waitFor(() => expect(onLoadingChange).toHaveBeenCalled());
+    expect(lastReport(onLoadingChange)).toBe(false);
+  });
+
+  it('reports false when the metadata call FAILS', async () => {
+    // A failed lookup must not block publishing: AtributosSection's own copy
+    // promises the stored attributes survive it.
+    h.client = { categoriaAtributos: vi.fn(async () => Promise.reject(new Error('boom'))) };
+    const { onLoadingChange } = renderForm({ category_id: 'MLB31447' });
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(false));
+  });
+
+  it('clears its id on unmount, so a removed listing cannot wedge the gate shut', async () => {
+    h.client = {
+      categoriaAtributos: vi.fn(
+        () =>
+          new Promise(() => {
+            /* never settles */
+          }),
+      ),
+    };
+    const { onLoadingChange, unmount } = renderForm({ category_id: 'MLB31447' });
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(true));
+
+    unmount();
+    expect(onLoadingChange).toHaveBeenLastCalledWith('ML-DOC-1', false);
   });
 });
 
