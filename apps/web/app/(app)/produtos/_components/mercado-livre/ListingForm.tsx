@@ -43,7 +43,7 @@ import {
   type MercadoLivreAtributoSugestao,
   type MercadoLivreAtributosSugestao,
 } from '@/lib/mercado-livre/client';
-import { isRetryableMercadoLivreError, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
+import { describeMercadoLivreFailure, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 
 import {
@@ -69,7 +69,7 @@ import {
 } from '@/lib/mercado-livre/saveListing';
 import type { OperatorOwnedKey } from '@/lib/mercado-livre/listingPatch';
 import { AtributosAiModal } from './AtributosAiModal';
-import { AtributosSection } from './AtributosSection';
+import { ATRIBUTOS_LOAD_FAILED_MESSAGE, AtributosSection } from './AtributosSection';
 import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
 import { ListingField, textOr } from './ListingField';
@@ -412,9 +412,18 @@ export function ListingForm({
   });
   // Without this the whole attribute grid stayed replaced by an alert until the
   // operator switched category away and back, or reloaded the page.
+  //
+  // The MESSAGE has to come from the mapper too, not just the button: a
+  // non-retryable failure gets no button by design, so the copy is all the
+  // operator has left. A hardcoded string rendered `409 ML_REAUTH_REQUIRED` as a
+  // bare "não foi possível carregar" — no button, no hint to reconnect.
   const atributosRetry = queryRetry(atributosQuery);
-  const atributosRetryable =
-    atributosQuery.error != null && isRetryableMercadoLivreError(atributosQuery.error);
+  const atributosFailure =
+    atributosQuery.error == null
+      ? null
+      : describeMercadoLivreFailure(atributosQuery.error, {
+          unknown: ATRIBUTOS_LOAD_FAILED_MESSAGE,
+        });
   const attrs = useMemo(() => atributosQuery.data?.atributos ?? [], [atributosQuery.data]);
   const omitidos = useMemo(() => atributosQuery.data?.omitidos ?? [], [atributosQuery.data]);
 
@@ -818,7 +827,8 @@ export function ListingForm({
           leaf={atributosQuery.data?.leaf ?? true}
           loading={atributosQuery.isPending && effectiveCategoryId != null}
           failed={atributosQuery.isError}
-          onRetry={atributosRetryable ? atributosRetry.retry : undefined}
+          message={atributosFailure?.message}
+          onRetry={atributosFailure?.retryable ? atributosRetry.retry : undefined}
           retrying={atributosRetry.retrying}
           disabled={readOnly}
           acaoIa={
