@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  Alert,
   Anchor,
   Badge,
   Button,
@@ -28,6 +27,9 @@ import {
   useMercadoLivreClient,
   type MercadoLivreCategoriaSugestao,
 } from '@/lib/mercado-livre/client';
+import { describeMercadoLivreFailure, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
+import { queryRetry } from '@/lib/query/queryRetry';
+import { RetryAlert } from '@/components/feedback/RetryAlert';
 
 /** ML metadata barely moves; a half-hour is generous and still bounded. */
 const METADATA_STALE_MS = 30 * 60 * 1000;
@@ -97,6 +99,7 @@ export function CategoriaPickerModal({
     enabled: opened && client != null,
     staleTime: METADATA_STALE_MS,
     queryFn: () => client!.categorias({ integracaoId, categoryId: cursor }),
+    retry: mercadoLivreQueryRetry,
   });
 
   const suggestionsQuery = useQuery({
@@ -104,7 +107,25 @@ export function CategoriaPickerModal({
     enabled: opened && showSuggestions && client != null && produtoNome.trim().length > 0,
     staleTime: METADATA_STALE_MS,
     queryFn: () => client!.sugerirCategorias({ integracaoId, q: produtoNome, limit: 8 }),
+    retry: mercadoLivreQueryRetry,
   });
+
+  const level = queryRetry(levelQuery);
+  const levelFailure =
+    level.error == null
+      ? null
+      : describeMercadoLivreFailure(level.error, {
+          unknown: 'Não foi possível carregar as categorias do Mercado Livre.',
+        });
+  // The trigger that started this is hidden once `showSuggestions` is on, so
+  // without a retry here a single blip cost the operator the whole panel.
+  const suggestions = queryRetry(suggestionsQuery);
+  const suggestionsFailure =
+    suggestions.error == null
+      ? null
+      : describeMercadoLivreFailure(suggestions.error, {
+          unknown: 'Não foi possível obter sugestões.',
+        });
 
   const node = levelQuery.data?.node ?? null;
   const children = levelChildren(levelQuery.data);
@@ -154,10 +175,13 @@ export function CategoriaPickerModal({
               automaticamente.
             </Text>
             {suggestionsQuery.isPending && <Loader size="xs" />}
-            {suggestionsQuery.isError && (
-              <Alert color="red" variant="light">
-                Não foi possível obter sugestões.
-              </Alert>
+            {suggestionsFailure && (
+              <RetryAlert
+                variant="compact"
+                message={suggestionsFailure.message}
+                onRetry={suggestionsFailure.retryable ? suggestions.retry : undefined}
+                retrying={suggestions.retrying}
+              />
             )}
             {suggestionsQuery.data?.sugestoes.length === 0 && (
               <Text size="sm" c="dimmed">
@@ -189,10 +213,12 @@ export function CategoriaPickerModal({
             <Loader size="sm" />
           </Group>
         )}
-        {levelQuery.isError && (
-          <Alert color="red" variant="light">
-            Não foi possível carregar as categorias do Mercado Livre.
-          </Alert>
+        {levelFailure && (
+          <RetryAlert
+            message={levelFailure.message}
+            onRetry={levelFailure.retryable ? level.retry : undefined}
+            retrying={level.retrying}
+          />
         )}
 
         <ScrollArea.Autosize mah={320}>

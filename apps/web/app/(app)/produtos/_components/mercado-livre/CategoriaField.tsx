@@ -6,6 +6,7 @@ import { Button, Group, Stack, Text } from '@mantine/core';
 
 import { formatCategoriaPath } from '@/lib/mercado-livre/categoriaTree';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { CategoriaPickerModal } from './CategoriaPickerModal';
 
 const METADATA_STALE_MS = 30 * 60 * 1000;
@@ -49,6 +50,10 @@ export function CategoriaField({
     enabled: value != null && client != null,
     staleTime: METADATA_STALE_MS,
     queryFn: () => client!.categorias({ integracaoId, categoryId: value }),
+    // No alert here on purpose: a failed lookup degrades to showing the raw
+    // `MLB…` id, which still names the category and still opens the picker. The
+    // automatic retry is what makes that fallback rare.
+    retry: mercadoLivreQueryRetry,
   });
   const path = formatCategoriaPath(pathQuery.data?.node ?? null);
 

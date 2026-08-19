@@ -23,11 +23,28 @@ import {
   type MercadoLivrePriceSyncStatus,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
-import { mercadoLivreQueryErrorMessage } from './mercadoLivreJobErrors';
+import { describeMercadoLivreFailure } from '@/lib/mercado-livre/errors';
+import { queryRetry } from '@/lib/query/queryRetry';
+import { RetryAlert } from '@/components/feedback/RetryAlert';
 import type { ContaRef } from './startJobsForContas';
 
 /** Poll cadence while a job is `running` (unchanged from the conta panel). */
 const POLL_MS = 3000;
+
+/*
+  ⚠️ Both cards keep `retry: false` while every other Mercado Livre read moved to
+  `mercadoLivreQueryRetry`. The next tick IS their retry, and 400ms→4s backoff
+  against a 3s interval stacks overlapping fetches on a backend that is already
+  down, multiplied by every card in the rail.
+
+  What the pollers were missing is the manual button. A card started this session
+  carries no `initialStatus`, so when the FIRST poll fails `data` is undefined,
+  the interval evaluates to `false`, and polling never resumes — the operator
+  loses the handle on a job still running server-side. The button revives it:
+  query-core recomputes the interval on every query state change
+  (`onQueryUpdate` → `#updateTimers` → `#computeRefetchInterval`, verified in
+  5.100.10), so one successful refetch returning `running` restarts the timer.
+*/
 
 /** How many skip/failure sample entries the details modal lists before "+N mais". */
 const PRICE_SYNC_LIST_LIMIT = 8;
@@ -124,6 +141,14 @@ export function MassImportJobCard({
   });
 
   const data = query.data;
+  const retry = queryRetry(query);
+  const failure =
+    query.error == null
+      ? null
+      : describeMercadoLivreFailure(query.error, {
+          network: 'Falha de rede ao consultar a importação.',
+          unknown: 'Não foi possível consultar a importação.',
+        });
   return (
     <JobCardShell
       conta={conta}
@@ -131,15 +156,14 @@ export function MassImportJobCard({
       running={data?.status === 'running'}
       onDismiss={onDismiss}
     >
-      {query.error != null ? (
-        <Alert color="yellow" variant="light" p="xs">
-          <Text size="xs">
-            {mercadoLivreQueryErrorMessage(query.error, {
-              network: 'Falha de rede ao consultar a importação.',
-              unknown: 'Não foi possível consultar a importação.',
-            })}
-          </Text>
-        </Alert>
+      {failure ? (
+        <RetryAlert
+          variant="compact"
+          color="yellow"
+          message={failure.message}
+          onRetry={failure.retryable ? retry.retry : undefined}
+          retrying={retry.retrying}
+        />
       ) : !data ? (
         <Loader size="xs" />
       ) : (
@@ -190,6 +214,14 @@ export function PriceSyncJobCard({
   });
 
   const data = query.data;
+  const retry = queryRetry(query);
+  const failure =
+    query.error == null
+      ? null
+      : describeMercadoLivreFailure(query.error, {
+          network: 'Falha de rede ao consultar o envio de preços.',
+          unknown: 'Não foi possível consultar o envio de preços.',
+        });
   const temAmostras = (data?.skips.length ?? 0) > 0 || (data?.failures.length ?? 0) > 0;
 
   return (
@@ -199,15 +231,14 @@ export function PriceSyncJobCard({
       running={data?.status === 'running'}
       onDismiss={onDismiss}
     >
-      {query.error != null ? (
-        <Alert color="yellow" variant="light" p="xs">
-          <Text size="xs">
-            {mercadoLivreQueryErrorMessage(query.error, {
-              network: 'Falha de rede ao consultar o envio de preços.',
-              unknown: 'Não foi possível consultar o envio de preços.',
-            })}
-          </Text>
-        </Alert>
+      {failure ? (
+        <RetryAlert
+          variant="compact"
+          color="yellow"
+          message={failure.message}
+          onRetry={failure.retryable ? retry.retry : undefined}
+          retrying={retry.retrying}
+        />
       ) : !data ? (
         <Loader size="xs" />
       ) : (

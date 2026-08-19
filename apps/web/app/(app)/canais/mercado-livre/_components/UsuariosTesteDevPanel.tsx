@@ -24,6 +24,9 @@ import {
   type MercadoLivreUsuarioTeste,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { describeMercadoLivreFailure, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
+import { queryRetry } from '@/lib/query/queryRetry';
+import { RetryAlert } from '@/components/feedback/RetryAlert';
 
 /**
  * Build-time constant: Next inlines `process.env.NODE_ENV`, so the check in the
@@ -85,7 +88,7 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
       return client.usuariosTeste(integracaoId);
     },
     enabled: Boolean(client),
-    retry: false,
+    retry: mercadoLivreQueryRetry,
   });
 
   const mutation = useMutation({
@@ -130,6 +133,18 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
   }
 
   const usuarios = query.data?.usuarios ?? [];
+  // Anything that is NOT that 404 used to be swallowed: `usuarios` fell back to
+  // `[]` and the panel said "Nenhum usuário de teste criado" — indistinguishable
+  // from an unreachable backend, on the one screen whose whole job is to tell
+  // you which users exist before you create more.
+  const listaFailure =
+    query.error == null
+      ? null
+      : describeMercadoLivreFailure(query.error, {
+          network: 'Falha de rede ao consultar os usuários de teste.',
+          unknown: 'Não foi possível consultar os usuários de teste.',
+        });
+  const listaRetry = queryRetry(query);
 
   return (
     <Card withBorder padding="md" data-testid="ml-usuarios-teste-panel">
@@ -147,6 +162,15 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
           guardadas aqui — é o único lugar onde elas existem depois da criação.
         </Text>
 
+        {listaFailure && (
+          <RetryAlert
+            color="yellow"
+            message={listaFailure.message}
+            onRetry={listaFailure.retryable ? listaRetry.retry : undefined}
+            retrying={listaRetry.retrying}
+          />
+        )}
+
         {usuarios.length > 0 ? (
           <Stack gap="xs" data-testid="ml-usuarios-teste-lista">
             {usuarios.map((u) => (
@@ -154,9 +178,14 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
             ))}
           </Stack>
         ) : (
-          <Text size="sm" c="dimmed">
-            Nenhum usuário de teste criado para esta conta ainda.
-          </Text>
+          // Suppressed while the read is failing: "nenhum criado" next to "não
+          // foi possível consultar" is the exact contradiction the alert exists
+          // to remove.
+          !listaFailure && (
+            <Text size="sm" c="dimmed">
+              Nenhum usuário de teste criado para esta conta ainda.
+            </Text>
+          )
         )}
 
         <Group align="center" gap="sm">
