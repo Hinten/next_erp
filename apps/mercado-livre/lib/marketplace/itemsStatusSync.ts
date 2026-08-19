@@ -198,9 +198,9 @@ export async function syncItemStatus(
     await migrationRunner(db, integracaoId, itemId, sourceLink);
     return 'migrated';
   }
-  // The uptin tag marks the migration's DESTINATION and never takes over, so it
-  // is checked first — a listing carrying both must not report as a source still
-  // waiting to close.
+  // Of the two DEFERRALS the uptin one is tested first (the takeover above still
+  // outranks both): that tag marks the migration's DESTINATION, so a listing
+  // carrying both must not report as a source still waiting to close.
   if (tags.includes(MIGRATION_UPTIN_TAG)) return 'deferred-migration-uptin';
   if (tags.includes(MIGRATION_SOURCE_TAG)) return 'deferred-migration-source';
 
