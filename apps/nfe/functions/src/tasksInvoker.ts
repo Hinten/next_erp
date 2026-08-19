@@ -30,9 +30,25 @@
  *
  * ⚠️ Returns `{}`, never `{ invoker: undefined }`. firebase-functions copies the
  * key on `hasOwnProperty`, so an explicitly-undefined one still reaches
- * `convertInvoker(undefined)` and throws during codebase analysis; an empty
- * string throws too. Unset must degrade to today's behaviour — the manual
- * gcloud grants, which are documented — never to a guess.
+ * `convertInvoker(undefined)` and throws during codebase analysis. Unset must
+ * degrade to today's behaviour — the manual gcloud grants, which are
+ * documented — never to a guess.
+ *
+ * ⚠️ A BLANK value does NOT throw, and that is why `filter(Boolean)` below is
+ * load-bearing rather than tidiness. Measured against firebase-functions@7.3.2's
+ * `convertInvoker`:
+ *
+ *   absent          no `invoker` key          <- what this returns when unset
+ *   undefined       THROWS at codebase analysis
+ *   `[]`            THROWS "Must be a non-empty array."
+ *   `''`            ACCEPTED -> `invoker: [""]`
+ *   `['', 'a@...']` ACCEPTED -> the blank member SURVIVES
+ *
+ * Its blank-member guard is `invoker.find((inv) => inv.length === 0)`, which
+ * returns `''` — FALSY — so the "Must be a non-empty string" branch beside it is
+ * unreachable. A blank therefore sails through analysis and fails one stage
+ * later, in firebase-tools' `formatServiceAccount` at DEPLOY time. Producing an
+ * empty-string member here would look valid locally and break the deploy.
  *
  * Inlined at build time by `build.mjs` (esbuild `define`) for the same reason as
  * the region: function options are read during Firebase's codebase analysis,

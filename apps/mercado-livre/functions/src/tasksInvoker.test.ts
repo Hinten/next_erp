@@ -67,6 +67,24 @@ describe('tasksInvokerOptions (#1133)', () => {
     });
   });
 
+  it('drops a BLANK member from a list rather than passing it through', () => {
+    // `filter(Boolean)` is load-bearing, not tidiness. firebase-functions@7.3.2
+    // ACCEPTS a blank member — `convertInvoker(['', 'a@…'])` returns it verbatim,
+    // because its guard `find((inv) => inv.length === 0)` yields `''`, which is
+    // falsy, leaving the "Must be a non-empty string" branch unreachable. So a
+    // stray comma would sail through codebase analysis and only break later, in
+    // firebase-tools' `formatServiceAccount` at DEPLOY time.
+    const options = optionsWith(
+      'apphosting@p.iam.gserviceaccount.com, ,1-compute@developer.gserviceaccount.com',
+    );
+
+    expect(options.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
+    expect(options.invoker).not.toContain('');
+  });
+
   it('spreads into a function options object without adding an `invoker` key when unset', () => {
     // The call-site shape: `{ ...tasksInvokerOptions(), retryConfig }`.
     const options = { ...optionsWith(undefined), retryConfig: { maxAttempts: 3 } };
