@@ -30,10 +30,12 @@
  * depends on no schemas (see its `incidents.ts` / `ai/medidasReference.ts`
  * notes). `apps/mercado-livre` depends on both.
  *
- * ⚠️ Only ever fed an **item-endpoint** failure. `MercadoLivreHttpError` is
- * generic, so a caller must not hand this an OAuth failure and let the raw-body
- * tail below reach a document — #1015 is what a token response in a persisted
- * payload costs.
+ * ⚠️ `MercadoLivreHttpError` is GENERIC — it is thrown for `/oauth/token`,
+ * `/users/me` and `/categories/{id}` as readily as for `/items`. Reading a body
+ * therefore requires knowing which endpoint produced it, which only the call
+ * site knows, so {@link falhaPatch} takes a required {@link EscopoFalha} rather
+ * than trusting its input. #1015 is what a foreign response body in a persisted,
+ * operator-visible payload costs.
  */
 import { z } from 'zod';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
@@ -359,6 +361,24 @@ export type FalhaPatch = {
 };
 
 /**
+ * Whether a failure's BODY may be read and persisted.
+ *
+ *  - `'item'` — the failure came from an `/items…` call, so the body is ML's
+ *    documented validation shape: parse its `cause[]`, and keep a capped dump of
+ *    an unrecognised one.
+ *  - `'nao-item'` — anything else that reaches the same writers: a token refresh
+ *    (`oauth.ts` throws a plain `MercadoLivreHttpError` carrying the
+ *    `/oauth/token` body for every non-`invalid_grant` failure), the
+ *    `GET /users/me` capability probe, the size-chart `/categories/{id}` read.
+ *    Only the headline message survives.
+ *
+ * Required and deliberately NOT defaulted: a default would be silently wrong at
+ * whichever call site forgot it, and the two mistakes do not cost the same —
+ * losing a diagnosis is an inconvenience, persisting a foreign body is #1015.
+ */
+export type EscopoFalha = 'item' | 'nao-item';
+
+/**
  * The whole failure diagnosis as a link-doc patch, so the two fields can never
  * drift apart: `errors` is the Flutter-visible `string[]` (root `CLAUDE.md`
  * dual-run) and `causas` the structure the editor highlights fields from.
@@ -369,8 +389,14 @@ export type FalhaPatch = {
 export function falhaPatch(
   err: unknown,
   fallbackMessage: string,
+  escopo: EscopoFalha,
   attributesSent: readonly AttributeLike[] | null = null,
 ): FalhaPatch {
+  // Not merely "skip the raw tail" — do not read the body AT ALL. An OAuth
+  // error body legitimately carries `cause[]` too (`oauth.ts` names a
+  // `redirect_uri` mismatch as exactly that), so parsing one would file a
+  // token-endpoint complaint under "Última falha do Mercado Livre" on a produto.
+  if (escopo !== 'item') return { errors: [fallbackMessage], causas: [] };
   const causas = parseMlCausas(err, attributesSent);
   return { errors: buildErrorLines(err, causas, fallbackMessage), causas };
 }

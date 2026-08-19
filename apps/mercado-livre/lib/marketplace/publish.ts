@@ -34,7 +34,7 @@ import {
   publishUserProductMembers,
   sweepRemovedMembers,
 } from './publishUserProduct';
-import { buildErrorLines, parseMlCausas } from './publishFalhas';
+import { type EscopoFalha, falhaPatch } from './publishFalhas';
 import type { ComponentesKit } from '@delfrance/schemas';
 import {
   INTEGRACAO_TIPO,
@@ -261,9 +261,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const stampErrorLinkDoc = async (
     err: unknown,
     fallbackMessage: string,
+    escopo: EscopoFalha,
     attributesSent: readonly MlAttribute[] | null = null,
   ): Promise<void> => {
-    const causas = parseMlCausas(err, attributesSent);
+    const { errors, causas } = falhaPatch(err, fallbackMessage, escopo, attributesSent);
     await writeLinkDoc({
       sku: produto.sku ?? null,
       condition: resolveCondition(link, pubProduto, condicao),
@@ -271,7 +272,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       listing_type_id: linkDoc?.data.listing_type_id ?? deps.listingTypeId ?? null,
       estado: 'E',
       isUserProductModel: link?.isUserProductModel ?? false,
-      errors: buildErrorLines(err, causas, fallbackMessage),
+      errors,
       causas,
       ultimaModificacao: Date.now(),
     });
@@ -298,7 +299,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       const user = await (deps.getMe ?? defaultGetMe)(api);
       sellerIsUserProduct = (user.tags ?? []).includes('user_product_seller');
     } catch (err) {
-      if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err, err.message);
+      // `GET /users/me` — not an item call, so its body stays off the doc.
+      if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err, err.message, 'nao-item');
       throw err;
     }
   }
@@ -397,7 +399,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   } catch (err) {
     // The binding's category-detail call is an ML API call — a failure (stale
     // category_id → 404, transient 5xx) must land on the doc like any other.
-    if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err, err.message);
+    // `/categories/{id}`, not an item call — headline only.
+    if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err, err.message, 'nao-item');
     throw err;
   }
 
@@ -489,10 +492,16 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       // Old-app parity: a purged ML picture id in the cache would otherwise
       // fail every retry identically — strip it so the next publish re-uploads.
       await pruneDeadPictures(db, err, pictureSources);
-      // A User-Products family builds one payload per member inside
-      // `publishUserProductMembers`, so no single sent array exists here; fall
-      // back to the parent attributes, which is what every member starts from.
-      await stampErrorLinkDoc(err, err.message, attributesSent ?? input.attributes ?? null);
+      // ⚠️ `attributesSent` stays NULL on the User-Products path, and must.
+      // `buildUserProductItemPayload` sends
+      // `attributesWithValue(input.attributes).filter(not a member override)`
+      // plus the member's own attributes, so every valueless or overridden entry
+      // SHIFTS the indices: resolving `item.attributes[0]` against
+      // `input.attributes` pins the error to a healthy row and leaves the guilty
+      // one clean. Null means only the bracketed-id message scan resolves, which
+      // is positional-independent — and an unmapped cause renders above the form,
+      // which the `campos` docblock names as the safe outcome.
+      await stampErrorLinkDoc(err, err.message, 'item', attributesSent);
     }
     throw err;
   }
@@ -690,11 +699,12 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         // key-only ghost holding an error and no `id` — a live listing nothing
         // can find. The fallback path recreates a schema-complete doc, so the
         // item id has to ride the patch.
-        const causas = parseMlCausas(err, attributesSent);
+        // `/items/{id}/description` — an item endpoint.
+        const { errors, causas } = falhaPatch(err, err.message, 'item', attributesSent);
         await writeLinkDoc({
           id: parentExternalId,
           estado: 'E',
-          errors: buildErrorLines(err, causas, err.message),
+          errors,
           causas,
           ultimaModificacao: Date.now(),
         });

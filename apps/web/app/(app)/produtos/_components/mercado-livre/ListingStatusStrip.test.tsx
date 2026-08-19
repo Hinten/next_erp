@@ -118,14 +118,32 @@ describe('ListingStatusStrip', () => {
     expect(alerta.textContent).toContain('moderations.seller.not_authorized');
   });
 
-  it('does NOT repeat a cause the control already shows', () => {
-    // A single-field cause belongs on its input; echoing it here would make one
-    // rejection look like two.
+  it('lists a cause even when a control also shows it', () => {
+    // #1118 review: this asserted the OPPOSITE, and that was the bug. Suppressing
+    // the banner for a single-control cause assumed the control was on screen,
+    // which `campos` never promised — it is resolved against the payload we SENT.
     renderStrip({
       estado: ESTADO_PUBLICACAO_ML.erro,
       causas: [causaFixture({ mensagem: 'Categoria inválida', campos: ['category_id'] })],
     });
-    expect(screen.queryByTestId('ml-causas-gerais')).toBeNull();
+    expect(screen.getByTestId('ml-causas-gerais').textContent).toContain('Categoria inválida');
+  });
+
+  it('shows a cause pinned to a control the editor never renders', () => {
+    // The exact silent drop: `SELLER_PACKAGE_WIDTH` is derived and stripped
+    // before the attribute grid, so nothing downstream could display this — and
+    // `temCausas` suppresses the raw `errors` fallback for the whole doc.
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.erro,
+      errors: ['ML 400: Validation error'],
+      causas: [
+        causaFixture({
+          mensagem: 'Invalid package width',
+          campos: ['attributes.SELLER_PACKAGE_WIDTH'],
+        }),
+      ],
+    });
+    expect(screen.getByTestId('ml-causas-gerais').textContent).toContain('Invalid package width');
   });
 
   it('keeps ML-applied warnings out of the red alert', () => {

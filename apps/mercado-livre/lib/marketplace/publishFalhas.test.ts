@@ -287,11 +287,83 @@ describe('formatCausaLinha / buildErrorLines', () => {
   });
 });
 
+/**
+ * #1118 review: `buildUserProductItemPayload` sends
+ * `attributesWithValue(input.attributes)` minus member overrides, so every
+ * valueless entry SHIFTS the indices. Resolving a positional reference against
+ * the pre-filter array pins the error to a healthy row.
+ */
+describe('positional references are only safe against the array actually SENT', () => {
+  it('pins the wrong attribute when resolved against the unfiltered input', () => {
+    const inputAttrs = [{ id: 'BRAND' }, { id: 'MODEL' }, { id: 'GTIN' }]; // BRAND has no value
+    const sentAttrs = [{ id: 'MODEL' }, { id: 'GTIN' }]; // what the UP builder emits
+
+    expect(resolveCampos(['item.attributes[0]'], 'Invalid value', sentAttrs)).toEqual([
+      'attributes.MODEL',
+    ]);
+    expect(resolveCampos(['item.attributes[0]'], 'Invalid value', inputAttrs)).toEqual([
+      'attributes.BRAND',
+    ]);
+  });
+
+  it('resolves nothing rather than wrongly when no sent array is available', () => {
+    // What the User-Products path now passes. Empty ⇒ the cause renders above
+    // the form, which the `campos` docblock names as the safe outcome.
+    expect(resolveCampos(['item.attributes[0]'], 'Invalid value', null)).toEqual([]);
+  });
+
+  it('still resolves a bracketed id from the message with no sent array', () => {
+    // The message scan is positional-INDEPENDENT, so the UP path keeps this.
+    expect(resolveCampos(['item.attributes'], 'The attributes [BRAND] are required', null)).toEqual(
+      ['attributes.BRAND'],
+    );
+  });
+});
+
 describe('falhaPatch / clearFalha', () => {
   it('produces both link-doc fields together', () => {
-    const patch = falhaPatch(httpErr(400, DOCS_BODY), 'ML 400: Validation error', SENT);
+    const patch = falhaPatch(httpErr(400, DOCS_BODY), 'ML 400: Validation error', 'item', SENT);
     expect(patch.causas).toHaveLength(4);
     expect(patch.errors).toHaveLength(4);
+  });
+
+  /**
+   * `oauth.ts` throws a plain `MercadoLivreHttpError` carrying the
+   * `/oauth/token` body for every non-`invalid_grant` failure, and that error
+   * reaches `estoqueSend`'s terminal-4xx branch exactly like an item rejection.
+   * Persisting its body would put a token-endpoint response on a document any
+   * `d_produto` reader can open — the #1015 door.
+   */
+  describe("escopo 'nao-item' — a foreign body never reaches the document", () => {
+    const TOKEN_ERR = httpErr(400, {
+      error: 'invalid_client',
+      message: 'bad client',
+      status: 400,
+      // An OAuth body legitimately carries `cause[]` too, so "parse but skip the
+      // raw tail" would NOT have been enough.
+      cause: [{ code: 'redirect_uri_mismatch', message: 'invalid redirect_uri' }],
+    });
+
+    it('keeps the headline and drops the body entirely', () => {
+      const patch = falhaPatch(TOKEN_ERR, 'ML 400: ML /oauth/token: bad client', 'nao-item');
+      expect(patch).toEqual({ errors: ['ML 400: ML /oauth/token: bad client'], causas: [] });
+    });
+
+    it('leaks neither the body keys nor its cause[] into errors', () => {
+      const persisted = falhaPatch(
+        TOKEN_ERR,
+        'ML 400: ML /oauth/token: bad client',
+        'nao-item',
+      ).errors.join(' ');
+      expect(persisted).not.toContain('invalid_client');
+      expect(persisted).not.toContain('redirect_uri_mismatch');
+    });
+
+    it("still parses the SAME body under 'item' — proving the gate is what suppresses it", () => {
+      // Red-on-mutation: flipping the guard off resurrects the leak above.
+      const patch = falhaPatch(TOKEN_ERR, 'ML 400: boom', 'item');
+      expect(patch.causas).toHaveLength(1);
+    });
   });
 
   it('clears both together — a causa outliving its errors is a red healthy field', () => {

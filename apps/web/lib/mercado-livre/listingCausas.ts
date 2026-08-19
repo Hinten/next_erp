@@ -11,11 +11,25 @@
  *
  * Three buckets, because ML's causes are not uniform:
  *
- *  - **`porCampo`** — a blocking cause naming a control. The control shows it.
- *  - **`gerais`** — a blocking cause naming NO control we own (`shipping.modes`,
- *    `item.seller_id`, a variation combination, an unrecognised path) **plus**
- *    every cause naming more than one. A multi-field rejection whose only trace
- *    is two red inputs is a rejection the operator has to reconstruct.
+ *  - **`gerais`** — EVERY blocking cause. This is the complete list and the one
+ *    the operator reads; the banner is never a leftovers bin.
+ *  - **`porCampo`** — the subset that resolved to a control, so the control can
+ *    ALSO show it. Purely additive: it says *where to fix*, it never replaces
+ *    the banner entry.
+ *
+ * ⚠️ `porCampo` deliberately does NOT remove a cause from `gerais`, and that
+ * asymmetry is the whole correctness argument. Resolving to a control is not the
+ * same as being VISIBLE on one: `campos` is resolved server-side against the
+ * payload we SENT, which by design carries attributes the editor never renders
+ * (`SELLER_PACKAGE_*`, `WEIGHT`, `SIZE_GRID_ID`, `SELLER_SKU`), and several
+ * controls come and go — `listing_type_id` becomes read-only once published,
+ * `descricao` hides behind a collapsible, and an `attributes.X` row vanishes when
+ * the operator changes category. An earlier cut kept single-control causes out of
+ * `gerais`; combined with the strip suppressing the raw `errors` fallback, a
+ * rejection pinned to an unrendered control was displayed NOWHERE — strictly
+ * worse than the `ML 400: Validation error` line this feature replaced. Any
+ * scheme where the banner depends on what the form happens to render is one
+ * refactor away from that hole, so the banner depends on nothing.
  *  - **`avisos`** — `type: 'warning'`. ML's docs are explicit that it already
  *    applied these itself, so painting a field red for one would report a
  *    problem that does not exist.
@@ -24,9 +38,9 @@ import type { MlCausa, ProdutoMercadoLivreLink } from '@delfrance/schemas';
 import { ML_CAUSA_TIPO } from '@delfrance/schemas';
 
 export interface CausasSplit {
-  /** Control key → the messages to show on it. */
+  /** Control key → the messages to show on it. A SUBSET of `gerais`, never a partition. */
   porCampo: Record<string, string[]>;
-  /** Blocking causes that belong above the form. */
+  /** Every blocking cause — the complete list, shown above the form. */
   gerais: MlCausa[];
   /** Non-blocking causes ML resolved on its own. */
   avisos: MlCausa[];
@@ -54,8 +68,11 @@ export function splitCausas(link: Pick<ProdutoMercadoLivreLink, 'causas'>): Caus
     // `tipo` absent means ML did not label it. Treated as BLOCKING: a shape we
     // failed to classify is one the operator still has to act on, and the cost
     // of the two mistakes is not symmetric.
+    // Unconditional — see the ⚠️ in the module docblock. A cause is listed
+    // whether or not it found a control, because "found a control" does not
+    // imply that control is on screen.
+    gerais.push(causa);
     const campos = (causa.campos ?? []).filter((c) => c.length > 0);
-    if (campos.length === 0 || campos.length > 1) gerais.push(causa);
     for (const campo of campos) (porCampo[campo] ??= []).push(causa.mensagem);
   }
 

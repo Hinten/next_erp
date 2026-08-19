@@ -506,7 +506,15 @@ async function registrarRejeicaoFinal(
   // its `cause[]` is worth the same treatment. No item payload exists on this
   // path, so nothing resolves positionally — an `item.price` / `available_quantity`
   // cause has no control in the listing form anyway and lands above it.
-  const diagnostico = falhaPatch(err, err.message);
+  //
+  // ⚠️ `api` is the endpoint discriminator, and the reason it is a parameter.
+  // It is assigned only AFTER `resolveChannelContext` returns, so a null one means
+  // the failure happened before the item client existed — and a non-`invalid_grant`
+  // token refresh throws a plain `MercadoLivreHttpError` carrying the
+  // `/oauth/token` body (`oauth.ts`), which lands in this same terminal-4xx
+  // branch. Reading that body would persist a token-endpoint response into a
+  // document any `d_produto` reader can open.
+  const diagnostico = falhaPatch(err, err.message, api != null ? 'item' : 'nao-item');
 
   // Unreachable today — a MercadoLivreHttpError from the PUT implies the client
   // was built. Guarded so a future reorder degrades to the conservative stop

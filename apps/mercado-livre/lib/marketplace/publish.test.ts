@@ -1355,6 +1355,80 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     ).toEqual([4, 7]);
   });
 
+  /**
+   * #1118 review. `buildUserProductItemPayload` sends
+   * `attributesWithValue(input.attributes)` minus the member's own overrides, so
+   * a valueless or overridden entry SHIFTS every later index. Resolving
+   * `item.attributes[0]` against `input.attributes` therefore paints a healthy
+   * row red and leaves the offending one clean — the exact outcome the `campos`
+   * docblock exists to forbid.
+   */
+  it('resolves NO control for a positional cause on the family path', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi({
+      createItem: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          message: 'Validation error',
+          error: 'validation_error',
+          status: 400,
+          cause: [
+            {
+              cause_id: 154,
+              type: 'error',
+              code: 'item.attributes.invalid_length',
+              // Positional, and meaningless without the array actually sent.
+              references: ['item.attributes[0]'],
+              message: 'Invalid value length for attribute.',
+            },
+          ],
+        });
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    expect(link.estado).toBe('E');
+    // The cause is still PERSISTED and still readable — it just claims no control.
+    expect(link.errors).toEqual([
+      'error · item.attributes.invalid_length — Invalid value length for attribute. [item.attributes[0]]',
+    ]);
+    expect(link.causas).toEqual([
+      expect.objectContaining({ code: 'item.attributes.invalid_length', campos: [] }),
+    ]);
+  });
+
+  it('DOES resolve a bracketed id from the message on the family path', async () => {
+    // The message scan is index-independent, so dropping the positional
+    // resolver costs nothing where ML names the attribute.
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi({
+      createItem: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          cause: [
+            {
+              type: 'error',
+              code: 'item.attributes.missing_required',
+              references: ['item.attributes'],
+              message: 'The attributes [BRAND] are required for category MLB1234.',
+            },
+          ],
+        });
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')!.causas).toEqual([
+      expect.objectContaining({ campos: ['attributes.BRAND'] }),
+    ]);
+  });
+
   it('records every member itemId on its child link, and the FAMILY id on the parent', async () => {
     const db = new FakeDb();
     seedFamilyOfTwo(db);

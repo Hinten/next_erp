@@ -30,12 +30,61 @@ describe('splitCausas', () => {
     });
   });
 
-  it('sends a single-control error to that control and nowhere else', () => {
+  it('sends a single-control error to that control AND the banner', () => {
     const split = splitCausas({
       causas: [causa({ mensagem: 'Categoria inválida', campos: ['category_id'] })],
     });
     expect(split.porCampo).toEqual({ category_id: ['Categoria inválida'] });
-    expect(split.gerais).toEqual([]);
+    // #1118 review: NOT `[]`. Resolving to a control is not the same as being
+    // visible on one — see the regression block below.
+    expect(split.gerais).toHaveLength(1);
+  });
+
+  /**
+   * #1118 review — the hole this asymmetry closes.
+   *
+   * `campos` is resolved server-side against the payload we SENT, which carries
+   * attributes the editor never renders. An earlier cut kept a single-control
+   * cause out of `gerais`; `ListingStatusStrip` also suppresses the raw `errors`
+   * fallback as soon as `temCausas` is true, so such a cause was displayed
+   * NOWHERE — strictly worse than the `ML 400: Validation error` line this
+   * feature replaced.
+   */
+  describe('a cause pinned to an UNRENDERED control is still shown', () => {
+    const naoRenderizados = [
+      // Derived, stripped before the editor ever sees them.
+      'attributes.SELLER_PACKAGE_WIDTH',
+      'attributes.WEIGHT',
+      'attributes.SIZE_GRID_ID',
+      'attributes.SELLER_SKU',
+      // Read-only once the listing is published.
+      'listing_type_id',
+      // An id absent from the category the operator has since switched to.
+      'attributes.OBSOLETO',
+    ];
+
+    for (const campo of naoRenderizados) {
+      it(`keeps \`${campo}\` in the banner`, () => {
+        const split = splitCausas({
+          causas: [causa({ mensagem: 'Medida inválida', campos: [campo] })],
+        });
+        expect(split.gerais).toHaveLength(1);
+        expect(split.porCampo[campo]).toEqual(['Medida inválida']);
+      });
+    }
+
+    it('never drops a blocking cause, whatever it resolved to', () => {
+      // The invariant, stated once: `gerais` is the COMPLETE blocking list, so
+      // no `campos` value can make a rejection disappear.
+      const causas = [
+        causa({ mensagem: 'a', campos: [] }),
+        causa({ mensagem: 'b', campos: ['title'] }),
+        causa({ mensagem: 'c', campos: ['attributes.SELLER_PACKAGE_WIDTH'] }),
+        causa({ mensagem: 'd', campos: ['category_id', 'attributes.BRAND'] }),
+      ];
+      const split = splitCausas({ causas });
+      expect(split.gerais.map((c) => c.mensagem)).toEqual(['a', 'b', 'c', 'd']);
+    });
   });
 
   it('sends a cause with NO control to the banner', () => {

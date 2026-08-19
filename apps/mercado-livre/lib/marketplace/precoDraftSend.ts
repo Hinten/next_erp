@@ -258,7 +258,7 @@ export async function enviarPrecoDraft(
           db,
           { produtoId: draft.produtoId },
           draft.linkDocId,
-          { estado: 'E', ...falhaPatch(err, err.message), ultimaModificacao: nowMs },
+          { estado: 'E', ...falhaPatch(err, err.message, 'item'), ultimaModificacao: nowMs },
         );
         return {
           kind: 'falha',
