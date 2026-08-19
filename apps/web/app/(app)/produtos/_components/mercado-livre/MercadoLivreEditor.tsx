@@ -104,7 +104,10 @@ export function MercadoLivreEditor({
   const client = useMercadoLivreClient();
   // The backend publicar route is PERM.integracao.write-gated — gate the button
   // by the same bit so a viewer isn't offered an action that will 403.
-  const { allowed: canPublish } = usePermission(PERM.integracao.write);
+  // `loading` is load-bearing: `usePermission` answers `allowed: false` WHILE it
+  // loads, so without it the publish tooltip tells a fully-privileged operator
+  // they lack permission on every page load (`publishDisabled.ts`).
+  const { allowed: canPublish, loading: permLoading } = usePermission(PERM.integracao.write);
 
   const contasQuery = useMemo(
     () =>
@@ -201,6 +204,23 @@ export function MercadoLivreEditor({
       if (prev.has(linkDocId) === dirty) return prev;
       const next = new Set(prev);
       if (dirty) next.add(linkDocId);
+      else next.delete(linkDocId);
+      return next;
+    });
+  }, []);
+
+  // Which listings are still loading the metadata their form is made of. Same
+  // shape as `dirtyIds` above and for the same reason: the gate is per-account,
+  // so account A's half-loaded attribute grid must not block a publish to B.
+  const [loadingIds, setLoadingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const handleLoadingChange = useCallback((linkDocId: string, loading: boolean) => {
+    setLoadingIds((prev) => {
+      // Identity-preserving, exactly like `handleDirtyChange`: every ListingForm
+      // reports on mount and on every query transition, and a fresh Set each
+      // time is an infinite render loop.
+      if (prev.has(linkDocId) === loading) return prev;
+      const next = new Set(prev);
+      if (loading) next.add(linkDocId);
       else next.delete(linkDocId);
       return next;
     });
@@ -514,6 +534,18 @@ export function MercadoLivreEditor({
     }
   }
 
+  /**
+   * Editor-wide data the write actions depend on that has NOT arrived.
+   *
+   * `contasSnap`/`linksSnap` are absent on purpose — the early return below
+   * means we never render at all while those two load. These three do not stop
+   * a render: the produto doc (`fotos`/`nome`/`ehUsado`), its extraData
+   * (`condicao`, the second input to `resolveCondicaoAnuncio`) and the tenant
+   * claims all resolve AFTER the buttons are on screen, which is the window a
+   * publish could previously be fired in.
+   */
+  const carregandoGeral = produtoSnap.loading || extraDataSnap.loading || permLoading;
+
   if (contasSnap.loading || linksSnap.loading) {
     return (
       <Group justify="center" py="md">
@@ -595,6 +627,10 @@ export function MercadoLivreEditor({
             }
             const dirtyLinkIds = contaLinks.filter((l) => dirtyIds.has(l.id)).map((l) => l.id);
             const contaDirty = dirtyLinkIds.length > 0;
+            // Filtered THROUGH the rendered links, like `contaDirty` above: a
+            // stale id left by a link doc that has since disappeared is then
+            // never consulted, so it cannot wedge the gate shut.
+            const contaLoading = carregandoGeral || contaLinks.some((l) => loadingIds.has(l.id));
             const publishBlocked = produtoDirty || contaDirty;
             // Publish refuses a create with no category ("categoria do Mercado
             // Livre não definida"). Saying so here beats a round trip that comes
@@ -605,6 +641,7 @@ export function MercadoLivreEditor({
             // had the conditions inline and the explanations in three separate
             // `<Text>` blocks that covered only half of them.
             const publishReason = publishDisabledReason({
+              loading: contaLoading,
               disabled: Boolean(disabled),
               canPublish,
               hasClient: client != null,
@@ -644,7 +681,7 @@ export function MercadoLivreEditor({
                         <ListingStatusStrip
                           link={l.data}
                           canWrite={Boolean(client) && canPublish}
-                          disabled={Boolean(disabled) || rechecking !== null}
+                          disabled={Boolean(disabled) || rechecking !== null || contaLoading}
                           rechecking={rechecking === l.id}
                           onReverificar={() => handleReverificar(conta.id, l.id)}
                         />
@@ -681,6 +718,7 @@ export function MercadoLivreEditor({
                           disabled={disabled}
                           serverErrors={serverErrors}
                           onDirtyChange={handleDirtyChange}
+                          onLoadingChange={handleLoadingChange}
                           registerFlush={registerFlush}
                         />
                       </Stack>
@@ -715,7 +753,7 @@ export function MercadoLivreEditor({
                         variant="light"
                         onClick={() => void handleSalvarAnuncios(conta.id, dirtyLinkIds)}
                         loading={savingConta === conta.id}
-                        disabled={disabled || !canPublish || savingConta !== null}
+                        disabled={disabled || !canPublish || savingConta !== null || contaLoading}
                       >
                         {/* Plural counts the listings it will actually SAVE, not
                             the listings in the card — "Salvar anúncios" beside a
@@ -750,7 +788,13 @@ export function MercadoLivreEditor({
                           )
                         }
                         loading={sendingStock === conta.id}
-                        disabled={disabled || !client || !canPublish || sendingStock !== null}
+                        disabled={
+                          disabled ||
+                          !client ||
+                          !canPublish ||
+                          sendingStock !== null ||
+                          contaLoading
+                        }
                       >
                         Enviar estoque
                       </Button>
@@ -768,7 +812,7 @@ export function MercadoLivreEditor({
                             }))
                           }
                           allowDeselect={false}
-                          disabled={disabled || !canPublish}
+                          disabled={disabled || !canPublish || contaLoading}
                           w={160}
                         />
                         {/* Publishing straight from here is impossible, not merely
@@ -783,7 +827,11 @@ export function MercadoLivreEditor({
                           onClick={() => handlePreparar(conta.id)}
                           loading={preparing === conta.id}
                           disabled={
-                            disabled || !canPublish || preparing !== null || produtoNome === ''
+                            disabled ||
+                            !canPublish ||
+                            preparing !== null ||
+                            produtoNome === '' ||
+                            contaLoading
                           }
                         >
                           Preparar anúncio

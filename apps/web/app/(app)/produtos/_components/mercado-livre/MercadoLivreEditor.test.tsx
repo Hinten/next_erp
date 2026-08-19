@@ -21,6 +21,10 @@ const h = vi.hoisted(() => ({
   outcomes: new Map<string, string>(),
   /** Lets a test mark one listing dirty, the way a real edit would. */
   markDirty: null as null | ((linkDocId: string, dirty: boolean) => void),
+  /** Lets a test hold one listing's attribute metadata in flight. */
+  markLoading: null as null | ((linkDocId: string, loading: boolean) => void),
+  /** The produto doc snapshot's `loading` — it resolves AFTER the buttons render. */
+  produtoLoading: false,
   notify: vi.fn(),
   /**
    * What `useMercadoLivreClient()` answers. Empty by default — most tests here
@@ -53,7 +57,10 @@ vi.mock('@delfrance/data/hooks', () => ({
   })(),
   useDocSnapshot: () => ({
     data: { id: 'prod-1', data: { nome: 'Camiseta Básica', fotos: ['a'], ehUsado: false } },
-    loading: false,
+    // Unlike the two `useSnapshot` queries above, this one does NOT hold back the
+    // render — the editor paints its buttons and resolves this afterwards, which
+    // is the window a publish could be fired in.
+    loading: h.produtoLoading,
     error: null,
   }),
 }));
@@ -84,13 +91,16 @@ vi.mock('./ListingForm', () => ({
   ListingForm: ({
     linkDocId,
     onDirtyChange,
+    onLoadingChange,
     registerFlush,
   }: {
     linkDocId: string;
     onDirtyChange: (id: string, dirty: boolean) => void;
+    onLoadingChange: (id: string, loading: boolean) => void;
     registerFlush: (id: string, save: ListingSaveFn | null) => void;
   }) => {
     h.markDirty = onDirtyChange;
+    h.markLoading = onLoadingChange;
     if (!h.saves.has(linkDocId))
       h.saves.set(
         linkDocId,
@@ -127,6 +137,8 @@ beforeEach(() => {
   h.saves = new Map();
   h.outcomes = new Map();
   h.markDirty = null;
+  h.markLoading = null;
+  h.produtoLoading = false;
   h.notify.mockClear();
   h.client = {};
 });
@@ -308,6 +320,72 @@ describe('the publication facts come before the editable form', () => {
     const publicacao = screen.getByText('Publicação');
     // 4 = DOCUMENT_POSITION_FOLLOWING: the form follows the Publicação legend.
     expect(publicacao.compareDocumentPosition(form) & 4).toBeTruthy();
+  });
+});
+
+/**
+ * The write actions were live while the page was still loading.
+ *
+ * The editor already withholds its whole render until the contas and links
+ * snapshots resolve, which made the remaining gap easy to miss: the produto doc,
+ * its extraData, the tenant claims and each listing's category attributes all
+ * land AFTER the buttons are on screen. A publish fired in that window is built
+ * from data nobody saw — and the attribute grid is the worst of them, because it
+ * renders EMPTY rather than absent, so a half-loaded form looks complete.
+ */
+describe('write actions wait for the data they act on', () => {
+  // ⚠️ Anchored regexes so neither locator can claim the sibling button, and
+  // `.disabled` rather than `toBeEnabled` — this suite loads no jest-dom, so the
+  // DOM matchers silently do not exist (`Invalid Chai property`).
+  const btn = (name: RegExp) => screen.getByRole('button', { name }) as HTMLButtonElement;
+  const publicar = () => btn(/^Republicar$/);
+  const comPrecos = () => btn(/^Republicar e atualizar preços$/);
+
+  beforeEach(() => {
+    h.links = [link('ML-DOC-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado })];
+  });
+
+  it('disables BOTH publish buttons while the produto doc is still loading', async () => {
+    h.produtoLoading = true;
+    renderEditor();
+    await waitFor(() => expect(publicar().disabled).toBe(true));
+    expect(comPrecos().disabled).toBe(true);
+  });
+
+  it('enables them once everything has settled', async () => {
+    renderEditor();
+    await waitFor(() => expect(publicar().disabled).toBe(false));
+    expect(comPrecos().disabled).toBe(false);
+  });
+
+  it('disables them while a listing reports its attributes in flight', async () => {
+    renderEditor();
+    await waitFor(() => expect(publicar().disabled).toBe(false));
+
+    act(() => h.markLoading!('ML-DOC-1', true));
+    await waitFor(() => expect(publicar().disabled).toBe(true));
+    expect(comPrecos().disabled).toBe(true);
+
+    // ...and RELEASES. A gate that never opens is worse than the race it fixes.
+    act(() => h.markLoading!('ML-DOC-1', false));
+    await waitFor(() => expect(publicar().disabled).toBe(false));
+  });
+
+  it('holds the sibling write actions too, not just publish', async () => {
+    // They act on the same half-arrived data; gating only publish would leave
+    // the same bug one button over. (`Reverificar anúncio` is not asserted here
+    // — it renders only for a stock-latched listing, which a published one is
+    // not; it takes the same `contaLoading` through `ListingStatusStrip`.)
+    h.produtoLoading = true;
+    renderEditor();
+    await waitFor(() => expect(btn(/^Enviar estoque$/).disabled).toBe(true));
+  });
+
+  it('holds Reverificar too, on the latched listing that offers it', async () => {
+    h.links = [link('ML-DOC-1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.erro })];
+    h.produtoLoading = true;
+    renderEditor();
+    await waitFor(() => expect(btn(/^Reverificar anúncio$/).disabled).toBe(true));
   });
 });
 
