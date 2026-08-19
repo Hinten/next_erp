@@ -125,9 +125,9 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
 
         {/*
           Mounted inside the conta card because it acts ON this conta — and, on
-          success, disconnects it. Renders nothing in a production build, and
-          nothing at all against a backend without
-          MERCADO_LIVRE_TEST_USERS_ENABLED (it 404s).
+          success, disconnects it. Renders nothing in a production build; in dev
+          against a backend without MERCADO_LIVRE_TEST_USERS_ENABLED (which
+          404s) it renders a card naming the variable, rather than vanishing.
         */}
         <UsuariosTesteDevPanel integracaoId={integracaoId} />
       </Stack>

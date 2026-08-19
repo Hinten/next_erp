@@ -40,11 +40,19 @@ import { getFunctions } from 'firebase-admin/functions';
 import { getAdminApp } from '../firebase/admin';
 import { MERCADO_LIVRE_NOTIFICATION_QUEUE, type MlNotificationPayload } from './notificacao';
 
-/** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
+/**
+ * Region the notification function and its queue live in.
+ *
+ * ⚠️ This is NOT the codebase region and must not fall back to it. Cloud Tasks
+ * does not exist in `us-east5`, so the queue functions are pinned to `us-east1`
+ * (`TASKS_SCHEDULER_REGION` in the functions codebase) while the Firestore
+ * triggers stay in the Firestore region. A `FUNCTIONS_REGION` fallback used to
+ * sit here and is actively harmful now: on a backend where that variable names
+ * the data region, every enqueue would resolve a queue that does not exist and
+ * the Admin SDK would silently target `us-central1`.
+ */
 function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
+  return process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || 'us-east1';
 }
 
 /**

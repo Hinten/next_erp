@@ -25,15 +25,28 @@ analysis. `firebase.mercado-livre.deploy.json` points `source` at the generated
   rather than codebase-wide precisely so the two Firestore triggers (`onNfeAprovada`,
   `onIntegracaoMercadoLivreChanged`), which never call the ML API, carry **no**
   credentials at all.
-- **Region match**: the App Hosting backend must enqueue onto the queue in the
-  function's region. The enqueuer resolves the region from
-  `MERCADO_LIVRE_TASKS_REGION ?? FUNCTIONS_REGION ?? us-east5` (App Hosting / Cloud
-  Run does NOT expose its own region as an env var — only the metadata server
-  does — so it must be configured). Both the functions (build.mjs) and the
-  enqueuer default to **us-east5**; if you deploy the functions to another region,
-  set `MERCADO_LIVRE_TASKS_REGION` (or `FUNCTIONS_REGION`) on the App Hosting env
-  to match. A wrong/absent region makes the Admin SDK target `us-central1` and the
-  task **silently drops**.
+- ⚠️ **This codebase deploys into TWO regions, and that is not a mistake.**
+  **Cloud Tasks and Cloud Scheduler do not exist in `us-east5`** — neither service
+  lists it ([Cloud Tasks locations](https://cloud.google.com/tasks/docs/locations),
+  [Cloud Scheduler locations](https://cloud.google.com/scheduler/docs/locations);
+  both stop at `us-east4` in the eastern US). Deploying the codebase wholesale into
+  `us-east5` fails **all eleven** `onTaskDispatched`/`onSchedule` functions at once
+  while the four Firestore triggers deploy cleanly — that asymmetric failure list
+  IS the diagnosis. So:
+
+  | Functions                                 | Region                                      | Set by                                                            | Why                                                                                 |
+  | ----------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+  | the 4 `onDocumentWritten` triggers        | `FUNCTIONS_REGION` (**us-east5**)           | `build.mjs`                                                       | co-located with Firestore — a distant function is pure added latency on every write |
+  | the 5 `onTaskDispatched` + 6 `onSchedule` | `MERCADO_LIVRE_TASKS_REGION` (**us-east1**) | `build.mjs`, applied via `TASKS_SCHEDULER_REGION` in `options.ts` | the only nearby region where both services exist                                    |
+
+- **Region match**: the App Hosting backend must enqueue onto the queue in the TASK
+  functions' region — `MERCADO_LIVRE_TASKS_REGION`, **not** `FUNCTIONS_REGION`
+  (App Hosting / Cloud Run does NOT expose its own region as an env var, only the
+  metadata server does, so it must be configured). The enqueuer defaults to
+  `us-east1` and deliberately no longer falls back to `FUNCTIONS_REGION`: that
+  fallback would name the _data_ region, resolving a queue that does not exist. A
+  wrong region makes the Admin SDK target `us-central1` and the task **silently
+  drops**.
 - **One-time IAM** (see the dedicated section below) — required before the callback
   cutover so the receiver can enqueue.
 

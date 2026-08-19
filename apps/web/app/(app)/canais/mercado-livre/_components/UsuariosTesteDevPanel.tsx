@@ -26,6 +26,12 @@ import {
 } from '@/lib/mercado-livre/client';
 
 /**
+ * Build-time constant: Next inlines `process.env.NODE_ENV`, so the check in the
+ * wrapper below folds to a constant rather than being evaluated per render.
+ */
+const IS_DEV = process.env.NODE_ENV !== 'production';
+
+/**
  * Dev-only: mint the pair of Mercado Livre test users an end-to-end run needs.
  *
  * Mercado Livre has **no sandbox**. It hands out throwaway production accounts
@@ -44,23 +50,20 @@ import {
  * guard: `apps/web` in local dev calls the DEPLOYED channel backend, so the
  * browser's notion of "dev" says nothing about which backend answers. It does
  * still have to be correct — see the wrapper below for why its POSITION matters.
- * A backend without the flag returns 404 and this panel renders nothing at all.
- */
-/**
- * Build-time constant: Next inlines `process.env.NODE_ENV`, so the check in the
- * wrapper below folds to a constant rather than being evaluated per render.
- */
-const IS_DEV = process.env.NODE_ENV !== 'production';
-
-/**
- * No hooks in this wrapper — deliberately.
  *
- * ⚠️ The env check used to sit AFTER the hooks, which does not do what it looks
- * like it does: hooks run before any early return, so a deployed `apps/web`
- * (always `NODE_ENV=production`) still fired `GET /usuarios-teste` at the channel
- * backend on **every** Mercado Livre conta page — a request that can only 404 and
- * whose result can never be rendered. Returning before the hooks exist is what
- * actually makes "renders nothing in a production build" true.
+ * A backend without `MERCADO_LIVRE_TEST_USERS_ENABLED=1` answers 404. In
+ * PRODUCTION that renders nothing (the wrapper returns first); in DEV it renders
+ * {@link FlagDesligadaCard}, which names the variable — silence there cost a
+ * debugging session, because an absent panel is indistinguishable from a feature
+ * that was never built.
+ *
+ * ⚠️ **No hooks in this wrapper, deliberately.** The env check used to sit AFTER
+ * the hooks, which does not do what it looks like it does: hooks run before any
+ * early return, so a deployed `apps/web` (always `NODE_ENV=production`) still
+ * fired `GET /usuarios-teste` at the channel backend on **every** Mercado Livre
+ * conta page — a request that can only 404 and whose result can never be
+ * rendered. Returning before the hooks exist is what makes "renders nothing in a
+ * production build" actually true.
  */
 export function UsuariosTesteDevPanel({ integracaoId }: { integracaoId: string }) {
   if (!IS_DEV) return null;
@@ -117,10 +120,14 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
     },
   });
 
-  // A backend without the flag answers 404 on both verbs — render nothing, so
-  // the panel simply does not exist where the feature is off. (The production
-  // check lives in the wrapper above, where it can run BEFORE the hooks.)
-  if (query.error instanceof MercadoLivreClientHttpError && query.error.status === 404) return null;
+  // A backend without the flag answers 404 on both verbs. This branch only ever
+  // runs in a dev build (the wrapper above returned already in production), so
+  // it SAYS SO instead of rendering nothing: an off flag is indistinguishable
+  // from a missing feature otherwise, and "no panel, no error" sends you reading
+  // the component to find out why. Naming the variable is the whole point.
+  if (query.error instanceof MercadoLivreClientHttpError && query.error.status === 404) {
+    return <FlagDesligadaCard />;
+  }
 
   const usuarios = query.data?.usuarios ?? [];
 
@@ -225,6 +232,49 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
           </Group>
         </Stack>
       </Modal>
+    </Card>
+  );
+}
+
+/**
+ * Shown in a DEV build when the backend 404s the route — i.e. it is running
+ * without `MERCADO_LIVRE_TEST_USERS_ENABLED=1`.
+ *
+ * ⚠️ This exists because the previous behaviour was to render nothing, and an
+ * absent panel with no error in the console reads as "the feature was never
+ * built" rather than "one env var is unset". The 404 is deliberate on the
+ * backend (the route must not admit it exists where the flag is off), so the
+ * only place that can explain it is here.
+ *
+ * It deliberately does NOT assert the cause: a 404 also covers a backend
+ * predating the route (a stale `pnpm dev`, or `NEXT_PUBLIC_MERCADO_LIVRE_URL`
+ * still aimed at the deployed one). Both remedies are named.
+ */
+function FlagDesligadaCard() {
+  return (
+    <Card withBorder padding="md" data-testid="ml-usuarios-teste-flag-off">
+      <Stack gap="xs">
+        <Group justify="space-between">
+          <Text fw={600}>Usuários de teste (dev)</Text>
+          <Badge color="gray" variant="light">
+            Desativado
+          </Badge>
+        </Group>
+        <Alert color="yellow" variant="light">
+          O backend do Mercado Livre respondeu <Code>404</Code> nesta rota, então a criação de
+          usuários de teste está desligada aqui.
+        </Alert>
+        <Text size="sm">
+          Para ligar: defina <Code>MERCADO_LIVRE_TEST_USERS_ENABLED=1</Code> no{' '}
+          <Code>.env.local</Code> da raiz do repositório e <strong>reinicie</strong> o servidor de
+          dev do <Code>@delfrance/mercado-livre-app</Code> — o Next lê o arquivo só na
+          inicialização.
+        </Text>
+        <Text size="xs" c="dimmed">
+          Se a variável já estiver definida, confira se <Code>NEXT_PUBLIC_MERCADO_LIVRE_URL</Code>{' '}
+          aponta para o backend local (:3006) e não para o publicado, que não tem a flag.
+        </Text>
+      </Stack>
     </Card>
   );
 }

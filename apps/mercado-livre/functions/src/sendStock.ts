@@ -11,6 +11,7 @@ import { processStockSendTask } from '../../lib/marketplace/estoqueSend';
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';
 import { readCacheSummary } from '@delfrance/data/admin/cache';
+import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * Cloud Tasks dispatcher for ML stock sends (Step 10 PR B). The sweeps (PR C)
@@ -51,6 +52,8 @@ import { readCacheSummary } from '@delfrance/data/admin/cache';
  */
 export const sendMercadoLivreStock = onTaskDispatched(
   {
+    // Cloud Tasks does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
     retryConfig: {
       maxAttempts: STOCK_SEND_MAX_ATTEMPTS,
       minBackoffSeconds: 30,
