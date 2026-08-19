@@ -13,6 +13,7 @@ import {
   FreightValidationError,
   buildCalculatePayload,
   isErroredOption,
+  toVolumeInput,
 } from '@delfrance/integrations-freight-br/http-client';
 
 import { useFreightClient } from '@/lib/freight/client';
@@ -87,12 +88,7 @@ export function MelhorEnvioFields({
       const payload = buildCalculatePayload({
         fromPostalCode: cepOrigem,
         toPostalCode: cepDestino,
-        volumes: volumes.map((v) => ({
-          width: v.dimensoes?.largura ?? null,
-          height: v.dimensoes?.altura ?? null,
-          length: v.dimensoes?.comprimento ?? null,
-          weight: v.pesoBruto ?? v.pesoLiquido ?? null,
-        })),
+        volumes: volumes.map(toVolumeInput),
         insuranceValue: valorAssegurado,
       });
       setQuotes(await client.calculate(intFreteId, payload));
