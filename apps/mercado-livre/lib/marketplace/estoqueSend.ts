@@ -82,6 +82,7 @@ import { applyItemStatusToLink } from './itemsStatusSync';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { MlTasksDisabledError } from './mlTasks';
 import type { MlStockTaskScheduler } from './mlStockTasks';
+import { clearFalha, type FalhaPatch, falhaPatch } from './publishFalhas';
 
 /* ------------------------------- task payload ------------------------------ */
 
@@ -378,7 +379,7 @@ export async function processStockSendTask(
         // A send that lands clears whatever diagnosis the last failure left
         // behind — otherwise the produto tab keeps showing a red alert for a
         // fault that has since healed (#781).
-        errors: [],
+        ...clearFalha(),
       },
     );
     if (!applied) {
@@ -501,12 +502,16 @@ async function registrarRejeicaoFinal(
     linkDocId: payload.linkDocId,
     itemId: payload.itemId,
   };
-  const errors = [err.message];
+  // The stock PUT is rejected by the same validation pipeline a publish is, so
+  // its `cause[]` is worth the same treatment. No item payload exists on this
+  // path, so nothing resolves positionally — an `item.price` / `available_quantity`
+  // cause has no control in the listing form anyway and lands above it.
+  const diagnostico = falhaPatch(err, err.message);
 
   // Unreachable today — a MercadoLivreHttpError from the PUT implies the client
   // was built. Guarded so a future reorder degrades to the conservative stop
   // rather than throwing past the recording step.
-  if (api == null) return await pararComErro(db, target, errors, nowMs, 'sem-api');
+  if (api == null) return await pararComErro(db, target, diagnostico, nowMs, 'sem-api');
 
   let item: MlItem;
   try {
@@ -522,7 +527,7 @@ async function registrarRejeicaoFinal(
         payload.integracaoId,
         target,
         { status: 'closed', sub_status: [] },
-        { nowMs, extra: { errors } },
+        { nowMs, extra: { ...diagnostico } },
       );
       return { outcome: 'erro-registrado', reason: 'anuncio-inexistente' };
     }
@@ -535,7 +540,7 @@ async function registrarRejeicaoFinal(
           error: getErr.message,
         },
       );
-      return await pararComErro(db, target, errors, nowMs, 'verificacao-indisponivel');
+      return await pararComErro(db, target, diagnostico, nowMs, 'verificacao-indisponivel');
     }
     throw getErr; // Firestore / anything unclassified — transient or a coding bug
   }
@@ -545,7 +550,7 @@ async function registrarRejeicaoFinal(
     nowMs,
     // ML says this listing COULD take stock, so the rejection was about our
     // payload rather than the anúncio — latch it with the estado the gate skips.
-    extra: sendable ? { estado: ESTADO_PUBLICACAO_ML.erro, errors } : { errors },
+    extra: sendable ? { estado: ESTADO_PUBLICACAO_ML.erro, ...diagnostico } : { ...diagnostico },
   });
   return {
     outcome: 'erro-registrado',
@@ -560,7 +565,7 @@ async function registrarRejeicaoFinal(
 async function pararComErro(
   db: Firestore,
   target: { produtoId: string; linkDocId: string },
-  errors: string[],
+  diagnostico: FalhaPatch,
   nowMs: number,
   reason: string,
 ): Promise<StockSendResult> {
@@ -570,7 +575,7 @@ async function pararComErro(
     db,
     { produtoId: target.produtoId },
     target.linkDocId,
-    { estado: ESTADO_PUBLICACAO_ML.erro, errors, ultimaModificacao: nowMs },
+    { estado: ESTADO_PUBLICACAO_ML.erro, ...diagnostico, ultimaModificacao: nowMs },
   );
   if (!applied) {
     console.warn('[mercado-livre] stock-send: link removido — erro não registrado no anúncio', {

@@ -101,7 +101,9 @@ describe('POST /api/marketplace/mercado-livre/reverificar-anuncio', () => {
     expect(target).toEqual({ produtoId: PRODUTO, linkDocId: LINK, itemId: ITEM });
     expect(item).toMatchObject({ status: 'active' });
     // Clearing `errors` is the whole point — it is what un-latches the sweep.
-    expect(opts.extra).toEqual({ errors: [] });
+    // `causas` goes with it: a surviving cause would keep painting a red field
+    // on a listing ML has just confirmed healthy.
+    expect(opts.extra).toEqual({ errors: [], causas: [] });
   });
 
   it('reports a listing ML still refuses stock for, without pretending it is fixed', async () => {

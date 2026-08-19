@@ -1,10 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { ESTADO_PUBLICACAO_ML, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  ESTADO_PUBLICACAO_ML,
+  ML_CAUSA_TIPO,
+  type MlCausa,
+  type ProdutoMercadoLivreLink,
+} from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
 import { ListingStatusStrip } from './ListingStatusStrip';
+
+const causaFixture = (over: Partial<MlCausa> = {}): MlCausa => ({
+  code: null,
+  causaId: null,
+  tipo: ML_CAUSA_TIPO.erro,
+  departamento: null,
+  mensagem: 'algo deu errado',
+  referencias: [],
+  campos: [],
+  ...over,
+});
 
 function renderStrip(over: Partial<ProdutoMercadoLivreLink> = {}, onReverificar = vi.fn()) {
   render(
@@ -70,6 +86,61 @@ describe('ListingStatusStrip', () => {
     renderStrip({ estado: ESTADO_PUBLICACAO_ML.erro, errors: ['item.attributes.required'] });
     expect(screen.getByText('Última falha do Mercado Livre')).toBeDefined();
     expect(screen.getByText('item.attributes.required')).toBeDefined();
+  });
+
+  it('falls back to the raw errors when the doc predates structured causes', () => {
+    // A Flutter-written doc, or one this app stamped before #1109, has
+    // `causas: null` and must keep showing what it does have.
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.erro,
+      errors: ['ML 400: Validation error'],
+      causas: null,
+    });
+    expect(screen.getByText('ML 400: Validation error')).toBeDefined();
+  });
+
+  it('shows a cause with no control above the form, with its ML code', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.erro,
+      errors: ['warning · shipping.me2_adoption_mandatory — …'],
+      causas: [
+        causaFixture({
+          code: 'moderations.seller.not_authorized',
+          mensagem: 'Marca não autorizada',
+          referencias: ['item.seller_id'],
+        }),
+      ],
+    });
+    const alerta = screen.getByTestId('ml-causas-gerais');
+    expect(alerta.textContent).toContain('Marca não autorizada');
+    // The raw ML reference rides along: an unmapped path is still actionable.
+    expect(alerta.textContent).toContain('item.seller_id');
+    expect(alerta.textContent).toContain('moderations.seller.not_authorized');
+  });
+
+  it('does NOT repeat a cause the control already shows', () => {
+    // A single-field cause belongs on its input; echoing it here would make one
+    // rejection look like two.
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.erro,
+      causas: [causaFixture({ mensagem: 'Categoria inválida', campos: ['category_id'] })],
+    });
+    expect(screen.queryByTestId('ml-causas-gerais')).toBeNull();
+  });
+
+  it('keeps ML-applied warnings out of the red alert', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.publicado,
+      causas: [
+        causaFixture({
+          tipo: ML_CAUSA_TIPO.aviso,
+          code: 'shipping.me2_adoption_mandatory',
+          mensagem: 'ME2 adoption is mandatory for the user',
+        }),
+      ],
+    });
+    expect(screen.queryByTestId('ml-causas-gerais')).toBeNull();
+    expect(screen.getByTestId('ml-causas-avisos').textContent).toContain('ME2 adoption');
   });
 
   it('offers the latch escape hatch only for a PUBLISHED listing in error', () => {

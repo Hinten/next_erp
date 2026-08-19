@@ -21,6 +21,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 
 import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { type LinkStatusTarget, applyItemStatusToLink } from './itemsStatusSync';
+import { clearFalha } from './publishFalhas';
 
 /** The minimal ML surface a re-verification needs (injectable for tests). */
 export interface ReverificarApi {
@@ -67,7 +68,7 @@ export async function reverificarAnuncio(
         integracaoId,
         target,
         { status: 'closed', sub_status: [] },
-        { nowMs, extra: { errors: [] } },
+        { nowMs, extra: clearFalha() },
       );
       return {
         estado: estadoFromMlStatus('closed'),
@@ -83,7 +84,7 @@ export async function reverificarAnuncio(
     nowMs,
     // Drop the stale diagnosis so the produto tab stops showing a fault the
     // listing may no longer have.
-    extra: { errors: [] },
+    extra: clearFalha(),
   });
 
   return {

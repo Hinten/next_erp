@@ -100,6 +100,86 @@ beforeEach(() => {
   h.remote = linkFixture();
 });
 
+describe('ListingForm — server errors', () => {
+  it('shows a Mercado Livre rejection ON the control it names', () => {
+    // The whole point of #1109: `ML 400: Validation error` in a banner told the
+    // operator nothing about WHICH field ML refused.
+    renderForm(
+      { id: null },
+      { serverErrors: { title: ['You should include more main features in the title.'] } },
+    );
+    expect(screen.getByText('You should include more main features in the title.')).toBeDefined();
+  });
+
+  it('renders on the categoria and tipo controls too', () => {
+    renderForm(
+      { id: null },
+      {
+        serverErrors: {
+          category_id: ['Is not allowed to post in category MLB1234.'],
+          listing_type_id: ['Tipo indisponível.'],
+        },
+      },
+    );
+    expect(screen.getByText('Is not allowed to post in category MLB1234.')).toBeDefined();
+    expect(screen.getByText('Tipo indisponível.')).toBeDefined();
+  });
+
+  it('leaves the controls clean when the server has nothing to say', () => {
+    renderForm({ id: null });
+    expect(screen.queryByText(/You should include/)).toBeNull();
+  });
+
+  it('is DISPLAYED, not pushed into form state — editing the field is what clears it', () => {
+    // Deliberately not `form.setError`: a manual RHF error is wiped by the next
+    // resolver run, so it would vanish on an unrelated blur while ML still
+    // rejects the listing. Typing here re-renders without touching the prop.
+    const { update } = renderForm({ id: null }, { serverErrors: { title: ['ML recusou'] } });
+    type('Título do anúncio', 'Outro título bem mais descritivo');
+    expect(screen.getByText('ML recusou')).toBeDefined();
+    // …and it goes when the next publish attempt clears the stamp.
+    update({ id: null });
+    expect(screen.getByText('ML recusou')).toBeDefined();
+  });
+});
+
+describe('ListingForm — server errors on the attribute grid', () => {
+  function setAttrClient(atributos: unknown[]) {
+    h.client = {
+      categoriaAtributos: vi.fn(async () => ({ leaf: true, atributos, omitidos: [] })),
+    };
+  }
+
+  it('marks the attribute row ML named, reusing the existing per-row channel', async () => {
+    setAttrClient([
+      { id: 'BRAND', name: 'Marca', required: false, valueType: 'string', values: [] },
+    ]);
+    renderForm(
+      { id: null, category_id: 'MLB31447' },
+      { serverErrors: { 'attributes.BRAND': ['The attributes [BRAND] are required.'] } },
+    );
+    await waitFor(() => {
+      expect(screen.getByText('The attributes [BRAND] are required.')).toBeDefined();
+    });
+  });
+
+  it('lets local validation win over a stale server message on the same row', async () => {
+    // A required row the operator has since emptied: what is wrong NOW beats
+    // what ML said about the previous attempt.
+    setAttrClient([
+      { id: 'BRAND', name: 'Marca', required: true, valueType: 'string', values: [] },
+    ]);
+    renderForm(
+      { id: null, category_id: 'MLB31447', attributes: [] },
+      { serverErrors: { 'attributes.BRAND': ['mensagem antiga do ML'] } },
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Este campo é obrigatório')).toBeDefined();
+    });
+    expect(screen.queryByText('mensagem antiga do ML')).toBeNull();
+  });
+});
+
 describe('ListingForm', () => {
   it('seeds every input from the stored doc', () => {
     renderForm({ title: 'Camiseta Básica' });
