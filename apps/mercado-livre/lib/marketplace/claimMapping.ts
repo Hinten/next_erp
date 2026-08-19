@@ -104,6 +104,7 @@ export function tipoIncidenteFromClaimType(type: string | null): TipoIncidente {
       return type;
     case 'change':
       return TIPO_INCIDENTE.troca;
+    case null:
     default:
       return TIPO_INCIDENTE.outros;
   }
