@@ -21,7 +21,7 @@ import {
   type PedidoDevolucaoDataPort,
 } from '@delfrance/data/pedido';
 import { PedidoForm } from './PedidoForm';
-import { DIRECAO, type Direcao } from './direcao';
+import { DIRECAO, direcaoIncompativelDaCopia, type Direcao } from './direcao';
 import { DirecaoSurface } from './DirecaoSurface';
 import { useConfirmDialog } from './ConfirmDialog';
 import { runDevolucaoDialogs } from './devolucaoSaveFlow';
@@ -210,6 +210,10 @@ function NovoPedidoCreate({ direcao }: { direcao: Direcao }) {
  * an independent, unpaid draft (see {@link buildDuplicarPedidoSeed} for the
  * exact field-by-field rules). Saves through the same
  * {@link useCreatePedidoSubmit} path as the plain create.
+ *
+ * A seed whose direction disagrees with the route is refused rather than
+ * rendered — see {@link direcaoIncompativelDaCopia} for why the two halves of
+ * the page would otherwise contradict each other.
  */
 function NovoPedidoCopia({ direcao, originId }: { direcao: Direcao; originId: string }) {
   const cfg = DIRECAO[direcao];
@@ -229,6 +233,10 @@ function NovoPedidoCopia({ direcao, originId }: { direcao: Direcao; originId: st
     retry: (failureCount, err) => !(err instanceof PedidoConflictError) && failureCount < 2,
     queryFn: () => buildDuplicarPedidoSeed(port, { originId, usuarioRef }),
   });
+
+  const direcaoDoOriginal = seed
+    ? direcaoIncompativelDaCopia(seed.values.ehSaida as boolean | null | undefined, direcao)
+    : null;
 
   return (
     <DirecaoSurface direcao={direcao}>
@@ -260,6 +268,17 @@ function NovoPedidoCopia({ direcao, originId }: { direcao: Direcao; originId: st
           </Alert>
         ) : error ? (
           <Alert color="red">{error.message}</Alert>
+        ) : direcaoDoOriginal ? (
+          <Alert color="yellow" title="Direção incompatível">
+            O original é do tipo “{DIRECAO[direcaoDoOriginal].docLabel}” e a cópia mantém a direção
+            do original, que não pode ser alterada. Esta página cria do tipo “{cfg.docLabel}”.{' '}
+            <Anchor
+              component={Link}
+              href={`${DIRECAO[direcaoDoOriginal].novoPath}?copiarDe=${encodeURIComponent(originId)}`}
+            >
+              Duplicar em {DIRECAO[direcaoDoOriginal].listTitle}
+            </Anchor>
+          </Alert>
         ) : (
           <PedidoForm
             defaultValues={seed.values as Pedido}
