@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useState } from 'react';
 import {
   ActionIcon,
   Button,
@@ -11,12 +11,15 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
+import { useQueryClient } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import type { VolumeFormState } from '../../types';
 import type { PedidoFormHandle } from './fields';
 import { fretePath } from './fields';
 import { pesoPedido, volumePadrao } from './pesoPedido';
-import { useProdutoPesoMap } from './useProdutoPesoMap';
+import { loadProdutoPesoMap } from './produtoPeso';
 
 export interface VolumesEditorProps {
   form: PedidoFormHandle;
@@ -29,27 +32,48 @@ export interface VolumesEditorProps {
 export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorProps) {
   const volumes = (form.watch(fretePath('volumes')) as VolumeFormState[] | null) ?? [];
 
-  // getPesoPedido() (#371) as the "+ Novo volume" button's starting weight,
-  // instead of a blind 1kg guess. Deliberately NOT auto-inserted: a fabricated
-  // 10×10×10cm box feeds straight into a real freight quote
-  // (`melhorEnvioCart`), so review flagged silently auto-seeding one as risking
-  // a materially inaccurate quote nobody looked at. Requiring the click keeps
-  // the box in front of the operator before it's ever sent anywhere — the
-  // computed weight is the only thing that gets smarter.
   const itensFlat = form.watch('_itensFlat') ?? [];
-  const produtoUidsForPeso = useMemo(
-    () => itensFlat.filter((i) => !i._delete && !!i.produtoUid).map((i) => i.produtoUid as string),
-    [itensFlat],
-  );
-  const produtoPesoById = useProdutoPesoMap(db, produtoUidsForPeso);
-  const defaultPesoBruto = produtoPesoById
-    ? pesoPedido(
-        itensFlat
-          .filter((i) => !i._delete)
-          .map((i) => ({ produtoUid: i.produtoUid, quantidade: i.quantidade })),
-        produtoPesoById,
-      )
-    : 1;
+  const queryClient = useQueryClient();
+  const [adicionando, setAdicionando] = useState(false);
+
+  /**
+   * Add a volume weighed by `getPesoPedido` (#371) instead of a blind 1kg
+   * guess. The weight is fetched **on click**, not on mount: the same cache
+   * entry the activation seed (`seedVolumePadrao`) fills, so the usual path
+   * costs no extra read, and a Frete tab the operator only looks at costs
+   * none at all.
+   *
+   * A read failure still adds the volume — the operator asked for one — but
+   * falls back to `volumePadrao()`'s 1kg and says so, rather than presenting a
+   * fabricated weight as if it had been computed.
+   */
+  async function adicionarVolume() {
+    const itens = itensFlat.filter((i) => !i._delete);
+    setAdicionando(true);
+    let peso = 1;
+    try {
+      peso = pesoPedido(
+        itens,
+        await loadProdutoPesoMap(
+          queryClient,
+          db,
+          itens.map((i) => i.produtoUid),
+        ),
+      );
+    } catch (err) {
+      if (!(err instanceof FirebaseError)) throw err;
+      notifications.show({
+        color: 'yellow',
+        title: 'Peso do pedido',
+        message: 'Não foi possível calcular o peso do pedido. Confira o peso do volume.',
+      });
+    } finally {
+      setAdicionando(false);
+    }
+    // Re-read across the await — the list may have changed while it ran.
+    const atuais = (form.getValues(fretePath('volumes')) as VolumeFormState[] | null) ?? [];
+    update([...atuais, volumePadrao(peso)]);
+  }
 
   const update = (next: VolumeFormState[]) => {
     form.setValue(fretePath('volumes'), next.length > 0 ? next : null, {
@@ -154,8 +178,9 @@ export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorP
             type="button"
             variant="light"
             size="xs"
-            onClick={() => update([...volumes, volumePadrao(defaultPesoBruto)])}
-            disabled={disabled}
+            onClick={() => void adicionarVolume()}
+            loading={adicionando}
+            disabled={disabled || adicionando}
           >
             + Novo volume
           </Button>

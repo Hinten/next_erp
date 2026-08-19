@@ -4,8 +4,8 @@ import type { VolumeFormState } from '../../types';
 /**
  * The produto fields `pesoPedido` needs — a produto's own weight plus its
  * `paiId` for the variation→parent fallback. Callers batch-fetch these
- * (`useProdutoPesoMap`) keyed by produto id, including any parent a
- * zero-weight variation needs.
+ * (`loadProdutoPesoMap`, `./produtoPeso`) keyed by produto id, including any
+ * parent a zero-weight variation needs.
  */
 export interface ProdutoPesoInfo {
   pesoBrutoKg: number | null;
@@ -43,8 +43,9 @@ export function normalizeProdutoId(raw: string | null | undefined): string | nul
 /**
  * Port of `getPesoPedido` (`.old/lib/pedido/providers/cadastroPedidoProvider.dart:1394-1448`,
  * see issue #371's legacy-context comment for the full trace) — the pedido's
- * total weight in **kg**, used to default the Frete tab's "+ Novo volume"
- * weight so adding one doesn't start from a blind guess.
+ * total weight in **kg**. It backs both the Volume seeded when frete is
+ * activated (`seedVolumePadrao`) and `VolumesEditor`'s "+ Novo volume" button,
+ * so neither starts from a blind 1kg guess.
  *
  * `itens` must already exclude staged-for-deletion rows (`FlatItem._delete`) —
  * this function has no delete-marker concept of its own. `produtoPesoById` is
@@ -102,10 +103,15 @@ export function pesoPedido(
  * — a single default Volume built from a pedido weight: 1 unit, 90% of
  * `pesoBruto` as `pesoLiquido` (2 decimals, byte-parity `duasCasasDecimais`
  * rounding — {@link roundReais} despite the money-flavored name, see
- * `@delfrance/core/money`), 'Pacote', hardcoded 10×10×10cm (the factory does
- * not read product dimensions — see `VolumesEditor`'s "+ Novo volume" button
- * for why that fallback is only ever a *starting point* the operator reviews,
- * never auto-committed to a quote unseen).
+ * `@delfrance/core/money`), 'Pacote', hardcoded 10×10×10cm.
+ *
+ * The factory does not read product dimensions — porting the legacy
+ * `getDimensoes` box estimator is the remaining half of #371. Until then the
+ * 10×10×10cm box is still strictly better than the alternative: an empty
+ * volume list makes `buildCalculatePayload`
+ * (`@delfrance/integrations-freight-br`) fall back to **20×20×20cm / 1kg**, so
+ * seeding this one replaces a fabricated box AND a fabricated weight with a
+ * fabricated box and the pedido's real weight.
  */
 export function volumePadrao(pesoBruto = 1): VolumeFormState {
   return {
@@ -118,4 +124,29 @@ export function volumePadrao(pesoBruto = 1): VolumeFormState {
     dimensoes: { altura: 10, largura: 10, comprimento: 10 },
     lacres: null,
   };
+}
+
+/**
+ * Whether the Frete tab should seed a default Volume right now — pure, so the
+ * decision is testable without mounting the form.
+ *
+ * The caller only invokes this from a real `temFrete` false→true transition in
+ * `onModalidadeChange` (a user gesture), so there is deliberately no
+ * "activation latch" parameter here: the earlier mount-effect version needed
+ * one and it was the source of both suppressed review findings on #1093 (a
+ * latch that was never cleared re-seeded a volume the operator had deleted,
+ * and a latch held in a `useRef` was lost whenever the tab unmounted — the
+ * pedido form's Tabs use `keepMounted={false}`).
+ *
+ * - `marketplaceOwned` — a marketplace-imported freteInicial is owned entirely
+ *   by the order importer (`MarketplaceReadOnly` renders no editor at all);
+ *   never inject a locally-fabricated Volume into it.
+ * - a non-empty `volumes` is left strictly alone.
+ */
+export function shouldSeedVolume(input: {
+  marketplaceOwned: boolean;
+  volumes: readonly VolumeFormState[] | null | undefined;
+}): boolean {
+  if (input.marketplaceOwned) return false;
+  return !input.volumes || input.volumes.length === 0;
 }
