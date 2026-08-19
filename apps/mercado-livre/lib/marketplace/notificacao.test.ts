@@ -605,10 +605,42 @@ describe('handleNotificationTask', () => {
       { questionImportRunner },
     );
 
-    expect(questionImportRunner).toHaveBeenCalledWith(expect.anything(), 'conta-A', 123);
+    // ⚠️ The 4th argument is the payload's own `sent`. The importer needs it to
+    // tell a 404 that means "deleted" from a 404 that means "ML has not
+    // propagated this question yet" — acking the second one loses a real
+    // customer question permanently. Dropping it here would silently restore
+    // that behaviour, because `undefined` reads as "no timestamp" ⇒ ack.
+    expect(questionImportRunner).toHaveBeenCalledWith(
+      expect.anything(),
+      'conta-A',
+      123,
+      1_700_000_000_000,
+    );
     expect(r.outcome).toBe('done');
     // A processed question persists NOTHING — the whole point of the failures-only store.
     expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('passes a NULL sent through rather than inventing one', async () => {
+    // A payload with no freshness claim must reach the importer as `null`, so it
+    // takes the "cannot defend this with a window" branch instead of being
+    // treated as fresh forever.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const questionImportRunner = vi.fn(async () => ({
+      conversaId: 'conv-1',
+      clienteId: 'cli-1',
+      skipped: null,
+    }));
+
+    await handleNotificationTask(
+      asDb(db),
+      payloadOf({ topic: 'questions', resource: '/questions/123', sent: null }),
+      0,
+      { questionImportRunner },
+    );
+
+    expect(questionImportRunner).toHaveBeenCalledWith(expect.anything(), 'conta-A', 123, null);
   });
 
   it('routes a messages notification to the order-message importer (#532)', async () => {
@@ -631,10 +663,16 @@ describe('handleNotificationTask', () => {
       { orderMessageImportRunner },
     );
 
+    // ⚠️ The 4th argument is the payload's own `sent`, and it is load-bearing:
+    // the receiver delays `messages` precisely because ML can 404 a message it
+    // has not propagated yet, and the importer uses this clock to tell that
+    // race apart from a real deletion. Dropping it reads as "no timestamp" ⇒ ack
+    // ⇒ a silently lost message.
     expect(orderMessageImportRunner).toHaveBeenCalledWith(
       expect.anything(),
       'conta-A',
       'fd1d2e37ad004ede9e0bf25d1215002d',
+      1_700_000_000_000,
     );
     expect(r.outcome).toBe('done');
     expect(db.docs(NOTIF).size).toBe(0);
@@ -713,6 +751,7 @@ describe('handleNotificationTask', () => {
       expect.anything(),
       'conta-A',
       'abcdef0123456789abcdef0123456789',
+      1_700_000_000_000,
     );
   });
 

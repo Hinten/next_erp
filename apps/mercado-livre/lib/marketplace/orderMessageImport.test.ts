@@ -8,6 +8,15 @@ import { makeConversaIdOrderMessage } from './orderMessageIds';
 
 type DocData = Record<string, unknown>;
 
+interface FakeRef {
+  id: string;
+  __col: Map<string, DocData>;
+}
+interface FakeTx {
+  get: (ref: FakeRef) => Promise<{ exists: boolean; id: string; data: () => DocData | undefined }>;
+  set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => void;
+}
+
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
 
@@ -28,6 +37,7 @@ class FakeDb {
     return {
       doc: (id: string) => ({
         id,
+        __col: col,
         get: async () => ({ exists: col.has(id), id, data: () => col.get(id) }),
         set: async (data: DocData, opts?: { merge?: boolean }) => {
           col.set(id, opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data });
@@ -35,6 +45,35 @@ class FakeDb {
       }),
     };
   }
+
+  /**
+   * Enough of a transaction for the out-of-order guard: reads see current
+   * state, writes apply immediately.
+   *
+   * ⚠️ It does NOT model OCC contention, so it cannot prove two writers
+   * serialise — only that the guard READS INSIDE the transaction and drops an
+   * older snapshot. That is the half a unit test can own; Firestore's own
+   * conflict retry is the other half.
+   */
+  async runTransaction<T>(fn: (tx: FakeTx) => Promise<T>): Promise<T> {
+    this.transacoes += 1;
+    return fn({
+      get: async (ref: FakeRef) => ({
+        exists: ref.__col.has(ref.id),
+        id: ref.id,
+        data: () => ref.__col.get(ref.id),
+      }),
+      set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => {
+        ref.__col.set(
+          ref.id,
+          opts?.merge ? { ...(ref.__col.get(ref.id) ?? {}), ...data } : { ...data },
+        );
+      },
+    });
+  }
+
+  /** How many transactions ran — pins that the write path uses one at all. */
+  transacoes = 0;
 
   collectionGroup(groupId: string) {
     const entries: Array<[string, DocData, string]> = [];
@@ -111,7 +150,16 @@ function packResponse(over: Record<string, unknown> = {}): MlPackMessages {
   } as unknown as MlPackMessages;
 }
 
-function api(over: Partial<MercadoLivreApi> = {}): MercadoLivreApi {
+/**
+ * ⚠️ Looser than `Partial<MercadoLivreApi>` on purpose. Every override here is a
+ * hand-rolled page fixture carrying only what the code under test reads. Typing
+ * them against the real return shape would force each case to spell out a whole
+ * ML envelope to vary ONE field, which is how a fixture stops describing the
+ * case it exists for.
+ */
+type ApiStubs = Partial<Record<keyof MercadoLivreApi, unknown>>;
+
+function api(over: ApiStubs = {}): MercadoLivreApi {
   return {
     getMessage: vi.fn(async () => ({ conversation_status: null, messages: [msg()] })),
     getPackMessages: vi.fn(async () => packResponse()),
@@ -119,13 +167,21 @@ function api(over: Partial<MercadoLivreApi> = {}): MercadoLivreApi {
   } as unknown as MercadoLivreApi;
 }
 
-function deps(db: FakeDb, apiOver: Partial<MercadoLivreApi> = {}) {
+function deps(
+  db: FakeDb,
+  apiOver: ApiStubs = {},
+  over: { notificacaoEnviadaMs?: number | null } = {},
+) {
   return {
     db: asDb(db),
     api: api(apiOver),
     integracaoId: CONTA,
     conta: { userId: SELLER, cor: 7 },
     nowMs: NOW_MS,
+    // Default OLD (literal, not derived from the window constant), so a 404 in
+    // an unrelated test still reads as "gone".
+    notificacaoEnviadaMs: NOW_MS - 3_600_000,
+    ...over,
   };
 }
 
@@ -212,7 +268,12 @@ describe('importOrderMessageMercadoLivre — resolution and skips', () => {
     const d = deps(db);
     await importOrderMessageMercadoLivre(d, MSG_ID);
 
-    expect(d.api.getPackMessages).toHaveBeenCalledWith(PACK_ID, String(SELLER));
+    // ⚠️ And it asks for a REAL page. ML defaults to 10 (its own reference shows
+    // `paging: { limit: 10, … }`), so the bare call silently returned the first
+    // ten messages of every thread.
+    expect(d.api.getPackMessages).toHaveBeenCalledWith(PACK_ID, String(SELLER), {
+      limit: 100,
+    });
   });
 
   it('keys the conversa on the PACK, not the order', async () => {
@@ -286,5 +347,226 @@ describe('importOrderMessageMercadoLivre — resolution and skips', () => {
     const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
     expect(db.docs(CHAT).size).toBe(1);
     expect(db.docs(MENSAGENS(conversaId)).size).toBe(1);
+  });
+});
+
+describe('importOrderMessageMercadoLivre — the whole thread, not ML’s first page', () => {
+  it('walks paging.total instead of stopping at the default page of 10', async () => {
+    // ⚠️ The bug: `paging.total` said 3 while `messages` carried 1, and the
+    // importer wrote only what it was handed. Real post-sale threads clear ten
+    // messages easily, so this silently truncated most of them.
+    const db = new FakeDb();
+    seedPedido(db);
+    const paginas = [
+      { paging: { limit: 2, offset: 0, total: 5 }, ids: ['m1', 'm2'] },
+      { paging: { limit: 2, offset: 2, total: 5 }, ids: ['m3', 'm4'] },
+      { paging: { limit: 2, offset: 4, total: 5 }, ids: ['m5'] },
+    ];
+    let chamada = 0;
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () => {
+        const pagina = paginas[Math.min(chamada, paginas.length - 1)]!;
+        chamada += 1;
+        return {
+          ...packResponse(),
+          paging: pagina.paging,
+          messages: pagina.ids.map((id) => msg({ id })),
+        };
+      }),
+    });
+
+    const r = await importOrderMessageMercadoLivre(d, MSG_ID);
+
+    expect(d.api.getPackMessages).toHaveBeenCalledTimes(3);
+    expect(db.docs(`chat/${r.conversaId!}/mensagem`).size).toBe(5);
+  });
+
+  it('stops as soon as the page count covers total — one call for a short thread', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db);
+    await importOrderMessageMercadoLivre(d, MSG_ID);
+    expect(d.api.getPackMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops on an empty page rather than spinning to the cap', async () => {
+    // ML claiming a total it will not serve must not burn the 500 rpm post-sale
+    // budget on a loop that gains nothing.
+    const db = new FakeDb();
+    seedPedido(db);
+    let chamada = 0;
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () => {
+        chamada += 1;
+        return {
+          ...packResponse(),
+          paging: { limit: 2, offset: 0, total: 999 },
+          messages: chamada === 1 ? [msg({ id: 'm1' })] : [],
+        };
+      }),
+    });
+
+    await importOrderMessageMercadoLivre(d, MSG_ID);
+
+    expect(d.api.getPackMessages).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('importOrderMessageMercadoLivre — 404 is usually the race (#532)', () => {
+  it('RETHROWS a 404 on a fresh notification instead of acking it', async () => {
+    // ⚠️ ML's own reference says so for this endpoint: "Mensagem não encontrada
+    // no servidor. Tente novamente em alguns segundos." Acking loses a real
+    // customer message with no record anywhere.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(
+      db,
+      {
+        getMessage: vi.fn(async () => {
+          throw new MercadoLivreHttpError('ML 404', 404, null, null);
+        }),
+      },
+      { notificacaoEnviadaMs: NOW_MS - 5_000 },
+    );
+
+    await expect(importOrderMessageMercadoLivre(d, MSG_ID)).rejects.toBeInstanceOf(
+      MercadoLivreHttpError,
+    );
+  });
+
+  it('acks a 404 once the notification is outside the race window', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(
+      db,
+      {
+        getMessage: vi.fn(async () => {
+          throw new MercadoLivreHttpError('ML 404', 404, null, null);
+        }),
+      },
+      { notificacaoEnviadaMs: NOW_MS - 600_001 }, // 10 min + 1 ms
+    );
+
+    expect((await importOrderMessageMercadoLivre(d, MSG_ID)).skipped).toBe('message-404');
+  });
+
+  it('applies the same policy to the PACK read, not just the by-id read', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(
+      db,
+      {
+        getPackMessages: vi.fn(async () => {
+          throw new MercadoLivreHttpError('ML 404', 404, null, null);
+        }),
+      },
+      { notificacaoEnviadaMs: NOW_MS - 5_000 },
+    );
+
+    await expect(importOrderMessageMercadoLivre(d, MSG_ID)).rejects.toBeInstanceOf(
+      MercadoLivreHttpError,
+    );
+  });
+});
+
+describe('importOrderMessageMercadoLivre — out-of-order provider snapshots (rule 7)', () => {
+  it('advances the watermark on status_date, not only on a new message', async () => {
+    // ⚠️ The half a message-only watermark misses, and the one that matters most:
+    // a thread going BLOCKED usually carries no new message at all. If the
+    // watermark only tracked message times, the blocked snapshot would store a
+    // stale value and the very next `active` snapshot — even an older one — would
+    // beat it and reopen the thread.
+    const statusDate = '2027-03-01T00:00:00.000Z';
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () => ({
+        ...packResponse({
+          conversation_status: {
+            path: `/packs/${PACK_ID}/seller/${SELLER}`,
+            // ACTIVE on purpose: a blocked thread with no stored conversa is
+            // refused by the actionability gate before any write, which would
+            // test the gate instead of the watermark.
+            status: 'active',
+            substatus: null,
+            status_date: statusDate,
+            status_update_allowed: false,
+            shipping_id: null,
+          },
+        }),
+      })),
+    });
+
+    const r = await importOrderMessageMercadoLivre(d, MSG_ID);
+
+    const stored = db.docs('chat').get(r.conversaId!)!;
+    expect(stored.ultimaModificacaoIntegracao).toBe(Date.parse(statusDate));
+  });
+
+  it('runs the conversa write inside a TRANSACTION', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    await importOrderMessageMercadoLivre(deps(db), MSG_ID);
+    expect(db.transacoes).toBeGreaterThan(0);
+  });
+
+  it('DROPS an older snapshot instead of reopening a closed thread', async () => {
+    // ⚠️ The reported failure. Two notifications for one pack are in flight; the
+    // older `active` snapshot finishes last and overwrites `respostaBloqueada` /
+    // `atendido`, handing the operator a composer that cannot send — #817 again,
+    // arrived by a different road.
+    const db = new FakeDb();
+    seedPedido(db);
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    db.seed('chat', conversaId, {
+      origem: 'mlped',
+      respostaBloqueada: 'Mediação em andamento',
+      atendido: true,
+      // A NEWER provider snapshot already landed.
+      // ⚠️ Must beat the FIXTURE MESSAGE time, not NOW_MS — the sample message is
+      // dated 2026-02 while NOW_MS is 2025-07, so `NOW_MS + 60s` is still older
+      // than the incoming snapshot and the guard would (correctly) let it through.
+      ultimaModificacaoIntegracao: Date.parse('2030-01-01T00:00:00.000Z'),
+    });
+
+    await importOrderMessageMercadoLivre(deps(db), MSG_ID);
+
+    const stored = db.docs('chat').get(conversaId)!;
+    expect(stored.respostaBloqueada).toBe('Mediação em andamento');
+    expect(stored.atendido).toBe(true);
+  });
+
+  it('still writes the mensagens when the conversa patch is dropped', async () => {
+    // They are keyed by ML id, so they can only ADD history — never contradict
+    // whatever the newer snapshot decided about the thread.
+    const db = new FakeDb();
+    seedPedido(db);
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    db.seed('chat', conversaId, {
+      origem: 'mlped',
+      // ⚠️ Must beat the FIXTURE MESSAGE time, not NOW_MS — the sample message is
+      // dated 2026-02 while NOW_MS is 2025-07, so `NOW_MS + 60s` is still older
+      // than the incoming snapshot and the guard would (correctly) let it through.
+      ultimaModificacaoIntegracao: Date.parse('2030-01-01T00:00:00.000Z'),
+    });
+
+    await importOrderMessageMercadoLivre(deps(db), MSG_ID);
+
+    expect(db.docs(`chat/${conversaId}/mensagem`).size).toBeGreaterThan(0);
+  });
+
+  it('lets an EQUAL or newer snapshot through', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    db.seed('chat', conversaId, {
+      origem: 'mlped',
+      respostaBloqueada: 'algo antigo',
+      ultimaModificacaoIntegracao: 1,
+    });
+
+    await importOrderMessageMercadoLivre(deps(db), MSG_ID);
+
+    expect(db.docs('chat').get(conversaId)!.respostaBloqueada).toBeNull();
   });
 });

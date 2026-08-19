@@ -777,12 +777,16 @@ export type OrderMessageImportRunner = (
   db: Firestore,
   integracaoId: string,
   resourceId: string,
+  /** The notification's `sent` (ms) — tells a 404 race from a real deletion. */
+  enviadaMs: number | null,
 ) => Promise<OrderMessageImportResult>;
 
 export type QuestionImportRunner = (
   db: Firestore,
   integracaoId: string,
   resourceId: number,
+  /** The notification's `sent` (ms), so the importer can tell a 404 race from a deletion. */
+  enviadaMs: number | null,
 ) => Promise<QuestionImportResult>;
 
 export type ClaimImportRunner = (
@@ -811,7 +815,12 @@ export type ClaimImportRunner = (
  * µs twin here to pick the wrong one from.
  */
 /** The production #532 post-sale message importer. Milliseconds only. */
-const runOrderMessageImport: OrderMessageImportRunner = async (db, integracaoId, resourceId) => {
+const runOrderMessageImport: OrderMessageImportRunner = async (
+  db,
+  integracaoId,
+  resourceId,
+  enviadaMs,
+) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
@@ -825,12 +834,13 @@ const runOrderMessageImport: OrderMessageImportRunner = async (db, integracaoId,
         cor: asNumberOrNull(ctx.conta.cor),
       },
       nowMs: Date.now(),
+      notificacaoEnviadaMs: enviadaMs,
     },
     resourceId,
   );
 };
 
-const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourceId) => {
+const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourceId, enviadaMs) => {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
@@ -844,6 +854,7 @@ const runQuestionImport: QuestionImportRunner = async (db, integracaoId, resourc
         cor: asNumberOrNull(ctx.conta.cor),
       },
       nowMs: Date.now(),
+      notificacaoEnviadaMs: enviadaMs,
     },
     resourceId,
   );
@@ -1133,7 +1144,7 @@ export async function processNotificationPayload(
     const resourceId = parseOrderResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
     const result = await wrapImportRunner(integracaoId, () =>
-      questionImportRunner(db, integracaoId, resourceId),
+      questionImportRunner(db, integracaoId, resourceId, payload.sent ?? null),
     );
     if (result.skipped === 'ML_500') {
       return { kind: 'ml-500', integracaoId, message: result.message };
@@ -1162,7 +1173,7 @@ export async function processNotificationPayload(
     const resourceId = parseMessageResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
     const result = await wrapImportRunner(integracaoId, () =>
-      orderMessageImportRunner(db, integracaoId, resourceId),
+      orderMessageImportRunner(db, integracaoId, resourceId, payload.sent ?? null),
     );
     if (result.skipped === 'ML_500') {
       return { kind: 'ml-500', integracaoId, message: result.message };
