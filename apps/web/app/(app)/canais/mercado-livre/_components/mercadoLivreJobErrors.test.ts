@@ -4,11 +4,7 @@ import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
 } from '@/lib/mercado-livre/client';
-import {
-  describeMassImportStartError,
-  describePriceSyncStartError,
-  mercadoLivreQueryErrorMessage,
-} from './mercadoLivreJobErrors';
+import { describeMassImportStartError, describePriceSyncStartError } from './mercadoLivreJobErrors';
 
 describe('describeMassImportStartError', () => {
   it('maps ML_MASS_IMPORT_RUNNING to a yellow "already running" entry', () => {
@@ -71,21 +67,5 @@ describe('describePriceSyncStartError', () => {
 
   it('returns null for anything that is not a Mercado Livre client error', () => {
     expect(describePriceSyncStartError(new RangeError('boom'))).toBeNull();
-  });
-});
-
-describe('mercadoLivreQueryErrorMessage', () => {
-  const fallbacks = { network: 'rede caiu', unknown: 'não deu' };
-
-  it('prefers the backend message on an HTTP error', () => {
-    const err = new MercadoLivreClientHttpError('Importação não encontrada.', 404, null);
-    expect(mercadoLivreQueryErrorMessage(err, fallbacks)).toBe('Importação não encontrada.');
-  });
-
-  it('keeps "unreachable" and "unknown state" distinct', () => {
-    expect(mercadoLivreQueryErrorMessage(new MercadoLivreClientNetworkError('x'), fallbacks)).toBe(
-      'rede caiu',
-    );
-    expect(mercadoLivreQueryErrorMessage(new TypeError('x'), fallbacks)).toBe('não deu');
   });
 });

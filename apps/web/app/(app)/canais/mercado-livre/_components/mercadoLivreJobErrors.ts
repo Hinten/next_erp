@@ -13,6 +13,7 @@ import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
 } from '@/lib/mercado-livre/client';
+import { mercadoLivreErrorMessage } from '@/lib/mercado-livre/errors';
 
 /** How a contained per-conta failure is rendered: a colour plus its copy. */
 export interface JobErrorDescription {
@@ -64,40 +65,28 @@ export function describePriceSyncStartError(err: unknown): JobErrorDescription |
 }
 
 /**
- * `POST /importar-todos/cancelar` failures. Returns `null` for anything that is
- * not a known client failure, so the caller rethrows (rule 6).
+ * `POST /importar-todos/cancelar` failures.
+ *
+ * Job-specific copy first, then `mercadoLivreErrorMessage` for everything else —
+ * so unlike the `describe*StartError` pair above this ALWAYS returns something.
+ * That contract is deliberate: the caller is an async click handler that must
+ * never rethrow (a throw there is an unhandled promise rejection React does not
+ * catch), so "not mine" cannot mean "let it bubble" here.
  *
  * `ML_MASS_IMPORT_NOT_RUNNING` and a 404 are both benign races — the job
  * finished, or somebody else already cancelled it, between the card's last poll
  * and the click. Neither is worth alarming copy; the next poll shows the real
- * terminal state either way.
+ * terminal state either way. Neither is retryable either, and both are already
+ * non-retryable by status in the shared mapper, so no code needs adding to
+ * `NON_RETRYABLE_CODES`.
  */
-export const MASS_IMPORT_CANCEL_ERRO_DESCONHECIDO = 'Não foi possível cancelar a importação.';
-
-export function describeMassImportCancelError(err: unknown): string | null {
+export function describeMassImportCancelError(err: unknown): string {
   if (err instanceof MercadoLivreClientHttpError) {
     if (err.code === 'ML_MASS_IMPORT_NOT_RUNNING') return 'Esta importação já foi finalizada.';
     if (err.status === 404) return 'Importação não encontrada.';
-    return err.message;
   }
-  if (err instanceof MercadoLivreClientNetworkError) {
-    return 'Falha de rede ao cancelar a importação.';
-  }
-  return null;
-}
-
-/**
- * Read-path counterpart: the message for a failed status/lookup query. Unlike
- * the start path this never returns `null` — a poll that fails is displayed,
- * not rethrown, because the job itself is unaffected by our inability to read
- * it. The two fallbacks stay distinct so "the backend is unreachable" never
- * reads as "the job is in an unknown state".
- */
-export function mercadoLivreQueryErrorMessage(
-  err: unknown,
-  fallbacks: { readonly network: string; readonly unknown: string },
-): string {
-  if (err instanceof MercadoLivreClientHttpError) return err.message;
-  if (err instanceof MercadoLivreClientNetworkError) return fallbacks.network;
-  return fallbacks.unknown;
+  return mercadoLivreErrorMessage(err, {
+    network: 'Falha de rede ao cancelar a importação.',
+    unknown: 'Não foi possível cancelar a importação.',
+  });
 }

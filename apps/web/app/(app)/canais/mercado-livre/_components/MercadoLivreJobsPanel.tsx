@@ -23,7 +23,7 @@
  *    shows up.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Badge, Stack, Text } from '@mantine/core';
+import { Badge, Button, Group, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 
 import {
@@ -32,6 +32,7 @@ import {
   type MercadoLivrePriceSyncStatus,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { ContaJobErrorCard, MassImportJobCard, PriceSyncJobCard } from './MercadoLivreJobCards';
 import type { ContaJobOutcome, ContaRef } from './startJobsForContas';
 
@@ -107,7 +108,11 @@ export function MercadoLivreJobsPanel({
       return client.jobsEmAndamento({ integracaoIds: trackedIds });
     },
     enabled: Boolean(client) && trackedIds.length > 0,
-    retry: false,
+    // A one-shot lookup with no `refetchInterval`, so the reason the job CARDS
+    // keep `retry: false` (backoff stacking against POLL_MS) does not apply
+    // here — there is no next tick to serve as the retry. One blip would
+    // otherwise hide every running job until the operator clicked.
+    retry: mercadoLivreQueryRetry,
     staleTime: LOOKUP_STALE_MS,
   });
 
@@ -165,9 +170,23 @@ export function MercadoLivreJobsPanel({
     // every page load whenever apps/mercado-livre is down.
     if (!collapsed && lookup.error != null) {
       return (
-        <Text size="xs" c="dimmed">
-          Não foi possível consultar os jobs em andamento.
-        </Text>
+        <Group gap="xs" wrap="nowrap">
+          <Text size="xs" c="dimmed">
+            Não foi possível consultar os jobs em andamento.
+          </Text>
+          {/* Quiet on purpose (see above), but no longer a dead end: without
+              this, a lookup that failed once left running jobs invisible until
+              the operator navigated away and back. */}
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            color="gray"
+            loading={lookup.isFetching}
+            onClick={() => void lookup.refetch()}
+          >
+            Tentar novamente
+          </Button>
+        </Group>
       );
     }
     return null;
