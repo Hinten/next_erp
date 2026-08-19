@@ -3,29 +3,31 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 // Region must be inlined at build time by build.mjs (esbuild `define`) — Firebase
 // runs `setGlobalOptions` during codebase analysis BEFORE process.env/.env is
 // available, so the build-time literal is what makes the region available there.
-// Defaults to us-east5 (the ML backend's region); override via FUNCTIONS_REGION.
+// Defaults to us-east1 — the region this whole codebase deploys into, and NOT
+// the ML backend's own region (us-east5). Override via FUNCTIONS_REGION.
 const region = process.env.FUNCTIONS_REGION;
 if (!region) {
   throw new Error(
     'FUNCTIONS_REGION was not inlined at build time. Build via build.mjs ' +
-      '(defaults us-east5) or set FUNCTIONS_REGION.',
+      '(defaults us-east1) or set FUNCTIONS_REGION.',
   );
 }
 
 /**
  * Region for every `onTaskDispatched` and `onSchedule` function in this codebase.
  *
+ * Normally identical to `region` above. It stays a SEPARATE variable because it
+ * is the one the App Hosting backend must be told as well: `mlTasksRegion.ts`
+ * there builds the region-qualified queue name from `MERCADO_LIVRE_TASKS_REGION`,
+ * and if the two disagree the Admin SDK resolves `us-central1` and the task is
+ * SILENTLY DROPPED.
+ *
  * ⚠️ **Cloud Tasks and Cloud Scheduler do not exist in `us-east5`.** Neither
  * service lists it (Cloud Tasks locations / Cloud Scheduler locations both stop
- * at `us-east4` in the eastern US), so deploying the codebase wholesale into the
- * ML backend's region fails all eleven queue/schedule functions at once while
- * the four Firestore triggers deploy cleanly — the exact signature seen on the
- * first ML functions deploy. They are pinned to `us-east1`, which offers both.
- *
- * ⚠️ This is also what the ENQUEUER must target. `mlTasks.ts` on the App Hosting
- * backend builds a region-qualified queue name from `MERCADO_LIVRE_TASKS_REGION`;
- * point it anywhere else and the Admin SDK resolves `us-central1` and the task is
- * SILENTLY DROPPED. Set the same value on the backend env.
+ * at `us-east4` in the eastern US), so this must never resolve there: it fails
+ * all eleven queue/schedule functions at once while the four Firestore triggers
+ * deploy cleanly — the asymmetric failure list that diagnosed the first ML
+ * functions deploy. That constraint is what picked `us-east1` for the codebase.
  *
  * Inlined at build time by `build.mjs` for the same reason as `region` — the
  * `region:` option is read during codebase analysis, before any env exists.

@@ -2,14 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MassImportAlreadyRunningError } from '@/lib/marketplace/massImport';
 
-// verifyCaller / context loader / job start / scheduler / job-doc merge are
-// mocked; the route's own logic (body validation, defaults, error mapping,
+// verifyCaller / context loader / job start / scheduler / the terminal stamp
+// are mocked; the route's own logic (body validation, defaults, error mapping,
 // enqueue-failure fallback) runs real.
 const h = vi.hoisted(() => ({
   verifyCaller: vi.fn(),
   loadCtx: vi.fn(),
   startMassImportJob: vi.fn(),
   enqueue: vi.fn(async (_payload: unknown) => {}),
+  finalizeMassImportJob: vi.fn(async (..._args: unknown[]) => 'stamped'),
   merge: vi.fn(async (..._args: unknown[]) => {}),
 }));
 
@@ -27,7 +28,11 @@ vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
 
 vi.mock('@/lib/marketplace/massImport', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/marketplace/massImport')>();
-  return { ...actual, startMassImportJob: h.startMassImportJob };
+  return {
+    ...actual,
+    startMassImportJob: h.startMassImportJob,
+    finalizeMassImportJob: h.finalizeMassImportJob,
+  };
 });
 
 vi.mock('@/lib/marketplace/mlMassImportTasks', () => ({
@@ -134,11 +139,25 @@ describe('POST /api/marketplace/mercado-livre/importar-todos', () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.code).toBe('ML_MASS_IMPORT_ENQUEUE_FAILED');
-    expect(body.error).toBe('cloudtasks down');
-    expect(h.merge).toHaveBeenCalledOnce();
-    const [, , id, patch] = h.merge.mock.calls[0]!;
+    expect(body.error).toContain('cloudtasks down');
+    expect(h.finalizeMassImportJob).toHaveBeenCalledOnce();
+    const [, id, patch] = h.finalizeMassImportJob.mock.calls[0]!;
     expect(id).toBe('job-1');
-    expect(patch).toMatchObject({ status: 'failed', erro: 'cloudtasks down' });
+    expect(patch).toMatchObject({ status: 'failed' });
+    expect((patch as { erro: string }).erro).toContain('cloudtasks down');
+  });
+
+  it('names the queue an enqueue failure was aimed at, so a region mismatch identifies itself', async () => {
+    // The bare RPC error never says which location it tried, and a wrong
+    // MERCADO_LIVRE_TASKS_REGION is the likeliest reason to land here.
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', 'us-east5');
+    h.enqueue.mockRejectedValue(new Error('cloudtasks down'));
+    const res = await POST(req({ integracaoId: 'int-1' }));
+    const body = await res.json();
+    expect(body.error).toBe(
+      'cloudtasks down (fila: locations/us-east5/functions/processMercadoLivreMassImport)',
+    );
+    vi.unstubAllEnvs();
   });
 
   it('propagates the auth failure from verifyCaller', async () => {

@@ -21,25 +21,20 @@
  *     same error). There is no sweep to fall back on — the trigger logs + skips
  *     while the valve is on, and the poke/route re-drive is the recovery path
  *     once it lifts — so the valve must stay a deliberate, short-lived state.
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) —
- *     see `mlTasks.ts` for why the region-qualified path is mandatory.
+ *   - `MERCADO_LIVRE_TASKS_REGION` (default `us-east1`) — see `mlTasksRegion.ts`
+ *     for why the region-qualified path is mandatory and why it must NOT fall
+ *     back to `FUNCTIONS_REGION`.
  */
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
 import { MlTasksDisabledError } from './mlTasks';
+import { mlQueuePath } from './mlTasksRegion';
 import {
   MERCADO_LIVRE_NFE_UPLOAD_QUEUE,
   type MlNfeUploadScheduler,
   type NfeUploadTaskPayload,
 } from './nfeUpload';
-
-/** Region the NF-e upload function/queue live in (shared knob with mlTasks.ts). */
-function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
-}
 
 /**
  * Real scheduler — enqueues onto the `processMercadoLivreNfeUpload` queue.
@@ -53,7 +48,7 @@ class FirebaseMlNfeUploadScheduler implements MlNfeUploadScheduler {
   // region (the Admin SDK otherwise defaults to us-central1).
   private queue() {
     return getFunctions(getAdminApp()).taskQueue<NfeUploadTaskPayload>(
-      `locations/${mlTasksRegion()}/functions/${MERCADO_LIVRE_NFE_UPLOAD_QUEUE}`,
+      mlQueuePath(MERCADO_LIVRE_NFE_UPLOAD_QUEUE),
     );
   }
 

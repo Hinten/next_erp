@@ -54,14 +54,14 @@ describe('createMlStockTaskScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload, undefined);
   });
 
-  it('defaults the region to us-east5 when nothing is configured', async () => {
+  it('defaults the region to us-east1 when nothing is configured', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     // Truly unset (not empty) so the `?? default` chain falls through.
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMlStockTaskScheduler();
     await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith('locations/us-east5/functions/sendMercadoLivreStock');
+    expect(h.taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/sendMercadoLivreStock');
   });
 
   it('treats blank MERCADO_LIVRE_TASKS_REGION as unset and falls through to default', async () => {
@@ -71,7 +71,19 @@ describe('createMlStockTaskScheduler', () => {
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMlStockTaskScheduler();
     await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith('locations/us-east5/functions/sendMercadoLivreStock');
+    expect(h.taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/sendMercadoLivreStock');
+  });
+
+  it('IGNORES FUNCTIONS_REGION — the queue does not live in the codebase region', async () => {
+    // Cloud Tasks does not exist in us-east5, so this resolver must not fall
+    // back to the codebase region: it would name a queue that cannot exist and
+    // the Admin SDK would silently target us-central1 instead.
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', 'us-east5');
+    const scheduler = createMlStockTaskScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/sendMercadoLivreStock');
   });
 
   it('passes scheduleDelaySeconds through to the underlying queue.enqueue (429 pause re-enqueue)', async () => {

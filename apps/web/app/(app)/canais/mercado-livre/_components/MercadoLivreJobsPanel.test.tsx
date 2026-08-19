@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -147,5 +147,143 @@ describe('MercadoLivreJobsPanel', () => {
       await screen.findByText('Não foi possível consultar os jobs em andamento.'),
     ).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('MercadoLivreJobsPanel — o X de um job em andamento', () => {
+  const CARD_X = 'Dispensar Importação em massa de Conta A';
+  const AVISO = 'Este job está rodando no servidor e não para sozinho ao fechar o cartão.';
+
+  /**
+   * Renders one started mass-import card and waits for its FIRST poll to land.
+   * The wait is load-bearing: until the status query answers, the card has no
+   * data, `running` is false, and the X takes the plain dismiss branch — so
+   * clicking too early tests the wrong path entirely.
+   */
+  async function renderCartaoEmAndamento(
+    over: Record<string, unknown> = {},
+  ): Promise<{ dismiss: ReturnType<typeof vi.fn> }> {
+    const dismiss = vi.fn();
+    h.clientRef.current = {
+      jobsEmAndamento: vi.fn(async () => ({ importacoes: [], enviosPreco: [] })),
+      massImportStatus: vi.fn(async () => RUNNING_IMPORT),
+      priceSyncStatus: vi.fn(),
+      cancelMassImport: vi.fn(async () => ({ status: 'cancelled' })),
+      ...over,
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MercadoLivreJobsPanel
+        collapsed={false}
+        selecionadas={[]}
+        massImport={{ entries: [{ kind: 'started', conta: CONTA_A, jobId: 'job-a' }], dismiss }}
+        priceSync={{ entries: [], dismiss: vi.fn() }}
+      />,
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <MantineProvider env="test">
+            <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+          </MantineProvider>
+        ),
+      },
+    );
+    await screen.findByText(/40 encontrados/);
+    return { dismiss };
+  }
+
+  it('pergunta em vez de dispensar em silêncio — a importação não para ao fechar o cartão', async () => {
+    const { dismiss } = await renderCartaoEmAndamento();
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+
+    expect(await screen.findByText(AVISO)).toBeTruthy();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('"Apenas ocultar" esconde o cartão SEM tocar no job', async () => {
+    const { dismiss } = await renderCartaoEmAndamento();
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    fireEvent.click(await screen.findByRole('button', { name: 'Apenas ocultar' }));
+
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith('a'));
+    expect(h.clientRef.current!.cancelMassImport).not.toHaveBeenCalled();
+  });
+
+  it('"Cancelar importação" chama a rota e o cartão passa a mostrar o estado final', async () => {
+    const massImportStatus = vi
+      .fn<() => Promise<Record<string, unknown>>>()
+      .mockResolvedValue(RUNNING_IMPORT);
+    await renderCartaoEmAndamento({ massImportStatus });
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    await screen.findByText(AVISO);
+    // The post-cancel refetch is what surfaces the new state on the card.
+    massImportStatus.mockResolvedValue({ ...RUNNING_IMPORT, status: 'cancelled', finishedAt: 9 });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar importação' }));
+    });
+
+    await waitFor(() => {
+      expect(h.clientRef.current!.cancelMassImport).toHaveBeenCalledWith({
+        integracaoId: 'a',
+        jobId: 'job-a',
+      });
+    });
+    expect(await screen.findByText('Importação cancelada.')).toBeTruthy();
+  });
+
+  it('mostra a falha do cancelamento sem esconder o cartão', async () => {
+    const { MercadoLivreClientHttpError } = await import('@/lib/mercado-livre/client');
+    const { dismiss } = await renderCartaoEmAndamento({
+      cancelMassImport: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('x', 409, 'ML_MASS_IMPORT_NOT_RUNNING');
+      }),
+    });
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    await screen.findByText(AVISO);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar importação' }));
+    });
+
+    expect(await screen.findByText('Esta importação já foi finalizada.')).toBeTruthy();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('um job já terminado dispensa direto, sem confirmação', async () => {
+    const dismiss = vi.fn();
+    h.clientRef.current = {
+      jobsEmAndamento: vi.fn(async () => ({ importacoes: [], enviosPreco: [] })),
+      massImportStatus: vi.fn(async () => ({
+        ...RUNNING_IMPORT,
+        status: 'completed',
+        finishedAt: 9,
+      })),
+      priceSyncStatus: vi.fn(),
+      cancelMassImport: vi.fn(),
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MercadoLivreJobsPanel
+        collapsed={false}
+        selecionadas={[]}
+        massImport={{ entries: [{ kind: 'started', conta: CONTA_A, jobId: 'job-a' }], dismiss }}
+        priceSync={{ entries: [], dismiss: vi.fn() }}
+      />,
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <MantineProvider env="test">
+            <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+          </MantineProvider>
+        ),
+      },
+    );
+
+    expect(await screen.findByText('Importação concluída.')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(CARD_X));
+
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith('a'));
+    expect(screen.queryByText(AVISO)).toBeNull();
   });
 });

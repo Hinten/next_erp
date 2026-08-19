@@ -22,21 +22,16 @@
  *     same error). Like the mass import there is no sweep to fall back on —
  *     the caller (route or task handler) must surface this as a failed
  *     job/response, never a silent drop.
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) —
- *     see `mlTasks.ts` for why the region-qualified path is mandatory.
+ *   - `MERCADO_LIVRE_TASKS_REGION` (default `us-east1`) — see `mlTasksRegion.ts`
+ *     for why the region-qualified path is mandatory and why it must NOT fall
+ *     back to `FUNCTIONS_REGION`.
  */
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
 import { MlTasksDisabledError, type MlEnqueueOptions } from './mlTasks';
+import { mlQueuePath } from './mlTasksRegion';
 import { MERCADO_LIVRE_PRICE_SYNC_QUEUE, type PriceSyncTaskPayload } from './precoSync';
-
-/** Region the price-sync function/queue live in (shared knob with mlTasks.ts). */
-function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
-}
 
 /**
  * The enqueue seam. `processPriceSyncJob` and the `/atualizar-precos` route
@@ -53,7 +48,7 @@ class FirebaseMlPriceSyncScheduler implements MlPriceSyncScheduler {
   // region (the Admin SDK otherwise defaults to us-central1).
   private queue() {
     return getFunctions(getAdminApp()).taskQueue<PriceSyncTaskPayload>(
-      `locations/${mlTasksRegion()}/functions/${MERCADO_LIVRE_PRICE_SYNC_QUEUE}`,
+      mlQueuePath(MERCADO_LIVRE_PRICE_SYNC_QUEUE),
     );
   }
 

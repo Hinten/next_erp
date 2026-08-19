@@ -182,6 +182,8 @@ const INVENTARIO = {
     'C — same shape for shipments. Tier 2 in **µs**, null-tolerant the OPPOSITE way from the payment import (a null stored OR mapped stamp skips), which the file docblock spells out; the pedido stamp is the monotonic `maiorUs(stored, now)`.',
   'apps/mercado-livre/lib/marketplace/nfeUpload.ts':
     'C — stamps `freteInicial.estado = "error"` after an ML upload attempt. Re-reads the pedido and takes the new stamp from `maiorUsNfe(coerceToMicros(pedido.ultimaModificacao), nowUs)`, so it can only move forward (**µs**).',
+  'apps/mercado-livre/lib/marketplace/massImport.ts':
+    'One site (`finalizeMassImportJob`), class **B** and the reason it exists: `status` has TWO writers that do not coordinate — the task handler stamping `completed`/`failed` at the end of a dispatch, and the `importar-todos/cancelar` route stamping `cancelled` at any moment. The decision to finalize is made outside the callback, so the guard is named and explicit: `status` (still `running`?) and `integracaoId` (the ownership check) are BOTH re-derived from the `tx.get` snapshot, and a concurrent winner turns the call into a `not-running` no-op instead of a clobber. Nothing else in the patch comes from the read. It was three unguarded `merge()`s before the cancel action existed.',
   'apps/mercado-livre/lib/marketplace/integracoesComProduto.ts':
     'Tier 0 — the write is `FieldValue.arrayRemove(integracaoId)`, commutative, so there is no loser. The read set is a DIFFERENT collection by design: `sobrevivem(tx)` re-derives membership from its own `tx.get` and aborts the removal when a link survives.',
   'apps/web/lib/checkout/saveCheckout.ts':

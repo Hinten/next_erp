@@ -14,10 +14,14 @@ import { dirname, join } from 'node:path';
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 
 export async function bundle(outfile) {
-  // Default to us-east5 — the ML backend's deploy region. Must match the
-  // enqueuer's MERCADO_LIVRE_TASKS_REGION default (mlTasks.ts) or tasks target a
-  // queue that doesn't exist in this region and silently drop.
-  const region = process.env.FUNCTIONS_REGION || 'us-east5';
+  // Default to us-east1 — where this whole codebase is deployed. It is NOT the
+  // ML backend's own region (us-east5): Cloud Tasks and Cloud Scheduler do not
+  // exist there, and eleven of the fifteen functions here need one or the other,
+  // so the region that can hold the codebase is the one that has both. The four
+  // Firestore triggers follow the rest rather than the database — Firebase
+  // imposes no hard region match for them, and one region for one codebase beats
+  // saving a cross-region hop on four triggers.
+  const region = process.env.FUNCTIONS_REGION || 'us-east1';
   // Default to `default` — the repo's NAMED Firestore database. Firebase reads no
   // env during codebase analysis, so `onNfeAprovada`'s `database:` binding
   // (onNfeAprovada.ts) and `getDb()` (lib/admin.ts) would see `undefined` and bind
@@ -25,15 +29,17 @@ export async function bundle(outfile) {
   // FUNCTIONS_REGION so the analyzed endpoint carries the real database id.
   // Mirrors apps/whatsapp/functions/build.mjs.
   const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
-  // ⚠️ Cloud Tasks and Cloud Scheduler DO NOT EXIST in us-east5, so the eleven
-  // onTaskDispatched/onSchedule functions cannot live in the codebase region —
-  // `firebase deploy` fails them all while the four Firestore triggers succeed.
-  // They are pinned to us-east1 instead (the nearest region offering both).
-  // Inlined for the same reason as FUNCTIONS_REGION: their `region:` option is
-  // read during codebase analysis, before any env is available.
-  // ⚠️ This is also the ENQUEUER's region — apps/mercado-livre/lib/marketplace/
-  // mlTasks.ts builds a region-qualified queue name from the same variable, and
-  // a mismatch makes the Admin SDK target us-central1 and SILENTLY DROP the task.
+  // The eleven onTaskDispatched/onSchedule functions. Same default as `region`
+  // above and normally the same value — it stays a SEPARATE variable because it
+  // is the one the App Hosting backend must also be told: apps/mercado-livre/
+  // lib/marketplace/mlTasksRegion.ts builds the region-qualified queue name from
+  // it, and a mismatch makes the Admin SDK target us-central1 and SILENTLY DROP
+  // the task. Inlined for the same reason as FUNCTIONS_REGION: the `region:`
+  // option is read during codebase analysis, before any env is available.
+  // ⚠️ Whatever this resolves to must be a region that HAS Cloud Tasks and Cloud
+  // Scheduler. us-east5 has neither — pointing either variable there fails all
+  // eleven at deploy while the four Firestore triggers succeed, which is the
+  // asymmetric failure list #1108 diagnosed.
   const tasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION || 'us-east1';
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],

@@ -43,7 +43,7 @@ describe('createMlMassImportScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload);
   });
 
-  it('defaults the region to us-east5 when nothing is configured', async () => {
+  it('defaults the region to us-east1 when nothing is configured', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     // Truly unset (not empty) so the `?? default` chain falls through.
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
@@ -51,7 +51,35 @@ describe('createMlMassImportScheduler', () => {
     const scheduler = createMlMassImportScheduler();
     await scheduler.enqueue(payload);
     expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processMercadoLivreMassImport',
+      'locations/us-east1/functions/processMercadoLivreMassImport',
+    );
+  });
+
+  it('treats blank MERCADO_LIVRE_TASKS_REGION as unset and falls through to default', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', '');
+    vi.stubEnv('FUNCTIONS_REGION', undefined);
+    const scheduler = createMlMassImportScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east1/functions/processMercadoLivreMassImport',
+    );
+  });
+
+  it('IGNORES FUNCTIONS_REGION — the queue does not live in the codebase region', async () => {
+    // Cloud Tasks does not exist in us-east5, so the queue functions are pinned
+    // to us-east1 while the Firestore triggers stay in the data region. This
+    // resolver used to carry a FUNCTIONS_REGION fallback; on a backend where
+    // that variable names the data region it resolved a queue that cannot
+    // exist, and the Admin SDK then silently targeted us-central1. #1108 fixed
+    // the notification scheduler and left this one behind.
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', 'us-east5');
+    const scheduler = createMlMassImportScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east1/functions/processMercadoLivreMassImport',
     );
   });
 

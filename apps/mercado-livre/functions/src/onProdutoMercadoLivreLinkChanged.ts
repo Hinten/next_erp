@@ -55,7 +55,7 @@ export const onProdutoMercadoLivreLinkChanged = onDocumentWritten(
   {
     document: `${produtoMercadoLivre.meta.collectionPath}/{linkId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
-    region: process.env.FUNCTIONS_REGION ?? 'us-east5',
+    region: process.env.FUNCTIONS_REGION ?? 'us-east1',
     retry: true,
   },
   async (event) => {

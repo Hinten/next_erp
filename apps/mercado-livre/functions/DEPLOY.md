@@ -25,28 +25,41 @@ analysis. `firebase.mercado-livre.deploy.json` points `source` at the generated
   rather than codebase-wide precisely so the two Firestore triggers (`onNfeAprovada`,
   `onIntegracaoMercadoLivreChanged`), which never call the ML API, carry **no**
   credentials at all.
-- ⚠️ **This codebase deploys into TWO regions, and that is not a mistake.**
-  **Cloud Tasks and Cloud Scheduler do not exist in `us-east5`** — neither service
-  lists it ([Cloud Tasks locations](https://cloud.google.com/tasks/docs/locations),
+- ⚠️ **The whole codebase deploys into `us-east1`, which is NOT the ML backend's
+  own region (`us-east5`).** **Cloud Tasks and Cloud Scheduler do not exist in
+  `us-east5`** — neither service lists it
+  ([Cloud Tasks locations](https://cloud.google.com/tasks/docs/locations),
   [Cloud Scheduler locations](https://cloud.google.com/scheduler/docs/locations);
-  both stop at `us-east4` in the eastern US). Deploying the codebase wholesale into
-  `us-east5` fails **all eleven** `onTaskDispatched`/`onSchedule` functions at once
-  while the four Firestore triggers deploy cleanly — that asymmetric failure list
-  IS the diagnosis. So:
+  both stop at `us-east4` in the eastern US). Deploying wholesale into `us-east5`
+  fails **all eleven** `onTaskDispatched`/`onSchedule` functions at once while the
+  four Firestore triggers deploy cleanly — that asymmetric failure list IS the
+  diagnosis, and it is what picked the region for everything here.
 
-  | Functions                                 | Region                                      | Set by                                                            | Why                                                                                 |
-  | ----------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-  | the 4 `onDocumentWritten` triggers        | `FUNCTIONS_REGION` (**us-east5**)           | `build.mjs`                                                       | co-located with Firestore — a distant function is pure added latency on every write |
-  | the 5 `onTaskDispatched` + 6 `onSchedule` | `MERCADO_LIVRE_TASKS_REGION` (**us-east1**) | `build.mjs`, applied via `TASKS_SCHEDULER_REGION` in `options.ts` | the only nearby region where both services exist                                    |
+  | Functions                                 | Region                                      | Set by                                                            |
+  | ----------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------- |
+  | the 4 `onDocumentWritten` triggers        | `FUNCTIONS_REGION` (**us-east1**)           | `build.mjs`                                                       |
+  | the 5 `onTaskDispatched` + 6 `onSchedule` | `MERCADO_LIVRE_TASKS_REGION` (**us-east1**) | `build.mjs`, applied via `TASKS_SCHEDULER_REGION` in `options.ts` |
+
+  The two variables stay separate even though they now hold the same value: only
+  `MERCADO_LIVRE_TASKS_REGION` is also read by the App Hosting backend, and the
+  queue functions are the half that cannot legally move to a region lacking Cloud
+  Tasks. The Firestore triggers follow the codebase rather than the database —
+  Firebase imposes no hard region match for them, and one region for one codebase
+  beats saving a cross-region hop on four triggers.
+
+  ⚠️ **A gen2 function cannot change region in place.** If the console still shows
+  any ML function in `us-east5` from an earlier deploy, delete it before deploying,
+  or you get two functions firing on the same events.
 
 - **Region match**: the App Hosting backend must enqueue onto the queue in the TASK
-  functions' region — `MERCADO_LIVRE_TASKS_REGION`, **not** `FUNCTIONS_REGION`
-  (App Hosting / Cloud Run does NOT expose its own region as an env var, only the
-  metadata server does, so it must be configured). The enqueuer defaults to
-  `us-east1` and deliberately no longer falls back to `FUNCTIONS_REGION`: that
-  fallback would name the _data_ region, resolving a queue that does not exist. A
-  wrong region makes the Admin SDK target `us-central1` and the task **silently
-  drops**.
+  functions' region — set `MERCADO_LIVRE_TASKS_REGION` on the backend env, since
+  App Hosting / Cloud Run does NOT expose its own region as an env var (only the
+  metadata server does). The enqueuer
+  (`apps/mercado-livre/lib/marketplace/mlTasksRegion.ts`) defaults to `us-east1` and
+  deliberately does not fall back to `FUNCTIONS_REGION`. A wrong region makes the
+  Admin SDK target `us-central1` and the task **silently drops** — or, when a queue
+  of that name happens to exist there, produces a task whose target URL is built
+  from the same wrong region and **404s on every dispatch attempt**.
 - **One-time IAM** (see the dedicated section below) — required before the callback
   cutover so the receiver can enqueue.
 
@@ -178,6 +191,38 @@ acks 200 — so notifications are not lost, but the intended rate-limited queue 
 is inactive. Verify the queue exists after the first deploy:
 `gcloud tasks queues describe processMercadoLivreNotification --location=<region>`.
 
+⚠️ **Those two grants cover the ENQUEUE leg only — the DISPATCH leg needs a
+third.** `firebase-admin` puts an OIDC token on every task it creates, minted
+for whatever `findServiceAccountEmail` resolves — on App Hosting, the **backend's
+own runtime SA**, not the functions runtime SA. Cloud Tasks then calls the
+function's Cloud Run service as that identity, and `firebase deploy` grants
+`run.invoker` to the _functions_ SA, so on any project where the two differ every
+dispatch is rejected:
+
+```bash
+# Once per task function (5 of them), or once at project level:
+gcloud run services add-iam-policy-binding processmercadolivremassimport \
+  --region=<tasks-region> --project=<project-id> \
+  --member="serviceAccount:<apphosting-runtime-sa>" \
+  --role="roles/run.invoker"
+```
+
+This failure looks nothing like the enqueue one: **the task IS created and then
+never delivered**, retrying to exhaustion with a 403/401 on each attempt. Read the
+task's last-attempt response code in the Cloud Tasks console — that number is the
+diagnosis, and it is the only place it appears.
+
+⚠️ **Also verify the queue's LOCATION equals the function's region.** They are
+not independently configured — `firebase-admin` builds the task's target URL as
+`https://{location}-{project}.cloudfunctions.net/{fn}` from the SAME location as
+the queue path it enqueues onto (`FIREBASE_FUNCTION_URL_FORMAT` in
+`functions-api-client-internal.js`). So a queue in the wrong region does not fail
+loudly at enqueue time when that queue happens to exist; it produces a task whose
+URL points at a function that does not exist there, and **every attempt 404s**.
+After the first deploy, check the region shown for each of the five queues in the
+Cloud Tasks console against the functions' region, and delete any queue left over
+in a region the codebase no longer deploys to.
+
 ## Mass-import job queue (Step 8, #621)
 
 `processMercadoLivreMassImport` auto-provisions its own Cloud Tasks queue the
@@ -289,7 +334,7 @@ gen2 Eventarc trigger itself — no manual Eventarc step. The
 Firestore→Eventarc→Cloud Run service agents were already exercised by
 apps/whatsapp's `sendOutbound` in this project, so no first-time service-agent
 provisioning delay is expected. The Eventarc trigger resource lands in the
-**database's region** while the function runs in `us-east5` — that split is
+**database's region** while the function runs in `us-east1` — that split is
 normal for Firestore triggers. Verify after the first deploy:
 
 ```bash

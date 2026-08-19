@@ -21,12 +21,13 @@
  *   - `MERCADO_LIVRE_TASKS_DISABLED=1` → `enqueue()` throws `MlTasksDisabledError`;
  *     the receiver falls back to persisting the notification as `failed` so the
  *     reprocess sweep drains it (sweep-only mode — never a silent drop).
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) → the
- *     region the function + its queue are deployed to. The region-qualified name
- *     is mandatory: without it the Admin SDK targets `us-central1` and the task
- *     silently drops. App Hosting / Cloud Run does NOT expose its own region as an
- *     env var (only the metadata server does), so it must be configured; the
- *     default matches the ML backend's deploy region (`us-east5`).
+ *   - `MERCADO_LIVRE_TASKS_REGION` (default `us-east1`) → the region the function
+ *     + its queue are deployed to. The region-qualified name is mandatory:
+ *     without it the Admin SDK targets `us-central1` and the task silently
+ *     drops. App Hosting / Cloud Run does NOT expose its own region as an env
+ *     var (only the metadata server does), so it must be configured. It is
+ *     deliberately NOT the ML backend's own deploy region (`us-east5`), which
+ *     has no Cloud Tasks at all — see `mlTasksRegion.ts`.
  *
  * `enqueue`'s optional 2nd arg (`MlEnqueueOptions`) passes through to the queue's
  * `TaskOptions` — the webhook route uses `scheduleDelaySeconds: 10` for the
@@ -38,22 +39,8 @@
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
+import { mlQueuePath } from './mlTasksRegion';
 import { MERCADO_LIVRE_NOTIFICATION_QUEUE, type MlNotificationPayload } from './notificacao';
-
-/**
- * Region the notification function and its queue live in.
- *
- * ⚠️ This is NOT the codebase region and must not fall back to it. Cloud Tasks
- * does not exist in `us-east5`, so the queue functions are pinned to `us-east1`
- * (`TASKS_SCHEDULER_REGION` in the functions codebase) while the Firestore
- * triggers stay in the Firestore region. A `FUNCTIONS_REGION` fallback used to
- * sit here and is actively harmful now: on a backend where that variable names
- * the data region, every enqueue would resolve a queue that does not exist and
- * the Admin SDK would silently target `us-central1`.
- */
-function mlTasksRegion(): string {
-  return process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || 'us-east1';
-}
 
 /**
  * Per-enqueue delivery options — currently just the delay. Mirrors (a subset
@@ -91,7 +78,7 @@ class FirebaseMlTaskScheduler implements MlTaskScheduler {
   // (the Admin SDK otherwise defaults to us-central1). Binds the default admin app.
   private queue() {
     return getFunctions(getAdminApp()).taskQueue<MlNotificationPayload>(
-      `locations/${mlTasksRegion()}/functions/${MERCADO_LIVRE_NOTIFICATION_QUEUE}`,
+      mlQueuePath(MERCADO_LIVRE_NOTIFICATION_QUEUE),
     );
   }
 

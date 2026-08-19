@@ -15,15 +15,20 @@
  * `importar-todos/status?integracaoId=…&jobId=…`.
  */
 import { NextResponse } from 'next/server';
-import type { MassImportOptions } from '@delfrance/schemas';
-import { importacaoMercadoLivreCollection } from '@delfrance/data/admin/collections';
+import { IMPORTACAO_MERCADO_LIVRE_STATUS, type MassImportOptions } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { MassImportAlreadyRunningError, startMassImportJob } from '@/lib/marketplace/massImport';
+import {
+  finalizeMassImportJob,
+  MassImportAlreadyRunningError,
+  MERCADO_LIVRE_MASS_IMPORT_QUEUE,
+  startMassImportJob,
+} from '@/lib/marketplace/massImport';
 import { createMlMassImportScheduler } from '@/lib/marketplace/mlMassImportTasks';
+import { mlQueuePath } from '@/lib/marketplace/mlTasksRegion';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -78,7 +83,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     try {
       await createMlMassImportScheduler().enqueue({ jobId, integracaoId });
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Falha ao enfileirar a importação.';
+      // Name the queue the enqueue was AIMED at. A region misconfiguration is
+      // the likeliest cause of a failure here and the bare RPC error never
+      // says which location it tried — see lib/marketplace/mlTasksRegion.ts.
+      const detail = err instanceof Error ? err.message : 'Falha ao enfileirar a importação.';
+      const message = `${detail} (fila: ${mlQueuePath(MERCADO_LIVRE_MASS_IMPORT_QUEUE)})`;
       // Best-effort: mark the job failed so the status route/UI surfaces the
       // outage instead of leaving an orphaned `running` doc with no worker. The
       // stamp itself is guarded (same boundary shape as the webhook receiver's
@@ -86,8 +95,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       // instead of an unhandled throw — the stamp failure is only logged.
       const failedAt = Date.now();
       try {
-        await importacaoMercadoLivreCollection.merge(db, {}, jobId, {
-          status: 'failed',
+        await finalizeMassImportJob(db, jobId, {
+          status: IMPORTACAO_MERCADO_LIVRE_STATUS.failed,
           erro: message,
           finishedAt: failedAt,
           updatedAt: failedAt,

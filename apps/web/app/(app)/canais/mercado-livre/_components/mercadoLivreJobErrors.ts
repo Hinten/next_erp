@@ -64,6 +64,27 @@ export function describePriceSyncStartError(err: unknown): JobErrorDescription |
 }
 
 /**
+ * `POST /importar-todos/cancelar` failures. Returns `null` for anything that is
+ * not a known client failure, so the caller rethrows (rule 6).
+ *
+ * `ML_MASS_IMPORT_NOT_RUNNING` and a 404 are both benign races — the job
+ * finished, or somebody else already cancelled it, between the card's last poll
+ * and the click. Neither is worth alarming copy; the next poll shows the real
+ * terminal state either way.
+ */
+export function describeMassImportCancelError(err: unknown): string | null {
+  if (err instanceof MercadoLivreClientHttpError) {
+    if (err.code === 'ML_MASS_IMPORT_NOT_RUNNING') return 'Esta importação já foi finalizada.';
+    if (err.status === 404) return 'Importação não encontrada.';
+    return err.message;
+  }
+  if (err instanceof MercadoLivreClientNetworkError) {
+    return 'Falha de rede ao cancelar a importação.';
+  }
+  return null;
+}
+
+/**
  * Read-path counterpart: the message for a failed status/lookup query. Unlike
  * the start path this never returns `null` — a poll that fails is displayed,
  * not rethrown, because the job itself is unaffected by our inability to read
