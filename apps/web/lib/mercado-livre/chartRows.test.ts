@@ -6,6 +6,7 @@ import {
   type ChartRowDraft,
   cellErrorKey,
   duplicateChart,
+  describeChartValidationError,
   indexCellErrors,
   isFilled,
   rowsFromVariantes,
@@ -299,17 +300,17 @@ describe('indexCellErrors', () => {
         {
           ...base,
           code: 'duplicated_measure_value',
-          message: 'medida duplicada',
+          message: 'Duplicated measure in attribute CHEST_CIRCUMFERENCE_FROM was found.',
           rowIndex: 1,
           attributeIds: ['CHEST_CIRCUMFERENCE_FROM', 'CHEST_CIRCUMFERENCE_TO'],
         },
       ],
       0,
     );
-    expect(idx.byCell.get(cellErrorKey(1, 'CHEST_CIRCUMFERENCE_FROM'))).toEqual([
-      'medida duplicada',
-    ]);
-    expect(idx.byCell.get(cellErrorKey(1, 'CHEST_CIRCUMFERENCE_TO'))).toEqual(['medida duplicada']);
+    const from = idx.byCell.get(cellErrorKey(1, 'CHEST_CIRCUMFERENCE_FROM'));
+    expect(from).toEqual(idx.byCell.get(cellErrorKey(1, 'CHEST_CIRCUMFERENCE_TO')));
+    expect(from).toHaveLength(1);
+    expect(from?.[0]).toContain('Outra linha da guia já usa');
     expect(idx.chartLevel).toEqual([]);
   });
 
@@ -319,7 +320,7 @@ describe('indexCellErrors', () => {
         {
           ...base,
           code: 'chart_name_unavailable',
-          message: 'nome em uso',
+          message: 'Chart name is unavailable.',
           rowIndex: null,
           attributeIds: [],
         },
@@ -327,7 +328,9 @@ describe('indexCellErrors', () => {
       0,
     );
     expect(idx.nameRejected).toBe(true);
-    expect(idx.chartLevel).toEqual(['nome em uso']);
+    expect(idx.chartLevel).toEqual([
+      'Já existe uma guia com esse nome nesta conta. Escolha outro nome.',
+    ]);
     expect(idx.byCell.size).toBe(0);
   });
 
@@ -338,7 +341,8 @@ describe('indexCellErrors', () => {
         {
           chartIndex: 0,
           code: 'value_out_of_range',
-          message: 'fora do intervalo',
+          message:
+            'The value 200 of the WAIST attribute is out of range. The value must be within the range: 40 - 120',
           rowIndex: null,
           attributeIds: ['WAIST'],
           rowMainValue: 'GG',
@@ -347,7 +351,9 @@ describe('indexCellErrors', () => {
       0,
     );
     expect(idx.byCell.size).toBe(0);
-    expect(idx.chartLevel).toEqual(['GG: fora do intervalo']);
+    expect(idx.chartLevel).toEqual([
+      'GG: O valor de WAIST está fora do intervalo aceito pelo Mercado Livre (40 - 120).',
+    ]);
   });
 
   it('ignores problems belonging to another chart in the same sync', () => {
@@ -368,6 +374,72 @@ describe('indexCellErrors', () => {
       0,
     );
     expect(idx.byCell.get(cellErrorKey(0, 'SIZE'))).toEqual(['um', 'dois']);
+  });
+});
+
+describe('describeChartValidationError', () => {
+  const problem = (over: Partial<Parameters<typeof describeChartValidationError>[0]> = {}) => ({
+    code: null as string | null,
+    message: null as string | null,
+    attributeIds: [] as string[],
+    ...over,
+  });
+
+  it('names the offending attribute of a general-attributes rejection', () => {
+    // ⚠️ Matched on the MESSAGE: this rejection is absent from ML's docs, so
+    // its code is unverified. The literal is ML's, copied from a real 400.
+    expect(
+      describeChartValidationError(
+        problem({
+          code: 'invalid_chart_attribute',
+          message:
+            "Attribute MODEL found in chart's attributes is not valid and should not be present in the chart's general attributes.",
+        }),
+      ),
+    ).toBe(
+      'O Mercado Livre não aceita o atributo MODEL nos atributos gerais desta guia. Apague esse valor no formulário (se ele ainda aparecer) e envie a guia novamente.',
+    );
+  });
+
+  it('does not depend on the code for that one', () => {
+    // Same message, code absent — ML has changed error codes before.
+    expect(
+      describeChartValidationError(
+        problem({ message: "Attribute LINE found in chart's attributes is not valid." }),
+      ),
+    ).toContain('LINE');
+  });
+
+  it('interpolates the attribute ids ML pinned the problem to', () => {
+    expect(
+      describeChartValidationError(
+        problem({
+          code: 'required_row_attribute_not_found',
+          message: 'Required attribute CHEST_CIRCUMFERENCE_FROM was not found in row SIZE M.',
+          attributeIds: ['CHEST_CIRCUMFERENCE_FROM', 'CHEST_CIRCUMFERENCE_TO'],
+        }),
+      ),
+    ).toBe('Preencha CHEST_CIRCUMFERENCE_FROM e CHEST_CIRCUMFERENCE_TO nesta linha.');
+  });
+
+  it('degrades to a code-only phrasing when ML pinned no attribute', () => {
+    expect(describeChartValidationError(problem({ code: 'main_attribute_missing_error' }))).toBe(
+      'Escolha o tamanho principal da guia.',
+    );
+  });
+
+  it('keeps ML’s text VERBATIM for a code it has never sent before', () => {
+    // ML adds validations unilaterally; an English message beats a swallowed one.
+    expect(
+      describeChartValidationError(
+        problem({ code: 'brand_new_thing', message: 'Something ML invented yesterday.' }),
+      ),
+    ).toBe('Something ML invented yesterday.');
+  });
+
+  it('falls back to the code, then to a generic phrase, when there is no message', () => {
+    expect(describeChartValidationError(problem({ code: 'mystery' }))).toBe('mystery');
+    expect(describeChartValidationError(problem())).toBe('Erro de validação');
   });
 });
 

@@ -273,6 +273,78 @@ export interface ChartCellErrors {
 const NAME_CODES = new Set(['chart_name_unavailable']);
 
 /**
+ * ML's chart-validation rejection, as an instruction the operator can act on.
+ *
+ * Every message ML sends here is English prose naming raw attribute ids
+ * ("Attribute MODEL found in chart's attributes is not valid …"), which tells a
+ * seller nothing. These are the codes documented on `validacao-tabela-de-medidas`.
+ *
+ * ⚠️ An unrecognised code falls through to ML's own text VERBATIM. ML adds
+ * validations unilaterally, and an English message beats a swallowed one.
+ */
+export function describeChartValidationError(problem: {
+  code: string | null;
+  message: string | null;
+  attributeIds: string[];
+}): string {
+  const raw = problem.message ?? problem.code ?? 'Erro de validação';
+  const attrs = problem.attributeIds.length > 0 ? problem.attributeIds.join(' e ') : null;
+
+  // ⚠️ Matched on the MESSAGE, not the code: this rejection is absent from ML's
+  // docs (the documented row analogue is `invalid_row_attribute`) so its code is
+  // unverified. The advice hedges on purpose — `chartLevelAttributes` no longer
+  // OFFERS an attribute outside the grid spec, so the usual case is that the
+  // field is already gone and a plain re-send is the whole fix; but ML can reject
+  // one the grid spec DID declare, and then there is a value to clear.
+  const general = /attribute\s+([A-Z0-9_]+)\s+found in (?:the )?chart'?s attributes/i.exec(raw);
+  if (general) {
+    return `O Mercado Livre não aceita o atributo ${general[1]!} nos atributos gerais desta guia. Apague esse valor no formulário (se ele ainda aparecer) e envie a guia novamente.`;
+  }
+
+  switch (problem.code) {
+    case 'chart_name_unavailable':
+      return 'Já existe uma guia com esse nome nesta conta. Escolha outro nome.';
+    case 'main_attribute_missing_error':
+      return 'Escolha o tamanho principal da guia.';
+    case 'invalid_main_attribute_id':
+      return 'O tamanho principal escolhido não vale neste domínio. Selecione outro em "Tamanho principal".';
+    case 'chart_tech_specs_not_found':
+      return 'O Mercado Livre não tem tabela de medidas para este domínio com o gênero escolhido. Revise o domínio e o gênero.';
+    case 'required_row_attribute_not_found':
+      return attrs == null
+        ? 'Faltam medidas obrigatórias nesta linha.'
+        : `Preencha ${attrs} nesta linha.`;
+    case 'invalid_row_attribute_value':
+      return attrs == null
+        ? 'O valor informado não é aceito pelo Mercado Livre.'
+        : `O valor informado em ${attrs} não é aceito pelo Mercado Livre.`;
+    case 'invalid_row_attribute':
+      return attrs == null
+        ? 'Esta medida não pertence ao tipo de medida da guia.'
+        : `${attrs} não pertence ao tipo de medida desta guia. Troque o tipo de medida ou deixe a coluna vazia.`;
+    case 'duplicated_measure_value':
+      return attrs == null
+        ? 'Outra linha da guia já usa esse valor.'
+        : `Outra linha da guia já usa esse mesmo valor em ${attrs}.`;
+    case 'invalid_attribute_value':
+      return 'O tamanho só pode conter palavras relacionadas a tamanho — nada de gênero, cor ou material.';
+    case 'value_is_not_the_same_type':
+      return 'Os tamanhos padrão precisam ser todos numéricos ou todos alfanuméricos, nunca misturados.';
+    case 'value_out_of_range': {
+      // ML's own text is the only place the accepted bounds appear, so they are
+      // lifted out rather than thrown away with the rest of the English.
+      const range = /range:\s*(.+?)\s*$/.exec(raw)?.[1] ?? null;
+      const subject = attrs == null ? 'O valor' : `O valor de ${attrs}`;
+      return range == null
+        ? `${subject} está fora do intervalo aceito pelo Mercado Livre.`
+        : `${subject} está fora do intervalo aceito pelo Mercado Livre (${range}).`;
+    }
+    default:
+      return raw;
+  }
+}
+
+/**
  * Index one chart's validation errors for the grid.
  *
  * A problem whose row could not be resolved deliberately lands at chart level
@@ -296,7 +368,7 @@ export function indexCellErrors(
 
   for (const err of errors) {
     if (err.chartIndex !== chartIndex) continue;
-    const text = err.message ?? err.code ?? 'Erro de validação';
+    const text = describeChartValidationError(err);
     if (err.code != null && NAME_CODES.has(err.code)) {
       nameRejected = true;
       chartLevel.push(text);
