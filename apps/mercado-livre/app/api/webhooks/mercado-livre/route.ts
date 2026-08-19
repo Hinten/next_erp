@@ -50,11 +50,12 @@ import { ZodError } from 'zod';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import {
+  MERCADO_LIVRE_NOTIFICATION_QUEUE,
   parseNotificationBody,
   persistNotificationFailure,
   shouldEnqueueTopic,
 } from '@/lib/marketplace/notificacao';
-import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
+import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/mlTasks';
 import { checkApplicationId, logWebhookHeaders } from '@/lib/marketplace/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
@@ -80,6 +81,40 @@ const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'claims',
 ]);
 const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
+
+/**
+ * One line per delivery, on EVERY path — including the ones that succeed.
+ *
+ * ⚠️ Without this the receiver is only observable when it FAILS: the happy path
+ * writes nothing to Firestore (by design — `notificacoesMercadoLivre` is
+ * failures-only) and logged nothing either, so "ML delivered and we acked 200"
+ * and "ML delivered and we deliberately ignored it" were indistinguishable
+ * from the outside. During the first live run that ambiguity cost two rounds of
+ * guessing: an empty failures collection is the GOOD outcome and the
+ * everything-is-broken outcome at the same time, and nothing on the box could
+ * tell them apart.
+ *
+ * Deliberately NOT the request body: the callback URL is a leak surface (#811)
+ * and a notification body is provider data. Topic, resource, the seller's
+ * `user_id` and the outcome are what a human actually needs, and `resource` is
+ * already a bare path like `/items/MLB123`.
+ *
+ * `console.info` (not `warn`) so the failure warnings around it stay findable —
+ * this is the boring line you filter FOR, not one you filter out.
+ */
+function logDelivery(
+  disposition: 'enfileirado' | 'persistido' | 'ignorado' | 'ruido' | 'descartado',
+  payload: { topic: string; resource: string; user_id?: number | null } | null,
+  extra?: Readonly<Record<string, unknown>>,
+): void {
+  console.info('[mercado-livre/webhook] entrega', {
+    disposition,
+    topic: payload?.topic ?? null,
+    resource: payload?.resource ?? null,
+    user_id: payload?.user_id ?? null,
+    ...extra,
+  });
+}
 
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();
@@ -117,6 +152,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // Noise (health ping / missing topic+resource) → ack without enqueuing.
   const payload = parseNotificationBody(body);
   if (!payload) {
+    logDelivery('ruido', null);
     return NextResponse.json({ ok: true, accepted: false });
   }
 
@@ -128,6 +164,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // change for a User-Products seller. An UNKNOWN topic still enqueues, so it
   // parks and stays visible.
   if (!shouldEnqueueTopic(payload.topic)) {
+    logDelivery('ignorado', payload);
     return NextResponse.json({ ok: true, accepted: false, ignored: true });
   }
 
@@ -137,6 +174,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const enqueueOpts = REFETCH_DELAY_TOPICS.has(payload.topic)
     ? { scheduleDelaySeconds: REFETCH_SCHEDULE_DELAY_SECONDS }
     : undefined;
+  let disposition: 'enfileirado' | 'persistido' = 'enfileirado';
   try {
     await createMlTaskScheduler().enqueue(payload, enqueueOpts);
   } catch (err) {
@@ -162,11 +200,19 @@ export async function POST(req: Request): Promise<NextResponse> {
         console.warn('[mercado-livre/webhook] dropping unpersistable notification', {
           message: persistErr.message,
         });
+        logDelivery('descartado', payload, { motivo: 'persist ZodError' });
         return NextResponse.json({ ok: true, accepted: false });
       }
       throw persistErr;
     }
+    // The enqueue lost, but the notification is durable and the sweep owns it.
+    disposition = 'persistido';
   }
 
+  logDelivery(disposition, payload, {
+    fila: MERCADO_LIVRE_NOTIFICATION_QUEUE,
+    regiao: mlTasksRegion(),
+    delaySeconds: enqueueOpts?.scheduleDelaySeconds ?? 0,
+  });
   return NextResponse.json({ ok: true, accepted: true });
 }

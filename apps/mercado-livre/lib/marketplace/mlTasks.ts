@@ -51,7 +51,7 @@ import { MERCADO_LIVRE_NOTIFICATION_QUEUE, type MlNotificationPayload } from './
  * the data region, every enqueue would resolve a queue that does not exist and
  * the Admin SDK would silently target `us-central1`.
  */
-function mlTasksRegion(): string {
+export function mlTasksRegion(): string {
   return process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || 'us-east1';
 }
 
