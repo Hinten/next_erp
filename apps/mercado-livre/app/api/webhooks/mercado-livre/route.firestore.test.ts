@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { __resetWebhookHeaderLog } from '@/lib/marketplace/webhookOrigin';
+import { __resetWebhookOriginState } from '@/lib/marketplace/webhookOrigin';
 
 import { POST } from './route';
 
@@ -60,7 +60,7 @@ function notification(over: Record<string, unknown> = {}) {
 }
 
 beforeEach(async () => {
-  __resetWebhookHeaderLog();
+  __resetWebhookOriginState();
   vi.unstubAllEnvs();
   // Sweep-only mode: the real valve, read at call time inside
   // `createMlTaskScheduler()`, so stubbing it here reaches the route.

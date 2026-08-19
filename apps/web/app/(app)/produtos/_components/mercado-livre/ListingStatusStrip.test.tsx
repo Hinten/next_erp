@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import {
   ESTADO_PUBLICACAO_ML,
@@ -9,7 +9,7 @@ import {
 } from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
-import { ListingStatusStrip } from './ListingStatusStrip';
+import { ListingStatusStrip, type ListingStatusStripProps } from './ListingStatusStrip';
 
 const causaFixture = (over: Partial<MlCausa> = {}): MlCausa => ({
   code: null,
@@ -22,7 +22,11 @@ const causaFixture = (over: Partial<MlCausa> = {}): MlCausa => ({
   ...over,
 });
 
-function renderStrip(over: Partial<ProdutoMercadoLivreLink> = {}, onReverificar = vi.fn()) {
+function renderStrip(
+  over: Partial<ProdutoMercadoLivreLink> = {},
+  onReverificar = vi.fn(),
+  extra: Partial<ListingStatusStripProps> = {},
+) {
   render(
     <MantineProvider env="test">
       <ListingStatusStrip
@@ -31,11 +35,18 @@ function renderStrip(over: Partial<ProdutoMercadoLivreLink> = {}, onReverificar 
         disabled={false}
         rechecking={false}
         onReverificar={onReverificar}
+        {...extra}
       />
     </MantineProvider>,
   );
   return onReverificar;
 }
+
+/** A published User-Products family: `id` is the family, not an MLB item. */
+const FAMILIA: Partial<ProdutoMercadoLivreLink> = {
+  isUserProductModel: true,
+  id: '6264141844942250',
+};
 
 describe('ListingStatusStrip', () => {
   it('keeps the assertions the existing e2e spec depends on', () => {
@@ -63,10 +74,71 @@ describe('ListingStatusStrip', () => {
     expect(anchor.getAttribute('target')).toBe('_blank');
   });
 
-  it('offers no link for a User-Products family, whose id is not an item', () => {
-    // `link.id` is the family id there; building an MLB URL from it would 404.
-    renderStrip({ isUserProductModel: true, id: '6264141844942250' });
+  it('cannot build a href for a User-Products family, and offers to ask ML instead', () => {
+    // `link.id` is the family id there; building an MLB URL from it would 404,
+    // and there is no public URL keyed by family — so the affordance resolves on
+    // click rather than not existing, which is what the old Flutter screen did.
+    const onAbrirAnuncio = vi.fn();
+    renderStrip(FAMILIA, vi.fn(), { onAbrirAnuncio });
+
     expect(screen.queryByRole('link', { name: 'ver no Mercado Livre' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    expect(onAbrirAnuncio).toHaveBeenCalledTimes(1);
+  });
+
+  it('becomes an ordinary new-tab anchor once the URL is resolved', () => {
+    // Which is also what stops a second click from costing another round trip.
+    renderStrip(FAMILIA, vi.fn(), {
+      onAbrirAnuncio: vi.fn(),
+      urlResolvida: 'https://www.mercadolivre.com.br/up/MLBU1',
+    });
+
+    const anchor = screen.getByRole('link', { name: 'ver no Mercado Livre' });
+    expect(anchor.getAttribute('href')).toBe('https://www.mercadolivre.com.br/up/MLBU1');
+    expect(anchor.getAttribute('target')).toBe('_blank');
+    expect(screen.queryByRole('button', { name: 'ver no Mercado Livre' })).toBeNull();
+  });
+
+  it('says it is working while the URL is being resolved', () => {
+    renderStrip(FAMILIA, vi.fn(), { onAbrirAnuncio: vi.fn(), abrindo: true });
+
+    expect(screen.getByRole('button', { name: 'abrindo…' })).toBeDefined();
+  });
+
+  it('offers nothing when there is no client to resolve with', () => {
+    // `onAbrirAnuncio` is undefined while logged out — the pre-existing
+    // behaviour, and the only case where a published listing shows no link.
+    renderStrip(FAMILIA);
+
+    expect(screen.queryByRole('link', { name: 'ver no Mercado Livre' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'ver no Mercado Livre' })).toBeNull();
+  });
+
+  it('offers nothing at all for a draft that was never published', () => {
+    renderStrip({ id: null }, vi.fn(), { onAbrirAnuncio: vi.fn() });
+
+    expect(screen.queryByRole('link', { name: 'ver no Mercado Livre' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'ver no Mercado Livre' })).toBeNull();
+  });
+
+  it('offers nothing for a UP family whose id is empty — the backend calls that unpublished', () => {
+    // `''` is legal in the schema (no `.min(1)`) and the Flutter app writes
+    // these docs concurrently; the route answers 409 for it.
+    renderStrip({ ...FAMILIA, id: '' }, vi.fn(), { onAbrirAnuncio: vi.fn() });
+
+    expect(screen.queryByRole('button', { name: 'ver no Mercado Livre' })).toBeNull();
+  });
+
+  it('does not offer to resolve a LEGACY id that yields no URL', () => {
+    // A legacy id with no digits is malformed, not User-Products — asking ML
+    // could only come back with "o anúncio não existe mais", which misdescribes
+    // it. The legacy path keeps behaving exactly as it did.
+    renderStrip({ isUserProductModel: false, id: 'sem-digitos' }, vi.fn(), {
+      onAbrirAnuncio: vi.fn(),
+    });
+
+    expect(screen.queryByRole('link', { name: 'ver no Mercado Livre' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'ver no Mercado Livre' })).toBeNull();
   });
 
   it("surfaces ML's raw status and sub_status", () => {

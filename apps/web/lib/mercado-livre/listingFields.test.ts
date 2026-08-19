@@ -69,4 +69,24 @@ describe('titleEditability', () => {
   it('reports zero sales as editable', () => {
     expect(titleEditability(linkFixture({ soldQuantity: 0 } as never)).editable).toBe(true);
   });
+
+  it('blocks a PUBLISHED User-Products listing, whatever it has sold', () => {
+    // Under User Products the título IS `family_name`, and publish strips that
+    // field from every update — an edit here could never reach ML, so offering
+    // one is a lie. Asserted with zero sales precisely because the sales rung
+    // would otherwise be the one doing the work.
+    const rule = titleEditability(
+      linkFixture({ isUserProductModel: true, soldQuantity: 0 } as never),
+    );
+    expect(rule.editable).toBe(false);
+    expect(rule.reason).toMatch(/User Products/);
+  });
+
+  it('still allows the título on an UNPUBLISHED User-Products draft', () => {
+    // That is where it is set: the draft's title becomes the family name on the
+    // create, the one write ML does accept.
+    expect(titleEditability(linkFixture({ id: null, isUserProductModel: true })).editable).toBe(
+      true,
+    );
+  });
 });

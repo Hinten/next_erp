@@ -112,7 +112,12 @@ export type ItemsSyncOutcome =
   | 'no-link' // no linked produto for this item on this account
   | 'deferred-up' // a User-Products / migrating listing — deferred to #441
   | 'migrated' // a migration-source listing went closed → #441 takeover ran
-  | 'item-gone'; // the listing 404s (deleted) — nothing to sync
+  | 'item-gone' // the listing 404s (deleted) — nothing to sync
+  | 'link-removido'; // the link doc was deleted mid-writeback — nothing was applied
+//   ⚠️ `link-removido` exists because `applyItemStatusToLink` returns FALSE when
+//   the doc vanished between the read and the write, and that boolean used to be
+//   discarded — so a refused write reported 'synced'. Reporting success for work
+//   that did not happen is the defect this whole outcome union guards against.
 
 /**
  * Sync one ML item's lifecycle status onto its linked `produtoMercadoLivre` doc.
@@ -204,7 +209,7 @@ export async function syncItemStatus(
 
   if (!linkChanged) return 'unchanged';
 
-  await applyItemStatusToLink(
+  const applied = await applyItemStatusToLink(
     db,
     integracaoId,
     { produtoId: link.produtoId, linkDocId: link.docId, itemId },
@@ -218,7 +223,8 @@ export async function syncItemStatus(
     },
   );
 
-  return 'synced';
+  // It already warns; the point here is that the CALLER learns nothing was written.
+  return applied ? 'synced' : 'link-removido';
 }
 
 /** The link doc one status refresh targets, plus the ML item id the denorm keys on. */
@@ -376,6 +382,16 @@ async function resolveLink(
     const produtoId = d.ref.parent?.parent?.id;
     if (produtoId) return { produtoId, docId: d.id, data };
   }
+  // ⚠️ "no link exists" and "a link exists but belongs to another conta" are
+  // very different problems with the same symptom, and both used to leave the
+  // caller with a bare `no-link`. The candidate count separates them: 0 means the
+  // item was never linked here, >0 means every match failed the contaOuterRef
+  // check — a mis-scoped or legacy-shaped ref, not a missing listing.
+  console.warn('[mercado-livre] items: nenhum link utilizável para o anúncio', {
+    itemId,
+    integracaoId,
+    candidatos: snap.size,
+  });
   return null;
 }
 

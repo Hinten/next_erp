@@ -58,6 +58,13 @@ import {
   type MercadoLivreMedidasFatos,
   type MercadoLivreMedidasSugestao,
 } from '@/lib/mercado-livre/client';
+import {
+  describeMercadoLivreFailure,
+  mercadoLivreErrorMessage,
+  mercadoLivreQueryRetry,
+} from '@/lib/mercado-livre/errors';
+import { queryRetry } from '@/lib/query/queryRetry';
+import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { SizeChartAiModal } from './SizeChartAiModal';
 import { SizeChartGrid } from './SizeChartGrid';
 
@@ -192,7 +199,7 @@ export function SizeChartEditorModal({
     queryKey: ['ml-chart-domains', integracaoId],
     queryFn: () => client.sizeChartDomains(integracaoId),
     enabled: opened,
-    retry: false,
+    retry: mercadoLivreQueryRetry,
   });
 
   // Step 1: the DOMAIN spec names the questions (GENDER, …) ML wants answered.
@@ -200,24 +207,11 @@ export function SizeChartEditorModal({
     queryKey: ['ml-chart-domain-specs', integracaoId, domainId],
     queryFn: () => client.sizeChartSpecs({ integracaoId, domainId: domainId! }),
     enabled: opened && domainId != null,
-    retry: false,
+    retry: mercadoLivreQueryRetry,
   });
 
   const templates = useMemo(
     () => (domainSpecsQuery.data ? extractGridTemplates(domainSpecsQuery.data) : []),
-    [domainSpecsQuery.data],
-  );
-  /**
-   * The chart-level questions to RENDER and to send in the chart body — the
-   * union of templates and grid filters, deduplicated.
-   *
-   * ⚠️ Never concatenate the two lists here: they overlap (GENDER is commonly
-   * both), which is what produced duplicate React keys and a doubled attribute
-   * in the payload. `specAttributes` below stays templates-only on purpose —
-   * that is the body ML wants for the `?section=grids` lookup.
-   */
-  const chartLevel = useMemo(
-    () => (domainSpecsQuery.data ? chartLevelAttributes(domainSpecsQuery.data) : []),
     [domainSpecsQuery.data],
   );
 
@@ -240,8 +234,28 @@ export function SizeChartEditorModal({
     queryFn: () =>
       client.sizeChartSpecs({ integracaoId, domainId: domainId!, attributes: specAttributes }),
     enabled: opened && domainId != null && answered,
-    retry: false,
+    retry: mercadoLivreQueryRetry,
   });
+
+  /**
+   * The chart-level questions to RENDER and to send in the chart body.
+   *
+   * ⚠️ BOTH specs go in, and the split matters: the domain spec supplies the
+   * templates and every attribute's rendering metadata, while the GRID spec is
+   * what decides which OTHER attributes belong at chart level at all. Deriving
+   * that from the domain spec offered a "Modelo" field ML rejects outright —
+   * `grid_filter` is the chart-search vocabulary there, not the chart's own
+   * attributes. So the non-template fields (Marca, …) appear once the grid spec
+   * lands, which is exactly ML's own order.
+   *
+   * `specAttributes` above stays templates-only on purpose — that is the body ML
+   * wants for the `?section=grids` lookup, and feeding it `chartLevel` would
+   * make the query depend on its own result.
+   */
+  const chartLevel = useMemo(
+    () => chartLevelAttributes(domainSpecsQuery.data ?? null, gridSpecsQuery.data ?? null),
+    [domainSpecsQuery.data, gridSpecsQuery.data],
+  );
 
   const measureOptions = useMemo(
     () => (gridSpecsQuery.data ? detectMeasureTypes(gridSpecsQuery.data) : []),
@@ -382,16 +396,13 @@ export function SizeChartEditorModal({
         notifications.show({
           color: 'red',
           title: 'Não foi possível preencher com IA',
-          // ⚠️ NOT `reportableMessage`. That helper maps every 409 to "Conta
-          // Mercado Livre não conectada", which is right for the sync and delete
-          // paths — but this route returns 409 for AI_DESATIVADA,
-          // AI_PROVEDOR_NAO_SUPORTADO and AI_JA_EM_ANDAMENTO, so turning the
-          // agent off in /configuracoes/ia was sending the operator to reconnect
-          // a perfectly healthy integration.
-          message:
-            err instanceof MercadoLivreClientHttpError
-              ? err.message
-              : 'Não foi possível contatar o Mercado Livre.',
+          // This route answers 409 for AI_DESATIVADA, AI_PROVEDOR_NAO_SUPORTADO
+          // and AI_JA_EM_ANDAMENTO, so the backend's own wording has to survive.
+          // Safe through the shared mapper because it keys the reconnect copy on
+          // ML_REAUTH_REQUIRED rather than on the 409 status.
+          message: mercadoLivreErrorMessage(err, {
+            unknown: 'Não foi possível preencher a guia com IA.',
+          }),
         });
         return;
       }
@@ -564,7 +575,9 @@ export function SizeChartEditorModal({
       ) {
         notifications.show({
           color: 'red',
-          message: reportableMessage(err, 'Falha ao salvar a guia de tamanhos.'),
+          message: mercadoLivreErrorMessage(err, {
+            unknown: 'Falha ao salvar a guia de tamanhos.',
+          }),
         });
       } else {
         throw err;
@@ -576,7 +589,19 @@ export function SizeChartEditorModal({
 
   /* -------------------------------- render ------------------------------- */
 
-  const specsError = domainsQuery.error ?? domainSpecsQuery.error ?? gridSpecsQuery.error;
+  /*
+    In chain order — a grid-spec failure is usually a consequence of the domain
+    one, so the operator hears about the first link first. `queryRetry` re-runs
+    ONLY the link that failed: `refetch()` ignores `enabled`, so retrying all
+    three would fire `sizeChartSpecs` with a null `domainId`.
+  */
+  const specs = queryRetry(domainsQuery, domainSpecsQuery, gridSpecsQuery);
+  const specsFailure =
+    specs.error == null
+      ? null
+      : describeMercadoLivreFailure(specs.error, {
+          unknown: 'Não foi possível carregar as especificações do domínio.',
+        });
   const loadingColumns = gridSpecsQuery.isFetching || domainSpecsQuery.isFetching;
 
   return (
@@ -766,17 +791,13 @@ export function SizeChartEditorModal({
 
         <Divider />
 
-        {specsError && (
-          <Alert
-            color="red"
-            variant="light"
+        {specsFailure && (
+          <RetryAlert
             title="Não foi possível carregar os dados do Mercado Livre"
-          >
-            {reportableMessage(
-              specsError,
-              'Não foi possível carregar as especificações do domínio.',
-            )}
-          </Alert>
+            message={specsFailure.message}
+            onRetry={specsFailure.retryable ? specs.retry : undefined}
+            retrying={specs.retrying}
+          />
         )}
 
         {loadingColumns && (
@@ -984,17 +1005,4 @@ function grupoIdOf(chart: MlSizeChart | null): string | null {
   const uid = chart?.grupoDeVariacoesUid;
   if (uid == null || uid === '') return null;
   return uid.split('/').filter(Boolean).pop() ?? null;
-}
-
-function reportableMessage(err: unknown, fallback: string): string {
-  if (err instanceof MercadoLivreClientHttpError) {
-    if (err.status === 409) {
-      return 'Conta Mercado Livre não conectada — reconecte em Canais de venda.';
-    }
-    return err.message;
-  }
-  if (err instanceof MercadoLivreClientNetworkError) {
-    return 'Não foi possível contatar o Mercado Livre.';
-  }
-  return fallback;
 }

@@ -117,6 +117,36 @@ the new trigger writes for a while, which is the accepted dual-run — see the
 schema/trigger PR notes), so when in doubt deploy the function first and ship
 the client change after.
 
+## ⚠️ One-time IAM - `processarBalanco` is a Cloud Tasks target
+
+This codebase hosts an `onTaskDispatched` function (`processarBalanco`,
+`src/estoques/aplicarBalanco.ts`) enqueued from apps/web's balanco flow via
+`firebase-admin`'s `taskQueue()`. That needs **three** grants, and this file
+documented none of them until the first Mercado Livre live run hit the third.
+
+```bash
+PROJECT=<project-id>
+CALLER_SA=<the runtime SA that enqueues>
+FN_RUNTIME_SA=<functions runtime SA>   # default: <projnum>-compute@developer.gserviceaccount.com
+
+# 1+2 - permission to CREATE the task, and to act as the function's identity.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:$CALLER_SA" --role="roles/cloudtasks.enqueuer"
+gcloud iam service-accounts add-iam-policy-binding "$FN_RUNTIME_SA" --project="$PROJECT" \
+  --member="serviceAccount:$CALLER_SA" --role="roles/iam.serviceAccountUser"
+
+# 3 - permission to DISPATCH. Cloud Tasks presents an OIDC token whose principal
+# is the caller's own identity, and a gen2 function is a Cloud Run service, so it
+# needs run.invoker ON THE SERVICE. Skip this and the task is created and
+# delivered and 403s `run.routes.invoke` - with the enqueue reported as a
+# success, so nothing anywhere records the failure except the function's own log.
+gcloud run services add-iam-policy-binding processarBalanco --region=<region> \
+  --project="$PROJECT" \
+  --member="serviceAccount:$CALLER_SA" --role="roles/run.invoker"
+```
+
+Verify: `gcloud run services get-iam-policy processarBalanco --region=<region>`.
+
 ## Known first-run gotchas (not yet executed)
 
 This lane has been prepared but **not run end-to-end** yet. On a first cloud deploy,

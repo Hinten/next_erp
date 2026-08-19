@@ -35,6 +35,21 @@ export interface ListingStatusStripProps {
   disabled: boolean;
   rechecking: boolean;
   onReverificar: () => void;
+  /**
+   * A listing URL the editor has already resolved from Mercado Livre — the
+   * User-Products answer {@link listingPermalink} cannot compute on its own.
+   * Once present the affordance is a plain anchor again, so a second click
+   * costs no round trip.
+   */
+  urlResolvida?: string | null;
+  /** True while {@link onAbrirAnuncio} is resolving this listing's URL. */
+  abrindo?: boolean;
+  /**
+   * Ask the backend where this listing lives and open it. Omitted (or absent
+   * along with a client) leaves an unresolvable listing with no affordance,
+   * which is the pre-existing behaviour.
+   */
+  onAbrirAnuncio?: () => void;
 }
 
 /**
@@ -52,7 +67,10 @@ export interface ListingStatusStripProps {
  *    short code; these are what actually distinguishes "paused by me" from
  *    "paused by ML for `out_of_stock`", which is the difference between waiting
  *    and acting.
- *  - a link to the **live listing**.
+ *  - a link to the **live listing**. Legacy listings resolve client-side; a
+ *    User-Products family's stored id addresses nothing public, so there the
+ *    control asks the backend for the URL on click (`onAbrirAnuncio`) and turns
+ *    into an ordinary anchor once it has one.
  */
 export function ListingStatusStrip({
   link,
@@ -60,11 +78,29 @@ export function ListingStatusStrip({
   disabled,
   rechecking,
   onReverificar,
+  urlResolvida,
+  abrindo = false,
+  onAbrirAnuncio,
 }: ListingStatusStripProps) {
   const estado = parseEstado(link.estado);
   const model = listingModel(link);
   const latched = isStockLatched(link);
-  const permalink = listingPermalink(link);
+  // The resolved URL wins: `listingPermalink` answers null for a User-Products
+  // family, whose stored id addresses nothing public.
+  const permalink = urlResolvida ?? listingPermalink(link);
+  // Published under User Products, where the stored id is a FAMILY and no
+  // string transform reaches a page — so the affordance asks ML instead. Same
+  // words either way: the operator should not have to know which of the two
+  // coexisting models produced this listing.
+  //
+  // Deliberately scoped to that model rather than to "permalink == null": a
+  // LEGACY id that yields no URL is malformed, and offering a control that can
+  // only come back with "o anúncio não existe mais" would misdescribe it.
+  const podeResolver =
+    permalink == null &&
+    model === 'user-products' &&
+    (link.id ?? '') !== '' &&
+    onAbrirAnuncio != null;
 
   // `errors` is written by the publish flow, the price sync AND the stock
   // sender, so the title must not blame any one of them (#781).
@@ -88,6 +124,17 @@ export function ListingStatusStrip({
           {permalink != null && (
             <Anchor href={permalink} target="_blank" rel="noopener noreferrer" size="sm">
               ver no Mercado Livre
+            </Anchor>
+          )}
+          {podeResolver && (
+            <Anchor
+              component="button"
+              type="button"
+              size="sm"
+              onClick={onAbrirAnuncio}
+              disabled={abrindo}
+            >
+              {abrindo ? 'abrindo…' : 'ver no Mercado Livre'}
             </Anchor>
           )}
         </Group>

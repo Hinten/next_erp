@@ -53,7 +53,11 @@ function renderPanel(props: {
   priceSyncEntries?: readonly ContaJobOutcome[];
   collapsed?: boolean;
 }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // ⚠️ `retryDelay`, not just `retry`. The lookup sets its own `retry`
+  // predicate, which a client default cannot override — so a RETRYABLE
+  // rejection (a network failure) would otherwise sit through the real
+  // 1s/2s backoff before the error path renders.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MantineProvider env="test">
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
