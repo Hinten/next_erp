@@ -42,6 +42,7 @@ import {
   createMercadoLivreApi,
   mapMlItemToImport,
   mapMlVariationsToImport,
+  MercadoLivreHttpError,
   type MappedMlItem,
   type MlItem,
 } from '@delfrance/integrations-mercado-livre';
@@ -261,10 +262,17 @@ async function main(): Promise<void> {
   log(`[inspect:anuncio] project=${projectId} integracao=${integracaoId} item=${itemId}`);
 
   const item = await api.getItem(itemId);
+  // A listing with no description answers 404, and that is DATA — this script
+  // exists to report it. Everything else (auth, rate limit, network) is a real
+  // failure and must not be swallowed: a silent `null` here would read as "ML
+  // has no description", which is the wrong finding to write into the run.
   const descricao = await api
     .getItemDescription(itemId)
     .then((d) => d.plain_text ?? null)
-    .catch(() => null);
+    .catch((err: unknown) => {
+      if (err instanceof MercadoLivreHttpError && err.status === 404) return null;
+      throw err;
+    });
 
   if (json) {
     log('');

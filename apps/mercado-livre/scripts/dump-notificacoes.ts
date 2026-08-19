@@ -97,9 +97,17 @@ function parseArgs(argv: readonly string[]): Args {
       case 'topic':
         topic = valueOf(name, inline, argv[i + 1]);
         break;
-      case 'userId':
-        userId = valueOf(name, inline, argv[i + 1]);
+      case 'userId': {
+        // `user_id` is a NUMBER in Firestore, so this is coerced before the
+        // `where`. A non-numeric value would become NaN and make the query throw
+        // deep inside the SDK — fail here, with a message that names the flag.
+        const raw = valueOf(name, inline, argv[i + 1]);
+        if (!/^\d+$/.test(raw.trim())) {
+          throw new DumpArgError(`--userId deve ser um inteiro (o user_id numérico do ML): ${raw}`);
+        }
+        userId = raw.trim();
         break;
+      }
       case 'limit': {
         const parsed = Number(valueOf(name, inline, argv[i + 1]));
         if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000) {
