@@ -407,6 +407,39 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(link).toMatchObject({ estado: 'p', id: 'MLB777', errors: [] });
   });
 
+  it('a successful publish clears the PREVIOUS rejection, causes and all', async () => {
+    // The regression this exists for: `causas` outliving its `errors` paints a
+    // red field on a listing that just published fine, and a stale highlight is
+    // indistinguishable from a fresh rejection. The two clear together or the
+    // feature is worse than no feature.
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...FLUTTER_LINK,
+      estado: 'E',
+      errors: ['error · item.attributes.missing_required — falta BRAND [item.attributes]'],
+      causas: [
+        {
+          code: 'item.attributes.missing_required',
+          causaId: 147,
+          tipo: 'error',
+          departamento: 'catalog',
+          mensagem: 'falta BRAND',
+          referencias: ['item.attributes'],
+          campos: ['attributes.BRAND'],
+        },
+      ],
+    });
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    expect(link).toMatchObject({ estado: 'p', errors: [], causas: [] });
+  });
+
   it('recreates a COMPLETE link doc when it was deleted mid-publish, never a ghost', async () => {
     const db = new FakeDb();
     seedBase(db);
@@ -591,15 +624,48 @@ describe('publishProduto — dual-run wire shape', () => {
     db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
     const { api } = makeApi({
       updateItem: vi.fn(async () => {
-        throw new MercadoLivreHttpError('item.price invalid', 400, { message: 'invalid' });
+        // ML's real rejection shape (developers site, *Guia para produtos →
+        // Validações*), not a bare message: the whole point of the stamp is
+        // that `cause[]` survives onto the doc.
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          message: 'Validation error',
+          error: 'validation_error',
+          status: 400,
+          cause: [
+            {
+              department: 'catalog',
+              cause_id: 147,
+              type: 'error',
+              code: 'item.attributes.missing_required',
+              references: ['item.attributes'],
+              message: 'The attributes [BRAND] are required for category MLB1234.',
+            },
+          ],
+        });
       }),
     });
 
-    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow('item.price invalid');
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
 
     const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
     expect(link.estado).toBe('E');
-    expect(link.errors).toEqual(['item.price invalid']);
+    // ⚠️ NOT `['ML 400: Validation error']`. That headline — all `api.ts` can
+    // build out of the body — was the entire diagnosis the operator used to
+    // get, for a rejection ML had explained field by field.
+    expect(link.errors).toEqual([
+      'error · item.attributes.missing_required — The attributes [BRAND] are required for category MLB1234. [item.attributes]',
+    ]);
+    expect(link.causas).toEqual([
+      expect.objectContaining({
+        code: 'item.attributes.missing_required',
+        causaId: 147,
+        tipo: 'error',
+        // Resolved against the payload we sent, so the editor can paint the row.
+        campos: ['attributes.BRAND'],
+      }),
+    ]);
     // Previously persisted data survives the stamp.
     expect(link).toMatchObject({
       precoPublicado: 50,
@@ -1338,6 +1404,80 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
         (c) => (c[0] as { available_quantity: number }).available_quantity,
       ),
     ).toEqual([4, 7]);
+  });
+
+  /**
+   * #1118 review. `buildUserProductItemPayload` sends
+   * `attributesWithValue(input.attributes)` minus the member's own overrides, so
+   * a valueless or overridden entry SHIFTS every later index. Resolving
+   * `item.attributes[0]` against `input.attributes` therefore paints a healthy
+   * row red and leaves the offending one clean — the exact outcome the `campos`
+   * docblock exists to forbid.
+   */
+  it('resolves NO control for a positional cause on the family path', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi({
+      createItem: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          message: 'Validation error',
+          error: 'validation_error',
+          status: 400,
+          cause: [
+            {
+              cause_id: 154,
+              type: 'error',
+              code: 'item.attributes.invalid_length',
+              // Positional, and meaningless without the array actually sent.
+              references: ['item.attributes[0]'],
+              message: 'Invalid value length for attribute.',
+            },
+          ],
+        });
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    expect(link.estado).toBe('E');
+    // The cause is still PERSISTED and still readable — it just claims no control.
+    expect(link.errors).toEqual([
+      'error · item.attributes.invalid_length — Invalid value length for attribute. [item.attributes[0]]',
+    ]);
+    expect(link.causas).toEqual([
+      expect.objectContaining({ code: 'item.attributes.invalid_length', campos: [] }),
+    ]);
+  });
+
+  it('DOES resolve a bracketed id from the message on the family path', async () => {
+    // The message scan is index-independent, so dropping the positional
+    // resolver costs nothing where ML names the attribute.
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi({
+      createItem: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          cause: [
+            {
+              type: 'error',
+              code: 'item.attributes.missing_required',
+              references: ['item.attributes'],
+              message: 'The attributes [BRAND] are required for category MLB1234.',
+            },
+          ],
+        });
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')!.causas).toEqual([
+      expect.objectContaining({ campos: ['attributes.BRAND'] }),
+    ]);
   });
 
   it('records every member itemId on its child link, and the FAMILY id on the parent', async () => {
