@@ -12,10 +12,11 @@ export type ProdutoPesoMap = Record<string, ProdutoPesoInfo | null>;
  * Project the produto fields the weight math needs. Absent from the fetched
  * map = "read succeeded, the produto doesn't exist" → `null`, the only case
  * `pesoPedido` treats as unresolvable. A real read failure (offline,
- * `permission-denied`, backend unavailable, …) rejects out of `getDocsByIds`
- * rather than becoming `null`, so a transient error can never masquerade as
- * "produto missing" and lock in a wrong 1kg-per-unit default (flagged in
- * review on #1093).
+ * `permission-denied`, backend unavailable, …) rejects rather than becoming
+ * `null`, so a transient error can never masquerade as "produto missing" and
+ * lock in a wrong 1kg-per-unit default (flagged in review on #1093). That
+ * holds only because both waves pass `{ source: 'server' }` — see the note at
+ * the call sites below.
  */
 function toPesoInfo(
   produtos: Map<
@@ -55,9 +56,15 @@ export async function fetchProdutoPesoMap(
 
   // Wave 1: the pedido's own produtos. Same batched loader the checkout screen
   // uses (`loadPedidoCheckout`): chunked 30-id `in` queries instead of one
-  // `getDoc` per produto, which on a large pedido is ~34 queries rather than
-  // ~1000 reads — and it reads through the local cache.
-  const wave1 = await getDocsByIds(db, produtoCollection, ids);
+  // `getDoc` per produto — on a large pedido ~34 queries rather than ~1000 reads.
+  //
+  // `source: 'server'` is load-bearing, not a default. Plain `getDocs` falls
+  // back to the local cache when the server is unreachable, and an id the cache
+  // has never seen then comes back missing — which `toPesoInfo` cannot tell
+  // apart from a produto that truly does not exist. That would quietly hand
+  // `pesoPedido` its 1kg-per-unit fallback and PERSIST it in a seeded Volume.
+  // Forcing the server means an offline/transient failure rejects instead.
+  const wave1 = await getDocsByIds(db, produtoCollection, ids, {}, { source: 'server' });
   for (const id of ids) byId[id] = toPesoInfo(wave1, id);
 
   // Wave 2: the parents of zero-weight variations, so `pesoPedido`'s
@@ -73,7 +80,7 @@ export async function fetchProdutoPesoMap(
     ),
   ].filter((id) => !(id in byId));
   if (paiIds.length > 0) {
-    const wave2 = await getDocsByIds(db, produtoCollection, paiIds);
+    const wave2 = await getDocsByIds(db, produtoCollection, paiIds, {}, { source: 'server' });
     for (const id of paiIds) byId[id] = toPesoInfo(wave2, id);
   }
 

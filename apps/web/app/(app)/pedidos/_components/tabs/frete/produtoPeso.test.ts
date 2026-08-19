@@ -99,6 +99,20 @@ describe('fetchProdutoPesoMap', () => {
     expect(batchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('forces the server on both waves so an offline read cannot read as "missing"', async () => {
+    catalogue({
+      child: row({ pesoBrutoKg: 0, pesoLiquidoKg: 0, paiId: 'parent' }),
+      parent: row({ pesoBrutoKg: 4 }),
+    });
+
+    await fetchProdutoPesoMap(db, ['child']);
+
+    // A cache-backed snapshot would report an uncached produto as absent,
+    // which `toPesoInfo` maps to null → a fabricated 1kg weight, persisted.
+    expect(batchMock.mock.calls[0]![4]).toEqual({ source: 'server' });
+    expect(batchMock.mock.calls[1]![4]).toEqual({ source: 'server' });
+  });
+
   it('propagates a read failure instead of reporting the produtos as missing', async () => {
     batchMock.mockRejectedValue(new FirebaseError('permission-denied', 'denied'));
 
