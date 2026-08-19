@@ -170,13 +170,34 @@ gcloud projects add-iam-policy-binding <project-id> \
 gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
   --member="serviceAccount:<apphosting-runtime-sa>" \
   --role="roles/iam.serviceAccountUser"
+# ⚠ THE THIRD ROLE, and the one everyone forgets. Enqueuing is only half the
+# trip: Cloud Tasks then DISPATCHES the task, presenting an OIDC token whose
+# principal is the enqueuer's own identity - and a gen2 function is a Cloud Run
+# service, so that principal needs run.invoker ON THE SERVICE. Without it the
+# task is created and delivered and the service answers 403 run.routes.invoke,
+# with NO failure document written anywhere.
+for FN in processMercadoLivreNotification processMercadoLivreMassImport sendMercadoLivreStock processMercadoLivrePriceSync processMercadoLivreNfeUpload; do
+  gcloud run services add-iam-policy-binding "$FN" --region=us-east1 \
+    --member="serviceAccount:<apphosting-runtime-sa>" \
+    --role="roles/run.invoker"
+done
 ```
 
-Until this is granted the enqueue fails; the receiver then **falls back** to
-persisting the notification as `failed` (the reprocess sweep drains it) and still
-acks 200 — so notifications are not lost, but the intended rate-limited queue path
-is inactive. Verify the queue exists after the first deploy:
+⚠️ **The grants fail in different places, and only one of them leaves a trace.**
+
+| Missing grant                                | Fails at     | What you see                                                                                                                                                                                                                                                       |
+| -------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cloudtasks.enqueuer` / `serviceAccountUser` | **enqueue**  | the receiver logs `persistido`, writes a `failed` doc and still acks 200. Nothing is lost — the reprocess sweep drains it — but the rate-limited queue path is inactive.                                                                                           |
+| **`run.invoker`**                            | **dispatch** | the receiver logs `enfileirado` and looks perfectly healthy. The task is created, delivered, and 403s at the function. **No failure document is written**, `notificacoesMercadoLivre` stays empty, and the only evidence is a WARNING in the _function's own_ log. |
+
+That second row is why an empty failures collection is not proof of health: on this
+path our code never sees the failure, so it cannot record one. Read the function's
+log, not just the receiver's.
+
+Verify the queue exists after the first deploy:
 `gcloud tasks queues describe processMercadoLivreNotification --location=<region>`.
+Verify the binding took:
+`gcloud run services get-iam-policy processMercadoLivreNotification --region=<region>`.
 
 ## Mass-import job queue (Step 8, #621)
 
