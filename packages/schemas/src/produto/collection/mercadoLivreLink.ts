@@ -181,7 +181,17 @@ export const produtoMercadoLivreLinkSchema = z
     status: z.string().nullable().default(null),
     sub_status: z.array(z.string()).nullable().default(null),
 
-    /** ML item id — null until the first successful publish. */
+    /**
+     * ML item id — null until the first successful publish.
+     *
+     * ⚠️ Under {@link isUserProductModel} this is `familyId ?? itemId`, NOT
+     * reliably a family id. Both writers fall back to the item when ML omits
+     * `family_id` (publish, import), and the UPtin takeover sets the flag on an
+     * existing link WITHOUT touching this field — so a migrated listing keeps the
+     * `MLB…` it already had. A reader that assumes one shape hands the other to
+     * the wrong ML endpoint, which answers 400, not 404; `resolveAnuncioUrl` in
+     * apps/mercado-livre is the worked example.
+     */
     id: z.string().nullable().default(null),
     sku: z.string().nullable().default(null),
     // ML plain-text descriptions run to ~50k; the old 10000 cap was a Flutter
