@@ -623,6 +623,22 @@ export interface MercadoLivreClient {
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
   /**
+   * Where ONE listing lives on Mercado Livre (PERM.integracao.read).
+   *
+   * Only a **User-Products** listing needs this: its link doc holds a FAMILY id,
+   * which addresses nothing public, so the URL has to come from ML. A legacy
+   * listing is a pure string transform `listingPermalink` already does in the
+   * browser. Nothing is persisted — the Flutter app's unmasked `set()` would wipe
+   * a cached field on its next save.
+   *
+   * 404 when the listing is gone; 409 when it was never published.
+   */
+  linkAnuncio(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId: string;
+  }): Promise<{ url: string }>;
+  /**
    * Import (or re-sync) an ML listing into an ERP produto (PERM.integracao.write).
    * All three listing models import: simple, legacy `variations[]` (#520) and
    * `family_name` / User-Products (#521). A listing the importer cannot take —
@@ -1087,6 +1103,8 @@ export function createMercadoLivreClient(config: {
         '/api/marketplace/mercado-livre/reverificar-anuncio',
         input,
       ),
+    linkAnuncio: (input) =>
+      call<{ url: string }>('/api/marketplace/mercado-livre/link-anuncio', input),
     importar: (input) =>
       call<MercadoLivreImportarResult>('/api/marketplace/mercado-livre/importar', input),
     startMassImport: (input) =>

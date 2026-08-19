@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
@@ -462,5 +462,120 @@ describe('Republicar e atualizar preços', () => {
     expect(screen.getByRole('button', { name: 'Publicar e atualizar preços' })).toBeInstanceOf(
       HTMLButtonElement,
     );
+  });
+});
+
+describe('"ver no Mercado Livre" for a User-Products listing', () => {
+  /** A published UP family: `id` is the family id, which addresses no page. */
+  const FAMILIA = { id: '6264141844942250', isUserProductModel: true };
+
+  /**
+   * `window.open` is what a real click grants and jsdom does not implement.
+   * Returning a handle lets the assertions cover the whole point of the flow:
+   * the tab is claimed BEFORE the await, then navigated.
+   */
+  function stubWindowOpen() {
+    const aba = { opener: {} as unknown, location: { replace: vi.fn() }, close: vi.fn() };
+    const open = vi.fn(() => aba as unknown as Window);
+    vi.stubGlobal('open', open);
+    return { aba, open };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resolves the URL from the backend and sends the tab there', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    const linkAnuncio = vi.fn(async () => ({ url: 'https://www.mercadolivre.com.br/up/MLBU1' }));
+    h.client = { linkAnuncio };
+    const { aba, open } = stubWindowOpen();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    expect(linkAnuncio).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      produtoId: 'prod-1',
+      linkDocId: 'link-1',
+    });
+    // ⚠️ The tab is claimed with a blank URL at click time — a `window.open`
+    // issued after the await has lost the user activation and is popup-blocked.
+    // The ORDER is the assertion: opening with the right args proves nothing if
+    // it happens once the resolution has already come back.
+    expect(open).toHaveBeenCalledWith('', '_blank');
+    expect(open.mock.invocationCallOrder[0]!).toBeLessThan(
+      linkAnuncio.mock.invocationCallOrder[0]!,
+    );
+    expect(aba.location.replace).toHaveBeenCalledWith('https://www.mercadolivre.com.br/up/MLBU1');
+    // Severed by hand: the blank-target form cannot carry `noopener` (that flag
+    // makes it return null, and the handle is what navigates the tab).
+    expect(aba.opener).toBeNull();
+  });
+
+  it('turns into a plain anchor afterwards, so a second click costs nothing', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    const linkAnuncio = vi.fn(async () => ({ url: 'https://www.mercadolivre.com.br/up/MLBU1' }));
+    h.client = { linkAnuncio };
+    stubWindowOpen();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    const anchor = await screen.findByRole('link', { name: 'ver no Mercado Livre' });
+    expect(anchor.getAttribute('href')).toBe('https://www.mercadolivre.com.br/up/MLBU1');
+    expect(linkAnuncio).toHaveBeenCalledOnce();
+  });
+
+  it('closes the tab and reports the failure instead of leaving it blank', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    h.client = {
+      linkAnuncio: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('O anúncio não existe mais.', 404, null);
+      }),
+    };
+    const { aba } = stubWindowOpen();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    expect(aba.close).toHaveBeenCalledOnce();
+    expect(aba.location.replace).not.toHaveBeenCalled();
+    expect(h.notify).toHaveBeenCalledWith({ color: 'red', message: 'O anúncio não existe mais.' });
+  });
+
+  it('still resolves when the browser refused the tab, leaving an anchor to click', async () => {
+    h.links = [link('link-1', FAMILIA)];
+    h.client = {
+      linkAnuncio: vi.fn(async () => ({ url: 'https://www.mercadolivre.com.br/up/MLBU1' })),
+    };
+    vi.stubGlobal(
+      'open',
+      vi.fn(() => null),
+    );
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'ver no Mercado Livre' }));
+    });
+
+    expect(await screen.findByRole('link', { name: 'ver no Mercado Livre' })).toBeDefined();
+  });
+
+  it('a legacy listing needs no round trip at all', async () => {
+    h.links = [link('link-1', { id: 'MLB777', isUserProductModel: false })];
+    const linkAnuncio = vi.fn();
+    h.client = { linkAnuncio };
+    renderEditor();
+
+    const anchor = await screen.findByRole('link', { name: 'ver no Mercado Livre' });
+    expect(anchor.getAttribute('href')).toBe('https://produto.mercadolivre.com.br/MLB-777');
+    expect(linkAnuncio).not.toHaveBeenCalled();
   });
 });
