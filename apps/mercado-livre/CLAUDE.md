@@ -236,9 +236,20 @@ published under the legacy model and not yet migrated stay editable with the
 legacy payload. Both paths are live for the whole migration, which is why
 `isUserProductModel` is per-link and flips only via the UPtin takeover.
 
-Three facts from the ML docs that the payload builder now encodes (#797) — check
+Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:
 
+- **`family_name` is CREATE-ONLY on BOTH User-Products paths.** ML takes it on
+  the create and answers `400 BODY_INVALID_FIELDS` /
+  *"The field family name is invalid"* on a `PUT /items/{id}` that carries it, so
+  both builders strip it from an update: `buildUserProductItemPayload` (the
+  family fan-out) always did, and `buildItemPayload` (the SINGLE-ITEM half — a UP
+  produto with no children) did not, which 400'd every republish of such a
+  listing. An update therefore sends no name field at all, never a `title`
+  either, and `titleEditability` in apps/web disables the título on a published
+  UP listing rather than accept an edit publish would drop. Why ML refuses is
+  not yet settled (sales lock vs `max_title_length` vs the field simply not
+  being writable there) — that is the follow-up issue.
 - **Variation display order does not exist under User Products.** No ordering
   field appears anywhere in that surface, so `produto.ordem` is legacy-only and
   is lost the moment a listing migrates. The full note is the ⚠️ in
