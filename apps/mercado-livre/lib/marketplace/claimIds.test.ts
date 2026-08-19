@@ -8,7 +8,6 @@ import {
   makeClaimMessageId,
   makeConversaIdClaim,
   makeIncidenteIdClaim,
-  usuarioExternalIdMl,
 } from './claimIds';
 
 // Golden vectors — hand-derived from the legacy preimage formulas and
@@ -85,14 +84,6 @@ describe('makeAttachmentMensagemId', () => {
     expect(
       makeAttachmentMensagemId(CONTA_ID, 'fa8d559e-b6c9-4a9d-9824-aba4607bd869_301110805.jpg'),
     ).toBe('8c859556c03408877834c445359a90f8f0995b70b8414c0f2a6211e8bbce5919');
-  });
-});
-
-describe('usuarioExternalIdMl', () => {
-  it('digests "/documents/integracao/{conta}-{mlUserId}"', () => {
-    expect(usuarioExternalIdMl(CONTA_ID, 301110805)).toBe(
-      '92ba54c7fac91eaa2221b4f07a155f846bf42642e9e16daa4eb9964a6d501014',
-    );
   });
 });
 

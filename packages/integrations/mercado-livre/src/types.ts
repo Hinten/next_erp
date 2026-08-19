@@ -1007,18 +1007,48 @@ export type MlCatalogDomain = z.infer<typeof catalogDomainSchema>;
 /* --------------------- Claims / reclamações (Step 14) --------------------- */
 
 /**
+ * One entry of a player's `available_actions` — what THAT party may do on the
+ * claim right now (ML "Gerenciar reclamações" → players.available_actions).
+ *
+ * `action` is a plain nullable string, NEVER an enum: the documented seller set
+ * alone is a dozen values (`send_message_to_complainant`,
+ * `send_message_to_mediator`, `refund`, `open_dispute`, `allow_return`,
+ * `allow_partial_refund`, `send_tracking_number`, `return_review`, …) and ML
+ * adds to it without notice. An unknown action must read as "an action we do not
+ * implement", never as a parse failure that parks the whole claim.
+ */
+export const mlClaimAvailableActionSchema = z
+  .object({
+    action: z.string().nullable().default(null),
+    /** True when ML requires it before `due_date`. */
+    mandatory: z.boolean().nullable().default(null),
+    due_date: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlClaimAvailableAction = z.infer<typeof mlClaimAvailableActionSchema>;
+
+/**
  * One `players[]` entry of a claim (legacy `_Players`, models.dart:4007-4034).
  * `role` is `complainant`/`respondent`/`mediator` and `type` is the per-resource
  * party name (`buyer`/`seller`, `payer`/`collector`, `receiver`/`sender`,
  * `internal`) — both stay plain strings (NEVER enums): ML adds vocabulary
  * without notice and an unknown value must not fail the claim parse.
- * `available_actions` rides through `.passthrough()` untyped.
+ *
+ * ⚠️ `available_actions` is now TYPED (it used to ride through
+ * `.passthrough()`): it is the field that decides whether the seller can still
+ * DO anything on this claim, which is what the import gates the chat conversa
+ * on. An absent or null array normalises to `[]` — "no actions available" — so
+ * the gate reads the same whether ML omits the key or sends it empty.
  */
 export const mlClaimPlayerSchema = z
   .object({
     role: z.string().nullable().default(null),
     type: z.string().nullable().default(null),
     user_id: z.number().int().nullable().default(null),
+    available_actions: z
+      .array(mlClaimAvailableActionSchema)
+      .nullish()
+      .transform((v) => v ?? []),
   })
   .passthrough();
 export type MlClaimPlayer = z.infer<typeof mlClaimPlayerSchema>;
@@ -1102,6 +1132,35 @@ export const mlClaimMessageSchema = z
     stage: z.string().nullable().default(null),
     message: z.string().default(''),
     date_created: z.string(),
+    /**
+     * ML's own per-message unique id — `"<claimId>_<n>_<uuid>"` — published
+     * under "Identificador único de mensagens" with the advice to key dedup on
+     * it.
+     *
+     * ⚠️ **This port deliberately does NOT key mensagem doc ids on it**, and the
+     * reason is worth stating: every claim message the Flutter app already
+     * imported lives under `claimIds.ts`'s five-field digest. Re-keying would
+     * write every one of them a SECOND time under a new id — a thread-wide
+     * duplication of history — while buying almost nothing, because that digest
+     * is already deterministic over sender/receiver/stage/date/text. The one
+     * case it would fix is two messages identical in all five fields, which ML
+     * flags itself with `repeated` and which collapse harmlessly today. It is
+     * modelled here so the value is visible, and so a future migration that
+     * DOES re-key has the field to migrate from.
+     *
+     * Nullable: ML added it in late 2024 and the reference's own primary
+     * example still omits it.
+     */
+    hash: z.string().nullable().default(null),
+    /**
+     * `available` | `moderated` | `rejected` | `pending_translation`.
+     *
+     * ⚠️ Not decorative. ML filters the COUNTERPARTY's moderated messages out of
+     * this endpoint but returns OUR OWN, so a `rejected` message is one the
+     * buyer never saw — importing it as an ordinary bubble tells the operator a
+     * message was delivered when it was not.
+     */
+    status: z.string().nullable().default(null),
     attachments: z
       .array(mlClaimMessageAttachmentSchema)
       .nullish()

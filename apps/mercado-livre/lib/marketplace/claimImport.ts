@@ -84,7 +84,8 @@ import {
   buildIncidenteFromClaim,
   buildReasonMensagem,
 } from './claimMapping';
-import { resolveClaimUsuario } from './claimUsuario';
+import { claimActionability, type ClaimActionability } from './claimActionability';
+import { vincularClienteMercadoLivre } from './claimCliente';
 import { resolveShipmentOrderId } from './shipmentOrderId';
 import { importPedidoMercadoLivre } from './orderImport';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
@@ -117,7 +118,11 @@ export interface ClaimImportResult {
     | 'pedido-nao-encontrado'
     | 'reclamacao-do-vendedor'
     | 'sem-cliente'
+    /** No send action for the seller and no conversa existed — incidente only. */
+    | 'sem-conversa-acionavel'
     | null;
+  /** What the seller can still do, for the caller's log line. */
+  acao?: ClaimActionability;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -287,29 +292,22 @@ export async function importClaimMercadoLivre(
     return skipResult('sem-cliente');
   }
   const buyerUserId = buyer.user_id;
-  // The nickname only feeds the decorative `apelido` — a deleted/banned buyer
-  // profile (deterministic ML answer) must not poison the claim into retries.
-  let buyerNickname: string | null = null;
-  try {
-    buyerNickname = (await api.getUser(buyerUserId)).nickname ?? null;
-  } catch (err) {
-    if (err instanceof MercadoLivreHttpError) {
-      console.warn('[mercado-livre] claim: perfil do comprador indisponível', {
-        claimId,
-        buyerUserId,
-        status: err.status,
-      });
-    } else {
-      throw err;
-    }
-  }
+  // ⚠️ The `GET /users/{id}` call that used to sit here is GONE (#768). Its
+  // only product was the buyer nickname, whose only consumer was
+  // `usuario.apelido` — and the module that wrote it is deleted. It was one
+  // ML round-trip per claim notification for a value nothing reads.
 
-  const { usuarioId } = await resolveClaimUsuario(db, {
-    contaId: integracaoId,
+  // #768 — the contact is a CLIENTE. The pedido already names it; all this does
+  // is stamp the ML buyer id onto it when absent, so the cliente a pre-sale
+  // question created and the cliente this order created converge instead of
+  // forking. No usuario is created anywhere on this path any more.
+  const { clienteOuterRef: clienteRef } = await vincularClienteMercadoLivre(db, {
     clienteOuterRef,
     buyerUserId,
-    buyerNickname,
   });
+
+  // What the seller can still DO on this claim — the conversa gate below.
+  const acao = claimActionability(claim);
 
   /* ------------------------ (g) best-effort reason -------------------------- */
   let reason: MlClaimReason | undefined;
@@ -357,16 +355,34 @@ export async function importClaimMercadoLivre(
   }
 
   /* -------------------------- (i) conversa upsert (ms) ----------------------- */
+  // ⚠️ The incidente above is written for EVERY claim; the conversa is not.
+  // A chat thread the seller cannot send on is #817 with extra steps — the
+  // operator types, the reply goes nowhere. The incidente keeps the business
+  // record either way, so nothing is lost by not opening the thread.
   const conversaId = makeConversaIdClaim(integracaoId, claim.resource_id, claim.id);
+  const conversaSnap = await conversaCollection.docRef(db, {}, conversaId).get();
+
+  if (!acao.podeResponder && !conversaSnap.exists) {
+    // Nothing to answer and no history to preserve — the incidente is the
+    // import. This is the owner's "import only what we can act on" directive.
+    return {
+      pedidoId,
+      incidenteId,
+      conversaId: null,
+      skipped: 'sem-conversa-acionavel',
+      acao,
+    };
+  }
+
   const conversaFields = buildConversaFromClaim(claim, {
     buyerUserId,
-    usuarioId,
+    clienteOuterRef: clienteRef,
     contaId: integracaoId,
     contaCor: conta.cor,
     pedidoId,
     incidenteId,
+    respostaBloqueada: acao.motivo,
   });
-  const conversaSnap = await conversaCollection.docRef(db, {}, conversaId).get();
   let atualizouConversa = false;
   if (!conversaSnap.exists) {
     // Full doc — estadoConversa fills from the schema default (naoRespondido).
@@ -388,6 +404,17 @@ export async function importClaimMercadoLivre(
       const { data_cadastro: _dataCadastro, ...patch } = conversaFields;
       await conversaCollection.merge(db, {}, conversaId, patch);
       atualizouConversa = true;
+    } else if (!acao.podeResponder && stored.respostaBloqueada !== acao.motivo) {
+      // ⚠️ Closing runs OUTSIDE the freshness gate on purpose. ML does not
+      // always bump `last_updated` when the seller's actions drain away, so a
+      // thread can become unanswerable while looking stale — and the composer
+      // would stay open on a claim nobody can reply to. Only the two closing
+      // fields are touched; `estadoConversa` remains the operator's.
+      await conversaCollection.merge(db, {}, conversaId, {
+        respostaBloqueada: acao.motivo,
+        atendido: true,
+        ultima_modificacao: nowMs,
+      });
     }
   }
 
@@ -405,7 +432,7 @@ export async function importClaimMercadoLivre(
         db,
         { conversaId },
         reasonId,
-        buildReasonMensagem({ reasonId, claim, reason, usuarioId }),
+        buildReasonMensagem({ reasonId, claim, reason, clienteOuterRef: clienteRef }),
       );
     }
   }
@@ -448,7 +475,7 @@ export async function importClaimMercadoLivre(
           parentMessage: msg,
           parentMessageDocId: messageDocId,
           arquivoOuterRef: ensured.arquivoOuterRef,
-          usuarioId,
+          clienteOuterRef: clienteRef,
         }),
       );
     }
@@ -458,9 +485,9 @@ export async function importClaimMercadoLivre(
       db,
       { conversaId },
       messageDocId,
-      buildClaimMessageMensagem(msg, messageDocId),
+      buildClaimMessageMensagem(msg, messageDocId, { clienteOuterRef: clienteRef }),
     );
   }
 
-  return { pedidoId, incidenteId, conversaId, skipped: null };
+  return { pedidoId, incidenteId, conversaId, skipped: null, acao };
 }

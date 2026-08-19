@@ -16,12 +16,15 @@ import {
   TIPO_RESOLUCAO,
 } from '@delfrance/schemas';
 
-// Package C seams (`resolveClaimUsuario` / `ensureClaimAttachmentArquivo`) and
-// the Step 9 order-import fallback are mocked with hoisted handles — this
+// Package C seams (`vincularClienteMercadoLivre` / `ensureClaimAttachmentArquivo`)
+// and the Step 9 order-import fallback are mocked with hoisted handles — this
 // file proves the CLAIMS orchestration only; those modules have their own
 // dedicated tests.
 const h = vi.hoisted(() => ({
-  resolveClaimUsuario: vi.fn(async () => ({ usuarioId: 'user-1' })),
+  vincularCliente: vi.fn(async () => ({
+    clienteOuterRef: 'documents/clientes/cli-1',
+    carimbouIdMercadoLivre: false,
+  })),
   ensureClaimAttachmentArquivo: vi.fn(
     async (): Promise<
       { ok: true; arquivoOuterRef: string } | { ok: false; skipped: 'http-error' | 'empty-body' }
@@ -35,7 +38,7 @@ const h = vi.hoisted(() => ({
     }),
   ),
 }));
-vi.mock('./claimUsuario', () => ({ resolveClaimUsuario: h.resolveClaimUsuario }));
+vi.mock('./claimCliente', () => ({ vincularClienteMercadoLivre: h.vincularCliente }));
 vi.mock('./claimAttachments', () => ({
   ensureClaimAttachmentArquivo: h.ensureClaimAttachmentArquivo,
 }));
@@ -156,7 +159,10 @@ const FAKE_BUCKET = { __bucket: true } as unknown as Bucket;
 function makeClaim(over: DocData = {}): MlClaim {
   return {
     id: CLAIM_ID,
-    type: 'returns',
+    // `mediations`, not `returns`: a return claim carries no messages at all
+    // (ML: "Neste caso, não há mensagens"), so the old fixture contradicted its
+    // own `getClaimMessages` stub the moment the actionability gate existed.
+    type: 'mediations',
     stage: 'claim',
     status: 'closed',
     parent_id: null,
@@ -166,8 +172,16 @@ function makeClaim(over: DocData = {}): MlClaim {
     reason_id: 'PDD9545',
     fulfilled: true,
     players: [
-      { role: 'complainant', type: 'buyer', user_id: BUYER_ID },
-      { role: 'respondent', type: 'seller', user_id: SELLER_ID },
+      { role: 'complainant', type: 'buyer', user_id: BUYER_ID, available_actions: [] },
+      {
+        role: 'respondent',
+        type: 'seller',
+        user_id: SELLER_ID,
+        // The seller can still write — what makes this claim own a conversa.
+        available_actions: [
+          { action: 'send_message_to_complainant', mandatory: true, due_date: null },
+        ],
+      },
     ],
     resolution: {
       reason: 'item_returned',
@@ -228,6 +242,22 @@ function deps(
   };
 }
 
+/** The same claim with the seller holding exactly `acoes`. */
+function claimComAcoes(acoes: string[], over: DocData = {}): MlClaim {
+  return makeClaim({
+    players: [
+      { role: 'complainant', type: 'buyer', user_id: BUYER_ID, available_actions: [] },
+      {
+        role: 'respondent',
+        type: 'seller',
+        user_id: SELLER_ID,
+        available_actions: acoes.map((action) => ({ action, mandatory: false, due_date: null })),
+      },
+    ],
+    ...over,
+  });
+}
+
 function seedPedido(db: FakeDb, over: DocData = {}): void {
   db.seed('pedidos', PEDIDO_ID, {
     clientePedidoOuterRef: 'documents/clientes/cli-1',
@@ -244,7 +274,10 @@ function seedOrderMl(db: FakeDb, opts: { packId?: number | null } = {}): void {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  h.resolveClaimUsuario.mockResolvedValue({ usuarioId: 'user-1' });
+  h.vincularCliente.mockResolvedValue({
+    clienteOuterRef: 'documents/clientes/cli-1',
+    carimbouIdMercadoLivre: false,
+  });
   h.ensureClaimAttachmentArquivo.mockResolvedValue({
     ok: true as const,
     arquivoOuterRef: 'documents/arquivos/arq-1',
@@ -279,13 +312,19 @@ describe('importClaimMercadoLivre — happy create path', () => {
       incidenteId: INCIDENTE_ID,
       conversaId: CONVERSA_ID,
       skipped: null,
+      // What the seller can still do — the caller logs it, and the respond
+      // half of #768 reads the action list instead of re-deriving it.
+      acao: expect.objectContaining({
+        podeResponder: true,
+        acaoMensagem: 'send_message_to_complainant',
+      }),
     });
 
     // Incidente — MICROSECONDS.
     const incidente = db.docs(INCIDENTES_PATH).get(INCIDENTE_ID)!;
     expect(incidente).toMatchObject({
       origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
-      tipo: TIPO_INCIDENTE.devolucao,
+      tipo: TIPO_INCIDENTE.mediacaoDoMarketplace,
       motivoDoIncidente: 'O produto chegou danificado',
       comentarios: 'order 2000004048276990(5142940410) - Fechada Reclamação',
       timestamp: DATE_CREATED_MS * 1000,
@@ -306,7 +345,8 @@ describe('importClaimMercadoLivre — happy create path', () => {
       estadoConversa: ESTADO_CONVERSA.naoRespondido,
       data_cadastro: DATE_CREATED_MS,
       ultima_modificacao: LAST_UPDATED_MS,
-      usarioOuterRef: 'documents/usuarios/user-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
+      respostaBloqueada: null,
       integracaoOuterRef: `documents/integracao/${CONTA_ID}`,
       pedidoOuterRef: `documents/pedidos/${PEDIDO_ID}`,
       incidenteOuterRef: `documents/pedidos/${PEDIDO_ID}/incidentes/${INCIDENTE_ID}`,
@@ -320,15 +360,17 @@ describe('importClaimMercadoLivre — happy create path', () => {
     const mensagens = db.docs(MENSAGENS_PATH);
     expect(mensagens.size).toBe(4);
     expect(mensagens.get('PDD9545')).toMatchObject({
-      estadoEnvio: ESTADO_ENVIO.salva,
+      // The BUYER wrote the reason; legacy filed it as our unsent draft.
+      estadoEnvio: ESTADO_ENVIO.recebido,
       conteudo: 'O produto chegou danificado',
       mid: 'PDD9545',
-      user_id: 'user-1',
-      usarioMensagemOuterRef: 'documents/usuarios/user-1',
+      clienteMensagemOuterRef: 'documents/clientes/cli-1',
     });
     const withAttachmentId = makeClaimMessageId(CONTA_ID, withAttachment);
     expect(mensagens.get(withAttachmentId)).toMatchObject({
-      estadoEnvio: ESTADO_ENVIO.enviado,
+      // sender_role complainant ⇒ inbound. Legacy stamped EVERY claim message
+      // 'enviado', so the buyer's own words rendered as ours.
+      estadoEnvio: ESTADO_ENVIO.recebido,
       tipo: TIPO_MENSAGEM.comum,
       conteudo: 'Hola',
       mid: withAttachmentId,
@@ -339,20 +381,18 @@ describe('importClaimMercadoLivre — happy create path', () => {
     const plainId = makeClaimMessageId(CONTA_ID, plain);
     expect(mensagens.get(plainId)).toMatchObject({ conteudo: 'Segunda', midGroup: null });
     expect(mensagens.get(makeAttachmentMensagemId(CONTA_ID, 'foto.jpg'))).toMatchObject({
-      estadoEnvio: ESTADO_ENVIO.salva,
+      estadoEnvio: ESTADO_ENVIO.recebido, // takes the PARENT message's direction
       tipo: TIPO_MENSAGEM.comum, // legacy quirk kept — NOT arquivo
       mid: 'foto.jpg',
       midGroup: withAttachmentId,
       anexoStorage: 'documents/arquivos/arq-1',
-      user_id: 'user-1',
+      clienteMensagemOuterRef: 'documents/clientes/cli-1',
     });
 
     // Package C seams received the pinned shapes.
-    expect(h.resolveClaimUsuario).toHaveBeenCalledWith(asDb(db), {
-      contaId: CONTA_ID,
+    expect(h.vincularCliente).toHaveBeenCalledWith(asDb(db), {
       clienteOuterRef: 'documents/clientes/cli-1',
       buyerUserId: BUYER_ID,
-      buyerNickname: 'buyer_nick',
     });
     expect(h.ensureClaimAttachmentArquivo).toHaveBeenCalledWith(
       { db: asDb(db), api, bucket: FAKE_BUCKET },
@@ -675,6 +715,7 @@ describe('importClaimMercadoLivre — pedido resolution routes', () => {
       incidenteId: makeIncidenteIdClaim(CONTA_ID, 777, CLAIM_ID),
       conversaId: makeConversaIdClaim(CONTA_ID, 777, CLAIM_ID),
       skipped: null,
+      acao: expect.objectContaining({ podeResponder: true }),
     });
   });
 
@@ -762,36 +803,20 @@ describe('importClaimMercadoLivre — reason best-effort', () => {
 });
 
 describe('importClaimMercadoLivre — buyer profile best-effort', () => {
-  it('an ML HTTP error on getUser degrades to a null nickname (warn, no throw)', async () => {
+  it('never calls getUser — #768 removed the only consumer of the nickname', async () => {
+    // ⚠️ One ML round-trip per claim notification, deleted. Its only product
+    // was `usuario.apelido`, and the module that wrote it is gone. A buyer
+    // whose ML profile is deleted or banned can no longer fail this import
+    // at all, because it never asks.
     const db = new FakeDb();
     seedPedido(db);
     seedOrderMl(db);
-    const api = makeApi({
-      getUser: vi.fn(async () => {
-        throw new MercadoLivreHttpError('ML 404: user not found', 404, null);
-      }),
-    });
+    const api = makeApi();
 
     const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
 
     expect(result.skipped).toBeNull();
-    expect(h.resolveClaimUsuario).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ buyerUserId: BUYER_ID, buyerNickname: null }),
-    );
-  });
-
-  it('a NETWORK error on getUser propagates (transient → retry)', async () => {
-    const db = new FakeDb();
-    seedPedido(db);
-    seedOrderMl(db);
-    const api = makeApi({
-      getUser: vi.fn(async () => {
-        throw new Error('network down');
-      }),
-    });
-
-    await expect(importClaimMercadoLivre(deps(db, api), CLAIM_ID)).rejects.toThrow('network down');
+    expect(api.getUser).not.toHaveBeenCalled();
   });
 });
 
@@ -888,5 +913,113 @@ describe('importClaimMercadoLivre — error policy', () => {
     // The upserts before the failure are idempotent — the retry overwrites them.
     expect(db.docs(INCIDENTES_PATH).has(INCIDENTE_ID)).toBe(true);
     expect(db.docs('chat').has(CONVERSA_ID)).toBe(true);
+  });
+});
+
+const WIRE_LAST_UPDATED = '2022-08-24T16:10:26.000-04:00';
+
+describe('importClaimMercadoLivre — the conversa actionability gate (#768)', () => {
+  const MENSAGENS = `chat/${makeConversaIdClaim(CONTA_ID, ORDER_ID, CLAIM_ID)}/mensagem`;
+
+  it('writes the INCIDENTE but NO conversa when the seller has no send action', async () => {
+    // ⚠️ The asymmetry is the design. The incidente is pedido business history
+    // and stays useful after the claim closes; a chat thread nobody can reply
+    // on is #817 — the operator types, the reply goes nowhere.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const api = makeApi({ getClaim: vi.fn(async () => claimComAcoes([], { status: 'closed' })) });
+
+    const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    expect(result.skipped).toBe('sem-conversa-acionavel');
+    expect(result.conversaId).toBeNull();
+    expect(result.incidenteId).not.toBeNull();
+    expect(db.docs(`pedidos/${PEDIDO_ID}/incidentes`).size).toBe(1);
+    expect(db.docs('chat').size).toBe(0);
+    expect(db.docs(MENSAGENS).size).toBe(0);
+  });
+
+  it('imports the conversa when a send action exists', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const api = makeApi({
+      getClaim: vi.fn(async () => claimComAcoes(['send_message_to_complainant'])),
+    });
+
+    const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    expect(result.skipped).toBeNull();
+    expect(result.conversaId).not.toBeNull();
+    expect(db.docs('chat').get(result.conversaId!)).toMatchObject({ respostaBloqueada: null });
+  });
+
+  it('a mediation-only action still opens the conversa, aimed at the mediator', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const api = makeApi({
+      getClaim: vi.fn(async () =>
+        claimComAcoes(['send_message_to_mediator'], { stage: 'dispute' }),
+      ),
+    });
+
+    const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    expect(result.skipped).toBeNull();
+    expect(result.acao?.acaoMensagem).toBe('send_message_to_mediator');
+  });
+
+  it('CLOSES an existing conversa instead of deleting it, keeping the history', async () => {
+    // Decision 5: a thread that stops being actionable keeps every message it
+    // ever had. Only `respostaBloqueada` + `atendido` change.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const conversaId = makeConversaIdClaim(CONTA_ID, ORDER_ID, CLAIM_ID);
+    db.seed('chat', conversaId, {
+      origem: 'mlclaims',
+      ultima_modificacao: Date.parse(WIRE_LAST_UPDATED) + 60_000, // NEWER than the wire
+      estadoConversa: ESTADO_CONVERSA.emResposta,
+      respostaBloqueada: null,
+    });
+    db.seed(MENSAGENS, 'antiga', { conteudo: 'histórico' });
+    const api = makeApi({ getClaim: vi.fn(async () => claimComAcoes([], { status: 'closed' })) });
+
+    const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    expect(result.skipped).toBeNull();
+    const stored = db.docs('chat').get(conversaId)!;
+    expect(stored.respostaBloqueada).toBe('Reclamação encerrada no Mercado Livre');
+    expect(stored.atendido).toBe(true);
+    // ⚠️ estadoConversa is operator triage state — a webhook must never move it.
+    expect(stored.estadoConversa).toBe(ESTADO_CONVERSA.emResposta);
+    expect(db.docs(MENSAGENS).get('antiga')).toBeDefined();
+  });
+
+  it('closes a STALE conversa even though the freshness gate would skip it', async () => {
+    // ⚠️ The reason the close runs outside `isFresh`. ML does not reliably bump
+    // `last_updated` when the seller\u2019s actions drain away, so a dead thread can
+    // look stale — and the composer would stay open on a claim nobody can
+    // answer. Proven by a stored timestamp far NEWER than the incoming one.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const conversaId = makeConversaIdClaim(CONTA_ID, ORDER_ID, CLAIM_ID);
+    db.seed('chat', conversaId, {
+      origem: 'mlclaims',
+      ultima_modificacao: Date.parse(WIRE_LAST_UPDATED) + 10_000_000,
+      nome: 'nome que o operador escolheu',
+      respostaBloqueada: null,
+    });
+    const api = makeApi({ getClaim: vi.fn(async () => claimComAcoes([], { status: 'closed' })) });
+
+    await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    const stored = db.docs('chat').get(conversaId)!;
+    expect(stored.respostaBloqueada).toBe('Reclamação encerrada no Mercado Livre');
+    // ...and ONLY the closing fields moved: the stale merge did not run.
+    expect(stored.nome).toBe('nome que o operador escolheu');
   });
 });
