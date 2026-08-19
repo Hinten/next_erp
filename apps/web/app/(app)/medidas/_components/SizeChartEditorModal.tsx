@@ -207,19 +207,6 @@ export function SizeChartEditorModal({
     () => (domainSpecsQuery.data ? extractGridTemplates(domainSpecsQuery.data) : []),
     [domainSpecsQuery.data],
   );
-  /**
-   * The chart-level questions to RENDER and to send in the chart body — the
-   * union of templates and grid filters, deduplicated.
-   *
-   * ⚠️ Never concatenate the two lists here: they overlap (GENDER is commonly
-   * both), which is what produced duplicate React keys and a doubled attribute
-   * in the payload. `specAttributes` below stays templates-only on purpose —
-   * that is the body ML wants for the `?section=grids` lookup.
-   */
-  const chartLevel = useMemo(
-    () => (domainSpecsQuery.data ? chartLevelAttributes(domainSpecsQuery.data) : []),
-    [domainSpecsQuery.data],
-  );
 
   // Every REQUIRED question answered ⇒ ML will describe the grid.
   const answered = templates.length > 0 && templates.every((t) => templateValues[t.id] != null);
@@ -242,6 +229,26 @@ export function SizeChartEditorModal({
     enabled: opened && domainId != null && answered,
     retry: false,
   });
+
+  /**
+   * The chart-level questions to RENDER and to send in the chart body.
+   *
+   * ⚠️ BOTH specs go in, and the split matters: the domain spec supplies the
+   * templates and every attribute's rendering metadata, while the GRID spec is
+   * what decides which OTHER attributes belong at chart level at all. Deriving
+   * that from the domain spec offered a "Modelo" field ML rejects outright —
+   * `grid_filter` is the chart-search vocabulary there, not the chart's own
+   * attributes. So the non-template fields (Marca, …) appear once the grid spec
+   * lands, which is exactly ML's own order.
+   *
+   * `specAttributes` above stays templates-only on purpose — that is the body ML
+   * wants for the `?section=grids` lookup, and feeding it `chartLevel` would
+   * make the query depend on its own result.
+   */
+  const chartLevel = useMemo(
+    () => chartLevelAttributes(domainSpecsQuery.data ?? null, gridSpecsQuery.data ?? null),
+    [domainSpecsQuery.data, gridSpecsQuery.data],
+  );
 
   const measureOptions = useMemo(
     () => (gridSpecsQuery.data ? detectMeasureTypes(gridSpecsQuery.data) : []),

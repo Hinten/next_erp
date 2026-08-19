@@ -17,6 +17,15 @@ vi.mock('@/lib/marketplace/mlTasks', () => ({
   createMlTaskScheduler: () => ({ enqueue: h.enqueue }),
 }));
 
+// The receiver reports the region it targeted on every delivery line — that
+// field is the whole point of the log (a queue in the wrong region is the
+// silent drop `mlTasksRegion.ts` warns about). The resolver moved out of
+// `mlTasks.ts` into its own module, shared by all five schedulers.
+vi.mock('@/lib/marketplace/mlTasksRegion', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/mlTasksRegion')>();
+  return { ...actual, mlTasksRegion: () => 'us-east1' };
+});
+
 vi.mock('@delfrance/data/admin/collections', () => ({
   notificacaoMercadoLivreCollection: {
     docRef: (...args: unknown[]) => {
@@ -46,6 +55,7 @@ function req(body: unknown, headers: Record<string, string> = {}): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'info').mockImplementation(() => {});
   // The header-inventory budget is module-level, so it leaks between tests.
   __resetWebhookHeaderLog();
   vi.unstubAllEnvs();
@@ -247,6 +257,53 @@ describe('POST /api/webhooks/mercado-livre — origin gate', () => {
     expect(console.warn).toHaveBeenCalledWith(
       '[mercado-livre/webhook] header-inventory',
       expect.anything(),
+    );
+  });
+});
+
+/**
+ * The receiver is failures-only in Firestore, so before this log the SUCCESS
+ * path was completely invisible: "delivered and enqueued" and "delivered and
+ * deliberately ignored" produced the same empty collection and the same silent
+ * log stream. These pin that every path now says which one it was.
+ */
+describe('POST /api/webhooks/mercado-livre — delivery log', () => {
+  it('reports `enfileirado` with the queue and region on the happy path', async () => {
+    const res = await POST(req({ topic: 'items', resource: '/items/MLB1' }));
+    expect(res.status).toBe(200);
+    expect(console.info).toHaveBeenCalledWith(
+      '[mercado-livre/webhook] entrega',
+      expect.objectContaining({
+        disposition: 'enfileirado',
+        topic: 'items',
+        resource: '/items/MLB1',
+        regiao: 'us-east1',
+      }),
+    );
+  });
+
+  it('reports `ignorado` for a topic refused at the receiver (#813)', async () => {
+    await POST(req({ topic: 'user-products-families', resource: '/user-products-families/1' }));
+    expect(console.info).toHaveBeenCalledWith(
+      '[mercado-livre/webhook] entrega',
+      expect.objectContaining({ disposition: 'ignorado', topic: 'user-products-families' }),
+    );
+  });
+
+  it('reports `persistido` when the enqueue failed but the sweep now owns it', async () => {
+    h.enqueue.mockRejectedValueOnce(new Error('IAM'));
+    await POST(req({ topic: 'items', resource: '/items/MLB2' }));
+    expect(console.info).toHaveBeenCalledWith(
+      '[mercado-livre/webhook] entrega',
+      expect.objectContaining({ disposition: 'persistido' }),
+    );
+  });
+
+  it('reports `ruido` for a body with no topic+resource', async () => {
+    await POST(req({ hello: 'world' }));
+    expect(console.info).toHaveBeenCalledWith(
+      '[mercado-livre/webhook] entrega',
+      expect.objectContaining({ disposition: 'ruido', topic: null }),
     );
   });
 });

@@ -42,6 +42,8 @@ import {
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
 import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
+import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
+import { mapPublishIssues } from '@/lib/mercado-livre/publishIssues';
 import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
 import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
 import {
@@ -581,6 +583,16 @@ export function MercadoLivreEditor({
             // a `!= null` check leaves the same dead button one value narrower.
             const hasPublished = contaLinks.some((l) => (l.data.id ?? '') !== '');
             const issues = blockedIssues[conta.id] ?? [];
+            // Our OWN pre-flight refusals (422), mapped onto controls by the
+            // module written for it. Every issue still renders verbatim in the
+            // alert below — a mapping miss loses nothing, it just highlights
+            // nothing (`publishIssues.ts` docblock).
+            const blockedTargets = mapPublishIssues(issues);
+            const blockedPorCampo: Record<string, string[]> = {};
+            for (const target of blockedTargets) {
+              if (target.scope !== 'listing' || target.field == null) continue;
+              (blockedPorCampo[target.field] ??= []).push(target.message);
+            }
             const dirtyLinkIds = contaLinks.filter((l) => dirtyIds.has(l.id)).map((l) => l.id);
             const contaDirty = dirtyLinkIds.length > 0;
             const publishBlocked = produtoDirty || contaDirty;
@@ -615,52 +627,65 @@ export function MercadoLivreEditor({
                     )}
                   </Group>
 
-                  {contaLinks.map((l, index) => (
-                    <Stack key={l.id} gap="sm" data-testid={`ml-anuncio-${l.id}`}>
-                      {index > 0 && <Divider />}
-                      <ListingStatusStrip
-                        link={l.data}
-                        canWrite={Boolean(client) && canPublish}
-                        disabled={Boolean(disabled) || rechecking !== null}
-                        rechecking={rechecking === l.id}
-                        onReverificar={() => handleReverificar(conta.id, l.id)}
-                      />
-                      {stockResultByLink[l.id] && (
-                        <Text
-                          size="xs"
-                          c={
-                            stockResultByLink[l.id]!.outcome === 'enviado'
-                              ? 'green'
-                              : stockResultByLink[l.id]!.outcome === 'falha'
-                                ? 'red'
-                                : 'dimmed'
-                          }
-                          data-testid={`ml-envio-estoque-${l.id}`}
-                        >
-                          {stockResultByLink[l.id]!.mensagem}
-                        </Text>
-                      )}
-                      {/* The read-only publication facts come BEFORE the editable
+                  {contaLinks.map((l, index) => {
+                    // Two sources, one control vocabulary: Mercado Livre's own
+                    // rejection — read live off THIS link doc, so it is already
+                    // per-listing and survives a reload — and our pre-flight
+                    // refusal, which is per conta (a produto carries one listing
+                    // per account in practice, and those issues are about the
+                    // produto or the account either way).
+                    const serverErrors = mergeServerErrors(
+                      splitCausas(l.data).porCampo,
+                      blockedPorCampo,
+                    );
+                    return (
+                      <Stack key={l.id} gap="sm" data-testid={`ml-anuncio-${l.id}`}>
+                        {index > 0 && <Divider />}
+                        <ListingStatusStrip
+                          link={l.data}
+                          canWrite={Boolean(client) && canPublish}
+                          disabled={Boolean(disabled) || rechecking !== null}
+                          rechecking={rechecking === l.id}
+                          onReverificar={() => handleReverificar(conta.id, l.id)}
+                        />
+                        {stockResultByLink[l.id] && (
+                          <Text
+                            size="xs"
+                            c={
+                              stockResultByLink[l.id]!.outcome === 'enviado'
+                                ? 'green'
+                                : stockResultByLink[l.id]!.outcome === 'falha'
+                                  ? 'red'
+                                  : 'dimmed'
+                            }
+                            data-testid={`ml-envio-estoque-${l.id}`}
+                          >
+                            {stockResultByLink[l.id]!.mensagem}
+                          </Text>
+                        )}
+                        {/* The read-only publication facts come BEFORE the editable
                           form: they are what the operator opens the tab to check
                           (is it live? at what price? what did ML reject?), and
                           they were previously buried under a long form. */}
-                      <ListingDetails link={l.data} produtoFotoCount={produtoFotoCount} />
-                      <ListingForm
-                        produtoId={produtoId}
-                        linkDocId={l.id}
-                        integracaoId={conta.id}
-                        produtoNome={produtoNome}
-                        produtoEhUsado={produtoEhUsado}
-                        produtoCondicao={produtoCondicao}
-                        link={l.data}
-                        db={db}
-                        canWrite={canPublish}
-                        disabled={disabled}
-                        onDirtyChange={handleDirtyChange}
-                        registerFlush={registerFlush}
-                      />
-                    </Stack>
-                  ))}
+                        <ListingDetails link={l.data} produtoFotoCount={produtoFotoCount} />
+                        <ListingForm
+                          produtoId={produtoId}
+                          linkDocId={l.id}
+                          integracaoId={conta.id}
+                          produtoNome={produtoNome}
+                          produtoEhUsado={produtoEhUsado}
+                          produtoCondicao={produtoCondicao}
+                          link={l.data}
+                          db={db}
+                          canWrite={canPublish}
+                          disabled={disabled}
+                          serverErrors={serverErrors}
+                          onDirtyChange={handleDirtyChange}
+                          registerFlush={registerFlush}
+                        />
+                      </Stack>
+                    );
+                  })}
 
                   {issues.length > 0 && (
                     <Alert color="red" variant="light" title="Publicação bloqueada">
