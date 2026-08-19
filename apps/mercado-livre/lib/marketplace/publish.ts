@@ -71,6 +71,7 @@ import {
   resolveListingModel,
 } from './publishCore';
 import { quantidadeParaEnvio } from './bulkEstoquePlan';
+import { readListaDePrecos } from './listaDePrecosCache';
 import {
   type ResolvedSizeChart,
   type SizeChartRowBinding,
@@ -419,10 +420,22 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   }
 
   // ---- Assemble + call ML -------------------------------------------------
+  // The price-list NAME is read only to enrich resolvePrice's blocked-publish
+  // message with a human-readable label alongside the raw id — the price
+  // VALUE that gates the publish still comes from produto.precos, uncached,
+  // below. Cached (listaDePrecosCache.ts): tabelaNormalOuterRef is a property
+  // of the INTEGRAÇÃO, so this id is identical for every produto published
+  // under this conta.
+  const priceListId = deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null;
+  const priceListNome = priceListId
+    ? ((await readListaDePrecos(db, priceListId))?.nome ?? null)
+    : null;
+
   const input = assemblePublishInput({
     produto: pubProduto,
     condicao,
-    priceListId: deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null,
+    priceListId,
+    priceListNome,
     availableQuantity,
     pictures,
     variations,

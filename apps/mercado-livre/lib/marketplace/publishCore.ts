@@ -125,6 +125,13 @@ export interface AssemblePublishArgs {
   condicao: number | null;
   /** Price-list id resolved from the integração's `tabelaNormalOuterRef`. */
   priceListId: string | null;
+  /**
+   * The price list's `nome`, when the IO layer could resolve one — null when
+   * `priceListId` itself is null, or the lookup found nothing (deleted
+   * table). This module stays pure/no-IO; only `publish.ts` may fetch it
+   * (`listaDePrecosCache.ts`).
+   */
+  priceListNome: string | null;
   /** Parent stock (ignored when legacy variations exist). */
   availableQuantity: number;
   /** ML picture ids, already uploaded/cached by the IO layer. */
@@ -244,19 +251,28 @@ export function publishModeIssues(args: {
   return issues;
 }
 
-/** Resolve the selling price from the integração's tabela normal — or fail. */
+/**
+ * Resolve the selling price from the integração's tabela normal — or fail,
+ * naming the price list by BOTH its `nome` (when resolved) and its raw
+ * Firestore id, never one in place of the other: the id is what an operator
+ * can look up directly in Firestore, the nome is what they recognise on
+ * sight. `nome` is null when `id` itself is null, or when the IO layer's
+ * cached lookup could not resolve one — in that case the message is
+ * IDENTICAL to what it always was, id-only.
+ */
 export function resolvePrice(
   produto: PublishProduto,
-  priceListId: string | null,
+  priceList: { id: string | null; nome: string | null },
   issues: string[],
 ): number | null {
-  if (!priceListId) {
+  if (!priceList.id) {
     issues.push('integração sem tabela de preços (tabelaNormalOuterRef)');
     return null;
   }
-  const valor = produto.precos?.[priceListId]?.valor;
+  const valor = produto.precos?.[priceList.id]?.valor;
   if (valor == null || valor <= 0) {
-    issues.push(`produto "${produto.nome}" sem preço na tabela ${priceListId}`);
+    const tabela = priceList.nome != null ? `"${priceList.nome}" (${priceList.id})` : priceList.id;
+    issues.push(`produto "${produto.nome}" sem preço na tabela ${tabela}`);
     return null;
   }
   return valor;
@@ -581,7 +597,11 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
   const issues: string[] = [];
 
   if (!args.produto.nome?.trim()) issues.push('produto sem nome');
-  const price = resolvePrice(args.produto, args.priceListId, issues);
+  const price = resolvePrice(
+    args.produto,
+    { id: args.priceListId, nome: args.priceListNome },
+    issues,
+  );
   const isUpdate = args.link?.id != null;
   // ⚠️ A User-Products FAMILY needs both unconditionally, however published the
   // listing already is: `isUpdate` there says the FAMILY exists, and a family
@@ -647,7 +667,7 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       // blocking issue there and irrelevant everywhere else.
       price:
         args.isUserProductSeller && args.produto.propagatePriceToChildren === false
-          ? resolvePrice(child.produto, args.priceListId, issues)
+          ? resolvePrice(child.produto, { id: args.priceListId, nome: args.priceListNome }, issues)
           : null,
       pictureIds: child.pictureIds,
       attributeCombinations: finalCombos,

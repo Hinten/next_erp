@@ -138,15 +138,28 @@ describe('publishModeIssues', () => {
 describe('resolvePrice', () => {
   it('reads the tabela-normal price', () => {
     const issues: string[] = [];
-    expect(resolvePrice(produto, 'lista-1', issues)).toBe(79.9);
+    expect(resolvePrice(produto, { id: 'lista-1', nome: 'Tabela Padrão' }, issues)).toBe(79.9);
     expect(issues).toEqual([]);
   });
 
-  it('flags a missing price list and a missing price (no fallbacks)', () => {
+  it('flags a missing price list (no id at all) — no fallback', () => {
     const issues: string[] = [];
-    expect(resolvePrice(produto, null, issues)).toBeNull();
-    expect(resolvePrice(produto, 'lista-x', issues)).toBeNull();
-    expect(issues).toHaveLength(2);
+    expect(resolvePrice(produto, { id: null, nome: null }, issues)).toBeNull();
+    expect(issues).toEqual(['integração sem tabela de preços (tabelaNormalOuterRef)']);
+  });
+
+  it('names the tabela by BOTH nome and id when the nome is known', () => {
+    const issues: string[] = [];
+    expect(resolvePrice(produto, { id: 'lista-x', nome: 'Tabela Padrão' }, issues)).toBeNull();
+    expect(issues).toEqual([
+      'produto "Camiseta Básica" sem preço na tabela "Tabela Padrão" (lista-x)',
+    ]);
+  });
+
+  it('falls back to the id alone when the nome could not be resolved — unchanged pre-fix message', () => {
+    const issues: string[] = [];
+    expect(resolvePrice(produto, { id: 'lista-x', nome: null }, issues)).toBeNull();
+    expect(issues).toEqual(['produto "Camiseta Básica" sem preço na tabela lista-x']);
   });
 });
 
@@ -356,6 +369,7 @@ describe('assemblePublishInput', () => {
     produto,
     condicao: 1,
     priceListId: 'lista-1',
+    priceListNome: null,
     availableQuantity: 10,
     pictures: [{ id: 'IMG1' }],
     variations: [],

@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import { type PublishDeps, publishProduto } from './publish';
 
@@ -244,7 +245,16 @@ const FLUTTER_LINK: DocData = {
 };
 
 beforeEach(() => {
+  // listaDePrecosCache.ts's reader is module-scope and keyed by document PATH
+  // only (not by which FakeDb supplied the data) — every test here builds a
+  // fresh FakeDb but many reuse the same price-list id ('lista-1'), so a
+  // stale cached `nome` would otherwise leak from one test into the next.
+  __resetAllReadCaches();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  __resetAllReadCaches();
 });
 
 describe('publishProduto — dual-run wire shape', () => {
@@ -486,6 +496,47 @@ describe('publishProduto — dual-run wire shape', () => {
     // first hit was only discoverable once the listing existed.
     expect(mocks.suggestCategories).not.toHaveBeenCalled();
     expect(mocks.createItem).not.toHaveBeenCalled();
+  });
+
+  it('a produto with no price names the tabela by BOTH nome and id, not just its raw Firestore id', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    // Same produto seedBase() writes, but with no price under the resolved
+    // price-list id ('lista-1', from makeDeps' tabelaNormalOuterRef) —
+    // reproduces the "sem preço" block end to end.
+    db.seed('produtos', PROD, {
+      nome: 'Camiseta Básica',
+      sku: 'SKU-1',
+      paiId: null,
+      publicado: true,
+      precos: {},
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-1' }],
+    });
+    db.seed('listaDePrecos', 'lista-1', { nome: 'Tabela Padrão' });
+    const { api } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'produto "Camiseta Básica" sem preço na tabela "Tabela Padrão" (lista-1)',
+    );
+  });
+
+  it('falls back to the id alone when the price table was never seeded — unchanged pre-fix message', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed('produtos', PROD, {
+      nome: 'Camiseta Básica',
+      sku: 'SKU-1',
+      paiId: null,
+      publicado: true,
+      precos: {},
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-1' }],
+    });
+    // No `listaDePrecos/lista-1` doc seeded at all.
+    const { api } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'produto "Camiseta Básica" sem preço na tabela lista-1',
+    );
   });
 
   it('writes status/sub_status from the ML response (#799)', async () => {
