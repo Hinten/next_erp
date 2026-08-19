@@ -366,9 +366,11 @@ refetch-before-mutate; the only inbound check is
 comparison (foreign ⇒ 403 pre-enqueue) that fails OPEN when unconfigured or when
 the field is absent, because ML disables a topic after ~1h of non-200. ML's
 published notification source IPs were considered and **declined** — an
-undocumented rotation would reject every genuine notification. The same file's
-`logWebhookHeaders` is the standing evidence-gatherer for whether that ever
-changes.
+undocumented rotation would reject every genuine notification. A temporary
+header-name inventory settled the signature question from live traffic (no
+signature header of any kind) and was then removed — the pattern worth copying
+for a new channel is *observe rather than guess*, and then delete the probe once
+it has answered.
 
 **Adding a receiver for a new channel?** Establish the signature posture from the
 provider's *notification* reference, not its security-recommendations page — the
