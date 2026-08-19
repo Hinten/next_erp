@@ -54,7 +54,7 @@ export const processMercadoLivreNotification = onTaskDispatched(
     // BOTH "synced the listing" and "found no link and did nothing".
     //
     // `kind` separates a processed topic from an ignored one; `detail` carries
-    // the handler's own outcome (the items sync returns one of seven values);
+    // the handler's own outcome (the items sync returns an `ItemsSyncOutcome`);
     // `resource` names the listing, which `topic` does not; and `user_id`
     // matters most on `deferred`, where the reason naming it is written to
     // Firestore and would otherwise never reach a log.

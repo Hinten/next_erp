@@ -503,34 +503,103 @@ describe('applyItemStatusToLink — the link is the anchor', () => {
   });
 });
 
-describe('syncItemStatus — deferred UP / migration (#441)', () => {
-  it('User-Products link → deferred WITHOUT an ML call (cheap link-only guard)', async () => {
+describe('syncItemStatus — the ERP owns estado (no dual-run)', () => {
+  // The reported defect (#1087): `isUserProductModel` is true for EVERY listing
+  // a `user_product_seller` publishes, so deferring on it skipped the whole
+  // catalogue while reporting success. ML said `under_review`; the ERP kept the
+  // estado it had at publish time, for a full day, with no error anywhere.
+  it('User-Products link → syncs like any other listing (the #1087 regression)', async () => {
     const db = new FakeDb();
     seedLink(db, { isUserProductModel: true });
-    const resolve = resolverFor({ status: 'paused' });
+    const resolve = resolverFor({ status: 'under_review' });
     const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
-    expect(out).toBe('deferred-up');
-    expect(db.updates).toEqual([]);
-    expect(resolve).not.toHaveBeenCalled(); // skipped before any ML fetch
+    expect(out).toBe('synced');
+    expect(resolve).toHaveBeenCalled();
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      estado: 'v',
+      status: 'under_review',
+      // The writeback must not disturb the model flag: publish, the importer and
+      // the UPtin takeover own it, and `resolveListingModel` reads it to pick
+      // which payload shape a republish sends.
+      isUserProductModel: true,
+    });
   });
 
-  it('link awaiting migration (estado "am") → deferred without an ML call', async () => {
+  // Nothing in this repo writes 'am' — it only ever arrived from Flutter, so
+  // with Flutter gone this was a value no writer could ever clear.
+  it('link left at estado "am" by Flutter → heals to the real ML status', async () => {
     const db = new FakeDb();
     seedLink(db, { estado: 'am' });
     const resolve = resolverFor({ status: 'active' });
     const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
-    expect(out).toBe('deferred-up');
-    expect(resolve).not.toHaveBeenCalled();
+    expect(out).toBe('synced');
+    expect(resolve).toHaveBeenCalled();
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
   });
 
-  it('migration-tagged item → deferred (needs the fetched item, so the ML call DOES run)', async () => {
+  // The old guard's worst consequence, and the one nothing reported: it returned
+  // BEFORE the fetch, so an 'am' link could never reach the tag check below —
+  // the #441 takeover was unreachable for exactly the rows it exists to migrate.
+  it('an "am" link that is a closed migration source reaches the #441 takeover', async () => {
+    const db = new FakeDb();
+    seedLink(db, { estado: 'am' });
+    const migrationRunner = vi.fn(async () => {});
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
+      migrationRunner,
+    );
+    expect(out).toBe('migrated');
+    expect(migrationRunner).toHaveBeenCalledWith(asDb(db), CONTA, ITEM, {
+      produtoId: PRODUTO,
+      linkDocId: 'link1',
+      raw: expect.objectContaining({ estado: 'am' }),
+    });
+    expect(db.updates).toEqual([]);
+  });
+});
+
+describe('syncItemStatus — migration deferrals each name themselves (#441)', () => {
+  it('source-tagged item still open → deferred-migration-source (the ML call DOES run)', async () => {
     const db = new FakeDb();
     seedLink(db);
-    const resolve = resolverFor({ status: 'closed', tags: ['variations_migration_source'] });
+    const resolve = resolverFor({ status: 'active', tags: ['variations_migration_source'] });
     const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
-    expect(out).toBe('deferred-up');
+    expect(out).toBe('deferred-migration-source');
     expect(resolve).toHaveBeenCalled(); // the tag is only visible after fetching
     expect(db.updates).toEqual([]);
+  });
+
+  it('uptin-tagged item → deferred-migration-uptin, a DIFFERENT outcome', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', tags: ['variations_migration_uptin'] }),
+    );
+    expect(out).toBe('deferred-migration-uptin');
+    expect(db.updates).toEqual([]);
+  });
+
+  // Both tags at once: the destination reading wins, so a listing ML has already
+  // migrated is never reported as a source still waiting to close.
+  it('both tags → uptin wins (the destination reading, never "still waiting")', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({
+        status: 'active',
+        tags: ['variations_migration_source', 'variations_migration_uptin'],
+      }),
+    );
+    expect(out).toBe('deferred-migration-uptin');
   });
 });
 
@@ -557,7 +626,12 @@ describe('syncItemStatus — #441 migration takeover', () => {
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
   });
 
-  it('source tag + closed but NO runner supplied → still deferred-up (unchanged pre-#441 behavior)', async () => {
+  // The takeover was DUE and could not run. That is a wiring defect, not a
+  // listing state, so it must not share an outcome with ML's own in-flight
+  // migrations — production always defaults a runner in, and this value is how a
+  // regression that drops the default would announce itself instead of
+  // degrading into a permanent, plausible-looking deferral.
+  it('source tag + closed but NO runner supplied → no-migration-runner, not a migration deferral', async () => {
     const db = new FakeDb();
     seedLink(db);
     const out = await syncItemStatus(
@@ -566,10 +640,11 @@ describe('syncItemStatus — #441 migration takeover', () => {
       ITEM,
       resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
     );
-    expect(out).toBe('deferred-up');
+    expect(out).toBe('no-migration-runner');
+    expect(db.updates).toEqual([]);
   });
 
-  it('source tag but NOT yet closed, even with a runner supplied → deferred-up, runner never invoked', async () => {
+  it('source tag but NOT yet closed, even with a runner supplied → deferred, runner never invoked', async () => {
     const db = new FakeDb();
     seedLink(db);
     const migrationRunner = vi.fn(async () => {});
@@ -580,7 +655,7 @@ describe('syncItemStatus — #441 migration takeover', () => {
       resolverFor({ status: 'active', tags: ['variations_migration_source'] }),
       migrationRunner,
     );
-    expect(out).toBe('deferred-up');
+    expect(out).toBe('deferred-migration-source');
     expect(migrationRunner).not.toHaveBeenCalled();
   });
 
@@ -595,7 +670,7 @@ describe('syncItemStatus — #441 migration takeover', () => {
       resolverFor({ status: 'closed', tags: ['variations_migration_uptin'] }),
       migrationRunner,
     );
-    expect(out).toBe('deferred-up');
+    expect(out).toBe('deferred-migration-uptin');
     expect(migrationRunner).not.toHaveBeenCalled();
   });
 

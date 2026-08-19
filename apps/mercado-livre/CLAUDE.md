@@ -220,6 +220,16 @@ matters:
 | `questions`, `messages` | `park` | data-bearing, importer pending (#532/#533) |
 | `public_offers`, `public_candidates`, `user-products-families` | `ignore` | never enqueued, never persisted (#813) |
 
+⚠️ **The ERP owns `estado` on the link doc — for User-Products listings too.**
+`itemsStatusSync` used to defer on `isUserProductModel` and on `estado === 'am'`,
+because the Flutter app drove those during dual-run. There is no dual-run — Flutter
+is switched off at the cutover — so that guard stood down for a writer that will not
+exist, and since `isUserProductModel` is true for every listing a
+`user_product_seller` publishes, it silently skipped the entire future catalogue
+(#1087). ML's own migration **tags** are now the only reason to defer, and each
+deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
+a sync. Do not reintroduce a link-only guard here.
+
 ⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacao.ts`, not
 this table. The four dispositions differ in what they COST: `handled` and `ack`
 persist nothing on success, `park` writes one document per delivery (the price
