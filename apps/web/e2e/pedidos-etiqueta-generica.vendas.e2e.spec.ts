@@ -13,8 +13,9 @@ import { warmRoutes } from './helpers/warmup';
  * `labelMode: 'generic'`). The dispatch/provider logic is unit-tested
  * (`etiquetaActions.test.ts`, `providers/genericLabel.test.ts`); this proves
  * the whole path against the real UI + Firestore: the FreteCell HoverCard
- * offers "Imprimir etiqueta" for a motoboy pedido with no bought label, and
- * clicking it renders the generic PDF and hands it to the local print agent.
+ * offers both label formats for a motoboy pedido with no bought label, and
+ * clicking either one renders it in the browser and hands the bytes to the
+ * local print agent.
  *
  * Network is stubbed (below): only the local print agent — the generic label
  * is built client-side from Firestore data, no marketplace/carrier route is
@@ -63,9 +64,13 @@ test.describe.serial('Pedidos — etiqueta genérica (row action)', () => {
     await cleanupPedidoFreteFixtures(prefix);
   });
 
-  test('renders and prints the generic PDF for a motoboy pedido', async ({ page }) => {
-    const stubs = await installRouteStubs(page);
-
+  /**
+   * Open the seeded motoboy pedido's etiqueta HoverCard and click one of its two
+   * format buttons. ⚠️ Both are matched EXACTLY: Playwright's `name` is a
+   * substring match, so a bare `'Imprimir etiqueta'` would resolve to two
+   * elements and fail strict mode.
+   */
+  async function clickEtiqueta(page: Page, label: string): Promise<void> {
     await page.goto('/pedidos');
     await expect(page.getByRole('heading', { name: 'Pedidos' })).toBeVisible();
     await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
@@ -77,22 +82,43 @@ test.describe.serial('Pedidos — etiqueta genérica (row action)', () => {
 
     const row = page.getByRole('row', { name: new RegExp(fixtures.motPedidoId) });
     await row.getByText('Iniciado', { exact: true }).hover();
-    const imprimir = page.getByRole('button', { name: 'Imprimir etiqueta' });
-    await expect(imprimir).toBeVisible({ timeout: 15_000 });
-
+    const button = page.getByRole('button', { name: label, exact: true });
+    await expect(button).toBeVisible({ timeout: 15_000 });
     // Not yet posted — no risk confirm, prints straight away.
-    await imprimir.click();
+    await button.click();
+  }
+
+  test('prints the generic label as ZPL for a motoboy pedido', async ({ page }) => {
+    const stubs = await installRouteStubs(page);
+    await clickEtiqueta(page, 'Imprimir etiqueta (ZPL2)');
 
     // Exactly one print-agent POST, routed as an etiqueta-size job — the
     // stub 200 pins the print path (never the download fallback).
     await expect.poll(() => stubs.printJobs.length, { timeout: 30_000 }).toBe(1);
     const job = stubs.printJobs[0]!;
     expect(job.tamanhoFolhaImpressao).toBe('etq');
-    // The agent routes on contentType, and the label is a PDF built in the
-    // browser — so this pins the whole render, not just that a POST happened.
+    // The agent routes on contentType: plain text is its RAW-spooler channel,
+    // the one the Zebra reads.
+    expect(job.contentType).toBe('text/plain;charset=utf-8');
+    expect(job.docName).toBe(`etiqueta-${fixtures.motPedidoId}.zpl2`);
+    // Real ZPL, not an empty blob — decoding pins the whole render, not just
+    // that a POST happened.
+    const zpl = Buffer.from(String(job.docDataBase64), 'base64').toString('utf8');
+    expect(zpl.startsWith('^XA')).toBe(true);
+    expect(zpl).toContain('^CI28');
+    expect(zpl.trimEnd().endsWith('^XZ')).toBe(true);
+  });
+
+  test('prints the generic label as PDF from the same HoverCard', async ({ page }) => {
+    const stubs = await installRouteStubs(page);
+    await clickEtiqueta(page, 'Imprimir etiqueta (PDF)');
+
+    await expect.poll(() => stubs.printJobs.length, { timeout: 30_000 }).toBe(1);
+    const job = stubs.printJobs[0]!;
+    expect(job.tamanhoFolhaImpressao).toBe('etq');
     expect(job.contentType).toBe('application/pdf');
     expect(job.docName).toBe(`etiqueta-${fixtures.motPedidoId}.pdf`);
-    // A real PDF, not an empty blob: %PDF- is `JVBERi0` once base64-encoded.
+    // A real PDF: `%PDF-` is `JVBERi0` once base64-encoded.
     expect(String(job.docDataBase64)).toMatch(/^JVBERi0/);
   });
 });

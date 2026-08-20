@@ -1,4 +1,8 @@
-import { buildEtiquetaGenericaModel, renderEtiquetaGenericaPdf } from '@/lib/etiqueta-generica';
+import {
+  buildEtiquetaGenericaModel,
+  renderEtiquetaGenericaPdf,
+  renderEtiquetaGenericaZpl,
+} from '@/lib/etiqueta-generica';
 
 import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput } from '../types';
 
@@ -6,35 +10,52 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  * Generic-label provider for the carrier-less freight tipos (retiradaNaLoja /
  * motoboy / fob / outros) — port of the `default:` branch of
  * `emitirOuImprimirFrete.dart`, which rendered `EtiquetaFreteGenericaPDF` and
- * printed it. There is no carrier API, so the app builds a 10×15cm PDF from
+ * printed it. There is no carrier API, so the app builds the 10×15cm label from
  * the pedido data and sends it to the print agent (which falls back to a
  * browser download when the agent is offline).
  *
- * ZPL2 is not implemented for the generic label (legacy `//todo`); a ZPL2
- * request toasts and builds the PDF anyway (legacy parity — it did the same).
+ * Both formats are real here. `pdf` draws the label with jsPDF; `zpl2` emits
+ * ZPL for a Zebra, which the print agent blasts to the label printer through
+ * its RAW spooler channel — the same `text/plain` path the marketplace ZPL
+ * already takes (`printJob.dart:_printPlainText`, `pDatatype = 'RAW'`). Legacy
+ * only pretended to support ZPL2: it toasted "ainda não implementado" and
+ * printed the PDF instead, on the format that was the operator's DEFAULT.
  */
+
+/** The agent routes on contentType; raw ZPL goes down its plain-text channel. */
+const ZPL_CONTENT_TYPE = 'text/plain;charset=utf-8';
+
 export const genericLabelProvider: CheckoutEtiquetaProvider = {
   tipos: ['retiradaNaLoja', 'motoboy', 'fob', 'outros'],
 
   async emitirOuImprimir(input: EtiquetaProviderInput): Promise<EtiquetaOutcome> {
     const { db, pedido, pedidoId, frete, intFrete, formato, deps, ui } = input;
 
-    if (formato === 'zpl2') {
-      ui.notify({
-        title: 'Etiqueta genérica',
-        message: 'Impressão de etiqueta genérica ZPL2 ainda não implementada. Gerando PDF.',
-        color: 'yellow',
-      });
-    }
-
     try {
       const model = await buildEtiquetaGenericaModel(db, pedido, pedidoId, frete, intFrete);
-      const blob = await renderEtiquetaGenericaPdf(model);
-      const fileName = `etiqueta-${pedido.numero ?? pedidoId}.pdf`;
+      const base = `etiqueta-${pedido.numero ?? pedidoId}`;
+      const artifact =
+        formato === 'zpl2'
+          ? {
+              // A ZPL string, so the bytes are the label — no rasterisation, and
+              // the Blob carries UTF-8 so `^CI28` finds the accents it expects.
+              blob: new Blob([renderEtiquetaGenericaZpl(model)], { type: ZPL_CONTENT_TYPE }),
+              fileName: `${base}.zpl2`,
+              contentType: ZPL_CONTENT_TYPE,
+            }
+          : {
+              blob: await renderEtiquetaGenericaPdf(model),
+              fileName: `${base}.pdf`,
+              contentType: 'application/pdf',
+            };
 
       // A print (agent up) or a download (agent down) both DELIVER the label to
       // the operator, so either way the action succeeded — map both to 'printed'.
-      await deps.printJob(blob, { fileName, contentType: 'application/pdf', tamanho: 'etq' });
+      await deps.printJob(artifact.blob, {
+        fileName: artifact.fileName,
+        contentType: artifact.contentType,
+        tamanho: 'etq',
+      });
       return { status: 'printed' };
     } catch (err) {
       // The Firestore derefs and the jsPDF render throw plain

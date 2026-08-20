@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The provider builds the model + renders the PDF through the generic-label
+// The provider builds the model then renders it through the generic-label
 // module; mock the whole barrel so the test never touches Firestore or jsPDF.
-const { buildModelMock, renderMock } = vi.hoisted(() => ({
+const { buildModelMock, renderPdfMock, renderZplMock } = vi.hoisted(() => ({
   buildModelMock: vi.fn(),
-  renderMock: vi.fn(),
+  renderPdfMock: vi.fn(),
+  renderZplMock: vi.fn(),
 }));
 vi.mock('@/lib/etiqueta-generica', () => ({
   buildEtiquetaGenericaModel: buildModelMock,
-  renderEtiquetaGenericaPdf: renderMock,
+  renderEtiquetaGenericaPdf: renderPdfMock,
+  renderEtiquetaGenericaZpl: renderZplMock,
 }));
 
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';
@@ -46,20 +48,26 @@ function makeInput(over: {
 describe('genericLabelProvider', () => {
   beforeEach(() => {
     buildModelMock.mockReset().mockResolvedValue({ title: 'Pedido 1234' });
-    renderMock.mockReset().mockResolvedValue(new Blob(['pdf']));
+    renderPdfMock.mockReset().mockResolvedValue(new Blob(['%PDF-1.3']));
+    renderZplMock.mockReset().mockReturnValue('^XA^CI28^XZ');
   });
 
-  it('builds the model, exports the PDF and prints it → printed', async () => {
+  it('builds the model, renders the PDF and prints it → printed', async () => {
     const printJob = vi.fn(async () => 'printed' as const);
     const input = makeInput({ printJob });
 
     const out = await genericLabelProvider.emitirOuImprimir(input);
     expect(out).toEqual({ status: 'printed' });
     expect(buildModelMock).toHaveBeenCalledTimes(1);
-    expect(renderMock).toHaveBeenCalledTimes(1);
+    expect(renderPdfMock).toHaveBeenCalledTimes(1);
+    expect(renderZplMock).not.toHaveBeenCalled();
     expect(printJob).toHaveBeenCalledWith(
       expect.any(Blob),
-      expect.objectContaining({ tamanho: 'etq', contentType: 'application/pdf' }),
+      expect.objectContaining({
+        tamanho: 'etq',
+        contentType: 'application/pdf',
+        fileName: 'etiqueta-1234.pdf',
+      }),
     );
   });
 
@@ -69,16 +77,44 @@ describe('genericLabelProvider', () => {
     expect(out).toEqual({ status: 'printed' });
   });
 
-  it('warns on zpl2 but still builds the PDF', async () => {
+  it('renders real ZPL for zpl2 and sends it down the agent’s plain-text channel', async () => {
+    // Legacy toasted "ainda não implementado" here and printed the PDF instead —
+    // on the format that was the operator's default.
+    const printJob = vi.fn(async () => 'printed' as const);
     const notify = vi.fn();
-    const out = await genericLabelProvider.emitirOuImprimir(makeInput({ formato: 'zpl2', notify }));
+    const out = await genericLabelProvider.emitirOuImprimir(
+      makeInput({ formato: 'zpl2', printJob, notify }),
+    );
+
     expect(out).toEqual({ status: 'printed' });
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Etiqueta genérica' }));
-    expect(renderMock).toHaveBeenCalledTimes(1);
+    expect(renderZplMock).toHaveBeenCalledTimes(1);
+    expect(renderPdfMock).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(printJob).toHaveBeenCalledWith(
+      expect.any(Blob),
+      expect.objectContaining({
+        tamanho: 'etq',
+        contentType: 'text/plain;charset=utf-8',
+        fileName: 'etiqueta-1234.zpl2',
+      }),
+    );
+  });
+
+  it('carries the ZPL bytes themselves, not a rasterised label', async () => {
+    renderZplMock.mockReturnValue('^XA^CI28^FDSão Paulo^FS^XZ');
+    let sent: Blob | null = null;
+    const printJob: EtiquetaProviderInput['deps']['printJob'] = async (blob) => {
+      sent = blob;
+      return 'printed';
+    };
+    await genericLabelProvider.emitirOuImprimir(makeInput({ formato: 'zpl2', printJob }));
+
+    expect(sent).not.toBeNull();
+    expect(await (sent as unknown as Blob).text()).toBe('^XA^CI28^FDSão Paulo^FS^XZ');
   });
 
   it('returns an error outcome + red toast when rendering fails (best-effort)', async () => {
-    renderMock.mockRejectedValue(new Error('canvas boom'));
+    renderPdfMock.mockRejectedValue(new Error('canvas boom'));
     const notify = vi.fn();
     const out = await genericLabelProvider.emitirOuImprimir(makeInput({ notify }));
     expect(out).toEqual({ status: 'error', message: 'canvas boom' });

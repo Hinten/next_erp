@@ -1,6 +1,7 @@
 /**
- * Render the generic shipping label's fixtures to `etiqueta-samples/` so the
- * layout can be eyeballed without a browser, a Firestore or a printer:
+ * Render the generic shipping label's fixtures to `etiqueta-samples/` — a PDF
+ * and a ZPL per fixture — so the layout can be eyeballed without a browser, a
+ * Firestore or a printer (drop the .zpl files on https://labelary.com):
  *
  *     pnpm --filter @delfrance/web render:etiqueta-samples
  *
@@ -22,6 +23,7 @@ import {
 import { buildEtiquetaGenericaLayout, LABEL_H_MM } from '../lib/etiqueta-generica/layout';
 import type { EtiquetaGenericaModel } from '../lib/etiqueta-generica/model';
 import { renderEtiquetaGenericaPdf } from '../lib/etiqueta-generica/pdf';
+import { renderEtiquetaGenericaZpl } from '../lib/etiqueta-generica/zpl2';
 
 const OUT_DIR = join(process.cwd(), 'etiqueta-samples');
 
@@ -38,13 +40,14 @@ async function main(): Promise<void> {
   for (const [name, model] of SAMPLES) {
     const blob = await renderEtiquetaGenericaPdf(model);
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.pdf`), Buffer.from(await blob.arrayBuffer()));
+    writeFileSync(join(OUT_DIR, `etiqueta-${name}.zpl`), renderEtiquetaGenericaZpl(model), 'utf8');
     const { contentHeightMm } = buildEtiquetaGenericaLayout(model);
     const fill = ((contentHeightMm / LABEL_H_MM) * 100).toFixed(0);
     process.stdout.write(
-      `etiqueta-${name}.pdf — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%)\n`,
+      `etiqueta-${name}.{pdf,zpl} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%)\n`,
     );
   }
-  process.stdout.write(`\nWrote ${SAMPLES.length} samples to ${OUT_DIR}\n`);
+  process.stdout.write(`\nWrote ${SAMPLES.length * 2} samples to ${OUT_DIR}\n`);
 }
 
 await main();
