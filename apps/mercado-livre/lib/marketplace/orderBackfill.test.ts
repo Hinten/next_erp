@@ -230,6 +230,9 @@ function syntheticPayload(orderId: number, userId: number): Record<string, unkno
     attempts: null,
     sent: null,
     received: NOW_MS,
+    // No ML event stands behind a backfilled order, so there is no subtopic
+    // array either.
+    actions: null,
   };
 }
 

@@ -1007,18 +1007,48 @@ export type MlCatalogDomain = z.infer<typeof catalogDomainSchema>;
 /* --------------------- Claims / reclamações (Step 14) --------------------- */
 
 /**
+ * One entry of a player's `available_actions` — what THAT party may do on the
+ * claim right now (ML "Gerenciar reclamações" → players.available_actions).
+ *
+ * `action` is a plain nullable string, NEVER an enum: the documented seller set
+ * alone is a dozen values (`send_message_to_complainant`,
+ * `send_message_to_mediator`, `refund`, `open_dispute`, `allow_return`,
+ * `allow_partial_refund`, `send_tracking_number`, `return_review`, …) and ML
+ * adds to it without notice. An unknown action must read as "an action we do not
+ * implement", never as a parse failure that parks the whole claim.
+ */
+export const mlClaimAvailableActionSchema = z
+  .object({
+    action: z.string().nullable().default(null),
+    /** True when ML requires it before `due_date`. */
+    mandatory: z.boolean().nullable().default(null),
+    due_date: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlClaimAvailableAction = z.infer<typeof mlClaimAvailableActionSchema>;
+
+/**
  * One `players[]` entry of a claim (legacy `_Players`, models.dart:4007-4034).
  * `role` is `complainant`/`respondent`/`mediator` and `type` is the per-resource
  * party name (`buyer`/`seller`, `payer`/`collector`, `receiver`/`sender`,
  * `internal`) — both stay plain strings (NEVER enums): ML adds vocabulary
  * without notice and an unknown value must not fail the claim parse.
- * `available_actions` rides through `.passthrough()` untyped.
+ *
+ * ⚠️ `available_actions` is now TYPED (it used to ride through
+ * `.passthrough()`): it is the field that decides whether the seller can still
+ * DO anything on this claim, which is what the import gates the chat conversa
+ * on. An absent or null array normalises to `[]` — "no actions available" — so
+ * the gate reads the same whether ML omits the key or sends it empty.
  */
 export const mlClaimPlayerSchema = z
   .object({
     role: z.string().nullable().default(null),
     type: z.string().nullable().default(null),
     user_id: z.number().int().nullable().default(null),
+    available_actions: z
+      .array(mlClaimAvailableActionSchema)
+      .nullish()
+      .transform((v) => v ?? []),
   })
   .passthrough();
 export type MlClaimPlayer = z.infer<typeof mlClaimPlayerSchema>;
@@ -1102,6 +1132,35 @@ export const mlClaimMessageSchema = z
     stage: z.string().nullable().default(null),
     message: z.string().default(''),
     date_created: z.string(),
+    /**
+     * ML's own per-message unique id — `"<claimId>_<n>_<uuid>"` — published
+     * under "Identificador único de mensagens" with the advice to key dedup on
+     * it.
+     *
+     * ⚠️ **This port deliberately does NOT key mensagem doc ids on it**, and the
+     * reason is worth stating: every claim message the Flutter app already
+     * imported lives under `claimIds.ts`'s five-field digest. Re-keying would
+     * write every one of them a SECOND time under a new id — a thread-wide
+     * duplication of history — while buying almost nothing, because that digest
+     * is already deterministic over sender/receiver/stage/date/text. The one
+     * case it would fix is two messages identical in all five fields, which ML
+     * flags itself with `repeated` and which collapse harmlessly today. It is
+     * modelled here so the value is visible, and so a future migration that
+     * DOES re-key has the field to migrate from.
+     *
+     * Nullable: ML added it in late 2024 and the reference's own primary
+     * example still omits it.
+     */
+    hash: z.string().nullable().default(null),
+    /**
+     * `available` | `moderated` | `rejected` | `pending_translation`.
+     *
+     * ⚠️ Not decorative. ML filters the COUNTERPARTY's moderated messages out of
+     * this endpoint but returns OUR OWN, so a `rejected` message is one the
+     * buyer never saw — importing it as an ordinary bubble tells the operator a
+     * message was delivered when it was not.
+     */
+    status: z.string().nullable().default(null),
     attachments: z
       .array(mlClaimMessageAttachmentSchema)
       .nullish()
@@ -1225,3 +1284,276 @@ export const mlMissedFeedsSchema = z
   .object({ messages: z.array(mlMissedFeedSchema).default([]) })
   .passthrough();
 export type MlMissedFeeds = z.infer<typeof mlMissedFeedsSchema>;
+
+/* ------------------- Perguntas / questions (#532, Step M11) ---------------- */
+
+/**
+ * The seller's answer to a question (`question.answer`, ML `api_version=4`).
+ *
+ * ⚠️ `text` is `.default('')`, not required. A **BANNED** answer comes back with
+ * an EMPTY text by ML's own documentation — the moderation stripped it — and an
+ * empty string must round-trip rather than fail the parse of the whole question.
+ *
+ * ⚠️ The datetimes here are ISO-8601 STRINGS while the parent carries them the
+ * same way; the importer converts once, at the mapping boundary. The legacy
+ * `questionsML` schema modelled the parent's as epoch millis and the answer's as
+ * ISO, which is the kind of split that produces 1970 timestamps.
+ */
+export const mlQuestionAnswerSchema = z
+  .object({
+    text: z.string().default(''),
+    /** `ACTIVE` / `DISABLED` / `BANNED` — a plain string, never an enum. */
+    status: z.string().nullable().default(null),
+    date_created: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlQuestionAnswer = z.infer<typeof mlQuestionAnswerSchema>;
+
+/** The asker, as `GET /questions/{id}?api_version=4` returns it. */
+export const mlQuestionFromSchema = z
+  .object({
+    id: z.number().int().nullable().default(null),
+    nickname: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlQuestionFrom = z.infer<typeof mlQuestionFromSchema>;
+
+/**
+ * A Mercado Livre question (`GET /questions/{id}?api_version=4`).
+ *
+ * Only `id` is required. Every vocabulary field is a plain nullable string —
+ * the same rule the claim schemas follow, and for the same reason: the legacy
+ * Dart `StatusQuestionMl` enum THREW on any value outside its four members, so
+ * ML shipping a fifth (it documents seven today: `UNANSWERED`, `ANSWERED`,
+ * `CLOSED_UNANSWERED`, `UNDER_REVIEW`, `BANNED`, `DELETED`, `DISABLED`) would
+ * poison the whole import.
+ *
+ * ⚠️ Do NOT model this on `packages/schemas/src/questionMercadoLivre.ts`. That
+ * schema uses `z.enum` for `status` and describes the LEGACY `questionsML`
+ * collection, which this port never writes and which goes away with the Flutter
+ * decommission (#829).
+ *
+ * ⚠️ An earlier draft of this note called that collection "dual-run-only".
+ * **There is no dual run and there never will be one** (root `CLAUDE.md` rule 8):
+ * legacy DATA arrives in the migration window, legacy WRITES never do. The
+ * distinction matters here because "dual-run" would imply Flutter keeps writing
+ * `questionsML` alongside us — it does not, which is exactly why this schema can
+ * be the only one and can afford to be strict about nothing.
+ *
+ * `buyer_id` and `from.id` are two spellings of the same asker: the by-id
+ * endpoint returns `buyer_id`, the search endpoint returns `from`. The importer
+ * reads whichever is present.
+ */
+export const mlQuestionSchema = z
+  .object({
+    id: z.number().int(),
+    seller_id: z.number().int().nullable().default(null),
+    buyer_id: z.number().int().nullable().default(null),
+    item_id: z.string().nullable().default(null),
+    status: z.string().nullable().default(null),
+    /** Empty when `status` is `BANNED` — ML strips moderated text. */
+    text: z.string().default(''),
+    date_created: z.string().nullable().default(null),
+    last_updated: z.string().nullable().default(null),
+    /** `true` while ML withholds the question from the seller. */
+    hold: z.boolean().nullable().default(null),
+    deleted_from_listing: z.boolean().nullable().default(null),
+    suspected_spam: z.boolean().nullable().default(null),
+    answer: mlQuestionAnswerSchema.nullable().default(null),
+    from: mlQuestionFromSchema.nullable().default(null),
+  })
+  .passthrough();
+export type MlQuestion = z.infer<typeof mlQuestionSchema>;
+
+/* ---------------- Post-sale messages / mensageria (#532, Step M11) --------- */
+
+/**
+ * `conversation_status` on a pack's message thread — **the actionability signal
+ * for post-sale messaging**.
+ *
+ * ML documents exactly two `status` values: `active` (open to send and receive)
+ * and `blocked` (closed). `substatus` then carries the reason, from a long and
+ * still-growing `blocked_by_*` vocabulary — hence a plain nullable string.
+ *
+ * ⚠️ The claim-id field is spelled **`claim_id` in one ML reference page and
+ * `claim_ids` in another**. Both ride `.passthrough()` untyped rather than being
+ * guessed at; nothing here reads them.
+ */
+export const mlConversationStatusSchema = z
+  .object({
+    path: z.string().nullable().default(null),
+    /** `active` | `blocked` — a plain string, never an enum. */
+    status: z.string().nullable().default(null),
+    /** `blocked_by_time`, `blocked_by_mediation`, … — the operator-facing reason. */
+    substatus: z.string().nullable().default(null),
+    status_date: z.string().nullable().default(null),
+    status_update_allowed: z.boolean().nullable().default(null),
+    shipping_id: z.union([z.number(), z.string()]).nullable().default(null),
+  })
+  .passthrough();
+export type MlConversationStatus = z.infer<typeof mlConversationStatusSchema>;
+
+/**
+ * `message_resources[]` — what a message belongs to. ML returns one entry per
+ * related id, `name` being `packs`, `orders` or `sellers`.
+ *
+ * This is how a `messages` notification (whose `resource` is a bare message id)
+ * is resolved to the pack whose thread we can actually read.
+ */
+export const mlMessageResourceSchema = z
+  .object({
+    id: z.union([z.number(), z.string()]).nullable().default(null),
+    name: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlMessageResource = z.infer<typeof mlMessageResourceSchema>;
+
+/** One attachment on a post-sale message. */
+export const mlMessageAttachmentSchema = z
+  .object({
+    filename: z.string().nullable().default(null),
+    original_filename: z.string().nullable().default(null),
+    type: z.string().nullable().default(null),
+    size: z.number().nullable().default(null),
+  })
+  .passthrough();
+export type MlMessageAttachment = z.infer<typeof mlMessageAttachmentSchema>;
+
+/**
+ * One post-sale message.
+ *
+ * ⚠️ `from.user_id`/`to.user_id` are typed as `number | string`: ML's own
+ * reference prints them BOTH ways across its samples (`123456789000` in one,
+ * `"415458330"` in the next). Every consumer here compares them as strings.
+ *
+ * ⚠️ Since the 02/02/2026 MLB messaging change, `from.user_id` on a READ is the
+ * **AI Agent's** id, not the buyer's — the agent intermediates the conversation.
+ * Do not use it to identify the contact; the pedido does that.
+ */
+export const mlPostSaleMessageSchema = z
+  .object({
+    id: z.string(),
+    site_id: z.string().nullable().default(null),
+    from: z
+      .object({ user_id: z.union([z.number(), z.string()]).nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
+    to: z
+      .object({ user_id: z.union([z.number(), z.string()]).nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
+    /** `available` | `moderated` | `rejected` | `pending_translation` — plain string. */
+    status: z.string().nullable().default(null),
+    text: z.string().nullable().default(null),
+    message_date: z
+      .object({
+        received: z.string().nullable().default(null),
+        available: z.string().nullable().default(null),
+        notified: z.string().nullable().default(null),
+        created: z.string().nullable().default(null),
+        read: z.string().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    message_attachments: z
+      .array(mlMessageAttachmentSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    message_resources: z
+      .array(mlMessageResourceSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+  })
+  .passthrough();
+export type MlPostSaleMessage = z.infer<typeof mlPostSaleMessageSchema>;
+
+/**
+ * The envelope both message endpoints return —
+ * `GET /messages/packs/{packId}/sellers/{sellerId}` and `GET /messages/{id}`.
+ *
+ * The by-id form answers with `conversation_status: null` and a single-entry
+ * `messages`, which is why resolving a notification takes two calls: one to find
+ * the pack, one to read the thread WITH its status.
+ *
+ * ⚠️ `seller_max_message_length` is the live per-thread cap (350 at the time of
+ * writing). Read it rather than trusting a constant — ML returns it on every
+ * response precisely because it is not one.
+ */
+/**
+ * The pack thread's paging block.
+ *
+ * ⚠️ **Load-bearing, and it used to ride `.passthrough()` untyped.** ML's
+ * default page is **10** — the reference's own example shows
+ * `paging: { limit: 10, offset: 0, total: 3 }` — so a thread with more than ten
+ * messages silently returned its first ten and the importer wrote only those.
+ * Most real post-sale threads clear ten easily.
+ */
+export const mlPagingSchema = z
+  .object({
+    limit: z.number().nullable().default(null),
+    offset: z.number().nullable().default(null),
+    total: z.number().nullable().default(null),
+  })
+  .passthrough();
+export type MlPaging = z.infer<typeof mlPagingSchema>;
+
+export const mlPackMessagesSchema = z
+  .object({
+    /** Null on the by-id read, which returns no envelope. */
+    paging: mlPagingSchema.nullable().default(null),
+    conversation_status: mlConversationStatusSchema.nullable().default(null),
+    messages: z
+      .array(mlPostSaleMessageSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    seller_max_message_length: z.number().int().nullable().default(null),
+    buyer_max_message_length: z.number().int().nullable().default(null),
+  })
+  .passthrough();
+export type MlPackMessages = z.infer<typeof mlPackMessagesSchema>;
+
+/**
+ * ML's post-sale **messaging Agent** user id, per site.
+ *
+ * ⚠️ Since **02/02/2026** ML intermediates buyer↔seller post-sale conversations
+ * with an AI Agent, starting with Fulfillment logistics and rolling forward.
+ * A seller message must be addressed to the AGENT, not to the buyer — and on a
+ * read, `from.user_id` is the agent's id rather than the buyer's.
+ *
+ * Sending to the real buyer id is not a soft failure: the agent is the delivery
+ * path, so a message addressed around it does not reach the buyer.
+ */
+export const ML_POST_SALE_AGENT_USER_ID = {
+  MLB: 3037675074,
+  MLA: 3037674934,
+  MLC: 3020819166,
+  MCO: 3037204123,
+  MLM: 3037204279,
+  MLU: 3037204685,
+} as const satisfies Record<string, number>;
+
+export type MlPostSaleAgentSite = keyof typeof ML_POST_SALE_AGENT_USER_ID;
+
+/**
+ * The agent for a site, defaulting to **MLB** — this ERP sells in Brazil, and a
+ * `null`/unknown `site_id` on a message is far more likely to be a field ML did
+ * not send than a genuinely different marketplace.
+ */
+export function postSaleAgentUserId(siteId: string | null | undefined): number {
+  const key = (siteId ?? '').trim().toUpperCase();
+  return ML_POST_SALE_AGENT_USER_ID[key as MlPostSaleAgentSite] ?? ML_POST_SALE_AGENT_USER_ID.MLB;
+}
+
+/** `POST /answers` — the shape ML accepts for answering a question. */
+export const mlAnswerResultSchema = z
+  .object({
+    id: z.union([z.number(), z.string()]).nullable().default(null),
+    status: z.string().nullable().default(null),
+    text: z.string().nullable().default(null),
+    date_created: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlAnswerResult = z.infer<typeof mlAnswerResultSchema>;

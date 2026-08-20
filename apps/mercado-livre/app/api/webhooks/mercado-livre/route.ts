@@ -81,6 +81,15 @@ const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'payments',
   'shipments',
   'claims',
+  // #532 — the handler re-fetches `GET /questions/{id}`, and ML is eventually
+  // consistent: an immediate read can 404, or return the status from BEFORE the
+  // change the notification is about. Reading a stale `ANSWERED` would classify
+  // a freshly-asked question as unanswerable and refuse to open its thread.
+  'questions',
+  // #532 — the handler re-fetches the announced message and then its pack;
+  // ML is eventually consistent, so an immediate read can 404 on a message it
+  // has only just accepted.
+  'messages',
 ]);
 const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
 

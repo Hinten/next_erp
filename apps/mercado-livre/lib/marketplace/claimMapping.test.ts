@@ -92,16 +92,28 @@ const NOW_US = Date.parse('2026-08-01T00:00:00.000Z') * 1000;
 
 const CONVERSA_CTX = {
   buyerUserId: 301110805,
-  usuarioId: 'user-1',
+  clienteOuterRef: 'documents/clientes/cli-1',
   contaId: 'conta_abc123',
   contaCor: 7,
   pedidoId: 'ped-1',
   incidenteId: 'inc-1',
+  respostaBloqueada: null,
+  // CLAIM_SAMPLE is `status: closed` — ML empties available_actions on close.
+  podeResponder: false,
 };
 
 /* ------------------------------ enum mappings ------------------------------ */
 
 describe('tipoIncidenteFromClaimType', () => {
+  it('accepts BOTH of ML’s return spellings — the reference contradicts itself', () => {
+    // ⚠️ The claim-detail field table documents `return`; the search-response
+    // example ships `"type": "returns"`. TIPO_INCIDENTE.devolucao is the
+    // plural, so the singular used to fall through to `outros` — silently, on
+    // every return claim ML spelled that way.
+    expect(tipoIncidenteFromClaimType('returns')).toBe(TIPO_INCIDENTE.devolucao);
+    expect(tipoIncidenteFromClaimType('return')).toBe(TIPO_INCIDENTE.devolucao);
+  });
+
   it('maps the four documented ML types verbatim (they ARE TipoIncidente wire values)', () => {
     expect(tipoIncidenteFromClaimType('mediations')).toBe(TIPO_INCIDENTE.mediacaoDoMarketplace);
     expect(tipoIncidenteFromClaimType('cancel_purchase')).toBe(
@@ -213,12 +225,26 @@ describe('buildIncidenteFromClaim', () => {
   });
 
   it('unknown status/stage vocabulary falls back to the raw string (never throws)', () => {
+    // The fixture must be vocabulary ML does NOT publish. It used to be
+    // `stage: 'stale'`, which stopped being unknown the moment STAGE_DISPLAY
+    // learned it — the same inert-fixture landmine #813 hit with 'questions'.
     const incidente = buildIncidenteFromClaim(
-      makeClaim({ status: 'frozen', stage: 'stale' }),
+      makeClaim({ status: 'frozen', stage: 'etapa_que_nao_existe' }),
       undefined,
       NOW_US,
     );
-    expect(incidente.comentarios).toBe('order 2000004048276990(5142940410) - frozen stale');
+    expect(incidente.comentarios).toBe(
+      'order 2000004048276990(5142940410) - frozen etapa_que_nao_existe',
+    );
+  });
+
+  it('displays the stage ML added for ml_case claims instead of the raw slug', () => {
+    const incidente = buildIncidenteFromClaim(
+      makeClaim({ status: 'opened', stage: 'stale' }),
+      undefined,
+      NOW_US,
+    );
+    expect(incidente.comentarios).toContain('Com o Mercado Livre');
   });
 });
 
@@ -275,7 +301,9 @@ describe('buildConversaFromClaim', () => {
       cor_etiqueta: 7,
       data_cadastro: DATE_CREATED_MS,
       ultima_modificacao: LAST_UPDATED_MS,
-      usarioOuterRef: 'documents/usuarios/user-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
+      respostaBloqueada: null,
+      ultimaModificacaoIntegracao: LAST_UPDATED_MS,
       integracaoOuterRef: 'documents/integracao/conta_abc123',
       pedidoOuterRef: 'documents/pedidos/ped-1',
       incidenteOuterRef: 'documents/pedidos/ped-1/incidentes/inc-1',
@@ -283,12 +311,34 @@ describe('buildConversaFromClaim', () => {
     // estadoConversa NEVER rides the mapped fields — create fills the schema
     // default; update must preserve the operator's triage state.
     expect(conversa).not.toHaveProperty('estadoConversa');
+    // #768 — the buyer is a cliente. No usuario is written anywhere.
+    expect(conversa).not.toHaveProperty('usarioOuterRef');
+    expect(conversa).not.toHaveProperty('user_id');
+  });
+
+  it('carries the blocked reason so the composer can explain itself', () => {
+    const conversa = buildConversaFromClaim(CLAIM_SAMPLE, {
+      ...CONVERSA_CTX,
+      respostaBloqueada: 'Reclamação encerrada no Mercado Livre',
+    });
+    expect(conversa.respostaBloqueada).toBe('Reclamação encerrada no Mercado Livre');
+  });
+
+  it('tolerates a claim whose pedido cliente is gone', () => {
+    // The ref is nullable end-to-end: losing the cliente must degrade the
+    // contact link, never block the claim from importing.
+    const conversa = buildConversaFromClaim(CLAIM_SAMPLE, {
+      ...CONVERSA_CTX,
+      clienteOuterRef: null,
+    });
+    expect(conversa.clienteOuterRef).toBeNull();
   });
 
   it('an open claim is not atendido; a null cor defaults to 0; last_updated falls back to date_created', () => {
     const conversa = buildConversaFromClaim(makeClaim({ status: 'opened', last_updated: null }), {
       ...CONVERSA_CTX,
       contaCor: null,
+      podeResponder: true,
     });
     expect(conversa.atendido).toBe(false);
     expect(conversa.cor_etiqueta).toBe(0);
@@ -302,48 +352,105 @@ describe('buildClaimMessageMensagem', () => {
   const DOC_ID = 'digest-abc';
   const MSG_MS = Date.parse('2022-08-23T20:30:52.000-04:00');
 
-  it('maps a plain message — enviado, tipo comum, mid = docId, NO midGroup, NO user fields, ms timestamps', () => {
-    const mensagem = buildClaimMessageMensagem(makeMessage(), DOC_ID);
+  const CTX = { clienteOuterRef: 'documents/clientes/cli-1' };
+
+  it('a BUYER message is recebido and carries the cliente — the #768 direction fix', () => {
+    // ⚠️ Legacy stamped `enviado` on every claim message, buyer ones included.
+    // It only rendered correctly because the synthetic usuario satisfied
+    // MensagemBubble's second test (`user_id === customerUid`); this import
+    // writes no user_id, so getting this wrong would show the buyer's own words
+    // as ours.
+    const mensagem = buildClaimMessageMensagem(makeMessage(), DOC_ID, CTX);
     expect(mensagem).toEqual({
-      estadoEnvio: ESTADO_ENVIO.enviado,
+      estadoEnvio: ESTADO_ENVIO.recebido,
       tipo: TIPO_MENSAGEM.comum,
       conteudo: 'Hola',
       mid: DOC_ID,
       midGroup: null,
       data_cadastro: MSG_MS,
       timestamp: MSG_MS, // deliberate deviation: legacy left timestamp null
+      clienteMensagemOuterRef: 'documents/clientes/cli-1',
     });
     expect(mensagem).not.toHaveProperty('user_id');
     expect(mensagem).not.toHaveProperty('usarioMensagemOuterRef');
+  });
+
+  it('a SELLER message is enviado and carries NO cliente', () => {
+    const mensagem = buildClaimMessageMensagem(
+      makeMessage({ sender_role: 'respondent', receiver_role: 'complainant' }),
+      DOC_ID,
+      CTX,
+    );
+    expect(mensagem.estadoEnvio).toBe(ESTADO_ENVIO.enviado);
+    expect(mensagem.clienteMensagemOuterRef).toBeNull();
+  });
+
+  it('anything that is not the respondent renders INBOUND', () => {
+    // The mediator, and any role ML adds next. Showing someone else's message
+    // as ours is a misattribution an operator cannot spot; the reverse is
+    // obvious on sight, so the unknown case defaults to inbound.
+    for (const role of ['mediator', 'complainant', 'papel_novo', null]) {
+      const m = buildClaimMessageMensagem(makeMessage({ sender_role: role }), DOC_ID, CTX);
+      expect(m.estadoEnvio, String(role)).toBe(ESTADO_ENVIO.recebido);
+    }
+  });
+
+  it('is case- and whitespace-insensitive about the role, which comes off the wire', () => {
+    const m = buildClaimMessageMensagem(makeMessage({ sender_role: ' Respondent ' }), DOC_ID, CTX);
+    expect(m.estadoEnvio).toBe(ESTADO_ENVIO.enviado);
+  });
+
+  it('marks OUR moderated/rejected message as erro — ML never delivered it', () => {
+    // ML filters the counterparty's moderated messages out of this endpoint but
+    // returns ours. Rendering one as `enviado` tells the operator the buyer read
+    // something they never received.
+    for (const status of ['rejected', 'moderated']) {
+      const m = buildClaimMessageMensagem(
+        makeMessage({ sender_role: 'respondent', status }),
+        DOC_ID,
+        CTX,
+      );
+      expect(m.estadoEnvio, status).toBe(ESTADO_ENVIO.erro);
+    }
+    // ...but a moderated INBOUND message stays inbound: it reached us.
+    const inbound = buildClaimMessageMensagem(
+      makeMessage({ sender_role: 'complainant', status: 'rejected' }),
+      DOC_ID,
+      CTX,
+    );
+    expect(inbound.estadoEnvio).toBe(ESTADO_ENVIO.recebido);
   });
 
   it('a message WITH attachments groups on its own doc id', () => {
     const mensagem = buildClaimMessageMensagem(
       makeMessage({ attachments: [{ filename: 'f.jpg' }] }),
       DOC_ID,
+      CTX,
     );
     expect(mensagem.midGroup).toBe(DOC_ID);
   });
 });
 
 describe('buildReasonMensagem', () => {
-  it('salva, RAW reason id as mid, user fields SET, reason-sourced ms timestamps', () => {
+  it('is RECEBIDO — the buyer opened the claim — with the RAW reason id as mid', () => {
+    // Legacy wrote `salva`, a draft state, for a sentence the BUYER authored.
     const mensagem = buildReasonMensagem({
       reasonId: 'PDD9545',
       claim: CLAIM_SAMPLE,
       reason: REASON_SAMPLE,
-      usuarioId: 'user-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
     });
     expect(mensagem).toEqual({
-      estadoEnvio: ESTADO_ENVIO.salva,
+      estadoEnvio: ESTADO_ENVIO.recebido,
       tipo: TIPO_MENSAGEM.comum,
       conteudo: 'O produto chegou danificado',
       mid: 'PDD9545',
       data_cadastro: DATE_CREATED_MS, // reason.date_created (ms)
       timestamp: LAST_UPDATED_MS, // reason.last_updated (ms)
-      usarioMensagemOuterRef: 'documents/usuarios/user-1',
-      user_id: 'user-1',
+      clienteMensagemOuterRef: 'documents/clientes/cli-1',
     });
+    expect(mensagem).not.toHaveProperty('user_id');
+    expect(mensagem).not.toHaveProperty('usarioMensagemOuterRef');
   });
 
   it('falls back to the claim datetimes + unknown-motivo when the reason lookup failed', () => {
@@ -351,7 +458,7 @@ describe('buildReasonMensagem', () => {
       reasonId: 'PDD9545',
       claim: CLAIM_SAMPLE,
       reason: undefined,
-      usuarioId: 'user-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
     });
     expect(mensagem.conteudo).toBe('Motivo da reclamação desconhecido');
     expect(mensagem.data_cadastro).toBe(DATE_CREATED_MS);
@@ -360,26 +467,106 @@ describe('buildReasonMensagem', () => {
 });
 
 describe('buildAttachmentMensagem', () => {
-  it('keeps tipo comum (legacy quirk — NOT arquivo), salva, parent-message ms timestamps, user fields SET', () => {
+  it('keeps tipo comum (legacy quirk — NOT arquivo) and takes the PARENT direction', () => {
     const parent = makeMessage({ attachments: [{ filename: 'foto.jpg' }] });
     const mensagem = buildAttachmentMensagem({
       filename: 'foto.jpg',
       parentMessage: parent,
       parentMessageDocId: 'digest-abc',
       arquivoOuterRef: 'documents/arquivos/arq-1',
-      usuarioId: 'user-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
     });
     expect(mensagem).toEqual({
-      estadoEnvio: ESTADO_ENVIO.salva,
+      // The parent is a complainant message, so the photo is the buyer's.
+      // Legacy stamped every attachment `salva`, rendering the buyer's photos
+      // as unsent drafts of ours.
+      estadoEnvio: ESTADO_ENVIO.recebido,
       tipo: TIPO_MENSAGEM.comum,
       mid: 'foto.jpg',
       midGroup: 'digest-abc',
       anexoStorage: 'documents/arquivos/arq-1',
       data_cadastro: Date.parse('2022-08-23T20:30:52.000-04:00'),
       timestamp: Date.parse('2022-08-23T20:30:52.000-04:00'),
-      usarioMensagemOuterRef: 'documents/usuarios/user-1',
-      user_id: 'user-1',
+      clienteMensagemOuterRef: 'documents/clientes/cli-1',
     });
     expect(mensagem.tipo).not.toBe(TIPO_MENSAGEM.arquivo);
+  });
+
+  it('an attachment on OUR message is outbound and carries no cliente', () => {
+    const mensagem = buildAttachmentMensagem({
+      filename: 'nota.pdf',
+      parentMessage: makeMessage({ sender_role: 'respondent' }),
+      parentMessageDocId: 'digest-abc',
+      arquivoOuterRef: 'documents/arquivos/arq-2',
+      clienteOuterRef: 'documents/clientes/cli-1',
+    });
+    expect(mensagem.estadoEnvio).toBe(ESTADO_ENVIO.enviado);
+    expect(mensagem.clienteMensagemOuterRef).toBeNull();
+  });
+});
+
+describe('atendido follows the ACTIONABILITY, not the claim status', () => {
+  it('marks an OPEN claim handled when the seller holds no send action', () => {
+    // ⚠️ The gap the status-only rule left: an open claim whose seller can only
+    // refund or allow a return is unanswerable, and leaving it `atendido: false`
+    // put a blocked thread back in the operator queue carrying a reason but no
+    // closure — a composer that explains why it cannot send, in the work list.
+    const conversa = buildConversaFromClaim(makeClaim({ status: 'opened' }), {
+      ...CONVERSA_CTX,
+      podeResponder: false,
+      respostaBloqueada: 'Sem envio nesta etapa',
+    });
+    expect(conversa.atendido).toBe(true);
+  });
+
+  it('leaves a CLOSED claim unhandled if ML still offers a send action', () => {
+    // The mirror case, and why `status === closed` is not OR-ed in. ML empties
+    // `available_actions` on close, so this shape should not occur — but if it
+    // does, marking it handled while the composer is live is the contradiction.
+    const conversa = buildConversaFromClaim(makeClaim({ status: 'closed' }), {
+      ...CONVERSA_CTX,
+      podeResponder: true,
+    });
+    expect(conversa.atendido).toBe(false);
+  });
+});
+
+describe('an attachment inherits the parent’s DELIVERY, not just its direction', () => {
+  it('marks an attachment on a rejected seller message as erro', () => {
+    // ⚠️ The parent message already lands `erro` — ML never delivered it. The
+    // attachment is part of that same rejected message, so showing it as
+    // `enviado` presented one failed delivery as two different outcomes.
+    for (const status of ['rejected', 'moderated']) {
+      const mensagem = buildAttachmentMensagem({
+        filename: 'nota.pdf',
+        parentMessage: makeMessage({ sender_role: 'respondent', status }),
+        parentMessageDocId: 'digest-abc',
+        arquivoOuterRef: 'documents/arquivos/arq-1',
+        clienteOuterRef: 'documents/clientes/cli-1',
+      });
+      expect(mensagem.estadoEnvio, status).toBe(ESTADO_ENVIO.erro);
+    }
+  });
+
+  it('leaves a delivered seller attachment as enviado', () => {
+    const mensagem = buildAttachmentMensagem({
+      filename: 'nota.pdf',
+      parentMessage: makeMessage({ sender_role: 'respondent', status: 'available' }),
+      parentMessageDocId: 'digest-abc',
+      arquivoOuterRef: 'documents/arquivos/arq-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
+    });
+    expect(mensagem.estadoEnvio).toBe(ESTADO_ENVIO.enviado);
+  });
+
+  it('a rejected INBOUND attachment stays recebido — it reached us', () => {
+    const mensagem = buildAttachmentMensagem({
+      filename: 'foto.jpg',
+      parentMessage: makeMessage({ sender_role: 'complainant', status: 'rejected' }),
+      parentMessageDocId: 'digest-abc',
+      arquivoOuterRef: 'documents/arquivos/arq-1',
+      clienteOuterRef: 'documents/clientes/cli-1',
+    });
+    expect(mensagem.estadoEnvio).toBe(ESTADO_ENVIO.recebido);
   });
 });
