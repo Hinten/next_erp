@@ -196,6 +196,20 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   TEMPO_ESGOTADO: 'Não tentado: o tempo do envio se esgotou. Tente com menos produtos.',
   REAUTH: 'Não tentado: a conta precisa ser reconectada ao Mercado Livre.',
   ERRO_CANAL: 'O Mercado Livre não respondeu. Tente novamente.',
+  // The account-wide job's reconciliation phase (#1072). This module never
+  // EMITS them — it reads anchors by key, so it has no unenumerated set — but
+  // the table is the repo's registry of the price vocabulary, and a code that
+  // is not in it is a code nobody can look up.
+  NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO:
+    'O anúncio está ativo, mas o produto não registra esta conta — por isso o envio em massa ' +
+    'não o alcançou. Envie o preço por aqui, pela tabela de produtos.',
+  NAO_ENUMERADO_LINK_EM_VARIACAO:
+    'O anúncio está vinculado a uma variação, não ao produto pai. Nenhuma tela consegue enviar ' +
+    'preço para ele — corrija o vínculo do anúncio.',
+  NAO_ENUMERADO_PRODUTO_AUSENTE:
+    'O anúncio aponta para um produto que não existe mais. Refaça o vínculo ou remova o anúncio.',
+  RECONCILIACAO_INCOMPLETA:
+    'A conferência de anúncios não enumerados foi interrompida — o relatório está incompleto.',
 };
 
 /**
@@ -350,8 +364,18 @@ export async function enviarPrecoManual(
       });
       continue;
     }
-    // #804: the bulk query's `publicado == true` term drops this family with no
-    // trace. Here it is a row the operator can read and act on.
+    // ⚠️ A DELIBERATE divergence from the bulk job since #1072, not an
+    // oversight — do not "align" them without asking.
+    //
+    // The bulk job dropped this family server-side with no trace (#804 class
+    // 1); it now enumerates it and SENDS, because for an account-wide "sync
+    // every price" the live ML anúncio is the scope and `publicado` is an ERP
+    // catalogue flag that has nothing to say about it.
+    //
+    // Here the operator hand-picked ONE produto, and the two gestures mean
+    // different things: a hand-pick is worth confirming, so an oculto produto
+    // reports rather than silently pushing a price the operator may not have
+    // intended to touch.
     if (!row.publicado) {
       listings.push(linhaSimples(row, 'NAO_PUBLICADO'));
       continue;

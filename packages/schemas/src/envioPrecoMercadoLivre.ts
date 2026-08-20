@@ -20,11 +20,11 @@ import { millisSinceEpoch } from './shared/datetime';
  * Fields split into three groups:
  *  - job identity/state: `integracaoId`, `status`, `baixarPreco` (the request
  *    toggle the route sanitizes from the body), `startedBy`;
- *  - the resumable cursor: `afterAnchorId` (the plan's keyset cursor over
- *    anchor produtos — see `planejamentoConcluido` for the null
- *    disambiguation) and `fila` (the drafts still to send, at most one plan
- *    page's worth, persisted after EVERY item so a retry resumes exactly
- *    where it left off);
+ *  - the resumable cursors: `afterAnchorId` over anchor produtos and
+ *    `afterLinkPath` over the conta's links (each with its own
+ *    `*Concluido` flag for the null disambiguation), plus `fila` (the drafts
+ *    still to send, at most one plan page's worth, persisted after EVERY item
+ *    so a retry resumes exactly where it left off);
  *  - progress counters (`planejados`/`enviados`/`pulados`/`falhas`/`pausas`
  *    plus the capped `skips`/`failures` samples) surfaced to the UI as-is,
  *    and the terminal `finishedAt`/`erro`.
@@ -110,6 +110,28 @@ export const envioPrecoMercadoLivreSchema = z.object({
    */
   planejamentoConcluido: z.boolean().default(false),
   /**
+   * The RECONCILIATION phase's keyset cursor (#1072) — the FULL document path
+   * of the last link read, `null` before its first page.
+   *
+   * ⚠️ A path, not a doc id, and that is not a style choice: the phase pages a
+   * COLLECTION GROUP, where `__name__` is the full path, so `startAfter` needs
+   * a `DocumentReference` rebuilt from this value. The bare-id form
+   * `afterAnchorId` uses is a root-collection affordance and does not transfer.
+   */
+  afterLinkPath: z.string().nullable().default(null),
+  /**
+   * The reconciliation twin of `planejamentoConcluido` — its own flag rather
+   * than a widened meaning for that one, so each stays single-purpose and an
+   * in-flight job from before the deploy simply gains the phase.
+   *
+   * The phase runs only once the anchor plan is drained AND the fila is empty,
+   * so prices move first on a job a human just clicked; the report lands at the
+   * end. Consequence, and it is the accepted trade: a job that fails mid-drain
+   * never produces one. The acceptance criterion is about what `completed`
+   * means, and `completed` is exactly when it is guaranteed.
+   */
+  reconciliacaoConcluida: z.boolean().default(false),
+  /**
    * At most one plan page's drafts — refilled only when empty, bounding the
    * doc size; drained per dispatch by the send step.
    */
@@ -120,6 +142,22 @@ export const envioPrecoMercadoLivreSchema = z.object({
   enviados: z.number().int().default(0),
   /** Total per-item skips (may exceed `skips.length` past the cap). */
   pulados: z.number().int().default(0),
+  /**
+   * Anúncios the plan could not have enumerated, found by the reconciliation
+   * phase (#1072) — EXACT and uncapped, unlike the `skips` sample.
+   *
+   * It has its own counter rather than folding into `pulados` because the two
+   * answer different questions, and only this one makes `completed` mean what
+   * it says: `pulados` is "enumerated, then not sent", this is "never looked
+   * at". On a drifted catalogue the 200-row `skips` sample can be exhausted by
+   * the plan phase alone, so the count is the headline and the rows are the
+   * sample.
+   */
+  naoEnumerados: z.number().int().default(0),
+  /** Live links the reconciliation phase inspected (observability). */
+  linksReconciliados: z.number().int().default(0),
+  /** Reconciliation pages walked — bounded by `PRECO_RECON_MAX_PAGES`. */
+  reconciliacaoPaginas: z.number().int().default(0),
   /** Total per-item failures (may exceed `failures.length` past the cap). */
   falhas: z.number().int().default(0),
   /** 429 rate pauses taken so far (the consumer aborts past `PRICE_SYNC_MAX_PAUSES`). */

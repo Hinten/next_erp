@@ -141,6 +141,15 @@ export interface MercadoLivrePriceSyncStatus {
   planejados: number;
   enviados: number;
   pulados: number;
+  /**
+   * Anúncios the job could not have enumerated — a drifted denorm, or a link on
+   * a variation child (#1072). Exact and uncapped, unlike `skips`.
+   *
+   * Distinct from `pulados` because they answer different questions: `pulados`
+   * is "looked at, then not sent"; this is "never looked at". Zero is what
+   * makes `completed` mean what it says.
+   */
+  naoEnumerados: number;
   falhas: number;
   pausas: number;
   /** The first skips, for display — capped server-side; `pulados` stays exact. */
