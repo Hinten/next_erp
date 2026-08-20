@@ -55,7 +55,11 @@ Tick every box before step 2.1. Most failures in this run trace back to a missed
 - [ ] Notification callback → `<staging backend>/api/webhooks/mercado-livre`
 - [ ] Every topic in `KNOWN_TOPICS` subscribed (`lib/marketplace/notificacao.ts`):
       `orders_v2`, `orders`, `items`, `shipments`, `payments`, `items_prices`, `claims`,
-      `orders_feedback`, `questions`, `messages`, `stock-location`
+      `orders_feedback`, `questions`, `messages`, `stock-location` / `stock-locations`
+- [ ] ⚠️ Stock is **one** DevCenter checkbox ("Stock-Locations"), not two. The backend
+      knows both wire spellings because ML's reference contradicts itself — the section
+      heading is plural and its example payload is singular, and live traffic sent the
+      plural (#1129). Do not hunt for a second panel entry.
 
 ### 1.2 Environment
 
@@ -315,14 +319,15 @@ There is **no UI over `notificacoesMercadoLivre`**. Read it with:
 pnpm --filter @delfrance/mercado-livre-app dump:notificacoes --project <project-id> --status failed
 ```
 
-| Signal                                       | Assert                                                                                                                                                        | Result |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| Every subscribed topic arrives               | acks 200, dispatches to the right handler                                                                                                                     |        |
-| `items_prices`                               | **parks nothing** — #803, a permanent ack-only no-op                                                                                                          |        |
-| A notification for an **unconnected** seller | lands in the **deferred** lane; `redriveDeferredForUserId` pulls it back on connect (#808)                                                                    |        |
-| A **replayed** notification                  | dedups via `docIdOf` / ALREADY_EXISTS (#807)                                                                                                                  |        |
-| `missed_feeds` backstop (#812)               | make the backend return non-200 for a few minutes; the 05:00 sweep replays. ⚠️ `MERCADO_LIVRE_TASKS_DISABLED=1` is **not** a usable lever — it still acks 200 |        |
-| `questions` / `messages`                     | **deferred to a later run** — they `park` until #532/#533 ship                                                                                                |        |
+| Signal                                       | Assert                                                                                                                                                                                                                                                     | Result |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Every subscribed topic arrives               | acks 200, dispatches to the right handler                                                                                                                                                                                                                  |        |
+| `items_prices`                               | **parks nothing** — #803, a permanent ack-only no-op                                                                                                                                                                                                       |        |
+| `stock-location` / `stock-locations`         | **parks nothing** for a connected seller — #1129. Change stock on a User-Products listing; the dump must gain no `parked` doc. The ❌ line in `dump:notificacoes` now flags a parked doc for **any** `ack` topic, so a future spelling drift shows up here |        |
+| A notification for an **unconnected** seller | lands in the **deferred** lane; `redriveDeferredForUserId` pulls it back on connect (#808)                                                                                                                                                                 |        |
+| A **replayed** notification                  | dedups via `docIdOf` / ALREADY_EXISTS (#807)                                                                                                                                                                                                               |        |
+| `missed_feeds` backstop (#812)               | make the backend return non-200 for a few minutes; the 05:00 sweep replays. ⚠️ `MERCADO_LIVRE_TASKS_DISABLED=1` is **not** a usable lever — it still acks 200                                                                                              |        |
+| `questions` / `messages`                     | **deferred to a later run** — they `park` until #532/#533 ship                                                                                                                                                                                             |        |
 
 ---
 
