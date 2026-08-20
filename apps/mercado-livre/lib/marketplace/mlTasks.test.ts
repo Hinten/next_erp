@@ -29,6 +29,7 @@ const payload = {
   attempts: 1,
   sent: 1_700_000_000_000,
   received: 1_700_000_000_000,
+  actions: null,
 };
 
 beforeEach(() => {

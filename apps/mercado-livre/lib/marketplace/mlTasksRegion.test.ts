@@ -50,6 +50,7 @@ const ENQUEUERS = [
         attempts: null,
         sent: null,
         received: null,
+        actions: null,
       }),
   },
   {

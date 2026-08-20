@@ -21,13 +21,15 @@ import {
   IconPencilCog,
   IconSend2,
   IconTag,
+  IconTrash,
+  IconUserOff,
   IconUserPlus,
   IconUsersGroup,
 } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { writeBatch } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { ORIGEM_CONVERSA, ESTADO_CONVERSA, type Conversa } from '@delfrance/schemas';
+import { ORIGEM_CONVERSA, ESTADO_CONVERSA, idFromRef, type Conversa } from '@delfrance/schemas';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import {
@@ -46,6 +48,11 @@ import {
   WhatsappClientHttpError,
   WhatsappClientNetworkError,
 } from '@/lib/whatsapp/client';
+import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
+  useMercadoLivreClient,
+} from '@/lib/mercado-livre/client';
 import { EtiquetaPicker } from '../EtiquetaPicker';
 import { AtendentePickerModal } from './AtendentePickerModal';
 
@@ -84,6 +91,7 @@ export function ConversaActionsMenu({
 }) {
   const { user } = useAuth();
   const whatsappClient = useWhatsappClient();
+  const mlClient = useMercadoLivreClient();
   // Transferir / Incluir are gated on the usuario-read permission, matching
   // legacy `has_perm(UsuarioPerms().read)` — which maps to PERM.configuracoes.read
   // (bit 40), the read bit the `usuarios` collection shares.
@@ -100,6 +108,12 @@ export function ConversaActionsMenu({
   const participant = uid != null && usuarios.includes(uid);
   const isWhatsapp = conversa.origem === ORIGEM_CONVERSA.whatsapp;
   const isEmResposta = conversa.estadoConversa === ESTADO_CONVERSA.emResposta;
+  /**
+   * The two moderation actions ML offers on a PRE-SALE question, and only there
+   * — a post-sale thread has neither, and neither exists on any other channel.
+   */
+  const isPergunta = conversa.origem === ORIGEM_CONVERSA.mercadoLivrePerguntas;
+  const integracaoId = conversa.integracaoOuterRef ? idFromRef(conversa.integracaoOuterRef) : null;
 
   function closeAll() {
     setOpenModal('none');
@@ -157,6 +171,50 @@ export function ConversaActionsMenu({
     } catch (err) {
       if (err instanceof WhatsappClientHttpError || err instanceof WhatsappClientNetworkError) {
         notifications.show({ color: 'red', title: 'Falha ao enviar', message: err.message });
+      } else {
+        throw err;
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Run one of ML's question moderation actions (#533).
+   *
+   * ⚠️ Writes NOTHING locally on success. Both actions change the question's
+   * `status` on ML, and the question importer is the single writer of that
+   * state — the notification ML sends back closes the conversa with the right
+   * `respostaBloqueada`. Guessing it here would race the importer and could
+   * disagree with it.
+   */
+  async function runAcaoPergunta(acao: 'excluir' | 'bloquear'): Promise<void> {
+    if (!mlClient || !integracaoId) {
+      notifications.show({
+        color: 'red',
+        title: 'Ação indisponível',
+        message: 'Conta do Mercado Livre não resolvida para esta conversa.',
+      });
+      closeAll();
+      return;
+    }
+    setBusy(true);
+    try {
+      await mlClient.acaoPergunta({ integracaoId, conversaId, acao });
+      notifications.show({
+        color: 'teal',
+        message:
+          acao === 'excluir'
+            ? 'Pergunta excluída no Mercado Livre.'
+            : 'Usuário bloqueado para novas perguntas.',
+      });
+      closeAll();
+    } catch (err) {
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        notifications.show({ color: 'red', title: 'Falha na ação', message: err.message });
       } else {
         throw err;
       }
@@ -265,6 +323,43 @@ export function ConversaActionsMenu({
             >
               Encerrar atendimento
             </Menu.Item>
+          )}
+
+          {isPergunta && (
+            <>
+              <Menu.Item
+                color="red"
+                leftSection={<IconTrash size={16} />}
+                onClick={() =>
+                  setConfirm({
+                    title: 'Excluir pergunta?',
+                    message:
+                      'A pergunta sai do anúncio para todos no Mercado Livre e não pode ser restaurada por aqui.',
+                    confirmLabel: 'Excluir',
+                    color: 'red',
+                    run: () => runAcaoPergunta('excluir'),
+                  })
+                }
+              >
+                Excluir pergunta
+              </Menu.Item>
+              <Menu.Item
+                color="red"
+                leftSection={<IconUserOff size={16} />}
+                onClick={() =>
+                  setConfirm({
+                    title: 'Bloquear usuário?',
+                    message:
+                      'O usuário deixa de poder perguntar em qualquer anúncio da conta. O desbloqueio só existe no Mercado Livre.',
+                    confirmLabel: 'Bloquear',
+                    color: 'red',
+                    run: () => runAcaoPergunta('bloquear'),
+                  })
+                }
+              >
+                Bloquear usuário
+              </Menu.Item>
+            </>
           )}
 
           {participant && (

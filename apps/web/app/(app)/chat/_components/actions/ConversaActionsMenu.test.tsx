@@ -4,19 +4,29 @@ import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ORIGEM_CONVERSA, conversaSchema, type Conversa } from '@delfrance/schemas';
 
-const { batchSet, batchCommit, newDocIdMock, permAllowed, notifShow, whatsappClientRef } =
-  vi.hoisted(() => ({
-    batchSet: vi.fn(),
-    batchCommit: vi.fn(async () => undefined),
-    newDocIdMock: vi.fn(() => 'evt-id'),
-    permAllowed: { value: true },
-    notifShow: vi.fn(),
-    whatsappClientRef: {
-      value: { templateMessage: vi.fn(async () => ({ ok: true })) } as {
-        templateMessage: (id: string) => Promise<{ ok: boolean }>;
-      } | null,
-    },
-  }));
+const {
+  batchSet,
+  batchCommit,
+  newDocIdMock,
+  permAllowed,
+  notifShow,
+  whatsappClientRef,
+  acaoPergunta,
+  mlClientRef,
+} = vi.hoisted(() => ({
+  acaoPergunta: vi.fn(),
+  mlClientRef: { value: null as { acaoPergunta: unknown } | null },
+  batchSet: vi.fn(),
+  batchCommit: vi.fn(async () => undefined),
+  newDocIdMock: vi.fn(() => 'evt-id'),
+  permAllowed: { value: true },
+  notifShow: vi.fn(),
+  whatsappClientRef: {
+    value: { templateMessage: vi.fn(async () => ({ ok: true })) } as {
+      templateMessage: (id: string) => Promise<{ ok: boolean }>;
+    } | null,
+  },
+}));
 
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 vi.mock('@/lib/data/newDocId', () => ({ newDocId: newDocIdMock }));
@@ -25,6 +35,11 @@ vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ user: { uid: 'op1', displayName: 'Operador X' } }),
   usePermission: () => ({ allowed: permAllowed.value, loading: false }),
 }));
+// Keep the real error CLASSES (the menu narrows on them) and stub only the hook.
+vi.mock('@/lib/mercado-livre/client', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
+  return { ...actual, useMercadoLivreClient: () => mlClientRef.value };
+});
 vi.mock('@/lib/whatsapp/client', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/whatsapp/client')>();
   return { ...actual, useWhatsappClient: () => whatsappClientRef.value };
@@ -49,6 +64,7 @@ vi.mock('firebase/firestore', async (importActual) => {
   };
 });
 
+import { MercadoLivreClientHttpError } from '@/lib/mercado-livre/client';
 import { ConversaActionsMenu } from './ConversaActionsMenu';
 
 function makeConversa(over: Partial<Conversa>): Conversa {
@@ -71,6 +87,8 @@ function openMenu() {
 beforeEach(() => {
   permAllowed.value = true;
   whatsappClientRef.value = { templateMessage: vi.fn(async () => ({ ok: true })) };
+  mlClientRef.value = { acaoPergunta };
+  acaoPergunta.mockResolvedValue({ conversaId: 'c1', acao: 'excluir' });
 });
 
 afterEach(() => {
@@ -182,5 +200,91 @@ describe('ConversaActionsMenu — mensagem padrão', () => {
     );
     // The confirm modal is dismissed (no silent hang).
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+});
+
+describe('ConversaActionsMenu — Mercado Livre question moderation (#533)', () => {
+  const pergunta = (over: Partial<Conversa> = {}) =>
+    makeConversa({
+      usuarios: ['op1'],
+      origem: ORIGEM_CONVERSA.mercadoLivrePerguntas,
+      integracaoOuterRef: 'documents/integracao/conta1',
+      ...over,
+    });
+
+  async function confirmar(item: string, botao: string) {
+    openMenu();
+    fireEvent.click(screen.getByText(item));
+    const dialog = await screen.findByRole('dialog');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: botao }));
+    });
+  }
+
+  it('offers both items ONLY on a pergunta thread', () => {
+    wrap(<ConversaActionsMenu conversaId="c1" conversa={pergunta()} />);
+    openMenu();
+    expect(screen.getByText('Excluir pergunta')).toBeTruthy();
+    expect(screen.getByText('Bloquear usuário')).toBeTruthy();
+  });
+
+  it('offers neither on a post-sale ML thread, which has no such actions', () => {
+    // mlped shares the channel but not the surface: ML's delete/block endpoints
+    // are question-only, so showing them there would offer a 404 as a button.
+    wrap(
+      <ConversaActionsMenu
+        conversaId="c1"
+        conversa={pergunta({ origem: ORIGEM_CONVERSA.mercadoLivrePedido })}
+      />,
+    );
+    openMenu();
+    expect(screen.queryByText('Excluir pergunta')).toBeNull();
+    expect(screen.queryByText('Bloquear usuário')).toBeNull();
+  });
+
+  it('confirms before deleting, then calls the route with the resolved account', async () => {
+    wrap(<ConversaActionsMenu conversaId="c1" conversa={pergunta()} />);
+    await confirmar('Excluir pergunta', 'Excluir');
+
+    expect(acaoPergunta).toHaveBeenCalledWith({
+      integracaoId: 'conta1',
+      conversaId: 'c1',
+      acao: 'excluir',
+    });
+  });
+
+  it('writes NOTHING to the thread — the importer owns the question status', async () => {
+    // ⚠️ Deleting is not "our message went away": ML changes the question's
+    // status and the next notification brings it back through the importer.
+    // Guessing the new state here would race that single writer.
+    wrap(<ConversaActionsMenu conversaId="c1" conversa={pergunta()} />);
+    await confirmar('Bloquear usuário', 'Bloquear');
+
+    expect(acaoPergunta).toHaveBeenCalledWith(expect.objectContaining({ acao: 'bloquear' }));
+    expect(batchCommit).not.toHaveBeenCalled();
+    expect(batchSet).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a route refusal as a red notification instead of throwing', async () => {
+    acaoPergunta.mockRejectedValue(
+      new MercadoLivreClientHttpError('Pergunta não encontrada no Mercado Livre', 409, null),
+    );
+    wrap(<ConversaActionsMenu conversaId="c1" conversa={pergunta()} />);
+    await confirmar('Excluir pergunta', 'Excluir');
+
+    expect(notifShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: 'Pergunta não encontrada no Mercado Livre',
+      }),
+    );
+  });
+
+  it('refuses when the conversa names no integração, rather than calling with an empty id', async () => {
+    wrap(<ConversaActionsMenu conversaId="c1" conversa={pergunta({ integracaoOuterRef: null })} />);
+    await confirmar('Excluir pergunta', 'Excluir');
+
+    expect(acaoPergunta).not.toHaveBeenCalled();
+    expect(notifShow).toHaveBeenCalledWith(expect.objectContaining({ color: 'red' }));
   });
 });

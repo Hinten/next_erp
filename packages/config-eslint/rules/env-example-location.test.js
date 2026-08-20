@@ -107,6 +107,44 @@ describe('.env.example location convention', () => {
     expect(found).toContain('.env.secrets.example');
   });
 
+  it('allows only the repo-root .env.functions.example', () => {
+    // The THIRD root template (#1133 follow-up): build-time config for the
+    // Cloud Functions deploy, read by tools/deploy-env/build-env.mjs. It is a
+    // deliberate addition to the "one root template set", not a fourth
+    // population — it is split by WHEN the value is read (deploy-time, into the
+    // bundle) rather than by sensitivity, which is why neither existing template
+    // could hold it.
+    const found = findByPathspec('*.env.functions.example');
+    expect(
+      found.filter((p) => p !== '.env.functions.example'),
+      'App-level .env.functions.example files are not allowed — the loader only ever\nreads the repo ROOT file.',
+    ).toEqual([]);
+    expect(found).toContain('.env.functions.example');
+  });
+
+  it('has no UNKNOWN .env*.example anywhere', () => {
+    // ⚠️ The three assertions above each use an EXACT pathspec, so a template with
+    // a new infix is invisible to all of them. `.env.functions.example` was
+    // exactly that: `*.env.example` does not match it, so it would have joined the
+    // convention by slipping past it rather than by being allowed. This catch-all
+    // is what makes the next one a decision instead of an accident.
+    const known = new Set([
+      '.env.example',
+      '.env.secrets.example',
+      '.env.functions.example',
+      ...ALLOWED_NON_ROOT,
+    ]);
+    const offenders = findByPathspec('*.env*.example').filter((p) => !known.has(p));
+    expect(
+      offenders,
+      [
+        'These .env*.example templates are not part of the documented set. Add the',
+        'name to `known` above WITH a comment saying what reads it, or delete it:',
+        ...offenders.map((p) => `  - ${p}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
   it('the carve-out list only shrinks: every entry still exists', () => {
     // A consolidated file whose entry lingers here would silently re-allow a
     // future regression at that path — force the entry's removal in the same

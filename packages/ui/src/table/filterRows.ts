@@ -79,9 +79,22 @@ function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
       return (value) => value != null && Number(value) >= bound;
     }
     case 'array-contains':
+      // The one array op `ColumnFilterValue` can express: a single scalar
+      // candidate. The built-in ColumnFilter UI never emits it, but
+      // `buildPipeline` can wire it by hand as an `extraFilter`, and the
+      // client-side fallback has to agree with what the server would return.
+      return (value) => Array.isArray(value) && value.includes(f.value);
     case 'array-contains-any':
-      // Not yet implemented in client-side filtering; fall through to no-op.
-      return () => true;
+      // `ColumnFilterValue.value` is `string | number | boolean | null`, so the
+      // candidate LIST this op needs can never arrive — it would silently
+      // degrade to a one-candidate `array-contains` and return the wrong rows.
+      // Same posture as `filterExpr` (pipeline-queries.ts): surfacing the error
+      // beats quietly querying nonsense.
+      throw new Error(
+        `filterRows: op "array-contains-any" needs a list of candidates, but ` +
+          `ColumnFilterValue.value is a scalar (${typeof f.value}). ` +
+          `Use "array-contains" for a single value.`,
+      );
     default:
       return () => true;
   }

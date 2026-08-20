@@ -13,6 +13,7 @@ import { seedFreteInicial } from './frete/seedFreteInicial';
 import { FreteTab } from './FreteTab';
 import { notifications } from '@mantine/notifications';
 import { loadProdutoPesoMap } from './frete/produtoPeso';
+import { DIMENSOES_PADRAO, type ProdutoMedidas } from './frete/pesoPedido';
 
 // #371/#1093: the default Volume is seeded from the modalidade GESTURE, not a
 // mount effect. PedidoForm's Tabs use `keepMounted={false}`, so the earlier
@@ -110,6 +111,17 @@ async function pickModalidade(view: RenderResult, label: string) {
 const volumes = () =>
   formRef.getValues('freteInicial.volumes' as never) as unknown as VolumeFormState[] | null;
 
+/** A produto with no dimensions — these suites only exercise the weight. */
+const medidas = (over: Partial<ProdutoMedidas> = {}): ProdutoMedidas => ({
+  pesoBrutoKg: null,
+  pesoLiquidoKg: null,
+  alturaCm: null,
+  larguraCm: null,
+  profundidadeCm: null,
+  paiId: null,
+  ...over,
+});
+
 beforeEach(() => {
   // Mantine's Combobox portals its dropdown into `document.body`, which RTL's
   // `cleanup()` does not clear. A leftover dropdown keeps its combobox store
@@ -118,7 +130,7 @@ beforeEach(() => {
   document.body.innerHTML = '';
   loadMock.mockReset();
   notifyMock.mockReset();
-  loadMock.mockResolvedValue({ p1: { pesoBrutoKg: 2.5, pesoLiquidoKg: null, paiId: null } });
+  loadMock.mockResolvedValue({ p1: medidas({ pesoBrutoKg: 2.5 }) });
 });
 
 describe('FreteTab default Volume seed', () => {
@@ -131,7 +143,8 @@ describe('FreteTab default Volume seed', () => {
     const vol = volumes()![0]!;
     expect(vol.pesoBruto).toBe(7.5);
     expect(vol.pesoLiquido).toBe(6.75);
-    expect(vol.dimensoes).toEqual({ altura: 10, largura: 10, comprimento: 10 });
+    // No produto dimensions in this fixture, so the estimator falls back.
+    expect(vol.dimensoes).toEqual(DIMENSOES_PADRAO);
   });
 
   it('still seeds when the tab unmounts before the weight batch resolves', async () => {
