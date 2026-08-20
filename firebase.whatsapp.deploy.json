@@ -6,7 +6,10 @@
       "source": ".deploy/whatsapp-functions",
       "codebase": "whatsapp",
       "runtime": "nodejs22",
-      "predeploy": ["node apps/whatsapp/functions/scripts/prepare-deploy.mjs"],
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs whatsapp",
+        "node apps/whatsapp/functions/scripts/prepare-deploy.mjs"
+      ],
       "ignore": ["node_modules"]
     }
   ]
