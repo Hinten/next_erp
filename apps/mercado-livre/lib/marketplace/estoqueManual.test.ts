@@ -246,6 +246,7 @@ describe('enviarEstoqueManual — conta guards', () => {
   it.each([
     ['skipped', 'estoque-full-gerenciado-pelo-ml', 'Fulfillment'],
     ['erro-registrado', 'sem-deposito-no-ml', 'painel do ML'],
+    ['erro-registrado', 'sem-x-version', 'Reverificar anúncio'],
     ['erro-registrado', 'sem-user-product', 'User Products'],
     ['erro-registrado', 'multi-deposito-nao-suportado', 'mais de um depósito'],
     ['erro-registrado', 'deposito-sem-identificadores', 'store_id'],

@@ -396,7 +396,7 @@ export async function processStockSendTask(
     // that call is not merely wrong — ML accepts it and silently discards the
     // quantity, which is the failure mode this issue exists to end.
     if (payload.kind === 'userProductStock') {
-      return await enviarEstoqueUserProduct(db, api, payload, nowMs);
+      return await enviarEstoqueUserProduct(db, api, payload, nowMs, deps.retryCount ?? 0);
     }
 
     // (3) The request body — the payload's sweep-computed numbers, VERBATIM
@@ -705,6 +705,8 @@ async function enviarEstoqueUserProduct(
   api: StockSendApi,
   payload: MlStockSendTask,
   nowMs: number,
+  /** Cloud Tasks attempt index — only the LAST attempt may latch (see below). */
+  retryCount: number,
 ): Promise<StockSendResult> {
   const quantidade = payload.quantidade;
   if (quantidade == null) {
@@ -762,17 +764,26 @@ async function enviarEstoqueUserProduct(
     );
   }
   if (version == null) {
-    // ⚠️ RETHROW rather than latch. ML's reference calls this header
-    // always-present, so its absence is far likelier a proxy stripping it or a
-    // one-off hiccup than a property of this listing — and `pararMultiorigem`
-    // writes `estado 'E'`, which the sweep's `anuncio-em-erro` rung then skips
-    // until an `items` webhook or "Reverificar anúncio" clears it. Latching a
-    // healthy listing on attempt 0, with no verification, is exactly what #781's
-    // ladder exists to prevent: that path only records on the LAST attempt, and
-    // only after asking ML what the listing actually is. Letting the queue retry
-    // also makes the operator message ("tente novamente") true.
-    throw new MercadoLivreError(
-      'ML não retornou o cabeçalho x-version do estoque — escrita impossível',
+    // ⚠️ NOT a latch on sight — the #781 ladder, exactly. ML's reference calls
+    // this header always-present, so its absence is far likelier a proxy
+    // stripping it or a one-off hiccup than a property of this listing, and
+    // `pararMultiorigem` writes `estado 'E'`, which the sweep's
+    // `anuncio-em-erro` rung then skips until an `items` webhook or "Reverificar
+    // anúncio" clears it. So: RETHROW while the queue still has attempts left
+    // (one rejection is evidence, not proof), and only stop the listing once
+    // retrying has demonstrably failed. Unlike the configuration errors below,
+    // this one can heal by itself.
+    if (retryCount < STOCK_SEND_MAX_ATTEMPTS - 1) {
+      throw new MercadoLivreError(
+        'ML não retornou o cabeçalho x-version do estoque — nova tentativa',
+      );
+    }
+    return await pararMultiorigem(
+      db,
+      payload,
+      'ML não retornou o cabeçalho x-version do estoque em nenhuma tentativa — escrita impossível',
+      'sem-x-version',
+      nowMs,
     );
   }
 

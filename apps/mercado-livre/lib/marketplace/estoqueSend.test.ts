@@ -1014,6 +1014,29 @@ describe('processStockSendTask — multiorigem / seller_warehouse (#706)', () =>
     expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('p');
   });
 
+  it('…but the LAST attempt stops the listing, so it cannot loop forever', async () => {
+    // The other half of the #781 ladder: retrying has demonstrably failed, so
+    // this stops instead of re-earning three attempts every 15 minutes.
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [
+            { type: 'seller_warehouse', store_id: 'A', network_node_id: 'NA', quantity: 1 },
+          ],
+        } as MlUserProductStock,
+        version: null,
+      }),
+      retryCount: LAST_ATTEMPT,
+    });
+    seedLink(h.db, { estado: 'p' });
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-x-version' });
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('E');
+  });
+
   it('⚠️ a 404 from the stock read is `sem-deposito-no-ml`, not a generic 4xx', async () => {
     // A UP whose stock was never initialised answers `stock-locations not found`,
     // NOT an empty locations array. Left to the generic arm it would burn all
