@@ -1,5 +1,10 @@
 import { FieldPath, type Query, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
-import { type MigrationContext, type MigrationSummary, runMigration } from '../runner';
+import {
+  type MigrationContext,
+  type MigrationSummary,
+  isMainModule,
+  runMigration,
+} from '../runner';
 import {
   type ClienteRow,
   type ClientesPorUsuario,
@@ -147,6 +152,7 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   let semCliente = 0;
   let ambiguos = 0;
   let invalidas = 0;
+  let conflitos = 0;
 
   for await (const docs of pagesByDocId(ctx, 'chat')) {
     for (const doc of docs) {
@@ -191,13 +197,46 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
           );
           continue;
 
-        case 'resolvido':
+        case 'resolvido': {
+          // ⚠️ tier 1 (root `CLAUDE.md` rule 7): the patch is DERIVED from this
+          // snapshot, so it asserts the snapshot's `updateTime`. A blind update
+          // holds `ja-normalizado` only at READ time, and the gap to the write
+          // is real — `orderMessageImport.ts` sets `clienteOuterRef` on EXISTING
+          // conversas inside its own watermark transaction, deriving the cliente
+          // from `pedido.clientePedidoOuterRef` rather than the usuario hop used
+          // here. When the two disagree, the loser must be REPORTED, not
+          // silently overwritten — and the ML side’s guard cannot see a write
+          // made outside its transaction.
+          const gravou = await ctx.writer.updateGuarded(
+            doc.ref,
+            { clienteOuterRef: verdict.para },
+            doc.updateTime,
+          );
+          if (!gravou) {
+            conflitos += 1;
+            ctx.sink.skip(
+              doc.ref.path,
+              'clienteOuterRef',
+              verdict.para,
+              'documento alterado depois da leitura — outro escritor venceu, nada foi sobrescrito',
+            );
+            continue;
+          }
           ctx.sink.change(doc.ref.path, 'clienteOuterRef', null, verdict.para);
-          await ctx.writer.update(doc.ref, { clienteOuterRef: verdict.para });
           docsChanged += 1;
           continue;
+        }
       }
     }
+  }
+
+  if (conflitos > 0) {
+    // eslint-disable-next-line no-console -- operator-facing run summary
+    console.log(
+      `[conversa-cliente-outer-ref] ${conflitos} conversa(s) alteradas por outro ` +
+        `escritor entre a leitura e a escrita — NADA foi sobrescrito. O passe é ` +
+        `idempotente: rode de novo e elas serão reavaliadas contra o valor atual.`,
+    );
   }
 
   if (semCliente > 0 || ambiguos > 0 || invalidas > 0) {
@@ -214,11 +253,10 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   return { docsScanned, docsChanged };
 }
 
-const isDirectInvocation =
-  process.argv[1]?.endsWith('migrate.ts') === true ||
-  process.argv[1]?.endsWith('migrate.js') === true;
-
-if (isDirectInvocation) {
+// ⚠️ `isMainModule`, never an `argv[1].endsWith('migrate.ts')` test: EVERY
+// module in this package is named `migrate.ts`, so that shape answers "is the
+// entrypoint called migrate.ts", not "is the entrypoint me" (`runner.ts:28-33`).
+if (isMainModule(import.meta.url)) {
   runMigration('conversa-cliente-outer-ref', run).catch((err: unknown) => {
     console.error(err);
     process.exitCode = 1;
