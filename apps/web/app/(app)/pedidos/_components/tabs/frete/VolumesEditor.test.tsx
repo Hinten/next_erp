@@ -14,7 +14,7 @@ import type { PedidoFormHandle } from './fields';
 import { seedFreteInicial } from './seedFreteInicial';
 import { VolumesEditor } from './VolumesEditor';
 import { loadProdutoPesoMap } from './produtoPeso';
-import { volumePadrao } from './pesoPedido';
+import { volumePadrao, type ProdutoMedidas } from './pesoPedido';
 
 vi.mock('./produtoPeso', () => ({ loadProdutoPesoMap: vi.fn() }));
 vi.mock('@mantine/notifications', () => ({ notifications: { show: vi.fn() } }));
@@ -49,10 +49,21 @@ function Host({ volumes, maxVolumes }: { volumes: VolumeFormState[] | null; maxV
 const stored = () =>
   formRef.getValues('freteInicial.volumes' as never) as unknown as VolumeFormState[] | null;
 
+/** A produto with no dimensions — these suites only exercise the weight. */
+const medidas = (over: Partial<ProdutoMedidas> = {}): ProdutoMedidas => ({
+  pesoBrutoKg: null,
+  pesoLiquidoKg: null,
+  alturaCm: null,
+  larguraCm: null,
+  profundidadeCm: null,
+  paiId: null,
+  ...over,
+});
+
 beforeEach(() => {
   loadMock.mockReset();
   notifyMock.mockReset();
-  loadMock.mockResolvedValue({ p1: { pesoBrutoKg: 3, pesoLiquidoKg: null, paiId: null } });
+  loadMock.mockResolvedValue({ p1: medidas({ pesoBrutoKg: 3 }) });
 });
 
 describe('VolumesEditor "+ Novo volume"', () => {

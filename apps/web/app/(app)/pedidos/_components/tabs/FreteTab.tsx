@@ -99,7 +99,31 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   async function seedVolumeOnActivation() {
     if (marketplaceOwned || (integracaoRef != null && loadingIntegracao)) return;
     try {
-      await seedVolumePadrao({ form, db, queryClient, itens: itensFlat, marketplaceOwned });
+      const aviso = await seedVolumePadrao({
+        form,
+        db,
+        queryClient,
+        itens: itensFlat,
+        marketplaceOwned,
+      });
+      // The box the estimator produced may not be shippable as-is (#371).
+      // Surface that here rather than letting the operator discover it when the
+      // carrier rejects the quote.
+      if (aviso === 'excedeu60') {
+        notifications.show({
+          color: 'yellow',
+          title: 'Volume acima de 60cm',
+          message:
+            'O volume estimado passa de 60cm em algum lado — a maioria das transportadoras cobra adicional. Considere dividir o pedido.',
+        });
+      } else if (aviso === 'excedeuLimiteLegal') {
+        notifications.show({
+          color: 'orange',
+          title: 'Volume acima do limite dos Correios',
+          message:
+            'O pedido não cabe em um único volume dentro do limite dos Correios (100cm por lado, 200cm somados). As medidas foram limitadas — divida o pedido em mais volumes.',
+        });
+      }
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       notifications.show({

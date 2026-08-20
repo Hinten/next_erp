@@ -6,6 +6,7 @@ import { MODALIDADE_FRETE, type ModalidadeFrete } from '@delfrance/schemas';
 import type { VolumeFormState } from '../../types';
 import { fretePath, type PedidoFormHandle } from './fields';
 import { pesoPedido, shouldSeedVolume, volumePadrao, type PesoPedidoItem } from './pesoPedido';
+import { dimensoesPedido, type AvisoDimensoes } from './dimensoesPedido';
 import { loadProdutoPesoMap } from './produtoPeso';
 
 /** A `FlatItem` subset — the fields the seed reads. */
@@ -38,16 +39,19 @@ export interface SeedVolumePadraoArgs {
  * 20×20×20cm / **1kg** package, so seeding is what makes a quote use the
  * pedido's real weight.
  *
- * Returns whether a Volume was written. A produto read failure REJECTS
+ * Returns the estimator's `aviso` when a Volume was written (`null` = seeded
+ * cleanly), or `'naoSemeado'` when it declined. A produto read failure REJECTS
  * (`FirebaseError`) rather than seeding a wrong weight — the caller decides
- * how to surface that.
+ * how to surface both.
  */
-export async function seedVolumePadrao(args: SeedVolumePadraoArgs): Promise<boolean> {
+export async function seedVolumePadrao(
+  args: SeedVolumePadraoArgs,
+): Promise<AvisoDimensoes | 'naoSemeado' | null> {
   const readVolumes = () =>
     (args.form.getValues(fretePath('volumes')) as VolumeFormState[] | null) ?? null;
 
   if (!shouldSeedVolume({ marketplaceOwned: args.marketplaceOwned, volumes: readVolumes() })) {
-    return false;
+    return 'naoSemeado';
   }
 
   const itens = args.itens.filter((i) => !i._delete);
@@ -62,15 +66,18 @@ export async function seedVolumePadrao(args: SeedVolumePadraoArgs): Promise<bool
   // clobbered it would silently discard their entry (root CLAUDE.md rule 7 —
   // decide what happens when your write is the loser).
   if (!shouldSeedVolume({ marketplaceOwned: args.marketplaceOwned, volumes: readVolumes() })) {
-    return false;
+    return 'naoSemeado';
   }
 
+  // One batched map feeds both estimators — the weight and the box come from
+  // the same produto reads (#371).
+  const estimativa = dimensoesPedido(itens, pesoById);
   args.form.setValue(
     fretePath('volumes'),
-    [volumePadrao(pesoPedido(itens, pesoById))] as unknown as VolumeFormState[],
+    [volumePadrao(pesoPedido(itens, pesoById), estimativa)] as unknown as VolumeFormState[],
     { shouldDirty: true, shouldValidate: true },
   );
-  return true;
+  return estimativa.aviso;
 }
 
 /**

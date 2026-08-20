@@ -1,15 +1,42 @@
 import { roundReais } from '@delfrance/core/money';
 import type { VolumeFormState } from '../../types';
+// Type-only, so it is erased at build time and the runtime dependency stays
+// one-directional (`dimensoesPedido` → this module, never back).
+import type { EstimativaDimensoes } from './dimensoesPedido';
+
+/** A box, in centimetres, on the `Dimensoes` wire axes. */
+export interface DimensoesCm {
+  altura: number;
+  largura: number;
+  comprimento: number;
+}
 
 /**
- * The produto fields `pesoPedido` needs — a produto's own weight plus its
- * `paiId` for the variation→parent fallback. Callers batch-fetch these
- * (`loadProdutoPesoMap`, `./produtoPeso`) keyed by produto id, including any
- * parent a zero-weight variation needs.
+ * `Dimensoes.padrao()` (`.old/packages/pedido/lib/src/models.dart:1077-1083`),
+ * raised to the legal minimum — the legacy 10cm comprimento sits below the
+ * 11cm Correios floor for a caixa/pacote. Used whenever no item resolves a
+ * full set of dimensions.
  */
-export interface ProdutoPesoInfo {
+export const DIMENSOES_PADRAO: DimensoesCm = { altura: 10, largura: 10, comprimento: 11 };
+
+/**
+ * The produto fields the freight estimators need — weight for `pesoPedido`,
+ * the three dimensions for `dimensoesPedido`, and `paiId` for the
+ * variation→parent fallback both use. Callers batch-fetch these
+ * (`loadProdutoPesoMap`, `./produtoPeso`) keyed by produto id, including any
+ * parent a variation needs.
+ *
+ * It lives here rather than in `./produtoPeso` (its natural owner) only to
+ * keep the import graph acyclic: `produtoPeso` already imports
+ * {@link normalizeProdutoId} from this module.
+ */
+export interface ProdutoMedidas {
   pesoBrutoKg: number | null;
   pesoLiquidoKg: number | null;
+  /** ⚠️ The third axis is `profundidadeCm` on produto, `comprimento` on the wire. */
+  alturaCm: number | null;
+  larguraCm: number | null;
+  profundidadeCm: number | null;
   paiId: string | null;
 }
 
@@ -71,7 +98,7 @@ export function normalizeProdutoId(raw: string | null | undefined): string | nul
  */
 export function pesoPedido(
   itens: readonly PesoPedidoItem[],
-  produtoPesoById: Readonly<Record<string, ProdutoPesoInfo | null | undefined>>,
+  produtoPesoById: Readonly<Record<string, ProdutoMedidas | null | undefined>>,
 ): number {
   if (itens.length === 0) return 1;
 
@@ -103,25 +130,24 @@ export function pesoPedido(
  * — a single default Volume built from a pedido weight: 1 unit, 90% of
  * `pesoBruto` as `pesoLiquido` (2 decimals, byte-parity `duasCasasDecimais`
  * rounding — {@link roundReais} despite the money-flavored name, see
- * `@delfrance/core/money`), 'Pacote', hardcoded 10×10×10cm.
+ * `@delfrance/core/money`), and the box/bag `dimensoesPedido` estimated
+ * (#371). Without an estimate it falls back to {@link DIMENSOES_PADRAO} —
+ * still far better than no Volume at all, since an empty volume list makes
+ * `buildCalculatePayload` (`@delfrance/integrations-freight-br`) quote a
+ * fabricated **20×20×20cm / 1kg** package.
  *
- * The factory does not read product dimensions — porting the legacy
- * `getDimensoes` box estimator is the remaining half of #371. Until then the
- * 10×10×10cm box is still strictly better than the alternative: an empty
- * volume list makes `buildCalculatePayload`
- * (`@delfrance/integrations-freight-br`) fall back to **20×20×20cm / 1kg**, so
- * seeding this one replaces a fabricated box AND a fabricated weight with a
- * fabricated box and the pedido's real weight.
+ * `especie` follows the packaging the estimator picked, because it is what the
+ * NF-e `<vol><esp>` group carries for this shipment.
  */
-export function volumePadrao(pesoBruto = 1): VolumeFormState {
+export function volumePadrao(pesoBruto = 1, estimativa?: EstimativaDimensoes): VolumeFormState {
   return {
     quantidade: 1,
-    especie: 'Pacote',
+    especie: estimativa?.embalagem === 'saco' ? 'Saco' : 'Pacote',
     marca: null,
     numero: null,
     pesoBruto,
     pesoLiquido: roundReais(pesoBruto * 0.9),
-    dimensoes: { altura: 10, largura: 10, comprimento: 10 },
+    dimensoes: { ...(estimativa?.dimensoes ?? DIMENSOES_PADRAO) },
     lacres: null,
   };
 }
