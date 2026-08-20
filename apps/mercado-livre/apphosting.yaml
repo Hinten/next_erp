@@ -76,7 +76,7 @@ runConfig:
 
 env:
   # ⚠️ The queue region this backend ENQUEUES to. Not a secret, and NOT optional:
-  # unset, three of the five enqueuers fall through to
+  # unset, four of the five enqueuers fall through to
   # `MERCADO_LIVRE_TASKS_REGION?.trim() || FUNCTIONS_REGION || 'us-east5'`
   # (mlMassImportTasks / mlPriceSyncTasks / mlNfeUploadTasks / mlStockTasks) while
   # their queues live in us-east1 — the value functions/build.mjs inlines. The

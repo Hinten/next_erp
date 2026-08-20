@@ -89,13 +89,24 @@ const CODEBASES = {
       FIREBASE_DATABASE_ID: 'default',
     },
     tasksRegionVar: 'MERCADO_LIVRE_TASKS_REGION',
+    // The variable the ENQUEUER reads, on the App Hosting backend. Set in
+    // apphosting.yaml / the console, NOT in the deploy shell — so this script
+    // cannot read it and can only print what it must equal.
+    backendVar: 'MERCADO_LIVRE_TASKS_REGION',
+    backendManifest: 'apps/mercado-livre/apphosting.yaml',
     // Read from the DEPLOYING shell and baked into onTaskDispatched.rateLimits
     // by firebase-tools' local trigger analysis — not an esbuild define, but the
     // same "silent default" shape, and equally invisible after the fact.
+    // ⚠️ Source of truth: `envInt(...)` in bulkEstoquePlan.ts, drift-checked.
     deployShell: {
       MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES: '2',
       MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND: '2',
     },
+    deployShellSource: 'apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts',
+    // Read at RUNTIME by the enqueuer inside the deployed function, so a value in
+    // `.env.deploy` (copied into the artifact by prepare-deploy.mjs) overrides
+    // the inlined one. Printed, not validated — this script cannot see that file.
+    runtimeOverrides: [],
   },
   'mercado-pago': {
     deployConfig: 'firebase.mercado-pago.deploy.json',
@@ -103,7 +114,10 @@ const CODEBASES = {
     deployDoc: 'apps/mercado-pago/functions/DEPLOY.md',
     inlined: { FUNCTIONS_REGION: 'us-east5' },
     tasksRegionVar: 'FUNCTIONS_REGION',
+    backendVar: 'MERCADO_PAGO_TASKS_REGION',
+    backendManifest: 'apps/mercado-pago/apphosting.yaml',
     deployShell: {},
+    runtimeOverrides: ['MERCADO_PAGO_TASKS_REGION'],
   },
   whatsapp: {
     deployConfig: 'firebase.whatsapp.deploy.json',
@@ -111,7 +125,10 @@ const CODEBASES = {
     deployDoc: 'apps/whatsapp/functions/DEPLOY.md',
     inlined: { FUNCTIONS_REGION: 'us-east5', FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
+    backendVar: 'WHATSAPP_TASKS_REGION',
+    backendManifest: 'apps/whatsapp/apphosting.yaml',
     deployShell: {},
+    runtimeOverrides: ['WHATSAPP_TASKS_REGION'],
   },
   nfe: {
     deployConfig: 'firebase.nfe.deploy.json',
@@ -119,7 +136,10 @@ const CODEBASES = {
     deployDoc: 'apps/nfe/functions/DEPLOY.md',
     inlined: { FUNCTIONS_REGION: 'us-east1' },
     tasksRegionVar: 'FUNCTIONS_REGION',
+    backendVar: 'NFE_TASKS_REGION',
+    backendManifest: 'apps/nfe/apphosting.yaml',
     deployShell: {},
+    runtimeOverrides: ['NFE_TASKS_REGION'],
   },
   storage: {
     deployConfig: 'firebase.functions.deploy.json',
@@ -127,14 +147,57 @@ const CODEBASES = {
     deployDoc: 'apps/functions/DEPLOY.md',
     inlined: { FUNCTIONS_REGION: 'us-east1' },
     tasksRegionVar: 'FUNCTIONS_REGION',
+    // No App Hosting backend enqueues this one — `processarBalanco` is enqueued
+    // by the `finalizarBalanco` callable and by itself, both inside the codebase.
+    backendVar: null,
+    backendManifest: null,
     deployShell: {},
+    // ⚠️ The one queue with NO sweep behind it, and its region has a runtime
+    // override the inlined value does not cover.
+    runtimeOverrides: ['BALANCO_TASKS_REGION'],
   },
 };
 
-/** Blank and whitespace-only count as unset — same rule as every `build.mjs`. */
+/**
+ * Blank and whitespace-only count as unset.
+ *
+ * ⚠️ This is NOT the same rule as `build.mjs`, and the difference matters. There
+ * the expression is a bare `process.env.X || '<default>'` with no `trim()`, so
+ * `''` falls through but `'   '` does NOT — a whitespace-only export is inlined
+ * verbatim. `checkWhitespace` below turns that divergence into an error rather
+ * than letting this table print a default the build will not use.
+ */
 function valueOf(env, name) {
   const raw = env[name];
   return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
+}
+
+/**
+ * A value that is non-empty but not equal to its trimmed form is inlined WITH the
+ * whitespace by `build.mjs`, while this script would report the trimmed value —
+ * so the table would be lying about what the bundle gets. That is a genuine
+ * "your export is not what will be baked in" condition, not a style nit.
+ */
+/** The region the queue/schedule functions will be created in. */
+function tasksRegionOf(spec, env) {
+  return valueOf(env, spec.tasksRegionVar) ?? spec.inlined[spec.tasksRegionVar] ?? '(unknown)';
+}
+
+function checkWhitespace(env, names) {
+  const errors = [];
+  for (const name of names) {
+    const raw = env[name];
+    if (typeof raw !== 'string' || raw === '' || raw === raw.trim()) continue;
+    errors.push(
+      [
+        `${name} is ${JSON.stringify(raw)} — it has surrounding whitespace, and`,
+        '`build.mjs` inlines it VERBATIM (its expression is a bare `process.env.X ||',
+        "'<default>'`, with no trim). The bundle would get the padded string while",
+        'this table reported the trimmed one. Export it without the whitespace.',
+      ].join('\n'),
+    );
+  }
+  return errors;
 }
 
 /**
@@ -197,6 +260,17 @@ export function preflight(codebase, env = process.env) {
     });
   }
 
+  // Runtime overrides are listed so the table is not read as complete. This
+  // script cannot resolve them: they are read INSIDE the deployed function, and
+  // `.env.deploy` (copied into the artifact by prepare-deploy.mjs) can set them
+  // to something the inlined region disagrees with — the same silent drop, one
+  // layer down. Validating that file is `env-files.mjs`' territory.
+  for (const name of spec.runtimeOverrides) {
+    rows.push({ name, value: `(falls back to ${tasksRegionOf(spec, env)})`, source: 'runtime' });
+  }
+
+  errors.push(...checkWhitespace(env, Object.keys(spec.inlined)));
+
   const tasksRegion =
     valueOf(env, spec.tasksRegionVar) ?? spec.inlined[spec.tasksRegionVar] ?? '(unknown)';
   if (REGIONS_WITHOUT_TASKS.has(tasksRegion)) {
@@ -223,17 +297,30 @@ export function formatRows(rows) {
 
 /**
  * The cross-check this script CANNOT perform: the enqueuer lives in the App
- * Hosting backend, whose env is set in the Firebase console, not here. A mismatch
- * makes the Admin SDK resolve `us-central1` and the task is SILENTLY DROPPED.
+ * Hosting backend, whose env is set in `apphosting.yaml` / the console, not in
+ * the deploy shell. A mismatch makes the Admin SDK resolve `us-central1` and the
+ * task is SILENTLY DROPPED.
+ *
+ * ⚠️ This must fire for EVERY codebase with a backend enqueuer, not just
+ * mercado-livre. The region abort above tells a mercado-pago/whatsapp operator to
+ * `export FUNCTIONS_REGION=us-east1`, which moves the queue — while their
+ * backends set no region variable at all, so the enqueuer keeps resolving the
+ * `us-east5` code default. Obeying the remedy would CREATE the very mismatch this
+ * PR fixed for mercado-livre, and a note that returned null for those two would
+ * have said nothing about it.
  */
-function crossCheckNote(codebase, tasksRegion) {
-  if (codebase !== 'mercado-livre') return null;
+export function crossCheckNote(codebase, tasksRegion) {
+  const spec = CODEBASES[codebase];
+  if (!spec?.backendVar) return null;
   return [
-    `⚠️  Baking MERCADO_LIVRE_TASKS_REGION=${tasksRegion} into the functions bundle.`,
-    '    The App Hosting BACKEND must carry the same value, or its enqueue resolves',
-    '    us-central1 and the task is silently dropped (#1108). Confirm before the',
-    '    first live notification: Firebase console -> App Hosting -> the',
-    '    mercado-livre backend -> environment variables.',
+    `⚠️  The queue/schedule functions are being created in ${tasksRegion}.`,
+    `    The App Hosting BACKEND enqueues against ${spec.backendVar}, and it must`,
+    `    resolve to the SAME region — otherwise the Admin SDK falls back to`,
+    '    us-central1 and the task is silently dropped, with the route reporting',
+    '    success (#1108).',
+    '',
+    `    Set it in ${spec.backendManifest} (or the console), then redeploy the`,
+    `    backend:  ${spec.backendVar}=${tasksRegion}`,
   ].join('\n');
 }
 

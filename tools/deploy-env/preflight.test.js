@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { CODEBASES, REGIONS_WITHOUT_TASKS, preflight } from './preflight.mjs';
+import { CODEBASES, REGIONS_WITHOUT_TASKS, crossCheckNote, preflight } from './preflight.mjs';
 
 /**
  * The preflight's job is to turn two silent deploy outcomes into loud ones, so
@@ -140,6 +140,43 @@ describe('the duplicated defaults still match build.mjs', () => {
     }
   });
 
+  it('drift-checks the deployShell defaults too, not just the inlined ones', () => {
+    // These are restated from `envInt(NAME, N)` in bulkEstoquePlan.ts. Nothing
+    // compared them before, so changing either literal left the preflight
+    // printing the old number, green, on every deploy — the exact "the table
+    // lies" failure the drift test above exists to prevent.
+    for (const spec of Object.values(CODEBASES)) {
+      const names = Object.keys(spec.deployShell);
+      if (names.length === 0) continue;
+      const source = readFileSync(resolve(REPO_ROOT, spec.deployShellSource), 'utf8');
+      for (const [name, expected] of Object.entries(spec.deployShell)) {
+        const match = new RegExp(`envInt\\(\\s*'${name}'\\s*,\\s*(\\d+)\\s*\\)`).exec(source);
+        expect(match, `${spec.deployShellSource} has no envInt for ${name}`).not.toBeNull();
+        expect(match[1], `${name} drifted from ${spec.deployShellSource}`).toBe(expected);
+      }
+    }
+  });
+
+  it('lists EVERY build.mjs default, so a new define cannot go unlisted', () => {
+    // The drift test is otherwise one-directional: it proves each listed entry
+    // matches the build, never that the build has nothing the table omits. A new
+    // `process.env.X || '…'` would simply be absent, with nothing to notice.
+    for (const [codebase, spec] of Object.entries(CODEBASES)) {
+      const source = readFileSync(resolve(REPO_ROOT, spec.buildScript), 'utf8');
+      const found = [...source.matchAll(/process\.env\.([A-Z0-9_]+)\s*\|\|\s*'[^']*'/g)].map(
+        (m) => m[1],
+      );
+      const missing = found.filter(
+        // TASKS_INVOKER_SA is the guard's own subject, handled separately above.
+        (name) => name !== 'TASKS_INVOKER_SA' && !(name in spec.inlined),
+      );
+      expect(
+        missing,
+        `${spec.buildScript} inlines these but CODEBASES.${codebase} omits them`,
+      ).toEqual([]);
+    }
+  });
+
   it('names a build script that exists for every codebase', () => {
     for (const [codebase, spec] of Object.entries(CODEBASES)) {
       expect(
@@ -155,6 +192,72 @@ describe('the duplicated defaults still match build.mjs', () => {
         codebase,
       ).not.toThrow();
     }
+  });
+});
+
+describe('a padded value is refused rather than silently trimmed', () => {
+  // `build.mjs` is a bare `process.env.X || '<default>'` — no trim — so `''`
+  // falls through but `'   '` is inlined VERBATIM. Without this check the table
+  // reported the trimmed value while the bundle got the padded one.
+  it('rejects a region with surrounding whitespace', () => {
+    const { errors } = run({ TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: ' us-east1 ' }, 'nfe');
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('surrounding whitespace');
+    expect(errors[0]).toContain('VERBATIM');
+  });
+
+  it('still treats a whitespace-ONLY value as unset, matching `||`', () => {
+    // `'   ' || 'us-east1'` is `'   '` in build.mjs, so this is flagged too —
+    // but as the whitespace error, not as a missing value.
+    const { errors, rows } = run({ TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: '   ' }, 'nfe');
+
+    expect(rows.find((r) => r.name === 'FUNCTIONS_REGION')?.source).toBe('build.mjs default');
+    expect(errors.some((e) => e.includes('surrounding whitespace'))).toBe(true);
+  });
+
+  it('accepts a clean value', () => {
+    const { errors } = run({ TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: 'us-east1' }, 'nfe');
+
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('the backend cross-check note', () => {
+  // The region abort tells a mercado-pago/whatsapp operator to export
+  // FUNCTIONS_REGION=us-east1, which moves the queue — while their backends set
+  // NO region variable, so the enqueuer keeps resolving us-east5. Obeying the
+  // remedy would create the very mismatch this PR fixed for mercado-livre.
+  it.each([
+    ['mercado-livre', 'MERCADO_LIVRE_TASKS_REGION'],
+    ['mercado-pago', 'MERCADO_PAGO_TASKS_REGION'],
+    ['whatsapp', 'WHATSAPP_TASKS_REGION'],
+    ['nfe', 'NFE_TASKS_REGION'],
+  ])('%s gets a note naming the backend variable and its manifest', (codebase, backendVar) => {
+    // ⚠️ Assert the NOTE, not just the table entry. An earlier version of these
+    // tests checked `CODEBASES[x].backendVar` only, and reverting the function to
+    // `if (codebase !== 'mercado-livre') return null` stayed GREEN — the data was
+    // right while the thing that uses it was broken.
+    const note = crossCheckNote(codebase, 'us-east1');
+
+    expect(note, `${codebase} must get a backend cross-check note`).not.toBeNull();
+    expect(note).toContain(backendVar);
+    expect(note).toContain(CODEBASES[codebase].backendManifest);
+    expect(note).toContain('us-east1');
+    expect(CODEBASES[codebase].backendManifest).toMatch(/apphosting\.yaml$/);
+  });
+
+  it('has no backend note for storage, which no backend enqueues', () => {
+    // `processarBalanco` is enqueued by the finalizarBalanco callable and by
+    // itself — both inside the codebase, so there is no second env to agree with.
+    expect(CODEBASES.storage.backendVar).toBeNull();
+    expect(crossCheckNote('storage', 'us-east1')).toBeNull();
+  });
+
+  it('surfaces the runtime override on the queue that has no sweep', () => {
+    const { rows } = preflight('storage', { TASKS_INVOKER_SA: GOOD_SA });
+
+    expect(rows.some((r) => r.name === 'BALANCO_TASKS_REGION')).toBe(true);
   });
 });
 
