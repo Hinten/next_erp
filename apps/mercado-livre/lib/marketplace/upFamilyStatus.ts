@@ -26,6 +26,12 @@
  * is the direction this whole module is biased toward. Clearing that backlog needs
  * a reconciliation pass, not a rule change here.
  *
+ * ⚠️ The fold also carries ML's MODERATIONS (#1087), and it carries the WINNER's
+ * rather than a union: `status` and the text explaining it have to describe the
+ * same listing. Because every member's moderations are stored on its own link
+ * beside its raw status, this costs no extra ML call — the caller substitutes the
+ * notified member's freshly-fetched value exactly as it already does for `status`.
+ *
  * Pure and total: no Firestore, no ML, no clock. `podeEnviarEstoque` is itself a
  * pure predicate — the fold borrows the SAME definition of "sendable" the stock
  * planner gates on rather than restating it and letting the two drift. The caller
@@ -35,18 +41,42 @@
  * value stays.
  */
 
+import type { MlModeracao } from '@delfrance/schemas';
+
 import { podeEnviarEstoque } from './bulkEstoquePlan';
 
 /** The member facts the fold reads. `status` null = never observed. */
 export interface FoldableMember {
   status: string | null;
   subStatus: string[] | null;
+  /**
+   * ML's active moderations on THIS member (#1087) — as stored on its own link,
+   * with the notified member's freshly-fetched value substituted in by the
+   * caller, exactly like `status`.
+   *
+   * ⚠️ Optional so the fold's existing callers and tests need no change: a member
+   * observed before this field existed simply has no moderation, which is the
+   * correct reading of an absent value and not a guess.
+   */
+  moderacoes?: MlModeracao[] | null;
 }
 
 /** The raw ML values the family's parent link should carry. */
 export interface FoldedFamilyStatus {
   status: string;
   subStatus: string[] | null;
+  /**
+   * The WINNER's moderations — the same member whose status the family took.
+   *
+   * ⚠️ Not a union across members, and that is the whole point. `status` and the
+   * text explaining it must describe ONE listing: pooling every member's
+   * moderation onto the parent would show a reason for a sibling that is not the
+   * one the family's `estado` is reporting, which is the "one member speaks for
+   * the family" mistake this module exists to prevent (#1142) wearing a different
+   * hat. Never null: a winner with no moderation folds to `[]`, which is what
+   * CLEARS a lifted moderation off the parent.
+   */
+  moderacoes: MlModeracao[];
 }
 
 /**
@@ -98,16 +128,7 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
     if (r > winnerRank) {
       winnerRank = r;
       winner = m;
-    } else if (r === winnerRank && winner != null && !sendable(winner) && sendable(m)) {
-      // ⚠️ TIE-BREAK, and it is not cosmetic. `rank` reads `status` alone, so two
-      // `paused` members tie — but the stock gate reads the PAIR: `paused` sends
-      // only WITH `out_of_stock`. Left to arrive-order the winner would be
-      // whichever child produto sorts first by `__name__`, so the same family
-      // with the same member statuses would either keep receiving stock or stop,
-      // decided by document ordering. Stopping is the harmful direction: the
-      // out-of-stock member then never gets the `qty > 0` push ML reactivates on,
-      // and the listing stays down. Same shape as the `closed` rung above — one
-      // member's bad news speaking for the family — so it gets the same answer.
+    } else if (r === winnerRank && winner != null && prefere(winner, m)) {
       winner = m;
     }
   }
@@ -115,7 +136,41 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
   if (winner == null) return null; // nothing observed
   if (winnerRank === 0 && unobserved > 0) return null; // all-closed is not yet provable
 
-  return { status: winner.status!, subStatus: winner.subStatus };
+  return {
+    status: winner.status!,
+    subStatus: winner.subStatus,
+    moderacoes: winner.moderacoes ?? [],
+  };
+}
+
+/**
+ * Whether `desafiante` should displace `atual` among members of the SAME rank.
+ * Two rungs, tried in order; the first is the one that can cost money.
+ *
+ * ⚠️ RUNG 1 — sendability. Not cosmetic. `rank` reads `status` alone, so two
+ * `paused` members tie — but the stock gate reads the PAIR: `paused` sends only
+ * WITH `out_of_stock`. Left to arrive-order the winner would be whichever child
+ * produto sorts first by `__name__`, so the same family with the same member
+ * statuses would either keep receiving stock or stop, decided by document
+ * ordering. Stopping is the harmful direction: the out-of-stock member then never
+ * gets the `qty > 0` push ML reactivates on, and the listing stays down. Same
+ * shape as the `closed` rung above — one member's bad news speaking for the
+ * family — so it gets the same answer.
+ *
+ * ⚠️ RUNG 2 — explainability (#1087). Reached only when rank AND sendability are
+ * equal, i.e. exactly where the rules above are indifferent and DOCUMENT ORDER
+ * was silently deciding. Two `active` members, one carrying a
+ * `poor_quality_thumbnail` moderation and one clean, tie on both: whichever won
+ * would set the family's `sub_status` and, now, its `moderacoes`. Preferring the
+ * member that can say WHY turns an arbitrary choice into an informative one, and
+ * it cannot change stock behaviour because both readings are equally sendable.
+ * Deliberately last: it must never outrank a decision the stock gate depends on.
+ */
+function prefere(atual: FoldableMember, desafiante: FoldableMember): boolean {
+  const atualEnvia = sendable(atual);
+  const desafianteEnvia = sendable(desafiante);
+  if (atualEnvia !== desafianteEnvia) return desafianteEnvia;
+  return (atual.moderacoes ?? []).length === 0 && (desafiante.moderacoes ?? []).length > 0;
 }
 
 /** Whether ML would accept a stock update for this reading — the tie-break key. */
