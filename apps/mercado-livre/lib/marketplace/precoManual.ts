@@ -206,6 +206,9 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   NAO_ENUMERADO_LINK_EM_VARIACAO:
     'O anúncio está vinculado a uma variação, não ao produto pai. Nenhuma tela consegue enviar ' +
     'preço para ele — corrija o vínculo do anúncio.',
+  NAO_ENUMERADO_PAI_ID_INVALIDO:
+    'O produto tem um vínculo de pai inválido (nem vazio, nem um produto real), então o envio ' +
+    'em massa não o alcança. Corrija o cadastro do produto.',
   NAO_ENUMERADO_PRODUTO_AUSENTE:
     'O anúncio aponta para um produto que não existe mais. Refaça o vínculo ou remova o anúncio.',
   RECONCILIACAO_INCOMPLETA:

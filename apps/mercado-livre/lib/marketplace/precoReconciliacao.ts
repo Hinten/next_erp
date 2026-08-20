@@ -223,9 +223,31 @@ export function classificarLinkNaoEnumerado(
   // The link outlived its produto — `onProdutoDeleted`'s cascade should have
   // taken it, so this is a real orphan rather than a coverage gap.
   if (produto == null) return 'NAO_ENUMERADO_PRODUTO_AUSENTE';
-  // The link sits on a variation CHILD, and every anchor term is written for
-  // family parents (#804 class 3). No surface in the repo can send to it.
-  if (nonEmptyString(produto.paiId) != null) return 'NAO_ENUMERADO_LINK_EM_VARIACAO';
+  // ⚠️ EXACT, not the repo's usual `nonEmptyString` soft coercion, because the
+  // query term is an exact equality: `where('paiId', '==', null)` matches a
+  // stored null and NOTHING else — not `''`, and not a document missing the
+  // field, since Firestore does not index an absent field and it therefore
+  // satisfies no equality at all. Coercing here would call such a produto
+  // "enumerable" while the plan never selected it: a live anúncio reported by
+  // nobody, on a `completed` job — the exact silence #1072 exists to end,
+  // reintroduced inside the code written to detect it.
+  //
+  // `produto.ts:215` records that both writers always write `paiId` explicitly,
+  // so the absent-field arm should be unreachable; the empty string is the
+  // reachable one (the schema is `z.string().nullable()`, with no `.min(1)`,
+  // and the legacy corpus is not bound by it at all — rule 8). Both are
+  // reported rather than assumed away: over-include when in doubt, per
+  // `integracoesComProduto.ts`'s failure asymmetry.
+  if (produto.paiId !== null) {
+    // A real parent id — the link sits on a variation CHILD, and every anchor
+    // term is written for family parents (#804 class 3). No surface in the repo
+    // can send to it.
+    if (nonEmptyString(produto.paiId) != null) return 'NAO_ENUMERADO_LINK_EM_VARIACAO';
+    // Neither null nor a usable id: a malformed cadastro rather than a child.
+    // Kept a separate code because the remedy differs — this one is "set
+    // `paiId` to null on the family parent", not "re-point the anúncio".
+    return 'NAO_ENUMERADO_PAI_ID_INVALIDO';
+  }
   // The denorm no longer names a conta this produto is still linked to (#804
   // class 2). `integracoesComProduto.ts` calls this exact state a SILENT stock
   // + price outage — and until now it was one on the price side too.

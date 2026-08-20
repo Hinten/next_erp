@@ -253,10 +253,32 @@ describe('classificarLinkNaoEnumerado', () => {
     ).toBeNull();
   });
 
-  it('treats a blank paiId as no paiId', () => {
+  it('reports a paiId that is neither null nor a usable id', () => {
+    // `where('paiId','==',null)` is an EXACT equality, so `''` is matched by
+    // neither the query nor "is a variation child". Calling it enumerable would
+    // leave a live anúncio reported by nobody on a `completed` job — the exact
+    // silence this phase exists to end.
+    expect(classificarLinkNaoEnumerado({ paiId: '', integracoesComProduto: [CONTA] }, CONTA)).toBe(
+      'NAO_ENUMERADO_PAI_ID_INVALIDO',
+    );
+  });
+
+  it('reports an ABSENT paiId — a missing field satisfies no equality, not even == null', () => {
+    // Firestore does not index an absent field, so such a document matches no
+    // equality at all. `produto.ts:215` says both writers always write `paiId`,
+    // which should make this unreachable — reported anyway rather than trusted,
+    // because the legacy corpus is not bound by the schema (rule 8).
+    expect(classificarLinkNaoEnumerado({ integracoesComProduto: [CONTA] }, CONTA)).toBe(
+      'NAO_ENUMERADO_PAI_ID_INVALIDO',
+    );
+  });
+
+  it('a real paiId still reports as a variation child, not as invalid', () => {
+    // The two arms must not collapse: the remedies differ ("re-point the
+    // anúncio" vs "fix the produto's cadastro").
     expect(
-      classificarLinkNaoEnumerado({ paiId: '', integracoesComProduto: [CONTA] }, CONTA),
-    ).toBeNull();
+      classificarLinkNaoEnumerado({ paiId: 'ANCHOR', integracoesComProduto: [CONTA] }, CONTA),
+    ).toBe('NAO_ENUMERADO_LINK_EM_VARIACAO');
   });
 });
 

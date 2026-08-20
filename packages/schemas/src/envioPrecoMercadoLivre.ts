@@ -146,12 +146,14 @@ export const envioPrecoMercadoLivreSchema = z.object({
    * Anúncios the plan could not have enumerated, found by the reconciliation
    * phase (#1072) — EXACT and uncapped, unlike the `skips` sample.
    *
-   * It has its own counter rather than folding into `pulados` because the two
-   * answer different questions, and only this one makes `completed` mean what
-   * it says: `pulados` is "enumerated, then not sent", this is "never looked
-   * at". On a drifted catalogue the 200-row `skips` sample can be exhausted by
-   * the plan phase alone, so the count is the headline and the rows are the
-   * sample.
+   * ⚠️ A SUBSET of `pulados`, not a sibling: every finding goes through the
+   * same `registerSkip` that increments `pulados`, deliberately, so the rows
+   * ride the shared `skips` sample and the operator can read them. The counters
+   * therefore OVERLAP — do not present them as a partition.
+   *
+   * What this one adds is exactness: the 200-row `skips` sample can be
+   * exhausted by the plan phase alone, so on a drifted catalogue it is the only
+   * number that still tells the truth about how much the job never looked at.
    */
   naoEnumerados: z.number().int().default(0),
   /** Live links the reconciliation phase inspected (observability). */
