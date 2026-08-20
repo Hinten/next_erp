@@ -444,7 +444,7 @@ export async function importProduto(
           parentInfo,
           [up!.member],
           taxonomia,
-          { parentLinkDocId: linkDocId },
+          { parentLinkDocId: linkDocId, status: mapped.status, subStatus: mapped.subStatus },
         )
       : await importVariationChildren(
           { db, integracaoId, options, depositoOuterRef: deps.depositoOuterRef, now },

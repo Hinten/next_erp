@@ -272,6 +272,29 @@ export const variacaoMercadoLivreLinkSchema = z
     produtoMercadoLivreOuterRef: outerRefSchema,
     sku: z.string().nullable().default(null),
     attributes: z.array(mlAttributeWireSchema).nullable().default(null),
+
+    /**
+     * Raw ML `status` / `sub_status` for THIS member's own item, as last observed
+     * by publish, import or the `items` status-sync.
+     *
+     * Under User Products each member is its own ML item with its own lifecycle,
+     * but ML exposes no family-level status — so the family's `estado` on the
+     * PARENT link can only be a summary folded from these. Without them the fold
+     * would have to `GET /items/{id}` once per member on every notification.
+     * Null means never observed, which is NOT the same as closed: a null must
+     * never be able to push a family to `cancelado`.
+     *
+     * ⚠️ Still no `estado` here, and the asymmetry with the parent link is the
+     * same one {@link variacaoLinkHasListing} documents — these are raw
+     * observations, not a membership signal, so `variacaoLinkHasListing` ignores
+     * them and `onVariacaoMercadoLivreLinkChanged` gains no fan-out.
+     *
+     * Additive/nullable, and the generated ruleset covers this collection through
+     * the loose pass-through domain in `subcollections.ts` (gated by the parent
+     * produto's permissions), so no rules change — same as the parent's pair.
+     */
+    status: z.string().nullable().default(null),
+    sub_status: z.array(z.string()).nullable().default(null),
   })
   .passthrough();
 export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSchema>;

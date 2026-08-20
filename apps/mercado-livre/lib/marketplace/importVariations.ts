@@ -83,6 +83,13 @@ export interface ImportVariationChildrenResult {
  */
 export interface ImportVariationChildrenUpOptions {
   parentLinkDocId: string;
+  /**
+   * The member item's own raw ML status (#1142). Under User Products each member
+   * IS its own listing, so this is the item's own `status`/`sub_status` — the
+   * durable input the family `estado` fold reads.
+   */
+  status: string | null;
+  subStatus: string[] | null;
 }
 
 export async function importVariationChildren(
@@ -146,7 +153,9 @@ export async function importVariationChildren(
       existingLinkRaw: resolved?.linkRaw ?? null,
       existingEstoqueQty: existingStock?.quantidade ?? null,
       existingEstoqueReservada: existingStock?.reservada ?? null,
-      up: up ? { itemId: mappedVariation.variationId } : null,
+      up: up
+        ? { itemId: mappedVariation.variationId, status: up.status, subStatus: up.subStatus }
+        : null,
       now,
     };
     let plan = assembleVariationChildPlan(args);
