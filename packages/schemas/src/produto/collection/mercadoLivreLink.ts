@@ -163,6 +163,61 @@ export function campoAtributo(id: string): string {
   return `attributes.${id}`;
 }
 
+/**
+ * One active Mercado Livre MODERATION on a listing — why ML paused, penalised or
+ * removed it, and what (if anything) fixes it.
+ *
+ * The wire shape is `GET /moderations/last_moderation/{item_id}-ITM` (ML
+ * developers site, *Moderações → Gerenciar moderações*), whose entries carry
+ * `{name, id, date_created, evidences[], wordings[]}`. The mapper
+ * (`apps/mercado-livre/lib/marketplace/moderacoes.ts`) is deliberately tolerant:
+ * ML's own docs spell the evidence key BOTH `evidences` and `evidence` on
+ * different pages, and several documented responses carry no `wordings` at all.
+ *
+ * ⚠️ This is NOT {@link mlCausaSchema} and must not be folded into it. A causa is
+ * a PAYLOAD validation failure ML answered a write with; a moderação is a POLICY
+ * verdict ML reached on its own, it can sit on a listing that is still `active`,
+ * and its two texts are addressed to a human rather than to a form control.
+ */
+export const mlModeracaoSchema = z
+  .object({
+    /** ML `name` — the filter that fired (`POOR_QUALITY_THUMBNAIL`, `DENYLIST`). */
+    nome: z.string().nullable().default(null),
+    /**
+     * ML `date_created`, VERBATIM.
+     *
+     * ⚠️ Deliberately a string, never a parsed instant. ML sends TWO formats for
+     * this one field — `2021-04-14T10:47:05.270-0400` (offset-bearing) and
+     * `2022-10-25 15:57:46.0` (space-separated, NO zone) — so any single parse is
+     * wrong for the other, and a zone-less value read on a server whose ambient
+     * timezone differs answers hours out (`delfrance/no-lossy-date-parse`,
+     * `delfrance/no-ambient-timezone`). Presentation formats it, or does not.
+     */
+    dataCriacao: z.string().nullable().default(null),
+    /**
+     * `wordings[type=REASON].value` — WHY the listing was moderated, in the
+     * account's language. The only required field: a moderação with no reason
+     * explains nothing and is dropped by the mapper rather than stored.
+     */
+    motivo: z.string(),
+    /**
+     * `wordings[type=REMEDY].value` — HOW to fix it.
+     *
+     * ⚠️ NULL means UNRECOVERABLE, not "unknown". ML's docs are explicit that a
+     * removed listing (`under_review` + `forbidden`, e.g. `DENYLIST`) returns a
+     * REASON and no REMEDY *because there is no way back*. A reader must not
+     * offer a fix here — inventing one sends the operator to edit a listing that
+     * can never be reactivated.
+     */
+    remedio: z.string().nullable().default(null),
+    /** `evidences[].section_name` — `pictures` | `title` | `category` | `item`. */
+    secoes: z.array(z.string()).default([]),
+    /** `evidences[].text_matched` — the offending value (a picture id, a phrase). */
+    evidencias: z.array(z.string()).default([]),
+  })
+  .passthrough();
+export type MlModeracao = z.infer<typeof mlModeracaoSchema>;
+
 /** `produtos/{id}/produtoMercadoLivre/{docId}` — the listing link doc. */
 export const produtoMercadoLivreLinkSchema = z
   .object({
@@ -233,6 +288,45 @@ export const produtoMercadoLivreLinkSchema = z
      */
     causas: z.array(mlCausaSchema).nullable().default(null),
 
+    /**
+     * ML's ACTIVE moderations on this listing — the policy verdict behind a
+     * `pausado`/`em revisão` the operator would otherwise see with no
+     * explanation at all (#1087). Additive/nullable, invisible to the Flutter
+     * reader exactly like `status`/`sub_status`/`causas` above.
+     *
+     * ⚠️ It does NOT ride the `errors`/`causas` clearing rule, and the difference
+     * is the reason it is a separate field. Those two are cleared only once
+     * `podeEnviarEstoque(...).enviar` — deliberately, so a `closed`/`under_review`
+     * listing KEEPS its diagnosis. A moderação needs the opposite on both sides:
+     * it must SURVIVE on a listing ML still calls `active` (that is exactly the
+     * `poor_quality_thumbnail` case — live, but losing exposure), and it must
+     * VANISH the moment ML stops reporting one, even mid-review. Sharing `errors`
+     * would have wiped the first case on the very write that set it.
+     *
+     * ⚠️ The invariant that replaces that rule, and it is stronger: `moderacoes`
+     * is written in the SAME patch as the `status`/`sub_status` it explains, on
+     * every status write, either to a value or to `[]`. A reason outliving the
+     * state it explains is therefore impossible by construction rather than by
+     * discipline — which matters, because a stale moderação on a healthy listing
+     * is indistinguishable from a real one.
+     *
+     * ⚠️ **Only a writer that just asked ML about moderation may touch this
+     * field** — today `itemsStatusSync` and `reverificarAnuncio`. It is NOT in
+     * `clearFalha()`, and that omission is deliberate: `errors`/`causas` record
+     * OUR failed write, which a later success invalidates, but a moderação is
+     * ML's verdict and nothing we do lifts it. The stock writeback calls
+     * `clearFalha()` after a successful `PUT /items` — and a
+     * `poor_quality_thumbnail` listing is `active` and takes stock updates WHILE
+     * moderated, so clearing there would erase a live, still-true reason and
+     * show a clean listing that is really still penalised. Hiding a real problem
+     * is worse than the bug this field fixes.
+     *
+     * ⚠️ An ARRAY, not a nested object, and not only because ML returns one:
+     * `mergeIfExists` is `update()`-backed and `assertFlatUpdatePatch` throws a
+     * `TypeError` on a nested plain object in a patch. Arrays pass.
+     */
+    moderacoes: z.array(mlModeracaoSchema).nullable().default(null),
+
     ultimaModificacao: millisSinceEpoch().nullable().default(null),
     dataCadastro: millisSinceEpoch().nullable().default(null),
   })
@@ -295,6 +389,20 @@ export const variacaoMercadoLivreLinkSchema = z
      */
     status: z.string().nullable().default(null),
     sub_status: z.array(z.string()).nullable().default(null),
+
+    /**
+     * ML's active moderations on THIS member's own item, recorded beside the
+     * raw status they explain and for the same reason (#1087).
+     *
+     * Under User Products a moderação is per ITEM, so it lands here first and the
+     * PARENT link takes the fold's WINNER — the same member whose status won.
+     * Storing it per member is what keeps that fold free: `foldFamilyStatus` reads
+     * the siblings' stored values and never has to `GET` a moderation per member.
+     *
+     * ⚠️ Same rule as the parent's copy: written in the SAME patch as this
+     * member's `status`/`sub_status`, value or `[]`, never on its own.
+     */
+    moderacoes: z.array(mlModeracaoSchema).nullable().default(null),
   })
   .passthrough();
 export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSchema>;

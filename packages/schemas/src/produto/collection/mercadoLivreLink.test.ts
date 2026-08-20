@@ -4,6 +4,7 @@ import {
   ML_CAUSA_TIPO,
   campoAtributo,
   mlCausaSchema,
+  mlModeracaoSchema,
   produtoMercadoLivreLinkSchema,
   variacaoMercadoLivreLinkSchema,
   estadoPublicacaoMlSchema,
@@ -205,5 +206,73 @@ describe('mlCausaSchema', () => {
       'listing_type_id',
     ]);
     expect(campoAtributo('GTIN')).toBe('attributes.GTIN');
+  });
+});
+
+describe('mlModeracaoSchema', () => {
+  it('needs only a motivo — every other field defaults', () => {
+    expect(mlModeracaoSchema.parse({ motivo: 'infringe as políticas' })).toEqual({
+      nome: null,
+      dataCriacao: null,
+      motivo: 'infringe as políticas',
+      remedio: null,
+      secoes: [],
+      evidencias: [],
+    });
+  });
+
+  /**
+   * ⚠️ The load-bearing default. ML returns a REASON and NO REMEDY for a listing
+   * it removed, "pois a moderação não tem um REMEDY" — the seller cannot modify
+   * or recover it. A reader must be able to tell that apart from "we did not
+   * store the remedy", which is why the field is nullable rather than
+   * `.default('')`.
+   */
+  it('defaults remedio to NULL — the removed-listing case, never an empty string', () => {
+    const removido = mlModeracaoSchema.parse({ motivo: 'cancelado por falsificação' });
+    expect(removido.remedio).toBeNull();
+    expect(removido.remedio).not.toBe('');
+  });
+
+  it('rejects a moderação with no motivo — an entry that explains nothing', () => {
+    expect(mlModeracaoSchema.safeParse({ nome: 'DENYLIST' }).success).toBe(false);
+  });
+
+  /**
+   * ⚠️ A STRING, deliberately. ML sends `2021-04-14T10:47:05.270-0400` on one
+   * doc page and `2022-10-25 15:57:46.0` on another; the second carries no zone,
+   * so parsing it answers differently on each of this repo's three server
+   * timezones. Both must round-trip untouched.
+   */
+  it('keeps either date_created format verbatim', () => {
+    for (const raw of ['2021-04-14T10:47:05.270-0400', '2022-10-25 15:57:46.0']) {
+      expect(mlModeracaoSchema.parse({ motivo: 'x', dataCriacao: raw }).dataCriacao).toBe(raw);
+    }
+  });
+});
+
+describe('the moderacoes field on both link schemas', () => {
+  /**
+   * Additive and nullable, exactly like `status`/`sub_status`/`causas`: a
+   * migrated Flutter row has no such key and must parse, not fail.
+   */
+  it('defaults to null on a link doc that predates it', () => {
+    const parsed = produtoMercadoLivreLinkSchema.parse({
+      contaOuterRef: 'documents/integracao/c1',
+      title: 'Camiseta',
+    });
+    expect(parsed.moderacoes).toBeNull();
+  });
+
+  it('is carried by the MEMBER link too — moderation is per ML item', () => {
+    // A User-Products family folds the winner's up to the parent, so every member
+    // has to be able to hold its own.
+    const parsed = variacaoMercadoLivreLinkSchema.parse({
+      produtoVariacaoOuterRef: 'documents/produtos/child1',
+      produtoMercadoLivreOuterRef: 'documents/produtos/p1/produtoMercadoLivre/link1',
+      moderacoes: [{ motivo: 'foto de baixa qualidade' }],
+    });
+    expect(parsed.moderacoes?.[0]?.motivo).toBe('foto de baixa qualidade');
+    expect(parsed.moderacoes?.[0]?.remedio).toBeNull();
   });
 });

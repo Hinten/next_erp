@@ -794,4 +794,42 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
       errors: [],
     });
   });
+
+  /**
+   * ⚠️ #1087, and it is the OPPOSITE of the rule above. A successful stock
+   * update proves our payload was fine; it proves nothing about ML's POLICY
+   * verdict on the listing. The case is real, not hypothetical: a
+   * `poor_quality_thumbnail` moderation leaves the listing `active`, and an
+   * active listing accepts stock updates — so a send lands on a moderated
+   * listing routinely.
+   *
+   * Clearing `moderacoes` here would erase a live, still-true reason and show a
+   * clean listing that is really still penalised. Hiding a real problem is worse
+   * than the "no explanation" bug the field was added to fix, so this path — which
+   * never called `/moderations` — must leave it exactly as it found it.
+   */
+  it('does NOT clear a live moderation it never asked ML about', async () => {
+    const moderacao = {
+      nome: 'WATERMARK',
+      dataCriacao: null,
+      motivo: "A foto de capa contém marcas d'água.",
+      remedio: 'Corrija suas fotos de capa.',
+      secoes: ['pictures'],
+      evidencias: [],
+    };
+    const h = makeHarness();
+    seedLink(h.db, {
+      estado: 'p',
+      errors: ['ML 400: invalid quantity'],
+      moderacoes: [moderacao],
+    });
+
+    await run(h);
+
+    const link = h.db.docs(LINK_PATH).get('link1');
+    // The stock diagnosis cleared…
+    expect(link).toMatchObject({ errors: [] });
+    // …and the policy reason survived untouched.
+    expect(link).toMatchObject({ moderacoes: [moderacao] });
+  });
 });

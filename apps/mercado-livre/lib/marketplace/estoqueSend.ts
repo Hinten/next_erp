@@ -379,6 +379,13 @@ export async function processStockSendTask(
         // A send that lands clears whatever diagnosis the last failure left
         // behind — otherwise the produto tab keeps showing a red alert for a
         // fault that has since healed (#781).
+        //
+        // ⚠️ `clearFalha()` covers `errors`/`causas` and deliberately NOT
+        // `moderacoes` (#1087). A successful stock update says nothing about
+        // ML's policy verdict: a `poor_quality_thumbnail` listing is `active`
+        // and takes stock updates WHILE moderated, so clearing here would erase
+        // a live reason and show a clean listing that is still penalised. This
+        // path never asked `/moderations`, so it leaves the field alone.
         ...clearFalha(),
       },
     );
