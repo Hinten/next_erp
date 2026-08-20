@@ -357,16 +357,21 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  * scattered `tipo === 'melhorEnvios'` / `MARKETPLACE_TIPOS` checks the etiqueta
  * dispatch (`etiquetaRowState`) and the Frete tab used to hard-code.
  *
- * ⚠️ The **`can*` flags are the behavioral truth**; apart from Melhor Envio's
- * emit flow and Mercado Livre's `canFetchLabel`, they are ALL FALSE, so
- * `etiquetaRowState` yields `'unsupported'` — byte-identical to the previous
- * `tipo !== 'melhorEnvios'` reject. `labelMode` is **descriptive only**
- * (documents intended Phase-5/6 behavior); it does NOT drive the dispatch. Do
- * not flip a marketplace `canPrint` to true until the fetch flow + its client
- * route exist, or a marketplace pedido carrying a `printLabelId` would wrongly
- * route "Imprimir" to the Melhor Envio backend. `marketplaceOwned` is
- * behavioral — it reproduces the old `MARKETPLACE_TIPOS` read-only lock on the
- * Frete tab.
+ * ⚠️ The **`can*` flags are the behavioral truth**. Every marketplace-owned
+ * tipo (fetch category) stays ALL FALSE until its fetch flow + client route
+ * exist — `mercadoLivre`'s `canFetchLabel` is the one live exception — so
+ * `etiquetaRowState` yields `'unsupported'` for the rest, byte-identical to
+ * the previous `tipo !== 'melhorEnvios'` reject. The generic-label tipos
+ * (`motoboy`/`outros`) are the other exception: `canPrint` is true for them
+ * too, but `etiquetaRowState` never gates it on `printLabelId` (there is no
+ * buy step) — it dispatches to the on-demand generic PDF instead of the
+ * Melhor Envio reprint. `labelMode` is **descriptive** (documents intended
+ * Phase-5/6 marketplace behavior and today's generic/none split); it does NOT
+ * drive the dispatch by itself. Do not flip a marketplace `canPrint` to true
+ * until the fetch flow + its client route exist, or a marketplace pedido
+ * carrying a `printLabelId` would wrongly route "Imprimir" to the Melhor
+ * Envio backend. `marketplaceOwned` is behavioral — it reproduces the old
+ * `MARKETPLACE_TIPOS` read-only lock on the Frete tab.
  */
 export interface FreightTipoCapabilities {
   /** The importing marketplace owns the whole freight block → Frete tab read-only. */
@@ -466,12 +471,14 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'fetch',
     channel: null,
   },
-  // Manual / generic — no carrier API.
+  // Manual / generic — no carrier API, but a generic PDF label is always
+  // available on demand (no buy step, so no printLabelId gate — see
+  // etiquetaRowState).
   motoboy: {
     marketplaceOwned: false,
     canQuote: false,
     canBuy: false,
-    canPrint: false,
+    canPrint: true,
     canFetchLabel: false,
     canTrack: false,
     labelMode: 'generic',
@@ -501,7 +508,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     marketplaceOwned: false,
     canQuote: false,
     canBuy: false,
-    canPrint: false,
+    canPrint: true,
     canFetchLabel: false,
     canTrack: false,
     labelMode: 'generic',

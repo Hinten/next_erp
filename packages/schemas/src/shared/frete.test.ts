@@ -194,17 +194,39 @@ describe('FREIGHT_TIPO_CAPS', () => {
     expect(routed).toEqual(['melhorEnvios']);
   });
 
-  it('every non-ME tipo is non-buyable today (→ etiquetaRowState "unsupported")', () => {
+  it('every non-ME tipo is non-buyable/non-quotable/non-trackable today', () => {
     // Behavioral guarantee: the caps swap is byte-identical to the old
     // `tipo !== 'melhorEnvios'` reject until a provider implements its flow.
+    // `canPrint` is excluded here — the generic-label tipos are printable
+    // via their own on-demand PDF (see the dedicated test below).
     for (const tipo of integracoesFreteSchema.options) {
       if (tipo === 'melhorEnvios') continue;
       const caps = FREIGHT_TIPO_CAPS[tipo];
       expect(caps.canQuote).toBe(false);
       expect(caps.canBuy).toBe(false);
-      expect(caps.canPrint).toBe(false);
       expect(caps.canTrack).toBe(false);
     }
+  });
+
+  it('the generic-label tipos (motoboy/outros) are printable via the on-demand PDF, not the freight client', () => {
+    for (const tipo of [INTEGRACAO_FRETE.motoboy, INTEGRACAO_FRETE.outros] as const) {
+      expect(FREIGHT_TIPO_CAPS[tipo]).toMatchObject({
+        labelMode: 'generic',
+        canPrint: true,
+        canQuote: false,
+        canBuy: false,
+        canFetchLabel: false,
+        canTrack: false,
+        marketplaceOwned: false,
+        channel: null,
+      });
+    }
+    // Nothing else is printable outside Melhor Envio + the generic tipos —
+    // the `channel`-routed check above already pins ME as the only channel.
+    const printable = integracoesFreteSchema.options.filter((t) => FREIGHT_TIPO_CAPS[t].canPrint);
+    expect([...printable].sort()).toEqual(
+      [INTEGRACAO_FRETE.melhorEnvios, INTEGRACAO_FRETE.motoboy, INTEGRACAO_FRETE.outros].sort(),
+    );
   });
 
   it('Mercado Livre is the only fetch-label tipo (marketplace-client print)', () => {
