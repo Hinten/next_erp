@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 
 import {
   MAX_TENTATIVAS,
@@ -1078,7 +1079,12 @@ describe('handleNotificationTask', () => {
       isUserProductModel: true,
     });
     const getItem = vi.fn(async () => ({ id: 'MLB1', status: 'under_review' }));
-    const resolveItemsApi = vi.fn(async () => ({ getItem }) as never);
+    // `under_review` is a moderated state, so the sync asks ML for the reason
+    // too (#1087). 404 is ML's ordinary "no active moderation" answer.
+    const getLastModeration = vi.fn(async () => {
+      throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+    });
+    const resolveItemsApi = vi.fn(async () => ({ getItem, getLastModeration }) as never);
     const r = await handleNotificationTask(
       asDb(db),
       payloadOf({ id: 'N10c', resource: '/items/MLB1', topic: 'items' }),
@@ -1087,6 +1093,7 @@ describe('handleNotificationTask', () => {
     );
     expect(r).toMatchObject({ outcome: 'done', detail: 'synced' });
     expect(resolveItemsApi).toHaveBeenCalled();
+    expect(getLastModeration).toHaveBeenCalledWith('MLB1-ITM');
   });
 
   it('a migration-tagged listing still defers, under its own name', async () => {
