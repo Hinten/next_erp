@@ -1,26 +1,33 @@
 'use client';
 
 import type { QueryClient } from '@tanstack/react-query';
-import { getDocFromServer, type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { getDocsByIds } from '@/lib/data/getDocsByIds';
 import { normalizeProdutoId, type ProdutoPesoInfo } from './pesoPedido';
 
 export type ProdutoPesoMap = Record<string, ProdutoPesoInfo | null>;
 
 /**
- * `null` means "read succeeded, the produto doesn't exist" — the only case
- * `pesoPedido` should treat as unresolvable. A real read failure (offline,
- * `permission-denied`, backend unavailable, …) is NOT converted to `null`
- * here: it propagates and fails the batch, so a transient/permission error
- * can never masquerade as "produto missing" and lock in a wrong 1kg-per-unit
- * default (the earlier version swallowed every `FirebaseError` into `null` —
- * flagged in review on #1093).
+ * Project the produto fields the weight math needs. Absent from the fetched
+ * map = "read succeeded, the produto doesn't exist" → `null`, the only case
+ * `pesoPedido` treats as unresolvable. A real read failure (offline,
+ * `permission-denied`, backend unavailable, …) rejects rather than becoming
+ * `null`, so a transient error can never masquerade as "produto missing" and
+ * lock in a wrong 1kg-per-unit default (flagged in review on #1093). That
+ * holds only because both waves pass `{ source: 'server' }` — see the note at
+ * the call sites below.
  */
-async function fetchProdutoPeso(db: Firestore, id: string): Promise<ProdutoPesoInfo | null> {
-  const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
-  const data = snap.data();
-  if (!data) return null;
-  return { pesoBrutoKg: data.pesoBrutoKg, pesoLiquidoKg: data.pesoLiquidoKg, paiId: data.paiId };
+function toPesoInfo(
+  produtos: Map<
+    string,
+    { pesoBrutoKg: number | null; pesoLiquidoKg: number | null; paiId: string | null }
+  >,
+  id: string,
+): ProdutoPesoInfo | null {
+  const p = produtos.get(id);
+  if (!p) return null;
+  return { pesoBrutoKg: p.pesoBrutoKg, pesoLiquidoKg: p.pesoLiquidoKg, paiId: p.paiId };
 }
 
 /**
@@ -46,11 +53,22 @@ export async function fetchProdutoPesoMap(
   ids: readonly string[],
 ): Promise<ProdutoPesoMap> {
   const byId: ProdutoPesoMap = {};
-  await Promise.all(
-    ids.map(async (id) => {
-      byId[id] = await fetchProdutoPeso(db, id);
-    }),
-  );
+
+  // Wave 1: the pedido's own produtos. Same batched loader the checkout screen
+  // uses (`loadPedidoCheckout`): chunked 30-id `in` queries instead of one
+  // `getDoc` per produto — on a large pedido ~34 queries rather than ~1000 reads.
+  //
+  // `source: 'server'` is load-bearing, not a default. Plain `getDocs` falls
+  // back to the local cache when the server is unreachable, and an id the cache
+  // has never seen then comes back missing — which `toPesoInfo` cannot tell
+  // apart from a produto that truly does not exist. That would quietly hand
+  // `pesoPedido` its 1kg-per-unit fallback and PERSIST it in a seeded Volume.
+  // Forcing the server means an offline/transient failure rejects instead.
+  const wave1 = await getDocsByIds(db, produtoCollection, ids, {}, { source: 'server' });
+  for (const id of ids) byId[id] = toPesoInfo(wave1, id);
+
+  // Wave 2: the parents of zero-weight variations, so `pesoPedido`'s
+  // variation→parent fallback resolves from this same map.
   const paiIds = [
     ...new Set(
       Object.values(byId)
@@ -61,11 +79,11 @@ export async function fetchProdutoPesoMap(
         .map((p) => p.paiId as string),
     ),
   ].filter((id) => !(id in byId));
-  await Promise.all(
-    paiIds.map(async (id) => {
-      byId[id] = await fetchProdutoPeso(db, id);
-    }),
-  );
+  if (paiIds.length > 0) {
+    const wave2 = await getDocsByIds(db, produtoCollection, paiIds, {}, { source: 'server' });
+    for (const id of paiIds) byId[id] = toPesoInfo(wave2, id);
+  }
+
   return byId;
 }
 
