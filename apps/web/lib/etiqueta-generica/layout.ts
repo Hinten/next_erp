@@ -36,6 +36,7 @@
  */
 import { formatCep, formatCpfCnpj, formatTelefone } from '@/lib/pedido-print/format';
 
+import { textWidthMm } from './metrics';
 import type { EtiquetaGenericaAddress, EtiquetaGenericaModel } from './model';
 
 /** Label page, in millimetres. Matches the print agent's hard-coded `etq` format. */
@@ -74,34 +75,47 @@ export function lineHeightMm(sizePt: number): number {
 }
 
 /**
- * How many Helvetica characters of `sizePt` fit in `widthMm`. Helvetica's
- * average advance is ~0.5em, so this is deliberately conservative — it drives
- * WRAPPING, never silent truncation, and a wrap one word early is invisible
- * where a line running past the border is not. Legacy simply overflowed.
+ * Leave 1% of the box unused. Absorbs the sub-0.03mm per-character rounding
+ * between our width table and jsPDF's, which could otherwise accumulate on a
+ * long line.
  */
-function maxChars(widthMm: number, sizePt: number): number {
-  const charMm = (sizePt * 0.5 * 25.4) / 72;
-  return Math.max(1, Math.floor(widthMm / charMm));
-}
+const WRAP_SAFETY = 0.99;
 
 /**
- * Greedy word wrap to `limit` characters. A single word longer than the limit is
- * hard-split rather than allowed to overflow.
+ * Greedy word wrap to a MEASURED width. A single word too wide to fit is
+ * hard-split at the longest prefix that does, rather than allowed to overflow.
+ *
+ * ⚠️ This wraps on real Helvetica advances (`textWidthMm`), not a character
+ * count. It used to estimate with a flat 0.5em average, which is the figure for
+ * mixed-case prose: a 51-character line of uppercase — ordinary for a Brazilian
+ * address — measures 118mm against the 90mm box, wrapped happily, and was then
+ * clipped by the page. Wrapping a word early is invisible; a line past the
+ * border is not.
  */
-export function wrapText(text: string, limit: number): string[] {
+export function wrapText(
+  text: string,
+  maxWidthMm: number,
+  sizePt: number,
+  bold: boolean,
+): string[] {
+  const limit = maxWidthMm * WRAP_SAFETY;
+  const fits = (s: string): boolean => textWidthMm(s, sizePt, bold) <= limit;
+
   const out: string[] = [];
   let line = '';
   for (const word of text.split(/\s+/).filter(Boolean)) {
     const candidate = line === '' ? word : `${line} ${word}`;
-    if (candidate.length <= limit) {
+    if (fits(candidate)) {
       line = candidate;
       continue;
     }
     if (line !== '') out.push(line);
     let rest = word;
-    while (rest.length > limit) {
-      out.push(rest.slice(0, limit));
-      rest = rest.slice(limit);
+    while (!fits(rest) && rest.length > 1) {
+      let cut = rest.length - 1;
+      while (cut > 1 && !fits(rest.slice(0, cut))) cut -= 1;
+      out.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
     }
     line = rest;
   }
@@ -137,9 +151,65 @@ export type EtiquetaOp =
 export interface EtiquetaGenericaLayout {
   readonly widthMm: number;
   readonly heightMm: number;
-  /** Total content height; may exceed `heightMm` on a maximal label. */
+  /** Height the ops actually occupy, AFTER any shrink-to-fit. Never > `heightMm`. */
   readonly contentHeightMm: number;
+  /**
+   * Shrink-to-fit factor applied to the vertical rhythm and the type. `1` for a
+   * label that fitted as designed; below `1` when it had to be squeezed.
+   */
+  readonly scale: number;
   readonly ops: readonly EtiquetaOp[];
+}
+
+/**
+ * Floor on the shrink-to-fit factor. Below this the label stops being legible,
+ * and at that point clipping the tail is arguably no worse — but a pure text
+ * label would have to be ~270mm of content to get here, which no real pedido
+ * produces. See {@link fitToPage}.
+ */
+const MIN_SCALE = 0.55;
+
+/**
+ * Squeeze an overflowing label onto the page.
+ *
+ * ⚠️ Without this, overflow is SILENT: `pdf.ts` walks every op unconditionally
+ * and anything past `y = 150mm` is simply outside the MediaBox — no throw, no
+ * warning, and a PDF that looks complete. What falls off is the tail, and on a
+ * reverse label the tail is the `Entrega` block: the filial-sede address the
+ * parcel is being returned to. A return label missing its destination is worse
+ * than one set a point or two smaller.
+ *
+ * The squeeze is uniform — every `y`, every font size and the barcode height
+ * scale by the same factor — so the design stays recognisable rather than
+ * losing a block. `x`/`w` are untouched (horizontal fit is already handled by
+ * the wrap), and because the wrap ran at full size, scaled-down lines are
+ * strictly narrower than their box.
+ */
+function fitToPage(
+  ops: readonly EtiquetaOp[],
+  contentHeightMm: number,
+): {
+  ops: EtiquetaOp[];
+  scale: number;
+} {
+  if (contentHeightMm <= LABEL_H_MM) return { ops: [...ops], scale: 1 };
+  const scale = Math.max(MIN_SCALE, LABEL_H_MM / contentHeightMm);
+  return {
+    scale,
+    ops: ops.map((op) => {
+      switch (op.kind) {
+        // The border IS the label edge — it never scales.
+        case 'rect':
+          return op;
+        case 'rule':
+          return { ...op, y: op.y * scale };
+        case 'text':
+          return { ...op, y: op.y * scale, sizePt: op.sizePt * scale };
+        case 'barcode':
+          return { ...op, y: op.y * scale, h: op.h * scale };
+      }
+    }),
+  };
 }
 
 /**
@@ -171,7 +241,7 @@ export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): Etiqu
     x = SIDE_MM,
     w = INNER_W_MM,
   ): void => {
-    for (const part of wrapText(text, maxChars(w, sizePt))) {
+    for (const part of wrapText(text, w, sizePt, bold)) {
       ops.push({ kind: 'text', x, y, w, text: part, sizePt, bold, align });
       y += lineHeightMm(sizePt);
     }
@@ -281,5 +351,12 @@ export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): Etiqu
     y += PAD_MM;
   }
 
-  return { widthMm: LABEL_W_MM, heightMm: LABEL_H_MM, contentHeightMm: y, ops };
+  const fitted = fitToPage(ops, y);
+  return {
+    widthMm: LABEL_W_MM,
+    heightMm: LABEL_H_MM,
+    contentHeightMm: y * fitted.scale,
+    scale: fitted.scale,
+    ops: fitted.ops,
+  };
 }

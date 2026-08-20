@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CHAVE, COM_NFE_MODEL, MAXIMAL_MODEL, MINIMAL_MODEL } from './fixtures';
+import { CHAVE, COM_NFE_MODEL, LONG_STRINGS_MODEL, MAXIMAL_MODEL, MINIMAL_MODEL } from './fixtures';
 import { buildEtiquetaGenericaLayout, LABEL_H_MM, type EtiquetaOp } from './layout';
 import { renderEtiquetaGenericaZpl } from './zpl2';
 
@@ -90,11 +90,23 @@ describe('renderEtiquetaGenericaZpl', () => {
     expect(zpl.match(/\^GB/g) ?? []).toHaveLength(6);
   });
 
-  it('keeps every field origin inside the label', () => {
-    const zpl = renderEtiquetaGenericaZpl(MAXIMAL_MODEL);
+  it.each([
+    ['maximal', MAXIMAL_MODEL],
+    // The shrink-to-fit case: the layout hands the walker scaled `y` and
+    // fractional `sizePt`, so this also pins that the ZPL side survives it.
+    ['long uppercase strings', LONG_STRINGS_MODEL],
+  ])('keeps every field origin inside the label (%s)', (_name, model) => {
+    const zpl = renderEtiquetaGenericaZpl(model);
     const maxDots = Math.round((LABEL_H_MM * 203) / 25.4);
     const ys = [...zpl.matchAll(/\^FO\d+,(\d+)/g)].map((m) => Number(m[1]));
     expect(ys.length).toBeGreaterThan(10);
     for (const y of ys) expect(y).toBeLessThanOrEqual(maxDots);
+  });
+
+  it('emits an integer dot for every coordinate, even on a shrunk label', () => {
+    // `^FO`/`^A0N`/`^GB` take whole dots; a fractional value from the squeeze
+    // would be silently truncated by the printer, or reject the field outright.
+    const zpl = renderEtiquetaGenericaZpl(LONG_STRINGS_MODEL);
+    expect(zpl).not.toMatch(/\^(FO|GB|A0N|BY)[^^\n]*\d\.\d/);
   });
 });

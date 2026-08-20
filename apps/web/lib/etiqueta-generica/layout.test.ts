@@ -5,12 +5,15 @@ import {
   groupChave,
   LABEL_H_MM,
   LABEL_W_MM,
+  lineHeightMm,
   wrapText,
   type EtiquetaOp,
 } from './layout';
+import { textWidthMm } from './metrics';
 import {
   CHAVE,
   COM_NFE_MODEL,
+  LONG_STRINGS_MODEL,
   MAXIMAL_MODEL,
   MINIMAL_MODEL,
   RETIRADA_MODEL,
@@ -148,36 +151,96 @@ describe('buildEtiquetaGenericaLayout — legacy geometry', () => {
   it('fits the page even with every optional block present', () => {
     const layout = buildEtiquetaGenericaLayout(MAXIMAL_MODEL);
     expect(layout.contentHeightMm).toBeLessThanOrEqual(LABEL_H_MM);
+    expect(layout.scale).toBe(1); // comfortable — no squeeze needed
+  });
+});
+
+describe('buildEtiquetaGenericaLayout — nothing may leave the page', () => {
+  const MODELS: Array<[string, EtiquetaGenericaModel]> = [
+    ['minimal', MINIMAL_MODEL],
+    ['com NF-e', COM_NFE_MODEL],
+    ['reverso', REVERSO_MODEL],
+    ['retirada', RETIRADA_MODEL],
+    ['maximal', MAXIMAL_MODEL],
+    ['long uppercase strings', LONG_STRINGS_MODEL],
+  ];
+
+  it.each(MODELS)('keeps every line inside the 90mm text box (%s)', (_name, model) => {
+    // Measured width, not a character count — a 51-char uppercase line is 118mm
+    // wide and the old count-based assertion waved it through.
+    for (const op of textOps(model)) {
+      expect(textWidthMm(op.text, op.sizePt, op.bold)).toBeLessThanOrEqual(op.w);
+    }
+  });
+
+  it.each(MODELS)('keeps every op inside the 150mm page (%s)', (_name, model) => {
+    const layout = buildEtiquetaGenericaLayout(model);
+    expect(layout.contentHeightMm).toBeLessThanOrEqual(LABEL_H_MM);
+    for (const op of layout.ops) {
+      if (op.kind === 'rect') continue; // the border IS the page
+      const bottom =
+        op.kind === 'text' ? op.y + lineHeightMm(op.sizePt) : op.y + ('h' in op ? op.h : 0);
+      expect(bottom).toBeLessThanOrEqual(LABEL_H_MM);
+    }
+  });
+
+  it.each(MODELS)('never lets two lines collide (%s)', (_name, model) => {
+    // The squeeze has to scale the TYPE as well as the vertical rhythm. Scaling
+    // only `y` still "fits the page" — it just draws the lines on top of each
+    // other, which no page-bounds assertion would ever notice.
+    const ops = textOps(model);
+    for (let i = 0; i < ops.length - 1; i += 1) {
+      const bottom = ops[i]!.y + lineHeightMm(ops[i]!.sizePt);
+      expect(bottom).toBeLessThanOrEqual(ops[i + 1]!.y + 1e-6);
+    }
+  });
+
+  it('shrinks a realistic long-address reverse label to fit rather than dropping its tail', () => {
+    const layout = buildEtiquetaGenericaLayout(LONG_STRINGS_MODEL);
+    // It genuinely overflows at full size — that is why the fixture exists.
+    expect(layout.scale).toBeLessThan(1);
+    expect(layout.scale).toBeGreaterThan(0.7); // still comfortably legible
+    // …and the block that used to fall off the bottom is still drawn: on a
+    // reverse label the tail is the filial-sede address the parcel returns to.
+    const drawn = texts(LONG_STRINGS_MODEL);
+    expect(drawn).toContain('Entrega');
+    expect(drawn.some((t) => t.includes('RODOVIA GOVERNADOR'))).toBe(true);
   });
 });
 
 describe('wrapText', () => {
+  const INNER_W = 90;
+
   it('wraps on word boundaries instead of letting a line run past the border', () => {
-    expect(wrapText('Rua Professor Doutor Antonio Carlos', 20)).toEqual([
-      'Rua Professor Doutor',
-      'Antonio Carlos',
-    ]);
+    for (const line of wrapText('Rua Professor Doutor Antonio Carlos', 30, 10, false)) {
+      expect(textWidthMm(line, 10, false)).toBeLessThanOrEqual(30);
+    }
+    expect(wrapText('Rua Professor Doutor Antonio Carlos', 30, 10, false).length).toBeGreaterThan(
+      1,
+    );
   });
 
-  it('hard-splits a single word longer than the limit', () => {
-    expect(wrapText('AAAAABBBBBCCCCC', 5)).toEqual(['AAAAA', 'BBBBB', 'CCCCC']);
+  it('wraps uppercase earlier than lowercase, because it IS wider', () => {
+    // The bug this replaced: a flat 0.5em average treated these as identical.
+    const lower = wrapText('a'.repeat(60), INNER_W, 10, false);
+    const upper = wrapText('W'.repeat(60), INNER_W, 10, false);
+    expect(upper.length).toBeGreaterThan(lower.length);
   });
 
-  it('keeps a long logradouro inside the label instead of overflowing it', () => {
-    const long = {
-      ...MINIMAL_MODEL,
-      endereco: {
-        ...MINIMAL_MODEL.endereco!,
-        logradouro: 'Avenida Professor Doutor Antonio Carlos Fernandes de Albuquerque Junior',
-      },
-    };
-    const lines = texts(long).filter((t) => t.startsWith('Logradouro:') || t.includes('Albuquer'));
-    expect(lines.length).toBeGreaterThan(1);
-    for (const line of lines) expect(line.length).toBeLessThanOrEqual(51);
+  it('hard-splits a single word too wide for the box', () => {
+    const parts = wrapText('A'.repeat(200), INNER_W, 10, false);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) expect(textWidthMm(part, 10, false)).toBeLessThanOrEqual(INNER_W);
+  });
+
+  it('accounts for the point size, not just the character count', () => {
+    expect(wrapText('A'.repeat(40), INNER_W, 20, false).length).toBeGreaterThan(
+      wrapText('A'.repeat(40), INNER_W, 10, false).length,
+    );
   });
 
   it('returns a single empty line for empty input rather than nothing', () => {
-    expect(wrapText('', 10)).toEqual(['']);
+    expect(wrapText('', INNER_W, 10, false)).toEqual(['']);
   });
 });
 

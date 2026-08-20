@@ -15,6 +15,7 @@ import { join } from 'node:path';
 
 import {
   COM_NFE_MODEL,
+  LONG_STRINGS_MODEL,
   MAXIMAL_MODEL,
   MINIMAL_MODEL,
   RETIRADA_MODEL,
@@ -33,6 +34,7 @@ const SAMPLES: ReadonlyArray<readonly [string, EtiquetaGenericaModel]> = [
   ['reverso', REVERSO_MODEL],
   ['retirada-na-loja', RETIRADA_MODEL],
   ['maxima', MAXIMAL_MODEL],
+  ['textos-longos', LONG_STRINGS_MODEL],
 ];
 
 async function main(): Promise<void> {
@@ -41,10 +43,11 @@ async function main(): Promise<void> {
     const blob = await renderEtiquetaGenericaPdf(model);
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.pdf`), Buffer.from(await blob.arrayBuffer()));
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.zpl`), renderEtiquetaGenericaZpl(model), 'utf8');
-    const { contentHeightMm } = buildEtiquetaGenericaLayout(model);
+    const { contentHeightMm, scale } = buildEtiquetaGenericaLayout(model);
     const fill = ((contentHeightMm / LABEL_H_MM) * 100).toFixed(0);
+    const squeeze = scale < 1 ? `, shrunk to ${(scale * 100).toFixed(0)}% to fit` : '';
     process.stdout.write(
-      `etiqueta-${name}.{pdf,zpl} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%)\n`,
+      `etiqueta-${name}.{pdf,zpl} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze})\n`,
     );
   }
   process.stdout.write(`\nWrote ${SAMPLES.length * 2} samples to ${OUT_DIR}\n`);

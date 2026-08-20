@@ -86,3 +86,40 @@ export const MAXIMAL_MODEL: EtiquetaGenericaModel = {
   },
   volumesResumo: '3 volume(s) · 12,45 kg',
 };
+
+/**
+ * `MAXIMAL_MODEL`'s exact shape, with address strings of a length that is
+ * completely unremarkable in Brazil — and uppercase, which is how a great deal
+ * of legacy cadastro data is stored.
+ *
+ * This is the fixture that matters: the short, lowercase strings in the models
+ * above make the label look comfortable, and it is not. Unfitted, this content
+ * runs past the 150mm page, and the block that falls off the bottom is the
+ * reverse label's `Entrega` — the address the parcel is going back to.
+ */
+export const LONG_STRINGS_MODEL: EtiquetaGenericaModel = {
+  ...MAXIMAL_MODEL,
+  cliente: {
+    nome: 'MARIA DAS GRAÇAS XAVIER DE OLIVEIRA SOUZA',
+    telefone: '5511987654321',
+    cpfCnpj: '12345678909',
+  },
+  endereco: {
+    logradouro: 'AVENIDA ENGENHEIRO LUIZ CARLOS BERRINI DE OLIVEIRA',
+    numero: '1500',
+    complemento: 'CONJUNTO 1201 BLOCO B TORRE NORTE EDIFICIO CENTRAL',
+    bairro: 'CIDADE MONÇÕES',
+    cidade: 'SÃO PAULO',
+    uf: 'SP',
+    cep: '04571000',
+  },
+  enderecoReverso: {
+    logradouro: 'RODOVIA GOVERNADOR ADHEMAR PEREIRA DE BARROS KM 132',
+    numero: 'S/N',
+    complemento: 'GALPÃO 4 CONDOMINIO LOGISTICO PORTAL DO PLANALTO',
+    bairro: 'DISTRITO INDUSTRIAL',
+    cidade: 'SANTA BÁRBARA D OESTE',
+    uf: 'SP',
+    cep: '13456000',
+  },
+};
