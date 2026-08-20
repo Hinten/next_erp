@@ -7,8 +7,8 @@ import { ActionSidePanel } from './ActionSidePanel';
 import type { ActionConfig } from '../schema/types';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions / portals so the confirm Modal
-  // renders synchronously and is queryable.
+  // `MantineTestProvider` renders the confirm Modal inline instead of through a
+  // portal, so it is queryable here.
   return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 

@@ -63,10 +63,9 @@ function show(client: Partial<MercadoLivreClient>) {
     defaultOptions: { queries: { retryDelay: 0 } },
   });
   render(
-    // ⚠️ `env="test"` disables Mantine's transitions. Without it this fullScreen
-    // `Modal` leaves a `Transition` timer running past the test and the callback
-    // fires after jsdom has torn `window` down — an "every test passed, one
-    // error" failure that names an innocent bystander file.
+    // `MantineTestProvider` renders this fullScreen `Modal` inline instead of
+    // through a portal. The leaked transition timer is neutralised in
+    // `vitest.setup.ts`, not here — see #1150.
     <MantineTestProvider>
       <QueryClientProvider client={qc}>
         <SizeChartEditorModal

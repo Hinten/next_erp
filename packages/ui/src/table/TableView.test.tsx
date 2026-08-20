@@ -102,8 +102,8 @@ function fakeCollection(): CollectionHandle<typeof testSchema> {
 }
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions/portals so the ColumnPicker
-  // popover renders synchronously and is queryable in jsdom.
+  // `MantineTestProvider` renders the ColumnPicker popover inline instead of
+  // through a portal, so it is queryable in jsdom.
   return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 

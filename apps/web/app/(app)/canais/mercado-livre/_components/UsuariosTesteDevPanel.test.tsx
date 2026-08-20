@@ -40,9 +40,10 @@ const { MercadoLivreClientHttpError } = await import('@/lib/mercado-livre/client
 function renderPanel(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    // ⚠️ `env="test"` disables Mantine's Transition timers. Without it a leaked
-    // timer fires after teardown and reds an UNRELATED file with
-    // `window is not defined` — this component mounts a <Modal>.
+    // The leaked-timer protection comes from `vitest.setup.ts`
+    // (`DEFAULT_THEME.respectReducedMotion` + the `prefers-reduced-motion`
+    // matchMedia shim), not from this provider — this component mounts a
+    // <Modal>. See #1150.
     <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
     </MantineTestProvider>

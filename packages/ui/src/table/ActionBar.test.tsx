@@ -7,8 +7,8 @@ import { ActionBar } from './ActionBar';
 import type { ActionConfig } from '../schema/types';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions / portals so the Menu.Dropdown
-  // renders synchronously after the trigger click — assertions stay sync.
+  // `MantineTestProvider` renders the Menu.Dropdown inline instead of through a
+  // portal, so it is queryable after the trigger click.
   return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 

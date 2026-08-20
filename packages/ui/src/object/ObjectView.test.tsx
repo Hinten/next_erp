@@ -52,8 +52,8 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 }
 
 function Wrap({ children }: { children: React.ReactNode }) {
-  // `env="test"` disables Mantine transitions/portals so overlays (Modal)
-  // render synchronously and are queryable.
+  // `MantineTestProvider` renders overlays (Modal) inline instead of through a
+  // portal, so they are queryable here.
   return (
     <MantineTestProvider>
       <Notifications />

@@ -5,8 +5,8 @@ import { MantineTestProvider } from '../testing/mantine';
 import { SectionTabs } from './SectionTabs';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions/portals so panels render
-  // synchronously and are queryable.
+  // `MantineTestProvider` renders panels inline instead of through a portal, so
+  // they are queryable here.
   return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 

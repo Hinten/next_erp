@@ -40,12 +40,21 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
  * grep published in #1150 would have flagged — and off the two `mantine.tsx`
  * helpers, the one place allowed to build a provider. Do not widen this to every
  * `.tsx`; the exclusions would have to become a list.
+ *
+ * ⚠️ A single `*`, NEVER `**`/. A git pathspec is wildmatch **without**
+ * `WM_PATHNAME` unless you ask for `:(glob)` magic, so `*` already matches `/`
+ * and is therefore recursive on its own. Spelling it `src/**\/*.test.ts` does
+ * the OPPOSITE of what it looks like: it decomposes to `src/` + `**` + `/` +
+ * `*.test.ts` and so REQUIRES a second slash, silently skipping every test file
+ * sitting directly in the anchor directory. That is not hypothetical —
+ * `packages/ui/src/theme.test.ts` was invisible to this guard until the
+ * pathspecs lost their `**`. Pinned by the enumeration test below.
  */
 const TEST_MODULES = [
-  'apps/web/**/*.test.ts',
-  'apps/web/**/*.test.tsx',
-  'packages/ui/src/**/*.test.ts',
-  'packages/ui/src/**/*.test.tsx',
+  'apps/web/*.test.ts',
+  'apps/web/*.test.tsx',
+  'packages/ui/src/*.test.ts',
+  'packages/ui/src/*.test.tsx',
 ];
 
 const WEB_PROBE = 'apps/web/lib/testing/mantine-transitions.test.tsx';
@@ -111,6 +120,22 @@ describe('MantineProvider is built only by the test helper (#1150)', () => {
   // this file exists to prevent. 233 tracked + 2 untracked today.
   it('finds the test modules it is supposed to police', () => {
     expect(modules.length).toBeGreaterThan(200);
+  });
+
+  // The `**/` pitfall above is invisible in a total count -- it drops exactly the
+  // files sitting directly in an anchor directory, which are few and easy to miss.
+  // Assert that class is represented rather than trusting the count.
+  it('enumerates test files sitting DIRECTLY in an anchor directory', () => {
+    const topLevel = modules.filter((file) =>
+      /^(?:apps\/web|packages\/ui\/src)\/[^/]+$/.test(file),
+    );
+    expect(
+      topLevel,
+      'No test file directly under apps/web/ or packages/ui/src/ was enumerated.\n' +
+        'If TEST_MODULES regained a `**/`, that is the cause: a git pathspec is\n' +
+        'wildmatch without WM_PATHNAME, so `src/**/*.test.ts` requires a SECOND\n' +
+        'slash and silently skips `src/theme.test.ts`. Use a single `*`.',
+    ).not.toEqual([]);
   });
 
   // Anchors the CONTENT read, not just the filename list: a broken `read()` or a

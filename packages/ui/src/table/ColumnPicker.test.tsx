@@ -5,8 +5,8 @@ import { MantineTestProvider } from '../testing/mantine';
 import { ColumnPicker, type ColumnPickerItem } from './ColumnPicker';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions / portals so the Popover
-  // dropdown renders synchronously after the trigger click.
+  // `MantineTestProvider` renders the Popover dropdown inline instead of through
+  // a portal, so it is queryable after the trigger click.
   return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
