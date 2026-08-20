@@ -54,6 +54,12 @@ export interface FreteTabProps {
  */
 export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const freteInicial = form.watch('freteInicial');
+  // The `??` covers the NO-BLOCK case only — a pedido whose `freteInicial` is
+  // null, which the NF-e generator also reads as '9'
+  // (`buildTranspFromFrete(null)`). A block that EXISTS always carries a
+  // modalidade, because `freteDoPedidoSchema` defaults it — to '1' (FOB), the
+  // fail-safe non-emitente value (#1090) — so what this tab shows and what the
+  // generator reads cannot diverge. The two '9's are different rules, not one.
   const modalidade: ModalidadeFrete = freteInicial?.modalidade ?? MODALIDADE_FRETE.semTransporte;
   const temFrete = freteInicial != null && modalidade !== MODALIDADE_FRETE.semTransporte;
   const queryClient = useQueryClient();

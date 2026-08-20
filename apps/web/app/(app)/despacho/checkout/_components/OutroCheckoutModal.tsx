@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react';
 import { Badge, Button, Divider, Group, Modal, Stack, Text } from '@mantine/core';
 import { IconPrinter, IconTruck } from '@tabler/icons-react';
 import type { Firestore } from 'firebase/firestore';
+import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
@@ -22,9 +23,6 @@ import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 import { usePrintInFlight } from './usePrintInFlight';
 import { useConfirm } from './useConfirm';
 import type { OutroCheckoutRow } from './useOutrosCheckouts';
-
-/** `modalidadeFrete` code for "sem frete" — mirrors `etiqueta/gates.ts`. */
-const MODALIDADE_SEM_FRETE = '9';
 
 /**
  * Compile-time exhaustiveness guard for the two report switches below.
@@ -244,7 +242,7 @@ export function OutroCheckoutModal({
   const total = row?.itens.length ?? 0;
   const comErro = row?.itens.filter((i) => i.error != null).length ?? 0;
   const excluidos = row?.itens.filter((i) => i.dataExclusao != null).length ?? 0;
-  const canReprintFrete = row !== null && row.frete.modalidade !== MODALIDADE_SEM_FRETE;
+  const canReprintFrete = row !== null && row.frete.modalidade !== MODALIDADE_FRETE.semTransporte;
 
   return (
     <Modal

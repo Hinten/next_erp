@@ -1,4 +1,9 @@
-import { ESTADO_FRETE, ESTADO_FRETE_LABELS, isFreteJaPostado } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADO_FRETE_LABELS,
+  MODALIDADE_FRETE,
+  isFreteJaPostado,
+} from '@delfrance/schemas';
 
 import type { EtiquetaOutcome, EtiquetaProviderInput } from './types';
 
@@ -22,9 +27,6 @@ export type EtiquetaGatesResult =
   /** All gates passed — dispatch to the provider. */
   | { status: 'proceed' };
 
-/** The `modalidadeFrete` code for "sem ocorrência de transporte" (no shipping). */
-const MODALIDADE_SEM_FRETE = '9';
-
 /**
  * Run the shared pre-gates in legacy order:
  *
@@ -44,7 +46,7 @@ export async function runEtiquetaGates(
   const { frete, ui } = input;
 
   // 1. Sem frete — no shipment, no label.
-  if (frete.modalidade === MODALIDADE_SEM_FRETE) {
+  if (frete.modalidade === MODALIDADE_FRETE.semTransporte) {
     return { status: 'skip' };
   }
 

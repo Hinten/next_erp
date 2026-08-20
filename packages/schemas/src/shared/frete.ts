@@ -692,7 +692,34 @@ export const freteDoPedidoSchema = z
       .describe('Endereço de entrega'),
 
     // Modality + entities ---------------------------------------------------
-    modalidade: modalidadeFreteSchema.default('0').describe('Modalidade'),
+    /**
+     * ⚠️ FISCAL DEFAULT — deliberately NOT the legacy read default.
+     *
+     * `'0'` (CIF, contratação por conta do emitente) is the ONLY modalidade that
+     * charges the freight INTO the nota, and three reads in
+     * `apps/nfe/lib/nfe/orchestrator/generator-input.ts` key on it — all three
+     * see whatever this default produces, because `bundle.ts:parseFreteFromPedido`
+     * feeds the generator through `freteDoPedidoSchema.safeParse`:
+     *   - `vFrete` → `det[…].prod.vFrete`, `ICMSTot.vFrete` and the `vNF` sum;
+     *   - the single-payment `vPag` override (the payment absorbs the freight);
+     *   - the `<cobr>` duplicata values, which follow that same override.
+     * A block stored WITHOUT `modalidade` must therefore never read back as CIF:
+     * the store would pay ICMS on freight a third party charged (#1090).
+     *
+     * `'1'` (destinatário / FOB) declares the freight — `<transp><modFrete>` still
+     * carries the code — without charging it, and keeps the transportadora /
+     * veículo / volume sub-blocks that `'9'` would suppress
+     * ({@link freteDoPedidoSchema} readers short-circuit on `'9'`).
+     *
+     * This DIVERGES from legacy read-parity on purpose. Flutter's
+     * `_modalidadeFreteFromJson` (`.old/packages/pedido/lib/src/models.dart:344`)
+     * answers `contratacaoEmitente` for an absent value — but that shape is not
+     * one we inherit: the Dart field is non-nullable and its `@JsonKey` carries no
+     * `includeIfNull: false`, so every doc the legacy model serializes HAS the
+     * key, and the legacy CONSTRUCTOR default is `semFrete`, never CIF. Do not
+     * "restore parity" by putting `'0'` back.
+     */
+    modalidade: modalidadeFreteSchema.default(MODALIDADE_FRETE.fob).describe('Modalidade'),
     transportadora: transportadoraSchema.nullable().default(null).describe('Transportadora'),
     veiculo: veiculoSchema.nullable().default(null).describe('Veículo'),
     reboques: z.array(reboqueSchema).nullable().default(null).describe('Reboques'),
