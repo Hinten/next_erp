@@ -243,6 +243,41 @@ describe('enviarEstoqueManual — conta guards', () => {
     expect(task.kind).toBe('userProductStock');
   });
 
+  it.each([
+    ['skipped', 'estoque-full-gerenciado-pelo-ml', 'Fulfillment'],
+    ['erro-registrado', 'sem-deposito-no-ml', 'painel do ML'],
+    ['erro-registrado', 'sem-user-product', 'User Products'],
+    ['erro-registrado', 'multi-deposito-nao-suportado', 'mais de um depósito'],
+    ['erro-registrado', 'sem-x-version', 'versão do estoque'],
+    ['erro-registrado', 'deposito-sem-identificadores', 'store_id'],
+  ])(
+    '#706: the %s outcome %s reaches the operator with its own message, not the fallback',
+    async (outcome, reason, trecho) => {
+      // The handler's `reason` rides `toPushOutcome` straight into `motivo`, and
+      // `mensagemDe` looks it up. A reason with no entry silently degrades to
+      // "Não enviado.", which is exactly what this surface exists to avoid.
+      process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+      const deps = baseDeps({
+        api: {
+          getItem: vi.fn(),
+          getMe: vi.fn().mockResolvedValue({ id: 1, tags: ['warehouse_management'] }),
+        },
+        sendTask: vi.fn().mockResolvedValue({ outcome, reason } as StockSendResult),
+      });
+
+      const res = await enviarEstoqueManual(
+        fakeDb({ PROD: { paiId: null, nome: 'Camiseta' } }),
+        { integracaoId: CONTA, produtoIds: ['PROD'] },
+        deps as never,
+      );
+
+      const listing = res.listings[0]!;
+      expect(listing.motivo).toBe(reason);
+      expect(listing.mensagem).toContain(trecho);
+      expect(listing.mensagem).not.toBe('Não enviado.');
+    },
+  );
+
   it('#706: multiwarehouse keeps refusing even with the flag on, naming the mapping gap', async () => {
     process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
     const deps = baseDeps({
