@@ -16,6 +16,7 @@ import {
   type MlCategoryAttribute,
   type MlCategoryListingType,
   type MlClaim,
+  type MlPackMessages,
   type MlQuestion,
   type MlClaimMessage,
   type MlClaimReason,
@@ -62,6 +63,7 @@ import {
   mlClaimMessagesSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
+  mlPackMessagesSchema,
   mlQuestionSchema,
   mlClaimSearchSchema,
   mlMissedFeedsSchema,
@@ -352,6 +354,45 @@ export interface MercadoLivreApi {
    * the contact on that id, so the older shape would silently lose it.
    */
   getQuestion(questionId: number): Promise<MlQuestion>;
+
+  /**
+   * `GET /messages/{messageId}?tag=post_sale` — ONE post-sale message, used to
+   * resolve a `messages` notification's bare id to the pack it belongs to
+   * (#532).
+   *
+   * ⚠️ `mark_as_read=false` is deliberate. The plain GET MARKS THE THREAD READ
+   * as a side effect, and an importer must not silently clear the buyer's
+   * unread state — that is an operator decision, and ML surfaces unread
+   * counts the seller relies on.
+   */
+  getMessage(messageId: string): Promise<MlPackMessages>;
+
+  /**
+   * `GET /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale` — a pack's
+   * whole thread, WITH the `conversation_status` that says whether we can
+   * still reply (#532). Same `mark_as_read=false` reasoning as above.
+   *
+   * When a pack id is absent ML accepts the ORDER id in the same position,
+   * keeping the `/packs/` path — that fallback is the caller's to apply.
+   */
+  /**
+   * `GET /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale&mark_as_read=false`
+   * — ONE page of a post-sale thread, plus `conversation_status` and the live
+   * `seller_max_message_length`.
+   *
+   * ⚠️ **Paginated, with a default page of 10.** Callers that need the whole
+   * thread must loop on `paging.total`; a bare call returns the first ten
+   * messages and nothing says so.
+   *
+   * ⚠️ `mark_as_read=false` is not optional. The plain GET marks the thread
+   * read as a side effect, and an importer must not clear the unread state the
+   * seller relies on.
+   */
+  getPackMessages(
+    packId: string,
+    sellerId: string,
+    paginacao?: { limit?: number; offset?: number },
+  ): Promise<MlPackMessages>;
 
   /** `GET /post-purchase/v1/claims/{claimId}` — one claim (claims import, Step 14). */
   getClaim(claimId: number): Promise<MlClaim>;
@@ -795,6 +836,30 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCatalogDomain: (domainId) =>
       request('GET', `/catalog_domains/${domainId}`, catalogDomainSchema),
 
+    getMessage: (messageId) =>
+      request(
+        'GET',
+        `/messages/${encodeURIComponent(messageId)}?tag=post_sale&mark_as_read=false`,
+        mlPackMessagesSchema,
+      ),
+    getPackMessages: (packId, sellerId, paginacao) => {
+      // ML rejects a non-positive `limit` with a 400, so only send what the
+      // caller actually asked for.
+      const extra =
+        (paginacao?.limit != null && paginacao.limit > 0
+          ? `&limit=${String(paginacao.limit)}`
+          : '') +
+        (paginacao?.offset != null && paginacao.offset > 0
+          ? `&offset=${String(paginacao.offset)}`
+          : '');
+      return request(
+        'GET',
+        `/messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(sellerId)}` +
+          '?tag=post_sale&mark_as_read=false' +
+          extra,
+        mlPackMessagesSchema,
+      );
+    },
     getQuestion: (questionId) =>
       request('GET', `/questions/${questionId}?api_version=4`, mlQuestionSchema),
     getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),

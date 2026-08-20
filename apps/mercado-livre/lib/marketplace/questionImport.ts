@@ -45,6 +45,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 
 import { refMatchesIntegracao } from './linkRefs';
+import { JANELA_404_TRANSIENTE_MS, ack404EhSeguro } from './notificacaoFrescor';
 import { ANSWER_MENSAGEM_ID, makeConversaIdQuestion, makeQuestionMensagemId } from './questionIds';
 import {
   buildAnswerMensagem,
@@ -69,24 +70,11 @@ export interface QuestionImportDeps {
 }
 
 /**
- * How long after ML SENT the notification a 404 is still treated as the
- * read-your-writes race rather than as a deletion — and therefore RETRIED.
- *
- * ⚠️ This window exists because acking a 404 is not free. ML's question GET is
- * eventually consistent (which is why the receiver already delays the task by
- * 10s), so a genuinely new question can 404 on the first read. Acking that is
- * SILENT PERMANENT LOSS: a real customer question never reaches the inbox and
- * nothing anywhere records that it existed.
- *
- * Retrying a deleted question instead costs a handful of calls and then a
- * parked document — visible, and cheap. The asymmetry decides it.
- *
- * 10 minutes comfortably covers the queue's whole retry envelope, so a fresh
- * question gets every attempt; by the time the HOURLY sweep re-drives the
- * failure doc, `sent` is far outside the window and a truly deleted question
- * acks on that pass.
+ * Re-exported from {@link notificacaoFrescor}. `messages` needs the identical
+ * policy — ML's own reference tells integrators to retry a 404 on the by-id
+ * message read — so the window and its reasoning live in ONE place.
  */
-export const JANELA_404_TRANSIENTE_MS = 10 * 60 * 1000;
+export { JANELA_404_TRANSIENTE_MS };
 
 export type QuestionImportSkip =
   | 'question-404'
@@ -199,18 +187,9 @@ async function resolveClienteDaPergunta(
   return res.clienteId;
 }
 
-/**
- * Whether a 404 on this delivery can be trusted to mean "deleted".
- *
- * True once the notification is older than {@link JANELA_404_TRANSIENTE_MS},
- * and also when ML sent no `sent` at all — a payload with no freshness claim
- * (a replay, a synthesised body) cannot be defended by a window, and looping
- * on it forever would be worse than acking.
- */
+/** Whether a 404 on this delivery can be trusted to mean "deleted". */
 function notificacao404EhDefinitivo(deps: QuestionImportDeps): boolean {
-  const enviada = deps.notificacaoEnviadaMs;
-  if (enviada == null || !Number.isFinite(enviada)) return true;
-  return deps.nowMs - enviada > JANELA_404_TRANSIENTE_MS;
+  return ack404EhSeguro({ enviadaMs: deps.notificacaoEnviadaMs, nowMs: deps.nowMs });
 }
 
 /**

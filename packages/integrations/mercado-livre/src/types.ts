@@ -1298,3 +1298,153 @@ export const mlQuestionSchema = z
   })
   .passthrough();
 export type MlQuestion = z.infer<typeof mlQuestionSchema>;
+
+/* ---------------- Post-sale messages / mensageria (#532, Step M11) --------- */
+
+/**
+ * `conversation_status` on a pack's message thread — **the actionability signal
+ * for post-sale messaging**.
+ *
+ * ML documents exactly two `status` values: `active` (open to send and receive)
+ * and `blocked` (closed). `substatus` then carries the reason, from a long and
+ * still-growing `blocked_by_*` vocabulary — hence a plain nullable string.
+ *
+ * ⚠️ The claim-id field is spelled **`claim_id` in one ML reference page and
+ * `claim_ids` in another**. Both ride `.passthrough()` untyped rather than being
+ * guessed at; nothing here reads them.
+ */
+export const mlConversationStatusSchema = z
+  .object({
+    path: z.string().nullable().default(null),
+    /** `active` | `blocked` — a plain string, never an enum. */
+    status: z.string().nullable().default(null),
+    /** `blocked_by_time`, `blocked_by_mediation`, … — the operator-facing reason. */
+    substatus: z.string().nullable().default(null),
+    status_date: z.string().nullable().default(null),
+    status_update_allowed: z.boolean().nullable().default(null),
+    shipping_id: z.union([z.number(), z.string()]).nullable().default(null),
+  })
+  .passthrough();
+export type MlConversationStatus = z.infer<typeof mlConversationStatusSchema>;
+
+/**
+ * `message_resources[]` — what a message belongs to. ML returns one entry per
+ * related id, `name` being `packs`, `orders` or `sellers`.
+ *
+ * This is how a `messages` notification (whose `resource` is a bare message id)
+ * is resolved to the pack whose thread we can actually read.
+ */
+export const mlMessageResourceSchema = z
+  .object({
+    id: z.union([z.number(), z.string()]).nullable().default(null),
+    name: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlMessageResource = z.infer<typeof mlMessageResourceSchema>;
+
+/** One attachment on a post-sale message. */
+export const mlMessageAttachmentSchema = z
+  .object({
+    filename: z.string().nullable().default(null),
+    original_filename: z.string().nullable().default(null),
+    type: z.string().nullable().default(null),
+    size: z.number().nullable().default(null),
+  })
+  .passthrough();
+export type MlMessageAttachment = z.infer<typeof mlMessageAttachmentSchema>;
+
+/**
+ * One post-sale message.
+ *
+ * ⚠️ `from.user_id`/`to.user_id` are typed as `number | string`: ML's own
+ * reference prints them BOTH ways across its samples (`123456789000` in one,
+ * `"415458330"` in the next). Every consumer here compares them as strings.
+ *
+ * ⚠️ Since the 02/02/2026 MLB messaging change, `from.user_id` on a READ is the
+ * **AI Agent's** id, not the buyer's — the agent intermediates the conversation.
+ * Do not use it to identify the contact; the pedido does that.
+ */
+export const mlPostSaleMessageSchema = z
+  .object({
+    id: z.string(),
+    site_id: z.string().nullable().default(null),
+    from: z
+      .object({ user_id: z.union([z.number(), z.string()]).nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
+    to: z
+      .object({ user_id: z.union([z.number(), z.string()]).nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
+    /** `available` | `moderated` | `rejected` | `pending_translation` — plain string. */
+    status: z.string().nullable().default(null),
+    text: z.string().nullable().default(null),
+    message_date: z
+      .object({
+        received: z.string().nullable().default(null),
+        available: z.string().nullable().default(null),
+        notified: z.string().nullable().default(null),
+        created: z.string().nullable().default(null),
+        read: z.string().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    message_attachments: z
+      .array(mlMessageAttachmentSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    message_resources: z
+      .array(mlMessageResourceSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+  })
+  .passthrough();
+export type MlPostSaleMessage = z.infer<typeof mlPostSaleMessageSchema>;
+
+/**
+ * The envelope both message endpoints return —
+ * `GET /messages/packs/{packId}/sellers/{sellerId}` and `GET /messages/{id}`.
+ *
+ * The by-id form answers with `conversation_status: null` and a single-entry
+ * `messages`, which is why resolving a notification takes two calls: one to find
+ * the pack, one to read the thread WITH its status.
+ *
+ * ⚠️ `seller_max_message_length` is the live per-thread cap (350 at the time of
+ * writing). Read it rather than trusting a constant — ML returns it on every
+ * response precisely because it is not one.
+ */
+/**
+ * The pack thread's paging block.
+ *
+ * ⚠️ **Load-bearing, and it used to ride `.passthrough()` untyped.** ML's
+ * default page is **10** — the reference's own example shows
+ * `paging: { limit: 10, offset: 0, total: 3 }` — so a thread with more than ten
+ * messages silently returned its first ten and the importer wrote only those.
+ * Most real post-sale threads clear ten easily.
+ */
+export const mlPagingSchema = z
+  .object({
+    limit: z.number().nullable().default(null),
+    offset: z.number().nullable().default(null),
+    total: z.number().nullable().default(null),
+  })
+  .passthrough();
+export type MlPaging = z.infer<typeof mlPagingSchema>;
+
+export const mlPackMessagesSchema = z
+  .object({
+    /** Null on the by-id read, which returns no envelope. */
+    paging: mlPagingSchema.nullable().default(null),
+    conversation_status: mlConversationStatusSchema.nullable().default(null),
+    messages: z
+      .array(mlPostSaleMessageSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    seller_max_message_length: z.number().int().nullable().default(null),
+    buyer_max_message_length: z.number().int().nullable().default(null),
+  })
+  .passthrough();
+export type MlPackMessages = z.infer<typeof mlPackMessagesSchema>;
