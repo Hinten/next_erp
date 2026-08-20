@@ -32,6 +32,7 @@ import { NfColumnFilter } from './NfColumnFilter';
 import { PrintComumDialog } from './print/PrintComumDialog';
 import { usePrintComumAction } from './print/usePrintComumAction';
 import { useDownloadAnexosAction } from './useDownloadAnexosAction';
+import { useDuplicarPedidoAction } from './useDuplicarPedidoAction';
 import { DIRECAO, type Direcao } from './direcao';
 import { DirecaoBadge } from './DirecaoBadge';
 import { DirecaoSurface } from './DirecaoSurface';
@@ -159,6 +160,7 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
   const { action: emitNFeAction, loteModal } = useEmitirNFeAction();
   const { action: printAction, printModal } = usePrintComumAction();
   const { action: downloadAnexosAction } = useDownloadAnexosAction();
+  const { action: duplicarAction } = useDuplicarPedidoAction(direcao);
   return (
     <DirecaoSurface direcao={direcao}>
       <ContingenciaBanner />
@@ -206,11 +208,18 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
           </Button>
         )}
         selectable
-        // 4 actions on saída (emit + print + download anexos + devolução
-        // integral). Default ActionBar threshold is 3 → overflow menu, which
-        // hid labeled buttons and broke every pedidos bulk-action e2e.
-        overflowThreshold={4}
-        actions={[emitNFeAction, printAction, downloadAnexosAction, ...extraActions]}
+        // 5 actions on saída (emit + print + download anexos + duplicar +
+        // devolução integral). Default ActionBar threshold is 3 → overflow
+        // menu, which hid labeled buttons and broke every pedidos
+        // bulk-action e2e.
+        overflowThreshold={5}
+        actions={[
+          emitNFeAction,
+          printAction,
+          downloadAnexosAction,
+          duplicarAction,
+          ...extraActions,
+        ]}
       />
       <EmitirLoteDialog
         opened={loteModal.opened}

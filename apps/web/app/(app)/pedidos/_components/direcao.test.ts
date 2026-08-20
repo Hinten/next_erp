@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DIRECAO, direcaoOf } from './direcao';
+import { DIRECAO, direcaoIncompativelDaCopia, direcaoOf } from './direcao';
 
 describe('direcaoOf', () => {
   it('maps explicit false to entrada', () => {
@@ -40,5 +40,26 @@ describe('DIRECAO', () => {
       'Selecione pedidos e use o botão acima da tabela para emitir NF-e.',
     );
     expect(DIRECAO.entrada.listDescription).toBe('Entradas de mercadoria — compras e devoluções.');
+  });
+});
+
+describe('direcaoIncompativelDaCopia', () => {
+  it('allows a copy whose direction matches the create route', () => {
+    expect(direcaoIncompativelDaCopia(true, 'saida')).toBeNull();
+    expect(direcaoIncompativelDaCopia(false, 'entrada')).toBeNull();
+  });
+
+  it('names the origin direction when the copy landed on the wrong route', () => {
+    // Only reachable by hand-editing the URL — the Duplicar row action always
+    // targets the list's own direction. Blocked because `PedidoForm` would take
+    // `ehSaida` from the seed while the submit orchestration follows the route.
+    expect(direcaoIncompativelDaCopia(false, 'saida')).toBe('entrada');
+    expect(direcaoIncompativelDaCopia(true, 'entrada')).toBe('saida');
+  });
+
+  it('treats a null/undefined ehSaida as saida, matching the schema default', () => {
+    expect(direcaoIncompativelDaCopia(null, 'saida')).toBeNull();
+    expect(direcaoIncompativelDaCopia(undefined, 'saida')).toBeNull();
+    expect(direcaoIncompativelDaCopia(null, 'entrada')).toBe('saida');
   });
 });
