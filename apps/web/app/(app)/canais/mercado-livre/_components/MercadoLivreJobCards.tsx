@@ -14,10 +14,23 @@
  * moment the job leaves `running`.
  */
 import { type ReactNode, useState } from 'react';
-import { Alert, Anchor, Card, CloseButton, Group, Loader, Modal, Stack, Text } from '@mantine/core';
+import {
+  Alert,
+  Anchor,
+  Button,
+  Card,
+  CloseButton,
+  Group,
+  Loader,
+  Modal,
+  Stack,
+  Text,
+} from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 
 import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
   type MercadoLivreMassImportStatus,
   type MercadoLivrePriceSyncSkip,
   type MercadoLivrePriceSyncStatus,
@@ -26,6 +39,7 @@ import {
 import { describeMercadoLivreFailure } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
+import { describeMassImportCancelError } from './mercadoLivreJobErrors';
 import type { ContaRef } from './startJobsForContas';
 
 /** Poll cadence while a job is `running` (unchanged from the conta panel). */
@@ -49,20 +63,76 @@ const POLL_MS = 3000;
 /** How many skip/failure sample entries the details modal lists before "+N mais". */
 const PRICE_SYNC_LIST_LIMIT = 8;
 
-/** Shared chrome: conta heading, flow label, running spinner, dismiss. */
+/**
+ * Shared chrome: conta heading, flow label, running spinner, dismiss.
+ *
+ * ⚠️ Dismissing is NOT cancelling, and the two used to be indistinguishable:
+ * the X removed the card while the job kept running server-side, and the
+ * `dismissedJobIds` blacklist then kept the running-job lookup from bringing it
+ * back. A flow that can be stopped passes `onCancel`, and on a RUNNING job the
+ * X asks which one the operator meant instead of guessing.
+ */
 function JobCardShell({
   conta,
   flowLabel,
   running,
   onDismiss,
+  onCancel,
+  cancelLabel,
   children,
 }: {
   conta: ContaRef;
   flowLabel: string;
   running: boolean;
   onDismiss: () => void;
+  /**
+   * Stops the job server-side. Omitted = this flow has no cancel yet, and the X
+   * keeps its original dismiss-only behaviour. A rejection is shown in the
+   * confirm itself and never rethrown — see `handleCancel`.
+   */
+  onCancel?: () => Promise<void>;
+  /** Copy for the destructive button, e.g. "Cancelar importação". */
+  cancelLabel?: string;
   children: ReactNode;
 }) {
+  const [confirmOpened, setConfirmOpened] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelErro, setCancelErro] = useState<string | null>(null);
+  const podeCancelar = running && onCancel != null;
+
+  async function handleCancel() {
+    if (!onCancel) return;
+    setCancelling(true);
+    setCancelErro(null);
+    try {
+      await onCancel();
+      setConfirmOpened(false);
+      // Deliberately NOT dismissed: the card stays so its next poll shows
+      // "Importação cancelada", which is the only confirmation the operator
+      // gets that the click reached the server.
+    } catch (err) {
+      // ⚠️ Nothing may rethrow out of here. This is an ASYNC click handler, so a
+      // throw becomes an unhandled promise rejection — React error boundaries do
+      // not catch those — and the operator would see the spinner stop with the
+      // modal still open and nothing said at all. The reachable case is
+      // `onCancel` throwing a plain Error when the client is null.
+      //
+      // `describeMassImportCancelError` always returns copy, so the guard here
+      // exists only to decide what reaches the console — and to satisfy rule 6's
+      // lint rule, which reads the catch body rather than the helper it calls.
+      if (
+        !(err instanceof MercadoLivreClientHttpError) &&
+        !(err instanceof MercadoLivreClientNetworkError)
+      ) {
+        // Not a client failure at all — keep the original where it can be read.
+        console.error('[mercado-livre] cancelamento da importação falhou', err);
+      }
+      setCancelErro(describeMassImportCancelError(err));
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   return (
     <Card withBorder padding="xs">
       <Stack gap={4}>
@@ -75,7 +145,7 @@ function JobCardShell({
             <CloseButton
               size="sm"
               aria-label={`Dispensar ${flowLabel} de ${conta.nome}`}
-              onClick={onDismiss}
+              onClick={() => (podeCancelar ? setConfirmOpened(true) : onDismiss())}
             />
           </Group>
         </Group>
@@ -84,6 +154,43 @@ function JobCardShell({
         </Text>
         {children}
       </Stack>
+      {podeCancelar && (
+        <Modal
+          opened={confirmOpened}
+          onClose={() => setConfirmOpened(false)}
+          title={`${flowLabel} — ${conta.nome}`}
+          centered
+        >
+          <Stack gap="sm">
+            <Text size="sm">
+              Este job está rodando no servidor e não para sozinho ao fechar o cartão.
+            </Text>
+            {cancelErro != null && (
+              <Alert color="red" variant="light" p="xs">
+                <Text size="xs">{cancelErro}</Text>
+              </Alert>
+            )}
+            <Group justify="flex-end" gap="xs">
+              <Button variant="default" size="xs" onClick={() => setConfirmOpened(false)}>
+                Voltar
+              </Button>
+              <Button
+                variant="default"
+                size="xs"
+                onClick={() => {
+                  setConfirmOpened(false);
+                  onDismiss();
+                }}
+              >
+                Apenas ocultar
+              </Button>
+              <Button color="red" size="xs" loading={cancelling} onClick={handleCancel}>
+                {cancelLabel ?? 'Cancelar'}
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
+      )}
     </Card>
   );
 }
@@ -155,6 +262,13 @@ export function MassImportJobCard({
       flowLabel="Importação em massa"
       running={data?.status === 'running'}
       onDismiss={onDismiss}
+      cancelLabel="Cancelar importação"
+      onCancel={async () => {
+        if (!client) throw new Error('not ready');
+        await client.cancelMassImport({ integracaoId: conta.id, jobId });
+        // Show the terminal state now rather than waiting out the poll window.
+        await query.refetch();
+      }}
     >
       {failure ? (
         <RetryAlert
@@ -180,6 +294,13 @@ export function MassImportJobCard({
           {data.status === 'failed' && (
             <Alert color="red" variant="light" p="xs">
               <Text size="xs">Falha na importação{data.erro ? `: ${data.erro}` : '.'}</Text>
+            </Alert>
+          )}
+          {data.status === 'cancelled' && (
+            <Alert color="gray" variant="light" p="xs">
+              {/* The counters above still show what it managed to import — a
+                  cancel keeps its work, it does not roll anything back. */}
+              <Text size="xs">Importação cancelada.</Text>
             </Alert>
           )}
         </>

@@ -15,14 +15,17 @@
  * `importar-todos/status?integracaoId=…&jobId=…`.
  */
 import { NextResponse } from 'next/server';
-import type { MassImportOptions } from '@delfrance/schemas';
-import { importacaoMercadoLivreCollection } from '@delfrance/data/admin/collections';
+import { IMPORTACAO_MERCADO_LIVRE_STATUS, type MassImportOptions } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { MassImportAlreadyRunningError, startMassImportJob } from '@/lib/marketplace/massImport';
+import {
+  finalizeMassImportJob,
+  MassImportAlreadyRunningError,
+  startMassImportJob,
+} from '@/lib/marketplace/massImport';
 import { createMlMassImportScheduler } from '@/lib/marketplace/mlMassImportTasks';
 
 export const dynamic = 'force-dynamic';
@@ -86,8 +89,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       // instead of an unhandled throw — the stamp failure is only logged.
       const failedAt = Date.now();
       try {
-        await importacaoMercadoLivreCollection.merge(db, {}, jobId, {
-          status: 'failed',
+        await finalizeMassImportJob(db, jobId, {
+          status: IMPORTACAO_MERCADO_LIVRE_STATUS.failed,
           erro: message,
           finishedAt: failedAt,
           updatedAt: failedAt,
