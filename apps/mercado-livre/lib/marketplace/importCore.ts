@@ -411,7 +411,7 @@ export interface VariationChildAssembleArgs {
    * #520 `variations[]` behavior (numeric `id` derived from `variationId`,
    * `itemId` preserved-or-null).
    */
-  up: { itemId: string } | null;
+  up: { itemId: string; status: string | null; subStatus: string[] | null } | null;
 }
 
 export interface VariationChildPlan {
@@ -631,6 +631,14 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     // D-C (#521): the SAME rule applies in User-Products mode — the child's sku
     // is always the member's own SELLER_SKU, never the parent's familyId.
     sku: mappedVariation.sku,
+    // #1142 User-Products: the member's OWN raw ML status, so a family's `estado`
+    // can be a fold of its members rather than whichever one was imported. Legacy
+    // `variations[]` members are not separate listings and have no status of their
+    // own, so they keep whatever the spread carried (null).
+    status: args.up ? args.up.status : ((existingLink.status as string | null | undefined) ?? null),
+    sub_status: args.up
+      ? args.up.subStatus
+      : ((existingLink.sub_status as string[] | null | undefined) ?? null),
     attributes: mappedVariation.combos
       .map(comboToWireAttribute)
       .filter((a): a is Record<string, unknown> => a !== null),

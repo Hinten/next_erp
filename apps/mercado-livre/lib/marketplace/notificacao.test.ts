@@ -203,15 +203,23 @@ class FakeDb {
       }
     }
     const clauses: Clause[] = [];
+    let cap: number | null = null;
     const q = {
       where: (field: string, op: string, value: unknown) => {
         clauses.push({ field, op, value });
         return q;
       },
-      get: async () => ({
-        docs: entries
-          .filter(([, d]) => matches(d, clauses))
-          .map(([id, d, colPath]) => {
+      // The #1142 UP-member lookup bounds its scan with `.limit(10)`. Without it
+      // the chain throws, and because that lookup runs on the `no-link` path the
+      // failure lands on tests that have nothing to do with families.
+      limit: (n: number) => {
+        cap = n;
+        return q;
+      },
+      get: async () => {
+        const rows = entries.filter(([, d]) => matches(d, clauses));
+        return {
+          docs: (cap == null ? rows : rows.slice(0, cap)).map(([id, d, colPath]) => {
             const segs = colPath.split('/').filter(Boolean);
             return {
               id,
@@ -220,7 +228,8 @@ class FakeDb {
               ref: { parent: { parent: { id: segs[segs.length - 2] ?? '' } } },
             };
           }),
-      }),
+        };
+      },
     };
     return q;
   }

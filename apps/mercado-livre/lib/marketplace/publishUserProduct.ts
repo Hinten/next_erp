@@ -147,6 +147,13 @@ export async function publishUserProductMembers(
       itemId: item.id,
       state,
       sku: memberSku(memberInput.member.attributes) ?? state?.sku ?? null,
+      // ML just told us this member's lifecycle state; recording it here is what
+      // lets the family's `estado` be a FOLD of its members instead of whichever
+      // one happened to be sent first (#1142). Without it a freshly published
+      // family carries no member observations at all, and the fold would have to
+      // decline to conclude until every member had fired an `items` notification.
+      status: item.status ?? null,
+      subStatus: item.sub_status ?? null,
     });
   }
 
@@ -273,6 +280,8 @@ async function writeMemberLink(
     itemId: string;
     state: UserProductMember | null;
     sku: string | null;
+    status: string | null;
+    subStatus: string[] | null;
   },
 ): Promise<void> {
   const { integracaoId, produtoId, parentLinkDocId, childId, itemId, state, sku } = args;
@@ -289,6 +298,11 @@ async function writeMemberLink(
     // #920: unconditional, so a re-publish self-heals a row predating the field.
     contaOuterRef: toOuterRef(`integracao/${integracaoId}`),
     sku,
+    // #1142: this member's own lifecycle state, as ML just reported it. Raw, like
+    // the parent link's pair — the derived `estado` stays parent-only, because it
+    // is a FAMILY summary and a member has no business carrying one.
+    status: args.status,
+    sub_status: args.subStatus,
   };
 
   if (state?.varLinkDocId != null) {

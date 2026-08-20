@@ -39,13 +39,21 @@ class FakeDb {
 
   private query(entries: Array<[string, DocData, string]>) {
     const clauses: Array<[string, unknown]> = [];
+    let cap: number | null = null;
     const q = {
       where(field: string, _op: string, value: unknown) {
         clauses.push([field, value]);
         return q;
       },
+      // The UP member lookup bounds its scan with `.limit(10)`; without this the
+      // chain throws and every caller reports a resolution failure it never had.
+      limit(n: number) {
+        cap = n;
+        return q;
+      },
       async get() {
-        const rows = entries.filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
+        const matched = entries.filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
+        const rows = cap == null ? matched : matched.slice(0, cap);
         return {
           docs: rows.map(([id, d, colPath]) => ({
             id,
@@ -54,6 +62,7 @@ class FakeDb {
             ref: { parent: { parent: { id: parentDocId(colPath) } } },
           })),
           empty: rows.length === 0,
+          size: rows.length,
         };
       },
     };
@@ -147,6 +156,55 @@ function seedLink(db: FakeDb, link: DocData = {}, produto: DocData = {}): void {
     ...link,
   });
 }
+
+/* ---- User-Products family fixtures (#1142) ----
+ * A family's PARENT link carries the FAMILY id, so no member's item id matches it.
+ * Members live on their own CHILD produtos under `variacaoMercadoLivre`, keyed to
+ * the parent by `produtoMercadoLivreOuterRef`. */
+
+const FAMILY = 'FAM-9'; // the parent link's `id` — NOT any member's item id
+const MEMBER_A = 'MLB-A';
+const MEMBER_B = 'MLB-B';
+const FAMILY_PML_REF = `documents/produtos/${PRODUTO}/produtoMercadoLivre/link1`;
+
+/** Seed a UP family: one parent link at `FAMILY`, plus the given members. */
+function seedFamily(
+  db: FakeDb,
+  members: Array<{ itemId: string; child: string; status?: string | null; sub?: string[] | null }>,
+  link: DocData = {},
+  produto: DocData = {},
+): void {
+  db.seed('produtos', PRODUTO, {
+    nome: 'Camiseta',
+    marketplace: [{ integracaoUid: CONTA, externalId: FAMILY }],
+    marketplaceIds: [FAMILY],
+    integracoesComProduto: [CONTA],
+    ...produto,
+  });
+  db.seed(LINK_PATH, 'link1', {
+    id: FAMILY,
+    contaOuterRef: `documents/integracao/${CONTA}`,
+    title: 'Camiseta',
+    estado: 'p',
+    status: 'active',
+    sub_status: null,
+    isUserProductModel: true,
+    ...link,
+  });
+  for (const m of members) {
+    db.seed(`produtos/${m.child}/variacaoMercadoLivre`, `v-${m.child}`, {
+      itemId: m.itemId,
+      produtoMercadoLivreOuterRef: FAMILY_PML_REF,
+      produtoVariacaoOuterRef: `documents/produtos/${m.child}`,
+      // Deliberately absent unless asked for: `contaOuterRef` is null on every
+      // pre-#920 row, and the resolver must not depend on it.
+      status: m.status === undefined ? 'active' : m.status,
+      sub_status: m.sub ?? null,
+    });
+  }
+}
+
+const memberVarPath = (child: string) => `produtos/${child}/variacaoMercadoLivre`;
 
 beforeEach(() => vi.restoreAllMocks());
 
@@ -756,5 +814,146 @@ describe('syncItemStatus — transport errors', () => {
         failingResolver(new MercadoLivreNetworkError('offline')),
       ),
     ).rejects.toThrow(MercadoLivreNetworkError);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        User-Products FAMILY member status (#1142)                          */
+/* -------------------------------------------------------------------------- */
+
+describe('syncItemStatus — User-Products family members (#1142)', () => {
+  it('a MEMBER item resolves its family and syncs the parent link', async () => {
+    // The regression: the parent link carries FAMILY, so matching on `id` alone
+    // found nothing and the delivery reported `no-link`.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'paused' },
+    ]);
+    const resolve = resolverFor({ status: 'paused', sub_status: ['out_of_stock'] });
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve);
+
+    expect(out).toBe('synced-family');
+    // Every member is now paused, so the family summarises as paused.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa', status: 'paused' });
+  });
+
+  it("records the member's own status on ITS link, not on the family's", async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB' },
+    ]);
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'] }),
+    );
+
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      status: 'paused',
+      sub_status: ['out_of_stock'],
+    });
+    // The sibling is untouched — one notification speaks for one listing.
+    expect(db.docData(memberVarPath('childB'), 'v-childB')).toMatchObject({ status: 'active' });
+    // And no `estado` leaks onto a member: it is a FAMILY summary.
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).not.toHaveProperty('estado');
+  });
+
+  it('ONE member closing does NOT cancel a family whose sibling is still live', async () => {
+    // The whole point of the fold. `estado 'c'` would drop the produto from
+    // `integracoesComProduto` and so from both sweeps' anchor query — silently.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'active' },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+    expect(out).toBe('synced-member'); // recorded, family summary unmoved
+    // The produto keeps its denorm entry: nothing was cancelled.
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [FAMILY] });
+  });
+
+  it('the LAST member closing cancels the family and removes the FAMILY-keyed denorm entry', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'closed' },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(out).toBe('synced-family');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
+    // ⚠️ Keyed on the FAMILY id — publish/import stamped it that way. Keying on the
+    // member id would leave this array untouched and the removal a silent no-op.
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplace: [], marketplaceIds: [] });
+  });
+
+  it('a never-observed member blocks the cancel — unknown is not dead', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: null },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(out).toBe('synced-member');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' });
+  });
+
+  it('a member of ANOTHER conta never resolves (ownership comes from the parent link)', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }], {
+      contaOuterRef: `documents/integracao/outra-conta`,
+    });
+    const resolve = resolverFor({ status: 'paused' });
+
+    expect(await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve)).toBe('no-link');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(db.updates).toEqual([]);
+  });
+
+  it('the parent-id match still wins first — a simple listing never touches the member query', async () => {
+    // Stage 2 must stay a fallback: it is pure cost for the common case.
+    const db = new FakeDb();
+    seedLink(db);
+    // A member link that would ALSO match this id, on a different produto. If
+    // stage 2 ran first (or at all here) the sync would resolve the wrong parent.
+    db.seed('produtos/childX/variacaoMercadoLivre', 'v-childX', {
+      itemId: ITEM,
+      produtoMercadoLivreOuterRef: 'documents/produtos/OTHER/produtoMercadoLivre/linkX',
+      produtoVariacaoOuterRef: 'documents/produtos/childX',
+      status: 'closed',
+    });
+
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'paused' }));
+
+    expect(out).toBe('synced'); // the SIMPLE outcome, not a family one
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' });
+    // The stray member link was never written to.
+    expect(db.docData('produtos/childX/variacaoMercadoLivre', 'v-childX')).toMatchObject({
+      status: 'closed',
+    });
+  });
+
+  it('a redelivery of an unchanged member is a no-op', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB' },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'active' }));
+
+    expect(out).toBe('unchanged');
+    expect(db.updates).toEqual([]);
   });
 });
