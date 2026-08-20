@@ -306,6 +306,19 @@ a `user_product_seller` publishes, it silently skipped the entire future catalog
 deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
 a sync. Do not reintroduce a link-only guard here.
 
+⚠️ **A User-Products FAMILY's `estado` is a FOLD of its members, never one member's
+status.** A family's parent link carries the FAMILY id, so a member's `items`
+delivery matches no parent by `id` — `resolveLink` has a second stage that comes in
+through `variacaoMercadoLivre.itemId` and hops up the parent ref (#1142). Each
+member's raw `status`/`sub_status` is recorded on its OWN link and the parent takes
+the fold (`upFamilyStatus.ts`). The rule that matters: `estado 'c'` is written only
+when **every observed member is closed**, and never while one was never observed —
+`estado` feeds `linkHasLiveListing` → `integracoesComProduto`, the anchor pre-filter
+both sweeps open with, so one member closing could otherwise drop a produto whose
+siblings are still selling out of the stock and price sweeps, silently. The denorm
+is keyed on the parent link's own `id`, matching what publish and import stamped;
+member ids belong to the CHILD produtos.
+
 ⚠️ The same sync is now the **producer** of `estado 'am'`, not a reader of it. That
 value never had a writer in this repo — it only ever arrived from Flutter — yet
 `publishCore.ts` blocks publish on it and `precoPlan.ts`/`bulkEstoquePlan.ts` skip on

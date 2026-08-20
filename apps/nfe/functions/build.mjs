@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
+import { loadBuildEnv } from '../../../tools/deploy-env/build-env.mjs';
 
 // Bundle the NF-e Cloud Functions (codebase `nfe`) into a single self-contained
 // ESM file, inlining the function region (Firebase reads no env during codebase
@@ -16,6 +17,10 @@ import { dirname, join } from 'node:path';
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 
 export async function bundle(outfile) {
+  // Optional repo-root `.env.functions` supplies the build-time vars below when
+  // they are not exported in the deploy shell. A real export still wins, and a
+  // missing file is a no-op — see tools/deploy-env/build-env.mjs.
+  loadBuildEnv();
   const region = process.env.FUNCTIONS_REGION || 'us-east1';
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above

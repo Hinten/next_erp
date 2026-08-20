@@ -925,7 +925,7 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: '4455667788' }),
-        up: { itemId: '4455667788' },
+        up: { itemId: '4455667788', status: null, subStatus: null },
       }),
     );
     expect(plan.link.itemId).toBe('4455667788');
@@ -936,7 +936,7 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
-        up: { itemId: 'MLB4455667788' },
+        up: { itemId: 'MLB4455667788', status: null, subStatus: null },
         existingLinkRaw: { id: 42, itemId: 'MLB4455667788' },
       }),
     );
@@ -948,7 +948,7 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
-        up: { itemId: 'MLB4455667788' },
+        up: { itemId: 'MLB4455667788', status: null, subStatus: null },
       }),
     );
     expect(plan.denorm).toEqual({
@@ -962,7 +962,7 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788', sku: 'MEMBER-SKU' }),
-        up: { itemId: 'MLB4455667788' },
+        up: { itemId: 'MLB4455667788', status: null, subStatus: null },
       }),
     );
     expect(plan.produto?.data.sku).toBe('MEMBER-SKU');

@@ -1,8 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeProdutoId, pesoPedido, volumePadrao, type ProdutoPesoInfo } from './pesoPedido';
+import {
+  DIMENSOES_PADRAO,
+  normalizeProdutoId,
+  pesoPedido,
+  volumePadrao,
+  type ProdutoMedidas,
+} from './pesoPedido';
 
-function peso(over: Partial<ProdutoPesoInfo> = {}): ProdutoPesoInfo {
-  return { pesoBrutoKg: null, pesoLiquidoKg: null, paiId: null, ...over };
+function peso(over: Partial<ProdutoMedidas> = {}): ProdutoMedidas {
+  return {
+    pesoBrutoKg: null,
+    pesoLiquidoKg: null,
+    alturaCm: null,
+    larguraCm: null,
+    profundidadeCm: null,
+    paiId: null,
+    ...over,
+  };
 }
 
 describe('pesoPedido', () => {
@@ -140,7 +154,7 @@ describe('volumePadrao', () => {
       numero: null,
       pesoBruto: 4,
       pesoLiquido: 3.6,
-      dimensoes: { altura: 10, largura: 10, comprimento: 10 },
+      dimensoes: DIMENSOES_PADRAO,
       lacres: null,
     });
   });

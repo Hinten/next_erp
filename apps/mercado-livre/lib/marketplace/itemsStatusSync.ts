@@ -60,10 +60,21 @@
  * only component that reads ML's migration tags on its own schedule and three
  * other rungs gate on that value (`stampAguardandoMigracao` below).
  *
- * ⚠️ Known gap, deliberately not closed here: a UP FAMILY's parent link carries
- * the FAMILY id, so an `items` delivery for a member item resolves no link and
- * reports `'no-link'`. Member status therefore never reaches the ERP. Tracked
- * separately; it is the same defect class, one level down.
+ * #1142 (User-Products FAMILIES): a family's parent link carries the FAMILY id,
+ * so a member's `items` delivery matches no parent link by `id` — `resolveLink`
+ * therefore has a SECOND stage that comes in through `variacaoMercadoLivre.itemId`
+ * and hops up the parent ref. What arrives is one of N listings the parent link
+ * summarises, so it is NOT written straight through: each member's raw status is
+ * recorded on its OWN link and the parent takes a FOLD of all of them
+ * (`upFamilyStatus.ts`).
+ *
+ * ⚠️ The fold exists for one transition. `estado` feeds `linkHasLiveListing`,
+ * which drives `produtos.integracoesComProduto` — the anchor pre-filter BOTH ML
+ * sweeps open with — so letting a single member's `closed` set the family to
+ * `'c'` would drop a produto whose siblings are still selling out of the stock
+ * and price sweeps, with nothing logged and nothing failing. `'c'` is written
+ * only when every observed member is closed, and never while one was never
+ * observed.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
@@ -76,11 +87,14 @@ import {
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
+  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { refMatchesIntegracao } from './linkRefs';
+import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink';
+import { foldFamilyStatus } from './upFamilyStatus';
 import type { UptinSourceLink } from './importMigration';
 import { clearFalha } from './publishFalhas';
 
@@ -130,6 +144,8 @@ export type MigrationRunner = (
 
 export type ItemsSyncOutcome =
   | 'synced' // the link (and maybe parent denorm) was updated
+  | 'synced-family' // a UP family MEMBER moved and the family's summary changed with it
+  | 'synced-member' // the member was recorded, but the family's summary did not move
   | 'unchanged' // estado/status/sub_status all already current (idempotent no-op)
   | 'no-link' // no linked produto for this item on this account
   | 'migrated' // a migration-source listing went closed → #441 takeover ran
@@ -152,6 +168,12 @@ export type ItemsSyncOutcome =
 //   was due and nobody wired the runner. Today `notificacao.ts` always defaults
 //   one in, so it should never appear in production; if it ever does, that is the
 //   point of it having a name.
+//
+//   ⚠️ `'synced-family'` vs `'synced-member'` splits the same way, and for the
+//   same reason (#1142): both mean the notified MEMBER's status was recorded, but
+//   only the first also moved the family's summary. Collapsing them would make
+//   "the fold declined to conclude" look identical to "the family updated", which
+//   is the exact ambiguity that made the original bug invisible.
 
 /**
  * Sync one ML item's lifecycle status onto its linked `produtoMercadoLivre` doc.
@@ -183,6 +205,24 @@ export async function syncItemStatus(
     // A deleted listing (404) can't be synced and won't recover on retry.
     if (err instanceof MercadoLivreHttpError && err.status === 404) return 'item-gone';
     throw err; // transient (5xx/429/network) or reauth → the queue/sweep retry
+  }
+
+  // ⚠️ The FAMILY branch comes FIRST, above the migration-tag branches, and the
+  // ordering is load-bearing. Under stage-2 resolution `link` is the family's
+  // PARENT — so a tag branch here would let ONE member's tags speak for the whole
+  // family un-folded: `stampAguardandoMigracao` would write `estado: 'am'` on the
+  // parent, which blocks publish and makes both the price and stock planners skip
+  // every sibling. Worse, the takeover branch would hand `migrationRunner` a
+  // MEMBER item id together with the family's parent link as the migration
+  // SOURCE, pointing a prune at a live family.
+  //
+  // Nothing is lost by skipping the tag branches here: a UPtin migration's source
+  // is by definition a LEGACY `variations[]` listing, whose parent link carries an
+  // item id and therefore resolves through stage 1, never stage 2. A stage-2
+  // resolution is already User-Products, so it cannot be the source of a
+  // migration INTO User Products.
+  if (link.member) {
+    return syncFamilyMember(db, integracaoId, item, link, link.member);
   }
 
   // Migration-tagged item (needs the fetched item's `tags`) — the only reason
@@ -219,9 +259,34 @@ export async function syncItemStatus(
     return 'deferred-migration-source';
   }
 
-  const estado = estadoFromMlStatus(item.status);
-  const status = item.status ?? null;
-  const subStatus = item.sub_status ?? null;
+  return applyResolvedStatus(
+    db,
+    integracaoId,
+    link,
+    itemId,
+    item.status ?? null,
+    item.sub_status ?? null,
+  );
+}
+
+/**
+ * Write one already-decided status onto a parent link, with the #781 re-arm and
+ * the coarse-transition denorm gate.
+ *
+ * Shared by both paths so a family and a simple listing converge through
+ * IDENTICAL rules — the two differ only in where the status came from (the
+ * fetched item vs the fold) and in `denormItemId`, which must be the key the
+ * denorm was originally stamped with.
+ */
+async function applyResolvedStatus(
+  db: Firestore,
+  integracaoId: string,
+  link: ResolvedLink,
+  denormItemId: string,
+  status: string | null,
+  subStatus: string[] | null,
+): Promise<ItemsSyncOutcome> {
+  const estado = estadoFromMlStatus(status);
 
   const currentEstado = typeof link.data.estado === 'string' ? link.data.estado : null;
   const currentStatus = typeof link.data.status === 'string' ? link.data.status : null;
@@ -253,19 +318,174 @@ export async function syncItemStatus(
   const applied = await applyItemStatusToLink(
     db,
     integracaoId,
-    { produtoId: link.produtoId, linkDocId: link.docId, itemId },
-    item,
+    { produtoId: link.produtoId, linkDocId: link.docId, itemId: denormItemId },
+    { status, sub_status: subStatus },
     {
       nowMs: Date.now(),
       // The denorm is a COARSE-transition-only write (legacy gate) — skip it when
-      // only status/sub_status/errors moved.
-      skipDenorm: !estadoChanged,
+      // only status/sub_status/errors moved. Also skipped outright when the parent
+      // carries no `id`: there would be no key to union or remove by, and inventing
+      // one is how the arrays grow entries nothing can ever match.
+      skipDenorm: !estadoChanged || denormItemId === '',
       extra: errorsToClear ? clearFalha() : {},
     },
   );
 
   // It already warns; the point here is that the CALLER learns nothing was written.
   return applied ? 'synced' : 'link-removido';
+}
+
+/**
+ * The User-Products FAMILY path (#1142): record what ML said about THIS member,
+ * then re-derive the family's summary from every member.
+ *
+ * ⚠️ The denorm key is the PARENT link's own `id`, never the notified member's.
+ * Publish and import both stamped `produtos.marketplace` with the family id
+ * (member ids go on the CHILD produtos, in a different shape), so keying on the
+ * member would `arrayUnion` an entry nothing ever removes AND leave the cancel
+ * arm's `externalId` filter matching nothing — a removal that silently no-ops.
+ */
+async function syncFamilyMember(
+  db: Firestore,
+  integracaoId: string,
+  item: MlItem,
+  link: ResolvedLink,
+  member: ResolvedMember,
+): Promise<ItemsSyncOutcome> {
+  const status = item.status ?? null;
+  const subStatus = item.sub_status ?? null;
+
+  const parentRef = produtoMercadoLivreLinkCollection.docRef(
+    db,
+    { produtoId: link.produtoId },
+    link.docId,
+  );
+  const produtoRef = produtoCollection.docRef(db, {}, link.produtoId);
+  const siblingQuery = familyMemberQuery(db, member.pmlOuterRef);
+
+  return db.runTransaction(async (tx): Promise<ItemsSyncOutcome> => {
+    // ---- READS. All of them, before any write (Firestore's rule), and every
+    // input below is re-derived from THESE — never from `link.data` or
+    // `member.raw`, which were captured before the ML fetch and are stale by
+    // exactly the width of that round trip.
+    const [members, parentSnap, produtoSnap] = await Promise.all([
+      tx.get(siblingQuery),
+      tx.get(parentRef),
+      tx.get(produtoRef),
+    ]);
+    if (!parentSnap.exists) return 'link-removido';
+    const parent = (parentSnap.data() ?? {}) as Record<string, unknown>;
+
+    // ---- Re-derive the fold from the transaction's OWN view of every member.
+    // Reading the siblings INSIDE the transaction is the whole guard: the read
+    // set includes every member doc, so a concurrent task writing a DIFFERENT
+    // member of this family aborts this callback and it retries against the
+    // value that writer committed.
+    let notified: (typeof members.docs)[number] | null = null;
+    const foldable: Array<{ status: string | null; subStatus: string[] | null }> = [];
+    for (const d of members.docs) {
+      const raw = d.data() as Record<string, unknown>;
+      const isNotified =
+        d.id === member.docId && (d.ref.parent?.parent?.id ?? '') === member.produtoId;
+      if (isNotified) notified = d;
+      // ⚠️ A row with no `itemId` is not an ML listing at all — the legacy
+      // `variations[]` branch leaves the field null (`importCore.ts`). Passing it
+      // to the fold would count it as "never observed", and since no notification
+      // can ever arrive for something that was never published, the family could
+      // NEVER conclude `'c'`. Excluded outright: absent, not unknown.
+      if (!isNotified && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
+      foldable.push(
+        isNotified
+          ? { status, subStatus }
+          : {
+              status: typeof raw.status === 'string' ? raw.status : null,
+              subStatus: Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null,
+            },
+      );
+    }
+    // The notified member should be among its own siblings (they share the parent
+    // ref it was found by); if a delete removed it, its fresh reading still counts.
+    if (!notified) foldable.push({ status, subStatus });
+
+    const notifiedRaw = (notified?.data() ?? {}) as Record<string, unknown>;
+    const memberChanged =
+      notified != null &&
+      (status !== (typeof notifiedRaw.status === 'string' ? notifiedRaw.status : null) ||
+        !stringArraysEqual(
+          subStatus,
+          Array.isArray(notifiedRaw.sub_status) ? (notifiedRaw.sub_status as string[]) : null,
+        ));
+
+    const folded = foldFamilyStatus(foldable);
+
+    // ---- Parent decision, re-derived from the tx-fresh parent snapshot.
+    const estado = folded ? estadoFromMlStatus(folded.status) : null;
+    const currentEstado = typeof parent.estado === 'string' ? parent.estado : null;
+    const currentStatus = typeof parent.status === 'string' ? parent.status : null;
+    const currentSubStatus = Array.isArray(parent.sub_status)
+      ? (parent.sub_status as string[])
+      : null;
+    const currentErrors = Array.isArray(parent.errors) ? parent.errors : [];
+    const errorsToClear =
+      folded != null &&
+      currentErrors.length > 0 &&
+      podeEnviarEstoque(folded.status, folded.subStatus).enviar;
+    const estadoChanged = folded != null && estado !== currentEstado;
+    const parentChanged =
+      folded != null &&
+      (estadoChanged ||
+        folded.status !== currentStatus ||
+        !stringArraysEqual(folded.subStatus, currentSubStatus) ||
+        errorsToClear);
+
+    // ---- WRITES.
+    if (memberChanged && notified) {
+      tx.set(notified.ref, { status, sub_status: subStatus }, { merge: true });
+    }
+
+    if (!folded || !parentChanged) {
+      // Either the members do not support a conclusion (every observed one closed,
+      // some never observed — see `foldFamilyStatus`), or the summary already
+      // matches. Saying which happened is the difference between "nothing to do"
+      // and "recorded, cannot summarise yet".
+      return memberChanged ? 'synced-member' : 'unchanged';
+    }
+
+    // ⚠️ The denorm key is the PARENT link's own `id`, never the notified member's.
+    // Publish and import both stamped `produtos.marketplace` with the family id
+    // (member ids go on the CHILD produtos, in a different shape), so keying on the
+    // member would arrayUnion an entry nothing ever removes AND leave the cancel
+    // arm's `externalId` filter matching nothing.
+    const familyItemId = typeof parent.id === 'string' ? parent.id : '';
+    if (estadoChanged && familyItemId !== '' && produtoSnap.exists) {
+      // Same transaction as the link write, so the denorm-first ordering
+      // `applyItemStatusToLink` needs does not apply here: there is no window in
+      // which one landed and the other did not.
+      const produtoRaw = (produtoSnap.data() ?? {}) as Record<string, unknown>;
+      if (estado === ESTADO_PUBLICACAO_ML.cancelado) {
+        const patch = removeMarketplaceEntry(produtoRaw, integracaoId, familyItemId);
+        if (patch) tx.update(produtoRef, patch);
+      } else {
+        tx.update(produtoRef, {
+          marketplace: FieldValue.arrayUnion({
+            integracaoUid: integracaoId,
+            externalId: familyItemId,
+          }),
+          marketplaceIds: FieldValue.arrayUnion(familyItemId),
+        });
+      }
+    }
+
+    tx.update(parentRef, {
+      estado,
+      status: folded.status,
+      sub_status: folded.subStatus,
+      ultimaModificacao: Date.now(),
+      ...(errorsToClear ? clearFalha() : {}),
+    });
+
+    return 'synced-family';
+  });
 }
 
 /**
@@ -441,16 +661,46 @@ export async function applyItemStatusToLink(
 
 /* -------------------------------------------------------------------------- */
 
+/** The family member a notification came in through, when it did (#1142). */
+interface ResolvedMember {
+  /** The variation CHILD produto owning the member link. */
+  produtoId: string;
+  /** The `variacaoMercadoLivre` doc id. */
+  docId: string;
+  /** The member link's raw payload. */
+  raw: Record<string, unknown>;
+  /** The parent's outer ref — the key the sibling fold reads by. */
+  pmlOuterRef: string;
+}
+
 interface ResolvedLink {
   produtoId: string;
   docId: string;
   data: Record<string, unknown>;
+  /**
+   * Set ONLY when the item resolved through a User-Products family member rather
+   * than the parent link's own `id`. Its presence is what selects the fold path:
+   * the notified item is one of N listings this link summarises, so its status
+   * cannot be written straight through.
+   */
+  member?: ResolvedMember;
 }
 
 /**
- * Resolve the `produtoMercadoLivre` link for `itemId` on this account — the same
- * cross-app key the import + Flutter app match on: a collectionGroup query on the
- * `id` field, filtered to this integração's `contaOuterRef`.
+ * Resolve the `produtoMercadoLivre` link for `itemId` on this account.
+ *
+ * TWO stages, and the order is the cost model. First the parent link's own `id`
+ * — the cross-app key the import and the Flutter app match on, and the answer for
+ * every simple listing and every UP single-item one. Only on a miss does it try
+ * the User-Products FAMILY route, where the notified id belongs to a member and
+ * the parent carries the FAMILY id instead (`publish.ts`: `familyId ?? itemIds[0]`),
+ * so a member's delivery matches no parent link at all (#1142).
+ *
+ * The second stage costs one more indexed group query, paid only by items the
+ * first stage could not place — which includes every genuinely unlinked item, the
+ * bulk of the `items` stream. That is the deliberate trade: a family's status was
+ * previously unreachable, and the alternative (querying members first) would tax
+ * the common case instead.
  */
 async function resolveLink(
   db: Firestore,
@@ -467,6 +717,25 @@ async function resolveLink(
     const produtoId = d.ref.parent?.parent?.id;
     if (produtoId) return { produtoId, docId: d.id, data };
   }
+
+  // Stage 2 — a UP family member. Ownership is proven through the PARENT's
+  // `contaOuterRef` inside the resolver, never the member's own (which is null on
+  // every pre-#920 row until the backfill runs).
+  const member = await resolveUpFamilyByMemberItemId(db, itemId, integracaoId);
+  if (member) {
+    return {
+      produtoId: member.produtoId,
+      docId: member.linkDocId,
+      data: member.linkRaw,
+      member: {
+        produtoId: member.childProdutoId ?? '',
+        docId: member.memberDocId,
+        raw: member.memberRaw,
+        pmlOuterRef: member.pmlOuterRef,
+      },
+    };
+  }
+
   // ⚠️ "no link exists" and "a link exists but belongs to another conta" are
   // very different problems with the same symptom, and both used to leave the
   // caller with a bare `no-link`. The candidate count separates them: 0 means the

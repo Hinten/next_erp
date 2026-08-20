@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
+import { loadBuildEnv } from '../../../tools/deploy-env/build-env.mjs';
 
 // Bundle the Mercado Livre Cloud Functions (codebase `mercado-livre`) into a
 // single self-contained ESM file, inlining the function region (Firebase reads
@@ -14,6 +15,10 @@ import { dirname, join } from 'node:path';
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 
 export async function bundle(outfile) {
+  // Optional repo-root `.env.functions` supplies the build-time vars below when
+  // they are not exported in the deploy shell. A real export still wins, and a
+  // missing file is a no-op — see tools/deploy-env/build-env.mjs.
+  loadBuildEnv();
   // Default to us-east5 — the ML backend's deploy region. Must match the
   // enqueuer's MERCADO_LIVRE_TASKS_REGION default (mlTasks.ts) or tasks target a
   // queue that doesn't exist in this region and silently drop.

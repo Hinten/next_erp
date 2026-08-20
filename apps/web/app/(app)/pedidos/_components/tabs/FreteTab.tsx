@@ -10,6 +10,7 @@ import { type Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import {
   MODALIDADE_FRETE,
+  INTEGRACAO_FRETE,
   ESTADO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
   estadoFreteSchema,
@@ -27,6 +28,7 @@ import { collectFreteErrors } from '../freteErrors';
 import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
 import { seedFreteInicial } from './frete/seedFreteInicial';
 import { isAtivacaoDeFrete, seedVolumePadrao } from './frete/seedVolumePadrao';
+import { notificarAvisoDimensoes } from './frete/notificarAviso';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
@@ -99,7 +101,17 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   async function seedVolumeOnActivation() {
     if (marketplaceOwned || (integracaoRef != null && loadingIntegracao)) return;
     try {
-      await seedVolumePadrao({ form, db, queryClient, itens: itensFlat, marketplaceOwned });
+      const aviso = await seedVolumePadrao({
+        form,
+        db,
+        queryClient,
+        itens: itensFlat,
+        marketplaceOwned,
+      });
+      // The box the estimator produced may not be shippable as-is (#371).
+      // Surface that here rather than letting the operator discover it when the
+      // carrier rejects the quote.
+      notificarAvisoDimensoes(aviso === 'naoSemeado' ? null : aviso);
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       notifications.show({
@@ -214,7 +226,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
       return <MarketplaceReadOnly frete={freteInicial!} tipo={tipo} />;
     }
     switch (tipo) {
-      case 'retiradaNaLoja':
+      case INTEGRACAO_FRETE.retiradaNaLoja:
         return (
           <RetiradaFields
             form={form}
@@ -224,7 +236,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             isCreate={!pedidoId}
           />
         );
-      case 'motoboy':
+      case INTEGRACAO_FRETE.motoboy:
         return (
           <MotoboyFields
             form={form}
@@ -234,9 +246,9 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             cepDestino={cepDestino}
           />
         );
-      case 'fob':
+      case INTEGRACAO_FRETE.fob:
         return <FobFields form={form} db={db} disabled={disabled} />;
-      case 'melhorEnvios':
+      case INTEGRACAO_FRETE.melhorEnvios:
         return (
           <MelhorEnvioFields
             form={form}
@@ -248,12 +260,14 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             pedidoId={pedidoId}
           />
         );
-      case 'mercadoLivre':
-      case 'lojaIntegrada':
-      case 'magalu':
-      case 'shopee':
-      case 'outros':
-      case 'amz':
+      case INTEGRACAO_FRETE.mercadoLivre:
+      case INTEGRACAO_FRETE.lojaIntegrada:
+      case INTEGRACAO_FRETE.magalu:
+      case INTEGRACAO_FRETE.shopee:
+      case INTEGRACAO_FRETE.outros:
+      // ⚠️ The constant is `amazon`; the value on disk is `'amz'` — exactly the
+      // mismatch `INTEGRACAO_FRETE` exists to hide (schemas/shared/frete.ts).
+      case INTEGRACAO_FRETE.amazon:
       case undefined:
       default:
         return <GenericFreteFields form={form} db={db} disabled={disabled} />;

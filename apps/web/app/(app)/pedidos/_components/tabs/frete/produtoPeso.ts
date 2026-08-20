@@ -4,12 +4,13 @@ import type { QueryClient } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
-import { normalizeProdutoId, type ProdutoPesoInfo } from './pesoPedido';
+import { normalizeProdutoId, type ProdutoMedidas } from './pesoPedido';
 
-export type ProdutoPesoMap = Record<string, ProdutoPesoInfo | null>;
+export type ProdutoPesoMap = Record<string, ProdutoMedidas | null>;
 
 /**
- * Project the produto fields the weight math needs. Absent from the fetched
+ * Project the produto fields the freight estimators need — weight AND the
+ * three dimensions. Absent from the fetched
  * map = "read succeeded, the produto doesn't exist" → `null`, the only case
  * `pesoPedido` treats as unresolvable. A real read failure (offline,
  * `permission-denied`, backend unavailable, …) rejects rather than becoming
@@ -18,17 +19,30 @@ export type ProdutoPesoMap = Record<string, ProdutoPesoInfo | null>;
  * holds only because both waves pass `{ source: 'server' }` — see the note at
  * the call sites below.
  */
-function toPesoInfo(
-  produtos: Map<
-    string,
-    { pesoBrutoKg: number | null; pesoLiquidoKg: number | null; paiId: string | null }
-  >,
-  id: string,
-): ProdutoPesoInfo | null {
+function toPesoInfo(produtos: Map<string, ProdutoMedidas>, id: string): ProdutoMedidas | null {
   const p = produtos.get(id);
   if (!p) return null;
-  return { pesoBrutoKg: p.pesoBrutoKg, pesoLiquidoKg: p.pesoLiquidoKg, paiId: p.paiId };
+  return {
+    pesoBrutoKg: p.pesoBrutoKg,
+    pesoLiquidoKg: p.pesoLiquidoKg,
+    alturaCm: p.alturaCm,
+    larguraCm: p.larguraCm,
+    profundidadeCm: p.profundidadeCm,
+    paiId: p.paiId,
+  };
 }
+
+/** A produto that cannot supply its own weight — `pesoPedido` needs the parent. */
+const semPesoProprio = (p: ProdutoMedidas) =>
+  (p.pesoBrutoKg ?? 0) === 0 && (p.pesoLiquidoKg ?? 0) === 0;
+
+/**
+ * A produto that cannot supply its own box — `dimensoesPedido` needs the
+ * parent. Any missing or non-positive axis disqualifies the whole set, because
+ * a box needs all three.
+ */
+const semCaixaPropria = (p: ProdutoMedidas) =>
+  !((p.alturaCm ?? 0) > 0 && (p.larguraCm ?? 0) > 0 && (p.profundidadeCm ?? 0) > 0);
 
 /**
  * The distinct, **normalized**, sorted produto ids behind a pedido's items —
@@ -43,10 +57,10 @@ export function produtoPesoIds(produtoUids: readonly (string | null | undefined)
 }
 
 /**
- * Two-wave batched weight lookup: every produto, then — for any whose own
- * weights are BOTH null/0 and which carries a `paiId` — its parent too, so
- * `pesoPedido`'s variation→parent fallback resolves from the same map without
- * a second round-trip from the caller.
+ * Two-wave batched lookup: every produto, then — for any variation that can
+ * supply neither its own weight nor its own box — its parent too, so both
+ * `pesoPedido`'s and `dimensoesPedido`'s variation→parent fallbacks resolve
+ * from the same map without a second round-trip from the caller.
  */
 export async function fetchProdutoPesoMap(
   db: Firestore,
@@ -67,15 +81,18 @@ export async function fetchProdutoPesoMap(
   const wave1 = await getDocsByIds(db, produtoCollection, ids, {}, { source: 'server' });
   for (const id of ids) byId[id] = toPesoInfo(wave1, id);
 
-  // Wave 2: the parents of zero-weight variations, so `pesoPedido`'s
-  // variation→parent fallback resolves from this same map.
+  // Wave 2: the parents of variations that can supply neither their own weight
+  // NOR their own box, so both fallbacks resolve from this same map.
+  //
+  // ⚠️ The dimension half of the predicate is load-bearing: a variation very
+  // commonly carries a weight but no dimensions, and gating this wave on the
+  // weight alone would leave `dimensoesPedido` with no parent to fall back to —
+  // silently costing the pedido its real box.
   const paiIds = [
     ...new Set(
       Object.values(byId)
-        .filter((p): p is ProdutoPesoInfo => p != null)
-        .filter(
-          (p) => (p.pesoBrutoKg ?? 0) === 0 && (p.pesoLiquidoKg ?? 0) === 0 && p.paiId != null,
-        )
+        .filter((p): p is ProdutoMedidas => p != null)
+        .filter((p) => p.paiId != null && (semPesoProprio(p) || semCaixaPropria(p)))
         .map((p) => p.paiId as string),
     ),
   ].filter((id) => !(id in byId));
