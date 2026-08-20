@@ -69,13 +69,15 @@ const PRICE_SYNC_LIST_LIMIT = 8;
  * ⚠️ Dismissing is NOT cancelling, and the two used to be indistinguishable:
  * the X removed the card while the job kept running server-side, and the
  * `dismissedJobIds` blacklist then kept the running-job lookup from bringing it
- * back. A flow that can be stopped passes `onCancel`, and on a RUNNING job the
- * X asks which one the operator meant instead of guessing.
+ * back. A flow that can be stopped passes `onCancel`, and the X then asks which
+ * one the operator meant instead of guessing — unless the job is KNOWN to have
+ * finished, in which case there is nothing to ask about. See `encerrado`.
  */
 function JobCardShell({
   conta,
   flowLabel,
   running,
+  encerrado = false,
   onDismiss,
   onCancel,
   cancelLabel,
@@ -83,7 +85,22 @@ function JobCardShell({
 }: {
   conta: ContaRef;
   flowLabel: string;
+  /** Drives the spinner only — a card with no data yet is not "running". */
   running: boolean;
+  /**
+   * The job is KNOWN to have reached a terminal state. Gates the confirm, and
+   * deliberately not `!running`.
+   *
+   * ⚠️ `running` is false whenever the status query has no data — a card started
+   * this session carries no `initialStatus` until its first poll lands, the poll
+   * can fail (these queries keep `retry: false`), and the query does not run at
+   * all while `client` is null. Gating on `running` therefore sent the X down
+   * the silent-dismiss branch in exactly the states where the operator is most
+   * likely to press it, blacklisting the `jobId` for the session — the failure
+   * this confirm exists to remove. Unknown is treated as possibly-running: the
+   * worst case is a cancel that answers 409 and says so.
+   */
+  encerrado?: boolean;
   onDismiss: () => void;
   /**
    * Stops the job server-side. Omitted = this flow has no cancel yet, and the X
@@ -98,7 +115,17 @@ function JobCardShell({
   const [confirmOpened, setConfirmOpened] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelErro, setCancelErro] = useState<string | null>(null);
-  const podeCancelar = running && onCancel != null;
+  const podeCancelar = onCancel != null && !encerrado;
+
+  /**
+   * Every close path goes through here. `cancelErro` is scoped to ONE attempt:
+   * left standing it greets the operator the next time they open the confirm,
+   * reading as a fresh failure of a click they have not made yet.
+   */
+  function fecharConfirm() {
+    setConfirmOpened(false);
+    setCancelErro(null);
+  }
 
   async function handleCancel() {
     if (!onCancel) return;
@@ -157,28 +184,28 @@ function JobCardShell({
       {podeCancelar && (
         <Modal
           opened={confirmOpened}
-          onClose={() => setConfirmOpened(false)}
+          onClose={fecharConfirm}
           title={`${flowLabel} — ${conta.nome}`}
           centered
         >
           <Stack gap="sm">
-            <Text size="sm">
-              Este job está rodando no servidor e não para sozinho ao fechar o cartão.
-            </Text>
+            {/* Deliberately does not assert that it IS running: the confirm also
+                shows while the status is still unknown (see `encerrado`). */}
+            <Text size="sm">Fechar o cartão não interrompe o job — ele segue no servidor.</Text>
             {cancelErro != null && (
               <Alert color="red" variant="light" p="xs">
                 <Text size="xs">{cancelErro}</Text>
               </Alert>
             )}
             <Group justify="flex-end" gap="xs">
-              <Button variant="default" size="xs" onClick={() => setConfirmOpened(false)}>
+              <Button variant="default" size="xs" onClick={fecharConfirm}>
                 Voltar
               </Button>
               <Button
                 variant="default"
                 size="xs"
                 onClick={() => {
-                  setConfirmOpened(false);
+                  fecharConfirm();
                   onDismiss();
                 }}
               >
@@ -261,6 +288,10 @@ export function MassImportJobCard({
       conta={conta}
       flowLabel="Importação em massa"
       running={data?.status === 'running'}
+      // Only a status we actually READ closes the confirm off. `data` is
+      // undefined before the first poll lands, after a failed poll, and while
+      // the client is null — none of which mean the job stopped.
+      encerrado={data != null && data.status !== 'running'}
       onDismiss={onDismiss}
       cancelLabel="Cancelar importação"
       onCancel={async () => {

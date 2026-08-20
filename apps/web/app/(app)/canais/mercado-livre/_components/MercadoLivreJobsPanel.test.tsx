@@ -156,7 +156,7 @@ describe('MercadoLivreJobsPanel', () => {
 
 describe('MercadoLivreJobsPanel — o X de um job em andamento', () => {
   const CARD_X = 'Dispensar Importação em massa de Conta A';
-  const AVISO = 'Este job está rodando no servidor e não para sozinho ao fechar o cartão.';
+  const AVISO = 'Fechar o cartão não interrompe o job — ele segue no servidor.';
 
   /**
    * Renders one started mass-import card and waits for its FIRST poll to land.
@@ -310,5 +310,98 @@ describe('MercadoLivreJobsPanel — o X de um job em andamento', () => {
 
     await waitFor(() => expect(dismiss).toHaveBeenCalledWith('a'));
     expect(screen.queryByText(AVISO)).toBeNull();
+  });
+});
+
+describe('MercadoLivreJobsPanel — o X antes de saber o estado do job', () => {
+  const CARD_X = 'Dispensar Importação em massa de Conta A';
+  const AVISO = 'Fechar o cartão não interrompe o job — ele segue no servidor.';
+
+  /**
+   * Renders a started card and waits only for the FIRST poll attempt to settle,
+   * without requiring it to succeed.
+   *
+   * These are the states the confirm used to skip. `running` is
+   * `data?.status === 'running'`, so it is false whenever the status query has
+   * no data — and the X then took the plain dismiss branch, blacklisting the
+   * jobId for the session. Which is the exact failure the confirm exists to
+   * remove, reachable in precisely the moments an operator reaches for the X.
+   */
+  function renderCartaoSemEstado(over: Record<string, unknown>): ReturnType<typeof vi.fn> {
+    const dismiss = vi.fn();
+    h.clientRef.current = {
+      jobsEmAndamento: vi.fn(async () => ({ importacoes: [], enviosPreco: [] })),
+      priceSyncStatus: vi.fn(),
+      cancelMassImport: vi.fn(async () => ({ status: 'cancelled' })),
+      ...over,
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
+    render(
+      <MercadoLivreJobsPanel
+        collapsed={false}
+        selecionadas={[]}
+        massImport={{ entries: [{ kind: 'started', conta: CONTA_A, jobId: 'job-a' }], dismiss }}
+        priceSync={{ entries: [], dismiss: vi.fn() }}
+      />,
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <MantineProvider env="test">
+            <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+          </MantineProvider>
+        ),
+      },
+    );
+    return dismiss;
+  }
+
+  it('a primeira consulta FALHOU — ainda pergunta, em vez de dispensar em silêncio', async () => {
+    // The worst case of the three: a flaky backend is exactly when an operator
+    // gives up and reaches for the X.
+    const dismiss = renderCartaoSemEstado({
+      massImportStatus: vi.fn(async () => {
+        throw new (await import('@/lib/mercado-livre/client')).MercadoLivreClientNetworkError('x');
+      }),
+    });
+
+    fireEvent.click(await screen.findByLabelText(CARD_X));
+
+    expect(await screen.findByText(AVISO)).toBeTruthy();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('a consulta ainda não respondeu — ainda pergunta', async () => {
+    // A card started this session carries no initialStatus, so `data` is
+    // undefined until the first poll lands.
+    const dismiss = renderCartaoSemEstado({
+      massImportStatus: vi.fn(() => new Promise(() => {})),
+    });
+
+    fireEvent.click(await screen.findByLabelText(CARD_X));
+
+    expect(await screen.findByText(AVISO)).toBeTruthy();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('a falha de um cancelamento não sobrevive ao fechar o modal', async () => {
+    const { MercadoLivreClientHttpError } = await import('@/lib/mercado-livre/client');
+    renderCartaoSemEstado({
+      massImportStatus: vi.fn(async () => RUNNING_IMPORT),
+      cancelMassImport: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('x', 409, 'ML_MASS_IMPORT_NOT_RUNNING');
+      }),
+    });
+
+    fireEvent.click(await screen.findByLabelText(CARD_X));
+    await screen.findByText(AVISO);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar importação' }));
+    });
+    expect(await screen.findByText('Esta importação já foi finalizada.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Voltar' }));
+    fireEvent.click(screen.getByLabelText(CARD_X));
+
+    await screen.findByText(AVISO);
+    expect(screen.queryByText('Esta importação já foi finalizada.')).toBeNull();
   });
 });
