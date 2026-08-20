@@ -51,11 +51,18 @@ export interface FreteTabProps {
  * selector gates everything: '9' (sem frete) collapses the editor but keeps
  * whatever `freteInicial` data the doc carries (legacy semantics). Picking
  * a freight modalidade on a pedido without `freteInicial` seeds the block
- * via `freteDoPedidoSchema.parse`, so every wire key starts at its Flutter
- * default.
+ * via `freteDoPedidoSchema.parse`, so every wire key starts at its schema
+ * default — Flutter's, except `modalidade` (supplied by the caller here) and
+ * `ehReverso`, both of which deliberately diverge (#1090).
  */
 export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const freteInicial = form.watch('freteInicial');
+  // The `??` covers the NO-BLOCK case only — a pedido whose `freteInicial` is
+  // null, which the NF-e generator also reads as '9'
+  // (`buildTranspFromFrete(null)`). A block that EXISTS always carries a
+  // modalidade, because `freteDoPedidoSchema` defaults it — to '1' (FOB), the
+  // fail-safe non-emitente value (#1090) — so what this tab shows and what the
+  // generator reads cannot diverge. The two '9's are different rules, not one.
   const modalidade: ModalidadeFrete = freteInicial?.modalidade ?? MODALIDADE_FRETE.semTransporte;
   const temFrete = freteInicial != null && modalidade !== MODALIDADE_FRETE.semTransporte;
   const queryClient = useQueryClient();
@@ -129,10 +136,13 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
     // Captured BEFORE the write below — `temFrete` is derived from watched form
     // state, so it only reflects the new modalidade on the next render.
     const wasAtivo = temFrete;
-    if (next.data === '9') {
+    if (next.data === MODALIDADE_FRETE.semTransporte) {
       // Sem frete: collapse but keep the stored data (legacy parity).
       if (freteInicial) {
-        form.setValue(fretePath('modalidade'), '9', { shouldDirty: true, shouldValidate: true });
+        form.setValue(fretePath('modalidade'), MODALIDADE_FRETE.semTransporte, {
+          shouldDirty: true,
+          shouldValidate: true,
+        });
       }
       return;
     }

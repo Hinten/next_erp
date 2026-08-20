@@ -167,6 +167,25 @@ describe("OutroCheckoutModal — reprints target the row's OWN pedido", () => {
     expect(screen.getByRole('button', { name: /Reimprimir NF-e/ })).toBeTruthy();
   });
 
+  /**
+   * `row.frete` is TYPED `FreteDoPedido`, so the compiler is no help here: the
+   * value comes through `parseSoftRead`, which returns the RAW document on a
+   * schema mismatch, so a checkout doc stored without
+   * `freteNoMomentoDoCheckout` reaches this component as `undefined`. Before
+   * the `?.` guard this render threw, and `apps/web` has no `error.tsx` — the
+   * whole despacho page went down, not just the modal.
+   */
+  it('survives an unreadable frete snapshot and KEEPS the reprint offered', () => {
+    renderModal(makeRow({ frete: undefined as unknown as OutroCheckoutRow['frete'] }));
+
+    // Rendered at all — the regression was a TypeError, not a wrong label.
+    expect(screen.getByRole('button', { name: /Reimprimir NF-e/ })).toBeTruthy();
+    // Still offered: the snapshot is display + sem-frete gate only, and the
+    // reprint re-fetches the pedido's LIVE frete. An unreadable snapshot is not
+    // evidence of "sem frete", so it must not silently disable the button.
+    expect(screen.getByRole('button', { name: /Reimprimir Frete/ })).toBeTruthy();
+  });
+
   it('drops a second reprint click while the first is still in flight', async () => {
     let resolveFirst!: () => void;
     h.reprintCheckoutEtiqueta.mockImplementation(

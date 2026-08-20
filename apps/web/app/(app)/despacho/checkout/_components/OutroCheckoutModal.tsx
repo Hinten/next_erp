@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react';
 import { Badge, Button, Divider, Group, Modal, Stack, Text } from '@mantine/core';
 import { IconPrinter, IconTruck } from '@tabler/icons-react';
 import type { Firestore } from 'firebase/firestore';
+import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
@@ -22,9 +23,6 @@ import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 import { usePrintInFlight } from './usePrintInFlight';
 import { useConfirm } from './useConfirm';
 import type { OutroCheckoutRow } from './useOutrosCheckouts';
-
-/** `modalidadeFrete` code for "sem frete" — mirrors `etiqueta/gates.ts`. */
-const MODALIDADE_SEM_FRETE = '9';
 
 /**
  * Compile-time exhaustiveness guard for the two report switches below.
@@ -244,7 +242,17 @@ export function OutroCheckoutModal({
   const total = row?.itens.length ?? 0;
   const comErro = row?.itens.filter((i) => i.error != null).length ?? 0;
   const excluidos = row?.itens.filter((i) => i.dataExclusao != null).length ?? 0;
-  const canReprintFrete = row !== null && row.frete.modalidade !== MODALIDADE_SEM_FRETE;
+  // `row.frete` is typed `FreteDoPedido`, but it arrives through
+  // `parseSoftRead`, which returns the RAW document on a schema mismatch
+  // (`zodParse.ts`) — so a checkout doc stored without
+  // `freteNoMomentoDoCheckout` hands us `undefined` at runtime. `apps/web` has
+  // no `error.tsx`, so an unguarded deref takes down the whole despacho page;
+  // `CheckoutTab.tsx`'s `FreteSnapshotCard` guards the same hazard. `?.` rather
+  // than an early return on purpose: the snapshot is display + sem-frete gate
+  // only, and a reprint re-fetches the pedido's LIVE frete
+  // (`useOutrosCheckouts.ts`), so an unreadable snapshot must not silently
+  // disable the button.
+  const canReprintFrete = row !== null && row.frete?.modalidade !== MODALIDADE_FRETE.semTransporte;
 
   return (
     <Modal
