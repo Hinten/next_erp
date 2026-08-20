@@ -5,6 +5,7 @@ import {
   MercadoLivreReauthRequiredError,
   type MlModeration,
 } from '@delfrance/integrations-mercado-livre';
+import { mlModeracaoSchema } from '@delfrance/schemas';
 
 import {
   MAX_EVIDENCIAS,
@@ -120,12 +121,68 @@ describe('mapModeracoes', () => {
     expect(mapModeracoes([DOCS_PRECO])[0]?.dataCriacao).toBe('2022-10-25 15:57:46.0');
   });
 
-  it('DROPS a moderation with no REASON — an entry that explains nothing is noise', () => {
-    // A red alert saying only "POOR_QUALITY_THUMBNAIL" is worse than the bare
-    // "pausado" this feature replaces.
-    const semMotivo = { name: 'X', wordings: [{ type: 'REMEDY', value: 'conserte' }] };
-    expect(mapModeracoes([semMotivo as unknown as MlModeration])).toEqual([]);
-    expect(mapModeracoes([{ name: 'X' } as unknown as MlModeration])).toEqual([]);
+  /**
+   * ⚠️ KEEPS it, and the reason is the same one behind the 404 narrow and the
+   * transient rethrow. Dropping this entry would store `moderacoes: []`, which
+   * on disk is byte-identical to a healthy listing — recording "not moderated"
+   * about a listing ML just told us IS moderated. The filter name plus the
+   * section is also strictly more than the bare "pausado" this replaces.
+   */
+  it('KEEPS a moderation with no REASON when ML named the filter', () => {
+    const semMotivo = {
+      name: 'POOR_QUALITY_THUMBNAIL',
+      evidences: [{ section_name: 'pictures', text_matched: null }],
+    };
+    expect(mapModeracoes([semMotivo as unknown as MlModeration])).toEqual([
+      {
+        nome: 'POOR_QUALITY_THUMBNAIL',
+        dataCriacao: null,
+        motivo: null,
+        remedio: null,
+        secoes: ['pictures'],
+        evidencias: [],
+      },
+    ]);
+  });
+
+  it('keeps a REMEDY-only entry too, rather than throwing the verdict away', () => {
+    const soRemedio = { name: 'X', wordings: [{ type: 'REMEDY', value: 'conserte' }] };
+    expect(mapModeracoes([soRemedio as unknown as MlModeration])[0]).toMatchObject({
+      nome: 'X',
+      motivo: null,
+      remedio: 'conserte',
+    });
+  });
+
+  /**
+   * ⚠️ Never promoted into `motivo`. A raw SCREAMING_SNAKE filter id sitting
+   * where the operator expects ML's Portuguese prose reads as a translated
+   * reason and is not one.
+   */
+  it('does NOT promote the filter name into motivo', () => {
+    const m = mapModeracoes([{ name: 'DENYLIST' } as unknown as MlModeration])[0];
+    expect(m?.motivo).toBeNull();
+    expect(m?.nome).toBe('DENYLIST');
+  });
+
+  it('DROPS only an entry with neither a reason nor a name — that says nothing', () => {
+    expect(mapModeracoes([{} as unknown as MlModeration])).toEqual([]);
+    expect(mapModeracoes([{ name: '   ' } as unknown as MlModeration])).toEqual([]);
+    expect(mapModeracoes([{ name: null, wordings: [] } as unknown as MlModeration])).toEqual([]);
+  });
+
+  it('warns when ML sends a moderation with no REASON, so a live run can count it', () => {
+    // Every published ML sample carries `wordings`; this branch is defensive, and
+    // only the live run can say how often it really fires. A silent degrade would
+    // leave that permanently unanswerable.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mapModeracoes([{ name: 'POOR_QUALITY_THUMBNAIL' } as unknown as MlModeration]);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    warn.mockClear();
+    mapModeracoes([DOCS_MODERATION]);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('matches the wording type case-insensitively', () => {
@@ -339,9 +396,24 @@ describe('moderacoesArmazenadas', () => {
     expect(moderacoesArmazenadas({ moderacoes: null })).toEqual([]);
   });
 
-  it('skips a malformed entry instead of failing the whole read', () => {
+  /**
+   * ⚠️ The read gate mirrors the write gate on purpose, and it cannot be left to
+   * the schema. Every field is nullable (see `motivo`) and the shape is
+   * `.passthrough()`, so `{ lixo: 1 }` PARSES clean — without the filter it would
+   * count as a stored moderation, which is enough to win the family fold's
+   * explainability tie-break and to render an alert saying nothing. What
+   * `mapModeracoes` refuses to write, this refuses to read.
+   */
+  it('skips an entry carrying neither reason nor name, even though it parses', () => {
+    expect(mlModeracaoSchema.safeParse({ lixo: 1 }).success).toBe(true); // the trap
     expect(
       moderacoesArmazenadas({ moderacoes: [{ lixo: 1 }, ...mapModeracoes([DOCS_PRECO])] }),
     ).toHaveLength(1);
+  });
+
+  it('keeps a name-only entry — a real moderation ML supplied no text for', () => {
+    const semTexto = mapModeracoes([{ name: 'DENYLIST' } as unknown as MlModeration]);
+    expect(semTexto).toHaveLength(1);
+    expect(moderacoesArmazenadas({ moderacoes: semTexto })).toEqual(semTexto);
   });
 });

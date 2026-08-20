@@ -196,10 +196,29 @@ export const mlModeracaoSchema = z
     dataCriacao: z.string().nullable().default(null),
     /**
      * `wordings[type=REASON].value` — WHY the listing was moderated, in the
-     * account's language. The only required field: a moderação with no reason
-     * explains nothing and is dropped by the mapper rather than stored.
+     * account's language.
+     *
+     * ⚠️ NULL means "ML moderated this and supplied no text", NOT "no
+     * moderation". It is not the same null as {@link mlModeracaoSchema.shape.remedio}:
+     * that one says a fix does not exist, this one says the explanation is
+     * missing while {@link mlModeracaoSchema.shape.nome} still names the filter
+     * that fired. A reader must render the `nome`/`secoes` it does have rather
+     * than treat the entry as empty.
+     *
+     * Nullable rather than required because the alternative was worse: dropping
+     * such an entry stores `moderacoes: []`, which on disk is byte-identical to
+     * a healthy listing and to ML's 404 — recording "not moderated" about a
+     * listing ML just told us IS moderated. That is exactly the state the 404
+     * narrow and the transient rethrow exist to prevent, and it must not be
+     * reintroduced here. ⚠️ Do NOT fall back to `nome` to fill this: a raw
+     * `POOR_QUALITY_THUMBNAIL` shown where the operator expects ML's prose reads
+     * as a translated reason and is not one.
+     *
+     * An entry with NEITHER `motivo` nor `nome` genuinely says nothing and is
+     * dropped by the mapper — the schema does not refine that, so the mapper is
+     * the gate.
      */
-    motivo: z.string(),
+    motivo: z.string().nullable().default(null),
     /**
      * `wordings[type=REMEDY].value` — HOW to fix it.
      *

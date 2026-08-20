@@ -210,7 +210,7 @@ describe('mlCausaSchema', () => {
 });
 
 describe('mlModeracaoSchema', () => {
-  it('needs only a motivo — every other field defaults', () => {
+  it('every field defaults — the mapper, not the schema, decides what is worth storing', () => {
     expect(mlModeracaoSchema.parse({ motivo: 'infringe as políticas' })).toEqual({
       nome: null,
       dataCriacao: null,
@@ -219,6 +219,22 @@ describe('mlModeracaoSchema', () => {
       secoes: [],
       evidencias: [],
     });
+  });
+
+  /**
+   * ⚠️ Two DIFFERENT nulls, and a reader must not collapse them. `remedio: null`
+   * says a fix does not exist (a removed listing); `motivo: null` says ML
+   * moderated the listing and supplied no text, with `nome` still naming the
+   * filter that fired. Only the second leaves something to render from `nome`.
+   */
+  it('separates "no fix exists" from "no text supplied"', () => {
+    const semTexto = mlModeracaoSchema.parse({ nome: 'POOR_QUALITY_THUMBNAIL' });
+    expect(semTexto.motivo).toBeNull();
+    expect(semTexto.nome).toBe('POOR_QUALITY_THUMBNAIL');
+
+    const semConserto = mlModeracaoSchema.parse({ motivo: 'cancelado', nome: 'DENYLIST' });
+    expect(semConserto.remedio).toBeNull();
+    expect(semConserto.motivo).toBe('cancelado');
   });
 
   /**
@@ -234,8 +250,11 @@ describe('mlModeracaoSchema', () => {
     expect(removido.remedio).not.toBe('');
   });
 
-  it('rejects a moderação with no motivo — an entry that explains nothing', () => {
-    expect(mlModeracaoSchema.safeParse({ nome: 'DENYLIST' }).success).toBe(false);
+  it('does NOT reject a moderação with no motivo — dropping it would read as healthy', () => {
+    // `moderacoes: []` is byte-identical to "not moderated" on disk. Storing the
+    // filter name is the only way to tell those apart; `mapModeracoes` is the
+    // gate that refuses an entry carrying neither text nor name.
+    expect(mlModeracaoSchema.safeParse({ nome: 'DENYLIST' }).success).toBe(true);
   });
 
   /**

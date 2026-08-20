@@ -147,10 +147,22 @@ function distinct(values: ReadonlyArray<string | null | undefined>): string[] {
 /**
  * ML's `last_moderation` response → what the link doc stores.
  *
- * ⚠️ A moderation with no REASON is DROPPED, not stored with an empty `motivo`.
- * The entire point of the field is the explanation; an entry carrying only a
- * filter name would render as a red alert saying nothing, which is worse than
- * the bare "pausado" this replaces.
+ * ⚠️ An entry is dropped ONLY when it carries neither a REASON nor a `name` —
+ * then it genuinely says nothing. A moderation with a `name` and no REASON is
+ * KEPT, with `motivo: null`.
+ *
+ * That last rule is not a nicety. Dropping it would store `moderacoes: []`,
+ * which on disk is byte-identical to a healthy listing and to ML's 404 — i.e. it
+ * would record "not moderated" about a listing ML just told us IS moderated,
+ * which is precisely the state {@link consultarModeracoes}'s 404 narrow and its
+ * transient rethrow exist to prevent. `POOR_QUALITY_THUMBNAIL` +
+ * `section_name: pictures` is also strictly more than the bare "pausado" this
+ * whole feature replaces.
+ *
+ * ⚠️ But do NOT promote `name` into `motivo` to paper over it. A raw
+ * SCREAMING_SNAKE filter id sitting where the operator expects ML's Portuguese
+ * prose reads as a translated reason and is not one; `motivo: null` beside a
+ * `nome` says exactly what happened.
  *
  * ⚠️ `remedio` stays null when ML sent no REMEDY, and that null is DATA: ML's
  * docs are explicit that a removed listing (`under_review` + `forbidden`)
@@ -163,12 +175,24 @@ export function mapModeracoes(raw: readonly MlModeration[] | null | undefined): 
   const out: MlModeracao[] = [];
   for (const moderation of raw ?? []) {
     const motivo = wording(moderation, WORDING_REASON);
-    if (motivo == null) continue;
+    const nome = moderation.name?.trim() ?? null;
+    // Nothing to say at all — no text, not even which filter fired.
+    if (motivo == null && (nome == null || nome.length === 0)) continue;
+    if (motivo == null) {
+      // ⚠️ Deliberately observable. Every ML sample publishes `wordings`, so this
+      // branch is defensive rather than documented — and the live run (LIVE-TEST
+      // §8.1) is the only thing that can say how often ML really omits it. A
+      // silent degrade would leave that question permanently unanswerable.
+      console.warn('[mercado-livre] moderação sem REASON — mantida apenas pelo filtro', {
+        nome,
+        secoes: evidences(moderation).map((e) => e.section_name),
+      });
+    }
 
     const evidencias = evidences(moderation);
     out.push(
       mlModeracaoSchema.parse({
-        nome: moderation.name?.trim() ?? null,
+        nome,
         // Verbatim. ML sends two formats for this one field and neither is
         // safe to normalise here — see the schema's docblock.
         dataCriacao: moderation.date_created ?? null,
@@ -287,7 +311,16 @@ export function moderacoesArmazenadas(raw: Record<string, unknown>): MlModeracao
   const out: MlModeracao[] = [];
   for (const entry of raw.moderacoes) {
     const parsed = mlModeracaoSchema.safeParse(entry);
-    if (parsed.success) out.push(parsed.data);
+    // ⚠️ The SAME gate {@link mapModeracoes} applies on the way in, and it has to
+    // be repeated here rather than left to the schema: every field is nullable
+    // (see `motivo`) and the shape is `.passthrough()`, so a junk object parses
+    // clean. An all-null entry would then count as a moderation — enough to win
+    // the family fold's explainability tie-break and to render an alert saying
+    // nothing. Read and write agree on what counts as a moderação, or the fold
+    // sees one where the sync never stored one.
+    if (parsed.success && (parsed.data.motivo != null || parsed.data.nome != null)) {
+      out.push(parsed.data);
+    }
   }
   return out;
 }

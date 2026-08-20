@@ -1679,7 +1679,12 @@ export type MlModerationWording = z.infer<typeof mlModerationWordingSchema>;
  *  - the evidence key is spelled **`evidences`** on *Gerenciar moderações* and
  *    **`evidence`** on *Moderações com pausa* and *Moderações de imagens*. Both
  *    are accepted; the mapper unions them.
- *  - `wordings` is absent from some samples entirely.
+ *  - `wordings` is **optional**. Unlike the two above this is not something ML's
+ *    pages demonstrate — every published sample carries it. It is defensive on
+ *    purpose: those same pages already disagree with each other about
+ *    `evidence`/`evidences`, so they are plainly not an exhaustive spec, and a
+ *    missing `wordings` must degrade to "moderated, no text" rather than take the
+ *    whole read down. `mapModeracoes` keeps such an entry on its `name`.
  *  - `date_created` arrives in TWO formats — `2021-04-14T10:47:05.270-0400` and
  *    `2022-10-25 15:57:46.0` — so it stays a raw string here and everywhere
  *    downstream (`delfrance/no-lossy-date-parse`).
