@@ -20,8 +20,11 @@
  *     Handled in the API client.
  *  2. **The limits differ**: post-sale is 25 MB and accepts TXT
  *     (`ML_POST_SALE_ANEXO`), against the claim endpoint's 5 MB and no TXT
- *     (`ML_CLAIM_ANEXO`). They are separate constants for that reason; reusing
- *     one would silently mis-validate the other.
+ *     (`ML_CLAIM_ANEXO`). ⚠️ Both are documentation-only on the DOWNLOAD half —
+ *     nothing here validates size, format or count, because ML already enforced
+ *     them on the way in and a file it accepted is one we can fetch back. They
+ *     are recorded separately so the OUTBOUND direction, where the limits do
+ *     gate a write, reaches for the right ones.
  *  3. **ML documents no 404 for this route** — only 400 and 500 — so a
  *     permanently missing file arrives as a **500**. See the disposition below,
  *     which is why that matters.

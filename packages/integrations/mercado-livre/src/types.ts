@@ -1622,11 +1622,20 @@ export type MlClaimAttachmentUpload = z.infer<typeof mlClaimAttachmentUploadSche
 
 /**
  * Post-sale MESSAGE attachment limits — deliberately separate from
- * {@link ML_CLAIM_ANEXO}, which they do not match. Reusing one constant for
- * both would silently mis-validate whichever endpoint it was not written for.
+ * {@link ML_CLAIM_ANEXO}, which they do not match.
  *
  * ML: 25 MB, JPG/PNG/PDF/TXT, at most 25 per message, `original_filename` up to
  * 200 chars. (Claims: 5 MB, no TXT, filename up to 125.)
+ *
+ * ⚠️ **Documentation-only today — nothing reads it.** The download path
+ * (`orderMessageAttachments.ts`) validates neither size, format nor count: ML is
+ * the one enforcing them, and a file it already accepted on the way IN is one we
+ * can always fetch back. Same status as {@link ML_CLAIM_ANEXO}'s size/format
+ * fields on the download half. What the separation buys is that the numbers are
+ * recorded per endpoint, so whoever adds an OUTBOUND post-sale attachment (the
+ * upload direction, where the limits are enforced BEFORE spending a write
+ * against the shared 500 rpm) reaches for the right ones instead of the claim
+ * values sitting next door.
  */
 export const ML_POST_SALE_ANEXO = {
   maxBytes: 25_000_000,
