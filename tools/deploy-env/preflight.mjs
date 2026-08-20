@@ -79,14 +79,26 @@ const REGIONS_WITHOUT_TASKS = new Set(['us-east5']);
  * region their queues would be created in — which is why their `us-east5` default
  * is a latent broken deploy (#1121) that this preflight now refuses up front,
  * instead of 5 confusing per-function errors partway through.
+ *
+ * ⚠️ `mercado-livre` is NO LONGER one of those two: both its inlined regions are
+ * `us-east1`, so it deploys as it stands. Do not read its separate
+ * `MERCADO_LIVRE_TASKS_REGION` as evidence that its FUNCTIONS_REGION still points
+ * at the data region — the variable survives because the App Hosting backend
+ * reads it, not because the two values differ.
  */
 const CODEBASES = {
   'mercado-livre': {
     deployConfig: 'firebase.mercado-livre.deploy.json',
     buildScript: 'apps/mercado-livre/functions/build.mjs',
     deployDoc: 'apps/mercado-livre/functions/DEPLOY.md',
+    // ⚠️ BOTH are us-east1: this codebase no longer spans two regions. Cloud
+    // Tasks and Cloud Scheduler do not exist in us-east5, so the queue/schedule
+    // functions could never live there, and the four Firestore triggers follow
+    // them rather than the database — Firebase imposes no hard region match for
+    // a Firestore trigger. The two variables stay SEPARATE because only
+    // MERCADO_LIVRE_TASKS_REGION is also read by the App Hosting backend.
     inlined: {
-      FUNCTIONS_REGION: 'us-east5',
+      FUNCTIONS_REGION: 'us-east1',
       MERCADO_LIVRE_TASKS_REGION: 'us-east1',
       FIREBASE_DATABASE_ID: 'default',
     },
