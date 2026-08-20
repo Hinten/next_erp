@@ -14,3 +14,11 @@ if (!process.env.STORAGE_EMULATOR_HOST && process.env.FIREBASE_STORAGE_EMULATOR_
 if (!process.env.GCLOUD_PROJECT) {
   process.env.GCLOUD_PROJECT = process.env.GCP_PROJECT ?? 'demo-erp';
 }
+
+// No Cloud Tasks emulator exists, and the LIVE `onProdutoChanged` fires on every
+// produto write this suite makes. Without the kill switch each of those would
+// try to reach the real Cloud Tasks API. `ci-storage.yml` sets this too; setting
+// it here as well keeps a local `emulators:exec` run honest. The rollup's own
+// behaviour is covered by `kitRollup.storage.test.ts`, which passes a recorder
+// scheduler rather than relying on the transport.
+process.env.KIT_ROLLUP_TASKS_DISABLED ??= '1';

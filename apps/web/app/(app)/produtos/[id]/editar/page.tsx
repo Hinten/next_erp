@@ -20,7 +20,6 @@ import {
   deriveFotosArquivosIds,
   normalizeVariacoesUid,
   parseFakePath,
-  produtoPageBaseSchema,
   produtoPageIssues,
   sortGrupoUids,
 } from '@delfrance/schemas';
@@ -54,36 +53,34 @@ import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager, type VariationRow } from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
+  PRODUTO_PERSISTENT_SECTIONS,
   PRODUTO_SECTIONS,
   PRODUTO_TRANSIENT_FIELDS,
+  SECTION_MERCADO_LIVRE,
   produtoFieldOverrides,
+  produtoObjectViewSchema,
 } from '../../_components/produtoFields';
 
 /** Max referencing kits listed in the #246 promotion warning (a capped preview). */
 const REFERENCED_BY_DISPLAY = 5;
 
 /**
- * Edit-only page schema: the aggregate model plus two UI-anchor keys —
- * `mercadoLivre` and `modificacoes` — whose only job is giving their tab a
- * field descriptor (both tabs are self-contained; nothing is read from or
- * written to the form value for either). Edit-only because both need a
- * SAVED produto (publishing; a modification history), so the create page
- * keeps the plain aggregate.
+ * Edit-only page schema: the shared produto page model (which already carries
+ * the `mercadoLivre` tab anchor) plus one more UI-anchor key, `modificacoes`,
+ * whose only job is giving its tab a field descriptor — the tab is
+ * self-contained; nothing is read from or written to the form value. Edit-only
+ * because a modification history needs a SAVED produto, and there is nothing
+ * useful to show for one that does not exist yet.
  */
-const produtoEditarSchema = produtoPageBaseSchema.extend({
-  mercadoLivre: z.null().default(null),
+const produtoEditarSchema = produtoObjectViewSchema.extend({
   modificacoes: z.null().default(null),
 });
 
-/** Tab order for the edit page — the shared sections plus Mercado Livre + Modificações. */
-const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Mercado Livre', 'Modificações'];
+/** Tab order for the edit page — the shared sections plus Modificações. */
+const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Modificações'];
 
-/** The shared transient keys plus the Mercado Livre + Modificações tab anchors. */
-const PRODUTO_TRANSIENT_FIELDS_EDITAR = [
-  ...PRODUTO_TRANSIENT_FIELDS,
-  'mercadoLivre',
-  'modificacoes',
-];
+/** The shared transient keys plus the Modificações tab anchor. */
+const PRODUTO_TRANSIENT_FIELDS_EDITAR = [...PRODUTO_TRANSIENT_FIELDS, 'modificacoes'];
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
@@ -421,15 +418,16 @@ export default function EditarProdutoPage() {
       },
       mercadoLivre: {
         label: 'Mercado Livre',
-        section: 'Mercado Livre',
+        section: SECTION_MERCADO_LIVRE,
         // Self-contained tab (like Estoque): live link-doc status + the publish
         // action against the apps/mercado-livre backend, decoupled from this
         // form's save.
         //
         // Behind `MercadoLivreTab`, which defers loading the editor chunk until
-        // the tab is actually opened — Mantine keeps inactive panels mounted
-        // under `<Activity mode="hidden">`, so without the gate this subtree
-        // would render (and start its import) on every produto edit.
+        // the tab is actually opened — this panel is in
+        // `PRODUTO_PERSISTENT_SECTIONS`, so it renders (effects and all) from
+        // page load, and without the gate the import would start on every
+        // produto edit.
         renderInput: (p) => (
           <MercadoLivreTab
             produtoId={params.id}
@@ -533,6 +531,7 @@ export default function EditarProdutoPage() {
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
         sections={PRODUTO_SECTIONS_EDITAR}
+        persistentSections={PRODUTO_PERSISTENT_SECTIONS}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}

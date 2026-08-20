@@ -1,12 +1,76 @@
-import {
-  DIMENSOES_PADRAO,
-  normalizeProdutoId,
-  type DimensoesCm,
-  type PesoPedidoItem,
-  type ProdutoMedidas,
-} from './pesoPedido';
+/**
+ * The box/bag estimator — moved here from
+ * `apps/web/app/(app)/pedidos/_components/tabs/frete/dimensoesPedido.ts` (#371 /
+ * PR #1153) so BOTH consumers can reach it: the pedido Frete tab in `apps/web`,
+ * and the kit rollup task in `apps/functions` (#1152). It was pure from the
+ * start and imports nothing browser-shaped, so the move is a relocation.
+ *
+ * Two additions on the way: the {@link EstimarDimensoesOptions.fatorOcupacao}
+ * knob (see {@link FATOR_OCUPACAO}), and {@link itensDeComponentesKit}, which is
+ * what lets a kit reuse this estimator instead of growing a second algorithm.
+ *
+ * ⚠️ Say "dimensões", not "medidas", for anything new in this area —
+ * `tabelaDeMedidas` is the moda size-chart collection and the words collide.
+ * {@link ProdutoMedidas} is the one exception: it predates the rule, is already
+ * `Produto`-prefixed, and renaming it would churn unrelated call sites.
+ */
+import type { ComponentesKit } from '../collection/embedded/kit';
 
-export type { DimensoesCm };
+/** A box, in centimetres, on the `Dimensoes` wire axes. */
+export interface DimensoesCm {
+  altura: number;
+  largura: number;
+  comprimento: number;
+}
+
+/**
+ * `Dimensoes.padrao()` (`.old/packages/pedido/lib/src/models.dart:1077-1083`),
+ * raised to the legal minimum — the legacy 10cm comprimento sits below the
+ * 11cm Correios floor for a caixa/pacote. Used whenever no item resolves a
+ * full set of dimensions.
+ */
+export const DIMENSOES_PADRAO: DimensoesCm = { altura: 10, largura: 10, comprimento: 11 };
+
+/**
+ * The produto fields the freight estimators need — weight for `pesoPedido`,
+ * the three dimensions for {@link estimarDimensoes}, and `paiId` for the
+ * variation→parent fallback both use. Callers batch-fetch these keyed by
+ * produto id, including any parent a variation needs (`loadProdutoPesoMap` in
+ * `apps/web`, `carregarDimensoes` in `apps/functions`).
+ */
+export interface ProdutoMedidas {
+  pesoBrutoKg: number | null;
+  pesoLiquidoKg: number | null;
+  /** ⚠️ The third axis is `profundidadeCm` on produto, `comprimento` on the wire. */
+  alturaCm: number | null;
+  larguraCm: number | null;
+  profundidadeCm: number | null;
+  paiId: string | null;
+}
+
+/**
+ * One thing to fit in the box: a produto id and how many of it. A pedido item
+ * and a `componentesKit` entry both reduce to this shape.
+ */
+export interface ItemDimensoes {
+  produtoUid: string | null | undefined;
+  quantidade: number | null | undefined;
+}
+
+/**
+ * A pedido item's `produtoUid` can be a legacy full path (`produtos/p2`, the
+ * old Flutter ODM convention) instead of a bare id — the same fixup
+ * `productIdsFromPedidos` applies (`lib/pedido/downloadAnexos.ts`) and the one
+ * legacy `getPesoPedido` itself does (`.split('/').last`, per issue #371's
+ * legacy-context comment). Every produtoUid lookup goes through this so a
+ * legacy row still resolves its produto instead of silently falling back to
+ * the 1kg/unit default.
+ */
+export function normalizeProdutoId(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const id = raw.includes('/') ? (raw.split('/').pop() ?? raw) : raw;
+  return id || null;
+}
 
 /**
  * Packing efficiency for mixed items — you never fill a box to 100%. The
@@ -16,6 +80,15 @@ export type { DimensoesCm };
  * Correios only bills *peso cubado* (`C x L x A / 6000`) once it exceeds the
  * real weight, i.e. above ~30.000 cm3. Below that this factor affects whether
  * the parcel is ACCEPTED, not what it costs.
+ *
+ * ⚠️ It must be applied EXACTLY ONCE per parcel, which is why it is a parameter
+ * and not a constant folded into the arithmetic. A kit's stored dimensions are
+ * themselves produced by this estimator and are then fed BACK into it as a
+ * pedido line, so the kit-level call passes `fatorOcupacao: 1` — a kit's
+ * components are packed together deliberately, not loosely, and the pedido level
+ * still applies the allowance. Applying it at both levels declares ~2x the
+ * volume actually needed and can push a single-kit order into a larger bag or
+ * over the {@link LIMITE_SEM_SOBRETAXA_CM} surcharge line (#1152).
  */
 export const FATOR_OCUPACAO = 0.7;
 
@@ -67,6 +140,11 @@ export interface EstimativaDimensoes {
   dimensoes: DimensoesCm;
   embalagem: Embalagem;
   aviso: AvisoDimensoes | null;
+}
+
+export interface EstimarDimensoesOptions {
+  /** Defaults to {@link FATOR_OCUPACAO}; a kit rollup passes `1`. */
+  fatorOcupacao?: number;
 }
 
 const volumeDe = (d: DimensoesCm) => d.altura * d.largura * d.comprimento;
@@ -238,8 +316,8 @@ function escolherSaco(
 }
 
 /**
- * Estimate the box (or bag) a pedido ships in — the re-derived half of #371,
- * replacing `Volume.padrao`'s hardcoded 10x10x10cm.
+ * Estimate the box (or bag) a set of items ships in — the re-derived half of
+ * #371, replacing `Volume.padrao`'s hardcoded 10x10x10cm.
  *
  * `itens` must already exclude staged-for-deletion rows. `produtoMedidasById`
  * is the batched map from `loadProdutoPesoMap`, keyed by NORMALIZED produto id
@@ -250,10 +328,12 @@ function escolherSaco(
  * this differs from `pesoPedido`, which coerces such a quantidade to 1).
  * Nothing resolvable → {@link DIMENSOES_PADRAO} with `aviso: 'semDimensoes'`.
  */
-export function dimensoesPedido(
-  itens: readonly PesoPedidoItem[],
+export function estimarDimensoes(
+  itens: readonly ItemDimensoes[],
   produtoMedidasById: Readonly<Record<string, ProdutoMedidas | null | undefined>>,
+  opts?: EstimarDimensoesOptions,
 ): EstimativaDimensoes {
+  const fatorOcupacao = opts?.fatorOcupacao ?? FATOR_OCUPACAO;
   let volume = 0;
   const pisos: DimensoesCm = { altura: 0, largura: 0, comprimento: 0 };
   // Per-item extents, sorted within each item, so a bag footprint is checked
@@ -285,7 +365,7 @@ export function dimensoesPedido(
   if (volume <= 0) {
     return { dimensoes: DIMENSOES_PADRAO, embalagem: 'caixa', aviso: 'semDimensoes' };
   }
-  volume /= FATOR_OCUPACAO;
+  volume /= fatorOcupacao;
 
   const saco = escolherSaco(volume, maiorLado, ladoMedio, menorLado);
   if (saco) {
@@ -327,4 +407,18 @@ export function dimensoesPedido(
     embalagem: 'caixa',
     aviso: 'excedeuLimiteLegal',
   };
+}
+
+/**
+ * `componentesKit` reshaped into the item list {@link estimarDimensoes} takes.
+ * The map KEY is the component produto id, and only `quantidade` is consumed —
+ * `limitarEstoque` constrains stock, never volume.
+ */
+export function itensDeComponentesKit(
+  componentes: ComponentesKit | null | undefined,
+): ItemDimensoes[] {
+  return Object.entries(componentes ?? {}).map(([produtoUid, kit]) => ({
+    produtoUid,
+    quantidade: kit.quantidade,
+  }));
 }

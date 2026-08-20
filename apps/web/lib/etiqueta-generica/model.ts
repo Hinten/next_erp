@@ -60,8 +60,16 @@ export interface EtiquetaGenericaModel {
   readonly nfeChave: string | null;
   readonly ehReverso: boolean;
   readonly cliente: EtiquetaGenericaPessoa | null;
-  /** Delivery address — SUPPRESSED (null) for retiradaNaLoja. */
+  /** Delivery address, as stored. `null` means genuinely absent, never hidden. */
   readonly endereco: EtiquetaGenericaAddress | null;
+  /**
+   * `retiradaNaLoja` — the customer collects at the counter, so a RESOLVED
+   * address is not printed at all. Kept separate from `endereco === null`
+   * because the legacy label distinguishes them: a missing address still prints
+   * "Endereço não informado" on a pickup, a present one prints nothing
+   * (`generica.dart:152-158`, whose `else if` has no trailing `else`).
+   */
+  readonly ocultarEndereco: boolean;
   readonly recebedor: EtiquetaGenericaPessoa | null;
   /** Filial-sede address, present only on a reverse (return) shipment. */
   readonly enderecoReverso: EtiquetaGenericaAddress | null;
@@ -139,17 +147,26 @@ async function resolveFilialSede(
   return toAddress(filial?.sede ?? null);
 }
 
+/**
+ * The label's subtitle — the port of the legacy `IntegracaoFrete.toString()`,
+ * which is `'$nome (${tipo.displayName})'` (`models.dart:138`), e.g.
+ * `Motoboy Centro (Motoboy)`. Both halves matter on the shop floor: the account
+ * name says WHICH motoboy, the tipo says what kind of freight it is. Falls back
+ * to the tipo label alone when the integração has no `nome`.
+ */
 function subTitleFor(intFrete: { tipo: IntegracaoFrete; data: IntFrete }): string | null {
+  const tipoLabel = INTEGRACAO_FRETE_LABELS[intFrete.tipo] ?? null;
   const nome = intFrete.data.nome?.trim();
-  if (nome) return nome;
-  return INTEGRACAO_FRETE_LABELS[intFrete.tipo] ?? null;
+  if (!nome) return tipoLabel;
+  return tipoLabel ? `${nome} (${tipoLabel})` : nome;
 }
 
 /**
  * Resolve a pedido + its frete into the {@link EtiquetaGenericaModel}. The
- * delivery address is omitted for retiradaNaLoja (pickup — no address to
- * print); a reverse shipment additionally resolves the filial sede as the
- * return target. Independent reads fan out with `Promise.all`.
+ * delivery address is read either way and hidden at render time for
+ * retiradaNaLoja (see `ocultarEndereco`); a reverse shipment additionally
+ * resolves the filial sede as the return target. Independent reads fan out with
+ * `Promise.all`.
  */
 export async function buildEtiquetaGenericaModel(
   db: Firestore,
@@ -158,12 +175,9 @@ export async function buildEtiquetaGenericaModel(
   frete: FreteDoPedido,
   intFrete: { id: string; tipo: IntegracaoFrete; data: IntFrete },
 ): Promise<EtiquetaGenericaModel> {
-  const isRetirada = intFrete.tipo === INTEGRACAO_FRETE.retiradaNaLoja;
-
   const [cliente, endereco, recebedor, nfe, enderecoReverso] = await Promise.all([
     readRef<Cliente>(db, pedido.clientePedidoOuterRef),
-    // Retirada na loja has no delivery address to print (the customer picks up).
-    isRetirada ? Promise.resolve(null) : readRef<Endereco>(db, frete.enderecoFreteOuterReference),
+    readRef<Endereco>(db, frete.enderecoFreteOuterReference),
     readRef<Cliente>(db, frete.clienteRecebedorOuterReference),
     resolveLatestAprovadaNfe(db, pedidoId),
     // Reverse shipment prints the filial sede as the delivery target.
@@ -179,6 +193,7 @@ export async function buildEtiquetaGenericaModel(
     ehReverso: frete.ehReverso,
     cliente: toPessoa(cliente),
     endereco: toAddress(endereco),
+    ocultarEndereco: intFrete.tipo === INTEGRACAO_FRETE.retiradaNaLoja,
     recebedor: toPessoa(recebedor),
     enderecoReverso,
     volumesResumo: volumesResumo(frete),

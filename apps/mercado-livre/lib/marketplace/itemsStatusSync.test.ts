@@ -3,6 +3,7 @@ import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
+  type MlModeration,
 } from '@delfrance/integrations-mercado-livre';
 
 import {
@@ -240,23 +241,86 @@ const PRODUTO = 'prod1';
 const LINK_PATH = `produtos/${PRODUTO}/produtoMercadoLivre`;
 const ITEM = 'MLB123';
 
-function api(item: DocData): ItemsSyncApi {
-  return { getItem: vi.fn(async () => item) } as unknown as ItemsSyncApi;
+/**
+ * The moderation half of the fake ML API (#1087).
+ *
+ * ⚠️ The DEFAULT throws a 404, and that is not laziness — it is what ML answers
+ * for a listing with no active moderation, so every test that does not opt in is
+ * exercising the real "not moderated" path rather than a convenient `[]` that
+ * could never happen. A test wanting a moderation passes one explicitly.
+ */
+type ModeracaoStub = MlModeration[] | Error;
+const SEM_MODERACAO = new MercadoLivreHttpError('ML 404: not found', 404, null);
+
+function api(item: DocData, moderacao: ModeracaoStub = SEM_MODERACAO): ItemsSyncApi {
+  return {
+    getItem: vi.fn(async () => item),
+    getLastModeration: vi.fn(async () => {
+      if (moderacao instanceof Error) throw moderacao;
+      return moderacao;
+    }),
+  } as unknown as ItemsSyncApi;
 }
 function failingApi(err: Error): ItemsSyncApi {
   return {
     getItem: vi.fn(async () => {
       throw err;
     }),
+    getLastModeration: vi.fn(async () => {
+      throw new Error('getLastModeration must not be reached when getItem failed');
+    }),
   } as unknown as ItemsSyncApi;
 }
-/** A lazy resolver that yields a fake API returning `item` (link-first contract). */
-function resolverFor(item: DocData): ItemsApiResolver {
-  return vi.fn(async () => api(item));
+/**
+ * A lazy resolver that yields a fake API returning `item` (link-first contract).
+ *
+ * Returns the SAME api object every call so a test can assert on its mocks —
+ * `apiDo(resolve).getLastModeration` is how the "never called for a healthy
+ * listing" guarantee is checked.
+ */
+function resolverFor(item: DocData, moderacao: ModeracaoStub = SEM_MODERACAO): ItemsApiResolver {
+  const fake = api(item, moderacao);
+  return vi.fn(async () => fake);
 }
 function failingResolver(err: Error): ItemsApiResolver {
   return vi.fn(async () => failingApi(err));
 }
+
+/** The fake API a resolver hands out, with its mocks reachable. */
+async function apiDo(resolve: ItemsApiResolver): Promise<{
+  getItem: ReturnType<typeof vi.fn>;
+  getLastModeration: ReturnType<typeof vi.fn>;
+}> {
+  return (await resolve(asDb(new FakeDb()), CONTA)) as unknown as {
+    getItem: ReturnType<typeof vi.fn>;
+    getLastModeration: ReturnType<typeof vi.fn>;
+  };
+}
+
+/** ML's documented `last_moderation` entry, trimmed to what the mapper reads. */
+function moderacaoMl(over: Partial<MlModeration> = {}): MlModeration {
+  return {
+    name: 'POOR_QUALITY_THUMBNAIL',
+    id: '7123400815',
+    date_created: '2021-04-14T10:47:05.270-0400',
+    evidences: [{ text_matched: '604505-MLA82848669458_022025', section_name: 'pictures' }],
+    wordings: [
+      { type: 'REASON', value: 'Pausamos o anúncio porque ele infringe nossas políticas.' },
+      { type: 'REMEDY', value: 'Ajuste o título e/ou substitua as fotos.' },
+    ],
+    ...over,
+  } as MlModeration;
+}
+
+/** What {@link moderacaoMl} maps to on the link doc. */
+const MODERACAO_ARMAZENADA = {
+  nome: 'POOR_QUALITY_THUMBNAIL',
+  dataCriacao: '2021-04-14T10:47:05.270-0400',
+  motivo: 'Pausamos o anúncio porque ele infringe nossas políticas.',
+  remedio: 'Ajuste o título e/ou substitua as fotos.',
+  secoes: ['pictures'],
+  evidencias: ['604505-MLA82848669458_022025'],
+};
 
 /** Seed a linked produto + its `produtoMercadoLivre` link doc. */
 function seedLink(db: FakeDb, link: DocData = {}, produto: DocData = {}): void {
@@ -292,7 +356,13 @@ const FAMILY_PML_REF = `documents/produtos/${PRODUTO}/produtoMercadoLivre/link1`
 /** Seed a UP family: one parent link at `FAMILY`, plus the given members. */
 function seedFamily(
   db: FakeDb,
-  members: Array<{ itemId: string; child: string; status?: string | null; sub?: string[] | null }>,
+  members: Array<{
+    itemId: string;
+    child: string;
+    status?: string | null;
+    sub?: string[] | null;
+    moderacoes?: DocData[];
+  }>,
   link: DocData = {},
   produto: DocData = {},
 ): void {
@@ -322,6 +392,9 @@ function seedFamily(
       // pre-#920 row, and the resolver must not depend on it.
       status: m.status === undefined ? 'active' : m.status,
       sub_status: m.sub ?? null,
+      // Absent unless asked for: a member link written before #1087 has no such
+      // key, and the fold must read that as "no moderation" rather than throw.
+      ...(m.moderacoes ? { moderacoes: m.moderacoes } : {}),
     });
   }
 }
@@ -1309,5 +1382,293 @@ describe('syncItemStatus — userProductId self-heal (multiorigem, #706)', () =>
     expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
       userProductId: 'MLBU-A',
     });
+  });
+});
+
+/**
+ * #1087. The complaint: ML pauses a listing for a policy reason, the ERP records
+ * `status: 'paused'` and nothing else, and the operator sees a dead anúncio with
+ * no idea what to fix — while ML published the reason the whole time.
+ *
+ * The invariant every test here defends: `moderacoes` is written in the SAME
+ * patch as the status it explains, on every status write, value or `[]`. A
+ * reason cannot outlive the state it describes, because they are one write.
+ */
+describe('syncItemStatus — ML moderations (#1087)', () => {
+  it('persists the reason AND the remedy when ML has moderated the listing', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const resolve = resolverFor({ status: 'under_review', sub_status: ['waiting_for_patch'] }, [
+      moderacaoMl(),
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      estado: 'v',
+      status: 'under_review',
+      moderacoes: [MODERACAO_ARMAZENADA],
+    });
+    // The reference is the item id plus ML's element suffix, never a bare id.
+    expect((await apiDo(resolve)).getLastModeration).toHaveBeenCalledWith(`${ITEM}-ITM`);
+  });
+
+  /**
+   * ⚠️ THE HOT-PATH GUARANTEE. `items` fires for every change to every listing
+   * the seller owns; if a healthy one started costing a second ML call, this
+   * change would have doubled the traffic of the busiest topic in the channel.
+   */
+  it('spends NO moderation call on a healthy listing', async () => {
+    const db = new FakeDb();
+    seedLink(db, { status: 'paused' });
+    const resolve = resolverFor({ status: 'active', sub_status: [] });
+
+    expect(await syncItemStatus(asDb(db), CONTA, ITEM, resolve)).toBe('synced');
+    expect((await apiDo(resolve)).getLastModeration).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ⚠️ The case that made this a separate field instead of a reuse of `errors`.
+   * `active` + `poor_quality_thumbnail` is LIVE and sendable, so the #781 re-arm
+   * fires on the same write — and `errors` is cleared by it. A moderation stored
+   * there would have been wiped by the very write that produced it. Here BOTH
+   * happen and neither destroys the other.
+   */
+  it('keeps the moderation on an ACTIVE listing while still clearing the stock latch', async () => {
+    const db = new FakeDb();
+    seedLink(db, { estado: 'E', status: 'active', errors: ['ML 400: invalid quantity'] });
+    const resolve = resolverFor({ status: 'active', sub_status: ['poor_quality_thumbnail'] }, [
+      moderacaoMl({ name: 'WATERMARK' }),
+    ]);
+
+    expect(await syncItemStatus(asDb(db), CONTA, ITEM, resolve)).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      estado: 'p',
+      errors: [], // the latch cleared…
+      causas: [],
+      moderacoes: [{ ...MODERACAO_ARMAZENADA, nome: 'WATERMARK' }], // …and the reason survived
+    });
+  });
+
+  it('reads a 404 from last_moderation as "not moderated", not as item-gone', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    // `SEM_MODERACAO` is the default; naming it here is the point of the test.
+    const resolve = resolverFor(
+      { status: 'under_review', sub_status: ['held'] },
+      new MercadoLivreHttpError('ML 404: not found', 404, null),
+    );
+
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
+
+    expect(out).toBe('synced'); // NOT 'item-gone' — the ITEM is fine
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'v', moderacoes: [] });
+  });
+
+  /**
+   * Nothing was confirmed, so nothing may be recorded. Writing `moderacoes: []`
+   * after a failed read would persist "not moderated" — indistinguishable from a
+   * healthy listing, which is exactly the state this feature exists to end.
+   */
+  it('a transient moderation failure THROWS and writes nothing at all', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const resolve = resolverFor(
+      { status: 'under_review', sub_status: [] },
+      new MercadoLivreHttpError('ML 500: boom', 500, null),
+    );
+
+    await expect(syncItemStatus(asDb(db), CONTA, ITEM, resolve)).rejects.toThrow(/500/);
+    expect(db.updates).toEqual([]);
+    // Not even the status half landed — the two move together or not at all.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+  });
+
+  /**
+   * ⚠️ THE FAILURE MODE THAT MATTERS. A stale reason on a healthy listing is
+   * indistinguishable from a real one, so it is WORSE than no reason at all —
+   * the operator edits a listing that has nothing wrong with it.
+   *
+   * Note what this test would look like without the `moderacoesChanged` term in
+   * `linkChanged`: estado/status/sub_status all already match, so the sync would
+   * short-circuit on `unchanged` and the moderation would stand forever.
+   */
+  it('CLEARS a lifted moderation even when nothing else about the listing moved', async () => {
+    const db = new FakeDb();
+    seedLink(db, {
+      estado: 'p',
+      status: 'active',
+      sub_status: ['x'],
+      moderacoes: [MODERACAO_ARMAZENADA],
+    });
+    const resolve = resolverFor({ status: 'active', sub_status: ['x'] });
+
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ moderacoes: [] });
+  });
+
+  it('converges: a moderated listing re-delivered unchanged writes nothing', async () => {
+    // The counterpart of the clearing test. A naive "moderations present ⇒
+    // changed" would rewrite the doc on every single `items` delivery.
+    const db = new FakeDb();
+    seedLink(db, {
+      estado: 'v',
+      status: 'under_review',
+      sub_status: ['waiting_for_patch'],
+      moderacoes: [MODERACAO_ARMAZENADA],
+    });
+    const resolve = resolverFor({ status: 'under_review', sub_status: ['waiting_for_patch'] }, [
+      moderacaoMl(),
+    ]);
+
+    expect(await syncItemStatus(asDb(db), CONTA, ITEM, resolve)).toBe('unchanged');
+    expect(db.updates).toEqual([]);
+  });
+
+  it('a removed listing stores the REASON with remedio null — no fix is implied', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const resolve = resolverFor({ status: 'under_review', sub_status: ['forbidden'] }, [
+      moderacaoMl({
+        name: 'DENYLIST',
+        wordings: [{ type: 'REASON', value: 'Seu anúncio foi cancelado por falsificação.' }],
+      }),
+    ]);
+
+    await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
+
+    const stored = db.docData(LINK_PATH, 'link1')?.moderacoes as Array<Record<string, unknown>>;
+    expect(stored[0]).toMatchObject({ nome: 'DENYLIST', remedio: null });
+  });
+
+  it('a migration-tagged listing is never charged for a moderation it cannot store', async () => {
+    // Those branches stamp `estado: 'am'` and return without a status merge, so
+    // a moderation would have nowhere to go.
+    const db = new FakeDb();
+    seedLink(db);
+    const resolve = resolverFor({
+      status: 'under_review',
+      sub_status: ['waiting_for_patch'],
+      tags: ['variations_migration_uptin'],
+    });
+
+    expect(await syncItemStatus(asDb(db), CONTA, ITEM, resolve)).toBe('deferred-migration-uptin');
+    expect((await apiDo(resolve)).getLastModeration).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1087 × #1142. A family's `moderacoes` must describe the SAME listing its
+ * `status` does. The member's own reading lands on its own link; the parent takes
+ * the fold WINNER's — never a union, and never one member speaking for all.
+ */
+describe('syncItemStatus — moderations on a User-Products family', () => {
+  it("records the notified member's moderation on ITS link, and folds it up", async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'closed' },
+    ]);
+    const resolve = resolverFor({ status: 'active', sub_status: ['poor_quality_thumbnail'] }, [
+      moderacaoMl(),
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve);
+
+    expect(out).toBe('synced-family');
+    // The member's own link carries it…
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      moderacoes: [MODERACAO_ARMAZENADA],
+    });
+    // …and the family takes it, because this member won the fold (active > closed).
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      status: 'active',
+      moderacoes: [MODERACAO_ARMAZENADA],
+    });
+  });
+
+  /**
+   * The notified member is NOT the winner here: it is under review while a
+   * sibling is active. Its moderation is still recorded on its own link — that is
+   * real information about that listing — but must not reach the parent, which is
+   * reporting the sibling.
+   */
+  it("does NOT give the family a losing member's moderation", async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'active' },
+    ]);
+    const resolve = resolverFor({ status: 'under_review', sub_status: ['forbidden'] }, [
+      moderacaoMl({ name: 'DENYLIST' }),
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve);
+
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      status: 'under_review',
+      moderacoes: [{ nome: 'DENYLIST' }],
+    });
+    // The sibling is `active` and outranks `under_review`, so the family reports
+    // the sibling — and therefore the sibling's (absent) moderation.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ status: 'active' });
+    expect(db.docData(LINK_PATH, 'link1')?.moderacoes ?? []).toEqual([]);
+    // ⚠️ `synced-member`, not `synced-family`, and the distinction is the proof:
+    // it means the family's summary did not move AT ALL. Had the losing member's
+    // DENYLIST leaked upward, the parent would have changed and this would read
+    // `synced-family`. The outcome union is doing the assertion work here.
+    expect(out).toBe('synced-member');
+  });
+
+  it("folds a SIBLING's stored moderation up without any extra ML call", async () => {
+    // The whole reason moderations are stored per member: the family's answer is
+    // assembled from values already on disk, one notification reads one moderation.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA', status: 'closed' },
+      {
+        itemId: MEMBER_B,
+        child: 'childB',
+        status: 'active',
+        sub: ['poor_quality_thumbnail'],
+        moderacoes: [MODERACAO_ARMAZENADA],
+      },
+    ]);
+    const resolve = resolverFor({ status: 'closed', sub_status: null });
+
+    await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve);
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      status: 'active',
+      moderacoes: [MODERACAO_ARMAZENADA],
+    });
+    // One notification, one moderation read — and it was for the NOTIFIED member,
+    // which here is `closed` and needed none at all.
+    expect((await apiDo(resolve)).getLastModeration).not.toHaveBeenCalled();
+  });
+
+  it('a lifted moderation clears off BOTH the member and the family', async () => {
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        {
+          itemId: MEMBER_A,
+          child: 'childA',
+          sub: ['poor_quality_thumbnail'],
+          moderacoes: [MODERACAO_ARMAZENADA],
+        },
+      ],
+      { sub_status: ['poor_quality_thumbnail'], moderacoes: [MODERACAO_ARMAZENADA] },
+    );
+    const resolve = resolverFor({ status: 'active', sub_status: [] });
+
+    await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve);
+
+    expect(db.docData(memberVarPath('childA'), 'v-childA')?.moderacoes).toEqual([]);
+    expect(db.docData(LINK_PATH, 'link1')?.moderacoes).toEqual([]);
   });
 });

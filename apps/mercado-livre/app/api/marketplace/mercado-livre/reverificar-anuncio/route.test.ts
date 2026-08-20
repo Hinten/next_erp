@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   resolveChannelContext: vi.fn(),
   createApi: vi.fn(),
   getItem: vi.fn(),
+  getLastModeration: vi.fn(),
   docRef: vi.fn(),
   applyItemStatusToLink: vi.fn(),
 }));
@@ -77,7 +78,10 @@ beforeEach(() => {
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.resolveChannelContext.mockResolvedValue({ accessToken: 'AT' });
   h.loadCtx.mockResolvedValue({ conta: {}, resolveChannelContext: h.resolveChannelContext });
-  h.createApi.mockReturnValue({ getItem: h.getItem });
+  h.createApi.mockReturnValue({ getItem: h.getItem, getLastModeration: h.getLastModeration });
+  // ML's answer for a listing with no active moderation. The DEFAULT, so every
+  // test that does not opt in runs the real "not moderated" path (#1087).
+  h.getLastModeration.mockRejectedValue(new MercadoLivreHttpError('ML 404: not found', 404, null));
   h.getItem.mockResolvedValue({ id: ITEM, status: 'active', sub_status: [] });
   h.applyItemStatusToLink.mockResolvedValue(undefined);
   seedLink({ contaOuterRef: `documents/integracao/${CONTA}`, id: ITEM, estado: 'E' });
@@ -102,8 +106,10 @@ describe('POST /api/marketplace/mercado-livre/reverificar-anuncio', () => {
     expect(item).toMatchObject({ status: 'active' });
     // Clearing `errors` is the whole point — it is what un-latches the sweep.
     // `causas` goes with it: a surviving cause would keep painting a red field
-    // on a listing ML has just confirmed healthy.
-    expect(opts.extra).toEqual({ errors: [], causas: [] });
+    // on a listing ML has just confirmed healthy. `moderacoes` likewise (#1087).
+    expect(opts.extra).toEqual({ errors: [], causas: [], moderacoes: [] });
+    // A healthy `active` listing is never worth a moderation call.
+    expect(h.getLastModeration).not.toHaveBeenCalled();
   });
 
   it('reports a listing ML still refuses stock for, without pretending it is fixed', async () => {
@@ -113,6 +119,66 @@ describe('POST /api/marketplace/mercado-livre/reverificar-anuncio', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ estado: 'v', enviavel: false });
+  });
+
+  /**
+   * #1087. The re-check clears `errors`/`causas` UNCONDITIONALLY — that is its
+   * whole design, the operator saying "tell me the truth now". Left at that,
+   * pressing the button on a genuinely moderated listing would erase the reason
+   * they pressed it to see and leave a bare "pausado", with the next `items`
+   * delivery the only way back — and for a listing nobody touches, that delivery
+   * never comes. So a re-check FETCHES rather than merely clearing.
+   */
+  it('re-fetches the moderation instead of clearing it away', async () => {
+    h.getItem.mockResolvedValue({
+      id: ITEM,
+      status: 'under_review',
+      sub_status: ['waiting_for_patch'],
+    });
+    h.getLastModeration.mockResolvedValue([
+      {
+        name: 'PICTURE_QUALITY',
+        id: '7123400815',
+        date_created: '2021-04-14T10:47:05.270-0400',
+        evidences: [{ text_matched: 'MLB5095421681', section_name: 'pictures' }],
+        wordings: [
+          { type: 'REASON', value: 'Pausamos o anúncio porque ele infringe nossas políticas.' },
+          { type: 'REMEDY', value: 'Ajuste o título e/ou substitua as fotos.' },
+        ],
+      },
+    ]);
+
+    await POST(req(validBody));
+
+    // The reference id is the item id plus ML's `-ITM` element suffix, never bare.
+    expect(h.getLastModeration).toHaveBeenCalledWith(`${ITEM}-ITM`);
+    const [, , , , opts] = h.applyItemStatusToLink.mock.calls[0]!;
+    expect(opts.extra.errors).toEqual([]);
+    expect(opts.extra.moderacoes).toEqual([
+      {
+        nome: 'PICTURE_QUALITY',
+        dataCriacao: '2021-04-14T10:47:05.270-0400',
+        motivo: 'Pausamos o anúncio porque ele infringe nossas políticas.',
+        remedio: 'Ajuste o título e/ou substitua as fotos.',
+        secoes: ['pictures'],
+        evidencias: ['MLB5095421681'],
+      },
+    ]);
+  });
+
+  /**
+   * Nothing was confirmed, so nothing may be recorded — the same rule the 5xx
+   * branch of `getItem` already follows. Writing `moderacoes: []` after a failed
+   * read would record "not moderated", which is indistinguishable from healthy.
+   */
+  it('records NOTHING when the moderation read fails transiently', async () => {
+    h.getItem.mockResolvedValue({ id: ITEM, status: 'under_review', sub_status: [] });
+    h.getLastModeration.mockRejectedValue(new MercadoLivreHttpError('ML 500: boom', 500, null));
+
+    const res = await POST(req(validBody));
+
+    expect(res.status).toBe(502);
+    expect(h.applyItemStatusToLink).not.toHaveBeenCalled();
   });
 
   it('records the closed state when the listing is gone (never leaves it active)', async () => {
@@ -127,8 +193,12 @@ describe('POST /api/marketplace/mercado-livre/reverificar-anuncio', () => {
       subStatus: [],
       enviavel: false,
     });
-    const [, , , item] = h.applyItemStatusToLink.mock.calls[0]!;
+    const [, , , item, opts] = h.applyItemStatusToLink.mock.calls[0]!;
     expect(item).toEqual({ status: 'closed', sub_status: [] });
+    // A moderation on a listing that no longer exists explains nothing, and ML
+    // would 404 for it too — one of only two places allowed to blank the field
+    // without having read it.
+    expect(opts.extra).toEqual({ errors: [], causas: [], moderacoes: [] });
   });
 
   it('404s for a link that belongs to another conta (body is never trusted alone)', async () => {

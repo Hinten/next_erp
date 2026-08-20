@@ -79,6 +79,13 @@ import {
   precoPageLimit,
   precoRatePauseMin,
 } from './precoPlan';
+import {
+  type FetchPrecoReconPage,
+  PRECO_RECON_MAX_PAGES,
+  fetchPrecoReconPage,
+  precoReconPageLimit,
+  precoReconciliacaoHabilitada,
+} from './precoReconciliacao';
 import { type PriceSyncApi, enviarPrecoDraft } from './precoDraftSend';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import type { MlPriceSyncScheduler } from './mlPriceSyncTasks';
@@ -213,6 +220,14 @@ export interface PriceSyncRunDeps {
   resolveContext?: (db: Firestore, integracaoId: string) => Promise<PriceSyncContext>;
   /** Injectable for tests; defaults to `precoPlan.fetchPrecoPage`. */
   fetchPage?: FetchPrecoPage;
+  /**
+   * Injectable for tests; defaults to `precoReconciliacao.fetchPrecoReconPage`.
+   *
+   * ⚠️ Its own dep rather than another name on the `./precoPlan` mock, because
+   * `precoSync.test.ts` module-mocks that file WHOLESALE — an export added
+   * there arrives `undefined` here unless someone also edits the mock factory.
+   */
+  fetchReconPage?: FetchPrecoReconPage;
   /** Injectable clock (tests) — one call per dispatch, reused for every persisted timestamp. */
   now?: () => number;
 }
@@ -255,10 +270,12 @@ export type PriceSyncDispatchOutcome = 'done' | 'continued' | 'noop' | 'failed';
  * Process one `processMercadoLivrePriceSync` task dispatch: resume the job
  * doc, plan at most one produto page when the queue is empty and planning
  * isn't concluded, drain up to `precoItemsPerDispatch()` drafts through the
- * per-item gates, then either re-enqueue itself (`'continued'`) or mark the
- * job `completed` (`'done'`). `retryCount` is the Cloud Tasks attempt index
- * (0-based) — on the FINAL attempt an otherwise-fatal error is persisted as
- * `status: 'failed'` instead of re-thrown (mirrors `processMassImportJob`).
+ * per-item gates, reconcile at most one LINK page once both are exhausted
+ * (#1072 — report-only, flag-gated), then either re-enqueue itself
+ * (`'continued'`) or mark the job `completed` (`'done'`). `retryCount` is the
+ * Cloud Tasks attempt index (0-based) — on the FINAL attempt an otherwise-fatal
+ * error is persisted as `status: 'failed'` instead of re-thrown (mirrors
+ * `processMassImportJob`).
  */
 export async function processPriceSyncJob(
   deps: PriceSyncRunDeps,
@@ -285,6 +302,11 @@ export async function processPriceSyncJob(
     let fila = [...job.fila];
     let afterAnchorId = job.afterAnchorId;
     let planejamentoConcluido = job.planejamentoConcluido;
+    let afterLinkPath = job.afterLinkPath;
+    let reconciliacaoConcluida = job.reconciliacaoConcluida;
+    let reconciliacaoPaginas = job.reconciliacaoPaginas;
+    let naoEnumerados = job.naoEnumerados;
+    let linksReconciliados = job.linksReconciliados;
     let planejados = job.planejados;
     let enviados = job.enviados;
     let pulados = job.pulados;
@@ -314,10 +336,20 @@ export async function processPriceSyncJob(
     };
 
     const checkpoint = async (): Promise<void> => {
+      // ⚠️ Every mutable above must appear here. `envioPrecoMercadoLivreSchema`
+      // is a bare `z.object`, so `parseMerge` STRIPS anything it does not
+      // model: a field missing from this merge (or from the schema) is silently
+      // never persisted, every dispatch re-reads its default, and a phase gated
+      // on it re-enqueues forever.
       await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
         fila,
         afterAnchorId,
         planejamentoConcluido,
+        afterLinkPath,
+        reconciliacaoConcluida,
+        reconciliacaoPaginas,
+        naoEnumerados,
+        linksReconciliados,
         planejados,
         enviados,
         pulados,
@@ -455,8 +487,51 @@ export async function processPriceSyncJob(
       await consume();
     }
 
+    // (b2) RECONCILE one link page (#1072) — only once the anchor plan is
+    // drained AND the fila is empty, so a job a human just clicked moves prices
+    // first and reports at the end. Both existing mid-flight stops are excluded
+    // by that gate: a `PLAN_PAGE_DRAFTS_CAP` stop leaves `planejamentoConcluido`
+    // false, and a drain-cap stop leaves the fila non-empty.
+    //
+    // This phase produces SKIPS ONLY — no draft, no ML call, no link writeback
+    // (see `precoReconciliacao`'s module doc for why class 3 is not sendable).
+    if (
+      fila.length === 0 &&
+      planejamentoConcluido &&
+      !reconciliacaoConcluida &&
+      precoReconciliacaoHabilitada()
+    ) {
+      reconciliacaoPaginas += 1;
+      if (reconciliacaoPaginas > PRECO_RECON_MAX_PAGES) {
+        // A cursor that stops advancing returns the same page forever. Refuse
+        // loudly rather than chain tasks until something else kills the job —
+        // and say so in the report, so a truncated one is never read as clean.
+        registerSkip(null, payload.integracaoId, 'RECONCILIACAO_INCOMPLETA');
+        reconciliacaoConcluida = true;
+      } else {
+        const fetchRecon = deps.fetchReconPage ?? fetchPrecoReconPage;
+        const page = await fetchRecon(db, {
+          integracaoId: payload.integracaoId,
+          afterLinkPath,
+          pageLimit: precoReconPageLimit(),
+        });
+        for (const orfao of page.naoEnumerados) {
+          naoEnumerados += 1;
+          registerSkip(orfao.itemId, orfao.produtoId, orfao.code);
+        }
+        linksReconciliados += page.inspecionados;
+        afterLinkPath = page.nextAfterLinkPath;
+        reconciliacaoConcluida = page.nextAfterLinkPath == null;
+      }
+      await checkpoint();
+    }
+
     // (c) Continue (re-enqueue) or complete.
-    if (fila.length > 0 || !planejamentoConcluido) {
+    if (
+      fila.length > 0 ||
+      !planejamentoConcluido ||
+      (!reconciliacaoConcluida && precoReconciliacaoHabilitada())
+    ) {
       await deps.scheduler.enqueue({ jobId: payload.jobId, integracaoId: payload.integracaoId });
       return 'continued';
     }

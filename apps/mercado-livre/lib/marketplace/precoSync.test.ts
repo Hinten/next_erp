@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
@@ -15,6 +15,9 @@ import {
   precoPageLimit,
   precoRatePauseMin,
 } from './precoPlan';
+// NOT part of the `./precoPlan` module mock above — the reconciliation phase
+// lives in its own module precisely because that mock is wholesale.
+import { PRECO_RECON_MAX_PAGES, type PrecoReconPage } from './precoReconciliacao';
 import {
   PRICE_SYNC_MAX_ATTEMPTS,
   PRICE_SYNC_STALE_RUNNING_MS,
@@ -204,6 +207,14 @@ function runDeps(
       tabelaNormalOuterRef: TAB_REF,
     }),
     fetchPage: vi.fn(async () => ({ rows: [], nextAfterAnchorId: null })),
+    // Stubbed by default so a test that flips the reconciliation flag can never
+    // reach the real collection-group walk — this FakeDb has no
+    // `collectionGroup`, so that would fail for the wrong reason.
+    fetchReconPage: vi.fn(async () => ({
+      naoEnumerados: [],
+      inspecionados: 0,
+      nextAfterLinkPath: null,
+    })),
     now: () => CLOCK_NOW,
     ...over,
   };
@@ -1144,5 +1155,187 @@ describe('processPriceSyncJob — capped detail lists', () => {
     const job = db.docs(JOBS_PATH).get('job23')!;
     expect(job.falhas).toBe(101); // uncapped counter: 99 + 2
     expect((job.failures as unknown[]).length).toBe(100); // capped: only ONE new entry fit
+  });
+});
+
+describe('reconciliation phase (#1072)', () => {
+  const FLAG = 'MERCADO_LIVRE_PRECO_RECONCILIACAO_ENABLED';
+  beforeEach(() => {
+    delete process.env[FLAG];
+  });
+  afterEach(() => {
+    delete process.env[FLAG];
+  });
+
+  const reconPage = (over: Partial<PrecoReconPage> = {}): PrecoReconPage => ({
+    naoEnumerados: [],
+    inspecionados: 0,
+    nextAfterLinkPath: null,
+    ...over,
+  });
+
+  it('does not run while the flag is off — the job completes exactly as before', async () => {
+    // The rollback proof: with the COLLECTION_GROUP index undeployed this phase
+    // must be inert, because on Enterprise its query would silently full-scan.
+    const db = new FakeDb();
+    seedJob(db, 'r1', { planejamentoConcluido: true });
+    const fetchReconPage = vi.fn(async () => reconPage());
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r1', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('done');
+    expect(fetchReconPage).not.toHaveBeenCalled();
+    expect(db.docs(JOBS_PATH).get('r1')!.status).toBe('completed');
+  });
+
+  it('does not run while planning is still open', async () => {
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r2');
+    const fetchReconPage = vi.fn(async () => reconPage());
+    const deps = runDeps(db, makeApi(), {
+      fetchReconPage,
+      // A FULL page → the plan cursor survives, planning stays open.
+      fetchPage: vi.fn(async () => ({ rows: [], nextAfterAnchorId: 'A9' })),
+    });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r2', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('continued');
+    expect(fetchReconPage).not.toHaveBeenCalled();
+  });
+
+  it('does not run while the fila still holds drafts', async () => {
+    process.env[FLAG] = '1';
+    // `precoItemsPerDispatch` is MODULE-MOCKED here, so the env var is inert —
+    // the drain cap has to be set on the mock.
+    vi.mocked(precoItemsPerDispatch).mockReturnValue(1);
+    const db = new FakeDb();
+    // Two drafts, one per dispatch → the drain cap stops with the fila non-empty.
+    seedJob(db, 'r3', { planejamentoConcluido: true, fila: [draft('A'), draft('B')] });
+    const fetchReconPage = vi.fn(async () => reconPage());
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r3', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('continued');
+    expect(fetchReconPage).not.toHaveBeenCalled();
+  });
+
+  it('records findings as skips, counts them separately, and PERSISTS the cursor', async () => {
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r4', { planejamentoConcluido: true });
+    const fetchReconPage = vi.fn(async () =>
+      reconPage({
+        naoEnumerados: [
+          { produtoId: 'P1', itemId: 'MLB1', code: 'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO' },
+          { produtoId: 'C1', itemId: 'MLB2', code: 'NAO_ENUMERADO_LINK_EM_VARIACAO' },
+        ],
+        inspecionados: 7,
+        nextAfterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+      }),
+    );
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r4', integracaoId: CONTA }, 0);
+
+    expect(outcome).toBe('continued'); // a cursor came back → another page to walk
+    // Assert the PERSISTED doc, never the locals: a field missing from the
+    // checkpoint merge — or from the zod schema, which strips unknown keys —
+    // leaves the phase re-reading its default and re-enqueueing forever.
+    const job = db.docs(JOBS_PATH).get('r4')!;
+    expect(job.afterLinkPath).toBe('produtos/P1/produtoMercadoLivre/link1');
+    expect(job.reconciliacaoConcluida).toBe(false);
+    expect(job.reconciliacaoPaginas).toBe(1);
+    expect(job.naoEnumerados).toBe(2);
+    expect(job.linksReconciliados).toBe(7);
+    // They ride the shared skip list too, so the operator can read the rows.
+    expect(job.pulados).toBe(2);
+    expect(job.skips).toEqual([
+      { itemId: 'MLB1', produtoId: 'P1', code: 'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO' },
+      { itemId: 'MLB2', produtoId: 'C1', code: 'NAO_ENUMERADO_LINK_EM_VARIACAO' },
+    ]);
+  });
+
+  it('resumes from the persisted cursor and completes when the walk drains', async () => {
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r5', {
+      planejamentoConcluido: true,
+      afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+      reconciliacaoPaginas: 1,
+      naoEnumerados: 2,
+    });
+    const fetchReconPage = vi.fn(async () => reconPage({ inspecionados: 3 }));
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r5', integracaoId: CONTA }, 0);
+
+    expect(fetchReconPage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1' }),
+    );
+    expect(outcome).toBe('done');
+    const job = db.docs(JOBS_PATH).get('r5')!;
+    expect(job.reconciliacaoConcluida).toBe(true);
+    expect(job.status).toBe('completed');
+    expect(job.naoEnumerados).toBe(2); // carried across dispatches, never reset
+  });
+
+  it('walks ONE page per dispatch', async () => {
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r6', { planejamentoConcluido: true });
+    const fetchReconPage = vi.fn(async () =>
+      reconPage({ nextAfterLinkPath: 'produtos/P/produtoMercadoLivre/l' }),
+    );
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    await processPriceSyncJob(deps, { jobId: 'r6', integracaoId: CONTA }, 0);
+
+    expect(fetchReconPage).toHaveBeenCalledTimes(1);
+    expect(deps.scheduler.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('bails out past PRECO_RECON_MAX_PAGES rather than chaining tasks forever', async () => {
+    // The failure this bounds: a cursor that stops advancing returns the same
+    // page every dispatch. A truncated report must SAY it is truncated.
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r7', {
+      planejamentoConcluido: true,
+      reconciliacaoPaginas: PRECO_RECON_MAX_PAGES,
+    });
+    const fetchReconPage = vi.fn(async () =>
+      reconPage({ nextAfterLinkPath: 'produtos/P/produtoMercadoLivre/l' }),
+    );
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r7', integracaoId: CONTA }, 0);
+
+    expect(fetchReconPage).not.toHaveBeenCalled();
+    expect(outcome).toBe('done');
+    const job = db.docs(JOBS_PATH).get('r7')!;
+    expect(job.reconciliacaoConcluida).toBe(true);
+    expect(job.skips).toEqual([
+      { itemId: null, produtoId: CONTA, code: 'RECONCILIACAO_INCOMPLETA' },
+    ]);
+  });
+
+  it('an in-flight job written before the deploy simply gains the phase', async () => {
+    // `seedJob` writes no reconciliation fields at all — the schema defaults
+    // fill them on read, exactly as they already do for `afterAnchorId`.
+    process.env[FLAG] = '1';
+    const db = new FakeDb();
+    seedJob(db, 'r8', { planejamentoConcluido: true, enviados: 5 });
+    const fetchReconPage = vi.fn(async () => reconPage({ inspecionados: 1 }));
+    const deps = runDeps(db, makeApi(), { fetchReconPage });
+
+    const outcome = await processPriceSyncJob(deps, { jobId: 'r8', integracaoId: CONTA }, 0);
+
+    expect(fetchReconPage).toHaveBeenCalledTimes(1);
+    expect(outcome).toBe('done');
   });
 });

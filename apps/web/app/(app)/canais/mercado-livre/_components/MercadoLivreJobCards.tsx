@@ -400,6 +400,18 @@ export function PriceSyncJobCard({
             falhas
             {data.pausas > 0 ? ` · ${data.pausas} pausas` : ''}
           </Text>
+          {/* #1072: anúncios the job could not have ENUMERATED — a different
+              thing from a skip, and the reason "concluído" used to overstate
+              itself. Rendered only when non-zero: the healthy case is silence. */}
+          {data.naoEnumerados > 0 && (
+            <Alert color="yellow" variant="light" p="xs">
+              <Text size="xs">
+                {data.naoEnumerados} anúncio{data.naoEnumerados === 1 ? '' : 's'} não enumerado
+                {data.naoEnumerados === 1 ? '' : 's'} — o produto vinculado não entrou na busca.
+                Veja os detalhes.
+              </Text>
+            </Alert>
+          )}
           {data.status === 'completed' && (
             <Alert color="green" variant="light" p="xs">
               <Text size="xs">Envio de preços concluído.</Text>

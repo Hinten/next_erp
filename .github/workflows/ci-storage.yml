@@ -240,6 +240,13 @@ jobs:
     # Inlined into the functions bundle at build time (build.mjs).
     env:
       FUNCTIONS_REGION: us-east1
+      # There is no Cloud Tasks emulator, and the LIVE `onProdutoChanged` runs in
+      # this lane's functions emulator — so every produto `set()` a storage test
+      # makes would otherwise try to reach the real Cloud Tasks API. The flag is
+      # read at runtime (not `define`d), and `emulators:exec` passes this env to
+      # both the emulator and the vitest process. The rollup itself is covered by
+      # `kitRollup.storage.test.ts`, which drives the job core with a recorder.
+      KIT_ROLLUP_TASKS_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
         with:
