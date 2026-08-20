@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   loadCtx: vi.fn(),
   startMassImportJob: vi.fn(),
   enqueue: vi.fn(async (_payload: unknown) => {}),
+  finalizeMassImportJob: vi.fn(async (..._args: unknown[]) => 'stamped'),
   merge: vi.fn(async (..._args: unknown[]) => {}),
 }));
 
@@ -27,7 +28,11 @@ vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
 
 vi.mock('@/lib/marketplace/massImport', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/marketplace/massImport')>();
-  return { ...actual, startMassImportJob: h.startMassImportJob };
+  return {
+    ...actual,
+    startMassImportJob: h.startMassImportJob,
+    finalizeMassImportJob: h.finalizeMassImportJob,
+  };
 });
 
 vi.mock('@/lib/marketplace/mlMassImportTasks', () => ({
@@ -135,8 +140,8 @@ describe('POST /api/marketplace/mercado-livre/importar-todos', () => {
     const body = await res.json();
     expect(body.code).toBe('ML_MASS_IMPORT_ENQUEUE_FAILED');
     expect(body.error).toBe('cloudtasks down');
-    expect(h.merge).toHaveBeenCalledOnce();
-    const [, , id, patch] = h.merge.mock.calls[0]!;
+    expect(h.finalizeMassImportJob).toHaveBeenCalledOnce();
+    const [, id, patch] = h.finalizeMassImportJob.mock.calls[0]!;
     expect(id).toBe('job-1');
     expect(patch).toMatchObject({ status: 'failed', erro: 'cloudtasks down' });
   });

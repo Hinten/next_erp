@@ -2,11 +2,12 @@
 
 /**
  * Etiqueta actions inside the `/pedidos` FreteCell HoverCard — buy-or-reprint
- * (Melhor Envio) or fetch-and-print (Mercado Livre), dispatched by carrier
- * `tipo`. Resolves the tipo from the int_frete doc (cached, shared across rows
- * on the same integração); the buy's heavier cart resolution stays lazy in
- * `EtiquetaComprarModal`, and the fetch-label path reuses the shared checkout
- * etiqueta registry (gates + provider).
+ * (Melhor Envio), fetch-and-print (Mercado Livre) or the carrier-less generic
+ * label (motoboy/outros, PDF or ZPL2), dispatched by carrier `tipo`. Resolves the tipo from
+ * the int_frete doc (cached, shared across rows on the same integração); the
+ * buy's heavier cart resolution stays lazy in `EtiquetaComprarModal`, and the
+ * fetch-label + generic-label paths both reuse the shared checkout etiqueta
+ * registry (gates + provider).
  */
 import { useMemo, useState } from 'react';
 import { Button, Stack, Text } from '@mantine/core';
@@ -14,7 +15,12 @@ import { IconPrinter, IconShoppingCart, IconTruckDelivery } from '@tabler/icons-
 import { FirebaseError } from 'firebase/app';
 import { type DocumentReference, getDoc } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
-import type { IntFrete, IntegracaoFrete, Pedido } from '@delfrance/schemas';
+import {
+  freightCapsFor,
+  type IntFrete,
+  type IntegracaoFrete,
+  type Pedido,
+} from '@delfrance/schemas';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -53,12 +59,16 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     },
   });
 
-  const [busy, setBusy] = useState<null | 'imprimir' | 'rastrear' | 'fetch-zpl2' | 'fetch-pdf'>(
-    null,
-  );
+  const [busy, setBusy] = useState<
+    null | 'imprimir' | 'rastrear' | 'fetch-zpl2' | 'fetch-pdf' | 'generico-zpl2' | 'generico-pdf'
+  >(null);
   const [comprarOpen, setComprarOpen] = useState(false);
   const { confirm, element: confirmElement } = useConfirmDialog();
   const printLabelId = frete?.printLabelId ?? null;
+  // The generic-label tipos (motoboy/outros) share the 'imprimir' action with
+  // Melhor Envio's reprint, but render the label on demand instead of calling the
+  // ME HTTP client — see the render branch below.
+  const isGenericLabel = tipo != null && freightCapsFor(tipo).labelMode === 'generic';
 
   const { action, needsPostedConfirm } = etiquetaRowState({
     tipo: tipo ?? null,
@@ -113,13 +123,20 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     }
   }
 
-  // Fetch + print the marketplace label through the shared checkout etiqueta
-  // registry — the same gates (sem-frete skip, posted-risk confirm) and
-  // provider the checkout post-save dispatches.
-  async function runFetchLabel(formato: 'pdf' | 'zpl2') {
-    if (!frete || !intRef || !mlClient || busy !== null) return;
+  // Run an etiqueta action through the shared checkout etiqueta registry —
+  // the same gates (sem-frete skip, posted-risk confirm) and provider
+  // dispatch the checkout post-save uses. Serves both Mercado Livre's
+  // fetch-label (`mlClient`-backed) and the carrier-less generic label (no
+  // client needed — `genericLabelProvider` only uses `deps.printJob`); a
+  // provider that does need a client reports its own 'error' outcome when it
+  // is null (see `mercadoLivreProvider`), so this stays a single guard.
+  async function runEmitirOuImprimir(
+    formato: 'pdf' | 'zpl2',
+    busyKey: 'fetch-zpl2' | 'fetch-pdf' | 'generico-zpl2' | 'generico-pdf',
+  ) {
+    if (!frete || !intRef || busy !== null) return;
     if (!(await confirmMismatch())) return;
-    setBusy(formato === 'zpl2' ? 'fetch-zpl2' : 'fetch-pdf');
+    setBusy(busyKey);
     try {
       // The row caches only the tipo — resolve the full IntFrete doc lazily.
       const snap = await getDoc(intRef);
@@ -146,7 +163,8 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
             color: n.color ?? 'blue',
           }),
         openUrl: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
-        // A marketplace label is fetched, never bought — mirror the reprint modal.
+        // Neither the marketplace fetch nor the generic label ever buys a label
+        // — mirror the reprint modal for a provider that calls this anyway.
         comprarEtiqueta: async () => {
           showCopyableNotification({
             title: 'Etiqueta',
@@ -215,7 +233,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
         <Button
           size="xs"
           leftSection={<IconPrinter size={14} />}
-          onClick={() => void runFetchLabel('zpl2')}
+          onClick={() => void runEmitirOuImprimir('zpl2', 'fetch-zpl2')}
           loading={busy === 'fetch-zpl2'}
           disabled={!mlClient || busy !== null}
         >
@@ -225,11 +243,49 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
           size="xs"
           variant="light"
           leftSection={<IconPrinter size={14} />}
-          onClick={() => void runFetchLabel('pdf')}
+          onClick={() => void runEmitirOuImprimir('pdf', 'fetch-pdf')}
           loading={busy === 'fetch-pdf'}
           disabled={!mlClient || busy !== null}
         >
           Imprimir Etiqueta Transporte (PDF)
+        </Button>
+      </Stack>
+    );
+  }
+
+  // The carrier-less generic label (motoboy/outros) — no buy step, no tracking,
+  // rendered on demand from the pedido data via the shared registry (the same
+  // path the checkout post-save uses). Both formats are offered, ZPL2 first, the
+  // way the legacy row action ordered them (`pedidoTableView.dart:1582-1602`
+  // registers zpl2 as the default and pdf as the sub-action) — except that in
+  // legacy the ZPL2 entry never produced ZPL at all.
+  if (action === 'imprimir' && isGenericLabel) {
+    return (
+      <Stack gap="xs">
+        {needsPostedConfirm && (
+          <Text size="xs" c="orange">
+            Etiqueta já emitida — reimprimir pode duplicar a etiqueta.
+          </Text>
+        )}
+        {confirmElement}
+        <Button
+          size="xs"
+          leftSection={<IconPrinter size={14} />}
+          onClick={() => void runEmitirOuImprimir('zpl2', 'generico-zpl2')}
+          loading={busy === 'generico-zpl2'}
+          disabled={busy !== null}
+        >
+          Imprimir etiqueta (ZPL2)
+        </Button>
+        <Button
+          size="xs"
+          variant="light"
+          leftSection={<IconPrinter size={14} />}
+          onClick={() => void runEmitirOuImprimir('pdf', 'generico-pdf')}
+          loading={busy === 'generico-pdf'}
+          disabled={busy !== null}
+        >
+          Imprimir etiqueta (PDF)
         </Button>
       </Stack>
     );
@@ -264,7 +320,8 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     await run('imprimir');
   }
 
-  // action === 'imprimir' — a bought label: reprint + track.
+  // action === 'imprimir' && !isGenericLabel — a bought Melhor Envio label:
+  // reprint + track.
   return (
     <Stack gap="xs">
       {needsPostedConfirm && (
