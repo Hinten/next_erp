@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TIPO_MENSAGEM, ESTADO_ENVIO, type Mensagem } from '@delfrance/schemas';
 import type { ServerMensagem } from '../../_hooks/useMensagensWindow';
@@ -49,7 +49,7 @@ function renderBubble(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <MensagemBubble
           mensagem={m}
           myUid={opts?.myUid ?? 'me'}
@@ -59,7 +59,7 @@ function renderBubble(
           searchActive={opts?.searchActive ?? false}
           registerRef={() => {}}
         />
-      </MantineProvider>
+      </MantineTestProvider>
     </QueryClientProvider>,
   );
 }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider, Tabs } from '@mantine/core';
+import { Tabs } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import type { Pedido } from '@delfrance/schemas';
@@ -112,7 +113,7 @@ function Host({
   }, [form]);
   const [tab, setTab] = useState<string | null>('principal');
   return (
-    <MantineProvider>
+    <MantineTestProvider>
       <Tabs value={tab} onChange={setTab} keepMounted={false}>
         <Tabs.List>
           <Tabs.Tab value="principal">Principal</Tabs.Tab>
@@ -125,7 +126,7 @@ function Host({
           Outra aba
         </Tabs.Panel>
       </Tabs>
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

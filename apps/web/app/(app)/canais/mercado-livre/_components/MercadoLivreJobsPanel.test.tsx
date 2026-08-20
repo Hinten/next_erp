@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import type { MercadoLivreJobsEmAndamento } from '@/lib/mercado-livre/client';
@@ -59,9 +59,9 @@ function renderPanel(props: {
   // 1s/2s backoff before the error path renders.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
   return render(
     <MercadoLivreJobsPanel
@@ -185,9 +185,9 @@ describe('MercadoLivreJobsPanel — o X de um job em andamento', () => {
       />,
       {
         wrapper: ({ children }: { children: ReactNode }) => (
-          <MantineProvider env="test">
+          <MantineTestProvider>
             <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-          </MantineProvider>
+          </MantineTestProvider>
         ),
       },
     );
@@ -298,9 +298,9 @@ describe('MercadoLivreJobsPanel — o X de um job em andamento', () => {
       />,
       {
         wrapper: ({ children }: { children: ReactNode }) => (
-          <MantineProvider env="test">
+          <MantineTestProvider>
             <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-          </MantineProvider>
+          </MantineTestProvider>
         ),
       },
     );
@@ -345,9 +345,9 @@ describe('MercadoLivreJobsPanel — o X antes de saber o estado do job', () => {
       />,
       {
         wrapper: ({ children }: { children: ReactNode }) => (
-          <MantineProvider env="test">
+          <MantineTestProvider>
             <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-          </MantineProvider>
+          </MantineTestProvider>
         ),
       },
     );

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { ScanLogEntry } from '@delfrance/schemas';
 
 // jsdom has no layout, so the real virtualizer measures 0 rows — mock the thin
@@ -38,9 +38,9 @@ function entry(
 
 function renderPane(log: ScanLogEntry[]) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <ScanLogPane log={log} onDelete={() => undefined} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

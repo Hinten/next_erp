@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 const { batchSet, batchCommit, notifShow, newDocIdMock } = vi.hoisted(() => ({
   batchSet: vi.fn(),
@@ -35,7 +35,7 @@ vi.mock('firebase/firestore', async (importActual) => {
 import { BulkActionsBar } from './BulkActionsBar';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 afterEach(() => {

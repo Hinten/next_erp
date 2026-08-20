@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 
 import { SectionTabs } from './SectionTabs';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions/portals so panels render
-  // synchronously and are queryable.
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  // `MantineTestProvider` renders panels inline instead of through a portal, so
+  // they are queryable here.
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 const CONTENTS = { A: <div>conteúdo A</div>, B: <div>conteúdo B</div> };
@@ -30,9 +30,9 @@ describe('SectionTabs', () => {
     // Controlled: the active tab only moves when the prop does.
     expect(screen.getByRole('tab', { name: 'A' }).getAttribute('aria-selected')).toBe('true');
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <SectionTabs sections={['A', 'B']} contents={CONTENTS} value="B" onChange={onChange} />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.getByRole('tab', { name: 'B' }).getAttribute('aria-selected')).toBe('true');
   });

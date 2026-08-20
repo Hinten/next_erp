@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 
 import { ColumnPicker, type ColumnPickerItem } from './ColumnPicker';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions / portals so the Popover
-  // dropdown renders synchronously after the trigger click.
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  // `MantineTestProvider` renders the Popover dropdown inline instead of through
+  // a portal, so it is queryable after the trigger click.
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 /** Build `n` fields labelled `Campo 01`..`Campo NN`. */

@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 
 import { ActionSidePanel } from './ActionSidePanel';
 import type { ActionConfig } from '../schema/types';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions / portals so the confirm Modal
-  // renders synchronously and is queryable.
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  // `MantineTestProvider` renders the confirm Modal inline instead of through a
+  // portal, so it is queryable here.
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 type Row = { name: string };
@@ -66,14 +66,14 @@ describe('ActionSidePanel', () => {
     expect(enabled.hasAttribute('disabled')).toBe(false);
 
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <ActionSidePanel
           actions={[{ ...makeAction('1'), requiresSelection: true, maxSelection: 1 }]}
           selectedRows={[ROW, second]}
           collapsed={false}
           onToggleCollapsed={() => {}}
         />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     const capped = screen.getByRole('button', { name: 'Ação 1' }) as HTMLButtonElement;
     expect(capped.hasAttribute('disabled')).toBe(true);
@@ -135,7 +135,7 @@ describe('ActionSidePanel', () => {
     // Collapsing must not hide caller content — the caller decides what
     // survives (a badge, typically), so `extra` renders on the rail too.
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <ActionSidePanel
           actions={[makeAction('1')]}
           selectedRows={[ROW]}
@@ -143,7 +143,7 @@ describe('ActionSidePanel', () => {
           onToggleCollapsed={() => {}}
           extra={<span>progresso</span>}
         />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.queryByRole('button', { name: 'Ação 1' })).toBeNull();
     expect(screen.getByText('progresso')).toBeTruthy();

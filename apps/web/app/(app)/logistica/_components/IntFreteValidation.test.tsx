@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { intFreteSchema } from '@delfrance/schemas';
 import type { CollectionHandle } from '@delfrance/data';
 
@@ -73,7 +73,7 @@ function fakeCollection(): CollectionHandle<typeof intFreteSchema> {
 }
 
 function Wrap({ children }: { children: React.ReactNode }) {
-  return <MantineProvider env="test">{children}</MantineProvider>;
+  return <MantineTestProvider>{children}</MantineTestProvider>;
 }
 
 beforeEach(() => {

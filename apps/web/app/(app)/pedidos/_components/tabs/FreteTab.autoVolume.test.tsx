@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, type RenderResult } from '@testing-library/react';
-import { MantineProvider, Tabs } from '@mantine/core';
+import { Tabs } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
@@ -62,7 +63,7 @@ function Host({
   }, [form]);
   const [tab, setTab] = useState<string | null>('frete');
   return (
-    <MantineProvider>
+    <MantineTestProvider>
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
@@ -80,7 +81,7 @@ function Host({
         </Tabs>
         {children(tab)}
       </QueryClientProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 
