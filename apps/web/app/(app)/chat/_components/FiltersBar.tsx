@@ -50,33 +50,57 @@ export function FiltersBar({ filters }: { filters: ConversaFiltersState }) {
 
   const clienteLabel = filters.clienteRef ? (clienteNome ?? 'Cliente selecionado') : null;
 
+  // ⚠️ While a cliente filter is active the query is EXACTLY
+  // `clienteOuterRef == X orderBy ultima_modificacao desc` — see the INVARIANT
+  // in `lib/chat/clienteFilterParam.ts`. The hook enforces it by clearing the
+  // cliente when one of these changes; disabling them here means an operator
+  // never loses their filter by surprise.
+  const exclusivo = filters.clienteRef != null;
+  const dicaExclusiva = exclusivo
+    ? 'Indisponível com um filtro de cliente ativo — remova o cliente para usar.'
+    : null;
+
   return (
     <Stack gap="xs">
       <Group gap="xs" grow>
-        <Select
-          size="xs"
-          label="Ordenar"
-          data={ordemData}
-          value={filters.ordem}
-          onChange={(v) => v && filters.setOrdem(v as ConversaOrdem)}
-          allowDeselect={false}
-          comboboxProps={{ withinPortal: true }}
-        />
-        <Select
-          size="xs"
-          label="Integração"
-          placeholder="Todas"
-          data={integracoes ?? []}
-          value={filters.integracaoId}
-          onChange={(v) => filters.setIntegracao(v)}
-          clearable
-          searchable
-          comboboxProps={{ withinPortal: true }}
-        />
+        <Tooltip label={dicaExclusiva} disabled={!exclusivo} withArrow>
+          <Select
+            size="xs"
+            label="Ordenar"
+            data={ordemData}
+            value={filters.ordem}
+            onChange={(v) => v && filters.setOrdem(v as ConversaOrdem)}
+            allowDeselect={false}
+            disabled={exclusivo}
+            comboboxProps={{ withinPortal: true }}
+          />
+        </Tooltip>
+        <Tooltip label={dicaExclusiva} disabled={!exclusivo} withArrow>
+          <Select
+            size="xs"
+            label="Integração"
+            placeholder="Todas"
+            data={integracoes ?? []}
+            value={filters.integracaoId}
+            onChange={(v) => filters.setIntegracao(v)}
+            clearable
+            searchable
+            disabled={exclusivo}
+            comboboxProps={{ withinPortal: true }}
+          />
+        </Tooltip>
       </Group>
 
       <Group gap="xs" justify="space-between" wrap="nowrap">
-        <EtiquetaPicker value={filters.etiqueta} onChange={filters.setEtiqueta} />
+        <Tooltip label={dicaExclusiva} disabled={!exclusivo} withArrow>
+          <div>
+            <EtiquetaPicker
+              value={filters.etiqueta}
+              onChange={filters.setEtiqueta}
+              disabled={exclusivo}
+            />
+          </div>
+        </Tooltip>
         {clienteLabel ? (
           <Badge
             size="lg"

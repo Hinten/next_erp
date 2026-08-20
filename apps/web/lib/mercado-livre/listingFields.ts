@@ -60,11 +60,16 @@ export function listingTypeLabel(id: string | null | undefined): string | null {
 /**
  * How many units this listing has sold, as cached on the link doc.
  *
- * Returns null when unknown, which is the normal state today: only the server
- * writes it (publish + the `items` webhook), so a link neither has touched
- * since the field existed simply has no value. Both spellings are accepted —
- * ours and ML's raw `sold_quantity` — because the migrated corpus carries the
- * raw one.
+ * ⚠️ Returns null essentially always, because NOTHING in this repo writes
+ * either spelling — not publish, not the `items` webhook, and there is no such
+ * field on `mercadoLivreLink`. This accessor is forward-tolerant rather than
+ * live: it is here so a value picks up automatically if a writer is added, and
+ * so a migrated doc carrying ML's raw `sold_quantity` resolves. Do not read the
+ * null as "the webhook has not fired yet" — no fire will populate it.
+ *
+ * Both spellings are read for the corpus reason: the legacy shape used the raw
+ * key. (The previous note credited this to Flutter dropping unknown keys, which
+ * hid the fact that there is no writer at all.)
  */
 export function linkSoldQuantity(link: ProdutoMercadoLivreLink): number | null {
   const raw = link as unknown as Record<string, unknown>;

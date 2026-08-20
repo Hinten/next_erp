@@ -178,7 +178,18 @@ export const TOPIC_DISPOSITION = {
   // truth that PUSHES stock to ML in the first place — so this is a hint about
   // state, not an event carrying content. If a stock feature ever consumes it,
   // it becomes `handled`; it never needs to become `park`.
+  //
+  // ⚠️ BOTH SPELLINGS, and neither is a typo to tidy away (#1129). ML's own
+  // Notificações reference heads this section **"Stock-Locations"** and then
+  // shows `"topic": "stock-location"` in the example payload right underneath
+  // it; live traffic during the first run (#1087, 2026-08-19) sent the PLURAL.
+  // The published reference contradicts itself, so we accept what it says in
+  // both places. A spare key costs nothing; a missing one PARKS a permanent
+  // Firestore document on every stock change — ML mints a fresh `_id` per
+  // delivery, so `docIdOf` cannot collapse them and the cost grows with stock
+  // activity, filling a failures-only collection with a known no-op.
   'stock-location': 'ack',
+  'stock-locations': 'ack',
 
   // Data-bearing, handler pending (#532/#533). NOT `ack`: acking these is the
   // data loss #813 was filed about — at the callback cutover they would stop

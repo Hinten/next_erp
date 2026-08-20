@@ -6,11 +6,12 @@ import {
   type IntegracaoFrete,
 } from '@delfrance/schemas';
 
-// The generic-label provider pulls in the DOM/Firestore-backed generic-label
+// The generic-label provider pulls in the Firestore-backed generic-label
 // module; mock the barrel so importing the registry stays offline.
 vi.mock('@/lib/etiqueta-generica', () => ({
   buildEtiquetaGenericaModel: vi.fn(async () => ({ title: 'Pedido 1' })),
-  renderAndExportEtiquetaGenericaPdf: vi.fn(async () => new Blob(['pdf'])),
+  renderEtiquetaGenericaPdf: vi.fn(async () => new Blob(['pdf'])),
+  renderEtiquetaGenericaZpl: vi.fn(() => '^XA^XZ'),
 }));
 
 import { emitirOuImprimirEtiqueta, resolveEtiquetaProvider } from './registry';

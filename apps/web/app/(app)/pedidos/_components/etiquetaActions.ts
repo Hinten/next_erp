@@ -62,11 +62,13 @@ export interface EtiquetaRowStateResult {
 /**
  * Pure dispatch: given the resolved carrier tipo + the persisted frete fields,
  * decide which action the row offers. Driven by `FREIGHT_TIPO_CAPS` rather than a
- * hard-coded carrier check — a bought, printable label → reprint; a fetch-label
- * tipo (Mercado Livre) → fetch + print via the marketplace client; a selected
- * quote on a buyable tipo → buy; a quotable tipo with neither → quote-first;
- * anything else → unsupported. The other marketplaces set no `can*` flag, so
- * they still resolve to `'unsupported'` (their fetch flows are Phase 5/6).
+ * hard-coded carrier check — a bought, printable label → reprint; a generic-label
+ * tipo (motoboy/outros) → the on-demand generic PDF, available whenever frete is
+ * configured (no buy step, so NOT gated on `printLabelId`); a fetch-label tipo
+ * (Mercado Livre) → fetch + print via the marketplace client; a selected quote on
+ * a buyable tipo → buy; a quotable tipo with neither → quote-first; anything else
+ * → unsupported. The other marketplaces set no `can*` flag, so they still
+ * resolve to `'unsupported'` (their fetch flows are Phase 5/6).
  */
 export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowStateResult {
   const { tipo, printLabelId, externalOptionId, estado } = input;
@@ -76,7 +78,9 @@ export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowState
   // `tipo` is read unparsed from Firestore — `freightCapsFor` tolerates an
   // unknown/legacy value (→ unsupported) instead of throwing on a missing row.
   const caps = freightCapsFor(tipo);
-  if (printLabelId != null && caps.canPrint) return { action: 'imprimir', needsPostedConfirm };
+  if (caps.canPrint && (caps.labelMode === 'generic' || printLabelId != null)) {
+    return { action: 'imprimir', needsPostedConfirm };
+  }
   // Deliberately NOT gated on `externalId` — the provider surfaces the legacy
   // support error for a missing shipment id, same rule as the checkout.
   if (caps.canFetchLabel) return { action: 'fetch-label', needsPostedConfirm };

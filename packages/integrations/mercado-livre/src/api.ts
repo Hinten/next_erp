@@ -32,6 +32,7 @@ import {
   type MlListingPrices,
   type MlMigrationLiveListing,
   type MlMissedFeeds,
+  type MlModeration,
   type MlOrder,
   type MlOrderSearch,
   type MlPack,
@@ -67,6 +68,7 @@ import {
   mlClaimMessagesSchema,
   mlClaimAttachmentUploadSchema,
   mlExpectedResolutionsSchema,
+  mlModerationsSchema,
   mlPartialRefundOffersSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
@@ -171,6 +173,22 @@ export interface MercadoLivreApi {
    */
   criarUsuarioTeste(siteId: string): Promise<MlTestUser>;
   getItem(id: string): Promise<MlItem>;
+  /**
+   * `GET /moderations/last_moderation/{referenceId}` — the ACTIVE moderation(s)
+   * on one element, with ML's own REASON and REMEDY texts (#1087).
+   *
+   * ⚠️ `referenceId` is `{element_id}-{element_type}`, NOT a bare item id — for a
+   * listing that is `` `${itemId}-ITM` `` ({@link ML_MODERATION_ELEMENT}). The ML
+   * docs derive it straight from an `/items` notification, which is what makes
+   * this callable from the status-sync with no extra lookup. Passing a bare item
+   * id is a silent miss, not an error.
+   *
+   * ⚠️ A **404 means "not moderated"** — the ordinary answer for a healthy
+   * listing, and data rather than a failure. Callers must narrow it
+   * (`err instanceof MercadoLivreHttpError && err.status === 404`) and treat it
+   * as an empty result; anything else is transient and must rethrow.
+   */
+  getLastModeration(referenceId: string): Promise<MlModeration[]>;
   /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
   getPrices(itemId: string): Promise<MlItemPrices>;
   getOrder(id: number | string): Promise<MlOrder>;
@@ -891,6 +909,11 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
     getItem: (id) =>
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
+    // `-L` in ML's documented curl: this resource REDIRECTS, and `fetch` follows
+    // redirects by default, so nothing extra is needed here — noted because the
+    // docs make a point of the flag and its absence looks like an omission.
+    getLastModeration: (referenceId) =>
+      request('GET', `/moderations/last_moderation/${referenceId}`, mlModerationsSchema),
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
     getOrderResponse: async (id) => {
