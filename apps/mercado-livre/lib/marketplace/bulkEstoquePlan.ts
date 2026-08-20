@@ -1482,7 +1482,9 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
  * Per-listing rungs (legacy `continue` semantics — the skip is pushed and the
  * OTHER listings still send): `'sem-link'` (listing without a doc id,
  * defensive — server-projected), `'sem-item-id'` (never published),
- * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration, Flutter-driven),
+ * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration — stamped by
+ * `itemsStatusSync` from ML's own migration tags, which is the value's only
+ * producer now that the Flutter app is switched off at the cutover, #1087),
  * `'anuncio-em-erro'` (`estado 'E'` — the send handler verified with ML that the
  * anúncio is healthy and it was our PAYLOAD that was refused, so re-sending it
  * unchanged only re-earns the rejection, #781), `'status-nao-enviavel'`

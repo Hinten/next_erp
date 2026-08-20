@@ -816,7 +816,7 @@ describe('handleNotificationTask', () => {
    * found no link and one that rewrote the listing both resolve. On the first
    * live run (#1087) the task handler logged a bare success for every delivery
    * while the listing status never changed, and nothing on the box could say
-   * which of the seven `ItemsSyncOutcome` values had actually occurred.
+   * which `ItemsSyncOutcome` had actually occurred.
    *
    * `detail` is that value. Dropping it again would restore the blindness while
    * leaving every other assertion in this file green — so it is asserted here,
@@ -834,10 +834,13 @@ describe('handleNotificationTask', () => {
     expect(r).toMatchObject({ outcome: 'done', kind: 'done', detail: 'no-link' });
   });
 
-  it('reports `deferred-up` for a User-Products link, so a deliberate skip is legible', async () => {
+  // #1087, end to end: this reported `deferred-up` for the whole UP catalogue.
+  // The link doc is the shape a UP single-item publish writes — `id` is the MLB
+  // item, so the collectionGroup lookup DOES resolve it (`publish.ts`'s
+  // `parentExternalId` only carries a family id when the produto has variations).
+  it('a User-Products link now syncs, and the ML call it needs actually happens', async () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
-    // isUserProductModel → itemsStatusSync skips before any ML call (#441).
     db.seed('produtos/prod1/produtoMercadoLivre', 'link1', {
       id: 'MLB1',
       contaOuterRef: 'documents/integracao/conta-A',
@@ -846,16 +849,41 @@ describe('handleNotificationTask', () => {
       sub_status: null,
       isUserProductModel: true,
     });
-    const resolveItemsApi = vi.fn(async () => ({ getItem: vi.fn() }) as never);
+    const getItem = vi.fn(async () => ({ id: 'MLB1', status: 'under_review' }));
+    const resolveItemsApi = vi.fn(async () => ({ getItem }) as never);
     const r = await handleNotificationTask(
       asDb(db),
       payloadOf({ id: 'N10c', resource: '/items/MLB1', topic: 'items' }),
       0,
       { resolveItemsApi },
     );
-    expect(r).toMatchObject({ outcome: 'done', detail: 'deferred-up' });
-    // The skip is the point: it must cost no ML call.
-    expect(resolveItemsApi).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ outcome: 'done', detail: 'synced' });
+    expect(resolveItemsApi).toHaveBeenCalled();
+  });
+
+  it('a migration-tagged listing still defers, under its own name', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    db.seed('produtos/prod1/produtoMercadoLivre', 'link1', {
+      id: 'MLB1',
+      contaOuterRef: 'documents/integracao/conta-A',
+      estado: 'p',
+      status: 'active',
+      sub_status: null,
+      isUserProductModel: false,
+    });
+    const getItem = vi.fn(async () => ({
+      id: 'MLB1',
+      status: 'active',
+      tags: ['variations_migration_uptin'],
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N10e', resource: '/items/MLB1', topic: 'items' }),
+      0,
+      { resolveItemsApi: vi.fn(async () => ({ getItem }) as never) },
+    );
+    expect(r).toMatchObject({ outcome: 'done', detail: 'deferred-migration-uptin' });
   });
 
   it('reports the `kind` even where there is no detail — an ignored topic is not a processed one', async () => {
