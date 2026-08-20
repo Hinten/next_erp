@@ -67,6 +67,8 @@ export function widgetKind(attr: MercadoLivreCategoriaAtributo): AttrWidgetKind 
       return 'select';
     case 'list':
       return attr.multivalued ? 'multiselect' : 'select';
+    case null:
+      return 'unsupported';
     default:
       return 'unsupported';
   }

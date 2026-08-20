@@ -54,7 +54,11 @@ function estadoColor(estado: EstadoNFe): MantineColor {
     case ESTADO_NFE.cancelada:
     case ESTADO_NFE.numeracaoInutilizada:
       return 'gray';
-    default:
+    case ESTADO_NFE.gerado:
+    case ESTADO_NFE.enviando:
+    case ESTADO_NFE.aguardandoResposta:
+    case ESTADO_NFE.processamentoCompleto:
+    case ESTADO_NFE.processamentoCancelado:
       return 'yellow';
   }
 }

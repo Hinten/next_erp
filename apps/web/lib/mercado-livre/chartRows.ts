@@ -339,6 +339,8 @@ export function describeChartValidationError(problem: {
         ? `${subject} está fora do intervalo aceito pelo Mercado Livre.`
         : `${subject} está fora do intervalo aceito pelo Mercado Livre (${range}).`;
     }
+    case null:
+      return raw;
     default:
       return raw;
   }

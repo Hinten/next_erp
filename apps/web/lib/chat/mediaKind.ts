@@ -28,7 +28,18 @@ export function tipoForFiletype(filetype: Filetype): TipoMensagem {
       return TIPO_MENSAGEM.evento;
     case FILETYPE.error:
       return TIPO_MENSAGEM.erro;
-    default:
+    case FILETYPE.html:
+    case FILETYPE.image:
+    case FILETYPE.txt:
+    case FILETYPE.fallback:
+    case FILETYPE.file:
+    case FILETYPE.interactive:
+    case FILETYPE.button:
+    case FILETYPE.order:
+    case FILETYPE.sticker:
+    case FILETYPE.unknown:
+    case FILETYPE.unsupported:
+    case FILETYPE.reaction:
       return TIPO_MENSAGEM.comum;
   }
 }
@@ -63,7 +74,20 @@ export function mediaSubObject(
       return { video: { video: arquivoRef, caption } };
     case FILETYPE.audio:
       return { audio: { audio: arquivoRef } };
-    default:
+    case FILETYPE.html:
+    case FILETYPE.txt:
+    case FILETYPE.error:
+    case FILETYPE.unknown:
+    case FILETYPE.file:
+    case FILETYPE.document:
+    case FILETYPE.application:
+    case FILETYPE.reaction:
+    case FILETYPE.fallback:
+    case FILETYPE.interactive:
+    case FILETYPE.button:
+    case FILETYPE.order:
+    case FILETYPE.system:
+    case FILETYPE.unsupported:
       return { genericDocument: { genericDocument: arquivoRef, caption } };
   }
 }

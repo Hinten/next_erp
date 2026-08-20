@@ -207,7 +207,13 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             pedidoId={pedidoId}
           />
         );
-      default:
+      case 'mercadoLivre':
+      case 'lojaIntegrada':
+      case 'magalu':
+      case 'shopee':
+      case 'amz':
+      case 'outros':
+      case undefined:
         return <GenericFreteFields form={form} disabled={disabled} />;
     }
   }
