@@ -529,7 +529,7 @@ describe('runStockSweep — conta enumeration', () => {
     const db = new FakeDb();
     seedConta(db, 'INT-A', 'documents/depositos/dep-1');
     // Bare form on purpose: the outerRef invariant says readers tolerate it, and
-    // it is the form the Flutter app still writes during the dual run.
+    // it is the form the migrated corpus is stored in.
     seedConta(db, 'INT-B', 'depositos/dep-2');
     wireCtx();
     const { fetchFamilies, calls } = makeFetch(() => ({

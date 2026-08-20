@@ -56,7 +56,7 @@ import { getDb } from '../lib/admin';
  *
  * The client `deleteProdutoCascade` now only deletes the parent doc — this trigger
  * is the authoritative cascade, with no dependency on the client/e2e cleanup.
- * Idempotent (Flutter still cascades on its own deletes). Targets the NAMED
+ * Idempotent — Eventarc delivers at least once. Targets the NAMED
  * `default` database (gotcha #8).
  */
 

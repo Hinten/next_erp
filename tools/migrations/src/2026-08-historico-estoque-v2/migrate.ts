@@ -23,9 +23,10 @@ import { planHistoricoV2 } from './transform';
  * knows how to handle, which is precisely why it cannot describe the corpus.
  *
  * ---- ⚠️ WHEN. This runs inside the cutover window (root `CLAUDE.md` rule 8 /
- * ADR 0013), not before. The Flutter app still writes v1 rows, so an earlier run
- * is partially undone by every write that lands after it — the authoritative
- * run is the one inside the window, after Flutter stops. Running early is not
+ * ADR 0013), not before. The legacy app keeps writing v1 rows into the source
+ * project until the window switches it off, so an earlier run is superseded by
+ * every legacy write that lands after it — the authoritative run is the one
+ * inside the window, once the legacy app is off. Running early is not
  * harmful (the pass is idempotent), it is simply not finished.
  *
  * ---- Cost, honestly: this walks EVERY `historicoEstoque` row in the database

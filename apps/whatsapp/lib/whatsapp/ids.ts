@@ -1,11 +1,13 @@
 /**
  * Byte-parity identity layer for the WhatsApp inbound pipeline — pure,
  * dependency-free ID derivations that MUST match the legacy Flutter formulas
- * exactly. The Next handler dual-runs against the SAME Firestore database as
- * the still-live legacy handler during cutover (#527), so both must derive the
- * identical `chat/*` conversa id and `chat/{id}/mensagem/*` mensagem id for a
- * given inbound event — otherwise a message processed by both sides would fork
- * into two documents instead of converging on one.
+ * exactly. ⚠️ The original reason — a dual run in which both handlers wrote the
+ * same database (#527) — is void; there is no dual run (root `CLAUDE.md`
+ * rule 8). Byte parity is still REQUIRED, for the migrated corpus: every
+ * `chat/*` conversa and `chat/{id}/mensagem/*` mensagem inherited from the
+ * legacy handler is keyed by these formulas, so a new inbound event must derive
+ * the same id or it forks a second document instead of continuing the existing
+ * conversa.
  *
  * Ports:
  *  - `generateUid` — `.old/packages/global/lib/src/utils.dart:74`
@@ -18,8 +20,8 @@
  *    `.old/.../whatsapp_cloud_api/lib/src/notificacoes/messages.dart:60` and `:298`
  *    (`generateUid(conta_whatsapp.docId.pathWithDocuments, sender_id | message.id)`).
  *
- * `conta.docId.pathWithDocuments` for a `Conta_Whatsapp` (collection `integracao`
- * in both apps) is `documents/integracao/<contaId>` — see {@link contaPath}.
+ * `conta.docId.pathWithDocuments` for a `Conta_Whatsapp` (collection `integracao`,
+ * unchanged from legacy) is `documents/integracao/<contaId>` — see {@link contaPath}.
  */
 import { createHash } from 'node:crypto';
 
@@ -51,8 +53,8 @@ export function externalId(canal: string, id: string): string {
 
 /**
  * `conta.docId.pathWithDocuments` — the seed the conversa/mensagem ids hash
- * against. A `Conta_Whatsapp` lives in the `integracao` collection (both apps),
- * so its `pathWithDocuments` is `documents/integracao/<contaId>`.
+ * against. A `Conta_Whatsapp` lives in the `integracao` collection (the legacy
+ * path, unchanged), so its `pathWithDocuments` is `documents/integracao/<contaId>`.
  */
 export function contaPath(contaId: string): string {
   return `documents/integracao/${contaId}`;

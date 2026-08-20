@@ -64,7 +64,6 @@ describe('mlOrderToPedidoCoreFields', () => {
     // total = 150 + 0 = 150; total += valorFreteInicial(20) - descontoTotal(5) => 165
     expect(result.valorCobrado).toBe(165);
     expect(result.descontoTotal).toBe(5);
-    expect(result.valorFreteInicial).toBe(20);
   });
 
   it('numero falls back to order.id when packId is null', () => {
@@ -105,7 +104,6 @@ describe('mlOrderToPedidoCoreFields', () => {
     const result = mlOrderToPedidoCoreFields({ order, packId: null });
     expect(result.valorCobrado).toBe(0);
     expect(result.descontoTotal).toBe(0);
-    expect(result.valorFreteInicial).toBe(0);
   });
 });
 

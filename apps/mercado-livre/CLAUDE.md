@@ -32,9 +32,11 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   There is no signature to verify (confirmed against the 03/08/2026 Notificações reference:
   no `x-signature`, no manifest, no shared secret — the `ts=…,v1=…` scheme people find is
   **Mercado Pago**), so this is an `application_id` comparison against `MERCADO_LIVRE_CLIENT_ID`
-  (foreign ⇒ 403 before any enqueue or write) plus `logWebhookHeaders`, a self-silencing
-  header-name inventory that settles the signature question empirically during the migration
-  window. It fails OPEN when unconfigured or when `application_id` is absent — a misconfigured
+  (foreign ⇒ 403 before any enqueue or write). A self-silencing header-name inventory
+  rode along until the first live run (2026-08-19) settled the signature question from real
+  traffic — **no signature header of any kind**, matching the written reference — after which
+  it was removed. ⚠️ Do not re-add it: the question is answered, and the remaining follow-up
+  is a secret path segment on the callback URL. It fails OPEN when unconfigured or when `application_id` is absent — a misconfigured
   backend must not be able to stall the stream, since ML disables a topic after ~1h of non-200.
   ML's published notification source IPs were considered and **declined** (an undocumented
   rotation would reject every genuine notification). Follow-up if the logs show no signature
@@ -83,8 +85,9 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
-  `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
-  the still-running Flutter app during the dual-run migration; "one wins" refresh).
+  `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape — kept
+  because the migrated corpus carries it, not because a second app writes it;
+  "one wins" refresh).
 - `lib/marketplace/oauthState.ts` — **#821**, the connect flow's two trust anchors.
   The implementation is the SHARED module `@delfrance/data/admin/oauth-state`
   (extracted in #1034 and now serving all three OAuth channels); this file is a thin
@@ -208,10 +211,12 @@ Two suites, deliberately separated by filename:
   It serves the REAL functions codebase (built first by `prepare-deploy.mjs`, since
   `predeploy` hooks do not run under `emulators:exec`) and drives
   receiver → `mlTasks.ts` enqueue → tasks emulator → the real
-  `processMercadoLivreNotification` → a real Firestore write. ⚠️ `FUNCTIONS_REGION`
-  (inlined into the bundle) and `MERCADO_LIVRE_TASKS_REGION` (read by the enqueuer) MUST
-  match — a mismatch is the silent drop `mlTasks.ts` warns about, and it is what this
-  test detects. It uses a seller with no integração so the path needs no ML API call, no
+  `processMercadoLivreNotification` → a real Firestore write. ⚠️ The enqueuer's region and the TASK
+  functions' region MUST match — a mismatch is the silent drop `mlTasks.ts` warns about,
+  and it is what this test detects. Both are `MERCADO_LIVRE_TASKS_REGION` (inlined into
+  the bundle, **us-east1**), which is deliberately NOT `FUNCTIONS_REGION` (**us-east5**):
+  Cloud Tasks and Cloud Scheduler do not exist in us-east5, so the eleven queue/schedule
+  functions live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
 
@@ -273,6 +278,23 @@ matters:
 | `orders_feedback`, `stock-location` | `ack` | nothing to do; persists nothing |
 | `public_offers`, `public_candidates`, `user-products-families` | `ignore` | never enqueued, never persisted (#813) |
 
+⚠️ **The ERP owns `estado` on the link doc — for User-Products listings too.**
+`itemsStatusSync` used to defer on `isUserProductModel` and on `estado === 'am'`,
+because the Flutter app drove those during a dual run. **There is no dual run and
+there never will be one** (root `CLAUDE.md` rule 8) — so that guard stood down for a
+writer that will not exist, and since `isUserProductModel` is true for every listing
+a `user_product_seller` publishes, it silently skipped the entire future catalogue
+(#1087). ML's own migration **tags** are now the only reason to defer, and each
+deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
+a sync. Do not reintroduce a link-only guard here.
+
+⚠️ The same sync is now the **producer** of `estado 'am'`, not a reader of it. That
+value never had a writer in this repo — it only ever arrived from Flutter — yet
+`publishCore.ts` blocks publish on it and `precoPlan.ts`/`bulkEstoquePlan.ts` skip on
+it. Of the send paths only the price one re-reads ML's tags itself, so this sync
+stamps its verdict (it is the only component holding the fetched item) and those
+three gate without a fetch of their own.
+
 ⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacao.ts`, not
 this table. The four dispositions differ in what they COST: `handled` and `ack`
 persist nothing on success, `park` writes one document per delivery (the price
@@ -291,9 +313,20 @@ published under the legacy model and not yet migrated stay editable with the
 legacy payload. Both paths are live for the whole migration, which is why
 `isUserProductModel` is per-link and flips only via the UPtin takeover.
 
-Three facts from the ML docs that the payload builder now encodes (#797) — check
+Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:
 
+- **`family_name` is CREATE-ONLY on BOTH User-Products paths.** ML takes it on
+  the create and answers `400 BODY_INVALID_FIELDS` /
+  *"The field family name is invalid"* on a `PUT /items/{id}` that carries it, so
+  both builders strip it from an update: `buildUserProductItemPayload` (the
+  family fan-out) always did, and `buildItemPayload` (the SINGLE-ITEM half — a UP
+  produto with no children) did not, which 400'd every republish of such a
+  listing. An update therefore sends no name field at all, never a `title`
+  either, and `titleEditability` in apps/web disables the título on a published
+  UP listing rather than accept an edit publish would drop. Why ML refuses is
+  not yet settled (sales lock vs `max_title_length` vs the field simply not
+  being writable there) — that is the follow-up issue.
 - **Variation display order does not exist under User Products.** No ordering
   field appears anywhere in that surface, so `produto.ordem` is legacy-only and
   is lost the moment a listing migrates. The full note is the ⚠️ in
@@ -332,13 +365,13 @@ repo convention, #730) + `apphosting.yaml`. App-wide ML app credentials
 Manager — one registered ML app serves every connected account (so
 `MERCADO_LIVRE_CLIENT_ID` is also the `application_id` every notification carries,
 which is what the webhook origin check compares against). The optional
-`MERCADO_LIVRE_WEBHOOK_LOG_HEADERS` and `MERCADO_LIVRE_PKCE_ENABLED` are plain env
-vars, not secrets — see the PKCE ⚠️ above before flipping the latter. `ALLOWED_ADMIN_ORIGINS`
+`MERCADO_LIVRE_PKCE_ENABLED` is a plain env var, not a secret — see the PKCE ⚠️ above
+before flipping it. `ALLOWED_ADMIN_ORIGINS`
 became REQUIRED in production with #821/T5: localhost is no longer implicitly allowed,
 so an unset value leaves the CORS allow-list empty and every browser call fails.
 The per-account OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
-(shared with the Flutter app during the dual-run migration; the move to the
-encrypted `credenciais` store is a tracked post-migration follow-up).
+(the legacy wire shape, kept so the migrated corpus resolves natively; the move to
+the encrypted `credenciais` store is a tracked post-migration follow-up).
 
 Deploy of the App Hosting backend + the functions codebase is **manual and
 coordinated** — see root `CLAUDE.md`, Critical rules. Functions deploy: `functions/DEPLOY.md`.

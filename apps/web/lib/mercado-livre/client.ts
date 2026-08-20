@@ -482,6 +482,32 @@ export interface MercadoLivreMedidasFatos {
 }
 
 /** `POST /sugerir-medidas` — staged suggestions, never applied server-side. */
+/**
+ * One attribute the model proposes, in the shape the listing's rows already use.
+ *
+ * ⚠️ Redeclared here rather than imported. `@delfrance/integrations-mercado-livre`
+ * is server-only at its root (its OAuth core holds the app clientSecret), which
+ * is why every ML wire type in this file is a local declaration.
+ */
+export interface MercadoLivreAtributoSugestao {
+  id: string;
+  /** ML's enumerated value id, the `-1` N/A sentinel, or null for free text. */
+  value_id: string | null;
+  value_name: string;
+  unit_id: string | null;
+}
+
+/** `POST /sugerir-atributos` — suggestions to STAGE, never applied by the server. */
+export interface MercadoLivreAtributosSugestao {
+  /** False ⇒ a mid-tree category; no model call was made. */
+  leaf: boolean;
+  /** How many attributes were offered to the model. */
+  atributos: number;
+  sugestoes: MercadoLivreAtributoSugestao[];
+  /** Whether a produto photo reached the model at all. */
+  comFoto: boolean;
+}
+
 export interface MercadoLivreMedidasSugestao {
   sugestoes: MercadoLivreMedidaSugestao[];
   /** How many cells were offered to the model. */
@@ -608,6 +634,22 @@ export interface MercadoLivreClient {
     produtoId: string;
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
+  /**
+   * Where ONE listing lives on Mercado Livre (PERM.integracao.read).
+   *
+   * Only a **User-Products** listing needs this: its link doc holds a FAMILY id,
+   * which addresses nothing public, so the URL has to come from ML. A legacy
+   * listing is a pure string transform `listingPermalink` already does in the
+   * browser. Nothing is persisted — the Flutter app's unmasked `set()` would wipe
+   * a cached field on its next save.
+   *
+   * 404 when the listing is gone; 409 when it was never published.
+   */
+  linkAnuncio(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId: string;
+  }): Promise<{ url: string }>;
   /**
    * Import (or re-sync) an ML listing into an ERP produto (PERM.integracao.write).
    * All three listing models import: simple, legacy `variations[]` (#520) and
@@ -849,6 +891,22 @@ export interface MercadoLivreClient {
    * record. Each field falls back to the stored one individually, so omitting
    * `fatos` entirely keeps the old behaviour.
    */
+  /**
+   * Ask the agent to fill this listing's category attributes
+   * (PERM.integracao.write). Returns suggestions to STAGE — the server writes
+   * nothing, and the review modal applies only what the operator ticked.
+   *
+   * `feedback` + `anterior` are the revise turn: the operator says what is wrong
+   * and the previous answer rides along so the model corrects rather than
+   * restarts.
+   */
+  sugerirAtributos(input: {
+    integracaoId: string;
+    produtoId: string;
+    categoryId: string;
+    feedback?: string;
+    anterior?: MercadoLivreAtributoSugestao[];
+  }): Promise<MercadoLivreAtributosSugestao>;
   sugerirMedidas(input: {
     tabMediId: string;
     rows: MercadoLivreMedidaRow[];
@@ -1081,6 +1139,8 @@ export function createMercadoLivreClient(config: {
         '/api/marketplace/mercado-livre/reverificar-anuncio',
         input,
       ),
+    linkAnuncio: (input) =>
+      call<{ url: string }>('/api/marketplace/mercado-livre/link-anuncio', input),
     importar: (input) =>
       call<MercadoLivreImportarResult>('/api/marketplace/mercado-livre/importar', input),
     startMassImport: (input) =>
@@ -1181,6 +1241,11 @@ export function createMercadoLivreClient(config: {
       ),
     sizeChartSpecs: (input) =>
       call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
+    sugerirAtributos: (input) =>
+      call<MercadoLivreAtributosSugestao>(
+        '/api/marketplace/mercado-livre/sugerir-atributos',
+        input,
+      ),
     sugerirMedidas: ({ fatos, ...rest }) =>
       // `fatos` → `facts` on the wire: the route's own vocabulary is English,
       // and renaming here keeps the browser-facing API consistent with the rest

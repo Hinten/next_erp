@@ -1,6 +1,7 @@
 'use client';
 
 import { Group, Stack } from '@mantine/core';
+import type { Firestore } from 'firebase/firestore';
 import {
   FreteDateTimeField,
   FreteNumberField,
@@ -15,10 +16,18 @@ import { VolumesEditor } from './VolumesEditor';
  * (`.old/lib/integracoes_frete/por_conta_do_destinatario/widgets.dart`).
  * Single volume max, tracking code, money fields and deadlines.
  */
-export function FobFields({ form, disabled }: { form: PedidoFormHandle; disabled?: boolean }) {
+export function FobFields({
+  form,
+  db,
+  disabled,
+}: {
+  form: PedidoFormHandle;
+  db: Firestore;
+  disabled?: boolean;
+}) {
   return (
     <Stack gap="sm">
-      <VolumesEditor form={form} disabled={disabled} maxVolumes={1} />
+      <VolumesEditor form={form} db={db} disabled={disabled} maxVolumes={1} />
 
       <FreteTextField
         form={form}

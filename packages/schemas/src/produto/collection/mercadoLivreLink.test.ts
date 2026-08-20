@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ML_CAUSA_CAMPO,
+  ML_CAUSA_TIPO,
+  campoAtributo,
+  mlCausaSchema,
   produtoMercadoLivreLinkSchema,
   variacaoMercadoLivreLinkSchema,
   estadoPublicacaoMlSchema,
@@ -42,6 +46,39 @@ describe('produtoMercadoLivreLinkSchema', () => {
       condition: 'new',
       isUserProductModel: true,
     });
+  });
+
+  it('leaves `causas` null on a Flutter-written doc, which never sets it', () => {
+    // The whole reason it is additive+nullable: the migrated corpus is full of
+    // docs whose legacy writer knew nothing about this field.
+    const parsed = produtoMercadoLivreLinkSchema.parse({
+      contaOuterRef: 'documents/integracao/conta-1',
+      title: 'X',
+      errors: null,
+    });
+    expect(parsed.causas).toBeNull();
+  });
+
+  it('round-trips the structured causes the publisher writes', () => {
+    const parsed = produtoMercadoLivreLinkSchema.parse({
+      contaOuterRef: 'documents/integracao/conta-1',
+      title: 'X',
+      errors: ['error · item.attributes.missing_required — falta BRAND [item.attributes]'],
+      causas: [
+        {
+          code: 'item.attributes.missing_required',
+          causaId: 147,
+          tipo: ML_CAUSA_TIPO.erro,
+          departamento: 'catalog',
+          mensagem: 'The attributes [BRAND] are required for category MLB1234.',
+          referencias: ['item.attributes'],
+          campos: [campoAtributo('BRAND')],
+        },
+      ],
+    });
+    expect(parsed.causas).toEqual([
+      expect.objectContaining({ causaId: 147, tipo: 'error', campos: ['attributes.BRAND'] }),
+    ]);
   });
 
   it('requires contaOuterRef and a non-empty title', () => {
@@ -140,5 +177,33 @@ describe('variacaoMercadoLivreLinkSchema', () => {
       _futureField: 'whatever',
     });
     expect((parsed as Record<string, unknown>)._futureField).toBe('whatever');
+  });
+});
+
+describe('mlCausaSchema', () => {
+  it('needs only a message — every other field defaults', () => {
+    expect(mlCausaSchema.parse({ mensagem: 'algo deu errado' })).toEqual({
+      code: null,
+      causaId: null,
+      tipo: null,
+      departamento: null,
+      mensagem: 'algo deu errado',
+      referencias: [],
+      campos: [],
+    });
+  });
+
+  it('rejects a tipo outside the two ML documents', () => {
+    expect(mlCausaSchema.safeParse({ mensagem: 'x', tipo: 'critical' }).success).toBe(false);
+  });
+
+  it('names the four fixed listing-form controls', () => {
+    expect(Object.values(ML_CAUSA_CAMPO)).toEqual([
+      'title',
+      'descricao',
+      'category_id',
+      'listing_type_id',
+    ]);
+    expect(campoAtributo('GTIN')).toBe('attributes.GTIN');
   });
 });

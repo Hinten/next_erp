@@ -92,7 +92,7 @@ interface DevFreteSeed {
   readonly modalidade?: '0' | '1' | '2' | '3' | '4' | '9';
   /**
    * Freight value charged to the customer. Participates in the pedido money
-   * caches (`valorCobrado`/`valorFreteInicial`) for EVERY modalidade — see
+   * cache (`valorCobrado`) for EVERY modalidade — see
    * `derivePedidoFreteTotals` (legacy `Pedido.total`). Only the NF-e side is
    * modalidade-gated: `<total>.vFrete` counts it solely under modalidade='0'
    * (contratação pelo emitente).

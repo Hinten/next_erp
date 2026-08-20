@@ -7,6 +7,7 @@ import {
   handleNotificationTask,
 } from '../../lib/payments/notificacao';
 import { getDb } from './lib/admin';
+import { tasksInvokerOptions } from './tasksInvoker';
 
 /**
  * Cloud Tasks dispatcher for MP webhook notifications (#531). The receiver
@@ -26,6 +27,9 @@ import { getDb } from './lib/admin';
  */
 export const processMercadoPagoNotification = onTaskDispatched(
   {
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,
       minBackoffSeconds: 30,

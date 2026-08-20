@@ -1329,9 +1329,16 @@ export type MlQuestionFrom = z.infer<typeof mlQuestionFromSchema>;
  * poison the whole import.
  *
  * ⚠️ Do NOT model this on `packages/schemas/src/questionMercadoLivre.ts`. That
- * schema uses `z.enum` for `status` and is dual-run-only — it feeds the legacy
- * `questionsML` collection, which this port never writes and which is deleted
- * with the Flutter decommission (#829).
+ * schema uses `z.enum` for `status` and describes the LEGACY `questionsML`
+ * collection, which this port never writes and which goes away with the Flutter
+ * decommission (#829).
+ *
+ * ⚠️ An earlier draft of this note called that collection "dual-run-only".
+ * **There is no dual run and there never will be one** (root `CLAUDE.md` rule 8):
+ * legacy DATA arrives in the migration window, legacy WRITES never do. The
+ * distinction matters here because "dual-run" would imply Flutter keeps writing
+ * `questionsML` alongside us — it does not, which is exactly why this schema can
+ * be the only one and can afford to be strict about nothing.
  *
  * `buyer_id` and `from.id` are two spellings of the same asker: the by-id
  * endpoint returns `buyer_id`, the search endpoint returns `from`. The importer

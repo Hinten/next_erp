@@ -16,8 +16,10 @@ gets new CEPs constantly, ViaCEP rate-limits hard (HTTP 429), and a file cannot
 learn.
 
 The collection id is literally uppercase **`CMUN`** — the legacy Flutter wire
-name. Production already holds this data there and the still-running Flutter app
-queries it, so both apps share one table during the dual run.
+name. Production already holds this data under that id, and the migrated corpus
+arrives under it, so the name is kept rather than modernised. (The legacy app
+queries it too, but on its own project: there is no dual run — root `CLAUDE.md`
+rule 8.)
 
 ## ⚠️ Production probably does not need the import
 

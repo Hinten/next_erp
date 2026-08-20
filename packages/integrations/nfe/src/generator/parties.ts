@@ -147,9 +147,11 @@ export function buildDest(
   // defaulting the classification.
   //
   // So '2' is now reachable ONLY by an explicit `ISENTO` in the cadastro — it is
-  // a claim the operator makes, never one inferred from a blank field. Dual-run
-  // note: the Flutter reader still maps the same blank field to '2', so the two
-  // apps can disagree on this one indicator until the Flutter decommission.
+  // a claim the operator makes, never one inferred from a blank field. ⚠️ Legacy
+  // note: the legacy reader mapped the same blank field to '2', so a MIGRATED
+  // cliente with a blank `ie` is classified differently here than it was before
+  // the cutover. That divergence was accepted (#787) — it is about how this app
+  // reads inherited data, not two apps disagreeing at runtime.
   const ehPJ = cliente.tipo === TIPO_CLIENTE.pessoaJuridica;
   const ieToken = classifyIe(cliente.ie);
   const indIEDest: TNFe_infNFe_dest['indIEDest'] =

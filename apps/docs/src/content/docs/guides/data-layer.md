@@ -95,7 +95,7 @@ export const onIntegracaoDeleted = defineCascadeCaroGenerico(integracaoMeta);
 
 Two properties of that factory are load-bearing:
 
-- It discovers children with `listCollections()` rather than reading `meta.cascade`. A registry-derived list silently orphans whatever it does not know about — Flutter writes subcollections this repo never registered, and `integracaoMeta.cascade` omits `brandshopee` today.
+- It discovers children with `listCollections()` rather than reading `meta.cascade`. A registry-derived list silently orphans whatever it does not know about — the migrated corpus contains subcollections this repo never registered, and `integracaoMeta.cascade` omits `brandshopee` today.
 - It is called **caro** ("expensive") on purpose: the walk costs one `listCollections()` per document reached, leaves included, so it suits collections whose deletes are rare and whose subtrees are small. A hot delete path or a wide subtree wants a targeted, kinded sweep instead.
 
 Never use `db.recursiveDelete` — on Firestore Enterprise its kindless descendant query cannot be indexed and bills as a silent full scan (~6,184 documents per call). See `apps/functions/CLAUDE.md`.
@@ -109,7 +109,7 @@ Never use `db.recursiveDelete` — on Firestore Enterprise its kindless descenda
 ## Validation policy
 
 - **On write**: strict-parse via `schema.parse(value)`. Bad data never lands in Firestore.
-- **On read**: soft-parse via `schema.safeParse(raw)`. Mismatches log a warning and pass through the raw doc — useful while migrating fields from the Flutter app without bricking the UI.
+- **On read**: soft-parse via `schema.safeParse(raw)`. Mismatches log a warning and pass through the raw doc — which is what lets the app read migrated documents carrying fields it does not model, without bricking the UI.
 
 ## What's not here
 

@@ -20,8 +20,7 @@
  * with a concurrent conta write (which on the create path would otherwise have both
  * invocations see "no doc" and create a DUPLICATE). Layered on top, `docMaisNovoQueEvento`
  * refuses to apply an event older than what is already stored — Eventarc is at-least-once
- * and unordered, and this doc has other writers (the `/logistica` editor, and the Flutter
- * conta screen during the dual run).
+ * and unordered, and this doc has another writer: the `/logistica` editor.
  *
  * ---- Parity notes vs `.old/` ----
  *  - Mirrored fields are the legacy `MercadoEnvios.fromConta` set
@@ -259,9 +258,8 @@ export async function buscarIntFreteDaConta(
  *
  * Eventarc is at-least-once AND unordered, so this is not hypothetical: a redelivery
  * carries the ORIGINAL `event.time`, and it can land long after a newer conta write has
- * already synced. The other writers of this doc are the `/logistica` editor and the
- * still-running Flutter conta screen (dual-run) — a human edit at T2 must survive a
- * stale event from T1.
+ * already synced. The other writer of this doc is the `/logistica` editor — a
+ * human edit at T2 must survive a stale event from T1.
  *
  * Equal stamps PROCEED: same instant, and the write is idempotent (the field diff
  * below reduces it to a no-op anyway). Only `>` blocks.

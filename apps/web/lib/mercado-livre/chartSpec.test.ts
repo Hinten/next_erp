@@ -6,6 +6,7 @@ import {
   chartLevelAttributes,
   columnAttributeIds,
   detectMeasureTypes,
+  draftChartAttributeValue,
   extractChartAttributes,
   extractColumns,
   extractGridTemplates,
@@ -210,6 +211,94 @@ const sneakerGrid = {
   },
 };
 
+/**
+ * Mirrors the real `GET /domains/MLB-T_SHIRTS/technical_specs` response — the
+ * DOMAIN ficha técnica, which is a different document from `tshirtGrid` above.
+ *
+ * ⚠️ The reason this fixture exists: at DOMAIN level `grid_filter` marks the
+ * `/catalog/charts/search` vocabulary, so MODEL and LINE carry it while being
+ * listing attributes ML refuses inside a chart body. GENDER is also typed as a
+ * closed `list` here and BRAND carries its suggestion list — neither is true of
+ * the grid response, which is why this is the RENDERING source.
+ */
+const tshirtDomainSpec = {
+  input: {
+    groups: [
+      {
+        id: 'MAIN',
+        section: 'SPECIFICATIONS',
+        components: [
+          {
+            component: 'COMBO',
+            label: 'Marca',
+            ui_config: { allow_custom_value: true },
+            attributes: [
+              {
+                id: 'BRAND',
+                name: 'Marca',
+                value_type: 'string',
+                tags: ['grid_filter', 'catalog_required', 'required'],
+                values: [
+                  { id: '14671', name: 'Nike' },
+                  { id: '9999', name: 'Genérica' },
+                ],
+              },
+            ],
+          },
+          {
+            component: 'COMBO',
+            label: 'Modelo',
+            attributes: [
+              {
+                id: 'MODEL',
+                name: 'Modelo',
+                value_type: 'string',
+                tags: ['grid_filter', 'catalog_required'],
+                values: [],
+              },
+            ],
+          },
+          {
+            component: 'COMBO',
+            label: 'Linha',
+            attributes: [
+              { id: 'LINE', name: 'Linha', value_type: 'string', tags: ['grid_filter'] },
+            ],
+          },
+          {
+            component: 'COMBO',
+            label: 'Gênero',
+            attributes: [
+              {
+                id: 'GENDER',
+                name: 'Gênero',
+                value_type: 'list',
+                tags: ['grid_template_required', 'grid_filter', 'required'],
+                values: [
+                  { id: '339665', name: 'Feminino' },
+                  { id: '339666', name: 'Masculino' },
+                ],
+              },
+            ],
+          },
+          {
+            component: 'GRID_ROW_INPUT',
+            label: 'ID da linha da guia',
+            attributes: [
+              {
+                id: 'SIZE_GRID_ROW_ID',
+                name: 'ID da linha da guia de tamanhos',
+                value_type: 'grid_row_id',
+                tags: ['vip_hidden', 'hidden', 'variation_attribute'],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+};
+
 function byKey(columns: ChartColumn[], key: string): ChartColumn {
   const found = columns.find((c) => c.key === key);
   if (!found) throw new Error(`no column ${key}: ${columns.map((c) => c.key).join(', ')}`);
@@ -334,45 +423,90 @@ describe('extractChartAttributes', () => {
 });
 
 describe('chartLevelAttributes', () => {
+  it('NEVER offers a domain-only grid_filter attribute — the MODEL regression', () => {
+    // The domain spec tags MODEL and LINE `grid_filter` because they filter a
+    // CHART SEARCH; the grid spec — the chart's own ficha técnica — does not
+    // mention them. Reading the list from the domain spec rendered a "Modelo"
+    // field whose answer ML rejected outright: "Attribute MODEL found in
+    // chart's attributes is not valid and should not be present in the chart's
+    // general attributes."
+    expect(extractChartAttributes(tshirtDomainSpec).map((a) => a.id)).toContain('MODEL');
+
+    const ids = chartLevelAttributes(tshirtDomainSpec, tshirtGrid).map((a) => a.id);
+    expect(ids).toEqual(['GENDER', 'BRAND']);
+    expect(ids).not.toContain('MODEL');
+    expect(ids).not.toContain('LINE');
+  });
+
   it('never repeats an attribute that is BOTH a template and a filter', () => {
     // GENDER on MLB-T_SHIRTS carries `grid_template_required` AND `grid_filter`.
     // Concatenating the two lists rendered two form fields with key="GENDER"
     // and sent the attribute twice in the chart body.
-    expect(extractGridTemplates(tshirtGrid).map((a) => a.id)).toContain('GENDER');
+    expect(extractGridTemplates(tshirtDomainSpec).map((a) => a.id)).toContain('GENDER');
     expect(extractChartAttributes(tshirtGrid).map((a) => a.id)).toContain('GENDER');
 
-    expect(chartLevelAttributes(tshirtGrid).map((a) => a.id)).toEqual(['GENDER', 'BRAND']);
-  });
-
-  it('yields unique ids — the invariant the React keys depend on', () => {
-    const ids = chartLevelAttributes(tshirtGrid).map((a) => a.id);
+    const ids = chartLevelAttributes(tshirtDomainSpec, tshirtGrid).map((a) => a.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('keeps the template values when the attribute appears in both lists', () => {
-    const gender = chartLevelAttributes(tshirtGrid).find((a) => a.id === 'GENDER');
-    expect(gender).toMatchObject({ required: true, name: 'Gênero' });
+  it('renders GENDER from the DOMAIN spec, not the grid spec echo', () => {
+    // The grid spec echoes GENDER back narrowed to the chosen value; taking it
+    // from there would drop every other gender from the Select.
+    const gender = chartLevelAttributes(tshirtDomainSpec, tshirtGrid).find(
+      (a) => a.id === 'GENDER',
+    );
+    expect(gender).toMatchObject({ required: true, name: 'Gênero', kind: 'select' });
     expect(gender?.values.map((v) => v.name)).toEqual(['Feminino', 'Masculino']);
   });
 
-  it('keeps a filter-only attribute', () => {
-    expect(chartLevelAttributes(tshirtGrid).find((a) => a.id === 'BRAND')).toMatchObject({
-      id: 'BRAND',
-      required: true,
-    });
+  it('keeps a grid-only filter, with the DOMAIN spec supplying its suggestions', () => {
+    // BRAND carries NO `values` on the grid spec, so a chart-level list built
+    // from that response alone would offer the operator nothing to pick from.
+    expect(extractChartAttributes(tshirtGrid).find((a) => a.id === 'BRAND')?.values).toEqual([]);
+
+    const brand = chartLevelAttributes(tshirtDomainSpec, tshirtGrid).find((a) => a.id === 'BRAND');
+    expect(brand).toMatchObject({ id: 'BRAND', required: true, kind: 'text' });
+    expect(brand?.values.map((v) => v.name)).toEqual(['Nike', 'Genérica']);
+  });
+
+  it('is the templates alone until the grid spec lands', () => {
+    // `gridSpecs` is null while the operator is still answering the questions
+    // that fetch it — the form must not be empty in that window.
+    expect(chartLevelAttributes(tshirtDomainSpec, null).map((a) => a.id)).toEqual(['GENDER']);
   });
 
   it('is empty for a domain with neither', () => {
-    expect(chartLevelAttributes(sneakerGrid)).toEqual([]);
+    expect(chartLevelAttributes(sneakerGrid, sneakerGrid)).toEqual([]);
   });
 
   it('marks a CLOSED list as select and an open one as free text', () => {
     // GENDER is `value_type: list` — a real closed list. BRAND is
     // `value_type: string` with a pile of known brands, and ML accepts any
     // value; a Select there blocks every brand ML has not seen.
-    const byId = new Map(chartLevelAttributes(tshirtGrid).map((a) => [a.id, a]));
+    const byId = new Map(chartLevelAttributes(tshirtDomainSpec, tshirtGrid).map((a) => [a.id, a]));
     expect(byId.get('GENDER')?.kind).toBe('select');
     expect(byId.get('BRAND')?.kind).toBe('text');
+  });
+});
+
+describe('draftChartAttributeValue', () => {
+  it('KEEPS a trailing space, so a multi-word brand is typeable', () => {
+    // Resolving on the change path trimmed the text the input renders back, so
+    // the space vanished before the caret moved — and the known-value snap ate
+    // it a second time, putting "Nike Air" out of reach on a domain shipping
+    // "Nike".
+    expect(draftChartAttributeValue('Nike ')).toEqual({ id: '', name: 'Nike ' });
+  });
+
+  it('treats a blank draft as no answer at all', () => {
+    // An answered chart attribute goes into the grid-spec query KEY, so a
+    // whitespace one would spend a real ML round trip.
+    expect(draftChartAttributeValue('  ')).toBeNull();
+    expect(draftChartAttributeValue('')).toBeNull();
+  });
+
+  it('still keeps the spaces around text that IS an answer', () => {
+    expect(draftChartAttributeValue(' Nike ')).toEqual({ id: '', name: ' Nike ' });
   });
 });
 

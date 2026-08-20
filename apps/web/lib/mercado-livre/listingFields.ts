@@ -99,9 +99,15 @@ const EDITABLE: FieldEditability = { editable: true, reason: null };
  *    under-review listing, which is exactly when an operator is trying to fix
  *    the title that caused the problem.
  *
- * ⚠️ A User-Products family stores its title as `family_name`, which ML freezes
- * on the same "no sales" rule; the UP publish path strips it rather than fail
- * the whole update, so a title saved here may legitimately not reach ML.
+ * ⚠️ A User-Products listing stores its title as `family_name`, and the UP
+ * publish path strips that field from every update rather than fail the whole
+ * republish (`buildItemPayload` / `buildUserProductItemPayload` — ML answers
+ * `400 BODY_INVALID_FIELDS` when it will not take the change). So on a PUBLISHED
+ * UP listing the título cannot reach ML at all, and the field says so instead of
+ * accepting an edit that publish silently drops. It stays editable while the
+ * listing is still a draft, where it becomes the family name on the create —
+ * which is also the name any FUTURE family member must be created with, so
+ * changing it afterwards could only file that member under a different family.
  */
 export function titleEditability(link: ProdutoMercadoLivreLink): FieldEditability {
   if (link.id == null) return EDITABLE;
@@ -116,6 +122,15 @@ export function titleEditability(link: ProdutoMercadoLivreLink): FieldEditabilit
     return {
       editable: false,
       reason: 'O anúncio está encerrado no Mercado Livre e não aceita alterações.',
+    };
+  }
+  // Last rung on purpose: the two above name a more specific reason, and both
+  // apply to a User-Products listing too.
+  if (link.isUserProductModel) {
+    return {
+      editable: false,
+      reason:
+        'Anúncios no modelo User Products do Mercado Livre não aceitam alteração de título depois de publicados.',
     };
   }
   return EDITABLE;

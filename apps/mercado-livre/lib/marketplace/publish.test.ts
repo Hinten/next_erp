@@ -1,11 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import { type PublishDeps, publishProduto } from './publish';
 
 /**
- * Regression tests for the DUAL-RUN contract of the publish orchestrator: the
+ * Regression tests for the LEGACY-WIRE contract of the publish orchestrator: the
  * still-running Flutter app equality-queries the docs this module writes, so
  * every `*OuterRef` must be stored `documents/`-prefixed (`pathWithDocuments`)
  * and a re-publish must preserve every Flutter-authored field it doesn't own
@@ -244,10 +245,19 @@ const FLUTTER_LINK: DocData = {
 };
 
 beforeEach(() => {
+  // listaDePrecosCache.ts's reader is module-scope and keyed by document PATH
+  // only (not by which FakeDb supplied the data) — every test here builds a
+  // fresh FakeDb but many reuse the same price-list id ('lista-1'), so a
+  // stale cached `nome` would otherwise leak from one test into the next.
+  __resetAllReadCaches();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
-describe('publishProduto — dual-run wire shape', () => {
+afterEach(() => {
+  __resetAllReadCaches();
+});
+
+describe('publishProduto — legacy wire shape', () => {
   it('first publish writes canonical documents/-prefixed refs everywhere', async () => {
     const db = new FakeDb();
     seedBase(db);
@@ -397,6 +407,39 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(link).toMatchObject({ estado: 'p', id: 'MLB777', errors: [] });
   });
 
+  it('a successful publish clears the PREVIOUS rejection, causes and all', async () => {
+    // The regression this exists for: `causas` outliving its `errors` paints a
+    // red field on a listing that just published fine, and a stale highlight is
+    // indistinguishable from a fresh rejection. The two clear together or the
+    // feature is worse than no feature.
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...FLUTTER_LINK,
+      estado: 'E',
+      errors: ['error · item.attributes.missing_required — falta BRAND [item.attributes]'],
+      causas: [
+        {
+          code: 'item.attributes.missing_required',
+          causaId: 147,
+          tipo: 'error',
+          departamento: 'catalog',
+          mensagem: 'falta BRAND',
+          referencias: ['item.attributes'],
+          campos: ['attributes.BRAND'],
+        },
+      ],
+    });
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    expect(link).toMatchObject({ estado: 'p', errors: [], causas: [] });
+  });
+
   it('recreates a COMPLETE link doc when it was deleted mid-publish, never a ghost', async () => {
     const db = new FakeDb();
     seedBase(db);
@@ -488,6 +531,47 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(mocks.createItem).not.toHaveBeenCalled();
   });
 
+  it('a produto with no price names the tabela by BOTH nome and id, not just its raw Firestore id', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    // Same produto seedBase() writes, but with no price under the resolved
+    // price-list id ('lista-1', from makeDeps' tabelaNormalOuterRef) —
+    // reproduces the "sem preço" block end to end.
+    db.seed('produtos', PROD, {
+      nome: 'Camiseta Básica',
+      sku: 'SKU-1',
+      paiId: null,
+      publicado: true,
+      precos: {},
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-1' }],
+    });
+    db.seed('listaDePrecos', 'lista-1', { nome: 'Tabela Padrão' });
+    const { api } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'produto "Camiseta Básica" sem preço na tabela "Tabela Padrão" (lista-1)',
+    );
+  });
+
+  it('falls back to the id alone when the price table was never seeded — unchanged pre-fix message', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed('produtos', PROD, {
+      nome: 'Camiseta Básica',
+      sku: 'SKU-1',
+      paiId: null,
+      publicado: true,
+      precos: {},
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-1' }],
+    });
+    // No `listaDePrecos/lista-1` doc seeded at all.
+    const { api } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'produto "Camiseta Básica" sem preço na tabela lista-1',
+    );
+  });
+
   it('writes status/sub_status from the ML response (#799)', async () => {
     const db = new FakeDb();
     seedBase(db);
@@ -540,15 +624,48 @@ describe('publishProduto — dual-run wire shape', () => {
     db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
     const { api } = makeApi({
       updateItem: vi.fn(async () => {
-        throw new MercadoLivreHttpError('item.price invalid', 400, { message: 'invalid' });
+        // ML's real rejection shape (developers site, *Guia para produtos →
+        // Validações*), not a bare message: the whole point of the stamp is
+        // that `cause[]` survives onto the doc.
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          message: 'Validation error',
+          error: 'validation_error',
+          status: 400,
+          cause: [
+            {
+              department: 'catalog',
+              cause_id: 147,
+              type: 'error',
+              code: 'item.attributes.missing_required',
+              references: ['item.attributes'],
+              message: 'The attributes [BRAND] are required for category MLB1234.',
+            },
+          ],
+        });
       }),
     });
 
-    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow('item.price invalid');
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
 
     const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
     expect(link.estado).toBe('E');
-    expect(link.errors).toEqual(['item.price invalid']);
+    // ⚠️ NOT `['ML 400: Validation error']`. That headline — all `api.ts` can
+    // build out of the body — was the entire diagnosis the operator used to
+    // get, for a rejection ML had explained field by field.
+    expect(link.errors).toEqual([
+      'error · item.attributes.missing_required — The attributes [BRAND] are required for category MLB1234. [item.attributes]',
+    ]);
+    expect(link.causas).toEqual([
+      expect.objectContaining({
+        code: 'item.attributes.missing_required',
+        causaId: 147,
+        tipo: 'error',
+        // Resolved against the payload we sent, so the editor can paint the row.
+        campos: ['attributes.BRAND'],
+      }),
+    ]);
     // Previously persisted data survives the stamp.
     expect(link).toMatchObject({
       precoPublicado: 50,
@@ -1289,6 +1406,80 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     ).toEqual([4, 7]);
   });
 
+  /**
+   * #1118 review. `buildUserProductItemPayload` sends
+   * `attributesWithValue(input.attributes)` minus the member's own overrides, so
+   * a valueless or overridden entry SHIFTS every later index. Resolving
+   * `item.attributes[0]` against `input.attributes` therefore paints a healthy
+   * row red and leaves the offending one clean — the exact outcome the `campos`
+   * docblock exists to forbid.
+   */
+  it('resolves NO control for a positional cause on the family path', async () => {
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi({
+      createItem: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          message: 'Validation error',
+          error: 'validation_error',
+          status: 400,
+          cause: [
+            {
+              cause_id: 154,
+              type: 'error',
+              code: 'item.attributes.invalid_length',
+              // Positional, and meaningless without the array actually sent.
+              references: ['item.attributes[0]'],
+              message: 'Invalid value length for attribute.',
+            },
+          ],
+        });
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    expect(link.estado).toBe('E');
+    // The cause is still PERSISTED and still readable — it just claims no control.
+    expect(link.errors).toEqual([
+      'error · item.attributes.invalid_length — Invalid value length for attribute. [item.attributes[0]]',
+    ]);
+    expect(link.causas).toEqual([
+      expect.objectContaining({ code: 'item.attributes.invalid_length', campos: [] }),
+    ]);
+  });
+
+  it('DOES resolve a bracketed id from the message on the family path', async () => {
+    // The message scan is index-independent, so dropping the positional
+    // resolver costs nothing where ML names the attribute.
+    const db = new FakeDb();
+    seedFamilyOfTwo(db);
+    const { api } = upApi({
+      createItem: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          cause: [
+            {
+              type: 'error',
+              code: 'item.attributes.missing_required',
+              references: ['item.attributes'],
+              message: 'The attributes [BRAND] are required for category MLB1234.',
+            },
+          ],
+        });
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      'ML 400: Validation error',
+    );
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')!.causas).toEqual([
+      expect.objectContaining({ campos: ['attributes.BRAND'] }),
+    ]);
+  });
+
   it('records every member itemId on its child link, and the FAMILY id on the parent', async () => {
     const db = new FakeDb();
     seedFamilyOfTwo(db);
@@ -1591,6 +1782,30 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     expect(mocks.updateItem).toHaveBeenCalledOnce();
     const payload = mocks.updateItem!.mock.calls[0]![1] as Record<string, unknown>;
     expect(payload.family_name).toBeUndefined();
+  });
+
+  it('a PUBLISHED User-Products listing with NO children republishes without family_name', async () => {
+    // The reported bug: a UP produto that never had variations does NOT go
+    // through the family fan-out (`publishModeIssues` lets it past precisely
+    // because `link.id` is a real item id, not a family id), so it republishes
+    // through `buildItemPayload` — which used to carry `family_name` on the PUT
+    // and earned `ML 400 BODY_INVALID_FIELDS / The field family name is
+    // invalid` on every attempt.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, isUserProductModel: true });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalledOnce();
+    const payload = mocks.updateItem!.mock.calls[0]![1] as Record<string, unknown>;
+    expect(payload.family_name).toBeUndefined();
+    // Nor a `title`: ML derives it from the family name and the attributes.
+    expect(payload.title).toBeUndefined();
+    // ...and the edit itself still goes out.
+    expect(payload.status).toBe('active');
   });
 
   it("estado 'am' (mid-UPtin) blocks the publish before any ML call", async () => {

@@ -44,7 +44,9 @@ export { isErroredOption } from '../melhor-envio/types';
 // calculate request with it before calling `client.calculate`.
 export {
   buildCalculatePayload,
+  toVolumeInput,
   type BuildCalculateParams,
+  type FreteVolumeLike,
   type VolumeInput,
 } from '../melhor-envio/calculate';
 

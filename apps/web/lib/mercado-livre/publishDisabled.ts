@@ -16,6 +16,11 @@
  * to pin in a unit test than through a rendered card.
  */
 export interface PublishDisabledInput {
+  /**
+   * Data the decision itself depends on has not arrived yet — the produto doc,
+   * its extraData, the tenant claims, or a listing's category attributes.
+   */
+  loading: boolean;
   /** ObjectView's `disabled` — the produto form is not in an editable state. */
   disabled: boolean;
   /** `PERM.integracao.write`. */
@@ -43,8 +48,24 @@ export interface PublishDisabledInput {
  * leaves the operator hunting for edits in the wrong half of the screen.
  */
 export function publishDisabledReason(input: PublishDisabledInput): string | null {
-  if (!input.canPublish) return 'Requer permissão de escrita em integrações.';
+  // ⚠️ FIRST, and this deliberately inverts the "most-actionable first" order
+  // documented above — that order ranks GENUINE reasons. While the data is still
+  // arriving every other input is derived from what has not landed, so they
+  // answer confidently and wrongly. The visible case is `canPublish`:
+  // `usePermission` returns `allowed: false` WHILE LOADING (`usePermission.ts`),
+  // so the branch below used to tell an operator with full rights that they
+  // lacked permission, on every ordinary page load, until the claims resolved.
+  // Nothing here is actionable anyway — the only correct instruction is "wait".
+  if (input.loading) return 'Carregando os dados do anúncio…';
+  // ⚠️ `hasClient` BEFORE `canPublish`, which is what the "most-actionable first"
+  // rule above always required: re-authenticating is something the operator can
+  // do right now, a permission grant needs an admin. Ordered the other way the
+  // `hasClient` branch was unreachable in practice AND said the wrong thing —
+  // no client means no Firebase user, and `useTenant` answers a userless session
+  // with `claims: null, loading: false` (`useTenant.ts`), so `canPublish` is
+  // false too and a merely logged-out operator was told they lacked permission.
   if (!input.hasClient) return 'Sessão não autenticada — recarregue a página e entre novamente.';
+  if (!input.canPublish) return 'Requer permissão de escrita em integrações.';
   if (input.disabled) return 'O formulário do produto não está em modo de edição.';
   if (input.publishingThisConta) return 'Publicação em andamento…';
   if (input.publishingOtherConta) return 'Aguarde a publicação em andamento em outra conta.';

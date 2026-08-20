@@ -4,10 +4,11 @@
  * WhatsApp Cloud API `wa_id`, so the future Facebook/WhatsApp integration
  * resolves clientes with a plain equality query on `telefone`.
  *
- * Legacy coexistence: the live Flutter app still writes raw 10/11-digit
- * BR numbers (DDD + subscriber, no country code). This app normalizes on
- * write only — no migration — so lookups against stored data must check
- * both shapes via `telefoneQueryShapes`.
+ * Legacy shapes in the corpus: the stored data is full of raw 10/11-digit BR
+ * numbers (DDD + subscriber, no country code) — that is what the legacy app
+ * wrote, and those rows arrive with the migration. This app normalizes on write
+ * only — no backfill — so lookups against stored data must check both shapes
+ * via `telefoneQueryShapes`.
  */
 
 /**

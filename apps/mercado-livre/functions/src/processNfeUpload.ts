@@ -10,6 +10,8 @@ import {
   processNfeUploadTask,
 } from '../../lib/marketplace/nfeUpload';
 import { getDb } from './lib/admin';
+import { TASKS_SCHEDULER_REGION } from './options';
+import { tasksInvokerOptions } from './tasksInvoker';
 
 /**
  * Cloud Tasks dispatcher for the ML NF-e invoice upload (Step 12, #739). The
@@ -53,6 +55,11 @@ import { getDb } from './lib/admin';
  */
 export const processMercadoLivreNfeUpload = onTaskDispatched(
   {
+    // Cloud Tasks does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: {
       maxAttempts: NFE_UPLOAD_MAX_ATTEMPTS,
       minBackoffSeconds: 60,

@@ -20,6 +20,8 @@ Three independent concurrency sources make this routine here, not theoretical:
    Firestore documents (see `guides/coexistence`). Every pedido, pagamento,
    produto and estoque doc has at least two writers today, in two codebases,
    with no shared lock.
+   ⚠️ **This source is void — see the Correction at the end of this ADR.** There
+   is no dual run and there never was one. Sources 2 and 3 carry the ADR alone.
 2. **At-least-once event delivery.** Marketplace and freight webhooks arrive out
    of order by design — a delayed `posted` after `delivered`, two payment
    notifications for the same payment id, a shipment event overtaken by the next
@@ -208,3 +210,23 @@ repo-wide audit (#824) and the shared helper (#839) are tracked separately; no
 call sites are migrated by this ADR. The automated check landed as the
 transaction inventory test described above — #776 is closed, and its verdict is
 recorded in that file's docblock.
+
+## Correction (2026-08-19)
+
+**Concurrency source #1 above — "dual-run coexistence" — is void.** There is no
+dual run and there never was one. The legacy Flutter app writes only the legacy
+production project; this repo writes only staging; the cutover *turns the legacy
+app off* rather than running the two side by side. See the root `CLAUDE.md`
+Critical rule 8 and ADR 0013.
+
+**Nothing else in this ADR changes.** Source **2** (at-least-once, out-of-order
+delivery — provider webhooks, the reprocess sweep re-driving hours-old payloads,
+Cloud Tasks retries) and source **3** (two humans, two tabs) are untouched and
+carry the four-tier ladder on their own; a Cloud Function trigger racing the
+client write that fired it is a fourth. The tier-1 argument also survives its
+Flutter phrasing — the point is that `updateTime` is server-maintained and needs
+no schema surface, not who the other writer is.
+
+If anything the correction **sharpens** the ADR. After the cutover this app is
+the *sole* writer of the real data: a lost update has no second codebase to
+attribute it to and no second source to reconstruct it from.

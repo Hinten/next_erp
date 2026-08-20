@@ -111,7 +111,7 @@ export function podeReabrirConversa(estado: EstadoConversa): boolean {
 
 /**
  * Conversa — collection `chat`. Mirrors `packages/atendimento/lib/src/models.dart`
- * shape so Flutter and Next coexist on the same docs. Outer references
+ * shape, which is how the migrated corpus is stored. Outer references
  * stay opaque pass-through; UI surfaces the IDs and resolves names lazily.
  */
 export const conversaSchema = z.object({

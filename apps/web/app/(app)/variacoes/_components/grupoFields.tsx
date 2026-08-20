@@ -16,7 +16,7 @@ export const GRUPO_SECTIONS: string[] = ['Dados gerais', 'Variantes'];
 /**
  * Fields hidden from the grupo ObjectView: audit stamps, the denormalized id
  * list (`variacoesIds` is derived on save), and the marketplace link arrays
- * (Shopee / Loja Integrada / Amazon) the Flutter app still authors.
+ * (Shopee / Loja Integrada / Amazon) that only the legacy app ever authored.
  */
 export const GRUPO_EXCLUDED_FIELDS: string[] = [
   'timestamp',
@@ -31,7 +31,11 @@ export const GRUPO_EXCLUDED_FIELDS: string[] = [
  * Mirror Flutter `GrupoDeVariacoes.save()` (`models.dart:4696`): `variacoesIds`
  * is always the de-duplicated ids of the embedded `variacoes`. Wire as
  * `ObjectView.deriveOnSave` so the denormalized list never drifts from the
- * variants — important for coexistence (Flutter reads `variacoesIds`).
+ * variants. ⚠️ The stated reason — "Flutter reads `variacoesIds`" — is VOID (no
+ * dual run; root `CLAUDE.md` rule 8), yet this still derives on EVERY save in
+ * this app. Kept because the migrated corpus carries the field and nothing here
+ * has re-derived whether the ERP itself needs it; dropping it is a real
+ * decision, not a drive-by edit.
  */
 export function deriveVariacoesIds(values: Record<string, unknown>): { variacoesIds: string[] } {
   const variacoes = (values.variacoes as Array<{ id: string }> | null) ?? [];

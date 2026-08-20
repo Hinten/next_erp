@@ -14,9 +14,10 @@
  * a Firestore create on the failure path, up to 5 sweep re-drives and one
  * rate-limited ML API call per POST). It fails OPEN when unconfigured or when
  * the field is absent — see lib/marketplace/webhookOrigin.ts for why, and for
- * why ML's published source-IP list was declined. `logWebhookHeaders` runs first
- * so the migration window produces evidence of whether ML ever sends a signature
- * header; that verdict decides the follow-up (real check vs secret path segment).
+ * why ML's published source-IP list was declined. A header-inventory probe used
+ * to run first, to settle from live traffic whether ML ever sends a signature
+ * header; the first live run answered NO and the probe was removed, so the
+ * remaining follow-up is a secret path segment on the callback URL.
  *
  * The receiver must answer `200` FAST so ML stops retrying, and do the heavy
  * work asynchronously. Step 6 (#290/#360): validate the body and ENQUEUE the
@@ -41,21 +42,23 @@
  * No Bearer token and OUT of the `proxy.ts` CORS matcher — it's a server→server
  * call from ML, not a browser request.
  *
- * ⚠️ DUAL-RUN: switching a seller's ML callback URL here MUST be paired with
- * disabling the legacy Flutter notification functions (see functions/DEPLOY.md)
- * or every notification is double-processed.
+ * ⚠️ CUTOVER: a seller's ML callback URL is ONE registration. Switching it here
+ * MUST be paired with disabling the legacy Flutter notification functions (see
+ * functions/DEPLOY.md), or the same notification is ingested by both systems.
  */
 import { NextResponse } from 'next/server';
+import { logger } from 'firebase-functions/logger';
 import { ZodError } from 'zod';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import {
+  MERCADO_LIVRE_NOTIFICATION_QUEUE,
   parseNotificationBody,
   persistNotificationFailure,
   shouldEnqueueTopic,
 } from '@/lib/marketplace/notificacao';
-import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
-import { checkApplicationId, logWebhookHeaders } from '@/lib/marketplace/webhookOrigin';
+import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/mlTasks';
+import { checkApplicationId } from '@/lib/marketplace/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -90,11 +93,56 @@ const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
 ]);
 const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
 
+/**
+ * One line per delivery, on EVERY path — including the ones that succeed.
+ *
+ * ⚠️ Without this the receiver is only observable when it FAILS: the happy path
+ * writes nothing to Firestore (by design — `notificacoesMercadoLivre` is
+ * failures-only) and logged nothing either, so "ML delivered and we acked 200"
+ * and "ML delivered and we deliberately ignored it" were indistinguishable
+ * from the outside. During the first live run that ambiguity cost two rounds of
+ * guessing: an empty failures collection is the GOOD outcome and the
+ * everything-is-broken outcome at the same time, and nothing on the box could
+ * tell them apart.
+ *
+ * Deliberately NOT the request body: the callback URL is a leak surface (#811)
+ * and a notification body is provider data. Topic, resource, the seller's
+ * `user_id` and the outcome are what a human actually needs, and `resource` is
+ * already a bare path like `/items/MLB123`.
+ *
+ * ⚠️ **`logger`, not `console`** — and this is the ONLY route in the repo that
+ * crosses that line, so the reason is written down rather than left to look like
+ * an accident. `console.x(msg, obj)` goes through Node's `util.inspect`, which
+ * wraps at a ~128-char break length; this context object is past it, so Cloud
+ * Run split ONE delivery across several Cloud Logging entries and `regiao` could
+ * land apart from the `topic` it belongs to. The repo's 100-odd
+ * `console.warn('[prefix]', {…})` calls are fine only because their context
+ * objects are small — the convention has a size limit nobody had hit yet.
+ * `firebase-functions/logger` writes a single structured JSON line instead, so
+ * the entry count no longer depends on how long the payload happens to be, the
+ * severity is real INFO rather than a `no-console` compromise, and the fields
+ * land in `jsonPayload` where they can be filtered:
+ * `jsonPayload.regiao != "us-east1"` finds every misrouted enqueue directly.
+ *
+ * ⚠️ Import the `firebase-functions/logger` SUBPATH, never the package root —
+ * the root pulls the Functions runtime into an App Hosting server bundle.
+ */
+function logDelivery(
+  disposition: 'enfileirado' | 'persistido' | 'ignorado' | 'ruido' | 'descartado',
+  payload: { topic: string; resource: string; user_id?: number | null } | null,
+  extra?: Readonly<Record<string, unknown>>,
+): void {
+  logger.info('[mercado-livre/webhook] entrega', {
+    disposition,
+    topic: payload?.topic ?? null,
+    resource: payload?.resource ?? null,
+    user_id: payload?.user_id ?? null,
+    ...extra,
+  });
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();
-
-  // Before any rejection, so a refused request's headers are still captured.
-  logWebhookHeaders(req);
 
   let body: unknown;
   try {
@@ -126,6 +174,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // Noise (health ping / missing topic+resource) → ack without enqueuing.
   const payload = parseNotificationBody(body);
   if (!payload) {
+    logDelivery('ruido', null);
     return NextResponse.json({ ok: true, accepted: false });
   }
 
@@ -137,6 +186,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   // change for a User-Products seller. An UNKNOWN topic still enqueues, so it
   // parks and stays visible.
   if (!shouldEnqueueTopic(payload.topic)) {
+    logDelivery('ignorado', payload);
     return NextResponse.json({ ok: true, accepted: false, ignored: true });
   }
 
@@ -146,6 +196,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const enqueueOpts = REFETCH_DELAY_TOPICS.has(payload.topic)
     ? { scheduleDelaySeconds: REFETCH_SCHEDULE_DELAY_SECONDS }
     : undefined;
+  let disposition: 'enfileirado' | 'persistido' = 'enfileirado';
   try {
     await createMlTaskScheduler().enqueue(payload, enqueueOpts);
   } catch (err) {
@@ -171,11 +222,19 @@ export async function POST(req: Request): Promise<NextResponse> {
         console.warn('[mercado-livre/webhook] dropping unpersistable notification', {
           message: persistErr.message,
         });
+        logDelivery('descartado', payload, { motivo: 'persist ZodError' });
         return NextResponse.json({ ok: true, accepted: false });
       }
       throw persistErr;
     }
+    // The enqueue lost, but the notification is durable and the sweep owns it.
+    disposition = 'persistido';
   }
 
+  logDelivery(disposition, payload, {
+    fila: MERCADO_LIVRE_NOTIFICATION_QUEUE,
+    regiao: mlTasksRegion(),
+    delaySeconds: enqueueOpts?.scheduleDelaySeconds ?? 0,
+  });
   return NextResponse.json({ ok: true, accepted: true });
 }

@@ -17,6 +17,16 @@
  * `roles/cloudtasks.enqueuer` + `roles/iam.serviceAccountUser` on the functions
  * runtime SA) is in functions/DEPLOY.md.
  *
+ * ⚠️ Minting that token is NOT the same as being allowed to use it, and
+ * this docblock used to stop one sentence too early. The token's principal is
+ * the enqueuer's own identity (nothing here overrides it), and a gen2 function
+ * is a Cloud Run service - so that identity ALSO needs `roles/run.invoker` on
+ * the target service. Without it the task is created and dispatched and the
+ * service answers 403 `run.routes.invoke`, which this code never observes: the
+ * enqueue SUCCEEDED, so no failure document is written and the notification
+ * dies inside Cloud Tasks leaving no trace in Firestore. Found on the first
+ * live run; all three roles are now in functions/DEPLOY.md.
+ *
  * Config:
  *   - `MERCADO_LIVRE_TASKS_DISABLED=1` → `enqueue()` throws `MlTasksDisabledError`;
  *     the receiver falls back to persisting the notification as `failed` so the
@@ -40,11 +50,19 @@ import { getFunctions } from 'firebase-admin/functions';
 import { getAdminApp } from '../firebase/admin';
 import { MERCADO_LIVRE_NOTIFICATION_QUEUE, type MlNotificationPayload } from './notificacao';
 
-/** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
-function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
+/**
+ * Region the notification function and its queue live in.
+ *
+ * ⚠️ This is NOT the codebase region and must not fall back to it. Cloud Tasks
+ * does not exist in `us-east5`, so the queue functions are pinned to `us-east1`
+ * (`TASKS_SCHEDULER_REGION` in the functions codebase) while the Firestore
+ * triggers stay in the Firestore region. A `FUNCTIONS_REGION` fallback used to
+ * sit here and is actively harmful now: on a backend where that variable names
+ * the data region, every enqueue would resolve a queue that does not exist and
+ * the Admin SDK would silently target `us-central1`.
+ */
+export function mlTasksRegion(): string {
+  return process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || 'us-east1';
 }
 
 /**

@@ -25,6 +25,30 @@ export async function bundle(outfile) {
   // FUNCTIONS_REGION so the analyzed endpoint carries the real database id.
   // Mirrors apps/whatsapp/functions/build.mjs.
   const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
+  // ⚠️ Cloud Tasks and Cloud Scheduler DO NOT EXIST in us-east5, so the eleven
+  // onTaskDispatched/onSchedule functions cannot live in the codebase region —
+  // `firebase deploy` fails them all while the four Firestore triggers succeed.
+  // They are pinned to us-east1 instead (the nearest region offering both).
+  // Inlined for the same reason as FUNCTIONS_REGION: their `region:` option is
+  // read during codebase analysis, before any env is available.
+  // ⚠️ This is also the ENQUEUER's region — apps/mercado-livre/lib/marketplace/
+  // mlTasks.ts builds a region-qualified queue name from the same variable, and
+  // a mismatch makes the Admin SDK target us-central1 and SILENTLY DROP the task.
+  const tasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION || 'us-east1';
+  // Service accounts allowed to enqueue AND dispatch this codebase's task
+  // functions, comma-separated. Inlined for the same reason as the region above
+  // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase
+  // analysis, before any env exists — and per PROJECT, so it cannot be a
+  // constant. ⚠️ The list is AUTHORITATIVE: a deploy REPLACES the members of
+  // both bindings it drives, so it must name every enqueuer. See DEPLOY.md.
+  const tasksInvoker = process.env.TASKS_INVOKER_SA || '';
+  if (!tasksInvoker) {
+    console.warn(
+      '[build] TASKS_INVOKER_SA is unset — `invoker` will be OMITTED from every ' +
+        'onTaskDispatched, leaving roles/run.invoker + roles/cloudtasks.enqueuer to ' +
+        'the manual gcloud grants in DEPLOY.md.',
+    );
+  }
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,
@@ -42,7 +66,9 @@ export async function bundle(outfile) {
     ],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.MERCADO_LIVRE_TASKS_REGION': JSON.stringify(tasksRegion),
       'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId),
+      'process.env.TASKS_INVOKER_SA': JSON.stringify(tasksInvoker),
     },
     // ESM output has no `require`, but bundled CommonJS deps may call it
     // dynamically → inject a real `require` via createRequire so those resolve.

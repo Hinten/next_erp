@@ -79,6 +79,7 @@ import {
 import { tryGetAdminBucket } from '../firebase/admin';
 import {
   type ItemsApiResolver,
+  type ItemsSyncOutcome,
   type MigrationRunner,
   resolveItemsApiFromContext,
   syncItemStatus,
@@ -940,7 +941,18 @@ async function wrapImportRunner<T extends { skipped?: unknown }>(
 
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
-  | { kind: 'done'; integracaoId: string } // known topic processed
+  | { kind: 'done'; integracaoId: string; detail?: ItemsSyncOutcome } // known topic processed
+  //   `detail` is the HANDLER's own outcome, when it has one worth reporting.
+  //   ⚠️ `done` is a DISPOSITION, not an assertion that work happened: an
+  //   items sync that found no link and one that rewrote the listing both
+  //   resolve. Without this field they are indistinguishable in the logs, which
+  //   is exactly how a listing status silently failed to update for a full day
+  //   during the first live run (#1087).
+  //   ⚠️ Typed as the union, not `string`, ON PURPOSE — `TaskResult.detail`
+  //   widens it for the log and that is the right shape there, but the widening
+  //   also meant renaming or dropping a member compiled everywhere in silence.
+  //   Narrowing the PRODUCER makes the next such change a typecheck error here.
+  //   A second handler wanting its own detail widens this to a union of unions.
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
   | { kind: 'ignored-topic' } // TOPIC_DISPOSITION says `ignore` — no account resolved, nothing written
@@ -1017,8 +1029,11 @@ export async function processNotificationPayload(
     if (!itemId) return { kind: 'malformed-resource', integracaoId };
     // The resolver is threaded (not a pre-built API) so syncItemStatus can go
     // link-first and skip the ML call entirely for an unlinked item.
-    await syncItemStatus(db, integracaoId, itemId, resolveItemsApi, migrationRunner);
-    return { kind: 'done', integracaoId };
+    // The `ItemsSyncOutcome` rides out on `detail`. Discarding it made every
+    // outcome — a sync, a no-op, an unlinked item, a deliberate skip — report
+    // the same thing, so the log could not say whether anything was written.
+    const detail = await syncItemStatus(db, integracaoId, itemId, resolveItemsApi, migrationRunner);
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `orders_v2` (and the legacy alias `orders`) — order → pedido import (Step 9).
@@ -1216,6 +1231,13 @@ export interface TaskResult {
   outcome: 'done' | 'failed' | 'parked' | 'dropped' | 'deferred';
   integracaoId?: string;
   topic?: string;
+  /**
+   * The channel's own `ProcessOutcome` discriminant, so the caller can tell a
+   * `done` that processed a topic from one that dropped an ignored topic.
+   */
+  kind?: ProcessOutcome['kind'];
+  /** The handler's own outcome (today: the `items` sync result). */
+  detail?: string;
 }
 /** The operator-facing reason for a seller that maps to no active integração. */
 function noAccountReason(payload: MlNotificationPayload): string {
@@ -1392,10 +1414,16 @@ export async function handleNotificationTask(
   // enumerating the exceptions is what made this a type error when
   // `ignored-topic` was added.
   const integracaoId = r.result && 'integracaoId' in r.result ? r.result.integracaoId : null;
+  // Same structural-check discipline as `integracaoId`: `detail` rides only on
+  // the `done` arm today, and an `in` check keeps compiling when another arm
+  // gains one.
+  const detail = r.result && 'detail' in r.result ? r.result.detail : null;
   return {
     outcome: r.outcome,
     ...(integracaoId != null ? { integracaoId } : {}),
     ...(r.payload ? { topic: r.payload.topic } : {}),
+    ...(r.result ? { kind: r.result.kind } : {}),
+    ...(detail != null ? { detail } : {}),
   };
 }
 

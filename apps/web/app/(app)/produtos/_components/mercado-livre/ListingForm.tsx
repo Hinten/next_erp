@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import {
+  ActionIcon,
   Alert,
   Button,
   Fieldset,
@@ -19,7 +20,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconChevronDown, IconChevronUp } from '@tabler/icons-react';
+import { IconChevronDown, IconChevronUp, IconSparkles } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
@@ -29,6 +30,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  applySuggestions,
   attributesForSave,
   seedRows,
   validateAttr,
@@ -38,7 +40,11 @@ import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   useMercadoLivreClient,
+  type MercadoLivreAtributoSugestao,
+  type MercadoLivreAtributosSugestao,
 } from '@/lib/mercado-livre/client';
+import { describeMercadoLivreFailure, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
+import { queryRetry } from '@/lib/query/queryRetry';
 
 import {
   LISTING_TYPE_OPTIONS,
@@ -53,6 +59,7 @@ import {
   type ListingFormInput,
   type ListingFormValues,
 } from '@/lib/mercado-livre/listingForm';
+import { erroDoCampo, errosDeAtributos } from '@/lib/mercado-livre/listingCausas';
 import { createClientListingPort } from '@/lib/mercado-livre/listingPort';
 import type { ListingSaveOutcome } from '@/lib/mercado-livre/listingSaveOutcome';
 import {
@@ -62,7 +69,8 @@ import {
   saveListing,
 } from '@/lib/mercado-livre/saveListing';
 import type { OperatorOwnedKey } from '@/lib/mercado-livre/listingPatch';
-import { AtributosSection } from './AtributosSection';
+import { AtributosAiModal } from './AtributosAiModal';
+import { ATRIBUTOS_LOAD_FAILED_MESSAGE, AtributosSection } from './AtributosSection';
 import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
 import { ListingField, textOr } from './ListingField';
@@ -90,8 +98,29 @@ export interface ListingFormProps {
   db: Firestore;
   canWrite: boolean;
   disabled?: boolean;
+  /**
+   * Server-side errors keyed by control — Mercado Livre's own rejection
+   * (`link.causas`, split by `splitCausas`) and the pre-flight 422 issues.
+   *
+   * ⚠️ Displayed, never pushed through `form.setError`. These are DERIVED from
+   * Firestore, and a manual RHF error is wiped by the next resolver run, so
+   * pushing them into form state would make them disappear on an unrelated blur
+   * while the listing is still rejected.
+   */
+  serverErrors?: Record<string, string[]>;
   /** Reported on every change so the page's leave-guard can see ML edits. */
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
+  /**
+   * Reported while this listing's category attributes are still in flight, so the
+   * editor can hold its write actions until the form actually describes the
+   * listing.
+   *
+   * ⚠️ The grid is EMPTY, not absent, while the query loads: `seedRows` iterates
+   * the query result, so `attrRows` is `[]`, the "N obrigatório(s) sem valor"
+   * badge reads 0, and a half-loaded form is indistinguishable from a complete
+   * one. Publishing from that state sends attributes nobody saw.
+   */
+  onLoadingChange: (linkDocId: string, loading: boolean) => void;
   /**
    * Hands the editor a closure that saves this listing, so **both** callers can
    * drive it: the produto's own "Salvar alterações" (`'flush'`) and the
@@ -201,9 +230,13 @@ export function ListingForm({
   db,
   canWrite,
   disabled,
+  serverErrors,
   onDirtyChange,
+  onLoadingChange,
   registerFlush,
 }: ListingFormProps) {
+  /** A control shows its own validation first; the server's when it has none. */
+  const erroServidor = (campo: string): string | undefined => erroDoCampo(serverErrors, campo);
   const client = useMercadoLivreClient();
   const form = useForm<ListingFormInput, unknown, ListingFormValues>({
     resolver: zodResolver(listingFormSchema),
@@ -401,7 +434,22 @@ export function ListingForm({
     enabled: effectiveCategoryId != null && client != null,
     staleTime: METADATA_STALE_MS,
     queryFn: () => client!.categoriaAtributos({ integracaoId, categoryId: effectiveCategoryId! }),
+    retry: mercadoLivreQueryRetry,
   });
+  // Without this the whole attribute grid stayed replaced by an alert until the
+  // operator switched category away and back, or reloaded the page.
+  //
+  // The MESSAGE has to come from the mapper too, not just the button: a
+  // non-retryable failure gets no button by design, so the copy is all the
+  // operator has left. A hardcoded string rendered `409 ML_REAUTH_REQUIRED` as a
+  // bare "não foi possível carregar" — no button, no hint to reconnect.
+  const atributosRetry = queryRetry(atributosQuery);
+  const atributosFailure =
+    atributosQuery.error == null
+      ? null
+      : describeMercadoLivreFailure(atributosQuery.error, {
+          unknown: ATRIBUTOS_LOAD_FAILED_MESSAGE,
+        });
   const attrs = useMemo(() => atributosQuery.data?.atributos ?? [], [atributosQuery.data]);
   const omitidos = useMemo(() => atributosQuery.data?.omitidos ?? [], [atributosQuery.data]);
 
@@ -417,14 +465,70 @@ export function ListingForm({
   const attrRows = attrDirty ? edited.rows : seededRows;
 
   const attrErrors = useMemo(() => {
-    const out: Record<string, string> = {};
+    // Server causes first, local validation on top: what the operator can see
+    // is wrong right now beats what ML said about the last attempt, and a local
+    // rule firing means the row changed since that rejection anyway.
+    const out: Record<string, string> = errosDeAtributos(serverErrors ?? {});
     const byId = new Map(attrRows.map((r) => [r.id, r]));
     for (const attr of attrs) {
       const message = validateAttr(attr, byId.get(attr.id));
       if (message != null) out[attr.id] = message;
     }
     return out;
-  }, [attrs, attrRows]);
+  }, [attrs, attrRows, serverErrors]);
+
+  // ---- AI attribute suggestion (#799 A4) ---------------------------------
+  // ⚠️ Staged, never applied. The route answers with suggestions and the modal
+  // applies only what the operator ticked — the whole reason it is `sugerir-`.
+  const [iaAberto, setIaAberto] = useState(false);
+  const [iaResultado, setIaResultado] = useState<MercadoLivreAtributosSugestao | null>(null);
+  const [iaOcupado, setIaOcupado] = useState(false);
+  const [iaFeedback, setIaFeedback] = useState('');
+  /** Bumped per run so the modal remounts and its checkbox set re-seeds. */
+  const [iaRun, setIaRun] = useState(0);
+
+  const pedirIa = useCallback(
+    async (opts?: { feedback?: string; anterior?: MercadoLivreAtributoSugestao[] }) => {
+      if (!client || effectiveCategoryId == null) return;
+      setIaOcupado(true);
+      // A revise turn keeps the modal open over the previous answer; a fresh run
+      // opens it empty so the dialog is its own spinner.
+      if (opts?.feedback == null) {
+        setIaResultado(null);
+        setIaRun((n) => n + 1);
+        setIaAberto(true);
+      }
+      try {
+        const res = await client.sugerirAtributos({
+          integracaoId,
+          produtoId,
+          categoryId: effectiveCategoryId,
+          ...(opts?.feedback != null ? { feedback: opts.feedback } : {}),
+          ...(opts?.anterior != null ? { anterior: opts.anterior } : {}),
+        });
+        setIaResultado(res);
+        setIaRun((n) => n + 1);
+        setIaFeedback('');
+      } catch (err) {
+        if (
+          err instanceof MercadoLivreClientHttpError ||
+          err instanceof MercadoLivreClientNetworkError
+        ) {
+          setIaAberto(false);
+          notifications.show({
+            color: 'red',
+            title: 'Não foi possível preencher com IA',
+            message: err.message,
+          });
+          return;
+        }
+        throw err;
+      } finally {
+        setIaOcupado(false);
+      }
+    },
+    [client, effectiveCategoryId, integracaoId, produtoId],
+  );
 
   // Re-seed from the live snapshot ONLY while the operator has nothing pending.
   // A publish or a webhook landing mid-edit must not silently rewrite the text
@@ -460,6 +564,36 @@ export function ListingForm({
       onDirtyChange(linkDocId, false);
     },
     [linkDocId, onDirtyChange],
+  );
+
+  // ⚠️ `isLoading`, NOT `isPending`. In TanStack v5 a DISABLED query sits at
+  // `isPending: true` forever, and this query is disabled in two legitimate,
+  // permanent states — no category chosen, and `client == null` before auth
+  // resolves. Reporting `isPending` would mean "never ready" in both, leaving
+  // every write action dead for the whole session. `isLoading` is
+  // `isPending && isFetching`, so it is true only while a request is genuinely
+  // in flight, and an error settles it (a failed metadata call must not block
+  // publishing — `AtributosSection` promises the stored attributes survive).
+  //
+  // ⚠️ This is deliberately NOT the flag passed to `AtributosSection` below,
+  // which stays `isPending && effectiveCategoryId != null`. That one answers
+  // "should I show a spinner instead of the grid?", and with a category but no
+  // client the honest answer is yes; `isLoading` there would fall through to
+  // "Esta categoria não exige atributos." — the false negative that ladder
+  // exists to avoid. Two questions, two flags.
+  const atributosCarregando = atributosQuery.isLoading;
+  useEffect(() => {
+    onLoadingChange(linkDocId, atributosCarregando);
+  }, [linkDocId, atributosCarregando, onLoadingChange]);
+
+  useEffect(
+    () => () => {
+      // An unmount that left "still loading" behind would disable the editor's
+      // write actions FOREVER — the id would sit in its Set with nothing left
+      // to clear it.
+      onLoadingChange(linkDocId, false);
+    },
+    [linkDocId, onLoadingChange],
   );
 
   const runSave = useCallback(
@@ -625,7 +759,7 @@ export function ListingForm({
                   maxLength={TITLE_MAX_LENGTH}
                   description={`${(field.value ?? '').length}/${TITLE_MAX_LENGTH}`}
                   disabled={readOnly || !titleRule.editable}
-                  error={fieldState.error?.message}
+                  error={fieldState.error?.message ?? erroServidor('title')}
                 />
               </Tooltip>
             )}
@@ -651,7 +785,7 @@ export function ListingForm({
                 value={field.value === '' ? null : field.value}
                 onChange={field.onChange}
                 disabled={readOnly}
-                error={fieldState.error?.message}
+                error={fieldState.error?.message ?? erroServidor('category_id')}
               />
             )}
           />
@@ -702,7 +836,7 @@ export function ListingForm({
                     minRows={3}
                     maxRows={10}
                     disabled={readOnly}
-                    error={fieldState.error?.message}
+                    error={fieldState.error?.message ?? erroServidor('descricao')}
                   />
                 )}
               />
@@ -734,7 +868,7 @@ export function ListingForm({
                   onChange={(v) => field.onChange(v ?? '')}
                   onBlur={field.onBlur}
                   disabled={readOnly}
-                  error={fieldState.error?.message}
+                  error={fieldState.error?.message ?? erroServidor('listing_type_id')}
                 />
               )}
             />
@@ -752,9 +886,60 @@ export function ListingForm({
           leaf={atributosQuery.data?.leaf ?? true}
           loading={atributosQuery.isPending && effectiveCategoryId != null}
           failed={atributosQuery.isError}
+          message={atributosFailure?.message}
+          onRetry={atributosFailure?.retryable ? atributosRetry.retry : undefined}
+          retrying={atributosRetry.retrying}
           disabled={readOnly}
+          acaoIa={
+            <Tooltip label="Preencher com IA" withArrow>
+              {/* ⚠️ A <span> so the tooltip still fires when the button is
+                  disabled — Mantine turns pointer events off on a disabled
+                  control, which is the trap `PermGate` documents. */}
+              <span style={{ display: 'inline-block' }}>
+                <ActionIcon
+                  variant="subtle"
+                  size="sm"
+                  aria-label="Preencher com IA"
+                  loading={iaOcupado && !iaAberto}
+                  disabled={
+                    readOnly ||
+                    client == null ||
+                    effectiveCategoryId == null ||
+                    atributosQuery.data?.leaf === false
+                  }
+                  onClick={() => void pedirIa()}
+                >
+                  <IconSparkles size={16} />
+                </ActionIcon>
+              </span>
+            </Tooltip>
+          }
         />
       </Fieldset>
+
+      <AtributosAiModal
+        key={iaRun}
+        opened={iaAberto}
+        onClose={() => setIaAberto(false)}
+        resultado={iaResultado}
+        attrs={attrs}
+        rows={attrRows}
+        onApply={(aceitas) => {
+          const ids = new Set(aceitas.map((a) => a.id));
+          setEdited({
+            categoryId: effectiveCategoryId,
+            rows: applySuggestions(attrs, attrRows, aceitas, (id) => ids.has(id)),
+          });
+        }}
+        feedback={{
+          value: iaFeedback,
+          onChange: setIaFeedback,
+          onResubmit: () =>
+            void pedirIa({ feedback: iaFeedback, anterior: iaResultado?.sugestoes ?? [] }),
+          busy: iaOcupado,
+          placeholder: 'Ex.: a cor está errada, é azul-marinho; o material é algodão.',
+        }}
+      />
 
       {/* ⚠️ "Salvar anúncio" is NOT rendered here any more. It lives in
           `MercadoLivreEditor`'s action group, beside "Publicar no Mercado Livre",

@@ -26,7 +26,10 @@ export interface ChartSpecValue {
   name: string;
 }
 
-/** A chart-level attribute the operator answers before the columns exist. */
+/**
+ * A chart-level attribute the operator answers — a question about the guia
+ * itself rather than about one of its rows.
+ */
 export interface GridTemplateAttribute {
   id: string;
   name: string;
@@ -237,6 +240,29 @@ function normalizeValue(value: string): string {
 }
 
 /**
+ * What the operator has typed SO FAR into a free-text chart attribute.
+ *
+ * ⚠️ The on-CHANGE path, and it deliberately leaves the text alone — the trim and
+ * the known-value match in {@link resolveChartAttributeValue} both rewrite the
+ * string the input renders back, which cost the operator every space they
+ * pressed. Blur resolves it; {@link resolveChartAttributeValue} runs again when
+ * the chart body is assembled, so an unblurred draft never reaches ML.
+ *
+ * The empty `id` is the existing "free text, no value_id" marker.
+ *
+ * ⚠️ Unlike `draftTypedValue` on the produto side, a BLANK draft still counts as
+ * no answer here. An answered chart-level attribute is what opens `answered` and
+ * puts the value into the grid-spec query KEY, so keeping `'  '` would spend a
+ * real Mercado Livre round trip asking about a whitespace brand. The cost is
+ * that a LEADING space cannot start an empty box — a trailing one, which is what
+ * blocks typing, is unaffected.
+ */
+export function draftChartAttributeValue(typed: string): ChartSpecValue | null {
+  if (typed.trim() === '') return null;
+  return { id: '', name: typed };
+}
+
+/**
  * What the operator typed into a free-text chart attribute, as an ML value.
  *
  * A known option wins when the text matches one — accent- and case-insensitively,
@@ -244,6 +270,9 @@ function normalizeValue(value: string): string {
  * value ML does not recognise (the same trap `attributeForm.ts` documents).
  * Otherwise the raw text goes as `name` with **no id**: an invented `value_id`
  * is rejected outright.
+ *
+ * ⚠️ Runs on BLUR and again in `buildChart` — never on change; see
+ * {@link draftChartAttributeValue}.
  */
 export function resolveChartAttributeValue(
   attribute: GridTemplateAttribute,
@@ -259,6 +288,15 @@ export function resolveChartAttributeValue(
  * The `grid_filter` attributes, which ML requires at CHART level and forbids
  * inside rows ("devem ser carregados no nível geral da tabela de medidas e não
  * no nível de rows"). Read-only ones are dropped: ML derives them itself.
+ *
+ * ⚠️ Feed this the **GRID** spec (`?section=grids`), NEVER the domain one.
+ * `grid_filter` names two different sets in the two responses. On the grid spec
+ * — the *ficha técnica da tabela de medidas* — it marks the chart's own general
+ * attributes. On the DOMAIN spec it marks the vocabulary of
+ * `/catalog/charts/search`, a much wider set carrying MODEL, LINE and friends,
+ * and ML answers a chart body containing one of those with
+ * "Attribute MODEL found in chart's attributes is not valid and should not be
+ * present in the chart's general attributes".
  */
 export function extractChartAttributes(specs: unknown): GridTemplateAttribute[] {
   return collectAttributes(specs)
@@ -275,34 +313,76 @@ export function extractChartAttributes(specs: unknown): GridTemplateAttribute[] 
 }
 
 /**
+ * Every attribute a spec declares, as chart-level questions keyed by id — the
+ * RENDERING lookup, independent of which tags it carries.
+ */
+function attributesById(specs: unknown): Map<string, GridTemplateAttribute> {
+  const byId = new Map<string, GridTemplateAttribute>();
+  for (const attr of collectAttributes(specs)) {
+    const id = str(attr.id);
+    // First occurrence wins: an id appears once per spec, and re-reading it from
+    // a later group could only replace richer metadata with poorer.
+    if (id == null || byId.has(id)) continue;
+    byId.set(id, {
+      id,
+      name: str(attr.name) ?? id,
+      values: toSpecValues(attr.values),
+      required: hasTag(attr, 'required'),
+      kind: attributeKind(attr),
+    });
+  }
+  return byId;
+}
+
+/**
  * Every chart-level question the operator answers, deduplicated by attribute id.
  *
- * ⚠️ `extractGridTemplates` and `extractChartAttributes` OVERLAP. ML routinely
- * tags one attribute both ways — GENDER on `MLB-T_SHIRTS` carries
- * `grid_template_required` AND `grid_filter` — so concatenating the two lists
- * yields the same attribute twice. Rendering that produced two form fields with
- * the same React key ("Encountered two children with the same key, `GENDER`"),
- * and building the chart body from it sent the attribute twice.
+ * The two specs play different roles and neither can be dropped:
  *
- * Merging here, once, is what keeps the render and the payload from drifting
- * apart: callers get the union and never concatenate for themselves. The
- * template wins on conflict, since its `required` is what gates the grid fetch;
- * whichever entry actually carried `values`/`name` supplies them.
+ *  - the DOMAIN spec contributes the `grid_template_required` questions — they
+ *    had to be answered to obtain the grid spec at all, and ML expects them in
+ *    the chart body — and it is the RENDERING source for every id it knows;
+ *  - the GRID spec is the AUTHORITY on which OTHER attributes belong here.
+ *    Reading that from the domain spec is what once rendered a "Modelo" field
+ *    and sent ML a MODEL it rejects — see `extractChartAttributes`.
+ *
+ * ⚠️ The metadata must keep coming from the DOMAIN spec. The grid spec echoes
+ * GENDER back as `value_type: 'string'` narrowed to the single chosen value, and
+ * its BRAND carries no `values` at all — take either from there and GENDER
+ * degrades to free text while BRAND loses its whole suggestion list.
+ *
+ * ⚠️ The two lists OVERLAP: ML routinely tags one attribute both ways — GENDER
+ * on `MLB-T_SHIRTS` carries `grid_template_required` AND `grid_filter`. Merging
+ * here, once, is what keeps the render and the payload from drifting apart;
+ * concatenating produced two form fields with the same React key ("Encountered
+ * two children with the same key, `GENDER`") and sent the attribute twice.
+ *
+ * `gridSpecs` is null until every template is answered, so until then the result
+ * is the templates alone.
  */
-export function chartLevelAttributes(specs: unknown): GridTemplateAttribute[] {
+export function chartLevelAttributes(
+  domainSpecs: unknown,
+  gridSpecs: unknown,
+): GridTemplateAttribute[] {
+  const domainById = attributesById(domainSpecs);
   const byId = new Map<string, GridTemplateAttribute>();
   // Templates first, so the questions ML *demands* lead the form.
-  for (const attr of extractGridTemplates(specs)) byId.set(attr.id, attr);
-  for (const attr of extractChartAttributes(specs)) {
-    const template = byId.get(attr.id);
-    if (template == null) {
-      byId.set(attr.id, attr);
+  for (const attr of extractGridTemplates(domainSpecs)) byId.set(attr.id, attr);
+  for (const filter of extractChartAttributes(gridSpecs)) {
+    // A template entry wins over the bare domain attribute (its `required` is
+    // what gates the grid fetch); either beats the grid spec's own echo.
+    const known = byId.get(filter.id) ?? domainById.get(filter.id);
+    if (known == null) {
+      byId.set(filter.id, filter);
       continue;
     }
-    byId.set(attr.id, {
-      ...template,
-      name: template.name !== '' ? template.name : attr.name,
-      values: template.values.length > 0 ? template.values : attr.values,
+    byId.set(filter.id, {
+      ...known,
+      name: known.name !== '' ? known.name : filter.name,
+      values: known.values.length > 0 ? known.values : filter.values,
+      // ML marks BRAND `required` on the grid spec only; a template is always
+      // required, so OR-ing can never relax one.
+      required: known.required || filter.required,
     });
   }
   return [...byId.values()];
@@ -314,9 +394,11 @@ export function chartLevelAttributes(specs: unknown): GridTemplateAttribute[] {
  * Empty ⇒ the domain has no measure-type concept (footwear) and `measure_type`
  * must be omitted from the create body entirely.
  *
- * ⚠️ `MIXED_MEASURE` is NOT offered even though ML supports it: the live
- * Flutter reader's `TipoTabelaDeMedidasML.fromJson` throws on an unknown value,
- * so writing one would crash it during the dual-run.
+ * ⚠️ `MIXED_MEASURE` is NOT offered even though ML supports it. ⚠️ The stated
+ * reason — the legacy reader's `TipoTabelaDeMedidasML.fromJson` throwing on an
+ * unknown value — is void (no dual run; root `CLAUDE.md` rule 8). Kept because
+ * `mlSizeChartWriteSchema` still rejects it and widening the type is a real
+ * feature decision, not a drive-by edit.
  */
 export function detectMeasureTypes(specs: unknown): ChartMeasureType[] {
   const attrs = collectAttributes(specs);

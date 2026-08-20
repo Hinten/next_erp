@@ -64,3 +64,10 @@ export {
 } from './object/resolveStampFields';
 export { useServerTruthSeed, type ServerTruthSeedArgs } from './object/useServerTruthSeed';
 export { useUnsavedChangesGuard } from './object/useUnsavedChangesGuard';
+export {
+  AiReviewModal,
+  AiReviewAtual,
+  type AiReviewColumn,
+  type AiReviewFeedback,
+  type AiReviewModalProps,
+} from './ai/AiReviewModal';

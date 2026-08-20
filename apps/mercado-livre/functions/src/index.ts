@@ -178,6 +178,7 @@ export {
   sweepMercadoLivreStockDaily,
   sweepMercadoLivreStockReconciliacao,
 } from './sweepStock';
+import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * Periodic backstop that pulls new/updated ML orders for each connected account
@@ -196,6 +197,8 @@ export {
  */
 export const importMercadoLivreOrders = onSchedule(
   {
+    // Cloud Tasks/Scheduler do not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
     schedule: 'every 15 minutes',
     timeZone: 'America/Sao_Paulo',
     secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
@@ -262,6 +265,8 @@ export const importMercadoLivreOrders = onSchedule(
  */
 export const reprocessMercadoLivreNotifications = onSchedule(
   {
+    // Cloud Tasks/Scheduler do not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
     schedule: 'every 30 minutes',
     timeZone: 'America/Sao_Paulo',
     secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
@@ -333,6 +338,8 @@ export const reprocessMercadoLivreNotifications = onSchedule(
  */
 export const sweepMercadoLivreMissedFeeds = onSchedule(
   {
+    // Cloud Tasks/Scheduler do not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
     schedule: '0 5 * * *',
     timeZone: 'America/Sao_Paulo',
     secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],

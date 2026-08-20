@@ -43,6 +43,7 @@ function renderForm(
   props: Record<string, unknown> = {},
 ) {
   const onDirtyChange = vi.fn();
+  const onLoadingChange = vi.fn();
   const registerFlush = vi.fn();
   const link = linkFixture(over);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -63,15 +64,16 @@ function renderForm(
       db={{} as Firestore}
       canWrite
       onDirtyChange={onDirtyChange}
+      onLoadingChange={onLoadingChange}
       registerFlush={registerFlush}
       {...props}
     />
   );
-  const { rerender } = render(node(link), { wrapper });
+  const { rerender, unmount } = render(node(link), { wrapper });
   /** Re-render with a NEW link, the way a live snapshot update arrives. */
   const update = (next: Partial<ProdutoMercadoLivreLink>) =>
     rerender(node(linkFixture({ ...over, ...next })));
-  return { onDirtyChange, registerFlush, link, update };
+  return { onDirtyChange, onLoadingChange, registerFlush, link, update, unmount };
 }
 
 function type(label: string | RegExp, value: string) {
@@ -98,6 +100,168 @@ beforeEach(() => {
   h.client = null;
   h.writes = [];
   h.remote = linkFixture();
+});
+
+describe('ListingForm — server errors', () => {
+  it('shows a Mercado Livre rejection ON the control it names', () => {
+    // The whole point of #1109: `ML 400: Validation error` in a banner told the
+    // operator nothing about WHICH field ML refused.
+    renderForm(
+      { id: null },
+      { serverErrors: { title: ['You should include more main features in the title.'] } },
+    );
+    expect(screen.getByText('You should include more main features in the title.')).toBeDefined();
+  });
+
+  it('renders on the categoria and tipo controls too', () => {
+    renderForm(
+      { id: null },
+      {
+        serverErrors: {
+          category_id: ['Is not allowed to post in category MLB1234.'],
+          listing_type_id: ['Tipo indisponível.'],
+        },
+      },
+    );
+    expect(screen.getByText('Is not allowed to post in category MLB1234.')).toBeDefined();
+    expect(screen.getByText('Tipo indisponível.')).toBeDefined();
+  });
+
+  it('leaves the controls clean when the server has nothing to say', () => {
+    renderForm({ id: null });
+    expect(screen.queryByText(/You should include/)).toBeNull();
+  });
+
+  it('is DISPLAYED, not pushed into form state — survives editing and re-render', () => {
+    // Deliberately not `form.setError`: a manual RHF error is wiped by the next
+    // resolver run, so it would vanish on an unrelated blur while ML still
+    // rejects the listing. Typing here re-renders without touching the prop.
+    const { update } = renderForm({ id: null }, { serverErrors: { title: ['ML recusou'] } });
+    type('Título do anúncio', 'Outro título bem mais descritivo');
+    expect(screen.getByText('ML recusou')).toBeDefined();
+    // Nor does a re-render of the LINK drop it: `serverErrors` is its own prop,
+    // derived from `causas`. What clears the message is the next publish
+    // stamping fresh `causas` — which is a change to THIS prop, not to the link
+    // fixture, and is covered by the `splitCausas` tests rather than here.
+    update({ id: null });
+    expect(screen.getByText('ML recusou')).toBeDefined();
+  });
+});
+
+/**
+ * The editor's write actions are held until every listing reports its category
+ * attributes settled. The grid is EMPTY, not absent, while that query is in
+ * flight, so a half-loaded form looks complete and a publish fired from it sends
+ * attributes nobody saw.
+ */
+describe('ListingForm — reports its attribute loading upward', () => {
+  const ATTR = { id: 'BRAND', name: 'Marca', required: false, valueType: 'string', values: [] };
+
+  const lastReport = (spy: ReturnType<typeof vi.fn>): boolean | undefined =>
+    spy.mock.calls.at(-1)?.[1] as boolean | undefined;
+
+  it('reports true while the query is in flight, then false once it lands', async () => {
+    let resolver: (v: unknown) => void = () => {};
+    h.client = {
+      categoriaAtributos: vi.fn(
+        () =>
+          new Promise((res) => {
+            resolver = res;
+          }),
+      ),
+    };
+    const { onLoadingChange } = renderForm({ category_id: 'MLB31447' });
+
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(true));
+    expect(onLoadingChange).toHaveBeenCalledWith('ML-DOC-1', true);
+
+    // The gate must RELEASE — a signal that never clears is a dead button.
+    await act(async () => {
+      resolver({ leaf: true, atributos: [ATTR], omitidos: [] });
+    });
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(false));
+  });
+
+  /**
+   * ⚠️ The two states a naive `isPending` gets wrong. TanStack v5 parks a
+   * DISABLED query at `isPending: true` forever, so reporting that would leave
+   * every write action dead for the whole session.
+   */
+  it('reports false when no category is chosen — the query never runs', async () => {
+    h.client = { categoriaAtributos: vi.fn() };
+    const { onLoadingChange } = renderForm({ category_id: null });
+    await waitFor(() => expect(onLoadingChange).toHaveBeenCalled());
+    expect(lastReport(onLoadingChange)).toBe(false);
+  });
+
+  it('reports false with no client — an unauthenticated session is not loading', async () => {
+    // `h.client` stays null (the harness default), which disables the query
+    // exactly as an unresolved auth session does.
+    const { onLoadingChange } = renderForm({ category_id: 'MLB31447' });
+    await waitFor(() => expect(onLoadingChange).toHaveBeenCalled());
+    expect(lastReport(onLoadingChange)).toBe(false);
+  });
+
+  it('reports false when the metadata call FAILS', async () => {
+    // A failed lookup must not block publishing: AtributosSection's own copy
+    // promises the stored attributes survive it.
+    h.client = { categoriaAtributos: vi.fn(async () => Promise.reject(new Error('boom'))) };
+    const { onLoadingChange } = renderForm({ category_id: 'MLB31447' });
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(false));
+  });
+
+  it('clears its id on unmount, so a removed listing cannot wedge the gate shut', async () => {
+    h.client = {
+      categoriaAtributos: vi.fn(
+        () =>
+          new Promise(() => {
+            /* never settles */
+          }),
+      ),
+    };
+    const { onLoadingChange, unmount } = renderForm({ category_id: 'MLB31447' });
+    await waitFor(() => expect(lastReport(onLoadingChange)).toBe(true));
+
+    unmount();
+    expect(onLoadingChange).toHaveBeenLastCalledWith('ML-DOC-1', false);
+  });
+});
+
+describe('ListingForm — server errors on the attribute grid', () => {
+  function setAttrClient(atributos: unknown[]) {
+    h.client = {
+      categoriaAtributos: vi.fn(async () => ({ leaf: true, atributos, omitidos: [] })),
+    };
+  }
+
+  it('marks the attribute row ML named, reusing the existing per-row channel', async () => {
+    setAttrClient([
+      { id: 'BRAND', name: 'Marca', required: false, valueType: 'string', values: [] },
+    ]);
+    renderForm(
+      { id: null, category_id: 'MLB31447' },
+      { serverErrors: { 'attributes.BRAND': ['The attributes [BRAND] are required.'] } },
+    );
+    await waitFor(() => {
+      expect(screen.getByText('The attributes [BRAND] are required.')).toBeDefined();
+    });
+  });
+
+  it('lets local validation win over a stale server message on the same row', async () => {
+    // A required row the operator has since emptied: what is wrong NOW beats
+    // what ML said about the previous attempt.
+    setAttrClient([
+      { id: 'BRAND', name: 'Marca', required: true, valueType: 'string', values: [] },
+    ]);
+    renderForm(
+      { id: null, category_id: 'MLB31447', attributes: [] },
+      { serverErrors: { 'attributes.BRAND': ['mensagem antiga do ML'] } },
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Este campo é obrigatório')).toBeDefined();
+    });
+    expect(screen.queryByText('mensagem antiga do ML')).toBeNull();
+  });
 });
 
 describe('ListingForm', () => {

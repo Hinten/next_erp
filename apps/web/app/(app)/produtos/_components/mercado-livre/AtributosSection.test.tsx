@@ -69,6 +69,18 @@ describe('AtributosSection', () => {
     expect(screen.getByText(/Os atributos já salvos continuam intactos/)).toBeDefined();
   });
 
+  it('shows the mapped reason when a retry cannot fix the failure', () => {
+    // The no-button case is exactly where the copy has to carry its weight: a
+    // dead credential gives no retry, so a hardcoded "não foi possível
+    // carregar" would leave the operator with nothing to act on.
+    renderSection({
+      failed: true,
+      message: 'Conta Mercado Livre não conectada — reconecte em Canais de venda.',
+    });
+    expect(screen.getByText(/reconecte em Canais de venda/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Tentar novamente/ })).toBeNull();
+  });
+
   it('counts the required attributes still missing a value', () => {
     renderSection({
       attrs: [attr({ id: 'BRAND', required: true }), attr({ id: 'MODEL', required: true })],

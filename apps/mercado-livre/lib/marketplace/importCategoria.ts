@@ -6,10 +6,10 @@
  * walked the tree with one HTTP call PER ancestor (`detalhar_categoria`, chasing
  * `categoriaPaiId` upward); this port collapses that to one call.
  *
- * Dual-run convergence: a `Categoria` doc id is the ML category id (e.g.
- * `MLB1055`), matching Flutter's `Categoria.fromMercadoLivre` — both apps write
- * the SAME doc id, so a doc created by either side is shared. Writes are
- * CREATE-IF-ABSENT ONLY (`docRef.create()`, swallowing ALREADY_EXISTS): an
+ * Legacy-id convergence: a `Categoria` doc id is the ML category id (e.g.
+ * `MLB1055`), matching Flutter's `Categoria.fromMercadoLivre` — the legacy app
+ * wrote the SAME doc id, so a migrated doc and one created here are one and the
+ * same. Writes are CREATE-IF-ABSENT ONLY (`docRef.create()`, swallowing ALREADY_EXISTS): an
  * existing `categorias/<id>` doc — Flutter-written or ERP-curated — is NEVER
  * overwritten by an import.
  *

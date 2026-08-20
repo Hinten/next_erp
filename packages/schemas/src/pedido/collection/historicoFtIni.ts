@@ -14,9 +14,8 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * HistoricoAlteracaoFreteInicial — subcoleção
  * `pedidos/{pedidoId}/historicoFtIni`. The leaf name is the legacy constant
  * `HISTORICO_FRETE_INICIAL_COLLECTION = '<pedidos>/*​/historicoFtIni'`
- * (`.old/packages/pedido/lib/src/models.dart:27`) kept verbatim — the Flutter
- * app still reads these documents on the shared backend, so the abbreviation
- * stays. Mirrors the legacy hand-model `HistoricoAlteracaoFreteInicial`
+ * (`.old/packages/pedido/lib/src/models.dart:27`) kept verbatim — the migrated
+ * corpus is stored under that leaf name, so the abbreviation stays. Mirrors the legacy hand-model `HistoricoAlteracaoFreteInicial`
  * (`.old/packages/pedido/lib/src/models.dart:3889-3934`). One audit row per
  * `freteInicial.estado` transition of the parent pedido.
  *
@@ -24,12 +23,11 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * (`apps/functions/src/pedidos/registrarHistoricoPedido.ts`), which observes every
  * `pedidos/{pedidoId}` write no matter who made it — the Melhor Envio
  * order-status webhook, the `comprar` etiqueta route, `saveCheckout`, the admin
- * pedido reconcile, the Mercado Livre importers, the web Frete tab, and the
- * still-running legacy Flutter app. Nothing appends a row at the call site:
- * that design was tried and rejected (PR #720). A call-site append can only
- * ever cover the writers someone remembered to touch, and Flutter is a writer
- * this repo cannot touch at all — which is precisely how the legacy trail ended
- * up with rows from just two of its writers.
+ * pedido reconcile, the Mercado Livre importers and the web Frete tab. Nothing
+ * appends a row at the call site: that design was tried and rejected (PR #720).
+ * A call-site append can only ever cover the writers someone remembered to
+ * touch — which is precisely how the legacy trail ended up with rows from just
+ * two of its writers.
  *
  * DATETIME UNIT — MILLISECONDS, deliberately diverging from the sibling
  * `historicoEstadoPedido` (µs) and from the repo-wide µs default. Legacy
@@ -42,8 +40,8 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * began the day this shipped. The tolerant `millisSinceEpoch` preprocess fixes
  * DISPLAY (it normalizes ms/µs/ISO/`Date` on read), never the sort key — the
  * unit written to disk is the only thing Firestore sorts on. Same reasoning,
- * same conclusion as `./checkout.ts`, which keeps ms "for byte-for-byte
- * coexistence with the live Flutter app on the shared backend".
+ * same conclusion as `./checkout.ts`, which keeps ms "for byte-for-byte parity"
+ * with the migrated corpus.
  * `historicoEstadoPedido` carries no such constraint — its rows have been µs
  * from the first write and there is no ms cohort to interleave with.
  *

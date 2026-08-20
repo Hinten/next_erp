@@ -7,8 +7,8 @@ import { outerRefSchema } from '../../shared/outerRef';
  * `produtos/{id}/produtoMercadoLivre/{docId}` and
  * `produtos/{id}/variacaoMercadoLivre/{docId}` — in the EXACT old Flutter wire
  * shape (`ProdutoMercadoLivre` / `VariacoesML`, models.dart 761–1684 +
- * models.g.dart): dual-run coexistence means the Flutter app keeps reading the
- * docs the new app writes.
+ * models.g.dart): the migrated corpus is stored in exactly this shape, so it
+ * has to be read and written that way.
  *
  * These are deliberately NOT DomainSchemas and NOT in `ALL_DOMAINS`: the loose
  * pass-through subcollection domains in `subcollections.ts` already cover the
@@ -81,6 +81,88 @@ export const mlAttributeWireSchema = z
   .passthrough();
 export type MlAttributeWire = z.infer<typeof mlAttributeWireSchema>;
 
+/**
+ * Blocking-ness of ONE Mercado Livre validation cause. ML's docs are explicit
+ * (`pt_br/validacoes`): `error` aborts the call and needs the seller to change
+ * the payload, while `warning` is informative — ML already applied the
+ * correction itself and the call may still have succeeded.
+ *
+ * ⚠️ A single 400 body MIXES both. Honouring the distinction is what keeps the
+ * editor from painting a field red for something ML fixed on its own (a
+ * normalized attribute value, an auto-added AGE_GROUP, mandatory ME2 adoption).
+ */
+export const mlCausaTipoSchema = z.enum(['error', 'warning']);
+export type MlCausaTipo = z.infer<typeof mlCausaTipoSchema>;
+
+/** Named members of {@link mlCausaTipoSchema} (`delfrance/prefer-schema-enum`). */
+export const ML_CAUSA_TIPO = {
+  erro: 'error',
+  aviso: 'warning',
+} as const satisfies Record<string, MlCausaTipo>;
+
+/**
+ * One entry of Mercado Livre's `cause[]` on a rejected item write, parsed and
+ * already resolved to the control that can fix it.
+ *
+ * The wire shape is documented — `{department, cause_id, type, code,
+ * references[], message}` (ML developers site, *Guia para produtos →
+ * Validações*). It is NOT universal: a 403 carries no `cause` at all and other
+ * endpoints spell it `causes`, so the parser
+ * (`apps/mercado-livre/lib/marketplace/publishFalhas.ts`) is deliberately
+ * tolerant and this schema keeps every field optional but `mensagem`.
+ */
+export const mlCausaSchema = z
+  .object({
+    /** ML `code` — the dotted validation code (`item.attributes.missing_required`). */
+    code: z.string().nullable().default(null),
+    /** ML `cause_id`. */
+    causaId: z.number().int().nullable().default(null),
+    tipo: mlCausaTipoSchema.nullable().default(null),
+    /** ML `department` — which ML area raised the validation. */
+    departamento: z.string().nullable().default(null),
+    /** ML `message`, verbatim and untranslated. */
+    mensagem: z.string(),
+    /** ML `references[]`, verbatim (`item.attributes[0]`, `shipping.modes`). */
+    referencias: z.array(z.string()).default([]),
+    /**
+     * The listing-form controls `referencias` resolved to — see
+     * {@link ML_CAUSA_CAMPO} and {@link campoAtributo} for the vocabulary.
+     *
+     * ⚠️ Resolved on the SERVER, at the moment of failure, because an ML
+     * reference can be POSITIONAL (`item.attributes[3]`) and the index counts
+     * the payload we sent — which carries the derived attributes (`WEIGHT`,
+     * `SELLER_PACKAGE_*`, `SIZE_GRID_ID`, `SELLER_SKU`) that `publishCore`
+     * strips before the editor ever sees them. Index 3 in the payload is not
+     * index 3 in the form, and only the publisher holds the payload.
+     *
+     * Empty is the SAFE default, not a failure: a cause nothing maps to is
+     * rendered above the form instead of pinned to the wrong control.
+     */
+    campos: z.array(z.string()).default([]),
+  })
+  .passthrough();
+export type MlCausa = z.infer<typeof mlCausaSchema>;
+
+/**
+ * The fixed listing-form keys {@link mlCausaSchema}'s `campos` can carry.
+ * Attribute rows are dynamic — see {@link campoAtributo}.
+ */
+export const ML_CAUSA_CAMPO = {
+  title: 'title',
+  descricao: 'descricao',
+  categoryId: 'category_id',
+  listingTypeId: 'listing_type_id',
+} as const;
+
+/**
+ * An attribute-grid row key. Deliberately the SAME spelling `fieldForPath`
+ * already produces in `apps/web/lib/mercado-livre/publishIssues.ts`, so the
+ * pre-flight (422) and ML-rejection paths address one control vocabulary.
+ */
+export function campoAtributo(id: string): string {
+  return `attributes.${id}`;
+}
+
 /** `produtos/{id}/produtoMercadoLivre/{docId}` — the listing link doc. */
 export const produtoMercadoLivreLinkSchema = z
   .object({
@@ -99,13 +181,23 @@ export const produtoMercadoLivreLinkSchema = z
     status: z.string().nullable().default(null),
     sub_status: z.array(z.string()).nullable().default(null),
 
-    /** ML item id — null until the first successful publish. */
+    /**
+     * ML item id — null until the first successful publish.
+     *
+     * ⚠️ Under {@link isUserProductModel} this is `familyId ?? itemId`, NOT
+     * reliably a family id. Both writers fall back to the item when ML omits
+     * `family_id` (publish, import), and the UPtin takeover sets the flag on an
+     * existing link WITHOUT touching this field — so a migrated listing keeps the
+     * `MLB…` it already had. A reader that assumes one shape hands the other to
+     * the wrong ML endpoint, which answers 400, not 404; `resolveAnuncioUrl` in
+     * apps/mercado-livre is the worked example.
+     */
     id: z.string().nullable().default(null),
     sku: z.string().nullable().default(null),
     // ML plain-text descriptions run to ~50k; the old 10000 cap was a Flutter
     // FORM validator the deployed backend never enforced, so a re-import/re-publish
-    // that spreads an existing Flutter link must not fail strict-write validation
-    // on a long stored descricao (dual-run). Match the real ML limit.
+    // that spreads a migrated link must not fail strict-write validation on a
+    // long stored descricao. Match the real ML limit.
     descricao: z.string().max(50000).nullable().default(null),
 
     site_id: z.string().default('MLB'),
@@ -126,6 +218,20 @@ export const produtoMercadoLivreLinkSchema = z
 
     /** Publish errors — Flutter writes this key even when null. */
     errors: z.array(z.string()).nullable().default(null),
+
+    /**
+     * Structured detail behind {@link errors} — ML's `cause[]` parsed and
+     * resolved to form controls. Additive and nullable, so it is invisible to
+     * the Flutter reader exactly like `status`/`sub_status` above; `errors`
+     * keeps its `string[]` wire type because Flutter reads THAT one.
+     *
+     * ⚠️ Cleared EVERYWHERE `errors` is cleared (publish success, the stock
+     * writeback, `itemsStatusSync`, `reverificarAnuncio`, import). A surviving
+     * entry paints a red field on a listing that is already healthy — which is
+     * worse than no detail at all, because it is indistinguishable from a real
+     * rejection.
+     */
+    causas: z.array(mlCausaSchema).nullable().default(null),
 
     ultimaModificacao: millisSinceEpoch().nullable().default(null),
     dataCadastro: millisSinceEpoch().nullable().default(null),

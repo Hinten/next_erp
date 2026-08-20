@@ -3,6 +3,7 @@
 import { Autocomplete, Checkbox, Group, Select, Stack, Text, TextInput } from '@mantine/core';
 
 import {
+  draftTypedValue,
   isNaRow,
   isNumericAttr,
   naRow,
@@ -34,6 +35,12 @@ export interface AttributeFieldProps {
  *    a hard Select would refuse legitimate input.
  *  - **A multivalued `list` renders as a single `Select` anyway** — see the note
  *    on the hint below.
+ *
+ * ⚠️ The free-text branch keeps the operator's RAW draft while they type and only
+ * resolves it on blur. Resolving on change rewrites the text under the caret —
+ * a trailing space was trimmed away, and text matching a known value snapped
+ * back to that value's canonical name — which between them made a space
+ * impossible to type and `Nike Air` impossible to enter at all.
  */
 export function AttributeField({ attr, row, onChange, disabled, error }: AttributeFieldProps) {
   const kind = widgetKind(attr);
@@ -41,6 +48,12 @@ export function AttributeField({ attr, row, onChange, disabled, error }: Attribu
   const label = attr.name ?? attr.id;
 
   function setValue(next: AttrRow) {
+    // ⚠️ Only report an ACTUAL change. `onBlur` fires this on every focus loss,
+    // and the parent turns any report into a new rows array, which `ListingForm`
+    // reads as "the operator edited the attributes" — so an unconditional write
+    // would raise unsaved changes on a listing nobody touched, just from tabbing
+    // past a field.
+    if (sameRow(next, row)) return;
     onChange(next);
   }
 
@@ -83,11 +96,26 @@ export function AttributeField({ attr, row, onChange, disabled, error }: Attribu
           // An Autocomplete reports the LABEL, both when typed and when an
           // option is clicked — which is exactly what `resolveTypedValue`
           // expects, since it matches on the value NAME (accent- and
-          // case-insensitively) and falls back to free text.
+          // case-insensitively) and falls back to free text. That resolution
+          // waits for blur; until then the draft is stored verbatim.
           data={attr.values.map((v) => v.name ?? '').filter((n) => n !== '')}
           value={row.value_name ?? ''}
           onChange={(typed) =>
-            setValue(resolveTypedValue(attr, isNumericAttr(attr) ? digitsOnly(typed) : typed))
+            setValue(draftTypedValue(attr, isNumericAttr(attr) ? digitsOnly(typed) : typed))
+          }
+          // ⚠️ Resolve what the INPUT holds, not what the `row` prop holds. The
+          // two agree only once React has re-rendered with the last keystroke,
+          // and blur is a separate event from change — reading the prop makes
+          // this handler's correctness depend on that flush having happened, and
+          // a stale read here overwrites the newest character with an older
+          // resolution. The DOM node is the one source that is never behind.
+          onBlur={(e) =>
+            setValue(
+              resolveTypedValue(
+                attr,
+                isNumericAttr(attr) ? digitsOnly(e.currentTarget.value) : e.currentTarget.value,
+              ),
+            )
           }
           maxLength={attr.valueMaxLength ?? undefined}
           inputMode={isNumericAttr(attr) ? 'numeric' : undefined}
@@ -134,6 +162,15 @@ export function AttributeField({ attr, row, onChange, disabled, error }: Attribu
         </Group>
       )}
     </Stack>
+  );
+}
+
+function sameRow(a: AttrRow, b: AttrRow): boolean {
+  return (
+    a.id === b.id &&
+    a.value_id === b.value_id &&
+    a.value_name === b.value_name &&
+    a.unit_id === b.unit_id
   );
 }
 

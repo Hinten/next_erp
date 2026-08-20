@@ -1,10 +1,20 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Alert, Badge, Group, Loader, Paper, SimpleGrid, Text } from '@mantine/core';
 
 import type { AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
+import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { AttributeField } from './AttributeField';
+
+/**
+ * Wording for a failure that is NOT a Mercado Livre one — exported so
+ * `ListingForm` can hand it to `describeMercadoLivreFailure` as the `unknown`
+ * fallback, and the string lives in exactly one place.
+ */
+export const ATRIBUTOS_LOAD_FAILED_MESSAGE =
+  'Não foi possível carregar os atributos desta categoria. Os atributos já salvos continuam intactos.';
 
 /**
  * Alternating cell background, by position in the grid.
@@ -30,7 +40,35 @@ export interface AtributosSectionProps {
   leaf: boolean;
   loading: boolean;
   failed: boolean;
+  /**
+   * The mapped failure copy. Defaults to the generic wording, so a failure that
+   * is not a Mercado Livre one reads exactly as it did before.
+   *
+   * ⚠️ Load-bearing together with `onRetry`. A non-retryable failure gets NO
+   * button by design, so the message is the only thing left telling the operator
+   * what to do — a hardcoded string there means `409 ML_REAUTH_REQUIRED` renders
+   * as "não foi possível carregar" with no button and no hint that the fix is to
+   * reconnect the account, which is the dead end this whole surface removes.
+   */
+  message?: string;
+  /**
+   * Re-runs the attribute load. Omitted when the failure is one a retry cannot
+   * fix — without it the whole grid stayed replaced by the alert until the
+   * operator switched category away and back, or reloaded the page.
+   */
+  onRetry?: () => void;
+  retrying?: boolean;
   disabled?: boolean;
+  /**
+   * The "Preencher com IA" trigger, rendered in this section's header.
+   *
+   * ⚠️ Passed IN rather than built here. The call needs `produtoId`,
+   * `integracaoId` and the form's current category — all of which live in
+   * `ListingForm` — and this component is otherwise a pure function of its
+   * props. It sits in the header because that is the row above the grid the
+   * suggestions actually fill.
+   */
+  acaoIa?: ReactNode;
 }
 
 /**
@@ -57,7 +95,11 @@ export function AtributosSection({
   leaf,
   loading,
   failed,
+  message = ATRIBUTOS_LOAD_FAILED_MESSAGE,
+  onRetry,
+  retrying,
   disabled,
+  acaoIa,
 }: AtributosSectionProps) {
   const rowById = new Map(rows.map((r) => [r.id, r]));
   const pendingRequired = attrs.filter((a) => a.required && errors[a.id] != null).length;
@@ -79,12 +121,7 @@ export function AtributosSection({
   }
 
   if (failed) {
-    return (
-      <Alert color="red" variant="light">
-        Não foi possível carregar os atributos desta categoria. Os atributos já salvos continuam
-        intactos.
-      </Alert>
-    );
+    return <RetryAlert message={message} onRetry={onRetry} retrying={retrying} />;
   }
 
   if (!leaf) {
@@ -109,18 +146,21 @@ export function AtributosSection({
 
   return (
     <>
-      <Group gap="xs">
-        <Text size="sm" fw={600}>
-          Atributos
-        </Text>
-        <Badge size="sm" variant="light">
-          {attrs.length}
-        </Badge>
-        {pendingRequired > 0 && (
-          <Badge size="sm" color="red" variant="light">
-            {pendingRequired} obrigatório(s) sem valor
+      <Group gap="xs" justify="space-between" wrap="nowrap">
+        <Group gap="xs">
+          <Text size="sm" fw={600}>
+            Atributos
+          </Text>
+          <Badge size="sm" variant="light">
+            {attrs.length}
           </Badge>
-        )}
+          {pendingRequired > 0 && (
+            <Badge size="sm" color="red" variant="light">
+              {pendingRequired} obrigatório(s) sem valor
+            </Badge>
+          )}
+        </Group>
+        {acaoIa}
       </Group>
       <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="sm" verticalSpacing="xs">
         {attrs.map((attr, index) => (

@@ -98,7 +98,8 @@ pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa -- --projec
 `--apply` is **rejected**, not ignored. Deciding what a stock counter _should_ be
 is a decision about real inventory, and per root `CLAUDE.md` rule 8 a bulk write
 against production belongs in the coordinated cutover window — a correction run
-before it is partially undone by the still-live Flutter writer anyway.
+before it is superseded by the legacy app's own later writes to the source
+project anyway.
 
 If the report finds rows that need correcting, that correction is its own
 `needs-migration-window` issue.

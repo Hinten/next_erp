@@ -560,9 +560,8 @@ describe('shipmentToEnderecoFields', () => {
 
 /**
  * GOLDEN VECTORS — hand-computed, byte-for-byte fixed. `makeEnderecoId` ports
- * `Endereco.generateUid` (models.dart:841-866), and a Flutter-written endereço
- * only resolves to the same doc id during dual-run while every hashed value
- * matches. Each 40-char hex is the lowercase SHA-1 of the documented UTF-8
+ * `Endereco.generateUid` (models.dart:841-866), and a migrated endereço only
+ * resolves to the same doc id while every hashed value matches. Each 40-char hex is the lowercase SHA-1 of the documented UTF-8
  * preimage. Recompute any of them by pasting that preimage as the argument —
  * runs as-is in both bash and PowerShell (the inner quotes must stay single;
  * PowerShell strips double ones and `require` then picks up Node's WebCrypto
@@ -597,9 +596,9 @@ const FULL_WITH_COMPLEMENTO = 'e9628f9968f54ac0c1a6f3270e73bff09134a30e';
 // `both mappers now agree` case below.
 const UNIFIED_FALLBACKS = '303b2fa905f645c8ca70c704df4bea5c27d3b971';
 // sha1("enderecoNão informadoS/NNão informadoNão informado01310100NAO INFORMADASP")
-// — what the shipment path produced BEFORE #789 unified it, i.e. what the
-// still-running Flutter writer produces for this payload. Pinned as a
-// `.not.toBe` so the accepted dual-run fork stays visible, the same way
+// — what the shipment path produced BEFORE #789 unified it, i.e. what the legacy
+// writer produced for this payload and what the migrated corpus is keyed on.
+// Pinned as a `.not.toBe` so the accepted fork stays visible, the same way
 // LEGACY_*_NUMERO below pin theirs.
 const LEGACY_SHIPMENT_FALLBACKS = 'f1726b875c77521560406cbb8b6a9d032367788b';
 // sha1("enderecoNAO INFORMADOS/NSEM BAIRRO01310100NAO INFORMADAAC") — estado absent
@@ -719,10 +718,10 @@ describe('makeEnderecoId — mapper fallback vectors', () => {
     expect(makeEnderecoId(fields)).toBe(UNIFIED_FALLBACKS);
   });
 
-  it('the shipment fallback address no longer hashes to what Flutter writes for it', () => {
-    // The accepted dual-run cost of the unification: the still-running Flutter
-    // writer keys this same payload on the pre-#789 digest, so the port creates a
-    // SECOND endereço rather than recovering that one. `ensureEndereco` creates
+  it('the shipment fallback address no longer hashes to the legacy digest', () => {
+    // The accepted cost of the unification: the migrated corpus keys this same
+    // payload on the pre-#789 digest, so the port creates a SECOND endereço
+    // rather than recovering that one. `ensureEndereco` creates
     // without overwriting, so it is a duplicate document, never a lost one.
     expect(makeEnderecoId(shipmentFallbackFields())).not.toBe(LEGACY_SHIPMENT_FALLBACKS);
   });
@@ -743,7 +742,7 @@ describe('makeEnderecoId — mapper fallback vectors', () => {
     expect(makeEnderecoId(fields)).toBe(BILLING_FALLBACKS_UF_AC);
   });
 
-  it("numero's 'S/N' is a KNOWN, accepted dual-run fork — not legacy's digest", () => {
+  it("numero's 'S/N' is a KNOWN, accepted fork — not legacy's digest", () => {
     // orderCliente.ts:55-59: legacy's numero fallback was the 13-char
     // "NAO INFORMADO" / "Não informado", which overflows enderecoSchema.numero's
     // max(10), so this port substitutes 'S/N'. The two constants are what legacy
@@ -780,8 +779,8 @@ describe('ensureEndereco', () => {
   });
 
   it('recovers a PRE-EXISTING doc instead of duplicating it', async () => {
-    // The real dual-run case: the doc was written earlier — by a prior import or
-    // by the still-running Flutter app — so unlike the idempotency test above,
+    // The real inherited case: the doc was written earlier — by a prior import
+    // or by the legacy app, arriving with the migration — so unlike above,
     // not both writes happen here. `create` must hit ALREADY_EXISTS and return.
     const fake = new FakeDb();
     const id = makeEnderecoId(fields);

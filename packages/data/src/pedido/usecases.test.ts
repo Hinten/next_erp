@@ -37,8 +37,11 @@ const VALUES = {
   error: 'boom',
 } as unknown as Pedido;
 
-const ALL_CACHES = [
-  'valorCobrado',
+/** The caches `buildPedidoPatch` still persists — `valorCobrado` alone (#796). */
+const ALL_CACHES = ['valorCobrado'];
+
+/** Removed from `pedidoSchema`; still present on every migrated pedido. */
+const CACHES_REMOVIDOS = [
   'valorCusto',
   'valorFreteInicial',
   'custoFreteInicial',
@@ -186,6 +189,20 @@ describe('remotelyChangedFields', () => {
     for (const field of pedidoMeta.serverOwnedFields ?? []) {
       expect(isIgnoredForConcurrency(field)).toBe(true);
     }
+  });
+
+  it('ignores the removed money caches so they cannot raise a phantom conflict', () => {
+    // #796. These five are gone from `pedidoSchema`, but `pedidoSchema` is
+    // `.passthrough()` and every migrated pedido carries them — the legacy
+    // `Pedido.factory` recomputed them on each integral save — so they keep
+    // appearing in the raw diff with NOBODY on this side writing them. Without the ignore the operator gets a
+    // conflict modal naming a field that is not on their screen.
+    for (const field of CACHES_REMOVIDOS) {
+      expect(isIgnoredForConcurrency(field)).toBe(true);
+    }
+    const baseline = { numero: 'A', valorFreteInicial: 7, custoFreteInicial: 5 };
+    const current = { numero: 'A', valorFreteInicial: 12.5, custoFreteInicial: 9 };
+    expect(remotelyChangedFields(baseline, current)).toEqual([]);
   });
 });
 

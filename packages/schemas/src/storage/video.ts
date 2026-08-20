@@ -21,7 +21,7 @@ export const VIDEO_FORMATO = {
  *
  * Only `arquivoOuterRef` is required; the rest are nullable/defaulted so a
  * Flutter-written video — or a slightly-off one — never breaks the whole Produto
- * parse. `.passthrough()` keeps any extra fields the Flutter app may write.
+ * parse. `.passthrough()` keeps any extra fields the migrated corpus carries.
  */
 export const videoSchema = z
   .object({

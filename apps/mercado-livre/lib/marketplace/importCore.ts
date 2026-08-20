@@ -23,6 +23,7 @@ import type {
 } from '@delfrance/integrations-mercado-livre';
 import { CONDICAO_PRODUTO, makeEstoqueUid, reservaEfetiva, toOuterRef } from '@delfrance/schemas';
 import type { TaxonomiaResolution } from './taxonomiaCore';
+import { clearFalha } from './publishFalhas';
 
 /** Import blocked by unusable item data — maps to HTTP 422. */
 export class MercadoLivreImportError extends Error {
@@ -127,7 +128,7 @@ export interface ImportPlan {
   estoque: { docId: string; data: Record<string, unknown> } | null;
   /** The `produtoMercadoLivre` link doc (full set, spread-existing). */
   link: Record<string, unknown>;
-  /** ML item id, for the dual-run `arrayUnion` denorm (applied by IO). */
+  /** ML item id, for the legacy `arrayUnion` denorm (applied by IO). */
   denormItemId: string;
 }
 
@@ -208,7 +209,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
       },
     };
   } else {
-    // Update: fill-nulls only — never overwrite existing ERP data (dual-run).
+    // Update: fill-nulls only — never overwrite existing ERP data (legacy parity).
     // Prices are NOT in this patch (see precosOps) so the legacy precos map is
     // never re-validated. Every field here fills only a currently-null value.
     const patch: Record<string, unknown> = { ultimaModificacao: now };
@@ -318,7 +319,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     isUserProductModel: mapped.isUserProductModel,
     video_id: mapped.videoId,
     attributes: mapped.attributes,
-    errors: [],
+    ...clearFalha(),
     ultimaModificacao: now,
     dataCadastro: (existingLink.dataCadastro as number | undefined) ?? now,
   };
@@ -365,7 +366,7 @@ function lastSegment(ref: string): string {
  * OWN MLB item — there's no numeric ML "variation id" the way `variations[]`
  * has one. The `up` flag swaps only the `variacaoMercadoLivre` link's identity
  * fields (`itemId` set to the member's MLB id, numeric `id` never stamped) and
- * adds the dual-run `relevantData.isUserProductModel` marker to the denorm
+ * adds the legacy `relevantData.isUserProductModel` marker to the denorm
  * entry — every other field (sku, nome, precos, dims/categoria, taxonomy) is
  * assembled identically to the #520 `variations[]` path.
  */
@@ -421,7 +422,7 @@ export interface VariationChildPlan {
   /** The `variacaoMercadoLivre` link doc (full set, spread-existing). */
   link: Record<string, unknown>;
   /**
-   * Dual-run `marketplace`/`marketplaceIds` denorm entry (applied by IO).
+   * Legacy `marketplace`/`marketplaceIds` denorm entry (applied by IO).
    * `relevantData` is set ONLY in User-Products mode (#521) — the parity
    * marker (`isUserProductModel: true`) that must byte-match Flutter's
    * `ProdMarketplace.relevantData` (`includeIfNull: false`, so it's simply

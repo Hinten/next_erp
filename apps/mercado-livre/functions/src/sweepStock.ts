@@ -11,6 +11,7 @@ import {
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';
 import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
+import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * The two ML stock-sync sweep schedules (Step 10 PR C) — thin `onSchedule`
@@ -57,6 +58,8 @@ function sweepScheduleOptions(schedule: string): ScheduleOptions {
   return {
     schedule,
     timeZone: 'America/Sao_Paulo',
+    // Cloud Scheduler does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
     secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
     timeoutSeconds: 540,
   };
