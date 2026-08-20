@@ -256,7 +256,11 @@ unifying them needs a runtime `firebase-admin/functions` import.
 7. **Functions** — `apps/<canal>/functions/src/`: the `onTaskDispatched`
    consumer (name === queue constant; `retryConfig.maxAttempts` === `TASK_MAX_ATTEMPTS`)
    and an `onSchedule('every 30 minutes')` sweep that logs `processed`/`outcomes`/
-   `errors`. Add `firebase.<canal>.deploy.json`.
+   `errors`. Add `firebase.<canal>.deploy.json`. **Copy `src/tasksInvoker.ts`
+   verbatim from another codebase, spread `...tasksInvokerOptions()` into the
+   options, and add the `process.env.TASKS_INVOKER_SA` `define` to `build.mjs`**
+   (#1133) — `packages/config-eslint/rules/tasks-invoker-inventory.test.js` reds
+   CI until all three are done.
 8. **Docs** — the app's `CLAUDE.md`, and its `functions/DEPLOY.md` with the
    one-time IAM grant. **Three roles, not two**: `roles/cloudtasks.enqueuer` and
    `roles/iam.serviceAccountUser` cover ENQUEUING, and `roles/run.invoker` on each

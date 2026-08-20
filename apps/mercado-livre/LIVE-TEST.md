@@ -82,6 +82,13 @@ the live-test path for stock is the synchronous `/enviar-estoque` route.
 - [ ] App Hosting runtime SA has `roles/cloudtasks.enqueuer` **and**
       `roles/iam.serviceAccountUser` (`functions/DEPLOY.md`). Without them every enqueue
       fails and the whole channel silently degrades to sweep-only mode.
+- [ ] **`roles/run.invoker` on each of the five task functions** — the DISPATCH leg.
+      Deployed with `TASKS_INVOKER_SA` set (#1133) this is automatic; verify with
+      `gcloud run services get-iam-policy processMercadoLivreNotification --region=us-east1`.
+      ⚠️ Missing, it writes NO failure document: the receiver logs `enfileirado`, the
+      task 403s at the function, and an empty `notificacoesMercadoLivre` reads as health.
+      The list must also carry the **functions** runtime SA — the sweeps and every
+      self-continuation enqueue as that identity, not the App Hosting one.
 - [ ] `gcloud tasks queues describe processMercadoLivreNotification --location=<region>`
       returns a queue.
 
