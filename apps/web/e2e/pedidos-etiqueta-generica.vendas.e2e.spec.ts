@@ -86,6 +86,13 @@ test.describe.serial('Pedidos — etiqueta genérica (row action)', () => {
     // Exactly one print-agent POST, routed as an etiqueta-size job — the
     // stub 200 pins the print path (never the download fallback).
     await expect.poll(() => stubs.printJobs.length, { timeout: 30_000 }).toBe(1);
-    expect(stubs.printJobs[0]!.tamanhoFolhaImpressao).toBe('etq');
+    const job = stubs.printJobs[0]!;
+    expect(job.tamanhoFolhaImpressao).toBe('etq');
+    // The agent routes on contentType, and the label is a PDF built in the
+    // browser — so this pins the whole render, not just that a POST happened.
+    expect(job.contentType).toBe('application/pdf');
+    expect(job.docName).toBe(`etiqueta-${fixtures.motPedidoId}.pdf`);
+    // A real PDF, not an empty blob: %PDF- is `JVBERi0` once base64-encoded.
+    expect(String(job.docDataBase64)).toMatch(/^JVBERi0/);
   });
 });

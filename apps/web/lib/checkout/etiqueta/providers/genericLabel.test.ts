@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The provider builds the model + renders the PDF through the generic-label
-// module; mock the whole barrel so the test never touches Firestore or the DOM.
+// module; mock the whole barrel so the test never touches Firestore or jsPDF.
 const { buildModelMock, renderMock } = vi.hoisted(() => ({
   buildModelMock: vi.fn(),
   renderMock: vi.fn(),
 }));
 vi.mock('@/lib/etiqueta-generica', () => ({
   buildEtiquetaGenericaModel: buildModelMock,
-  renderAndExportEtiquetaGenericaPdf: renderMock,
+  renderEtiquetaGenericaPdf: renderMock,
 }));
 
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';

@@ -1,7 +1,4 @@
-import {
-  buildEtiquetaGenericaModel,
-  renderAndExportEtiquetaGenericaPdf,
-} from '@/lib/etiqueta-generica';
+import { buildEtiquetaGenericaModel, renderEtiquetaGenericaPdf } from '@/lib/etiqueta-generica';
 
 import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput } from '../types';
 
@@ -32,7 +29,7 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
 
     try {
       const model = await buildEtiquetaGenericaModel(db, pedido, pedidoId, frete, intFrete);
-      const blob = await renderAndExportEtiquetaGenericaPdf(model);
+      const blob = await renderEtiquetaGenericaPdf(model);
       const fileName = `etiqueta-${pedido.numero ?? pedidoId}.pdf`;
 
       // A print (agent up) or a download (agent down) both DELIVER the label to
@@ -40,7 +37,7 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
       await deps.printJob(blob, { fileName, contentType: 'application/pdf', tamanho: 'etq' });
       return { status: 'printed' };
     } catch (err) {
-      // The Firestore derefs and the html-to-image / jsPDF render throw plain
+      // The Firestore derefs and the jsPDF render throw plain
       // Errors; keep the post-save contract best-effort — surface a toast and
       // return an `error` outcome instead of rejecting the caller (the checkout
       // is already committed). A genuinely non-Error still propagates.
