@@ -267,7 +267,14 @@ export const orderItemSchema = z
           .passthrough(),
       )
       .nullable()
-      .optional(),
+      .optional()
+      // ⚠️ `.catch(null)` because this field has NO readers yet. Every other
+      // field on this line is load-bearing and rightly fails the parse when ML
+      // sends a shape we cannot use; this one is documentation until #1177, so
+      // an unexpected shape must not fail `orderItemSchema` → `orderSchema` →
+      // the whole ORDER IMPORT for a value nobody consumes. Same idiom the
+      // notification schema below uses, and for the same reason.
+      .catch(null),
   })
   .passthrough();
 
