@@ -82,9 +82,11 @@ export type ItemCheckoutPedido = z.infer<typeof itemCheckoutPedidoSchema>;
  * ¹ The legacy Flutter writer OMITS `title`/`obs`/`ehDoFreteInicial` when null
  *   (`@JsonKey(includeIfNull:false)`); the new-app writer sets them explicitly.
  *   The tolerance that matters runs the OTHER way now: no Flutter reader is left
- *   to be lenient about what we write (rule 8), but every migrated checkout doc
- *   reaches us MISSING those three keys, so all three stay nullable-with-default
- *   and this schema must parse their absence. The base-model
+ *   to be lenient about what we write (rule 8), but a migrated checkout doc whose
+ *   values WERE null reaches us missing those keys entirely — so all three stay
+ *   nullable-with-default and this schema must parse their absence. (Not every
+ *   doc: one written with a real `title` carries the key, exactly as the
+ *   omit-when-null rule above implies.) The base-model
  *   keys `docId`/`createTime`/`updateTime`/`readTime` (also omit-when-null) are
  *   NOT part of this body schema; `.passthrough()` keeps them on read.
  *
