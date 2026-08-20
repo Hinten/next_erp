@@ -31,8 +31,19 @@
 /** The label that makes the standing issues findable — by this script and by a human. */
 export const ALERT_LABEL = 'main-red';
 
-/** `main` is broken right now. */
-const RED = new Set(['failure', 'timed_out']);
+/**
+ * `main` is broken right now.
+ *
+ * ⚠️ `startup_failure` is in here deliberately, and it is the one entry that is
+ * not a test going red: GitHub records it when the run never starts at all —
+ * invalid workflow YAML, an unresolvable `uses:`, a bad reusable-workflow
+ * reference. That is a merge that broke the trunk in the most literal way
+ * available, so it must not fall through to "proves nothing". Whether
+ * `workflow_run: types: [completed]` even fires for such a run is not something
+ * this repo can establish without breaking `main` on purpose; if it does not,
+ * this entry is an inert no-op, which is the right direction to be wrong in.
+ */
+const RED = new Set(['failure', 'timed_out', 'startup_failure']);
 
 /** `main` is verified good right now. */
 const GREEN = new Set(['success']);
@@ -109,6 +120,52 @@ export function failingSteps(jobs) {
     });
   }
   return out;
+}
+
+/**
+ * Suite jobs whose failure means a THIRD PARTY was down, not that the trunk broke.
+ *
+ * ⚠️ Not hypothetical. `ci-nfe.yml`'s `changes` job short-circuits on every non-PR
+ * event and passes `true` for the LIVE verdict too, so every path-matching merge
+ * to `main` runs `nfe-live` against SEFAZ homologação — the endpoint this repo
+ * documents as rate-limiting (`cStat=656`) and treats as flaky enough to deserve
+ * its own alerting workflow. `ci-freight.yml` has the same shape (dormant today:
+ * `FREIGHT_CI_LIVE_ENABLED` is unset, so `freight-live` skips rather than fails).
+ * A ten-minute SEFAZ outage would otherwise open `🚨 main is red — CI — NFe`
+ * about a trunk that is fine — the same noise class the `cancelled` carve-out
+ * exists to prevent, and the one that will actually recur.
+ *
+ * Pinned against the lane manifests by assertion 15 in `ci-lane-gates.test.js`:
+ * this set must equal every LANES job whose class carries a `live_` guard.
+ */
+export const THIRD_PARTY_JOBS = new Set([
+  'NFe live (SEFAZ homologacao + staging Firestore)',
+  'Freight live (Melhor Envio sandbox)',
+]);
+
+/**
+ * Jobs that report on other jobs rather than running anything themselves.
+ *
+ * ⚠️ Load-bearing for `onlyThirdPartyFailed`. When `nfe-live` fails the lane GATE
+ * fails with it — its verdict loop sets `RED` for any job concluding `failure` and
+ * exits 1 — so the failing-job list reads `[NFe live …, CI gate (nfe)]`, and a
+ * naive "every failing job is third-party" test would answer false and alert
+ * anyway. Matching by shape is safe because assertions 5 and 9 pin every gate and
+ * scope name.
+ */
+export const DERIVED_JOB = /^(?:CI|E2E) (?:gate|scope) \(/;
+
+/**
+ * True when a third party was down and nothing of ours failed.
+ *
+ * ⚠️ The `length > 0` guard is not decoration: `[].every(…)` is `true`, so without
+ * it a run that failed while reporting NO failing job — which is exactly what a
+ * `startup_failure` looks like — would be read as a SEFAZ outage and dropped.
+ * Anything this function cannot positively explain has to alert.
+ */
+export function onlyThirdPartyFailed(failing) {
+  const substantive = failing.filter((f) => !DERIVED_JOB.test(f.job));
+  return substantive.length > 0 && substantive.every((f) => THIRD_PARTY_JOBS.has(f.job));
 }
 
 /** What one failure looks like — used as the issue body AND as each follow-up comment. */
@@ -188,20 +245,38 @@ async function findStandingIssue({ github, owner, repo, title }) {
   return data.find((i) => i.title === title && !i.pull_request) ?? null;
 }
 
-/** Creating an issue with an unknown label fails, so the label has to exist first. */
-async function ensureLabel({ github, owner, repo }) {
-  try {
-    await github.rest.issues.getLabel({ owner, repo, name: ALERT_LABEL });
-  } catch (err) {
-    // Narrow, per CLAUDE.md rule 6: a missing label is ours to fix, nothing else is.
-    if (err?.status !== 404) throw err;
-    await github.rest.issues.createLabel({
-      owner,
-      repo,
-      name: ALERT_LABEL,
-      color: 'b60205',
-      description: 'The trunk is failing this workflow — opened and closed by main-red-alert.yml',
-    });
+/**
+ * The labels every standing tracker carries. `ci` already exists on this repo;
+ * `main-red` does not, and is created on the first alert.
+ */
+const ISSUE_LABELS = [
+  { name: 'ci', color: '1d76db', description: 'Continuous integration' },
+  {
+    name: ALERT_LABEL,
+    color: 'b60205',
+    description: 'The trunk is failing this workflow — opened and closed by main-red-alert.yml',
+  },
+];
+
+/**
+ * Make sure every label exists before the issue is created.
+ *
+ * ⚠️ BOTH labels go through here, not just `main-red`. Whether `POST /issues`
+ * auto-creates an unknown label is exactly the sort of thing that is cheap to make
+ * irrelevant and expensive to be wrong about: if it does not, an unguarded second
+ * label is a 422 on the FIRST alert — the one run that has to work — failing
+ * closed into the same "reported to nobody" outcome this whole file removes.
+ * `getLabel` against a label that exists is one cheap read.
+ */
+async function ensureLabels({ github, owner, repo }) {
+  for (const label of ISSUE_LABELS) {
+    try {
+      await github.rest.issues.getLabel({ owner, repo, name: label.name });
+    } catch (err) {
+      // Narrow, per CLAUDE.md rule 6: a missing label is ours to fix, nothing else is.
+      if (err?.status !== 404) throw err;
+      await github.rest.issues.createLabel({ owner, repo, ...label });
+    }
   }
 }
 
@@ -214,6 +289,15 @@ async function openOrUpdateIssue({ github, core, owner, repo, run, title, existi
     per_page: 100,
   });
   const failing = failingSteps(jobs.jobs);
+
+  if (onlyThirdPartyFailed(failing)) {
+    const reason =
+      `only third-party suites failed (${failing.map((f) => f.job).join(', ')}) — ` +
+      'the trunk is not implicated';
+    core.notice(`${title}: not opened — ${reason}`);
+    return { action: 'skip', reason };
+  }
+
   const body = trackerBody({ run, failing });
 
   if (existing) {
@@ -230,13 +314,13 @@ async function openOrUpdateIssue({ github, core, owner, repo, run, title, existi
     return { action: 'alert', issue: existing.number, created: false };
   }
 
-  await ensureLabel({ github, owner, repo });
+  await ensureLabels({ github, owner, repo });
   const { data: created } = await github.rest.issues.create({
     owner,
     repo,
     title,
     body,
-    labels: ['ci', ALERT_LABEL],
+    labels: ISSUE_LABELS.map((l) => l.name),
   });
   core.warning(`main is red — opened #${created.number}: ${title}`);
   return { action: 'alert', issue: created.number, created: true };

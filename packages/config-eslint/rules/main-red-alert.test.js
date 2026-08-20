@@ -5,6 +5,7 @@ import {
   decide,
   failingSteps,
   markerFor,
+  onlyThirdPartyFailed,
   recordedRunNumber,
   run,
   titleFor,
@@ -32,7 +33,7 @@ import {
  */
 const CONTEXT = { repo: { owner: 'Hinten', repo: 'next_erp' } };
 
-const core = { info: () => {}, warning: () => {}, setFailed: () => {} };
+const core = { info: () => {}, notice: () => {}, warning: () => {}, setFailed: () => {} };
 
 /** The real shape, trimmed to the fields the alerter reads. */
 const workflowRun = (over = {}) => ({
@@ -61,6 +62,33 @@ const JOBS = [
   },
   { name: 'Post failure logs on PR', conclusion: 'skipped', steps: [] },
 ];
+
+/**
+ * `ci-nfe.yml` when SEFAZ is down, which is a real shape and not a contrived one:
+ * the `changes` job short-circuits on non-PR events and runs `nfe-live` on every
+ * path-matching merge to `main`, and when it fails the GATE reds with it.
+ */
+const NFE_SEFAZ_OUTAGE_JOBS = [
+  { name: 'CI scope (nfe)', conclusion: 'success', steps: [] },
+  { name: 'NFe offline (lint + typecheck + unit + build)', conclusion: 'success', steps: [] },
+  {
+    name: 'NFe live (SEFAZ homologacao + staging Firestore)',
+    conclusion: 'failure',
+    steps: [{ name: 'SEFAZ-SP HOM status gate', conclusion: 'failure' }],
+  },
+  {
+    name: 'CI gate (nfe)',
+    conclusion: 'failure',
+    steps: [{ name: 'Verdict', conclusion: 'failure' }],
+  },
+];
+
+const failedNfeOffline = () =>
+  NFE_SEFAZ_OUTAGE_JOBS.map((j) =>
+    j.name.startsWith('NFe offline')
+      ? { ...j, conclusion: 'failure', steps: [{ name: 'Test', conclusion: 'failure' }] }
+      : j,
+  );
 
 /**
  * A recording Octokit stand-in. Every write is captured, so a test can assert on
@@ -111,6 +139,11 @@ describe('main-red-alert: the verdict', () => {
   it.each([
     ['failure', 'alert'],
     ['timed_out', 'alert'],
+    // The run never started — invalid YAML, an unresolvable `uses:`. That is the
+    // trunk broken in the most literal sense, and it used to fall through to the
+    // "a superseded run is cancelled, not broken" branch, which is the wrong
+    // sentence about it.
+    ['startup_failure', 'alert'],
     ['success', 'resolve'],
     ['cancelled', 'skip'],
     ['skipped', 'skip'],
@@ -166,6 +199,28 @@ describe('main-red-alert: the verdict', () => {
     expect(failingSteps([])).toEqual([]);
     expect(failingSteps(undefined)).toEqual([]);
   });
+
+  // ------------------------------------------------------------------
+  // 3b. A third party being down is not the trunk being broken.
+  // ------------------------------------------------------------------
+  it('excuses a live third-party suite, and nothing else', () => {
+    const gate = { job: 'CI gate (nfe)', steps: [] };
+    const live = { job: 'NFe live (SEFAZ homologacao + staging Firestore)', steps: [] };
+    const ours = { job: 'NFe offline (lint + typecheck + unit + build)', steps: ['Test'] };
+
+    // SEFAZ down. The gate reds only because the live job did, so it must not
+    // count as something of ours failing.
+    expect(onlyThirdPartyFailed([live, gate])).toBe(true);
+    // Our own suite failed too — the outage explains one of them, not both.
+    expect(onlyThirdPartyFailed([live, ours, gate])).toBe(false);
+    expect(onlyThirdPartyFailed([ours, gate])).toBe(false);
+    // The gate failed on its own (an unexplained skip, a job it could not find).
+    // Nothing third-party about that.
+    expect(onlyThirdPartyFailed([gate])).toBe(false);
+    // ⚠️ `[].every()` is true. A run that failed while reporting no failing job —
+    // `startup_failure` — must NOT be read as an outage.
+    expect(onlyThirdPartyFailed([])).toBe(false);
+  });
 });
 
 describe('main-red-alert: what it does about it', () => {
@@ -191,11 +246,40 @@ describe('main-red-alert: what it does about it', () => {
     expect(created.body).toContain(markerFor('CI', 900));
   });
 
-  it('creates the label first when it does not exist yet', async () => {
+  it('ensures BOTH labels exist before creating the issue', async () => {
+    // Not just `main-red`: if `POST /issues` does not auto-create an unknown
+    // label, an unguarded second label is a 422 on the FIRST alert — the one run
+    // that has to work, failing closed into the same silence this file removes.
     const github = fakeGithub({ wr: workflowRun(), labelStatus: 404 });
     await invoke(github);
-    expect(github.names()).toContain('createLabel');
+    expect(argsOf(github, 'createLabel').map((a) => a.name)).toEqual(['ci', ALERT_LABEL]);
     expect(github.names().indexOf('createLabel')).toBeLessThan(github.names().indexOf('create'));
+    expect(argsOf(github, 'create')[0].labels).toEqual(['ci', ALERT_LABEL]);
+  });
+
+  // ------------------------------------------------------------------
+  // 4b. A SEFAZ outage on a merge to `main` is not a red trunk.
+  // ------------------------------------------------------------------
+  it('opens nothing when only the live third-party suite failed', async () => {
+    const github = fakeGithub({
+      wr: workflowRun({ name: 'CI — NFe' }),
+      jobs: NFE_SEFAZ_OUTAGE_JOBS,
+    });
+    expect(await invoke(github)).toMatchObject({ action: 'skip' });
+    expect(github.names()).not.toContain('create');
+    expect(github.names()).not.toContain('createComment');
+  });
+
+  it('still opens one when our own suite failed alongside the live one', async () => {
+    const github = fakeGithub({ wr: workflowRun({ name: 'CI — NFe' }), jobs: failedNfeOffline() });
+    expect(await invoke(github)).toMatchObject({ action: 'alert', created: true });
+    expect(argsOf(github, 'create')[0].body).toContain('NFe offline');
+  });
+
+  it('opens one for a run that failed with no failing job at all', async () => {
+    // `startup_failure` — the run never started, so the jobs list is empty.
+    const github = fakeGithub({ wr: workflowRun({ conclusion: 'startup_failure' }), jobs: [] });
+    expect(await invoke(github)).toMatchObject({ action: 'alert', created: true });
   });
 
   it('rethrows a label lookup failure that is not a 404', async () => {

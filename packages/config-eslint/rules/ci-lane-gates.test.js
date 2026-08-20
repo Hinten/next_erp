@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red-alert.mjs';
+
 /**
  * Every PR-triggered lane must ALWAYS publish a check, and that check must tell
  * the truth. (Was `e2e-lane-gates.test.js`; renamed when the four domain
@@ -299,6 +301,52 @@ function onSubBlock(source, key) {
   return out;
 }
 
+/**
+ * The values of the YAML list under `key:` within `lines`, in EITHER spelling.
+ *
+ * ⚠️ FLOW STYLE IS NOT THE ONLY SPELLING, and a scan that only knows
+ * `branches: [main]` carries exactly the silent hole it was written to close. A
+ * lane spelled
+ *
+ *     push:
+ *       branches:
+ *         - master
+ *         - main
+ *
+ * is invisible to the flow-only regex, so assertion 14 would pass while a
+ * trunk-verifying workflow sat missing from `main-red-alert.yml`. Both spellings
+ * are legal YAML and GitHub accepts both; every one of this repo's lanes happens
+ * to use flow style today, which is precisely what makes the hole quiet. Caught in
+ * review on #1181, reproduced with a scratch block-style workflow that assertion
+ * 14 then failed to notice.
+ *
+ * Returns `null` when the key is absent, so "no list" and "empty list" stay
+ * distinguishable.
+ */
+export function yamlListUnder(lines, key) {
+  const at = lines.findIndex((l) => new RegExp(`^\\s+${key}\\s*:`).test(l));
+  if (at === -1) return null;
+  const header = lines[at];
+
+  const flow = header.match(/:\s*\[(.*)\]\s*$/);
+  if (flow) {
+    return flow[1]
+      .split(',')
+      .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean);
+  }
+
+  const indent = header.match(/^\s*/)[0].length;
+  const out = [];
+  for (const line of lines.slice(at + 1)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    const m = line.match(/^(\s+)-\s*(.+?)\s*$/);
+    if (!m || m[1].length <= indent) break;
+    out.push(m[2].replace(/^['"]|['"]$/g, ''));
+  }
+  return out;
+}
+
 /** `{ jobId: body }` for the top-level `jobs:` mapping, with the indent derived. */
 export function jobBlocks(source) {
   const { body } = topBlock(source, 'jobs');
@@ -413,6 +461,28 @@ describe('CI lanes always report', () => {
     expect(onSubBlock(fixture, 'push').some((l) => /^\s+paths\s*:/.test(l))).toBe(true);
     expect(onSubBlock(fixture, 'pull_request').some((l) => /^\s+paths\s*:/.test(l))).toBe(false);
     expect(onSubBlock(fixture, 'schedule')).toBeNull();
+
+    // ⚠️ BOTH list spellings, because assertion 14 decides which workflows verify
+    // the trunk by reading `push: branches:` — and a flow-only parser silently
+    // misses a block-style lane, which is a guard that passes while the thing it
+    // guards is missing. This control is the regression test for that.
+    expect(yamlListUnder(onSubBlock(fixture, 'push'), 'branches')).toEqual(['main']);
+    const blockStyle = [
+      'on:',
+      '  push:',
+      '    branches:',
+      '      # a comment inside the list',
+      '      - master',
+      "      - 'main'",
+      '    paths:',
+      "      - 'a/**'",
+      'jobs:',
+      '  j:',
+      '    if: always()',
+      '',
+    ].join('\n');
+    expect(yamlListUnder(onSubBlock(blockStyle, 'push'), 'branches')).toEqual(['master', 'main']);
+    expect(yamlListUnder(onSubBlock(blockStyle, 'push'), 'nope')).toBeNull();
 
     // ...and it still reads real files in this repo.
     expect(Object.keys(jobBlocks(read('.github/workflows/ci.yml')))).toEqual([
@@ -1132,7 +1202,7 @@ describe('CI lanes always report', () => {
       if (file === ALERT || NOT_TRUNK_VERIFIERS[file]) continue;
       const push = onSubBlock(read(file), 'push');
       if (push === null) continue;
-      if (!push.some((l) => /^\s+branches\s*:\s*\[[^\]]*\bmain\b/.test(l))) continue;
+      if (!(yamlListUnder(push, 'branches') ?? []).includes('main')) continue;
       verifiers.push(workflowName(read(file)));
     }
 
@@ -1145,15 +1215,7 @@ describe('CI lanes always report', () => {
         'here has rotted and this assertion now checks nothing.',
     ).toBeGreaterThanOrEqual(6);
 
-    const onWorkflowRun = onSubBlock(read(ALERT), 'workflow_run') ?? [];
-    const at = onWorkflowRun.findIndex((l) => /^\s+workflows\s*:/.test(l));
-    const indent = at === -1 ? Infinity : onWorkflowRun[at].match(/^\s*/)[0].length;
-    const listed = [];
-    for (const line of onWorkflowRun.slice(at + 1)) {
-      const m = line.match(/^(\s+)-\s*(.+?)\s*$/);
-      if (!m || m[1].length <= indent) break;
-      listed.push(m[2].replace(/^['"]|['"]$/g, ''));
-    }
+    const listed = yamlListUnder(onSubBlock(read(ALERT), 'workflow_run') ?? [], 'workflows') ?? [];
 
     expect(
       listed.length,
@@ -1184,5 +1246,65 @@ describe('CI lanes always report', () => {
       onSubBlock(read(ALERT), 'pull_request'),
       `${ALERT} gained a \`pull_request:\` trigger.`,
     ).toBeNull();
+  });
+
+  // ------------------------------------------------------------------
+  // 15. The alerter's third-party carve-out tracks the lane manifests.
+  // ------------------------------------------------------------------
+  it('the alerter excuses exactly the live jobs, and recognises every gate and scope', () => {
+    // A job classed `live_scope` / `live_enabled` is a suite that calls a THIRD
+    // PARTY — SEFAZ homologação, the Melhor Envio sandbox. Both lanes run theirs on
+    // every path-matching merge to `main`, because the `changes` job short-circuits
+    // to run=true on non-PR events and ci-nfe.yml passes `true` for the live
+    // verdict as well. So an outage there reds a `main` run without the trunk being
+    // broken, and `main-red-alert.mjs` has to know which jobs those are.
+    const live = [
+      ...new Set(
+        Object.values(LANES)
+          .flatMap((lane) => lane.jobs)
+          .filter((job) => /(?:^|:|\+)live_/.test(job.class))
+          .map((job) => job.check),
+      ),
+    ];
+
+    expect(
+      live.length,
+      'Parsed no live-classed jobs out of LANES — the class filter here has rotted ' +
+        'and this assertion now checks nothing.',
+    ).toBeGreaterThanOrEqual(2);
+
+    expect(
+      [...THIRD_PARTY_JOBS].sort(),
+      [
+        "`THIRD_PARTY_JOBS` in .github/scripts/main-red-alert.mjs and this file's lane",
+        'manifests disagree about which suites call a third party.',
+        '',
+        'Too FEW entries and a SEFAZ or Melhor Envio outage opens a `🚨 main is red`',
+        'issue about a trunk that is fine — the noise class that gets a label ignored.',
+        'Too MANY and a genuinely broken suite is written off as someone else being',
+        'down, which is the "reported to nobody" failure this alert exists to remove.',
+      ].join('\n'),
+    ).toEqual(live.sort());
+
+    // The gate reds whenever a job it certifies fails, so a live failure always
+    // arrives as `[<live job>, <gate>]`. The alerter drops derived jobs before
+    // asking whether anything of ours failed — which only works if it recognises
+    // every gate and scope this repo publishes...
+    const derived = Object.values(LANES).flatMap((lane) => [lane.gate, lane.scope]);
+    expect(derived.length).toBeGreaterThanOrEqual(14);
+    expect(
+      derived.filter((name) => !DERIVED_JOB.test(name)),
+      '`DERIVED_JOB` in main-red-alert.mjs no longer matches every gate/scope name. ' +
+        'An unrecognised gate counts as "something of ours failed", so a third-party ' +
+        'outage would alert anyway.',
+    ).toEqual([]);
+
+    // ...and only those. A suite job swallowed by this regex would be dropped from
+    // the decision, and a real failure could then read as an outage.
+    const suites = Object.values(LANES).flatMap((lane) => lane.jobs.map((job) => job.check));
+    expect(
+      suites.filter((name) => DERIVED_JOB.test(name)),
+      '`DERIVED_JOB` matches a SUITE job. It must only match reporters.',
+    ).toEqual([]);
   });
 });
