@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
@@ -55,10 +55,10 @@ function Wrap({ children }: { children: React.ReactNode }) {
   // `env="test"` disables Mantine transitions/portals so overlays (Modal)
   // render synchronously and are queryable.
   return (
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <Notifications />
       {children}
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

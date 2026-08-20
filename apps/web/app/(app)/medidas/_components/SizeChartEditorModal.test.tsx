@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import {
@@ -67,7 +67,7 @@ function show(client: Partial<MercadoLivreClient>) {
     // `Modal` leaves a `Transition` timer running past the test and the callback
     // fires after jsdom has torn `window` down — an "every test passed, one
     // error" failure that names an innocent bystander file.
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <QueryClientProvider client={qc}>
         <SizeChartEditorModal
           opened
@@ -85,7 +85,7 @@ function show(client: Partial<MercadoLivreClient>) {
           onDuplicate={vi.fn()}
         />
       </QueryClientProvider>
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

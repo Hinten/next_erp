@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import { ESTADO_NFE } from '@delfrance/schemas';
 import type { NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
@@ -80,7 +80,7 @@ vi.mock('next/navigation', () => ({
 import { ClienteCell, FreteCell, ImpCell, NFCell, VlrCell } from './PedidoCells';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 /** Build a fully-typed NFe doc with the given estado + overrides. */
@@ -178,9 +178,9 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave: '3'.repeat(44) }))] });
     });
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <NFCell pedidoId="p1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.getByText('Aprovada')).toBeTruthy();
     expect(screen.queryByText('Gerado')).toBeNull();
@@ -191,9 +191,9 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       });
     });
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <NFCell pedidoId="p1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.getByText('Rejeitada')).toBeTruthy();
   });

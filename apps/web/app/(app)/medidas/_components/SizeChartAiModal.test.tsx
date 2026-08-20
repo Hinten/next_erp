@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import type { MercadoLivreMedidasSugestao } from '@/lib/mercado-livre/client';
 import type { ChartColumn } from '@/lib/mercado-livre/chartSpec';
@@ -35,7 +35,7 @@ function show(r: MercadoLivreMedidasSugestao) {
     // `Transition` leaves a timer running past the test, and the callback fires
     // after jsdom has torn `window` down — an "every test passed, one error"
     // failure that names an innocent bystander file.
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <SizeChartAiModal
         opened
         onClose={vi.fn()}
@@ -45,7 +45,7 @@ function show(r: MercadoLivreMedidasSugestao) {
         mainAttributeId="SIZE"
         onApply={vi.fn()}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

@@ -10,7 +10,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { MercadoLivreUsuarioTeste } from '@/lib/mercado-livre/client';
 
@@ -43,9 +43,9 @@ function renderPanel(): void {
     // ⚠️ `env="test"` disables Mantine's Transition timers. Without it a leaked
     // timer fires after teardown and reds an UNRELATED file with
     // `window is not defined` — this component mounts a <Modal>.
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
   render(<UsuariosTesteDevPanel integracaoId="i1" />, { wrapper });
 }

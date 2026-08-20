@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 
@@ -46,7 +46,7 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 
 function renderWith(extraDirty?: boolean) {
   render(
-    <MantineProvider>
+    <MantineTestProvider>
       <ObjectView
         schema={schema}
         collection={fakeCollection()}
@@ -55,7 +55,7 @@ function renderWith(extraDirty?: boolean) {
         recordId="EXISTING"
         {...(extraDirty === undefined ? {} : { extraDirty })}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

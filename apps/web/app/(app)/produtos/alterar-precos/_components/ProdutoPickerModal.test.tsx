@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Produto } from '@delfrance/schemas';
 
 // jsdom has no real Firestore — mock the live-query layer so the component
@@ -55,9 +55,9 @@ function row(id: string, over: Partial<Produto> = {}) {
 
 function renderModal(onInclude = vi.fn(), onClose = vi.fn()) {
   render(
-    <MantineProvider>
+    <MantineTestProvider>
       <ProdutoPickerModal opened onClose={onClose} onInclude={onInclude} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
   return { onInclude, onClose };
 }

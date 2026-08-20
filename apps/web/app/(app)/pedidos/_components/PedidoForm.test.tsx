@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 // PedidoForm pulls in every tab, the footer and the firebase/auth hooks. Stub
 // them so the render is just the form shell — enough to assert the Pagamento
@@ -39,9 +39,9 @@ import { PedidoForm } from './PedidoForm';
 
 function renderCreateForm(ehSaida: boolean) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <PedidoForm ehSaida={ehSaida} onSubmit={async () => {}} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

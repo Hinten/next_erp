@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore } from 'firebase/firestore';
 
 const h = vi.hoisted(() => ({ editorRenders: vi.fn() }));
@@ -16,9 +16,9 @@ const { MercadoLivreTab } = await import('./MercadoLivreTab');
 
 function renderTab() {
   return render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <MercadoLivreTab produtoId="prod-1" db={{} as Firestore} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

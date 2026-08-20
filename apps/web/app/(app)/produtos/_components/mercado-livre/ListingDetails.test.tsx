@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
@@ -8,9 +8,9 @@ import { ListingDetails } from './ListingDetails';
 
 function renderDetails(over: Partial<ProdutoMercadoLivreLink> = {}, fotos: number | null = 3) {
   render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <ListingDetails link={linkFixture(over)} produtoFotoCount={fotos} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

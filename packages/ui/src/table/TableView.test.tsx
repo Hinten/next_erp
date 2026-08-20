@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
@@ -104,7 +104,7 @@ function fakeCollection(): CollectionHandle<typeof testSchema> {
 function wrap(node: React.ReactNode) {
   // `env="test"` disables Mantine transitions/portals so the ColumnPicker
   // popover renders synchronously and is queryable in jsdom.
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 describe('TableView', () => {
@@ -331,7 +331,7 @@ describe('TableView', () => {
     // A re-render with an unchanged selection must NOT re-fire: consumers set
     // state from this callback, and `selectedRows` is re-derived every tick.
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <TableView
           schema={testSchema}
           collection={fakeCollection()}
@@ -339,7 +339,7 @@ describe('TableView', () => {
           selectable
           onSelectionChange={onSelectionChange}
         />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(onSelectionChange).toHaveBeenCalledTimes(2);
 
@@ -369,7 +369,7 @@ describe('TableView', () => {
       error: undefined,
     };
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <TableView
           schema={testSchema}
           collection={fakeCollection()}
@@ -377,7 +377,7 @@ describe('TableView', () => {
           selectable
           actions={[{ id: 'del', label: 'Excluir', requiresSelection: true, run: vi.fn() }]}
         />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     // The stale id was reconciled away: bulk actions disable again and the
     // header checkbox is neither checked nor indeterminate.

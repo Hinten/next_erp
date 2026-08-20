@@ -10,7 +10,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
@@ -76,10 +76,10 @@ function fakeCollection(): CollectionHandle<typeof schema> {
  */
 function Wrap({ children }: { children: React.ReactNode }) {
   return (
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <Notifications />
       {children}
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
@@ -38,11 +38,11 @@ function Host({ volumes, maxVolumes }: { volumes: VolumeFormState[] | null; maxV
     formRef = form;
   }, [form]);
   return (
-    <MantineProvider>
+    <MantineTestProvider>
       <QueryClientProvider client={new QueryClient()}>
         <VolumesEditor form={form as PedidoFormHandle} db={db} maxVolumes={maxVolumes} />
       </QueryClientProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

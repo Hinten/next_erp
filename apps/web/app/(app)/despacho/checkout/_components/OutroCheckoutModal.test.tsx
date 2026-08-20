@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
 
 import type { OutroCheckoutRow } from './useOutrosCheckouts';
@@ -39,7 +39,7 @@ function makeRow(over: Partial<OutroCheckoutRow> = {}): OutroCheckoutRow {
 
 function renderModal(row: OutroCheckoutRow | null) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <OutroCheckoutModal
         row={row}
         onClose={() => {}}
@@ -50,7 +50,7 @@ function renderModal(row: OutroCheckoutRow | null) {
         formatoDanfe="simplificadoPdf"
         formatoEtiqueta="pdf"
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

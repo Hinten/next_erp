@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
 
@@ -30,9 +30,9 @@ function renderPicker(ehSaida: boolean) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MantineProvider>
+      <MantineTestProvider>
         <OperacaoPicker db={{} as Firestore} ehSaida={ehSaida} value={null} onChange={() => {}} />
-      </MantineProvider>
+      </MantineTestProvider>
     </QueryClientProvider>,
   );
 }
