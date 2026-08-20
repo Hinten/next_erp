@@ -7,9 +7,16 @@ import { encodeHorarioMs } from '@delfrance/schemas';
 // have their own suites). The conta lookup, conversa/mensagem writes, status
 // matrix, auto-reply dedupe and the sweep all run REAL against the fake db.
 vi.mock('./discoverUser', () => ({
-  discoverUserByPhoneNumber: vi.fn(async () => ({ id: 'user-1', usuario: { nome: 'Fulano' } })),
+  // `clienteId` is part of the contract now (#1159) — a mock that omits it lets
+  // the conversa writer's null branch pass for the wrong reason.
+  discoverUserByPhoneNumber: vi.fn(async () => ({
+    id: 'user-1',
+    usuario: { nome: 'Fulano' },
+    clienteId: 'cliente-1',
+  })),
   fixConversaAnonima: vi.fn(async () => {}),
   usuarioOuterRef: (id: string) => `documents/usuarios/${id}`,
+  clienteOuterRef: (id: string) => `documents/clientes/${id}`,
 }));
 
 const media = vi.hoisted(() => ({
@@ -26,6 +33,7 @@ const {
   parseWebhookBody,
   reprocessNotifications,
 } = await import('./notificacao');
+const { discoverUserByPhoneNumber } = await import('./discoverUser');
 const { conversaDocId, mensagemDocId, senderId } = await import('./ids');
 
 /* ----------------------------- fake Firestore ---------------------------- */
@@ -754,5 +762,85 @@ describe('reprocessNotifications', () => {
     seedFailed(db, 'wamid.C', { messageId: 'wamid.C', processedAt: 9_999_999_999 }); // too new
     const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 }, deps);
     expect(res.processed).toBe(1); // only the first 'dup'
+  });
+});
+
+/* ------------------- conversa.clienteOuterRef (#1159) -------------------- */
+
+describe('conversa.clienteOuterRef', () => {
+  // The inbox Cliente filter matches ONE field. ML importers write
+  // `clienteOuterRef`; WhatsApp wrote only `usarioOuterRef`, so no cliente
+  // filter could ever return both. These pin the WhatsApp half.
+  //
+  // ⚠️ This suite's fake `matches()` returns false for any op it does not
+  // implement, `in` included — so `discoverUser`\u2019s phone lookup never matches
+  // here and resolution always lands on the create branch. That is the branch
+  // under test; the other three are covered in `discoverUser.test.ts`, whose
+  // fake evaluates `in` for real.
+
+  it('a new conversa carries the cliente the contact resolution produced', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+
+    const conv = db.docs('chat').get(CONV_ID)!;
+    expect(conv.clienteOuterRef).toBe('documents/clientes/cliente-1');
+  });
+
+  it('writes null — never a fabricated ref — when the cliente is unresolvable', async () => {
+    // `clienteId: null` means "unknown", and the only honest thing to store is
+    // nothing. Deriving a ref from the usuario id instead would point the filter
+    // at a `clientes` doc that does not exist.
+    const db = new FakeDb();
+    seedConta(db);
+    vi.mocked(discoverUserByPhoneNumber).mockResolvedValueOnce({
+      id: 'user-1',
+      usuario: { nome: 'Fulano' },
+      clienteId: null,
+    } as unknown as Awaited<ReturnType<typeof discoverUserByPhoneNumber>>);
+
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+
+    const conv = db.docs('chat').get(CONV_ID)!;
+    expect(conv.clienteOuterRef).toBeNull();
+    // ...and the conversa is still created — an unknown cliente is not a reason
+    // to drop a customer message.
+    expect(conv.origem).toBe('whatsapp');
+  });
+
+  it('keeps usarioOuterRef alongside it — this ADDS a field, it replaces nothing', async () => {
+    // The thread still derives bubble direction from `usarioOuterRef`, and the
+    // legacy readers still expect it. Dropping it here would be a silent
+    // regression in a place no cliente-filter test would notice.
+    const db = new FakeDb();
+    seedConta(db);
+
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+
+    const conv = db.docs('chat').get(CONV_ID)!;
+    expect(conv.usarioOuterRef).toBe('documents/usuarios/user-1');
+    expect(conv.clienteOuterRef).toBe('documents/clientes/cliente-1');
+  });
+
+  it('does NOT stamp an existing conversa — create only', async () => {
+    // The three update branches each document what they deliberately do and do
+    // not write, and one of them writes NOTHING on purpose: that freeze is what
+    // lets a late message reopen a finalized ticket. Backfilling this field
+    // through them would change reopen semantics for an unrelated reason.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('chat', CONV_ID, {
+      estadoConversa: 2, // atendimentoFinalizado (reopenable)
+      sender_id: SENDER,
+      nome: 'Fulano',
+      ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
+    });
+
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+
+    const conv = db.docs('chat').get(CONV_ID)!;
+    expect(conv.estadoConversa).toBe(0); // the reopen DID happen...
+    expect(conv.clienteOuterRef).toBeUndefined(); // ...without stamping the field
   });
 });
