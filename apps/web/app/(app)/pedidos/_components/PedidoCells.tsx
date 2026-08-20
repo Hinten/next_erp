@@ -406,9 +406,18 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
     () => dereferenceOuterRef(db, frete?.integracaoFreteOuterRef) as DocumentReference | null,
     [db, frete?.integracaoFreteOuterRef],
   );
+  // A bought label, a selected quote or a fetch-label marketplace frete
+  // already answers `hasEtiquetaAction` without knowing the tipo — skip the
+  // int_frete read entirely for those rows (most of a page of already-bought
+  // ME/ML pedidos never needs it).
+  const canFetchLabel =
+    frete?.externalOptionIntegracao != null &&
+    freightCapsFor(frete.externalOptionIntegracao).canFetchLabel;
+  const knownEtiquetaAction =
+    frete?.printLabelId != null || frete?.externalOptionId != null || canFetchLabel;
   const { data: intTipo } = useQuery<IntegracaoFrete | null>({
     queryKey: ['intFreteTipo', intRef?.path ?? null],
-    enabled: intRef != null,
+    enabled: intRef != null && !knownEtiquetaAction,
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       const snap = await getDoc(intRef!);
@@ -425,15 +434,8 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
   // only externalOptionIntegracao identifies them), or a generic-label tipo
   // (its on-demand PDF needs no prior state). Otherwise keep the lightweight
   // tracking tooltip.
-  const canFetchLabel =
-    frete?.externalOptionIntegracao != null &&
-    freightCapsFor(frete.externalOptionIntegracao).canFetchLabel;
   const isGenericLabel = intTipo != null && freightCapsFor(intTipo).labelMode === 'generic';
-  const hasEtiquetaAction =
-    frete?.printLabelId != null ||
-    frete?.externalOptionId != null ||
-    canFetchLabel ||
-    isGenericLabel;
+  const hasEtiquetaAction = knownEtiquetaAction || isGenericLabel;
   if (!hasEtiquetaAction) {
     const tooltipParts: string[] = [];
     if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
