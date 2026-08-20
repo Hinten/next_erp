@@ -92,6 +92,40 @@ class FakeDb {
   collection(path: string) {
     const col = this.col(path);
     return {
+      // The doc-id RANGE chain `limparMensagensProvisorias` uses. Strict on
+      // purpose: an unexpected field throws instead of quietly matching all,
+      // which would let a broken cleanup read as a working one.
+      where: function whereRange(campo: unknown, op: string, valor: unknown) {
+        if (String(campo) !== '__name__') {
+          throw new Error(`unexpected where on ${String(campo)}`);
+        }
+        const faixa: { min: string | null; max: string | null } = { min: null, max: null };
+        const q = {
+          where: (c2: unknown, o2: string, v2: unknown) => {
+            if (String(c2) !== '__name__') throw new Error('unexpected where');
+            if (o2 === '>=') faixa.min = String(v2);
+            else if (o2 === '<') faixa.max = String(v2);
+            return q;
+          },
+          get: async () => ({
+            docs: [...col.entries()]
+              .filter(
+                ([id]) =>
+                  (faixa.min == null || id >= faixa.min) && (faixa.max == null || id < faixa.max),
+              )
+              .map(([id, data]) => ({
+                id,
+                data: () => data,
+                ref: {
+                  delete: async () => {
+                    col.delete(id);
+                  },
+                },
+              })),
+          }),
+        };
+        return q.where(campo, op, valor);
+      },
       doc: (id: string) => ({
         id,
         __col: col,

@@ -55,10 +55,14 @@ describe('createMercadoLivreChannel scaffold (extended #288 contract)', () => {
     expect(channel.fetchLabel).toBeUndefined();
   });
 
-  it('exposes the incident READ surface but NOT respondIncident (Step 14 is import-only)', () => {
-    expect(channel.importIncidents).toBeDefined();
-    expect(channel.getIncident).toBeDefined();
-    expect(channel.respondIncident).toBeUndefined();
+  it('exposes the incident READ **and** WRITE surface (#768 completed the contract)', () => {
+    // ⚠️ This test used to assert `respondIncident` was UNDEFINED — Step 14 was
+    // import-only. It is the whole point of #768 that it now exists, so the
+    // assertion inverts rather than being deleted: callers feature-detect on
+    // exactly this, and losing the member again must fail here.
+    expect(typeof channel.importIncidents).toBe('function');
+    expect(typeof channel.getIncident).toBe('function');
+    expect(typeof channel.respondIncident).toBe('function');
   });
 
   it('oauthFlow.start builds a consent URL carrying state, client_id and redirect_uri', () => {

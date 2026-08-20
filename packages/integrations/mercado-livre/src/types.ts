@@ -1557,3 +1557,81 @@ export const mlAnswerResultSchema = z
   })
   .passthrough();
 export type MlAnswerResult = z.infer<typeof mlAnswerResultSchema>;
+
+/* ------------------- Claim resolution / respond (#768) -------------------- */
+
+/**
+ * One entry of `GET /post-purchase/v1/claims/{id}/partial-refund/available-offers`.
+ *
+ * ⚠️ **The percentage is an allow-list, not a slider.** ML rejects anything not
+ * on this list with `400 "Percentage not found 35.0"`, and refuses 100% through
+ * the partial endpoint entirely (that is the full-refund one). A caller that
+ * wants to refund an AMOUNT has to find the offer matching it here first —
+ * inventing a percentage silently refunds a different sum or fails.
+ */
+export const mlPartialRefundOfferSchema = z
+  .object({
+    amount: z.number().nullable().default(null),
+    percentage: z.number().nullable().default(null),
+  })
+  .passthrough();
+export type MlPartialRefundOffer = z.infer<typeof mlPartialRefundOfferSchema>;
+
+/**
+ * The `available-offers` envelope. `recommendations`/`restrictions` ride
+ * `.passthrough()` untyped — they are advice for a human, and nothing here
+ * decides on them.
+ */
+export const mlPartialRefundOffersSchema = z
+  .object({
+    currency_id: z.string().nullable().default(null),
+    available_offers: z
+      .array(mlPartialRefundOfferSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+  })
+  .passthrough();
+export type MlPartialRefundOffers = z.infer<typeof mlPartialRefundOffersSchema>;
+
+/**
+ * One `expected_resolutions` entry — what each party wants out of the claim.
+ * Every resolution POST answers with the refreshed list, so this doubles as the
+ * write result.
+ */
+export const mlExpectedResolutionSchema = z
+  .object({
+    player_role: z.string().nullable().default(null),
+    user_id: z.number().int().nullable().default(null),
+    expected_resolution: z.string().nullable().default(null),
+    status: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlExpectedResolution = z.infer<typeof mlExpectedResolutionSchema>;
+
+/** The array every `/expected-resolutions/*` POST returns. */
+export const mlExpectedResolutionsSchema = z.array(mlExpectedResolutionSchema);
+
+/** `POST /post-purchase/v1/claims/{id}/attachments` — the stored file key. */
+export const mlClaimAttachmentUploadSchema = z
+  .object({
+    filename: z.string(),
+    user_id: z.number().int().nullable().default(null),
+  })
+  .passthrough();
+export type MlClaimAttachmentUpload = z.infer<typeof mlClaimAttachmentUploadSchema>;
+
+/**
+ * ML's claim-attachment rules, from the post-purchase reference. Enforced
+ * BEFORE the upload: a rejected file wastes a write against the shared 500 rpm
+ * budget and returns an error the operator cannot act on.
+ *
+ * ⚠️ Attachments also EXPIRE: one not attached to a message within 48h is
+ * deleted and its key stops working.
+ */
+export const ML_CLAIM_ANEXO = {
+  maxBytes: 5_000_000,
+  formatos: ['jpg', 'jpeg', 'png', 'pdf'] as readonly string[],
+  maxNomeArquivo: 125,
+  /** ML: "letras, números, pontos, hífens e sublinhados". */
+  nomeArquivoPermitido: /^[a-zA-Z0-9_\-.]+$/,
+} as const;

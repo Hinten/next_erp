@@ -4,6 +4,7 @@ import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import type { MercadoLivreApi, MlPackMessages } from '@delfrance/integrations-mercado-livre';
 
 import { importOrderMessageMercadoLivre } from './orderMessageImport';
+import { PREFIXO_PROVISORIA, makeMensagemProvisoriaId } from './mensagemProvisoria';
 import { makeConversaIdOrderMessage } from './orderMessageIds';
 
 type DocData = Record<string, unknown>;
@@ -35,6 +36,40 @@ class FakeDb {
   collection(path: string) {
     const col = this.col(path);
     return {
+      // The doc-id RANGE chain `limparMensagensProvisorias` uses. Strict on
+      // purpose: an unexpected field throws instead of quietly matching all,
+      // which would let a broken cleanup read as a working one.
+      where: function whereRange(campo: unknown, op: string, valor: unknown) {
+        if (String(campo) !== '__name__') {
+          throw new Error(`unexpected where on ${String(campo)}`);
+        }
+        const faixa: { min: string | null; max: string | null } = { min: null, max: null };
+        const q = {
+          where: (c2: unknown, o2: string, v2: unknown) => {
+            if (String(c2) !== '__name__') throw new Error('unexpected where');
+            if (o2 === '>=') faixa.min = String(v2);
+            else if (o2 === '<') faixa.max = String(v2);
+            return q;
+          },
+          get: async () => ({
+            docs: [...col.entries()]
+              .filter(
+                ([id]) =>
+                  (faixa.min == null || id >= faixa.min) && (faixa.max == null || id < faixa.max),
+              )
+              .map(([id, data]) => ({
+                id,
+                data: () => data,
+                ref: {
+                  delete: async () => {
+                    col.delete(id);
+                  },
+                },
+              })),
+          }),
+        };
+        return q.where(campo, op, valor);
+      },
       doc: (id: string) => ({
         id,
         __col: col,
@@ -568,5 +603,46 @@ describe('importOrderMessageMercadoLivre — out-of-order provider snapshots (ru
     await importOrderMessageMercadoLivre(deps(db), MSG_ID);
 
     expect(db.docs('chat').get(conversaId)!.respostaBloqueada).toBeNull();
+  });
+});
+
+describe('importOrderMessageMercadoLivre — the provisional bubble expires', () => {
+  it('deletes the placeholder the operator’s reply left behind', async () => {
+    // ⚠️ The importer writes EVERY message in the thread, ours included, at its
+    // ML id. The reply the composer had already shown provisionally therefore
+    // appeared TWICE — once at `local-<ms>`, once at the ML id — and nothing
+    // linked them, so the duplicate was permanent.
+    const db = new FakeDb();
+    seedPedido(db);
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    db.seed(`chat/${conversaId}/mensagem`, makeMensagemProvisoriaId(1_000), {
+      conteudo: 'Enviado hoje!',
+      timestamp: 1_000,
+    });
+
+    await importOrderMessageMercadoLivre(deps(db), MSG_ID);
+
+    const mensagens = db.docs(`chat/${conversaId}/mensagem`);
+    expect([...mensagens.keys()].some((id) => id.startsWith(PREFIXO_PROVISORIA))).toBe(false);
+    // ...and the real messages are still there.
+    expect(mensagens.size).toBeGreaterThan(0);
+  });
+
+  it('KEEPS a placeholder newer than everything ML just returned', async () => {
+    // A reply sent after this snapshot has not come back yet. Deleting it would
+    // reopen the gap the bubble exists to cover, and an operator who reloads
+    // would see no trace of a message the customer already received.
+    const db = new FakeDb();
+    seedPedido(db);
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    const futuro = makeMensagemProvisoriaId(Date.parse('2099-01-01T00:00:00.000Z'));
+    db.seed(`chat/${conversaId}/mensagem`, futuro, {
+      conteudo: 'recém-enviada',
+      timestamp: Date.parse('2099-01-01T00:00:00.000Z'),
+    });
+
+    await importOrderMessageMercadoLivre(deps(db), MSG_ID);
+
+    expect(db.docs(`chat/${conversaId}/mensagem`).get(futuro)).toBeDefined();
   });
 });

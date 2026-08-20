@@ -89,8 +89,47 @@ function api(over: ApiStubs = {}): MercadoLivreApi {
       seller_max_message_length: 350,
     })),
     sendPackMessage: vi.fn(async () => undefined),
+    getClaim: vi.fn(async () => claimComAcoes(['send_message_to_complainant'])),
+    sendClaimMessage: vi.fn(async () => undefined),
     ...over,
   } as unknown as MercadoLivreApi;
+}
+
+const CONV_CLAIM = 'conv-claim';
+const CLAIM_ID = 5204934310;
+
+/** A claim whose seller holds exactly `acoes`. */
+function claimComAcoes(acoes: string[], over: Record<string, unknown> = {}) {
+  return {
+    id: CLAIM_ID,
+    resource_id: 2000008026430162,
+    status: 'opened',
+    type: 'mediations',
+    stage: 'claim',
+    resource: 'order',
+    players: [
+      { role: 'complainant', type: 'buyer', user_id: 1, available_actions: [] },
+      {
+        role: 'respondent',
+        type: 'seller',
+        user_id: SELLER,
+        available_actions: acoes.map((action) => ({ action, mandatory: false, due_date: null })),
+      },
+    ],
+    resolution: null,
+    date_created: '2024-04-12T08:26:23.000-04:00',
+    last_updated: null,
+    ...over,
+  };
+}
+
+function seedReclamacao(db: FakeDb, over: DocData = {}) {
+  db.seed(CHAT, CONV_CLAIM, {
+    origem: 'mlclaims',
+    id: String(CLAIM_ID),
+    integracaoOuterRef: 'documents/integracao/conta1',
+    ...over,
+  });
 }
 
 function deps(db: FakeDb, apiOver: ApiStubs = {}) {
@@ -284,5 +323,94 @@ describe('acaoPerguntaMercadoLivre', () => {
       acaoPerguntaMercadoLivre(d, { conversaId: CONV_PERG, acao: 'bloquear' }),
     ).rejects.toMatchObject({ codigo: 'ML_DADOS_INSUFICIENTES' });
     expect(d.api.blockUserFromQuestions).not.toHaveBeenCalled();
+  });
+});
+
+describe('responderConversaMercadoLivre — reclamações (#768)', () => {
+  it('sends to the COMPLAINANT in the claim stage', async () => {
+    const db = new FakeDb();
+    seedReclamacao(db);
+    const d = deps(db);
+
+    const r = await responderConversaMercadoLivre(d, {
+      conversaId: CONV_CLAIM,
+      texto: 'Vou verificar hoje.',
+    });
+
+    expect(d.api.sendClaimMessage).toHaveBeenCalledWith(CLAIM_ID, {
+      receiverRole: 'complainant',
+      message: 'Vou verificar hoje.',
+    });
+    expect(db.docs(`chat/${CONV_CLAIM}/mensagem`).size).toBe(1);
+    // A claim thread stays open — unlike a question, it accepts many replies.
+    expect(r.respostaBloqueada).toBeNull();
+  });
+
+  it('switches to the MEDIATOR once a mediation is open', async () => {
+    // ⚠️ ML refuses a message aimed at the complainant in the dispute stage, so
+    // guessing the role turns every reply into a 4xx.
+    const db = new FakeDb();
+    seedReclamacao(db);
+    const d = deps(db, {
+      getClaim: vi.fn(async () =>
+        claimComAcoes(['send_message_to_mediator'], { stage: 'dispute' }),
+      ),
+    });
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_CLAIM, texto: 'oi' });
+
+    expect(d.api.sendClaimMessage).toHaveBeenCalledWith(
+      CLAIM_ID,
+      expect.objectContaining({ receiverRole: 'mediator' }),
+    );
+  });
+
+  it('re-reads the claim and REFUSES one that closed since the import', async () => {
+    // The stored `respostaBloqueada` is a UI hint and stale by construction.
+    const db = new FakeDb();
+    seedReclamacao(db, { respostaBloqueada: null });
+    const d = deps(db, { getClaim: vi.fn(async () => claimComAcoes([], { status: 'closed' })) });
+
+    await expect(
+      responderConversaMercadoLivre(d, { conversaId: CONV_CLAIM, texto: 'oi' }),
+    ).rejects.toMatchObject({ codigo: 'ML_NAO_RESPONDIVEL' });
+    expect(d.api.sendClaimMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses a claim whose seller holds only NON-message actions', async () => {
+    // A refund or a return label is real work, but it is not chat work — the
+    // composer is the wrong place to offer it.
+    const db = new FakeDb();
+    seedReclamacao(db);
+    const d = deps(db, { getClaim: vi.fn(async () => claimComAcoes(['refund'])) });
+
+    await expect(
+      responderConversaMercadoLivre(d, { conversaId: CONV_CLAIM, texto: 'oi' }),
+    ).rejects.toMatchObject({ codigo: 'ML_NAO_RESPONDIVEL' });
+  });
+
+  it('writes NOTHING when ML rejects the message', async () => {
+    const db = new FakeDb();
+    seedReclamacao(db);
+    const d = deps(db, {
+      sendClaimMessage: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 400', 400, null, null);
+      }),
+    });
+
+    await expect(
+      responderConversaMercadoLivre(d, { conversaId: CONV_CLAIM, texto: 'oi' }),
+    ).rejects.toBeInstanceOf(MercadoLivreHttpError);
+    expect(db.docs(`chat/${CONV_CLAIM}/mensagem`).size).toBe(0);
+  });
+
+  it('refuses a body over the claim cap, before calling ML', async () => {
+    const db = new FakeDb();
+    seedReclamacao(db);
+    const d = deps(db);
+    await expect(
+      responderConversaMercadoLivre(d, { conversaId: CONV_CLAIM, texto: 'a'.repeat(301) }),
+    ).rejects.toMatchObject({ codigo: 'ML_TEXTO_LONGO' });
+    expect(d.api.getClaim).not.toHaveBeenCalled();
   });
 });

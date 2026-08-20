@@ -20,6 +20,9 @@ import {
   type MlPackMessages,
   type MlQuestion,
   type MlClaimMessage,
+  type MlClaimAttachmentUpload,
+  type MlExpectedResolution,
+  type MlPartialRefundOffers,
   type MlClaimReason,
   type MlClaimSearch,
   type MlDomainDiscovery,
@@ -62,6 +65,9 @@ import {
   migrationLiveListingSchema,
   mlBillingInfoSchema,
   mlClaimMessagesSchema,
+  mlClaimAttachmentUploadSchema,
+  mlExpectedResolutionsSchema,
+  mlPartialRefundOffersSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
   mlAnswerResultSchema,
@@ -446,6 +452,61 @@ export interface MercadoLivreApi {
    * because `request()` ALWAYS sends the Bearer header.
    */
   getClaimReason(reasonId: string): Promise<MlClaimReason>;
+
+  /* ---------------------- Claim respond + resolve (#768) ---------------- */
+
+  /**
+   * `POST /post-purchase/v1/claims/{id}/actions/send-message`.
+   *
+   * ⚠️ `receiverRole` is not cosmetic. Once a mediation is open ML routes the
+   * seller's messages through the mediator and a message aimed at the
+   * complainant is refused — derive it from the available action rather than
+   * guessing (`receiverRoleDaAcao`).
+   *
+   * ⚠️ `attachments` must be OMITTED, not empty: ML validates the keys it is
+   * given, so `[]` invites a 422 for nothing.
+   */
+  sendClaimMessage(
+    claimId: number,
+    body: { receiverRole: string; message: string; attachments?: readonly string[] },
+  ): Promise<void>;
+
+  /**
+   * `POST /post-purchase/v1/claims/{id}/attachments` — multipart, returns the
+   * key a message then references.
+   *
+   * ⚠️ 5 MB, JPG/PNG/PDF, filename ≤125 chars of `[a-zA-Z0-9_\-.]` — and the
+   * key EXPIRES in 48h if no message claims it (see `ML_CLAIM_ANEXO`).
+   */
+  uploadClaimAttachment(
+    claimId: number,
+    file: { data: Uint8Array; filename: string; contentType: string },
+  ): Promise<MlClaimAttachmentUpload>;
+
+  /** `POST …/actions/open-dispute` — escalate to a Mercado Livre mediator. */
+  openClaimDispute(claimId: number): Promise<MlClaim>;
+
+  /** `POST …/expected-resolutions/refund` — refund the buyer in full; closes the claim. */
+  refundClaim(claimId: number): Promise<MlExpectedResolution[]>;
+
+  /** `POST …/expected-resolutions/allow-return` — accept the product back. */
+  allowClaimReturn(claimId: number): Promise<MlExpectedResolution[]>;
+
+  /**
+   * `GET …/partial-refund/available-offers` — the ONLY percentages ML accepts.
+   * Read this before offering one; see {@link partialRefundClaim}.
+   */
+  getClaimPartialRefundOffers(claimId: number): Promise<MlPartialRefundOffers>;
+
+  /**
+   * `POST …/expected-resolutions/partial-refund` with `{ percentage }`.
+   *
+   * ⚠️ The percentage MUST come from `getClaimPartialRefundOffers`. ML answers
+   * `400 "Percentage not found 35.0"` for anything else, refuses 100% here
+   * (that is the full-refund endpoint), and silently defaults to 50% if none
+   * is sent at all — which would refund half the order by omission.
+   */
+  partialRefundClaim(claimId: number, percentage: number): Promise<MlExpectedResolution[]>;
   /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
   searchClaims(params: {
     status?: string;
@@ -591,8 +652,18 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     await requestWithStatus(method, path, z.unknown(), body === undefined ? {} : { body });
   }
 
-  /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
-  async function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
+  /**
+   * Multipart upload — same auth/retry/error mapping as `request`, no JSON body.
+   *
+   * Generic over the endpoint because claims upload attachments through the
+   * identical machinery at a different path (#768).
+   */
+  async function uploadMultipart<T>(
+    path: string,
+    file: { data: Uint8Array; filename: string; contentType: string },
+    schema: z.ZodType<T>,
+    mensagemDeRede: string,
+  ): Promise<T> {
     const token = await config.getAccessToken();
     const form = new FormData();
     // Uint8Array → ArrayBuffer slice so the Blob owns plain bytes.
@@ -603,7 +674,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     form.append('file', new Blob([bytes], { type: file.contentType }), file.filename);
 
     const res = await fetchWithNetworkRetry(
-      buildUrl('/pictures/items/upload'),
+      buildUrl(path),
       {
         method: 'POST',
         headers: {
@@ -614,10 +685,19 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         },
         body: form,
       },
+      mensagemDeRede,
+    );
+    if (res.ok) return parseOk(res, schema);
+    throw await toHttpError(res);
+  }
+
+  function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
+    return uploadMultipart(
+      '/pictures/items/upload',
+      file,
+      pictureUploadSchema,
       'Falha de rede ao enviar imagem ao Mercado Livre',
     );
-    if (res.ok) return parseOk(res, pictureUploadSchema);
-    throw await toHttpError(res);
   }
 
   /**
@@ -949,6 +1029,54 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),
     getClaimMessages: (claimId) =>
       request('GET', `/post-purchase/v1/claims/${claimId}/messages`, mlClaimMessagesSchema),
+    sendClaimMessage: async (claimId, body) => {
+      await requestVoid('POST', `/post-purchase/v1/claims/${claimId}/actions/send-message`, {
+        receiver_role: body.receiverRole,
+        message: body.message,
+        // Omitted when empty — ML validates the keys it is handed.
+        ...(body.attachments && body.attachments.length > 0
+          ? { attachments: [...body.attachments] }
+          : {}),
+      });
+    },
+    uploadClaimAttachment: (claimId, file) =>
+      uploadMultipart(
+        `/post-purchase/v1/claims/${claimId}/attachments`,
+        file,
+        mlClaimAttachmentUploadSchema,
+        'Falha de rede ao enviar anexo da reclamação ao Mercado Livre',
+      ),
+    openClaimDispute: (claimId) =>
+      request('POST', `/post-purchase/v1/claims/${claimId}/actions/open-dispute`, mlClaimSchema, {
+        body: {},
+      }),
+    refundClaim: (claimId) =>
+      request(
+        'POST',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions/refund`,
+        mlExpectedResolutionsSchema,
+        { body: {} },
+      ),
+    allowClaimReturn: (claimId) =>
+      request(
+        'POST',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions/allow-return`,
+        mlExpectedResolutionsSchema,
+        { body: {} },
+      ),
+    getClaimPartialRefundOffers: (claimId) =>
+      request(
+        'GET',
+        `/post-purchase/v1/claims/${claimId}/partial-refund/available-offers`,
+        mlPartialRefundOffersSchema,
+      ),
+    partialRefundClaim: (claimId, percentage) =>
+      request(
+        'POST',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions/partial-refund`,
+        mlExpectedResolutionsSchema,
+        { body: { percentage } },
+      ),
     getClaimReason: (reasonId) =>
       request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
     searchClaims: (params) =>
