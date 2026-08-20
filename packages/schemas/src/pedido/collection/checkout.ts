@@ -39,7 +39,7 @@ export type ItemCheckoutError = (typeof ITEM_CHECKOUT_ERRORS)[keyof typeof ITEM_
  *
  * Datetime unit: MILLISECONDS since epoch — legacy `maybeDateTimeToJson`
  * (`.old/packages/global/lib/src/models/utils.dart:95`) serializes
- * `millisecondsSinceEpoch`. This port keeps ms for byte-for-byte coexistence
+ * `millisecondsSinceEpoch`. This port keeps ms for byte-for-byte parity
  * with the live Flutter app on the shared backend (the repo default elsewhere is
  * µs; the tolerant `millisSinceEpoch` read still parses either).
  */

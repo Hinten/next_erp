@@ -14,9 +14,11 @@ import { z } from 'zod';
  *   - legacy doc updating an unrelated field: `!c.hasAny([...])`
  *     short-circuits, so docs predating a schema keep updating.
  *
- * Presence-on-create is deliberately NOT enforced: the coexisting Flutter app
- * creates docs in these same collections and omits fields that Zod fills via
- * `.default()`.
+ * Presence-on-create is deliberately NOT enforced. ⚠️ The stated reason — a
+ * coexisting Flutter app creating docs in these collections — is VOID (no dual
+ * run; root `CLAUDE.md` rule 8). It still holds for the migrated corpus, whose
+ * docs omit fields Zod fills via `.default()`; whether CREATE should now be
+ * tightened is an open question, not a settled design.
  */
 export interface FieldClause {
   field: string;
@@ -63,9 +65,12 @@ function exprForProperty(ref: string, prop: JsonSchema): string | null {
     return `(${ref} == null || ${inner})`;
   }
 
-  // Datetime fields are skipped entirely: Next writes ISO strings but the
-  // coexisting Flutter app writes real Timestamps to the same documents —
-  // `is string` would brick Flutter writes the day this ruleset deploys.
+  // Datetime fields are skipped entirely. ⚠️ The stated reason — a coexisting
+  // Flutter app writing real Timestamps to the same documents, which `is string`
+  // would brick — is VOID (no dual run; root `CLAUDE.md` rule 8). This app writes
+  // ISO strings, so nothing validates datetimes today for a reason that no longer
+  // applies. Tightening it changes the generated ruleset, so it is its own change,
+  // not a drive-by edit here.
   if (prop.format === 'date-time') return null;
 
   if (Array.isArray(prop.enum)) {

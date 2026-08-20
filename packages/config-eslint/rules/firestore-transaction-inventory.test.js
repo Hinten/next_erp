@@ -74,8 +74,8 @@ import { describe, expect, it } from 'vitest';
  *
  * Firestore's OCC retries the callback but does **not** re-derive anything
  * captured in the closure, so a value read before an `await` is re-applied
- * verbatim over the winner. A second writer is always plausible here: the legacy
- * provider webhooks arrive out of order, Cloud Tasks retries re-drive payloads,
+ * verbatim over the winner. A second writer is always plausible here: provider
+ * webhooks arrive out of order, Cloud Tasks retries re-drive payloads,
  * and the notification sweep re-drives hours-old payloads through the same
  * handler as a fresh task. See root `CLAUDE.md` Critical rule 7 and ADR 0011.
  */

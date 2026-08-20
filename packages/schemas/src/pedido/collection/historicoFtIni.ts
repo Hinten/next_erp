@@ -40,8 +40,8 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * began the day this shipped. The tolerant `millisSinceEpoch` preprocess fixes
  * DISPLAY (it normalizes ms/µs/ISO/`Date` on read), never the sort key — the
  * unit written to disk is the only thing Firestore sorts on. Same reasoning,
- * same conclusion as `./checkout.ts`, which keeps ms "for byte-for-byte
- * coexistence with the live Flutter app on the shared backend".
+ * same conclusion as `./checkout.ts`, which keeps ms "for byte-for-byte parity"
+ * with the migrated corpus.
  * `historicoEstadoPedido` carries no such constraint — its rows have been µs
  * from the first write and there is no ms cohort to interleave with.
  *

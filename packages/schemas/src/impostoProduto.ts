@@ -34,7 +34,7 @@ export const ORIGEM_PRODUTO_LABELS: Record<string, string> = {
  * Wire shape mirrors the Flutter `Imposto` generated JSON
  * (`packages/produtos/lib/src/models.g.dart:_$ImpostoToJson`):
  *   - `impostoOpercaoOuterRef` — the scope pointer, Flutter's **typo** key
- *     preserved verbatim for coexistence: `null` = default fallback (any
+ *     preserved verbatim for legacy parity: `null` = default fallback (any
  *     operação), else `operacao/<id>` (`pathNoDocuments`).
  *   - the **Dados Gerais** scalars (`origem`, `cfop`, `cfopInterestadual`,
  *     `NCM`, `NVE`, `CEST`, `indEscala`, `CNPJFab`, `cBenef`, `extipi`,

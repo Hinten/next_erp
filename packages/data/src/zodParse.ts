@@ -33,7 +33,7 @@ function isPlainRecord(v: unknown): v is Record<string, unknown> {
  * and the admin handle delegate to.
  *
  * Schemas that deliberately opt into `.passthrough()` (legacy Flutter /
- * marketplace coexistence) are respected automatically: they never strip a key,
+ * marketplace legacy shapes) are respected automatically: they never strip a key,
  * so the strict re-check below never fires and their unknown fields pass through
  * as before. Plain `z.object` (strip-policy) schemas reject unknown keys.
  */

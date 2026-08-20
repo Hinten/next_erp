@@ -524,7 +524,7 @@ export const credenciaisIntegracaoMeta: CollectionMetadata = {
 /* -------------------------------------------------------------------------- */
 
 /**
- * ⚠️ **LEGACY-CLIENT GRANT ONLY — remove with the Flutter decommission (#829).**
+ * ⚠️ **LEGACY-CLIENT GRANT ONLY — comes out in #829, which waits on nothing.**
  *
  * The two collections below are the OLD Flutter Mercado Livre credential shapes.
  * The wire shape is load-bearing (the migrated corpus is stored in it); the
