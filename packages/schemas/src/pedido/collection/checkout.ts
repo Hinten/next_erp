@@ -57,8 +57,8 @@ export type ItemCheckoutPedido = z.infer<typeof itemCheckoutPedidoSchema>;
 /**
  * `CheckoutFretePedido` — subcollection `pedidos/{pedidoId}/checkout` (leaf name
  * EXACTLY `checkout`, NOT pluralized: the legacy constant is
- * `PEDIDO_CHECKOUT_COLLECTION = '<pedidos>/*​/checkout'` and the Flutter app still
- * reads these docs). The dispatch/checkout audit document written when a
+ * `PEDIDO_CHECKOUT_COLLECTION = '<pedidos>/*​/checkout'` and the migrated corpus
+ * is stored under it). The dispatch/checkout audit document written when a
  * warehouse operator finishes scanning a paid pedido's physical contents.
  * Legacy hand-model `.old/packages/pedido/lib/src/models.dart:3943`, generated
  * writer `models.g.dart:760-784`.

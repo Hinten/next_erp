@@ -188,7 +188,7 @@ describe('resolveTaxonomia — create path', () => {
 /* --------------------------------- updates -------------------------------- */
 
 describe('resolveTaxonomia — update path (existing grupo)', () => {
-  it('appends a new variante via tx.set, preserving unrelated/unknown raw keys (dual-run)', async () => {
+  it('appends a new variante via tx.set, preserving unrelated/unknown raw keys (legacy parity)', async () => {
     const db = new FakeDb();
     db.seed('grupoDeVariacoes', 'SIZE', {
       nome: 'Tamanho',

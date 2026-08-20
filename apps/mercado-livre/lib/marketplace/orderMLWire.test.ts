@@ -470,7 +470,7 @@ describe('mergeOrderMLWire', () => {
   });
 
   it('preserves a stored key neither the wire nor the payload mentions', () => {
-    // Dual-run: `orderMLSchema` is passthrough, so a Flutter-written field must
+    // Legacy wire: `orderMLSchema` is passthrough, so a legacy-written field must
     // survive a partial refresh.
     const stored = { ...storedMirror(), campoEscritoPeloFlutter: 'preservar' };
     const { wire, carried } = refreshFrom(partialOrder());

@@ -300,7 +300,7 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/orderML', onDelete: 'cascade' },
     // Freight-history / checkout / checkin subcollections, all three reusing
-    // the legacy leaf names so the Flutter app keeps reading them. The new app
+    // the legacy leaf names, which is where the migrated corpus sits. The new app
     // writes two of them: `checkout` (saveCheckout, schema
     // `checkoutFretePedidoMeta`) and `historicoFtIni`, whose sole writer is the
     // `onPedidoChanged` trigger (schema `historicoFreteInicialMeta`).

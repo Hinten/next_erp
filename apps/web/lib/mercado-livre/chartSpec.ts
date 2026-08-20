@@ -368,9 +368,11 @@ export function chartLevelAttributes(
  * Empty ⇒ the domain has no measure-type concept (footwear) and `measure_type`
  * must be omitted from the create body entirely.
  *
- * ⚠️ `MIXED_MEASURE` is NOT offered even though ML supports it: the live
- * Flutter reader's `TipoTabelaDeMedidasML.fromJson` throws on an unknown value,
- * so writing one would crash it during the dual-run.
+ * ⚠️ `MIXED_MEASURE` is NOT offered even though ML supports it. ⚠️ The stated
+ * reason — the legacy reader's `TipoTabelaDeMedidasML.fromJson` throwing on an
+ * unknown value — is void (no dual run; root `CLAUDE.md` rule 8). Kept because
+ * `mlSizeChartWriteSchema` still rejects it and widening the type is a real
+ * feature decision, not a drive-by edit.
  */
 export function detectMeasureTypes(specs: unknown): ChartMeasureType[] {
   const attrs = collectAttributes(specs);

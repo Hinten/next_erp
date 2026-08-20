@@ -3,7 +3,7 @@
  * candidates for a set of item combos, runs the pure `planTaxonomia` (#519
  * matching cascade), and persists whatever it couldn't match.
  *
- * ## The dual-run embedded-array hazard
+ * ## The legacy embedded-array hazard
  * `grupoDeVariacoes.variacoes` is an EMBEDDED array on the grupo doc, not a
  * subcollection — and the legacy Flutter app treats the whole doc as one
  * `copyWith`-and-save unit (its own variation editor reads the full doc,

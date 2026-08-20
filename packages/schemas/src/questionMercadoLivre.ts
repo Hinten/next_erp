@@ -10,7 +10,7 @@ const PERM_INTEGRACAO_WRITE = 1n << 57n;
 const PERM_INTEGRACAO_DELETE = 1n << 58n;
 
 /**
- * ⚠️ **DUAL-RUN ONLY — delete with the Flutter decommission (#829).**
+ * ⚠️ **LEGACY-PARITY ONLY — delete with the Flutter decommission (#829).**
  *
  * `questionsML` (TOP-LEVEL) — pre-sale buyer questions on a listing, written by
  * the legacy Mercado Livre backend's `questions` notification handler
@@ -59,7 +59,7 @@ export const STATUS_QUESTION_MERCADO_LIVRE = {
 /**
  * Legacy `StatusAnswerMl` (`.old/…/models.dart:6678-6690`). Wire values are
  * UPPERCASE, unlike the question status above — the legacy `fromString` upcased
- * the input before matching, so both apps only ever stored these three.
+ * the input before matching, so only these three were ever stored.
  */
 export const statusAnswerMercadoLivreSchema = z.enum(['ACTIVE', 'DISABLED', 'BANNED']);
 export type StatusAnswerMercadoLivre = z.infer<typeof statusAnswerMercadoLivreSchema>;
@@ -143,7 +143,7 @@ export type QuestionMercadoLivre = z.infer<typeof questionMercadoLivreSchema>;
 
 export const questionMercadoLivreMeta: CollectionMetadata = {
   collectionPath: 'questionsML',
-  // DUAL-RUN grant (#829) — see the docstring above. Legacy perm code `mb`;
+  // LEGACY-CLIENT grant (#829) — see the docstring above. Legacy perm `mb`;
   // reusing the `integracao` bits keeps existing claim-holders working, exactly
   // as `brandShopee` does.
   permissions: {

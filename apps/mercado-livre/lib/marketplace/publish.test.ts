@@ -6,7 +6,7 @@ import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { type PublishDeps, publishProduto } from './publish';
 
 /**
- * Regression tests for the DUAL-RUN contract of the publish orchestrator: the
+ * Regression tests for the LEGACY-WIRE contract of the publish orchestrator: the
  * still-running Flutter app equality-queries the docs this module writes, so
  * every `*OuterRef` must be stored `documents/`-prefixed (`pathWithDocuments`)
  * and a re-publish must preserve every Flutter-authored field it doesn't own
@@ -257,7 +257,7 @@ afterEach(() => {
   __resetAllReadCaches();
 });
 
-describe('publishProduto — dual-run wire shape', () => {
+describe('publishProduto — legacy wire shape', () => {
   it('first publish writes canonical documents/-prefixed refs everywhere', async () => {
     const db = new FakeDb();
     seedBase(db);

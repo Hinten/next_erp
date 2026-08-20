@@ -29,9 +29,11 @@
  * `status: 'active'` behind for the sweep's gate to trip over.
  *
  * Scope (7a): SIMPLE listings. User-Products links and a listing still
- * mid-migration (`estado === 'am'`) are DEFERRED — a UP link or an
- * awaiting-migration listing is driven by the Flutter app during dual-run;
- * syncing `estado` here would fight it. A cancel removes the PARENT produto's
+ * mid-migration (`estado === 'am'`) are DEFERRED. ⚠️ The stated reason — that
+ * the legacy Flutter app drives those during a dual run — is VOID (no dual run;
+ * root `CLAUDE.md` rule 8). Nothing drives them now, so the deferral leaves that
+ * state unmanaged rather than deconflicted; revisiting it is #441's call, not a
+ * drive-by change here. A cancel removes the PARENT produto's
  * denorm entry (`removeMarketplaceEntry` below) but does not walk down to the
  * variation-children produtos. That sweep was once deferred to #438; it is now
  * moot rather than pending — the whole denorm cluster is deleted at the cutover
@@ -140,9 +142,9 @@ export async function syncItemStatus(
   const link = await resolveLink(db, itemId, integracaoId);
   if (!link) return 'no-link';
 
-  // Cheap (link-only) User-Products / migration guard → #441: a UP link or a
-  // listing still awaiting migration (`estado === 'am'`) is driven by the Flutter
-  // app during dual-run; touching `estado` here would fight it. Skipped BEFORE any
+  // Cheap (link-only) User-Products / migration guard → #441. ⚠️ The original
+  // reason (the legacy app driving these during a dual run) is void — see the
+  // module docstring; the deferral is kept as-is. Skipped BEFORE any
   // ML call — the migration-TAG case (which needs the fetched item) is checked below.
   if (link.data.isUserProductModel === true || link.data.estado === 'am') {
     return 'deferred-up';
@@ -251,7 +253,7 @@ export interface ApplyItemStatusOpts {
 
 /**
  * Write one ML item's lifecycle status onto its link doc, plus the parent
- * produto's dual-run marketplace denorm. Extracted so the `items` webhook and
+ * produto's legacy marketplace denorm. Extracted so the `items` webhook and
  * the stock sender's terminal 4xx branch (#781) refresh a listing IDENTICALLY —
  * the sender learns the listing's real state from ML instead of leaving a stale
  * `status: 'active'` behind, which is what made a rejected send retry forever.
@@ -271,8 +273,8 @@ export interface ApplyItemStatusOpts {
  * advances once the denorm has succeeded.
  *
  * The denormalized arrays are DEPRECATED (the link subcollections resolve
- * linkage now) but kept in the exact shape publish/import stamp during dual-run
- * — see the canonical cluster note on `produtoSchema` and #992, which tracks
+ * linkage now) but kept in the exact shape publish/import stamp, which is also
+ * the shape the migrated corpus carries — see the canonical cluster note on `produtoSchema` and #992, which tracks
  * deleting all three fields in one piece after the cutover.
  *
  * This path does not write the third cluster member, the legacy
@@ -302,7 +304,7 @@ export async function applyItemStatusToLink(
   // the writes below still half-applies. Closing that window entirely needs both
   // writes in one transaction — a bigger change than this one, and the residual
   // race is the same denorm drift the arrays already tolerate (they are
-  // DEPRECATED, dual-run only). `mergeIfExists` still backstops the link half.
+  // DEPRECATED). `mergeIfExists` still backstops the link half.
   const linkSnap = await produtoMercadoLivreLinkCollection
     .docRef(db, { produtoId: target.produtoId }, target.linkDocId)
     .get();
@@ -396,7 +398,7 @@ async function resolveLink(
 }
 
 /**
- * Maintain the parent produto's dual-run marketplace arrays on an estado change:
+ * Maintain the parent produto's legacy marketplace arrays on an estado change:
  * ensure-present on a live transition (idempotent arrayUnion), key-based removal
  * on a cancel (a dead listing must stop being advertised).
  *

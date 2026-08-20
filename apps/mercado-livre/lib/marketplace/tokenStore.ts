@@ -1,8 +1,8 @@
 /**
  * Firestore-backed Mercado Livre token store over the admin-only
  * `integracao/{integracaoId}/tokenDuravel` collection — the OLD Flutter wire
- * shape (#287 dual-run migration: the new app and the still-running Flutter app
- * share the same credential on the same ML application).
+ * shape (#287: the migrated corpus stores the credential this way, on the same
+ * ML application).
  *
  * ## Concurrency ("one wins")
  * ML refresh tokens are **single-use and rotate** on every refresh, so two

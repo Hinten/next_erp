@@ -149,7 +149,7 @@
  *    module's contract (A3's job, done with a fresh read AFTER this
  *    transaction commits).
  *
- * Dual-run wire rule: the pedido doc itself NEVER goes through a full
+ * Legacy wire rule: the pedido doc itself NEVER goes through a full
  * `pedidoSchema.parse` on an UPDATE — only `itens`/`itensIds`/
  * `ultimaModificacao`/`lastMarketplaceUpdate` (this module's whole write
  * surface for an existing pedido) go through `pedidoCollection.parseMerge` +
@@ -158,7 +158,7 @@
  * `tools/test-fixtures/src/seed-pedidos-dev.ts`'s `writePedido`).
  *
  * `orderML`/`pagamento` are independent leaf subcollection docs (not "the
- * pedido doc" the dual-run rule restricts), and BOTH follow legacy's
+ * pedido doc" the legacy wire rule restricts), and BOTH follow legacy's
  * create-fresh / merge-on-refresh split rather than a full rewrite:
  *  - `pagamento` — `mergePagamentoUpdate` (see the ⚠️ under (c) above);
  *  - `orderML`  — replaced wholesale whenever ML spoke in FULL (a fresh create,

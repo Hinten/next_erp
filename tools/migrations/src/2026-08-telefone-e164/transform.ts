@@ -47,9 +47,9 @@ export type TelefonePlan =
  *
  * **Idempotent by construction**: a value that is already canonical takes the
  * `already-normalized` branch, so re-running the migration is free. That
- * matters because the legacy Flutter app is a LIVE concurrent writer of the raw
- * shape — a single run does not converge the collection, repeated runs plus
- * the eventual cutover do.
+ * matters because the legacy app keeps writing the raw shape into the source
+ * project until the cutover switches it off — a single early run does not
+ * converge the collection; the authoritative run is the one inside the window.
  */
 export function planTelefone(stored: unknown): TelefonePlan {
   if (typeof stored !== 'string') {

@@ -56,10 +56,9 @@
  *    picks it goes through `normalizarIe` instead of being exact. Legacy's
  *    exact match let one casing variant from ML fall through to a null
  *    `state_registration`, leaving the destinatário unclassified rather than
- *    marked não-contribuinte — the NF-e reader then has to default it. Dual-run
- *    safe: the
- *    Flutter NF-e reader normalizes before comparing
- *    (`pedido_nfe_base.dart:675`), so the canonical token matches it verbatim.
+ *    marked não-contribuinte — the NF-e reader then has to default it. Safe for
+ *    migrated data: the legacy NF-e reader normalized before comparing
+ *    (`pedido_nfe_base.dart:675`), so the canonical token matches verbatim.
  *  - An unmappable (non-empty, unrecognized) `estado` name/code no longer
  *    discards the endereço. It yields `uf-desconhecida`, and the call site
  *    resolves the real UF from the CEP through ViaCEP — legacy's own recovery

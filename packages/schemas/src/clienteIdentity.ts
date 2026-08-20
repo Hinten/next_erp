@@ -238,7 +238,7 @@ export function telefoneLookupShapes(raw: unknown): string[] {
 /**
  * Two stored telefone values are the same number when either is one of the
  * other's wire shapes — the normalized `55…` this app writes and the raw
- * 10/11-digit BR shape the live Flutter app still writes are the SAME phone.
+ * 10/11-digit BR shape the migrated corpus is full of are the SAME phone.
  *
  * Used to suppress a pointless rewrite on merge. Re-canonicalizing a stored
  * value is a migration (`tools/migrations`), not a side effect of an unrelated

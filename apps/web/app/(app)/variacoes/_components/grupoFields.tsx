@@ -16,7 +16,7 @@ export const GRUPO_SECTIONS: string[] = ['Dados gerais', 'Variantes'];
 /**
  * Fields hidden from the grupo ObjectView: audit stamps, the denormalized id
  * list (`variacoesIds` is derived on save), and the marketplace link arrays
- * (Shopee / Loja Integrada / Amazon) the Flutter app still authors.
+ * (Shopee / Loja Integrada / Amazon) that only the legacy app ever authored.
  */
 export const GRUPO_EXCLUDED_FIELDS: string[] = [
   'timestamp',

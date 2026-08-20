@@ -96,8 +96,8 @@ export const TIPO_MOVIMENTO_ESTOQUE_LABELS: Record<TipoMovimentoEstoque, string>
  * the deliberately read-free manual entrada/saída path (#387). Nothing computes
  * from them — they are for the audit UI. `*Antes` is `saldo − movimento`.
  *
- * ⚠️ **Dual run**: the Flutter app still writes rows in the v1 shape, so a
- * Flutter-written row arrives with `movimento: null`. That is deliberate and
+ * ⚠️ **Legacy rows**: the corpus is full of v1-shape rows, so a legacy-written
+ * row arrives with `movimento: null`. That is deliberate and
  * safe — every consumer treats an absent `movimento` as *unknown* and **fails
  * open** (the sweep sends rather than skips). Keeping v1's field name would
  * instead have let a Flutter balanço's absolute value be summed as if it were a

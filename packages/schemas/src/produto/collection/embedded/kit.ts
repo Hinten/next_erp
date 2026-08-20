@@ -9,7 +9,7 @@ import { z } from 'zod';
  *
  * `quantidade` (min 1) is how many of the component go into one kit;
  * `limitarEstoque` flags whether the component constrains the kit's available
- * stock. `.passthrough()` preserves any extra field the Flutter app may add.
+ * stock. `.passthrough()` preserves any extra field the migrated corpus carries.
  */
 export const kitSchema = z
   .object({

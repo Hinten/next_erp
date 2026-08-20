@@ -42,9 +42,9 @@
  * No Bearer token and OUT of the `proxy.ts` CORS matcher — it's a server→server
  * call from ML, not a browser request.
  *
- * ⚠️ DUAL-RUN: switching a seller's ML callback URL here MUST be paired with
- * disabling the legacy Flutter notification functions (see functions/DEPLOY.md)
- * or every notification is double-processed.
+ * ⚠️ CUTOVER: a seller's ML callback URL is ONE registration. Switching it here
+ * MUST be paired with disabling the legacy Flutter notification functions (see
+ * functions/DEPLOY.md), or the same notification is ingested by both systems.
  */
 import { NextResponse } from 'next/server';
 import { logger } from 'firebase-functions/logger';

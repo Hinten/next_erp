@@ -113,7 +113,7 @@ Next produto editor's `onAfterSave`).
 client-side history/propagation writes** — until it's live, an edit made while
 only the OLD client code runs would record no history and propagate nothing.
 Deploying the trigger first is safe on its own (both the old client writes and
-the new trigger writes for a while, which is the accepted dual-run — see the
+the new trigger writes for a while, which is the accepted overlap — see the
 schema/trigger PR notes), so when in doubt deploy the function first and ship
 the client change after.
 

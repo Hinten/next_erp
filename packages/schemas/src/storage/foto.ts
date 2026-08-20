@@ -83,7 +83,7 @@ export function buildOriginalFotoRef(arquivoId: string): FotoRefs {
  * refs are nullable because the resize Cloud Function fills them in
  * asynchronously after the upload finalizes. `grupoDeVariacoesOuterRef` /
  * `variantePath` scope a photo to a specific variation (per-variant galleries).
- * `.passthrough()` keeps any extra fields the Flutter app may write. Build the
+ * `.passthrough()` keeps any extra fields the migrated corpus carries. Build the
  * refs with `buildFotoRefs`.
  */
 export const fotoSchema = z

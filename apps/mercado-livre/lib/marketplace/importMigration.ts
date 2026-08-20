@@ -51,7 +51,7 @@
  * `variations[]` listing's link, per the identical parenting rule applied one
  * level up by the ORIGINAL, non-migration import).
  *
- * So the correct, dual-run-equivalent override is `sourceLink.produtoId`
+ * So the correct, legacy-equivalent override is `sourceLink.produtoId`
  * (constant for the WHOLE migration run — every `new_items` entry belongs to
  * the same source listing) — never a per-entry `Ci`. This also matches the
  * observed convergence property that motivated `resolveUpParentOverride`
