@@ -19,6 +19,8 @@ import type { VolumeFormState } from '../../types';
 import type { PedidoFormHandle } from './fields';
 import { fretePath } from './fields';
 import { pesoPedido, volumePadrao } from './pesoPedido';
+import { dimensoesPedido, type EstimativaDimensoes } from './dimensoesPedido';
+import { notificarAvisoDimensoes } from './notificarAviso';
 import { loadProdutoPesoMap } from './produtoPeso';
 
 export interface VolumesEditorProps {
@@ -51,15 +53,15 @@ export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorP
     const itens = itensFlat.filter((i) => !i._delete);
     setAdicionando(true);
     let peso = 1;
+    let estimativa: EstimativaDimensoes | undefined;
     try {
-      peso = pesoPedido(
-        itens,
-        await loadProdutoPesoMap(
-          queryClient,
-          db,
-          itens.map((i) => i.produtoUid),
-        ),
+      const medidas = await loadProdutoPesoMap(
+        queryClient,
+        db,
+        itens.map((i) => i.produtoUid),
       );
+      peso = pesoPedido(itens, medidas);
+      estimativa = dimensoesPedido(itens, medidas);
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       notifications.show({
@@ -76,7 +78,11 @@ export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorP
     // (maxVolumes 1) could end up with two.
     const atuais = (form.getValues(fretePath('volumes')) as VolumeFormState[] | null) ?? [];
     if (maxVolumes != null && atuais.length >= maxVolumes) return;
-    update([...atuais, volumePadrao(peso)]);
+    update([...atuais, volumePadrao(peso, estimativa)]);
+    // Same box as the activation seed, so the same explanation — adding a
+    // volume by hand must not be the one path that stays quiet about a clamped
+    // or surcharged box.
+    notificarAvisoDimensoes(estimativa?.aviso);
   }
 
   const update = (next: VolumeFormState[]) => {

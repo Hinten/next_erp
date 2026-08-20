@@ -53,6 +53,8 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { BUILD_ENV_FILE, BuildEnvError, loadBuildEnv } from './build-env.mjs';
+
 /**
  * Regions that do NOT offer Cloud Tasks and Cloud Scheduler, so no
  * `onTaskDispatched` or `onSchedule` can live there.
@@ -206,7 +208,7 @@ function checkWhitespace(env, names) {
  *
  * @returns {{rows: Array<{name: string, value: string, source: string}>, errors: string[], tasksRegion: string}}
  */
-export function preflight(codebase, env = process.env) {
+export function preflight(codebase, env = process.env, fromFile = new Set()) {
   const spec = CODEBASES[codebase];
   if (!spec) {
     throw new Error(
@@ -214,6 +216,10 @@ export function preflight(codebase, env = process.env) {
     );
   }
 
+  // Where a value came from is part of the answer, not decoration: `[env]` and
+  // `[.env.functions]` behave identically for THIS deploy but differ for the next
+  // operator, who may not have the file.
+  const sourceOf = (name) => (fromFile.has(name) ? BUILD_ENV_FILE : 'env');
   const rows = [];
   const errors = [];
 
@@ -221,7 +227,7 @@ export function preflight(codebase, env = process.env) {
   rows.push({
     name: 'TASKS_INVOKER_SA',
     value: invoker ?? '(unset)',
-    source: invoker ? 'env' : 'MISSING',
+    source: invoker ? sourceOf('TASKS_INVOKER_SA') : 'MISSING',
   });
   if (!invoker) {
     errors.push(
@@ -248,7 +254,7 @@ export function preflight(codebase, env = process.env) {
     rows.push({
       name,
       value: set ?? fallback,
-      source: set ? 'env' : 'build.mjs default',
+      source: set ? sourceOf(name) : 'build.mjs default',
     });
   }
   for (const [name, fallback] of Object.entries(spec.deployShell)) {
@@ -256,7 +262,7 @@ export function preflight(codebase, env = process.env) {
     rows.push({
       name,
       value: set ?? fallback,
-      source: set ? 'env' : 'code default',
+      source: set ? sourceOf(name) : 'code default',
     });
   }
 
@@ -351,7 +357,24 @@ if (isMain()) {
     process.exit(1);
   }
 
-  const { rows, errors, tasksRegion } = preflight(codebase);
+  // Load BEFORE resolving: the preflight and prepare-deploy.mjs are SEPARATE node
+  // processes, so each must read the file or they would disagree about what the
+  // build is going to inline.
+  let loaded;
+  try {
+    loaded = loadBuildEnv();
+  } catch (err) {
+    // Narrowed on purpose — a refusal to load is an operator message, anything
+    // else is a bug and must keep its stack (rule 6).
+    if (!(err instanceof BuildEnvError)) throw err;
+    console.error(`
+✖ deploy preflight FAILED for '${codebase}':
+
+${err.message}
+`);
+    process.exit(1);
+  }
+  const { rows, errors, tasksRegion } = preflight(codebase, process.env, new Set(loaded.applied));
   console.log(`\ndeploy preflight — codebase '${codebase}'\n`);
   console.log(formatRows(rows));
   const note = crossCheckNote(codebase, tasksRegion);

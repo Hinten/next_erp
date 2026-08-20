@@ -37,23 +37,38 @@ class FakeDb {
     return this.col(path).get(id);
   }
 
-  private query(entries: Array<[string, DocData, string]>) {
+  private query(entriesOf: () => Array<[string, DocData, string]>) {
     const clauses: Array<[string, unknown]> = [];
+    let cap: number | null = null;
     const q = {
+      // Tagged so the transaction fake can tell a query from a doc ref.
+      __isQuery: true as const,
       where(field: string, _op: string, value: unknown) {
         clauses.push([field, value]);
         return q;
       },
+      // The UP member lookup bounds its scan with `.limit(10)`; without this the
+      // chain throws and every caller reports a resolution failure it never had.
+      limit(n: number) {
+        cap = n;
+        return q;
+      },
       async get() {
-        const rows = entries.filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
+        // ⚠️ Re-evaluated per call, never captured. A transaction retry MUST see
+        // what the winning writer committed; a frozen snapshot would make an OCC
+        // guard look broken and, worse, make a missing one look fine.
+        const matched = entriesOf().filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
+        const rows = cap == null ? matched : matched.slice(0, cap);
         return {
           docs: rows.map(([id, d, colPath]) => ({
             id,
+            __path: colPath,
             data: () => d,
             exists: true,
-            ref: { parent: { parent: { id: parentDocId(colPath) } } },
+            ref: { id, __path: colPath, parent: { parent: { id: parentDocId(colPath) } } },
           })),
           empty: rows.length === 0,
+          size: rows.length,
         };
       },
     };
@@ -66,9 +81,11 @@ class FakeDb {
     return {
       doc: (id: string) => ({
         id,
+        __path: path,
         get: async () => ({ exists: col.has(id), id, data: () => col.get(id) }),
         set: async (data: DocData, opts?: { merge?: boolean }) => {
           col.set(id, opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data });
+          self.versions.set(`${path}/${id}`, (self.versions.get(`${path}/${id}`) ?? 0) + 1);
         },
         update: async (patch: DocData) => {
           const full = `${path}/${id}`;
@@ -81,18 +98,132 @@ class FakeDb {
           if (!col.has(id)) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
           self.updates.push({ path: full, patch });
           col.set(id, { ...(col.get(id) ?? {}), ...patch });
+          self.versions.set(full, (self.versions.get(full) ?? 0) + 1);
         },
       }),
     };
   }
 
   collectionGroup(groupId: string) {
-    const entries: Array<[string, DocData, string]> = [];
-    for (const [path, col] of this.cols) {
-      if (path.split('/').pop() === groupId) for (const [id, d] of col) entries.push([id, d, path]);
-    }
-    return this.query(entries);
+    return this.query(() => {
+      const entries: Array<[string, DocData, string]> = [];
+      for (const [path, col] of this.cols) {
+        if (path.split('/').pop() === groupId) {
+          for (const [id, d] of col) entries.push([id, d, path]);
+        }
+      }
+      return entries;
+    });
   }
+
+  /**
+   * A transaction fake with REAL optimistic concurrency, not a pass-through.
+   *
+   * A pass-through would make the family fold's race test vacuous — it would
+   * report green for the exact unguarded read-modify-write the transaction was
+   * added to prevent. So this records the version of every document the callback
+   * READS and, at commit, re-checks them: if another writer touched one in the
+   * meantime the callback is re-run against the new state, which is what Firestore
+   * does and what makes the concurrent-member test meaningful.
+   */
+  async runTransaction<T>(fn: (tx: FakeTx) => Promise<T>): Promise<T> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const readVersions = new Map<string, number>();
+      const writes: Array<() => void> = [];
+      const tx = this.makeTx(readVersions, writes);
+      const out = await fn(tx);
+      // The race window: a competing writer commits after our reads and before
+      // our commit. Fires ONCE so a retry is not itself raced forever.
+      const hook = this.onBeforeCommit;
+      this.onBeforeCommit = null;
+      if (hook) await hook();
+      const stale = [...readVersions].some(([k, v]) => (this.versions.get(k) ?? 0) !== v);
+      if (stale) continue; // OCC conflict → re-run against fresh state
+      for (const w of writes) w();
+      return out;
+    }
+    throw new Error('transaction failed after 5 attempts');
+  }
+
+  /** Bump a doc's version so readers that saw the old one lose at commit. */
+  private bump(path: string, id: string): void {
+    const k = `${path}/${id}`;
+    this.versions.set(k, (this.versions.get(k) ?? 0) + 1);
+  }
+
+  readonly versions = new Map<string, number>();
+  /** Runs inside the read→commit window, so a test can interleave a competing writer. */
+  onBeforeCommit: (() => void | Promise<void>) | null = null;
+
+  private makeTx(readVersions: Map<string, number>, writes: Array<() => void>): FakeTx {
+    const self = this;
+    const note = (path: string, id: string) =>
+      readVersions.set(`${path}/${id}`, self.versions.get(`${path}/${id}`) ?? 0);
+    return {
+      get: async (target: FakeRef | FakeQuery) => {
+        if ('__isQuery' in target) {
+          const snap = await target.get();
+          for (const d of snap.docs) note(d.__path, d.id);
+          return snap;
+        }
+        note(target.__path, target.id);
+        const col = self.cols.get(target.__path);
+        return {
+          exists: col?.has(target.id) ?? false,
+          id: target.id,
+          data: () => col?.get(target.id),
+        };
+      },
+      set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => {
+        writes.push(() => {
+          const col = self.colOf(ref.__path);
+          col.set(ref.id, opts?.merge ? { ...(col.get(ref.id) ?? {}), ...data } : { ...data });
+          self.updates.push({ path: `${ref.__path}/${ref.id}`, patch: data });
+          self.bump(ref.__path, ref.id);
+        });
+      },
+      update: (ref: FakeRef, patch: DocData) => {
+        writes.push(() => {
+          const col = self.colOf(ref.__path);
+          if (!col.has(ref.id)) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
+          col.set(ref.id, { ...(col.get(ref.id) ?? {}), ...patch });
+          self.updates.push({ path: `${ref.__path}/${ref.id}`, patch });
+          self.bump(ref.__path, ref.id);
+        });
+      },
+    };
+  }
+
+  colOf(path: string): Map<string, DocData> {
+    let c = this.cols.get(path);
+    if (!c) this.cols.set(path, (c = new Map()));
+    return c;
+  }
+}
+
+interface FakeRef {
+  id: string;
+  __path: string;
+}
+interface FakeQueryDoc {
+  id: string;
+  __path: string;
+  data: () => DocData;
+  ref: unknown;
+}
+interface FakeQuery {
+  __isQuery: true;
+  get(): Promise<{ docs: FakeQueryDoc[] }>;
+}
+interface FakeDocSnap {
+  exists: boolean;
+  id: string;
+  data: () => DocData | undefined;
+}
+interface FakeTx {
+  get(target: FakeRef | FakeQuery): Promise<{ docs: FakeQueryDoc[] } | FakeDocSnap>;
+  set(ref: FakeRef, data: DocData, opts?: { merge?: boolean }): void;
+  update(ref: FakeRef, patch: DocData): void;
 }
 
 function parentDocId(colPath: string): string {
@@ -147,6 +278,55 @@ function seedLink(db: FakeDb, link: DocData = {}, produto: DocData = {}): void {
     ...link,
   });
 }
+
+/* ---- User-Products family fixtures (#1142) ----
+ * A family's PARENT link carries the FAMILY id, so no member's item id matches it.
+ * Members live on their own CHILD produtos under `variacaoMercadoLivre`, keyed to
+ * the parent by `produtoMercadoLivreOuterRef`. */
+
+const FAMILY = 'FAM-9'; // the parent link's `id` — NOT any member's item id
+const MEMBER_A = 'MLB-A';
+const MEMBER_B = 'MLB-B';
+const FAMILY_PML_REF = `documents/produtos/${PRODUTO}/produtoMercadoLivre/link1`;
+
+/** Seed a UP family: one parent link at `FAMILY`, plus the given members. */
+function seedFamily(
+  db: FakeDb,
+  members: Array<{ itemId: string; child: string; status?: string | null; sub?: string[] | null }>,
+  link: DocData = {},
+  produto: DocData = {},
+): void {
+  db.seed('produtos', PRODUTO, {
+    nome: 'Camiseta',
+    marketplace: [{ integracaoUid: CONTA, externalId: FAMILY }],
+    marketplaceIds: [FAMILY],
+    integracoesComProduto: [CONTA],
+    ...produto,
+  });
+  db.seed(LINK_PATH, 'link1', {
+    id: FAMILY,
+    contaOuterRef: `documents/integracao/${CONTA}`,
+    title: 'Camiseta',
+    estado: 'p',
+    status: 'active',
+    sub_status: null,
+    isUserProductModel: true,
+    ...link,
+  });
+  for (const m of members) {
+    db.seed(`produtos/${m.child}/variacaoMercadoLivre`, `v-${m.child}`, {
+      itemId: m.itemId,
+      produtoMercadoLivreOuterRef: FAMILY_PML_REF,
+      produtoVariacaoOuterRef: `documents/produtos/${m.child}`,
+      // Deliberately absent unless asked for: `contaOuterRef` is null on every
+      // pre-#920 row, and the resolver must not depend on it.
+      status: m.status === undefined ? 'active' : m.status,
+      sub_status: m.sub ?? null,
+    });
+  }
+}
+
+const memberVarPath = (child: string) => `produtos/${child}/variacaoMercadoLivre`;
 
 beforeEach(() => vi.restoreAllMocks());
 
@@ -756,5 +936,268 @@ describe('syncItemStatus — transport errors', () => {
         failingResolver(new MercadoLivreNetworkError('offline')),
       ),
     ).rejects.toThrow(MercadoLivreNetworkError);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        User-Products FAMILY member status (#1142)                          */
+/* -------------------------------------------------------------------------- */
+
+describe('syncItemStatus — User-Products family members (#1142)', () => {
+  it('a MEMBER item resolves its family and syncs the parent link', async () => {
+    // The regression: the parent link carries FAMILY, so matching on `id` alone
+    // found nothing and the delivery reported `no-link`.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'paused' },
+    ]);
+    const resolve = resolverFor({ status: 'paused', sub_status: ['out_of_stock'] });
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve);
+
+    expect(out).toBe('synced-family');
+    // Every member is now paused, so the family summarises as paused.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa', status: 'paused' });
+  });
+
+  it("records the member's own status on ITS link, not on the family's", async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB' },
+    ]);
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'] }),
+    );
+
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      status: 'paused',
+      sub_status: ['out_of_stock'],
+    });
+    // The sibling is untouched — one notification speaks for one listing.
+    expect(db.docData(memberVarPath('childB'), 'v-childB')).toMatchObject({ status: 'active' });
+    // And no `estado` leaks onto a member: it is a FAMILY summary.
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).not.toHaveProperty('estado');
+  });
+
+  it('ONE member closing does NOT cancel a family whose sibling is still live', async () => {
+    // The whole point of the fold. `estado 'c'` would drop the produto from
+    // `integracoesComProduto` and so from both sweeps' anchor query — silently.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'active' },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+    expect(out).toBe('synced-member'); // recorded, family summary unmoved
+    // The produto keeps its denorm entry: nothing was cancelled.
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [FAMILY] });
+  });
+
+  it('the LAST member closing cancels the family and removes the FAMILY-keyed denorm entry', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'closed' },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(out).toBe('synced-family');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
+    // ⚠️ Keyed on the FAMILY id — publish/import stamped it that way. Keying on the
+    // member id would leave this array untouched and the removal a silent no-op.
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplace: [], marketplaceIds: [] });
+  });
+
+  it('a never-observed member blocks the cancel — unknown is not dead', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: null },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(out).toBe('synced-member');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' });
+  });
+
+  it('a member of ANOTHER conta never resolves (ownership comes from the parent link)', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }], {
+      contaOuterRef: `documents/integracao/outra-conta`,
+    });
+    const resolve = resolverFor({ status: 'paused' });
+
+    expect(await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolve)).toBe('no-link');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(db.updates).toEqual([]);
+  });
+
+  it('the parent-id match still wins first — a simple listing never touches the member query', async () => {
+    // Stage 2 must stay a fallback: it is pure cost for the common case.
+    const db = new FakeDb();
+    seedLink(db);
+    // A member link that would ALSO match this id, on a different produto. If
+    // stage 2 ran first (or at all here) the sync would resolve the wrong parent.
+    db.seed('produtos/childX/variacaoMercadoLivre', 'v-childX', {
+      itemId: ITEM,
+      produtoMercadoLivreOuterRef: 'documents/produtos/OTHER/produtoMercadoLivre/linkX',
+      produtoVariacaoOuterRef: 'documents/produtos/childX',
+      status: 'closed',
+    });
+
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'paused' }));
+
+    expect(out).toBe('synced'); // the SIMPLE outcome, not a family one
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' });
+    // The stray member link was never written to.
+    expect(db.docData('produtos/childX/variacaoMercadoLivre', 'v-childX')).toMatchObject({
+      status: 'closed',
+    });
+  });
+
+  it('a redelivery of an unchanged member is a no-op', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB' },
+    ]);
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'active' }));
+
+    expect(out).toBe('unchanged');
+    expect(db.updates).toEqual([]);
+  });
+});
+
+describe('syncItemStatus — concurrent family members (rule 7)', () => {
+  /**
+   * The queue runs `maxConcurrentDispatches: 3`, and ML fans out ONE notification
+   * per member item — so a family-wide pause/close/reactivate is precisely when two
+   * members are processed at once. The fold reads every sibling and writes the
+   * parent, which is a read-modify-write across documents: without a guard the
+   * loser re-applies a decision made against a view that has since moved.
+   *
+   * Reported interleaving: stored A `active`, B `closed`; on ML, A has closed and
+   * B has been reactivated. A folds against B's STALE `closed`, concludes
+   * all-closed, and its write lands last — cancelling a family whose member B is
+   * live, dropping the FAMILY denorm entry, and (in production) taking the conta
+   * out of `integracoesComProduto`, the anchor pre-filter both sweeps open with.
+   */
+  it('a sibling reactivated mid-flight does NOT let the other member cancel the family', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA', status: 'active' },
+      { itemId: MEMBER_B, child: 'childB', status: 'closed' },
+    ]);
+
+    // B commits inside A's read→commit window: it records itself active and
+    // re-folds. A must not then re-apply its stale all-closed conclusion.
+    db.onBeforeCommit = async () => {
+      await syncItemStatus(asDb(db), CONTA, MEMBER_B, resolverFor({ status: 'active' }));
+    };
+
+    const aOut = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    // Both members' own readings are recorded truthfully.
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({ status: 'closed' });
+    expect(db.docData(memberVarPath('childB'), 'v-childB')).toMatchObject({ status: 'active' });
+
+    // And the family reflects the LIVE member, not the stale all-closed view.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+    expect(aOut).not.toBe('link-removido');
+
+    // The denorm entry survives: nothing was cancelled.
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [FAMILY] });
+  });
+
+  it('the LAST member closing still cancels, even when a sibling commits mid-flight', async () => {
+    // The mirror case — the guard must not make a legitimate cancel unreachable.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA', status: 'active' },
+      { itemId: MEMBER_B, child: 'childB', status: 'active' },
+    ]);
+
+    db.onBeforeCommit = async () => {
+      await syncItemStatus(asDb(db), CONTA, MEMBER_B, resolverFor({ status: 'closed' }));
+    };
+
+    await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplace: [], marketplaceIds: [] });
+  });
+});
+
+describe('syncItemStatus — a family member never speaks for the family un-folded', () => {
+  it("a MEMBER's migration tags do not stamp `estado 'am'` on the family", async () => {
+    // Under stage-2 resolution `link` is the family PARENT. A tag branch reaching
+    // it would block publish and make BOTH planners skip every sibling because one
+    // member is tagged. The member goes to the fold instead.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'paused' },
+    ]);
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', tags: ['variations_migration_uptin'] }),
+    );
+
+    expect(out).not.toBe('deferred-migration-uptin');
+    expect(db.docData(LINK_PATH, 'link1')).not.toMatchObject({ estado: 'am' });
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' });
+  });
+
+  it('a MEMBER never triggers the #441 takeover against the family link', async () => {
+    // The takeover prunes its source. Handing it a member item id with the
+    // FAMILY's parent link would point that prune at a live family. A UPtin
+    // migration's source is a LEGACY listing, which resolves through stage 1.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }]);
+    const migrationRunner = vi.fn(async () => {});
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
+      migrationRunner,
+    );
+
+    expect(migrationRunner).not.toHaveBeenCalled();
+  });
+
+  it('a member row with no itemId is not a listing, so it cannot block a cancel forever', async () => {
+    // The legacy `variations[]` branch leaves `itemId` null. Counted as "never
+    // observed" it would make `'c'` unreachable for the family for all time — no
+    // notification can arrive for something that was never published.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }]);
+    db.seed('produtos/childZ/variacaoMercadoLivre', 'v-childZ', {
+      itemId: null,
+      produtoMercadoLivreOuterRef: FAMILY_PML_REF,
+      produtoVariacaoOuterRef: 'documents/produtos/childZ',
+      status: null,
+    });
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(out).toBe('synced-family');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c' });
   });
 });

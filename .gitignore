@@ -23,6 +23,12 @@ e2e/.auth/
 # `.env.deploy` line (as #764 added) would NOT cover `.env.deploy.<project-id>`,
 # the per-project variant that same allowlist also accepts.
 .env.deploy*
+# Build-time config for the Cloud Functions deploy, read by tools/deploy-env/
+# build-env.mjs. Holds service-account EMAILS and regions — non-secret, but
+# environment-specific, so it is never committed. ⚠️ `.env` above is an EXACT
+# match, so without this line a filled-in `.env.functions` is committable.
+.env.functions*
+!.env.functions.example
 # Credential material. Note `.env` above is an EXACT match, not a prefix — without
 # this line a filled-in `.env.secrets` is committable.
 .env.secrets*

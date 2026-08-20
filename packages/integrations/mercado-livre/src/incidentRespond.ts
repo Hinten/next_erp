@@ -146,10 +146,19 @@ export async function respondIncidentMl(
       return { ok: true };
     }
 
-    default:
-      // `attach_evidence`, `ship_replacement` and `custom` have no ML equivalent
-      // on this surface. Refusing by name beats a silent `ok: false`.
+    // No ML equivalent on this surface. Refusing by name beats a silent
+    // `ok: false`. Named explicitly rather than left to `default` so the
+    // exhaustiveness check proves the list is complete: a new `IncidentAction`
+    // member now fails lint here instead of quietly inheriting this refusal.
+    case 'attach_evidence':
+    case 'ship_replacement':
+    case 'custom':
       throw new ClaimActionUnavailableError(action.type, disponiveis);
+
+    default:
+      // Unreachable through the type; a value from outside it still refuses by
+      // name rather than resolving `undefined` into `IncidentActionResult`.
+      throw new ClaimActionUnavailableError((action as IncidentAction).type, disponiveis);
   }
 }
 
