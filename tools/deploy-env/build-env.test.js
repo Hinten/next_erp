@@ -103,6 +103,50 @@ describe('parsing', () => {
     expect(parseBuildEnv('FUNCTIONS_REGION="us-east1\n')[0].value).toBe('"us-east1');
   });
 
+  it('accepts a leading `export `, because that is what we tell people to type', () => {
+    // Every DEPLOY.md, this module's own rejection text and .env.example all say
+    // `export TASKS_INVOKER_SA="…"`. That is the line an operator pastes here.
+    expect(parseBuildEnv('export FUNCTIONS_REGION=us-east1\n')).toEqual([
+      { key: 'FUNCTIONS_REGION', value: 'us-east1' },
+    ]);
+    expect(parseBuildEnv('export TASKS_INVOKER_SA="a@b.com"\n')[0].value).toBe('a@b.com');
+  });
+
+  it('strips a UTF-8 BOM', () => {
+    // PowerShell's `>` / Out-File write one here, and it would otherwise make the
+    // first key `﻿TASKS_INVOKER_SA` — refused with a message naming a key
+    // that looks identical to the one on screen.
+    expect(parseBuildEnv('﻿FUNCTIONS_REGION=us-east1\n')).toEqual([
+      { key: 'FUNCTIONS_REGION', value: 'us-east1' },
+    ]);
+  });
+
+  it('THROWS on a line it cannot parse, naming the line number', () => {
+    // ⚠️ The regression this exists for. Skipping the line was silent: for
+    // FUNCTIONS_REGION the loader then fell back to the build default, printed
+    // `[build.mjs default]` and EXITED 0 — a deploy to the wrong region with the
+    // file in front of you saying otherwise.
+    let message = '';
+    try {
+      parseBuildEnv('TASKS_INVOKER_SA=a@b.com\nFUNCTIONS_REGION: us-east1\n');
+    } catch (err) {
+      if (!(err instanceof BuildEnvError)) throw err;
+      message = err.message;
+    }
+
+    expect(message).toContain('cannot parse');
+    expect(message).toContain('line 2');
+    expect(message).toContain('FUNCTIONS_REGION: us-east1');
+  });
+
+  it.each([
+    ['lowercase key', 'functions_region=us-east1\n'],
+    ['no equals', 'FUNCTIONS_REGION us-east1\n'],
+    ['leading junk', '- FUNCTIONS_REGION=us-east1\n'],
+  ])('throws rather than skipping: %s', (_label, text) => {
+    expect(() => parseBuildEnv(text)).toThrow(BuildEnvError);
+  });
+
   it('skips comments and blank lines', () => {
     expect(parseBuildEnv('# FUNCTIONS_REGION=nope\n\n  \nNFE_TASKS_REGION=us-east1\n')).toEqual([
       { key: 'NFE_TASKS_REGION', value: 'us-east1' },

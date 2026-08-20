@@ -137,9 +137,23 @@ export const RUNTIME_KEYS = new Set([
  */
 export function parseBuildEnv(text) {
   const entries = [];
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*([A-Z][A-Z0-9_]*)\s*=(.*)$/.exec(line);
-    if (!match) continue;
+  const malformed = [];
+  // ⚠️ Strip a UTF-8 BOM. PowerShell's `>` and `Out-File` write one here, and it
+  // would otherwise make the first key `﻿TASKS_INVOKER_SA` — rejected with a
+  // message naming a key that looks identical to the one the operator typed.
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    if (line.trim() === '' || line.trim().startsWith('#')) continue;
+    // ⚠️ Accept a leading `export `. Every DEPLOY.md, this module's own rejection
+    // text and `.env.example` all tell the operator to type
+    // `export TASKS_INVOKER_SA="…"`, so that is the line they will paste in here.
+    // Refusing the exact syntax we taught them would be hostile; silently dropping
+    // it is worse, which is what the `malformed` branch below is for.
+    const match = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=(.*)$/.exec(line);
+    if (!match) {
+      malformed.push(`  line ${index + 1}: ${JSON.stringify(line)}`);
+      continue;
+    }
     let value = match[2].trim();
     if (
       value.length >= 2 &&
@@ -149,6 +163,29 @@ export function parseBuildEnv(text) {
       value = value.slice(1, -1);
     }
     entries.push({ key: match[1], value });
+  }
+
+  // ⚠️ A line that does not parse is an ERROR, never a skip. Skipping is the one
+  // outcome this whole subsystem exists to forbid: for TASKS_INVOKER_SA a dropped
+  // line at least aborts later as MISSING, but for FUNCTIONS_REGION or
+  // MERCADO_LIVRE_TASKS_REGION it falls back to the build default, prints
+  // `[build.mjs default]` and EXITS 0 — a deploy to the wrong region with the file
+  // sitting right there, saying otherwise.
+  if (malformed.length > 0) {
+    throw new BuildEnvError(
+      [
+        `${BUILD_ENV_FILE} has ${malformed.length === 1 ? 'a line' : 'lines'} it cannot parse:`,
+        '',
+        ...malformed,
+        '',
+        'Expected `KEY=value`, one per line (a leading `export ` is fine, and `#`',
+        'starts a comment). Keys are UPPER_SNAKE_CASE.',
+        '',
+        'This is an error rather than a skipped line on purpose: a dropped',
+        'FUNCTIONS_REGION would silently fall back to the build default and deploy',
+        'to the wrong region, with the file in front of you saying otherwise.',
+      ].join('\n'),
+    );
   }
   return entries;
 }
