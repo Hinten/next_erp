@@ -88,8 +88,17 @@ export type CheckoutDanfeFormat = 'simplificadoPdf' | 'retrato' | 'paisagem' | '
 /**
  * Map the checkout DANFE-format dropdown to the underlying print/download call.
  * The A4 formats deliberately print via the agent (legacy A4 was download-only);
- * `simplificadoZpl2` DOWNLOADS — the print agent's raw-ZPL passthrough is
- * unverified (follow-up issue). Returns which delivery path ran.
+ * `simplificadoZpl2` still DOWNLOADS. Returns which delivery path ran.
+ *
+ * On the ZPL question this used to say the agent's raw-ZPL passthrough was
+ * "unverified", which reads as unknown-and-unknowable. It is narrower than that:
+ * the agent has a `text/plain` → `_printPlainText` branch doing a `RAW` spooler
+ * write (`printJob.dart:268`), and that function already runs in production for
+ * marketplace ZPL — but reached through `_printFromZip`, never from a top-level
+ * `text/plain` job. `lib/checkout/etiqueta/providers/genericLabel.ts` is the
+ * first caller to use that entry point (#376). Once a real Zebra has confirmed
+ * it, this can switch to `printDanfe(..., 'etq')` too; until then a download is
+ * the honest default for a fiscal document.
  */
 export async function printDanfeForCheckout(
   client: NFeHttpClient,

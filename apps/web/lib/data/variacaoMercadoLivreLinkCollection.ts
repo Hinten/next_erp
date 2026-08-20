@@ -17,8 +17,13 @@ import { defineCollection } from '@delfrance/data';
  *  - `id` (numeric) — a legacy variation inside the parent ML item;
  *  - `itemId` (MLB string) — User-Products, where the variation IS its own item.
  *
- * Written server-side by `publishProduto` and the `items` status webhook;
- * rules coverage comes from `PRODUTO_SUBCOLLECTION_NAMES`, so adding this
+ * Written server-side by `publishProduto` / `publishUserProduct` and by
+ * `importVariations`, plus the UP-migration prune in `importMigration`. ⚠️ NOT
+ * by the `items` status webhook — `itemsStatusSync` imports this handle but only
+ * ever READS through it; its write-back is to the PARENT link
+ * (`produtoMercadoLivreLinkCollection`) and the denorm.
+ *
+ * Rules coverage comes from `PRODUTO_SUBCOLLECTION_NAMES`, so adding this
  * handle needs no ruleset regeneration.
  */
 export const variacaoMercadoLivreLinkCollection = defineCollection({

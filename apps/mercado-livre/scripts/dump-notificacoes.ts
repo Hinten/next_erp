@@ -30,6 +30,7 @@ import { notificacaoMercadoLivreCollection } from '@delfrance/data/admin/collect
 import type { Query } from 'firebase-admin/firestore';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
+import { TOPIC_DISPOSITION } from '../lib/marketplace/notificacao';
 
 function log(message: string): void {
   // eslint-disable-next-line no-console -- CLI output
@@ -212,14 +213,35 @@ async function main(): Promise<void> {
   for (const [k, v] of [...porStatus].sort()) log(`  status ${k.padEnd(10)} ${v}`);
   for (const [k, v] of [...porTopic].sort()) log(`  topic  ${k.padEnd(10)} ${v}`);
 
+  // ⚠️ Derivado de TOPIC_DISPOSITION, nunca de um literal (#1129). Este check
+  // existia só para `items_prices` — e #1129 foi exatamente esta classe de bug
+  // num OUTRO tópico: ML manda `stock-locations`, a tabela só conhecia
+  // `stock-location`, e cada entrega parqueava um documento. O resumo acima
+  // listaria esses docs, mas nada os apontaria como ERRADOS. Um tópico `ack`
+  // é, por definição, aquele que não persiste nada; ler a tabela faz este
+  // diagnóstico cobrir também o próximo nome que divergir.
+  //
+  // Só `parked`: um doc `deferred` de tópico ack é legítimo (vendedor ainda
+  // não conectado, #808 — a conta é resolvida ANTES do despacho por tópico),
+  // e sinalizá-lo aqui seria ruído.
+  const topicosAck = new Set(
+    Object.entries(TOPIC_DISPOSITION)
+      .filter(([, disposicao]) => disposicao === 'ack')
+      .map(([topico]) => topico),
+  );
   const parkedInertes = docs.filter(
-    (d) => d.data.status === 'parked' && d.data.topic === 'items_prices',
-  ).length;
-  if (parkedInertes > 0) {
+    (d) =>
+      d.data.status === 'parked' &&
+      typeof d.data.topic === 'string' &&
+      topicosAck.has(d.data.topic),
+  );
+  if (parkedInertes.length > 0) {
+    const nomes = [...new Set(parkedInertes.map((d) => String(d.data.topic)))].sort().join(', ');
     log('');
     log(
-      `  ❌ ${parkedInertes} documento(s) de items_prices parqueados. ` +
-        'Esse tópico é ack-only permanente (#803) e NÃO deve persistir nada.',
+      `  ❌ ${parkedInertes.length} documento(s) parqueados de tópico(s) ack-only: ${nomes}. ` +
+        'Um tópico `ack` NÃO deve persistir nada. Se o nome não estiver em ' +
+        'TOPIC_DISPOSITION, ML mudou/variou a grafia e cada entrega parqueia (#1129).',
     );
   }
 }
