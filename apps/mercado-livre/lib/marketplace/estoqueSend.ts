@@ -1,10 +1,21 @@
 /**
  * Mercado Livre **stock send task handler** (Step 10 PR B, produtos-first
  * rework) — the core behind the `sendMercadoLivreStock` `onTaskDispatched`
- * queue (`functions/src/sendStock.ts`). One task = one ML API call (the whole
- * point of the new queue): the sweeps (PR C) enqueue one task per ML call and
- * this handler executes exactly one `PUT /items/{itemId}` carrying the
- * payload's numbers.
+ * queue (`functions/src/sendStock.ts`). One task = one ML STOCK WRITE (the whole
+ * point of the new queue): the sweeps (PR C) enqueue one task per write and this
+ * handler performs exactly one, carrying the payload's numbers.
+ *
+ * ---- TWO write protocols, chosen by the conta, not by this handler (#706):
+ *   - `kind: 'item' | 'variationItem'` → one `PUT /items/{itemId}`, the path
+ *     every ordinary account uses;
+ *   - `kind: 'userProductStock'` → `GET /user-products/{id}/stock` for the
+ *     `x-version` **and** the warehouse identifiers, then
+ *     `PUT …/stock/type/seller_warehouse`. Two ML calls, not one — the version
+ *     is mandatory, so the read is part of the write. Used for a multiorigin
+ *     (`warehouse_management`) conta, where `PUT /items` `available_quantity` is
+ *     ignored and frequently answers 200 OK. The sweep decides via
+ *     `resolverModoEstoque` from the `GET /users/me` it already makes; this
+ *     handler only obeys the payload's `kind`. See `enviarEstoqueUserProduct`.
  *
  * ---- Master flag (#805): `isStockSyncEnabled()` gates this handler as well as
  * the sweeps. The sweep's own check cannot stop a backlog it has already
@@ -40,6 +51,10 @@
  *
  * ---- Error policy (no generic catch — narrowed, rethrow otherwise):
  *   - 429 → pause stamp + RETHROW (retry rides the queue backoff);
+ *   - **409 on the User-Products stock write → handled FIRST**, above the 4xx arm
+ *     below: a version conflict is the ordinary outcome of a read-before-write,
+ *     and the ladder would spend every attempt on it and then latch a healthy
+ *     listing with `estado 'E'`;
  *   - other 4xx (404 incl.) → NEVER trusted on one sample: ML answers 4xx for
  *     transient reasons too, so RETHROW until `deps.retryCount` reaches the last
  *     of `STOCK_SEND_MAX_ATTEMPTS`. On that final attempt the handler asks ML
@@ -572,6 +587,99 @@ function pararMultiorigem(
   );
 }
 
+/** One `PUT …/stock/type/seller_warehouse` body entry. */
+interface SellerWarehouseLocation {
+  store_id: string;
+  network_node_id: string;
+  quantity: number;
+}
+
+/**
+ * Which `seller_warehouse` location this task writes, derived from ONE
+ * `GET /user-products/{id}/stock` response — or the reason there is no writable
+ * target.
+ *
+ * Pure, and separate from the send so the 409 retry can re-run it against the
+ * FRESH read instead of re-applying a body captured before the conflict.
+ */
+type AlvoSellerWarehouse =
+  | { erro: null; locations: SellerWarehouseLocation[] }
+  | { erro: { mensagem: string; reason: string } | 'full' };
+
+function resolverAlvoSellerWarehouse(
+  stock: MlUserProductStock,
+  quantidade: number,
+): AlvoSellerWarehouse {
+  const todas = stock.locations ?? [];
+  const locais = todas.filter((l) => l.type === STOCK_LOCATION_TYPE.sellerWarehouse);
+
+  if (locais.length === 0) {
+    // Fulfillment: availability comes from ML's own distribution centre, and a
+    // `seller_warehouse` write returns SUCCESS while changing nothing. A skip,
+    // not an error — the listing is healthy, its stock is simply not ours.
+    if (todas.some((l) => l.type === STOCK_LOCATION_TYPE.meliFacility)) return { erro: 'full' };
+    return {
+      erro: {
+        mensagem:
+          'User Product sem depósito (seller_warehouse) — configure o depósito no painel do Mercado Livre',
+        reason: 'sem-deposito-no-ml',
+      },
+    };
+  }
+
+  if (locais.length > 1) {
+    // Unreachable for the tier #706 supports: `resolverModoEstoque` routes a
+    // conta carrying `multiwarehouse` to a refusal, and ML says a seller without
+    // that tag manages exactly one depósito. Defensive rather than a guess —
+    // picking a warehouse would silently move stock in the wrong building, and
+    // writing a one-element body would ZERO the ones it omitted. #1177 is where
+    // the depósito → store mapping belongs.
+    return {
+      erro: {
+        mensagem: `User Product com ${locais.length} depósitos — mapeamento multi-depósito não suportado`,
+        reason: 'multi-deposito-nao-suportado',
+      },
+    };
+  }
+
+  const alvo = locais[0]!;
+  const storeId = alvo.store_id != null ? String(alvo.store_id) : '';
+  const nodeId = alvo.network_node_id != null ? String(alvo.network_node_id) : '';
+  if (storeId === '' || nodeId === '') {
+    return {
+      erro: {
+        mensagem: 'depósito do User Product sem store_id/network_node_id — escrita impossível',
+        reason: 'deposito-sem-identificadores',
+      },
+    };
+  }
+
+  return {
+    erro: null,
+    locations: [{ store_id: storeId, network_node_id: nodeId, quantity: quantidade }],
+  };
+}
+
+/** Turn a {@link resolverAlvoSellerWarehouse} refusal into this task's outcome. */
+async function aplicarErroDeAlvo(
+  db: Firestore,
+  payload: MlStockSendTask,
+  alvo: AlvoSellerWarehouse,
+  userProductId: string,
+  nowMs: number,
+): Promise<StockSendResult> {
+  if (alvo.erro === null) throw new Error('aplicarErroDeAlvo chamado sem erro');
+  if (alvo.erro === 'full') {
+    console.info('[mercado-livre] stock-send: anúncio Fulfillment — estoque gerido pelo ML', {
+      integracaoId: payload.integracaoId,
+      itemId: payload.itemId,
+      userProductId,
+    });
+    return { outcome: 'skipped', reason: 'estoque-full-gerenciado-pelo-ml' };
+  }
+  return await pararMultiorigem(db, payload, alvo.erro.mensagem, alvo.erro.reason, nowMs);
+}
+
 async function enviarEstoqueUserProduct(
   db: Firestore,
   api: StockSendApi,
@@ -625,70 +733,22 @@ async function enviarEstoqueUserProduct(
     );
   }
 
-  const locais = (stock.locations ?? []).filter(
-    (l) => l.type === STOCK_LOCATION_TYPE.sellerWarehouse,
-  );
+  const alvo = resolverAlvoSellerWarehouse(stock, quantidade);
+  if (alvo.erro != null) return await aplicarErroDeAlvo(db, payload, alvo, userProductId, nowMs);
 
-  if (locais.length === 0) {
-    const temFull = (stock.locations ?? []).some(
-      (l) => l.type === STOCK_LOCATION_TYPE.meliFacility,
-    );
-    if (temFull) {
-      // Fulfillment: availability comes from ML's own distribution centre, and a
-      // `seller_warehouse` write returns SUCCESS while changing nothing. A skip,
-      // not an error — the listing is healthy, its stock is simply not ours.
-      console.info('[mercado-livre] stock-send: anúncio Fulfillment — estoque gerido pelo ML', {
-        integracaoId: payload.integracaoId,
-        itemId: payload.itemId,
-        userProductId,
-      });
-      return { outcome: 'skipped', reason: 'estoque-full-gerenciado-pelo-ml' };
-    }
-    return await pararMultiorigem(
-      db,
-      payload,
-      'User Product sem depósito (seller_warehouse) — configure o depósito no painel do Mercado Livre',
-      'sem-deposito-no-ml',
-      nowMs,
-    );
-  }
-
-  if (locais.length > 1) {
-    // Unreachable for the tier #706 supports: `resolverModoEstoque` routes a
-    // conta carrying `multiwarehouse` to a refusal, and ML says a seller without
-    // that tag manages exactly one depósito. Defensive rather than a guess —
-    // picking a warehouse would silently move stock in the wrong building.
-    // #1177 is where the depósito → store mapping belongs.
-    return await pararMultiorigem(
-      db,
-      payload,
-      `User Product com ${locais.length} depósitos — mapeamento multi-depósito não suportado`,
-      'multi-deposito-nao-suportado',
-      nowMs,
-    );
-  }
-
-  const alvo = locais[0]!;
-  const storeId = alvo.store_id != null ? String(alvo.store_id) : '';
-  const nodeId = alvo.network_node_id != null ? String(alvo.network_node_id) : '';
-  if (storeId === '' || nodeId === '') {
-    return await pararMultiorigem(
-      db,
-      payload,
-      'depósito do User Product sem store_id/network_node_id — escrita impossível',
-      'deposito-sem-identificadores',
-      nowMs,
-    );
-  }
-
-  // (3) The write. ONE in-process retry against a FRESH version: a conflict here
-  // means something moved this stock between our two calls (a single sale is
-  // enough), and re-reading is the documented remedy. A second conflict rethrows
-  // — into the queue's backoff, never the terminal-4xx ladder (see the `catch`
-  // in the main handler).
-  const locations = [{ store_id: storeId, network_node_id: nodeId, quantity: quantidade }];
+  // (3) The write. ONE in-process retry, and the retry RE-DERIVES its whole body
+  // from the fresh read — never just the version.
+  //
+  // ⚠️ Reusing the first read's `locations` here would be a real defect, not a
+  // shortcut: the body REPLACES the seller_warehouse set, and a conflict means
+  // something changed underneath us. If what changed was a SECOND warehouse
+  // appearing, re-sending the one-element body would zero it — and the
+  // `> 1 depósito` refusal above, which exists to prevent exactly that, would
+  // have been skipped. Root `CLAUDE.md` rule 7: re-derive from the read that
+  // won, do not re-apply a value captured before it.
+  let escrito = alvo.locations;
   try {
-    await api.putUserProductSellerWarehouseStock(userProductId, version, locations);
+    await api.putUserProductSellerWarehouseStock(userProductId, version, alvo.locations);
   } catch (err) {
     if (!isVersionConflict(err)) throw err;
     console.warn('[mercado-livre] stock-send: x-version desatualizado — relendo e reenviando', {
@@ -697,8 +757,14 @@ async function enviarEstoqueUserProduct(
       userProductId,
     });
     const novo = await api.getUserProductStock(userProductId);
+    // A second conflict rides the queue's backoff, which re-reads from scratch.
     if (novo.version == null) throw err;
-    await api.putUserProductSellerWarehouseStock(userProductId, novo.version, locations);
+    const alvoNovo = resolverAlvoSellerWarehouse(novo.stock, quantidade);
+    if (alvoNovo.erro != null) {
+      return await aplicarErroDeAlvo(db, payload, alvoNovo, userProductId, nowMs);
+    }
+    await api.putUserProductSellerWarehouseStock(userProductId, novo.version, alvoNovo.locations);
+    escrito = alvoNovo.locations;
   }
 
   // (4) Writeback — the healed diagnosis, the stamp, and (only when we had to
@@ -727,7 +793,9 @@ async function enviarEstoqueUserProduct(
     integracaoId: payload.integracaoId,
     itemId: payload.itemId,
     userProductId,
-    storeId,
+    // The location the WINNING call carried — the retry re-derives its own, so
+    // logging the first read's target could name a warehouse we did not write.
+    storeId: escrito[0]?.store_id ?? null,
     sweepId: payload.sweepId,
     ageMs: nowMs - payload.sweepComputedAtMs,
   });

@@ -1056,6 +1056,38 @@ describe('processStockSendTask — multiorigem / seller_warehouse (#706)', () =>
     expect(put).toHaveBeenNthCalledWith(2, 'MLBU-1', '9', expect.anything());
   });
 
+  it('⚠️ the 409 retry RE-DERIVES its body — a warehouse that appeared meanwhile must not be zeroed', async () => {
+    // The body REPLACES the seller_warehouse set. Re-sending the pre-conflict
+    // one-element body would zero the newcomer AND skip the `> 1 depósito`
+    // refusal that exists to prevent exactly that. Root CLAUDE.md rule 7:
+    // re-derive from the read that won.
+    let leituras = 0;
+    const put = vi.fn(async () => {
+      throw new MercadoLivreHttpError('version mismatch', 409, null);
+    });
+    const h = makeHarness({
+      getUserProductStock: async (id) => {
+        leituras += 1;
+        const locations =
+          leituras === 1
+            ? [{ type: 'seller_warehouse', store_id: 'S1', network_node_id: 'N1', quantity: 1 }]
+            : [
+                { type: 'seller_warehouse', store_id: 'S1', network_node_id: 'N1', quantity: 1 },
+                { type: 'seller_warehouse', store_id: 'S2', network_node_id: 'N2', quantity: 4 },
+              ];
+        return { stock: { id, locations } as MlUserProductStock, version: `v${leituras}` };
+      },
+      putUserProductSellerWarehouseStock: put,
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    // The retry saw two warehouses and REFUSED instead of writing one of them.
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'multi-deposito-nao-suportado' });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
   it('⚠️ a SECOND 409 rethrows for the queue and must NOT latch the listing with estado E', async () => {
     // The generic 4xx ladder would spend all three attempts and then mark a
     // perfectly healthy listing as failed, which only an `items` webhook or a
