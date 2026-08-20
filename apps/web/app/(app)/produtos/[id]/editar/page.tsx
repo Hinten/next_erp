@@ -53,11 +53,12 @@ import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager, type VariationRow } from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
+  PRODUTO_PERSISTENT_SECTIONS,
   PRODUTO_SECTIONS,
   PRODUTO_TRANSIENT_FIELDS,
   SECTION_MERCADO_LIVRE,
   produtoFieldOverrides,
-  produtoPageSchema,
+  produtoObjectViewSchema,
 } from '../../_components/produtoFields';
 
 /** Max referencing kits listed in the #246 promotion warning (a capped preview). */
@@ -71,7 +72,7 @@ const REFERENCED_BY_DISPLAY = 5;
  * because a modification history needs a SAVED produto, and there is nothing
  * useful to show for one that does not exist yet.
  */
-const produtoEditarSchema = produtoPageSchema.extend({
+const produtoEditarSchema = produtoObjectViewSchema.extend({
   modificacoes: z.null().default(null),
 });
 
@@ -80,15 +81,6 @@ const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Modificações'];
 
 /** The shared transient keys plus the Modificações tab anchor. */
 const PRODUTO_TRANSIENT_FIELDS_EDITAR = [...PRODUTO_TRANSIENT_FIELDS, 'modificacoes'];
-
-/**
- * Sections whose content must survive a tab switch fully mounted. Mercado Livre
- * is the one: its listing forms hold unsaved edits, in-flight requests and the
- * flush closure this page calls in `onAfterSave` — all of which the default
- * `<Activity mode="hidden">` suspension would tear down and re-run (see the
- * docblock on `MercadoLivreTab`).
- */
-const PRODUTO_PERSISTENT_SECTIONS = [SECTION_MERCADO_LIVRE];
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();

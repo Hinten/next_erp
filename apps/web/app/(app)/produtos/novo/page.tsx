@@ -37,11 +37,12 @@ import { MercadoLivreTab } from '../_components/mercado-livre/MercadoLivreTab';
 import {
   PRODUTO_CREATE_DEFAULTS,
   PRODUTO_EXCLUDED_FIELDS,
+  PRODUTO_PERSISTENT_SECTIONS,
   PRODUTO_SECTIONS,
   PRODUTO_TRANSIENT_FIELDS,
   SECTION_MERCADO_LIVRE,
   produtoFieldOverrides,
-  produtoPageSchema,
+  produtoObjectViewSchema,
 } from '../_components/produtoFields';
 
 export default function NovoProdutoPage() {
@@ -212,9 +213,7 @@ export default function NovoProdutoPage() {
         section: SECTION_MERCADO_LIVRE,
         // Shows the tab with "Salve o produto para continuar" rather than
         // hiding it: every listing action is keyed on a produto that exists, and
-        // a tab that simply is not there reads as a missing feature. No
-        // `persistentSections` here — there is nothing to keep alive until the
-        // produto is saved, and the save navigates to the edit page.
+        // a tab that simply is not there reads as a missing feature.
         renderInput: () => <MercadoLivreTab produtoId={null} db={db} />,
       },
     }),
@@ -232,12 +231,16 @@ export default function NovoProdutoPage() {
         }
       />
       <ObjectView
-        schema={produtoPageSchema}
+        schema={produtoObjectViewSchema}
         collection={produtoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
         defaultValues={PRODUTO_CREATE_DEFAULTS}
         sections={PRODUTO_SECTIONS}
+        // Paired with `PRODUTO_SECTIONS` on both pages so the two can never
+        // disagree. Free here: the create-mode tab is a single <Alert> with no
+        // effects, since there is no produto to load anything for yet.
+        persistentSections={PRODUTO_PERSISTENT_SECTIONS}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         transientFields={PRODUTO_TRANSIENT_FIELDS}
