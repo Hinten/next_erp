@@ -11,6 +11,7 @@ import {
 vi.mock('@/lib/etiqueta-generica', () => ({
   buildEtiquetaGenericaModel: vi.fn(async () => ({ title: 'Pedido 1' })),
   renderEtiquetaGenericaPdf: vi.fn(async () => new Blob(['pdf'])),
+  renderEtiquetaGenericaZpl: vi.fn(() => '^XA^XZ'),
 }));
 
 import { emitirOuImprimirEtiqueta, resolveEtiquetaProvider } from './registry';
