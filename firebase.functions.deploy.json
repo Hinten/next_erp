@@ -6,7 +6,10 @@
       "source": ".deploy/functions",
       "codebase": "storage",
       "runtime": "nodejs22",
-      "predeploy": ["node apps/functions/scripts/prepare-deploy.mjs"],
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs storage",
+        "node apps/functions/scripts/prepare-deploy.mjs"
+      ],
       "ignore": ["node_modules"]
     }
   ]

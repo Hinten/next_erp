@@ -186,6 +186,35 @@ for FN in processMercadoLivreNotification processMercadoLivreMassImport sendMerc
 done
 ```
 
+### The deploy aborts if `TASKS_INVOKER_SA` is missing (#1133)
+
+`predeploy` runs `node tools/deploy-env/preflight.mjs mercado-livre` **before** the
+artifact is built. It prints every build-time value that is about to be baked into
+the bundle — and whether each came from your shell or from a `build.mjs` default —
+then refuses to continue if either of these is true:
+
+- **`TASKS_INVOKER_SA` is unset or blank.** Without it `invoker` is omitted, no
+  `roles/run.invoker` is granted, and the dispatch leg 403s _after_ the enqueue
+  reported success — so nothing writes a failure document anywhere. This used to be
+  a `console.warn` that scrolled past.
+- **the task/schedule region has no Cloud Tasks** (`us-east5`). That deploy fails
+  every queue and schedule function at once while the Firestore triggers succeed —
+  the asymmetric failure list from #1108, now refused up front instead.
+
+It also echoes the `MERCADO_LIVRE_TASKS_REGION` it is inlining, because the one
+mismatch it cannot detect is with the App Hosting BACKEND — compare the two
+before the first live notification.
+
+Run it by hand any time; it changes nothing:
+
+```bash
+node tools/deploy-env/preflight.mjs mercado-livre
+```
+
+⚠️ It does **not** run in CI. `predeploy` hooks are skipped under
+`emulators:exec`, which is deliberate — the emulators have no IAM layer, so the
+lanes are unaffected either way.
+
 ### `TASKS_INVOKER_SA` — the third role, applied by the deploy (#1133)
 
 Export it in the shell you run `firebase deploy` from. `build.mjs` inlines it
