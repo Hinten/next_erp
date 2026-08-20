@@ -8,6 +8,7 @@ import {
   type ItemDoPedido,
   type Pedido,
 } from '@delfrance/schemas';
+import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
 import type { PedidoDataPort, PedidoDevolucaoDataPort, PedidoWriteOp } from './port';
 import { PedidoConflictError, buildIncidenteOp, remotelyChangedFields } from './usecases';
 import { PEDIDO_COUNTER_PATH, mintNumeros, operacaoNumeroPrefix } from './numero';
@@ -458,6 +459,13 @@ export const DEVOLUCAO_INTEGRAL_STRIP_KEYS = [
   'timestamp',
   'error',
   'observacoesInternas',
+  // ⚠️ SPREAD, never hand-listed — same reason `duplicar` does it. This list
+  // hand-listed 8 keys and nulled `estoqueAplicado` alone further down, which
+  // was survivable only while the two legacy markers were client-writable.
+  // They are `serverOwnedFields` now, so a clone carrying either is a
+  // PERMISSION_DENIED on the create — the whole devolução integral flow, for
+  // any origin pedido the estoque sync had touched.
+  ...CAMPOS_ESTOQUE_SYNC,
 ] as const;
 
 /**
@@ -470,8 +478,9 @@ export const DEVOLUCAO_INTEGRAL_STRIP_KEYS = [
  *
  * Deliberate divergence-safe cleanup beyond the strip keys: the clone also
  * nulls `entradasRelacionadas` / `saidasRelacionadas` / `itensDevolvidos` /
- * `estoqueAplicado` / `numero` — the seed must not carry the origin's links,
- * stock snapshot or numero; the entrada gets its own links + numero at save.
+ * `numero` — the seed must not carry the origin's links or numero; the entrada
+ * gets its own at save. The stock fields are handled by the strip list itself
+ * (`...CAMPOS_ESTOQUE_SYNC`), which is why they no longer appear here.
  *
  * Throws `PedidoConflictError(null)` when the origin no longer exists.
  */
@@ -507,7 +516,6 @@ export async function buildDevolucaoIntegralSeed(
     entradasRelacionadas: null,
     saidasRelacionadas: null,
     itensDevolvidos: null,
-    estoqueAplicado: null,
     numero: null,
   }) as Record<string, unknown>;
 
