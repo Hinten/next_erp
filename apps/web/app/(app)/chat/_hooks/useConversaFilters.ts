@@ -9,12 +9,13 @@ import {
   type ConversaOrdem,
   type ConversaTab,
 } from '@/lib/chat/conversaConstraints';
+import { aplicarFiltroCliente, aplicarTab, parseClienteParam } from '@/lib/chat/clienteFilterParam';
 
 /**
  * The inbox list state, mirrored in the URL query so it survives navigation
  * to `/chat/[id]` and back and is shareable/deep-linkable. Params:
  *   `tab` · `ordem` · `integracao` · `etiqueta` · `cliente` · `busca`
- * (`cliente` holds the resolved `usarioOuterRef`, i.e. `documents/usuarios/<uid>`;
+ * (`cliente` holds `documents/clientes/<id>`;
  * `busca` holds the cross-conversation search term — its PRESENCE, even empty,
  * puts the list pane in global-search mode so the state survives navigation into
  * a thread and back).
@@ -24,7 +25,7 @@ export interface ConversaFiltersState {
   ordem: ConversaOrdem;
   integracaoId: string | null;
   etiqueta: number | null;
-  /** Resolved `usarioOuterRef` of the cliente filter (or null). */
+  /** `documents/clientes/<id>` of the cliente filter (or null). */
   clienteRef: string | null;
   /** Cross-conversation search term, or null when not in search mode. */
   busca: string | null;
@@ -68,7 +69,7 @@ export function useConversaFilters(): ConversaFiltersState {
   const ordem = parseOrdem(searchParams.get('ordem'), tab);
   const integracaoId = searchParams.get('integracao') || null;
   const etiqueta = parseEtiqueta(searchParams.get('etiqueta'));
-  const clienteRef = searchParams.get('cliente') || null;
+  const clienteRef = parseClienteParam(searchParams.get('cliente'));
   // NOT `|| null`: an empty `?busca=` means "search mode on, blank input" and
   // must stay distinct from an absent param (search mode off).
   const busca = searchParams.get('busca');
@@ -86,14 +87,7 @@ export function useConversaFilters(): ConversaFiltersState {
   );
 
   const setTab = useCallback(
-    (nextTab: ConversaTab) =>
-      commit((p) => {
-        if (nextTab === 'atendimento') p.delete('tab');
-        else p.set('tab', nextTab);
-        // Each tab has its own default ordering; drop an explicit ordem so the
-        // new tab falls back to its default (legacy per-tab order state).
-        p.delete('ordem');
-      }),
+    (nextTab: ConversaTab) => commit((p) => aplicarTab(p, nextTab)),
     [commit],
   );
 
@@ -117,8 +111,11 @@ export function useConversaFilters(): ConversaFiltersState {
     [commit],
   );
 
+  // ⚠️ The cliente filter and the tab are mutually exclusive, enforced BOTH
+  // ways — see the INVARIANT note in `clienteFilterParam.ts`, which owns both
+  // mutations so the property is directly assertable.
   const setCliente = useCallback(
-    (ref: string | null) => commit((p) => (ref ? p.set('cliente', ref) : p.delete('cliente'))),
+    (ref: string | null) => commit((p) => aplicarFiltroCliente(p, ref)),
     [commit],
   );
 
