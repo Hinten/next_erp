@@ -541,6 +541,12 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     // `PUT /items/{link.id}` for a UP family. Members carry their own item ids
     // on `variacaoMercadoLivre.itemId`.
     id: parentExternalId,
+    // #706 multiorigem: the UP that backs THIS stock unit. Null for a family for
+    // the same reason `precoPublicado` is: the members are the stock units and
+    // each has its own `user_product_id` (stamped on their own links by
+    // `writeMemberLink`). `item` here is the family's FIRST member, so copying
+    // its id up would let one member speak for the family (#1142).
+    userProductId: family ? null : (item.user_product_id ?? null),
     // Members are priced independently under UP (`propagatePriceToChildren`),
     // so a single family-level `precoPublicado` would be whichever member was
     // sent first — `precoSync` skips the same stamp on `variationItem` drafts

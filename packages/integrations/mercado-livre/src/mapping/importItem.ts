@@ -75,6 +75,13 @@ export interface MappedMlItem {
   subStatus: string[] | null;
   freteGratis: boolean;
   isUserProductModel: boolean;
+  /**
+   * ML's `user_product_id` — the STOCK identity on a multiorigin
+   * (`warehouse_management`) conta (#706). Present on every item, UP model or
+   * not: before a seller carries `user_product_seller` the relation is simply
+   * 1:1 with the item id.
+   */
+  userProductId: string | null;
   videoId: string | null;
   /** Non-derived attributes, embedded inline on the link (parity). */
   attributes: MlAttribute[];
@@ -174,6 +181,24 @@ export function skuGuessFromVariations(item: MlItem): string | null {
   return prefixes.size === 1 ? [...prefixes][0]! : null;
 }
 
+/**
+ * Does this ML item keep its stock on CHILD produtos rather than on the listing
+ * itself? True for a legacy `variations[]` item (each variation carries its own
+ * quantity) and for every User-Products item (each member becomes a child) —
+ * which is exactly `ownsChildren` in `import.ts`.
+ *
+ * ⚠️ Exported because two components have to agree on it and there is no way to
+ * notice if they stop: the importer (`assembleImportPlan`, through
+ * `args.hasVariations`) and the `items` status-sync both decide from it whether
+ * a parent link may carry a `userProductId` (#706). The answer must be NO
+ * whenever the stock units are the children, because the item in hand is then
+ * one member of a family, and its `user_product_id` on the family's link is the
+ * "one member speaks for the family" mistake #1142 found in four places.
+ */
+export function itemStockLivesOnChildren(item: MlItem): boolean {
+  return item.family_name != null || (item.variations?.length ?? 0) > 0;
+}
+
 /** Map a fetched simple ML item to the normalized import shape. */
 export function mapMlItemToImport(item: MlItem): MappedMlItem {
   const condition = item.condition === 'used' ? 'used' : 'new';
@@ -212,6 +237,7 @@ export function mapMlItemToImport(item: MlItem): MappedMlItem {
     subStatus: item.sub_status ?? null,
     freteGratis: item.shipping?.free_shipping === true,
     isUserProductModel: item.family_name != null,
+    userProductId: item.user_product_id ?? null,
     videoId: item.video_id ?? null,
     attributes: attributesFromItem(item.attributes),
   };

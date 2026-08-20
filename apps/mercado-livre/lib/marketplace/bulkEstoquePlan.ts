@@ -373,6 +373,7 @@ export interface RawStockLinkRow {
   status?: unknown;
   sub_status?: unknown;
   isUserProductModel?: unknown;
+  userProductId?: unknown;
   linkDocId?: unknown;
   [key: string]: unknown;
 }
@@ -381,6 +382,7 @@ export interface RawStockLinkRow {
 export interface RawVarLinkRow {
   itemId?: unknown;
   id?: unknown;
+  userProductId?: unknown;
   produtoMercadoLivreOuterRef?: unknown;
   [key: string]: unknown;
 }
@@ -567,6 +569,10 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
         'status',
         'sub_status',
         'isUserProductModel',
+        // #706 multiorigem: the UP that backs this listing's stock. A PROJECTED
+        // field on documents this subquery already reads — no new join, no
+        // predicate, so no index (the ledger above lists only predicates).
+        'userProductId',
         pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
       )
       .toArrayExpression();
@@ -591,7 +597,9 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
         compEstoques('childKitKeys').as('componentEstoques'),
         pipelines
           .subcollection('variacaoMercadoLivre')
-          .select('itemId', 'id', 'produtoMercadoLivreOuterRef')
+          // `userProductId` (#706): same deal as on the parent join — projected,
+          // never filtered.
+          .select('itemId', 'id', 'produtoMercadoLivreOuterRef', 'userProductId')
           .toArrayExpression()
           .as('varLinks'),
       )

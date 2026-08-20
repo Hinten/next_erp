@@ -444,7 +444,15 @@ export async function importProduto(
           parentInfo,
           [up!.member],
           taxonomia,
-          { parentLinkDocId: linkDocId, status: mapped.status, subStatus: mapped.subStatus },
+          {
+            parentLinkDocId: linkDocId,
+            status: mapped.status,
+            subStatus: mapped.subStatus,
+            // The UP import fetches ONE member item per call, so `mapped` IS
+            // this member — its `user_product_id` belongs on the member's own
+            // link, never on the family's parent link (#706, #1142).
+            userProductId: mapped.userProductId,
+          },
         )
       : await importVariationChildren(
           { db, integracaoId, options, depositoOuterRef: deps.depositoOuterRef, now },

@@ -338,6 +338,7 @@ const linkSub = () => ({
         'status',
         'sub_status',
         'isUserProductModel',
+        'userProductId',
         alias('linkDocId', docId(f('__name__'))),
       ],
     },
@@ -365,7 +366,10 @@ const childrenSub = () => ({
           kind: 'arraySubquery',
           stages: [
             { stage: 'subcollection', args: ['variacaoMercadoLivre'] },
-            { stage: 'select', args: ['itemId', 'id', 'produtoMercadoLivreOuterRef'] },
+            {
+              stage: 'select',
+              args: ['itemId', 'id', 'produtoMercadoLivreOuterRef', 'userProductId'],
+            },
           ],
         }),
       ],

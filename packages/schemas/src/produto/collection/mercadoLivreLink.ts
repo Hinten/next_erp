@@ -193,6 +193,28 @@ export const produtoMercadoLivreLinkSchema = z
      * apps/mercado-livre is the worked example.
      */
     id: z.string().nullable().default(null),
+
+    /**
+     * ML's `user_product_id` (`MLBU…`) for this listing — the STOCK identity on
+     * a multiorigin (`warehouse_management`) conta, where `PUT /items`
+     * `available_quantity` is ignored and stock moves through
+     * `PUT /user-products/{id}/stock/type/seller_warehouse` (#706).
+     *
+     * ⚠️ Distinct from {@link id} above, which is `familyId ?? itemId` under
+     * User Products. A User Product describes a product at VARIATION level, so a
+     * family's members each have their own — the parent link's value is only
+     * meaningful for a listing with no children.
+     *
+     * Nullable and self-healing: it is stamped wherever the fetched ML item is
+     * already in hand (import, publish, the items status-sync), and the stock
+     * send resolves it lazily with the `getItem` it already has a seam for, then
+     * folds the answer into the writeback it was going to make anyway. So a link
+     * predating #706 costs one extra ML read ONCE, and no backfill.
+     *
+     * ⚠️ Null on every legacy `variations[]` child — ML variation objects carry
+     * no `user_product_id`, only UP members (each its own item) do.
+     */
+    userProductId: z.string().nullable().default(null),
     sku: z.string().nullable().default(null),
     // ML plain-text descriptions run to ~50k; the old 10000 cap was a Flutter
     // FORM validator the deployed backend never enforced, so a re-import/re-publish
@@ -249,6 +271,18 @@ export const variacaoMercadoLivreLinkSchema = z
     id: z.number().int().nullable().default(null),
     /** ML item id (User-Products model) — each variation is its own item. */
     itemId: z.string().nullable().default(null),
+    /**
+     * ML's `user_product_id` (`MLBU…`) for THIS member — the stock identity on a
+     * multiorigin (`warehouse_management`) conta (#706). See the parent link's
+     * field of the same name for the protocol.
+     *
+     * ⚠️ Null on a legacy `variations[]` child and it will stay null: an ML
+     * variation object carries no `user_product_id`, only a UP member (which is
+     * its own item) does — exactly like {@link itemId} beside it. The stock send
+     * treats a null as "resolve it from ML, or skip this listing and say so",
+     * never as "send zero".
+     */
+    userProductId: z.string().nullable().default(null),
     /**
      * Canonical `documents/integracao/<id>` path to the owning integracao —
      * the same denorm the PARENT link has carried all along (#920).

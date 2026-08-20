@@ -83,6 +83,7 @@ import {
   MercadoLivreHttpError,
   createMercadoLivreApi,
   estadoFromMlStatus,
+  itemStockLivesOnChildren,
 } from '@delfrance/integrations-mercado-livre';
 import {
   produtoCollection,
@@ -266,6 +267,13 @@ export async function syncItemStatus(
     itemId,
     item.status ?? null,
     item.sub_status ?? null,
+    // #706 multiorigem: the UP that backs this listing's stock — but ONLY when
+    // the listing IS the stock unit. `itemStockLivesOnChildren` is the same gate
+    // `importCore` applies (`args.hasVariations`), shared so the two cannot
+    // drift: a legacy `variations[]` item and a User-Products family both keep
+    // their quantities on CHILD produtos, and an item-level UP id on the parent
+    // link would let one number be written for the whole family (#1142).
+    itemStockLivesOnChildren(item) ? null : (item.user_product_id ?? null),
   );
 }
 
@@ -285,6 +293,7 @@ async function applyResolvedStatus(
   denormItemId: string,
   status: string | null,
   subStatus: string[] | null,
+  userProductId: string | null,
 ): Promise<ItemsSyncOutcome> {
   const estado = estadoFromMlStatus(status);
 
@@ -307,10 +316,18 @@ async function applyResolvedStatus(
   // this convergent — the flag can only be true while there is a write left to do.
   const errorsToClear = currentErrors.length > 0 && podeEnviarEstoque(status, subStatus).enviar;
   const estadoChanged = estado !== currentEstado;
+  // #706: counted as a change on its own, for the same reason `errorsToClear` is
+  // — a listing already at the right status would short-circuit on `unchanged`
+  // below and never gain the field. This sync is the catalogue-wide self-heal.
+  const userProductIdChanged =
+    userProductId != null &&
+    userProductId !==
+      (typeof link.data.userProductId === 'string' ? link.data.userProductId : null);
   const linkChanged =
     estadoChanged ||
     status !== currentStatus ||
     !stringArraysEqual(subStatus, currentSubStatus) ||
+    userProductIdChanged ||
     errorsToClear;
 
   if (!linkChanged) return 'unchanged';
@@ -327,7 +344,12 @@ async function applyResolvedStatus(
       // carries no `id`: there would be no key to union or remove by, and inventing
       // one is how the arrays grow entries nothing can ever match.
       skipDenorm: !estadoChanged || denormItemId === '',
-      extra: errorsToClear ? clearFalha() : {},
+      // Fill-only: never write null over a stored id because this particular
+      // response omitted it. The field is an identity, not an observation.
+      extra: {
+        ...(errorsToClear ? clearFalha() : {}),
+        ...(userProductIdChanged ? { userProductId } : {}),
+      },
     },
   );
 
@@ -408,9 +430,20 @@ async function syncFamilyMember(
     if (!notified) foldable.push({ status, subStatus });
 
     const notifiedRaw = (notified?.data() ?? {}) as Record<string, unknown>;
+    // #706: the member's own `user_product_id` — the stock identity on a
+    // multiorigin conta. Counted as a CHANGE in its own right, which is what
+    // makes this the catalogue-wide self-heal: a listing whose status never moves
+    // would otherwise never gain the field, and this sync is the only component
+    // that sees a member's fresh ML item on its own schedule.
+    const userProductId = item.user_product_id ?? null;
+    const userProductIdChanged =
+      userProductId != null &&
+      userProductId !==
+        (typeof notifiedRaw.userProductId === 'string' ? notifiedRaw.userProductId : null);
     const memberChanged =
       notified != null &&
       (status !== (typeof notifiedRaw.status === 'string' ? notifiedRaw.status : null) ||
+        userProductIdChanged ||
         !stringArraysEqual(
           subStatus,
           Array.isArray(notifiedRaw.sub_status) ? (notifiedRaw.sub_status as string[]) : null,
@@ -440,7 +473,17 @@ async function syncFamilyMember(
 
     // ---- WRITES.
     if (memberChanged && notified) {
-      tx.set(notified.ref, { status, sub_status: subStatus }, { merge: true });
+      tx.set(
+        notified.ref,
+        {
+          status,
+          sub_status: subStatus,
+          // Fill-only: never write null over a value ML simply did not send back
+          // on this response. The field is an identity, not an observation.
+          ...(userProductId != null ? { userProductId } : {}),
+        },
+        { merge: true },
+      );
     }
 
     if (!folded || !parentChanged) {
