@@ -37,10 +37,12 @@ class FakeDb {
     return this.col(path).get(id);
   }
 
-  private query(entries: Array<[string, DocData, string]>) {
+  private query(entriesOf: () => Array<[string, DocData, string]>) {
     const clauses: Array<[string, unknown]> = [];
     let cap: number | null = null;
     const q = {
+      // Tagged so the transaction fake can tell a query from a doc ref.
+      __isQuery: true as const,
       where(field: string, _op: string, value: unknown) {
         clauses.push([field, value]);
         return q;
@@ -52,14 +54,18 @@ class FakeDb {
         return q;
       },
       async get() {
-        const matched = entries.filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
+        // ⚠️ Re-evaluated per call, never captured. A transaction retry MUST see
+        // what the winning writer committed; a frozen snapshot would make an OCC
+        // guard look broken and, worse, make a missing one look fine.
+        const matched = entriesOf().filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
         const rows = cap == null ? matched : matched.slice(0, cap);
         return {
           docs: rows.map(([id, d, colPath]) => ({
             id,
+            __path: colPath,
             data: () => d,
             exists: true,
-            ref: { parent: { parent: { id: parentDocId(colPath) } } },
+            ref: { id, __path: colPath, parent: { parent: { id: parentDocId(colPath) } } },
           })),
           empty: rows.length === 0,
           size: rows.length,
@@ -75,9 +81,11 @@ class FakeDb {
     return {
       doc: (id: string) => ({
         id,
+        __path: path,
         get: async () => ({ exists: col.has(id), id, data: () => col.get(id) }),
         set: async (data: DocData, opts?: { merge?: boolean }) => {
           col.set(id, opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data });
+          self.versions.set(`${path}/${id}`, (self.versions.get(`${path}/${id}`) ?? 0) + 1);
         },
         update: async (patch: DocData) => {
           const full = `${path}/${id}`;
@@ -90,18 +98,132 @@ class FakeDb {
           if (!col.has(id)) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
           self.updates.push({ path: full, patch });
           col.set(id, { ...(col.get(id) ?? {}), ...patch });
+          self.versions.set(full, (self.versions.get(full) ?? 0) + 1);
         },
       }),
     };
   }
 
   collectionGroup(groupId: string) {
-    const entries: Array<[string, DocData, string]> = [];
-    for (const [path, col] of this.cols) {
-      if (path.split('/').pop() === groupId) for (const [id, d] of col) entries.push([id, d, path]);
-    }
-    return this.query(entries);
+    return this.query(() => {
+      const entries: Array<[string, DocData, string]> = [];
+      for (const [path, col] of this.cols) {
+        if (path.split('/').pop() === groupId) {
+          for (const [id, d] of col) entries.push([id, d, path]);
+        }
+      }
+      return entries;
+    });
   }
+
+  /**
+   * A transaction fake with REAL optimistic concurrency, not a pass-through.
+   *
+   * A pass-through would make the family fold's race test vacuous — it would
+   * report green for the exact unguarded read-modify-write the transaction was
+   * added to prevent. So this records the version of every document the callback
+   * READS and, at commit, re-checks them: if another writer touched one in the
+   * meantime the callback is re-run against the new state, which is what Firestore
+   * does and what makes the concurrent-member test meaningful.
+   */
+  async runTransaction<T>(fn: (tx: FakeTx) => Promise<T>): Promise<T> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const readVersions = new Map<string, number>();
+      const writes: Array<() => void> = [];
+      const tx = this.makeTx(readVersions, writes);
+      const out = await fn(tx);
+      // The race window: a competing writer commits after our reads and before
+      // our commit. Fires ONCE so a retry is not itself raced forever.
+      const hook = this.onBeforeCommit;
+      this.onBeforeCommit = null;
+      if (hook) await hook();
+      const stale = [...readVersions].some(([k, v]) => (this.versions.get(k) ?? 0) !== v);
+      if (stale) continue; // OCC conflict → re-run against fresh state
+      for (const w of writes) w();
+      return out;
+    }
+    throw new Error('transaction failed after 5 attempts');
+  }
+
+  /** Bump a doc's version so readers that saw the old one lose at commit. */
+  private bump(path: string, id: string): void {
+    const k = `${path}/${id}`;
+    this.versions.set(k, (this.versions.get(k) ?? 0) + 1);
+  }
+
+  readonly versions = new Map<string, number>();
+  /** Runs inside the read→commit window, so a test can interleave a competing writer. */
+  onBeforeCommit: (() => void | Promise<void>) | null = null;
+
+  private makeTx(readVersions: Map<string, number>, writes: Array<() => void>): FakeTx {
+    const self = this;
+    const note = (path: string, id: string) =>
+      readVersions.set(`${path}/${id}`, self.versions.get(`${path}/${id}`) ?? 0);
+    return {
+      get: async (target: FakeRef | FakeQuery) => {
+        if ('__isQuery' in target) {
+          const snap = await target.get();
+          for (const d of snap.docs) note(d.__path, d.id);
+          return snap;
+        }
+        note(target.__path, target.id);
+        const col = self.cols.get(target.__path);
+        return {
+          exists: col?.has(target.id) ?? false,
+          id: target.id,
+          data: () => col?.get(target.id),
+        };
+      },
+      set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => {
+        writes.push(() => {
+          const col = self.colOf(ref.__path);
+          col.set(ref.id, opts?.merge ? { ...(col.get(ref.id) ?? {}), ...data } : { ...data });
+          self.updates.push({ path: `${ref.__path}/${ref.id}`, patch: data });
+          self.bump(ref.__path, ref.id);
+        });
+      },
+      update: (ref: FakeRef, patch: DocData) => {
+        writes.push(() => {
+          const col = self.colOf(ref.__path);
+          if (!col.has(ref.id)) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
+          col.set(ref.id, { ...(col.get(ref.id) ?? {}), ...patch });
+          self.updates.push({ path: `${ref.__path}/${ref.id}`, patch });
+          self.bump(ref.__path, ref.id);
+        });
+      },
+    };
+  }
+
+  colOf(path: string): Map<string, DocData> {
+    let c = this.cols.get(path);
+    if (!c) this.cols.set(path, (c = new Map()));
+    return c;
+  }
+}
+
+interface FakeRef {
+  id: string;
+  __path: string;
+}
+interface FakeQueryDoc {
+  id: string;
+  __path: string;
+  data: () => DocData;
+  ref: unknown;
+}
+interface FakeQuery {
+  __isQuery: true;
+  get(): Promise<{ docs: FakeQueryDoc[] }>;
+}
+interface FakeDocSnap {
+  exists: boolean;
+  id: string;
+  data: () => DocData | undefined;
+}
+interface FakeTx {
+  get(target: FakeRef | FakeQuery): Promise<{ docs: FakeQueryDoc[] } | FakeDocSnap>;
+  set(ref: FakeRef, data: DocData, opts?: { merge?: boolean }): void;
+  update(ref: FakeRef, patch: DocData): void;
 }
 
 function parentDocId(colPath: string): string {
@@ -955,5 +1077,65 @@ describe('syncItemStatus — User-Products family members (#1142)', () => {
 
     expect(out).toBe('unchanged');
     expect(db.updates).toEqual([]);
+  });
+});
+
+describe('syncItemStatus — concurrent family members (rule 7)', () => {
+  /**
+   * The queue runs `maxConcurrentDispatches: 3`, and ML fans out ONE notification
+   * per member item — so a family-wide pause/close/reactivate is precisely when two
+   * members are processed at once. The fold reads every sibling and writes the
+   * parent, which is a read-modify-write across documents: without a guard the
+   * loser re-applies a decision made against a view that has since moved.
+   *
+   * Reported interleaving: stored A `active`, B `closed`; on ML, A has closed and
+   * B has been reactivated. A folds against B's STALE `closed`, concludes
+   * all-closed, and its write lands last — cancelling a family whose member B is
+   * live, dropping the FAMILY denorm entry, and (in production) taking the conta
+   * out of `integracoesComProduto`, the anchor pre-filter both sweeps open with.
+   */
+  it('a sibling reactivated mid-flight does NOT let the other member cancel the family', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA', status: 'active' },
+      { itemId: MEMBER_B, child: 'childB', status: 'closed' },
+    ]);
+
+    // B commits inside A's read→commit window: it records itself active and
+    // re-folds. A must not then re-apply its stale all-closed conclusion.
+    db.onBeforeCommit = async () => {
+      await syncItemStatus(asDb(db), CONTA, MEMBER_B, resolverFor({ status: 'active' }));
+    };
+
+    const aOut = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    // Both members' own readings are recorded truthfully.
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({ status: 'closed' });
+    expect(db.docData(memberVarPath('childB'), 'v-childB')).toMatchObject({ status: 'active' });
+
+    // And the family reflects the LIVE member, not the stale all-closed view.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+    expect(aOut).not.toBe('link-removido');
+
+    // The denorm entry survives: nothing was cancelled.
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [FAMILY] });
+  });
+
+  it('the LAST member closing still cancels, even when a sibling commits mid-flight', async () => {
+    // The mirror case — the guard must not make a legitimate cancel unreachable.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA', status: 'active' },
+      { itemId: MEMBER_B, child: 'childB', status: 'active' },
+    ]);
+
+    db.onBeforeCommit = async () => {
+      await syncItemStatus(asDb(db), CONTA, MEMBER_B, resolverFor({ status: 'closed' }));
+    };
+
+    await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplace: [], marketplaceIds: [] });
   });
 });

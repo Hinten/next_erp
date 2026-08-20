@@ -93,7 +93,7 @@ import {
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { refMatchesIntegracao } from './linkRefs';
-import { readFamilyMemberLinks, resolveUpFamilyByMemberItemId } from './upMemberLink';
+import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink';
 import { foldFamilyStatus } from './upFamilyStatus';
 import type { UptinSourceLink } from './importMigration';
 import { clearFalha } from './publishFalhas';
@@ -343,57 +343,131 @@ async function syncFamilyMember(
   const status = item.status ?? null;
   const subStatus = item.sub_status ?? null;
 
-  // 1. The member link is the record of what ML last said about this one item —
-  //    and the fold's only durable input, so it is written before anything else.
-  const memberStatus = typeof member.raw.status === 'string' ? member.raw.status : null;
-  const memberSubStatus = Array.isArray(member.raw.sub_status)
-    ? (member.raw.sub_status as string[])
-    : null;
-  const memberChanged = status !== memberStatus || !stringArraysEqual(subStatus, memberSubStatus);
-  if (memberChanged && member.produtoId !== '') {
-    // `mergeIfExists`, never `merge`: the member was resolved by a query and the
-    // produto delete cascade or a UPtin prune can have removed it since.
-    await variacaoMercadoLivreLinkCollection.mergeIfExists(
-      db,
-      { produtoId: member.produtoId },
-      member.docId,
-      { status, sub_status: subStatus },
-    );
-  }
-
-  // 2. Fold every member, substituting this one's FRESH values in memory rather
-  //    than relying on the write above being visible to the read below.
-  const siblings = await readFamilyMemberLinks(db, member.pmlOuterRef);
-  const isNotified = (s: { produtoId: string; docId: string }) =>
-    s.docId === member.docId && s.produtoId === member.produtoId;
-  const foldable = siblings.map((s) =>
-    isNotified(s) ? { status, subStatus } : { status: s.status, subStatus: s.subStatus },
-  );
-  // The notified member should always be among its own siblings (they share the
-  // parent ref it was found by); if a race removed it, its fresh reading still counts.
-  if (!siblings.some(isNotified)) foldable.push({ status, subStatus });
-
-  const folded = foldFamilyStatus(foldable);
-  if (!folded) {
-    // The members do not support a conclusion — every observed one is closed but
-    // some were never observed. Leaving the parent alone is the safe answer; see
-    // `foldFamilyStatus`. The member write above still happened, and saying so is
-    // the difference between "nothing to do" and "recorded, cannot summarise yet".
-    return memberChanged ? 'synced-member' : 'unchanged';
-  }
-
-  const familyItemId = typeof link.data.id === 'string' ? link.data.id : '';
-  const parentOutcome = await applyResolvedStatus(
+  const parentRef = produtoMercadoLivreLinkCollection.docRef(
     db,
-    integracaoId,
-    link,
-    familyItemId,
-    folded.status,
-    folded.subStatus,
+    { produtoId: link.produtoId },
+    link.docId,
   );
+  const produtoRef = produtoCollection.docRef(db, {}, link.produtoId);
+  const siblingQuery = familyMemberQuery(db, member.pmlOuterRef);
 
-  if (parentOutcome === 'unchanged') return memberChanged ? 'synced-member' : 'unchanged';
-  return parentOutcome === 'synced' ? 'synced-family' : parentOutcome;
+  return db.runTransaction(async (tx): Promise<ItemsSyncOutcome> => {
+    // ---- READS. All of them, before any write (Firestore's rule), and every
+    // input below is re-derived from THESE — never from `link.data` or
+    // `member.raw`, which were captured before the ML fetch and are stale by
+    // exactly the width of that round trip.
+    const [members, parentSnap, produtoSnap] = await Promise.all([
+      tx.get(siblingQuery),
+      tx.get(parentRef),
+      tx.get(produtoRef),
+    ]);
+    if (!parentSnap.exists) return 'link-removido';
+    const parent = (parentSnap.data() ?? {}) as Record<string, unknown>;
+
+    // ---- Re-derive the fold from the transaction's OWN view of every member.
+    // Reading the siblings INSIDE the transaction is the whole guard: the read
+    // set includes every member doc, so a concurrent task writing a DIFFERENT
+    // member of this family aborts this callback and it retries against the
+    // value that writer committed.
+    let notified: (typeof members.docs)[number] | null = null;
+    const foldable: Array<{ status: string | null; subStatus: string[] | null }> = [];
+    for (const d of members.docs) {
+      const raw = d.data() as Record<string, unknown>;
+      const isNotified =
+        d.id === member.docId && (d.ref.parent?.parent?.id ?? '') === member.produtoId;
+      if (isNotified) notified = d;
+      foldable.push(
+        isNotified
+          ? { status, subStatus }
+          : {
+              status: typeof raw.status === 'string' ? raw.status : null,
+              subStatus: Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null,
+            },
+      );
+    }
+    // The notified member should be among its own siblings (they share the parent
+    // ref it was found by); if a delete removed it, its fresh reading still counts.
+    if (!notified) foldable.push({ status, subStatus });
+
+    const notifiedRaw = (notified?.data() ?? {}) as Record<string, unknown>;
+    const memberChanged =
+      notified != null &&
+      (status !== (typeof notifiedRaw.status === 'string' ? notifiedRaw.status : null) ||
+        !stringArraysEqual(
+          subStatus,
+          Array.isArray(notifiedRaw.sub_status) ? (notifiedRaw.sub_status as string[]) : null,
+        ));
+
+    const folded = foldFamilyStatus(foldable);
+
+    // ---- Parent decision, re-derived from the tx-fresh parent snapshot.
+    const estado = folded ? estadoFromMlStatus(folded.status) : null;
+    const currentEstado = typeof parent.estado === 'string' ? parent.estado : null;
+    const currentStatus = typeof parent.status === 'string' ? parent.status : null;
+    const currentSubStatus = Array.isArray(parent.sub_status)
+      ? (parent.sub_status as string[])
+      : null;
+    const currentErrors = Array.isArray(parent.errors) ? parent.errors : [];
+    const errorsToClear =
+      folded != null &&
+      currentErrors.length > 0 &&
+      podeEnviarEstoque(folded.status, folded.subStatus).enviar;
+    const estadoChanged = folded != null && estado !== currentEstado;
+    const parentChanged =
+      folded != null &&
+      (estadoChanged ||
+        folded.status !== currentStatus ||
+        !stringArraysEqual(folded.subStatus, currentSubStatus) ||
+        errorsToClear);
+
+    // ---- WRITES.
+    if (memberChanged && notified) {
+      tx.set(notified.ref, { status, sub_status: subStatus }, { merge: true });
+    }
+
+    if (!folded || !parentChanged) {
+      // Either the members do not support a conclusion (every observed one closed,
+      // some never observed — see `foldFamilyStatus`), or the summary already
+      // matches. Saying which happened is the difference between "nothing to do"
+      // and "recorded, cannot summarise yet".
+      return memberChanged ? 'synced-member' : 'unchanged';
+    }
+
+    // ⚠️ The denorm key is the PARENT link's own `id`, never the notified member's.
+    // Publish and import both stamped `produtos.marketplace` with the family id
+    // (member ids go on the CHILD produtos, in a different shape), so keying on the
+    // member would arrayUnion an entry nothing ever removes AND leave the cancel
+    // arm's `externalId` filter matching nothing.
+    const familyItemId = typeof parent.id === 'string' ? parent.id : '';
+    if (estadoChanged && familyItemId !== '' && produtoSnap.exists) {
+      // Same transaction as the link write, so the denorm-first ordering
+      // `applyItemStatusToLink` needs does not apply here: there is no window in
+      // which one landed and the other did not.
+      const produtoRaw = (produtoSnap.data() ?? {}) as Record<string, unknown>;
+      if (estado === ESTADO_PUBLICACAO_ML.cancelado) {
+        const patch = removeMarketplaceEntry(produtoRaw, integracaoId, familyItemId);
+        if (patch) tx.update(produtoRef, patch);
+      } else {
+        tx.update(produtoRef, {
+          marketplace: FieldValue.arrayUnion({
+            integracaoUid: integracaoId,
+            externalId: familyItemId,
+          }),
+          marketplaceIds: FieldValue.arrayUnion(familyItemId),
+        });
+      }
+    }
+
+    tx.update(parentRef, {
+      estado,
+      status: folded.status,
+      sub_status: folded.subStatus,
+      ultimaModificacao: Date.now(),
+      ...(errorsToClear ? clearFalha() : {}),
+    });
+
+    return 'synced-family';
+  });
 }
 
 /**

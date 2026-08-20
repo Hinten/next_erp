@@ -27,7 +27,7 @@
  * on a missing one — it silently full-scans and bills data scanned — so neither
  * query may gain a filter that is not in `firestore.indexes.json`.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Query } from 'firebase-admin/firestore';
 import {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
@@ -100,46 +100,23 @@ export async function resolveUpFamilyByMemberItemId(
   return null;
 }
 
-/** One sibling member of a family, as the fold needs to see it. */
-export interface FamilyMemberRow {
-  /** The variation child produto id (the doc's parent-of-parent). */
-  produtoId: string;
-  /** The `variacaoMercadoLivre` doc id. */
-  docId: string;
-  /** This member's own ML item id, when it has one. */
-  itemId: string | null;
-  /** Raw ML `status` as last observed, or null when never observed. */
-  status: string | null;
-  /** Raw ML `sub_status` as last observed. */
-  subStatus: string[] | null;
-}
-
 /**
- * Every member link of one family, keyed off the parent's outer ref.
+ * The query selecting every member link of one family.
  *
- * Deliberately unfiltered beyond that ref: a family is a handful of documents,
- * and the declared index covers exactly this shape. No conta filter is needed —
- * the caller has already proven ownership through the parent link.
+ * Returned rather than executed so a caller can hand it to `tx.get` — the family
+ * fold MUST read the members inside its transaction, or a concurrent task
+ * processing a different member of the same family decides against a stale view
+ * and the last writer parks the family at the wrong `estado` (root `CLAUDE.md`
+ * rule 7). Reading here and writing there is exactly the unguarded
+ * read-modify-write that rule forbids.
+ *
+ * Deliberately unfiltered beyond the parent ref: a family is a handful of
+ * documents and the declared `produtoMercadoLivreOuterRef` group index covers
+ * exactly this shape. No conta filter is needed — the caller has already proven
+ * ownership through the parent link.
  */
-export async function readFamilyMemberLinks(
-  db: Firestore,
-  pmlOuterRef: string,
-): Promise<FamilyMemberRow[]> {
-  const snap = await variacaoMercadoLivreLinkCollection
+export function familyMemberQuery(db: Firestore, pmlOuterRef: string): Query {
+  return variacaoMercadoLivreLinkCollection
     .groupQuery(db)
-    .where('produtoMercadoLivreOuterRef', '==', pmlOuterRef)
-    .get();
-
-  const rows: FamilyMemberRow[] = [];
-  for (const d of snap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    rows.push({
-      produtoId: d.ref.parent?.parent?.id ?? '',
-      docId: d.id,
-      itemId: typeof raw.itemId === 'string' ? raw.itemId : null,
-      status: typeof raw.status === 'string' ? raw.status : null,
-      subStatus: Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null,
-    });
-  }
-  return rows;
+    .where('produtoMercadoLivreOuterRef', '==', pmlOuterRef);
 }
