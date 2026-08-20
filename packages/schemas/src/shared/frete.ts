@@ -357,16 +357,21 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  * scattered `tipo === 'melhorEnvios'` / `MARKETPLACE_TIPOS` checks the etiqueta
  * dispatch (`etiquetaRowState`) and the Frete tab used to hard-code.
  *
- * ⚠️ The **`can*` flags are the behavioral truth**; apart from Melhor Envio's
- * emit flow and Mercado Livre's `canFetchLabel`, they are ALL FALSE, so
- * `etiquetaRowState` yields `'unsupported'` — byte-identical to the previous
- * `tipo !== 'melhorEnvios'` reject. `labelMode` is **descriptive only**
- * (documents intended Phase-5/6 behavior); it does NOT drive the dispatch. Do
- * not flip a marketplace `canPrint` to true until the fetch flow + its client
- * route exist, or a marketplace pedido carrying a `printLabelId` would wrongly
- * route "Imprimir" to the Melhor Envio backend. `marketplaceOwned` is
- * behavioral — it reproduces the old `MARKETPLACE_TIPOS` read-only lock on the
- * Frete tab.
+ * ⚠️ The **`can*` flags are the behavioral truth**. Every marketplace-owned
+ * tipo (fetch category) stays ALL FALSE until its fetch flow + client route
+ * exist — `mercadoLivre`'s `canFetchLabel` is the one live exception — so
+ * `etiquetaRowState` yields `'unsupported'` for the rest, byte-identical to
+ * the previous `tipo !== 'melhorEnvios'` reject. The generic-label tipos
+ * (`motoboy`/`outros`) are the other exception: `canPrint` is true for them
+ * too, but `etiquetaRowState` never gates it on `printLabelId` (there is no
+ * buy step) — it dispatches to the on-demand generic PDF instead of the
+ * Melhor Envio reprint. `labelMode` is **descriptive** (documents intended
+ * Phase-5/6 marketplace behavior and today's generic/none split); it does NOT
+ * drive the dispatch by itself. Do not flip a marketplace `canPrint` to true
+ * until the fetch flow + its client route exist, or a marketplace pedido
+ * carrying a `printLabelId` would wrongly route "Imprimir" to the Melhor
+ * Envio backend. `marketplaceOwned` is behavioral — it reproduces the old
+ * `MARKETPLACE_TIPOS` read-only lock on the Frete tab.
  */
 export interface FreightTipoCapabilities {
   /** The importing marketplace owns the whole freight block → Frete tab read-only. */
@@ -466,12 +471,14 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'fetch',
     channel: null,
   },
-  // Manual / generic — no carrier API.
+  // Manual / generic — no carrier API, but a generic PDF label is always
+  // available on demand (no buy step, so no printLabelId gate — see
+  // etiquetaRowState).
   motoboy: {
     marketplaceOwned: false,
     canQuote: false,
     canBuy: false,
-    canPrint: false,
+    canPrint: true,
     canFetchLabel: false,
     canTrack: false,
     labelMode: 'generic',
@@ -501,7 +508,7 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     marketplaceOwned: false,
     canQuote: false,
     canBuy: false,
-    canPrint: false,
+    canPrint: true,
     canFetchLabel: false,
     canTrack: false,
     labelMode: 'generic',
@@ -692,7 +699,34 @@ export const freteDoPedidoSchema = z
       .describe('Endereço de entrega'),
 
     // Modality + entities ---------------------------------------------------
-    modalidade: modalidadeFreteSchema.default('0').describe('Modalidade'),
+    /**
+     * ⚠️ FISCAL DEFAULT — deliberately NOT the legacy read default.
+     *
+     * `'0'` (CIF, contratação por conta do emitente) is the ONLY modalidade that
+     * charges the freight INTO the nota, and three reads in
+     * `apps/nfe/lib/nfe/orchestrator/generator-input.ts` key on it — all three
+     * see whatever this default produces, because `bundle.ts:parseFreteFromPedido`
+     * feeds the generator through `freteDoPedidoSchema.safeParse`:
+     *   - `vFrete` → `det[…].prod.vFrete`, `ICMSTot.vFrete` and the `vNF` sum;
+     *   - the single-payment `vPag` override (the payment absorbs the freight);
+     *   - the `<cobr>` duplicata values, which follow that same override.
+     * A block stored WITHOUT `modalidade` must therefore never read back as CIF:
+     * the store would pay ICMS on freight a third party charged (#1090).
+     *
+     * `'1'` (destinatário / FOB) declares the freight — `<transp><modFrete>` still
+     * carries the code — without charging it, and keeps the transportadora /
+     * veículo / volume sub-blocks that `'9'` would suppress
+     * ({@link freteDoPedidoSchema} readers short-circuit on `'9'`).
+     *
+     * This DIVERGES from legacy read-parity on purpose. Flutter's
+     * `_modalidadeFreteFromJson` (`.old/packages/pedido/lib/src/models.dart:344`)
+     * answers `contratacaoEmitente` for an absent value — but that shape is not
+     * one we inherit: the Dart field is non-nullable and its `@JsonKey` carries no
+     * `includeIfNull: false`, so every doc the legacy model serializes HAS the
+     * key, and the legacy CONSTRUCTOR default is `semFrete`, never CIF. Do not
+     * "restore parity" by putting `'0'` back.
+     */
+    modalidade: modalidadeFreteSchema.default(MODALIDADE_FRETE.fob).describe('Modalidade'),
     transportadora: transportadoraSchema.nullable().default(null).describe('Transportadora'),
     veiculo: veiculoSchema.nullable().default(null).describe('Veículo'),
     reboques: z.array(reboqueSchema).nullable().default(null).describe('Reboques'),

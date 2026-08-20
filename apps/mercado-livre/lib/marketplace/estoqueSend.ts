@@ -379,6 +379,13 @@ export async function processStockSendTask(
         // A send that lands clears whatever diagnosis the last failure left
         // behind — otherwise the produto tab keeps showing a red alert for a
         // fault that has since healed (#781).
+        //
+        // ⚠️ `clearFalha()` covers `errors`/`causas` and deliberately NOT
+        // `moderacoes` (#1087). A successful stock update says nothing about
+        // ML's policy verdict: a `poor_quality_thumbnail` listing is `active`
+        // and takes stock updates WHILE moderated, so clearing here would erase
+        // a live reason and show a clean listing that is still penalised. This
+        // path never asked `/moderations`, so it leaves the field alone.
         ...clearFalha(),
       },
     );
@@ -535,7 +542,16 @@ async function registrarRejeicaoFinal(
         payload.integracaoId,
         target,
         { status: 'closed', sub_status: [] },
-        { nowMs, extra: { ...diagnostico } },
+        // ⚠️ `moderacoes: []` is spelled out, and this is the SECOND of the two
+        // places allowed to blank the field without having read `/moderations`
+        // (`reverificarAnuncio`'s 404 branch is the first). The listing is GONE:
+        // a moderation on it explains nothing, `/moderations` would 404 for it
+        // too, and — the part that makes it necessary rather than tidy — no
+        // further `items` notification can EVER arrive for a deleted item, so
+        // the self-healing this module relies on everywhere else does not exist
+        // here. Left out, a moderated listing ML deleted keeps its reason
+        // forever, next to `status: 'closed'`.
+        { nowMs, extra: { ...diagnostico, moderacoes: [] } },
       );
       return { outcome: 'erro-registrado', reason: 'anuncio-inexistente' };
     }

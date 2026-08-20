@@ -5,6 +5,7 @@ import {
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
+  MODALIDADE_FRETE,
   estadoFreteSchema,
   freightCapsFor,
   freteDoPedidoSchema,
@@ -102,6 +103,50 @@ describe('freteDoPedidoSchema — embedded carrier/vehicle blocks', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*        modalidade default — the fail-safe direction for a fiscal field     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠️ FISCAL GUARD (#1090). `freteDoPedidoSchema` is what the NF-e generator
+ * actually reads — `apps/nfe/lib/nfe/orchestrator/bundle.ts:parseFreteFromPedido`
+ * runs `freteDoPedidoSchema.safeParse(pedido.freteInicial)` — and `'0'` (CIF) is
+ * the ONLY modalidade that charges the freight into the nota. A block stored
+ * without `modalidade` must therefore never read back as CIF, or the store pays
+ * ICMS on freight a third party charged, plus every `vNF`-derived figure.
+ *
+ * The default used to be `'0'`, ported from Flutter's DESERIALISATION fallback
+ * (`_modalidadeFreteFromJson` → `contratacaoEmitente`). Flutter's constructor
+ * default was never CIF, and its `toJson` always writes the key, so nothing was
+ * gained by that fallback and a whole fiscal trap was inherited with it.
+ */
+describe('freteDoPedidoSchema.modalidade — fail-safe default', () => {
+  it('an absent modalidade reads back as destinatário (FOB), never as emitente', () => {
+    const frete = freteDoPedidoSchema.parse({ estado: 'iniciado', valorCobrado: 49.9 });
+
+    expect(frete.modalidade).toBe(MODALIDADE_FRETE.fob);
+  });
+
+  it('⚠️ the invariant that matters: an absent modalidade is NEVER CIF', () => {
+    // Asserted separately from the exact value on purpose — the exact code may
+    // one day move between non-emitente modalidades, but this line may not
+    // change without a fiscal decision. See #1085 for what CIF costs.
+    const frete = freteDoPedidoSchema.parse({ estado: 'iniciado' });
+
+    expect(frete.modalidade).not.toBe(MODALIDADE_FRETE.cif);
+  });
+
+  it('an explicitly stored CIF still parses as CIF — the default must not clobber it', () => {
+    const frete = freteDoPedidoSchema.parse({
+      estado: 'iniciado',
+      modalidade: MODALIDADE_FRETE.cif,
+      valorCobrado: 49.9,
+    });
+
+    expect(frete.modalidade).toBe(MODALIDADE_FRETE.cif);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                  derivePedidoFreteTotals — legacy formulas                 */
 /* -------------------------------------------------------------------------- */
 
@@ -194,17 +239,39 @@ describe('FREIGHT_TIPO_CAPS', () => {
     expect(routed).toEqual(['melhorEnvios']);
   });
 
-  it('every non-ME tipo is non-buyable today (→ etiquetaRowState "unsupported")', () => {
+  it('every non-ME tipo is non-buyable/non-quotable/non-trackable today', () => {
     // Behavioral guarantee: the caps swap is byte-identical to the old
     // `tipo !== 'melhorEnvios'` reject until a provider implements its flow.
+    // `canPrint` is excluded here — the generic-label tipos are printable
+    // via their own on-demand PDF (see the dedicated test below).
     for (const tipo of integracoesFreteSchema.options) {
       if (tipo === 'melhorEnvios') continue;
       const caps = FREIGHT_TIPO_CAPS[tipo];
       expect(caps.canQuote).toBe(false);
       expect(caps.canBuy).toBe(false);
-      expect(caps.canPrint).toBe(false);
       expect(caps.canTrack).toBe(false);
     }
+  });
+
+  it('the generic-label tipos (motoboy/outros) are printable via the on-demand PDF, not the freight client', () => {
+    for (const tipo of [INTEGRACAO_FRETE.motoboy, INTEGRACAO_FRETE.outros] as const) {
+      expect(FREIGHT_TIPO_CAPS[tipo]).toMatchObject({
+        labelMode: 'generic',
+        canPrint: true,
+        canQuote: false,
+        canBuy: false,
+        canFetchLabel: false,
+        canTrack: false,
+        marketplaceOwned: false,
+        channel: null,
+      });
+    }
+    // Nothing else is printable outside Melhor Envio + the generic tipos —
+    // the `channel`-routed check above already pins ME as the only channel.
+    const printable = integracoesFreteSchema.options.filter((t) => FREIGHT_TIPO_CAPS[t].canPrint);
+    expect([...printable].sort()).toEqual(
+      [INTEGRACAO_FRETE.melhorEnvios, INTEGRACAO_FRETE.motoboy, INTEGRACAO_FRETE.outros].sort(),
+    );
   });
 
   it('Mercado Livre is the only fetch-label tipo (marketplace-client print)', () => {

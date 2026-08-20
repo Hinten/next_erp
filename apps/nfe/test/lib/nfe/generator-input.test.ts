@@ -5,6 +5,7 @@ import {
   MODALIDADE_FRETE,
   ORIGEM,
   FORMA_PAGAMENTO,
+  freteDoPedidoSchema,
   pagamentoSchema,
   type FreteDoPedido,
 } from '@delfrance/schemas';
@@ -433,6 +434,33 @@ describe('vFrete only for frete por conta do emitente (fiscal guard)', () => {
       expect(out.transpXml).toContain(`<modFrete>${modalidade}</modFrete>`);
     });
   }
+
+  /**
+   * The case the table above cannot reach: a stored block with NO `modalidade`
+   * at all. Every case above casts a literal into `FreteDoPedido`, which skips
+   * the schema — but the generator never sees a cast, it sees
+   * `freteDoPedidoSchema.safeParse` (`bundle.ts:parseFreteFromPedido`). So this
+   * one MUST go through the real parse: the value under test is the schema
+   * DEFAULT, and a cast here would test nothing (#1090).
+   */
+  it('a block stored WITHOUT modalidade parses to a non-emitente code and stays out of the nota', () => {
+    const frete = freteDoPedidoSchema.parse({ estado: 'iniciado', valorCobrado: 20 });
+    expect(frete.modalidade).not.toBe(MODALIDADE_FRETE.cif);
+
+    const bundle = fullBundle({ pagamentos: [], frete });
+    const out = buildGeneratorInput(
+      bundle,
+      [item({ precoDeVenda: 100, quantidade: 1 })],
+      7,
+      1,
+      'homologacao',
+    );
+
+    expect(out.itens.every((g) => g.vFrete === undefined)).toBe(true);
+    expect(out.totalXml).toContain('<vFrete>0.00</vFrete>');
+    expect(out.totalXml).toContain('<vNF>100.00</vNF>');
+    expect(out.transpXml).toContain(`<modFrete>${MODALIDADE_FRETE.fob}</modFrete>`);
+  });
 
   it("modalidade='0' (emitente) is the ONLY case that charges it — the contrast that makes the guard meaningful", () => {
     const bundle = fullBundle({

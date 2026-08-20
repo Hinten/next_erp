@@ -45,7 +45,7 @@ export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';
-export { SectionTabs, type SectionTabsProps } from './object/SectionTabs';
+export { SectionTabs, useSectionActive, type SectionTabsProps } from './object/SectionTabs';
 export { isEmpty, pickDirty, valuesEqual } from './object/diff';
 export { DELETE_MARK, stripMarkedForDeletion } from './object/markForDeletion';
 export {
