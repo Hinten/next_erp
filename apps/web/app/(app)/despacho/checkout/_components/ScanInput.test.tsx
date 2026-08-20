@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { ScanInput } from './ScanInput';
 
 function renderInput(onScan: (code: string) => void) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <ScanInput onScan={onScan} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

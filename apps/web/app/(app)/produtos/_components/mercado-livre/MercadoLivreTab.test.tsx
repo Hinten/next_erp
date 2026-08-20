@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { SectionTabs } from '@delfrance/ui';
 import type { Firestore } from 'firebase/firestore';
 
@@ -17,16 +17,16 @@ const { MercadoLivreTab } = await import('./MercadoLivreTab');
 
 function renderTab(produtoId: string | null = 'prod-1') {
   return render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <MercadoLivreTab produtoId={produtoId} db={{} as Firestore} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 
 /** The produto page's real shape: the tab lives in a section, and starts closed. */
 function renderInTabs() {
   return render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <SectionTabs
         sections={['Dados gerais', 'Mercado Livre']}
         contents={{
@@ -35,7 +35,7 @@ function renderInTabs() {
         }}
         persistentSections={['Mercado Livre']}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

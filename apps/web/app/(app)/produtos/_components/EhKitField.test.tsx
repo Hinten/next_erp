@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { EhKitField, type EhKitFieldProps, type ReferencingKit } from './EhKitField';
 
 const kits: ReferencingKit[] = [{ id: 'k1', nome: 'Kit Verão' }];
@@ -8,9 +8,9 @@ const kits: ReferencingKit[] = [{ id: 'k1', nome: 'Kit Verão' }];
 function renderField(over: Partial<EhKitFieldProps> = {}) {
   const onChange = vi.fn();
   render(
-    <MantineProvider>
+    <MantineTestProvider>
       <EhKitField label="É kit" value={false} onChange={onChange} referencedByKits={[]} {...over} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
   return { onChange };
 }

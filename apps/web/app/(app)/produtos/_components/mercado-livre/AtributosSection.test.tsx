@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import type { AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
@@ -32,7 +32,7 @@ const combo = (name: string) => screen.getByRole('combobox', { name });
 function renderSection(props: Partial<Parameters<typeof AtributosSection>[0]> = {}) {
   const onRowsChange = vi.fn();
   render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <AtributosSection
         categoryId="MLB31447"
         attrs={[attr()]}
@@ -44,7 +44,7 @@ function renderSection(props: Partial<Parameters<typeof AtributosSection>[0]> = 
         failed={false}
         {...props}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
   return onRowsChange;
 }

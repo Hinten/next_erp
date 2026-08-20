@@ -59,8 +59,9 @@ interface EditorTarget {
  * full-screen editor.
  *
  * Guias live on the tabMedi doc's `tabelasDeMedidasMercadoLivre[<conta>]` map,
- * which the still-running Flutter app also authors — every write here merges
- * only this conta's key, so the two coexist.
+ * which also holds other contas' keys and the legacy app's Shopee entries from
+ * the migrated corpus — every write here merges only this conta's key, so none
+ * of the siblings are clobbered.
  *
  * ⚠️ Unsent guias are PERSISTED as drafts (`id: null`) rather than held in React
  * state. A 75-row × 10-column grid is far too much work to lose to a reload,

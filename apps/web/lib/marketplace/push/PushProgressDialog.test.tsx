@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { FirebaseError } from 'firebase/app';
 
 import { PushProgressDialog } from './PushProgressDialog';
@@ -37,7 +37,7 @@ function renderDialog(
   ) => Promise<{ rows: PushRowBase[]; cancelado: boolean }>,
 ) {
   render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <PushProgressDialog<PushRowBase, boolean>
         opened
         onClose={vi.fn()}
@@ -50,7 +50,7 @@ function renderDialog(
         renderOpcao={() => null}
         executar={executar}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

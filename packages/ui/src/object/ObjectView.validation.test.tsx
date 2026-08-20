@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 
@@ -69,7 +69,7 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 }
 
 function Wrap({ children }: { children: React.ReactNode }) {
-  return <MantineProvider env="test">{children}</MantineProvider>;
+  return <MantineTestProvider>{children}</MantineTestProvider>;
 }
 
 function renderTabbed(extra?: { excludedFields?: string[] }) {

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import type { Pedido } from '@delfrance/schemas';
@@ -61,7 +61,7 @@ function Host({
     formRef = form;
   }, [form]);
   return (
-    <MantineProvider>
+    <MantineTestProvider>
       <PedidoFooter
         form={form}
         db={{} as Firestore}
@@ -74,7 +74,7 @@ function Host({
         ehSaida={ehSaida}
         onSaveAndContinue={onSaveAndContinue}
       />
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

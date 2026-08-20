@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { Badge, MantineProvider, Text } from '@mantine/core';
+import { Badge, Text } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { FirestoreError } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 
@@ -38,7 +39,7 @@ function setSnap(state: Partial<SnapshotState<SnapshotRow<TestRec>[]>>) {
 }
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 const baseProps = {
@@ -133,9 +134,9 @@ describe('EventRoundtripHistory', () => {
     expect(screen.getByText('Histórico')).toBeTruthy();
 
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <EventRoundtripHistory {...baseProps} />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.queryByText('Histórico')).toBeNull();
   });

@@ -280,10 +280,10 @@ export function docMaisNovoQueEvento(data: Record<string, unknown>, eventTimeMs:
  * write at all, and `dataCadastro` never churns.
  *
  * Lookup and write share ONE transaction. Without it this is a read-modify-write with
- * a gap, and two conta writes landing together (or a trigger racing the still-running
- * Flutter conta screen) interleave: on the update path the later read loses the earlier
- * patch, and on the create path BOTH invocations see "no doc" and create one —
- * producing exactly the duplicate `int_frete` this issue exists to prevent.
+ * a gap, and two conta writes landing together (an Eventarc replay overlapping a fresh
+ * event, or two operators on the conta screen) interleave: on the update path the later
+ * read loses the earlier patch, and on the create path BOTH invocations see "no doc" and
+ * create one — producing exactly the duplicate `int_frete` this issue exists to prevent.
  */
 export async function sincronizarIntFreteDaConta(
   db: Firestore,

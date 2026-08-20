@@ -285,6 +285,53 @@ describe('fixConversaAnonima', () => {
     expect(h.cliente.merge).toHaveBeenCalledWith(DB, {}, 'c1', { nome: 'Ana' });
   });
 
+  it('finds the cliente stored under the BARE `usuarios/<id>` shape', async () => {
+    // ⚠️ The regression this function had. It ran its own single-shape
+    // `userCliente == documents/usuarios/<id>` query, so a MIGRATED contact whose
+    // cliente stores the bare form matched nothing: the conversa `nome` was
+    // upgraded and the cliente `nome` silently was not. Exactly the population
+    // `userClienteCandidates` exists for — which is why this now goes through
+    // `findClienteIdByUsuario` instead of duplicating the query shape.
+    const extId = externalId('whatsapp', FROM);
+    h.cliente._docs.push({
+      id: 'c-legado',
+      data: { nome: 'anônimo', telefone: FROM, userCliente: `usuarios/${extId}` },
+    });
+
+    await fixConversaAnonima(
+      DB,
+      'conv1',
+      { nome: 'Anônimo' },
+      { id: extId, usuario: { nome: 'Ana' } as never },
+    );
+
+    expect(h.cliente.merge).toHaveBeenCalledWith(DB, {}, 'c-legado', { nome: 'Ana' });
+  });
+
+  it('REFUSES to rename when two clientes claim the usuario', async () => {
+    // Inherited from `findClienteIdByUsuario`. A cosmetic best-effort upgrade is
+    // not worth renaming a coin-flip cliente.
+    const extId = externalId('whatsapp', FROM);
+    h.cliente._docs.push({
+      id: 'c1',
+      data: { nome: 'anônimo', userCliente: usuarioOuterRef(extId) },
+    });
+    h.cliente._docs.push({ id: 'c2', data: { nome: 'anônimo', userCliente: `usuarios/${extId}` } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await fixConversaAnonima(
+      DB,
+      'conv1',
+      { nome: 'Anônimo' },
+      { id: extId, usuario: { nome: 'Ana' } as never },
+    );
+
+    // The conversa still gets its name — only the ambiguous cliente is skipped.
+    expect(h.conversa.merge).toHaveBeenCalledWith(DB, {}, 'conv1', { nome: 'Ana' });
+    expect(h.cliente.merge).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('is a no-op when the conversa already has a real name', async () => {
     await fixConversaAnonima(
       DB,
@@ -312,5 +359,131 @@ describe('fixConversaAnonima', () => {
 
     expect(h.conversa.merge).toHaveBeenCalledWith(DB, {}, 'conv1', { nome: 'Ana' });
     expect(h.cliente.merge).not.toHaveBeenCalled();
+  });
+});
+
+describe('discoverUserByPhoneNumber — the resolved clienteId (#1159)', () => {
+  // The cliente was always resolved in here; it just was not returned, which is
+  // why a WhatsApp conversa carried no `clienteOuterRef` and the inbox Cliente
+  // filter could not match it. One case per branch, so a branch that quietly
+  // stops resolving cannot pass.
+
+  it('(a) externalId hit — reverse-looks-up the cliente that claims the usuario', async () => {
+    const extId = externalId('whatsapp', FROM);
+    h.usuario._docs.push({ id: 'u1', data: { nome: 'João', externalId: extId } });
+    h.cliente._docs.push({
+      id: 'c9',
+      data: { nome: 'João', telefone: FROM, userCliente: 'documents/usuarios/u1' },
+    });
+
+    const res = await discoverUserByPhoneNumber(DB, FROM);
+
+    expect(res.id).toBe('u1');
+    expect(res.clienteId).toBe('c9');
+  });
+
+  it('(a) finds the cliente stored under the BARE `usuarios/<id>` shape too', async () => {
+    // ⚠️ The single case that fails if the lookup stops querying both shapes.
+    // `usuarioOuterRef()` writes `documents/usuarios/<id>`, but the migrated
+    // corpus carries the bare form and Firestore cannot normalize a stored
+    // value inside a `where` — so one shape silently misses half the rows.
+    const extId = externalId('whatsapp', FROM);
+    h.usuario._docs.push({ id: 'u1', data: { nome: 'João', externalId: extId } });
+    h.cliente._docs.push({
+      id: 'c-legado',
+      data: { nome: 'João', telefone: FROM, userCliente: 'usuarios/u1' },
+    });
+
+    const res = await discoverUserByPhoneNumber(DB, FROM);
+
+    expect(res.clienteId).toBe('c-legado');
+  });
+
+  it('(a) REFUSES to pick when two clientes claim the same usuario', async () => {
+    // Two strong owners of one identity is a data defect. Picking the arbitrary
+    // first would hide it and point the conversa at a coin flip, so this
+    // resolves to unknown and warns — the same refusal `claimCliente` makes for
+    // a duplicated ML id (#1067).
+    const extId = externalId('whatsapp', FROM);
+    h.usuario._docs.push({ id: 'u1', data: { nome: 'João', externalId: extId } });
+    h.cliente._docs.push({
+      id: 'c1',
+      data: { nome: 'A', telefone: FROM, userCliente: 'documents/usuarios/u1' },
+    });
+    h.cliente._docs.push({
+      id: 'c2',
+      data: { nome: 'B', telefone: FROM, userCliente: 'usuarios/u1' },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await discoverUserByPhoneNumber(DB, FROM);
+
+    expect(res.id).toBe('u1');
+    expect(res.clienteId).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('(a) resolves null — not a guess — when nothing points at the usuario', async () => {
+    const extId = externalId('whatsapp', FROM);
+    h.usuario._docs.push({ id: 'u1', data: { nome: 'João', externalId: extId } });
+    h.cliente._docs.push({ id: 'c-outro', data: { nome: 'Outro', userCliente: null } });
+
+    const res = await discoverUserByPhoneNumber(DB, FROM);
+
+    expect(res.clienteId).toBeNull();
+  });
+
+  it('(c) create path — returns the cliente it just minted', async () => {
+    const res = await discoverUserByPhoneNumber(DB, FROM, 'Nova Cliente');
+
+    expect(h.cliente.add).toHaveBeenCalledTimes(1);
+    expect(res.clienteId).not.toBeNull();
+    expect(h.cliente._docs.find((d) => d.id === res.clienteId)).toBeDefined();
+  });
+
+  it('(c) the LOSER of a concurrent first call reads the winner\u2019s cliente', async () => {
+    // The loser did not mint the cliente, so it must not conclude there is
+    // none — that would write a conversa with no cliente link for a contact
+    // that has one.
+    const extId = externalId('whatsapp', FROM);
+    // Simulate the winner having already landed both docs.
+    h.usuario._docs.push({ id: extId, data: { nome: 'Vencedora', externalId: extId } });
+    h.cliente._docs.push({
+      id: 'c-vencedora',
+      data: { nome: 'Vencedora', telefone: '999', userCliente: `documents/usuarios/${extId}` },
+    });
+
+    const res = await discoverUserByPhoneNumber(DB, FROM);
+
+    expect(h.cliente.add).not.toHaveBeenCalled();
+    expect(res.clienteId).toBe('c-vencedora');
+  });
+
+  it('(d) linked cliente — returns it without a second lookup', async () => {
+    h.cliente._docs.push({
+      id: 'c1',
+      data: { nome: 'Cliente Um', telefone: FROM, userCliente: 'documents/usuarios/uX' },
+    });
+    h.usuario._docs.push({ id: 'uX', data: { nome: 'Cliente Um', externalId: 'e' } });
+
+    const res = await discoverUserByPhoneNumber(DB, FROM);
+
+    expect(res.id).toBe('uX');
+    expect(res.clienteId).toBe('c1');
+  });
+
+  it('(d) create+link fallback — returns the cliente it linked onto', async () => {
+    // A cliente matched by phone but carries no live userCliente, so a sem-auth
+    // usuario is minted and linked onto it. The cliente is that one, not a new.
+    h.cliente._docs.push({
+      id: 'c-sem-user',
+      data: { nome: 'Sem User', telefone: FROM, userCliente: null },
+    });
+
+    const res = await discoverUserByPhoneNumber(DB, FROM);
+
+    expect(h.cliente.add).not.toHaveBeenCalled();
+    expect(res.clienteId).toBe('c-sem-user');
   });
 });

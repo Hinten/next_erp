@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { ConversaGroup } from '@/lib/chat/globalSearch';
 import type { GlobalSearch } from '../../_hooks/useGlobalSearch';
 
@@ -59,9 +59,9 @@ function makeSearch(over: Partial<GlobalSearch> = {}): GlobalSearch {
 
 function renderResults(search: GlobalSearch) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <GlobalSearchResults search={search} term="orçamento" />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

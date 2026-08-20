@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 vi.mock('@mantine/notifications', () => ({
   notifications: {
@@ -48,7 +48,7 @@ describe('showErrorNotification', () => {
     showErrorNotification({ title: 'Erro de certificado', message: longMessage });
     const arg = showSpy.mock.calls[0]![0]!;
 
-    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
     // The full string is present in the DOM (nothing clipped out), and the copy
     // button is still rendered alongside it.
     expect(screen.getByText(longMessage).textContent).toBe(longMessage);
@@ -59,7 +59,7 @@ describe('showErrorNotification', () => {
     showErrorNotification({ title: 'Erro', message: 'Cert file not found' });
     const arg = showSpy.mock.calls[0]![0]!;
 
-    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
     // getByText / getByLabelText throw if not found, so reaching here means
     // both nodes are in the rendered output.
     expect(screen.getByText('Cert file not found').textContent).toBe('Cert file not found');
@@ -71,7 +71,7 @@ describe('showErrorNotification', () => {
     const arg = showSpy.mock.calls[0]![0]!;
     const id = arg.id!;
 
-    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
     // The Group is the outermost element of the message JSX; trigger
     // hover via the Text inside it so the event bubbles.
     const text = screen.getByText('msg');
@@ -104,7 +104,7 @@ describe('showCopyableNotification', () => {
     expect(arg.color).toBe('teal');
     expect(arg.title).toBe('EPEC registrado');
     // Same copyable JSX message as the error variant.
-    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
     expect(screen.getByLabelText('Copiar mensagem')).toBeTruthy();
   });
 
@@ -117,7 +117,7 @@ describe('showCopyableNotification', () => {
     });
     showCopyableNotification({ title: 'EPEC registrado', message: 'cStat=136: ok', color: 'teal' });
     const arg = showSpy.mock.calls[0]![0]!;
-    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
     fireEvent.click(screen.getByLabelText('Copiar mensagem'));
     expect(writeText).toHaveBeenCalledWith('EPEC registrado: cStat=136: ok');
   });

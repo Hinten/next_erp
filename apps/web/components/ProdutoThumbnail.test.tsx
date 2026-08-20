@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore } from 'firebase/firestore';
 import type { Produto } from '@delfrance/schemas';
 import type { SnapshotState } from '@delfrance/data/hooks';
@@ -66,7 +66,7 @@ function produtoWithFoto(): Produto {
 }
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 afterEach(() => {
@@ -137,9 +137,9 @@ describe('ProdutoThumbnail', () => {
       ],
     } as unknown as Produto;
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <ProdutoThumbnail db={db} produto={other} zoomable={false} />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     const img = screen.getByRole('img', { name: 'Boné' });
     expect(img.getAttribute('src')).toBe('https://cdn/deriv2.jpg');

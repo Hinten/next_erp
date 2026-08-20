@@ -41,6 +41,25 @@ export interface DiscoveredUsuario {
 }
 
 /**
+ * What `discoverUserByPhoneNumber` hands back: the usuario, plus the `clientes`
+ * doc behind it.
+ *
+ * The cliente was always resolved here — every branch below either finds, links
+ * or mints one — it just was not returned, so the conversa builder had nothing
+ * to point `clienteOuterRef` at and wrote only `usarioOuterRef`. That left the
+ * inbox's Cliente filter unable to match a WhatsApp thread and an ML thread with
+ * the same field (#1159).
+ *
+ * `clienteId` is `null` only when the cliente genuinely cannot be determined —
+ * a usuario whose `userCliente` link is dangling or absent. Callers must treat
+ * that as "unknown", never as "no cliente".
+ */
+export interface DiscoveredContato extends DiscoveredUsuario {
+  /** `clientes/<id>` document id, or null when it could not be resolved. */
+  readonly clienteId: string | null;
+}
+
+/**
  * `documents/usuarios/<id>` — the wire format for a usuario outer reference,
  * matching the legacy Flutter `OuterRefField.toJson` (`pathWithDocuments`) shape
  * `documents/<col>/<id>`, applied to this repo's `usuarios` collection. This is
@@ -49,6 +68,11 @@ export interface DiscoveredUsuario {
  */
 export function usuarioOuterRef(usuarioId: string): string {
   return `documents/usuarios/${usuarioId}`;
+}
+
+/** `documents/clientes/<id>` — the same wire format, for `conversa.clienteOuterRef`. */
+export function clienteOuterRef(clienteId: string): string {
+  return `documents/clientes/${clienteId}`;
 }
 
 /** gRPC ALREADY_EXISTS (code 6) from `docRef.create()` on a doc that now exists. */
@@ -89,6 +113,49 @@ async function findUsuarioByExternalId(
     id: doc.id,
     usuario: usuarioCollection.parseRead(doc.data(), usuarioCollection.docPath({}, doc.id)),
   };
+}
+
+/**
+ * The `cliente.userCliente` values that point at `usuarios/<id>`.
+ *
+ * ⚠️ BOTH shapes have to be tried. `usuarioOuterRef()` writes the
+ * `documents/`-prefixed form, but the migrated corpus carries bare
+ * `usuarios/<id>` too, and Firestore cannot normalize a stored value inside a
+ * `where` — so a single-shape lookup silently misses half the population. Same
+ * disjunction `clienteUserRefCandidates` uses on the web side.
+ */
+function userClienteCandidates(usuarioId: string): string[] {
+  return [`documents/usuarios/${usuarioId}`, `usuarios/${usuarioId}`];
+}
+
+/**
+ * The `clientes` doc linked to a usuario, or null when nothing points at it.
+ *
+ * Only branch (a) needs this — the other three already hold the cliente id from
+ * the work they just did. Backed by the `clientes(userCliente ASC)` index that
+ * already exists; on Enterprise an unindexed read would silently full-scan
+ * (root `CLAUDE.md` rule 1), so do not widen this query without checking
+ * `firestore.indexes.json`.
+ *
+ * `limit(2)`, not `limit(1)`: more than one cliente claiming the same usuario is
+ * a real data defect and picking the arbitrary first would hide it. Reported and
+ * resolved as unknown, so the conversa carries no `clienteOuterRef` rather than
+ * a guessed one — the same refusal `claimCliente` makes for ML ids (#1067).
+ */
+async function findClienteIdByUsuario(db: Firestore, usuarioId: string): Promise<string | null> {
+  const snap = await clienteCollection
+    .ref(db, {})
+    .where('userCliente', 'in', userClienteCandidates(usuarioId))
+    .limit(2)
+    .get();
+  if (snap.docs.length > 1) {
+    console.warn('[whatsapp] mais de um cliente aponta para o mesmo usuario', {
+      usuarioId,
+      clienteIds: snap.docs.map((d) => d.id),
+    });
+    return null;
+  }
+  return snap.docs[0]?.id ?? null;
 }
 
 /**
@@ -143,8 +210,8 @@ async function createClienteForUser(
   usuarioId: string,
   nome: string | null,
   telefone: string,
-): Promise<void> {
-  await clienteCollection.add(
+): Promise<string> {
+  const ref = await clienteCollection.add(
     db,
     {},
     {
@@ -153,6 +220,7 @@ async function createClienteForUser(
       userCliente: usuarioOuterRef(usuarioId),
     },
   );
+  return ref.id;
 }
 
 /**
@@ -174,17 +242,19 @@ export async function discoverUserByPhoneNumber(
   from: string,
   name?: string | null,
   attempt = 0,
-): Promise<DiscoveredUsuario> {
+): Promise<DiscoveredContato> {
   const extId = externalId(WHATSAPP_CANAL, from);
 
-  // (a) existing sem-auth usuario by externalId.
+  // (a) existing sem-auth usuario by externalId. The ONE branch that does no
+  // cliente work of its own, so it is the one that has to look the link up.
   const found = await findUsuarioByExternalId(db, extId);
   if (found) {
+    const clienteId = await findClienteIdByUsuario(db, found.id);
     if (name != null && name !== '' && isPlaceholderName(found.usuario.nome)) {
       await usuarioCollection.merge(db, {}, found.id, { nome: name });
-      return { id: found.id, usuario: { ...found.usuario, nome: name } };
+      return { id: found.id, usuario: { ...found.usuario, nome: name }, clienteId };
     }
-    return found;
+    return { ...found, clienteId };
   }
 
   // (b) clientes by phone. `telefoneQueryShapes` yields the normalized + raw BR
@@ -205,10 +275,12 @@ export async function discoverUserByPhoneNumber(
   // created the usuario (a concurrent loser skips it → exactly one cliente).
   if (clientes.length === 0) {
     const created = await getOrCreateUsuarioSemAuth(db, from, nameOrPlaceholder(name));
-    if (created.created) {
-      await createClienteForUser(db, created.id, name ?? null, from);
-    }
-    return { id: created.id, usuario: created.usuario };
+    // The loser of a concurrent first call did NOT mint the cliente, so it has
+    // to read the one the winner made rather than assume there is none.
+    const clienteId = created.created
+      ? await createClienteForUser(db, created.id, name ?? null, from)
+      : await findClienteIdByUsuario(db, created.id);
+    return { id: created.id, usuario: created.usuario, clienteId };
   }
 
   // (d) clientes found → deterministic order by doc id asc.
@@ -223,6 +295,8 @@ export async function discoverUserByPhoneNumber(
         return {
           id: userId,
           usuario: usuarioCollection.parseRead(snap.data(), usuarioCollection.docPath({}, userId)),
+          // This IS the cliente that claimed the usuario — no lookup needed.
+          clienteId: c.id,
         };
       }
       // A dangling userCliente (target usuario gone) — fall through to the next
@@ -246,7 +320,7 @@ export async function discoverUserByPhoneNumber(
   await clienteCollection.merge(db, {}, target.id, {
     userCliente: usuarioOuterRef(created.id),
   });
-  return { id: created.id, usuario: created.usuario };
+  return { id: created.id, usuario: created.usuario, clienteId: target.id };
 }
 
 /**
@@ -255,9 +329,17 @@ export async function discoverUserByPhoneNumber(
  * the user's name. Best-effort: the caller wraps it so a failure never blocks
  * message ingestion (legacy caught + logged the same way).
  *
- * The paired cliente is found by `userCliente == usuarioOuterRef(user.id)`
- * (legacy `Cliente.documents.userCliente__isEqualTo(user)`), so this needs the
- * resolved user's id, not the conversa id.
+ * The paired cliente is resolved through `findClienteIdByUsuario`, so this needs
+ * the resolved user's id, not the conversa id.
+ *
+ * ⚠️ It used to run its own `userCliente == usuarioOuterRef(user.id)` query
+ * (legacy `Cliente.documents.userCliente__isEqualTo(user)`) — the single-shape
+ * lookup the helper above exists to replace. A migrated contact whose cliente
+ * stores the BARE `usuarios/<id>` form matched nothing, so the conversa `nome`
+ * was upgraded and the cliente `nome` silently was not: exactly the population
+ * the dual-shape candidates were added for. Reusing the helper also inherits its
+ * ambiguity refusal — with two claimants this skips rather than renaming a
+ * coin-flip cliente, which for a cosmetic best-effort upgrade is the right call.
  *
  * @param conversaId the `chat/<id>` document id of `conversa`.
  */
@@ -277,15 +359,12 @@ export async function fixConversaAnonima(
   const { conversaCollection } = await import('@delfrance/data/admin/collections');
   await conversaCollection.merge(db, {}, conversaId, { nome });
 
-  const snap = await clienteCollection
-    .ref(db, {})
-    .where('userCliente', '==', usuarioOuterRef(user.id))
-    .limit(1)
-    .get();
-  const doc = snap.docs[0];
-  if (!doc) return;
-  const cliente = clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, doc.id));
+  const clienteId = await findClienteIdByUsuario(db, user.id);
+  if (clienteId == null) return;
+  const doc = await clienteCollection.docRef(db, {}, clienteId).get();
+  if (!doc.exists) return;
+  const cliente = clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, clienteId));
   if (isPlaceholderName(cliente.nome)) {
-    await clienteCollection.merge(db, {}, doc.id, { nome });
+    await clienteCollection.merge(db, {}, clienteId, { nome });
   }
 }

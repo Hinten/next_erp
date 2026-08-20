@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider, Tabs } from '@mantine/core';
+import { Tabs } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
@@ -67,7 +68,7 @@ function FreteHost({
   );
   return (
     <QueryClientProvider client={queryClient}>
-      <MantineProvider>
+      <MantineTestProvider>
         <Tabs value={tab} onChange={setTab} keepMounted={false}>
           <Tabs.List>
             <Tabs.Tab value="frete">Frete</Tabs.Tab>
@@ -80,7 +81,7 @@ function FreteHost({
             Outra aba
           </Tabs.Panel>
         </Tabs>
-      </MantineProvider>
+      </MantineTestProvider>
     </QueryClientProvider>
   );
 }
