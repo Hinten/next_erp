@@ -63,6 +63,8 @@ function shouldApplyStale(status: string, estado: EstadoEnvioMensagem): boolean 
       );
     case 'failed':
       return estado !== ESTADO_ENVIO.erro;
+    case 'deleted':
+      return false; // a stale 'deleted' is always ignored
     default:
       return false; // unknown status while stale → skip
   }
@@ -147,6 +149,9 @@ export async function processStatuses(
         break;
       case 'failed':
         patch.estadoEnvio = ESTADO_ENVIO.erro;
+        break;
+      case 'deleted':
+        patch.estadoEnvio = ESTADO_ENVIO.excluido;
         break;
       default:
         patch.estadoEnvio = ESTADO_ENVIO.desconhecido;

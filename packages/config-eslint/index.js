@@ -65,6 +65,10 @@ export function typeAware(
           { checksVoidReturn: { attributes: false } },
         ],
         '@typescript-eslint/await-thenable': 'error',
+        // Catch missing switch arms at lint time, not at runtime. Benign when
+        // the switch is a statement (side effect only) but dangerous for
+        // expression switches — a missing arm silently returns `undefined`.
+        '@typescript-eslint/switch-exhaustiveness-check': 'error',
         // Type-aware: it resolves the Zod enum from the type of the position
         // the literal sits in, so it lives here rather than in the base block.
         // The `delfrance` plugin is registered in the base block, which merges

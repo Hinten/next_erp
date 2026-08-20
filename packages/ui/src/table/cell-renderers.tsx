@@ -66,6 +66,12 @@ export function renderCell(value: unknown, descriptor: FieldDescriptor): ReactNo
       return <Text c="dimmed">…</Text>;
     case 'unknown':
       return <Text c="dimmed">—</Text>;
+    case 'string':
+    case 'email':
+    case 'longText':
+    case 'tel':
+    case 'url':
+    case 'reference':
     default:
       return String(value);
   }

@@ -38,6 +38,8 @@ function kindFromClaimType(type: string | null): IncidentKind {
       return 'cancellation';
     case 'change':
       return 'exchange';
+    case null:
+      return 'other';
     default:
       return 'other';
   }
@@ -57,6 +59,8 @@ function authorFromSenderRole(senderRole: string | null): IncidentParty {
       return 'buyer';
     case 'respondent':
       return 'seller';
+    case null:
+      return 'marketplace';
     default:
       return 'marketplace';
   }

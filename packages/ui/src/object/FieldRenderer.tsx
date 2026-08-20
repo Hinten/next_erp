@@ -338,6 +338,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                 rightSection={clearButton}
               />
             );
+          case 'object':
+          case 'array':
+          case 'unknown':
           case 'string':
           default:
             return (

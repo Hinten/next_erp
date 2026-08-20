@@ -78,6 +78,15 @@ function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
       const bound = Number(f.value);
       return (value) => value != null && Number(value) >= bound;
     }
+    case 'array-contains': {
+      // Array contains a specific value
+      return (value) => Array.isArray(value) && value.includes(f.value);
+    }
+    case 'array-contains-any': {
+      // Array contains any of the specified values
+      const values = Array.isArray(f.value) ? f.value : [f.value];
+      return (value) => Array.isArray(value) && values.some((v) => value.includes(v));
+    }
     default:
       return () => true;
   }

@@ -47,6 +47,9 @@ export function meStatusToEstadoFrete(status: string | null | undefined): Estado
       return ESTADO_FRETE.suspenso;
     case 'undelivered':
       return ESTADO_FRETE.falhaNaEntrega;
+    case null:
+    case undefined:
+      return null;
     default:
       return null;
   }
