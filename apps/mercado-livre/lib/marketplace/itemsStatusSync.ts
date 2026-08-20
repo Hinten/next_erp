@@ -53,7 +53,9 @@
  * supplied, runs that takeover (see `importMigration.ts`'s `handleUptinMigration`,
  * wired as the default by `notificacao.ts`) INSTEAD of the normal estado merge.
  * Every other migration-tag case defers, each under its OWN outcome — see the
- * `ItemsSyncOutcome` note.
+ * `ItemsSyncOutcome` note — and STAMPS `estado: 'am'`, since this sync is the
+ * only component that reads ML's migration tags on its own schedule and three
+ * other rungs gate on that value (`stampAguardandoMigracao` below).
  *
  * ⚠️ Known gap, deliberately not closed here: a UP FAMILY's parent link carries
  * the FAMILY id, so an `items` delivery for a member item resolves no link and
@@ -61,6 +63,7 @@
  * separately; it is the same defect class, one level down.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
 import {
   type MlItem,
   MercadoLivreHttpError,
@@ -189,7 +192,10 @@ export async function syncItemStatus(
     // Due — but only a supplied runner can actually take over. Reporting the
     // two apart is the difference between "ML is mid-migration" (normal) and
     // "the takeover never ran because nobody wired it" (a defect).
-    if (!migrationRunner) return 'no-migration-runner';
+    if (!migrationRunner) {
+      await stampAguardandoMigracao(db, link);
+      return 'no-migration-runner';
+    }
     const sourceLink: UptinSourceLink = {
       produtoId: link.produtoId,
       linkDocId: link.docId,
@@ -201,8 +207,14 @@ export async function syncItemStatus(
   // Of the two DEFERRALS the uptin one is tested first (the takeover above still
   // outranks both): that tag marks the migration's DESTINATION, so a listing
   // carrying both must not report as a source still waiting to close.
-  if (tags.includes(MIGRATION_UPTIN_TAG)) return 'deferred-migration-uptin';
-  if (tags.includes(MIGRATION_SOURCE_TAG)) return 'deferred-migration-source';
+  if (tags.includes(MIGRATION_UPTIN_TAG)) {
+    await stampAguardandoMigracao(db, link);
+    return 'deferred-migration-uptin';
+  }
+  if (tags.includes(MIGRATION_SOURCE_TAG)) {
+    await stampAguardandoMigracao(db, link);
+    return 'deferred-migration-source';
+  }
 
   const estado = estadoFromMlStatus(item.status);
   const status = item.status ?? null;
@@ -251,6 +263,50 @@ export async function syncItemStatus(
 
   // It already warns; the point here is that the CALLER learns nothing was written.
   return applied ? 'synced' : 'link-removido';
+}
+
+/**
+ * Record ML's "this listing is mid-UP-migration" verdict on the link doc as
+ * `estado: 'am'`.
+ *
+ * ⚠️ Without this, `'am'` has no PRODUCER at all. It never had one in this repo —
+ * the value only ever arrived from the Flutter app — and the guard removed above
+ * was the last thing keeping the Flutter-era values alive, since the normal merge
+ * below now overwrites `'am'` the moment ML reports no migration tag. Three rungs
+ * still gate on it: `publishCore.ts` (blocks publish), `precoPlan.ts`
+ * (`AGUARDANDO_MIGRACAO`) and `bulkEstoquePlan.ts` (`aguardando-migracao`). Of the
+ * send paths only the price one re-reads the tags itself
+ * (`precoDraftSend.ts`'s `MIGRATION_TAG_PREFIX`); `estoqueSend.ts` and `publish.ts`
+ * check NOTHING. So a listing ML is mid-flight rebuilding would be published to
+ * and stock-pushed, earning the 404 `publishCore.ts` describes.
+ *
+ * This sync is the only component that observes those tags on its own schedule —
+ * it is holding the fetched item right here — so it is the only one that can
+ * answer, and discarding that into a return string would leave the three rungs
+ * reading as live protection nothing can trigger.
+ *
+ * ⚠️ It clears the way every other field here does: the next delivery reporting no
+ * migration tag runs the normal merge and overwrites `'am'` with the real status.
+ * That is this module's ordinary staleness, not a new class of it — and unlike a
+ * static listing, one mid-migration is by definition changing, with a terminal
+ * event (`closed`) this module already depends on firing. `reverificarAnuncio` is
+ * the manual escape if ML ever drops a tag without a notification.
+ *
+ * Idempotent: writes only when the value actually moves, so a redelivery is free.
+ */
+async function stampAguardandoMigracao(db: Firestore, link: ResolvedLink): Promise<void> {
+  if (link.data.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) return;
+  // `mergeIfExists`, never `merge` — same reason as the writeback below: the link
+  // was resolved earlier and an upsert would resurrect a ghost with no schema.
+  await produtoMercadoLivreLinkCollection.mergeIfExists(
+    db,
+    { produtoId: link.produtoId },
+    link.docId,
+    {
+      estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao,
+      ultimaModificacao: Date.now(),
+    },
+  );
 }
 
 /** The link doc one status refresh targets, plus the ML item id the denorm keys on. */

@@ -562,17 +562,27 @@ describe('syncItemStatus — the ERP owns estado (no dual-run)', () => {
 });
 
 describe('syncItemStatus — migration deferrals each name themselves (#441)', () => {
-  it('source-tagged item still open → deferred-migration-source (the ML call DOES run)', async () => {
+  // The deferral is not just logged — it is RECORDED. `'am'` has no other
+  // producer in this repo (it only ever came from Flutter), and publishCore,
+  // precoPlan and bulkEstoquePlan all gate on it. Of the send paths only the
+  // price one re-reads ML's tags itself, so without this stamp a mid-migration
+  // listing would still be published to and stock-pushed.
+  it('source-tagged item still open → deferred AND stamped estado "am"', async () => {
     const db = new FakeDb();
     seedLink(db);
     const resolve = resolverFor({ status: 'active', tags: ['variations_migration_source'] });
     const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
     expect(out).toBe('deferred-migration-source');
     expect(resolve).toHaveBeenCalled(); // the tag is only visible after fetching
-    expect(db.updates).toEqual([]);
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'am' });
+    // The listing's own status is NOT touched — we did not sync it, and claiming
+    // otherwise is the failure mode this whole outcome union exists to prevent.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ status: 'active' });
+    // No parent denorm write: 'am' is not a cancel and those arrays are dead weight.
+    expect(db.updates.map((u) => u.path)).toEqual([`${LINK_PATH}/link1`]);
   });
 
-  it('uptin-tagged item → deferred-migration-uptin, a DIFFERENT outcome', async () => {
+  it('uptin-tagged item → deferred-migration-uptin, a DIFFERENT outcome, also stamped', async () => {
     const db = new FakeDb();
     seedLink(db);
     const out = await syncItemStatus(
@@ -582,6 +592,20 @@ describe('syncItemStatus — migration deferrals each name themselves (#441)', (
       resolverFor({ status: 'active', tags: ['variations_migration_uptin'] }),
     );
     expect(out).toBe('deferred-migration-uptin');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'am' });
+  });
+
+  // Idempotence: a redelivery of the same notification must cost no write.
+  it('a link ALREADY at "am" is not rewritten on redelivery', async () => {
+    const db = new FakeDb();
+    seedLink(db, { estado: 'am' });
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', tags: ['variations_migration_source'] }),
+    );
+    expect(out).toBe('deferred-migration-source');
     expect(db.updates).toEqual([]);
   });
 
@@ -641,7 +665,9 @@ describe('syncItemStatus — #441 migration takeover', () => {
       resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
     );
     expect(out).toBe('no-migration-runner');
-    expect(db.updates).toEqual([]);
+    // Still a mid-migration listing, so it is still stamped — the send paths must
+    // hold off whether or not the takeover was wired.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'am' });
   });
 
   it('source tag but NOT yet closed, even with a runner supplied → deferred, runner never invoked', async () => {
