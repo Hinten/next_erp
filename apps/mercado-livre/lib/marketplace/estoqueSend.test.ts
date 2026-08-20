@@ -163,7 +163,7 @@ interface HarnessOpts {
     userProductId: string,
     version: string,
     locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
-  ) => Promise<MlUserProductStock>;
+  ) => Promise<{ stock: MlUserProductStock | null; version: string | null }>;
   resolveChannelContext?: () => Promise<{ accessToken: string }>;
   jitterSec?: (maxS: number) => number;
   /**
@@ -215,11 +215,14 @@ function makeHarness(opts: HarnessOpts = {}) {
         userProductId: string,
         _version: string,
         locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
-      ) =>
-        ({
+      ) => ({
+        stock: {
           id: userProductId,
           locations: locations.map((l) => ({ ...l, type: 'seller_warehouse' })),
-        }) as MlUserProductStock),
+        } as MlUserProductStock,
+        // A successful write earns a NEW version; the handler ignores it today.
+        version: '8' as string | null,
+      })),
   );
   const apiFactory = vi.fn((_cfg: { getAccessToken: () => Promise<string> }) => ({
     updateItem,
@@ -1029,7 +1032,7 @@ describe('processStockSendTask — multiorigem / seller_warehouse (#706)', () =>
     let version = '7';
     const put = vi.fn(async (id: string, v: string) => {
       if (v !== '9') throw new MercadoLivreHttpError('version mismatch', 409, null);
-      return { id, locations: [] } as MlUserProductStock;
+      return { stock: { id, locations: [] } as MlUserProductStock, version: '10' as string | null };
     });
     const h = makeHarness({
       getUserProductStock: async (id) => {

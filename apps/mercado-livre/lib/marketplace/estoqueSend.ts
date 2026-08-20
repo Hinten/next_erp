@@ -171,11 +171,19 @@ export interface StockSendApi {
   getUserProductStock(
     userProductId: string,
   ): Promise<{ stock: MlUserProductStock; version: string | null }>;
+  /**
+   * Returns the response `x-version` too. This handler does not consume it —
+   * every write here re-reads first — but the seam mirrors the real client so a
+   * later fast path (store the version, skip the pre-read, fall back on 409)
+   * needs no signature change. `stock` is nullable: ML may answer a bare ack,
+   * and treating that as a parse failure would report a landed write as an
+   * error.
+   */
   putUserProductSellerWarehouseStock(
     userProductId: string,
     version: string,
     locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
-  ): Promise<MlUserProductStock>;
+  ): Promise<{ stock: MlUserProductStock | null; version: string | null }>;
 }
 
 /** The minimal account-context surface the send needs (injectable for tests). */
