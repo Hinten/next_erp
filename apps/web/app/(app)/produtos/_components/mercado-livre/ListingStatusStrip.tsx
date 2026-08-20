@@ -14,6 +14,15 @@ import {
   parseEstado,
 } from '@/lib/mercado-livre/listingLinks';
 import { splitCausas, textoDaCausa } from '@/lib/mercado-livre/listingCausas';
+import {
+  corDaModeracao,
+  moderacoesDoLink,
+  secoesLabel,
+  severidadeModeracao,
+} from '@/lib/mercado-livre/listingModeracoes';
+
+/** How many `evidencias` are worth showing before the list stops being read. */
+const MAX_EVIDENCIAS_VISIVEIS = 3;
 
 /** Badge colour per old-shape estado code. */
 const ESTADO_COLORS: Record<EstadoPublicacaoMl, string> = {
@@ -113,6 +122,9 @@ export function ListingStatusStrip({
   const subStatus = (link.sub_status ?? []).filter(
     (s): s is string => typeof s === 'string' && s.length > 0,
   );
+  // ML's POLICY verdict on the listing (#1087) — a different thing from `causas`
+  // below, which is ML refusing a write of OURS.
+  const moderacoes = moderacoesDoLink(link);
 
   return (
     <Stack gap="xs">
@@ -160,6 +172,77 @@ export function ListingStatusStrip({
           Mercado Livre: {link.status ?? 'sem status'}
           {subStatus.length > 0 ? ` · ${subStatus.join(', ')}` : ''}
         </Text>
+      )}
+
+      {/* ML's own moderation (#1087) — the explanation for the status line right
+          above it, which is why it sits here and not with the causas below.
+          Before this the operator read `paused · moderation_penalty` and had
+          nowhere at all to learn what ML actually objected to.
+
+          ⚠️ NOT gated on `estado`/`latched`. A `poor_quality_thumbnail`
+          moderation leaves the listing `active` and merely strips its exposure —
+          exactly the case that made `moderacoes` a separate field from `errors`
+          — so gating on the error states would hide the one moderation the
+          operator has no other way to discover.
+
+          ⚠️ EVERY entry is listed, including those `moderacoesPorCampo` also
+          pins to a control. See the additive rule in `listingCausas.ts`: this
+          repo already shipped a banner that depended on what the form rendered,
+          and a rejection pinned to an unrendered control showed up nowhere. */}
+      {moderacoes.length > 0 && (
+        <Alert
+          color={corDaModeracao(moderacoes)}
+          variant="light"
+          title="Moderação do Mercado Livre"
+          data-testid="ml-moderacoes"
+        >
+          <List size="sm">
+            {moderacoes.map((moderacao, i) => {
+              const severidade = severidadeModeracao(moderacao);
+              const onde = secoesLabel(moderacao.secoes);
+              const evidencias = moderacao.evidencias.filter((e) => e.length > 0);
+              const extras = evidencias.length - MAX_EVIDENCIAS_VISIVEIS;
+              return (
+                <List.Item key={`${moderacao.nome ?? 'sem-filtro'}-${String(i)}`}>
+                  {/* `sem-motivo` prints OUR framed sentence, never the bare
+                      filter id: a raw SCREAMING_SNAKE token sitting where the
+                      operator expects ML's Portuguese reads as a translated
+                      reason and is not one. */}
+                  {moderacao.motivo ?? 'O Mercado Livre não informou o motivo desta moderação.'}
+                  {moderacao.nome != null && (
+                    <Text span size="xs" c="dimmed">
+                      {' '}
+                      · {moderacao.nome}
+                    </Text>
+                  )}
+                  {onde.length > 0 && (
+                    <Text size="xs" c="dimmed">
+                      Onde: {onde}
+                    </Text>
+                  )}
+                  {/* ⚠️ Only `sem-conserto` may claim the anúncio is finished.
+                      `sem-motivo` carries `remedio: null` too, but there it means
+                      ML said nothing — telling the operator to give up on a
+                      listing that may be perfectly fixable is the worse error. */}
+                  {severidade === 'com-conserto' && (
+                    <Text size="xs">Como corrigir: {moderacao.remedio}</Text>
+                  )}
+                  {severidade === 'sem-conserto' && (
+                    <Text size="xs">
+                      O Mercado Livre não indicou correção — este anúncio não pode ser reativado.
+                    </Text>
+                  )}
+                  {evidencias.length > 0 && (
+                    <Text size="xs" c="dimmed">
+                      Detectado: {evidencias.slice(0, MAX_EVIDENCIAS_VISIVEIS).join(', ')}
+                      {extras > 0 ? ` (+${String(extras)})` : ''}
+                    </Text>
+                  )}
+                </List.Item>
+              );
+            })}
+          </List>
+        </Alert>
       )}
 
       {/* Structured causes when we have them; the raw `errors` strings otherwise

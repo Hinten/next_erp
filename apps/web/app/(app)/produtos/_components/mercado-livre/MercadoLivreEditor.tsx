@@ -43,6 +43,7 @@ import {
 import { flushListings } from '@/lib/mercado-livre/flushListings';
 import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
 import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
+import { moderacoesPorCampo } from '@/lib/mercado-livre/listingModeracoes';
 import { mapPublishIssues } from '@/lib/mercado-livre/publishIssues';
 import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
 import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
@@ -723,14 +724,23 @@ export function MercadoLivreEditor({
                   </Group>
 
                   {contaLinks.map((l, index) => {
-                    // Two sources, one control vocabulary: Mercado Livre's own
-                    // rejection — read live off THIS link doc, so it is already
-                    // per-listing and survives a reload — and our pre-flight
-                    // refusal, which is per conta (a produto carries one listing
-                    // per account in practice, and those issues are about the
-                    // produto or the account either way).
+                    // THREE sources, one control vocabulary: Mercado Livre's own
+                    // rejection of a write of ours — read live off THIS link doc,
+                    // so it is already per-listing and survives a reload — ML's
+                    // POLICY moderation on the listing itself (#1087), from the
+                    // same doc, and our pre-flight refusal, which is per conta (a
+                    // produto carries one listing per account in practice, and
+                    // those issues are about the produto or the account either
+                    // way).
+                    //
+                    // ⚠️ The moderation map is purely ADDITIVE: every moderação
+                    // is also listed in the strip, whether or not its section
+                    // resolved to a control here — `pictures` and `item` resolve
+                    // to none at all. See the ⚠️ in `listingCausas.ts` for what
+                    // it cost the last time a banner depended on this mapping.
                     const serverErrors = mergeServerErrors(
                       splitCausas(l.data).porCampo,
+                      moderacoesPorCampo(l.data),
                       blockedPorCampo,
                     );
                     return (

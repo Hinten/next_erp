@@ -4,7 +4,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
-import { ESTADO_PUBLICACAO_ML, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  ESTADO_PUBLICACAO_ML,
+  ML_CAUSA_TIPO,
+  type ProdutoMercadoLivreLink,
+} from '@delfrance/schemas';
 
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
 import { MercadoLivreClientHttpError } from '@/lib/mercado-livre/client';
@@ -17,6 +21,8 @@ const h = vi.hoisted(() => ({
   links: [] as Array<{ id: string; data: unknown }>,
   /** Every ListingForm stub's registered save, keyed by link doc id. */
   saves: new Map<string, ReturnType<typeof vi.fn>>(),
+  /** The control→messages map each ListingForm stub received, keyed by link doc id. */
+  serverErrors: new Map<string, Record<string, string[]>>(),
   /** What each stubbed save reports back, so a test can force a shortfall. */
   outcomes: new Map<string, string>(),
   /** Lets a test mark one listing dirty, the way a real edit would. */
@@ -93,14 +99,19 @@ vi.mock('./ListingForm', () => ({
     onDirtyChange,
     onLoadingChange,
     registerFlush,
+    serverErrors,
   }: {
     linkDocId: string;
     onDirtyChange: (id: string, dirty: boolean) => void;
     onLoadingChange: (id: string, loading: boolean) => void;
     registerFlush: (id: string, save: ListingSaveFn | null) => void;
+    serverErrors?: Record<string, string[]>;
   }) => {
     h.markDirty = onDirtyChange;
     h.markLoading = onLoadingChange;
+    // Captured the same way the two reporters above are: the editor merges THREE
+    // sources into this prop and a test needs to see the result (#1087).
+    h.serverErrors.set(linkDocId, serverErrors ?? {});
     if (!h.saves.has(linkDocId))
       h.saves.set(
         linkDocId,
@@ -135,6 +146,7 @@ beforeEach(() => {
   h.contas = [conta('conta-1', 'Loja Principal')];
   h.links = [];
   h.saves = new Map();
+  h.serverErrors = new Map();
   h.outcomes = new Map();
   h.markDirty = null;
   h.markLoading = null;
@@ -655,5 +667,124 @@ describe('"ver no Mercado Livre" for a User-Products listing', () => {
     const anchor = await screen.findByRole('link', { name: 'ver no Mercado Livre' });
     expect(anchor.getAttribute('href')).toBe('https://produto.mercadolivre.com.br/MLB-777');
     expect(linkAnuncio).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1087. ML's policy moderation names a content SECTION (`title`, `category`,
+ * `pictures`), and two of those are form controls — so a moderação joins the
+ * causa map and the pre-flight refusal on the same inputs instead of growing a
+ * fourth channel.
+ */
+describe('a moderação reaches the control it names', () => {
+  const moderacao = (over: Record<string, unknown> = {}) => ({
+    nome: 'POOR_QUALITY_THUMBNAIL',
+    dataCriacao: null,
+    motivo: 'O título infringe nossas políticas.',
+    remedio: 'Ajuste o título.',
+    secoes: ['title'],
+    evidencias: [],
+    ...over,
+  });
+
+  it('pins a title moderation to the título control', async () => {
+    h.links = [
+      link('L-MOD', {
+        id: 'MLB777',
+        moderacoes: [moderacao()],
+      } as Partial<ProdutoMercadoLivreLink>),
+    ];
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-MOD')).toBeDefined();
+    });
+
+    expect(h.serverErrors.get('L-MOD')?.title).toEqual(['O título infringe nossas políticas.']);
+  });
+
+  /**
+   * ⚠️ THE ADDITIVE RULE. `listingCausas.ts` records this repo shipping a banner
+   * that depended on the control mapping, and a rejection pinned to a control the
+   * form did not render then displayed NOWHERE. Resolving to a control is not the
+   * same as being visible on one, so the strip lists the moderation whether or
+   * not a control also shows it.
+   */
+  it('still lists it in the strip, even though a control also shows it', async () => {
+    h.links = [
+      link('L-MOD', {
+        id: 'MLB777',
+        moderacoes: [moderacao()],
+      } as Partial<ProdutoMercadoLivreLink>),
+    ];
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-MOD')).toBeDefined();
+    });
+
+    expect(h.serverErrors.get('L-MOD')?.title).toBeDefined();
+    expect(screen.getByTestId('ml-moderacoes').textContent).toContain('infringe nossas políticas');
+  });
+
+  /**
+   * `pictures` has no form control — the photos are managed outside this form —
+   * which is precisely why the strip cannot depend on the mapping.
+   */
+  it('leaves the controls untouched for a moderation on the photos', async () => {
+    h.links = [
+      link('L-FOTO', {
+        id: 'MLB777',
+        moderacoes: [moderacao({ secoes: ['pictures'] })],
+      } as Partial<ProdutoMercadoLivreLink>),
+    ];
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-FOTO')).toBeDefined();
+    });
+
+    expect(h.serverErrors.get('L-FOTO')).toEqual({});
+    // …and yet the operator still learns about it.
+    expect(screen.getByTestId('ml-moderacoes').textContent).toContain('infringe nossas políticas');
+  });
+
+  it('merges a moderation and a causa onto the same control', async () => {
+    // They answer different questions — "ML moderated the listing" vs "ML refused
+    // this write" — and a listing can legitimately carry both at once.
+    h.links = [
+      link('L-BOTH', {
+        id: 'MLB777',
+        moderacoes: [moderacao()],
+        causas: [
+          {
+            code: null,
+            causaId: null,
+            tipo: ML_CAUSA_TIPO.erro,
+            departamento: null,
+            mensagem: 'Título muito curto',
+            referencias: [],
+            campos: ['title'],
+          },
+        ],
+      } as Partial<ProdutoMercadoLivreLink>),
+    ];
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-BOTH')).toBeDefined();
+    });
+
+    expect(h.serverErrors.get('L-BOTH')?.title).toEqual([
+      'Título muito curto',
+      'O título infringe nossas políticas.',
+    ]);
+  });
+
+  it('sends no control errors at all for a listing with no moderation', async () => {
+    h.links = [link('L-LIMPO', { id: 'MLB777' })];
+    renderEditor();
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-LIMPO')).toBeDefined();
+    });
+
+    expect(h.serverErrors.get('L-LIMPO')).toEqual({});
+    expect(screen.queryByTestId('ml-moderacoes')).toBeNull();
   });
 });
