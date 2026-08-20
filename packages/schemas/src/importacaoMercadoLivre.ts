@@ -32,8 +32,29 @@ import { millisSinceEpoch } from './shared/datetime';
  * client access and the rules generator emits no match block for it).
  */
 
-/** One mass-import job's lifecycle: `running` → `completed` | `failed`. */
-export const importacaoMercadoLivreStatusSchema = z.enum(['running', 'completed', 'failed']);
+/**
+ * One mass-import job's lifecycle: `running` → `completed` | `failed` |
+ * `cancelled`.
+ *
+ * `cancelled` is operator-initiated (the "Cancelar importação" action behind
+ * the job card's close button) and is written by the `importar-todos/cancelar`
+ * route, NOT by the task handler. It is terminal like the other two, which is
+ * the whole point: `startMassImportJob` blocks on a `running` job with no
+ * staleness bound, so a job whose task never dispatched would otherwise keep
+ * the button returning 409 forever.
+ *
+ * ⚠️ The route and the task handler are therefore two writers of one field.
+ * Every terminal stamp goes through `finalizeMassImportJob`, which re-derives
+ * "still running" from the `tx.get` snapshot — a plain `merge()` would let a
+ * dispatch finishing right after a cancel overwrite it with `completed` (root
+ * `CLAUDE.md` rule 7).
+ */
+export const importacaoMercadoLivreStatusSchema = z.enum([
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+]);
 export type ImportacaoMercadoLivreStatus = z.infer<typeof importacaoMercadoLivreStatusSchema>;
 
 /** Named members of {@link importacaoMercadoLivreStatusSchema}. */
@@ -41,6 +62,7 @@ export const IMPORTACAO_MERCADO_LIVRE_STATUS = {
   running: 'running',
   completed: 'completed',
   failed: 'failed',
+  cancelled: 'cancelled',
 } as const satisfies Record<string, ImportacaoMercadoLivreStatus>;
 
 /**
