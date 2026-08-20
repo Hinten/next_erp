@@ -48,8 +48,14 @@ function toEpochMs(v: unknown): number | null {
  * status.timestamp`), this decides whether the (stale) status is still applied
  * (`true` = the legacy `break`) or skipped (`false` = the legacy `continue`). A
  * status strictly newer than the last update bypasses this and always applies.
+ *
+ * ⚠️ Parameter typed to the webhook's literal union to enable exhaustiveness
+ * checking; the caller ensures this invariant via valuePayloadSchema.
  */
-function shouldApplyStale(status: string, estado: EstadoEnvioMensagem): boolean {
+function shouldApplyStale(
+  status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted',
+  estado: EstadoEnvioMensagem,
+): boolean {
   switch (status) {
     case 'sent':
       return false; // a stale 'sent' is always ignored
@@ -65,8 +71,6 @@ function shouldApplyStale(status: string, estado: EstadoEnvioMensagem): boolean 
       return estado !== ESTADO_ENVIO.erro;
     case 'deleted':
       return false; // a stale 'deleted' is always ignored
-    default:
-      return false; // unknown status while stale → skip
   }
 }
 

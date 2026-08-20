@@ -79,13 +79,17 @@ function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
       return (value) => value != null && Number(value) >= bound;
     }
     case 'array-contains': {
-      // Array contains a specific value
+      // Array contains a specific value. `ColumnFilterValue.value` is never an
+      // array, so this is never emitted by the ColumnFilter UI, but
+      // `buildPipeline` can wire it manually as an `extraFilter`.
       return (value) => Array.isArray(value) && value.includes(f.value);
     }
     case 'array-contains-any': {
-      // Array contains any of the specified values
-      const values = Array.isArray(f.value) ? f.value : [f.value];
-      return (value) => Array.isArray(value) && values.some((v) => value.includes(v));
+      // `ColumnFilterValue.value` cannot be an array (it is `string | number |
+      // boolean | null`), making this dead code in column filters. No caller
+      // wires this today. Throw to match `filterExpr` posture (error on
+      // mismatched value shapes) rather than silently returning wrong rows.
+      throw new Error(`array-contains-any filter requires an array value, got ${typeof f.value}`);
     }
     default:
       return () => true;

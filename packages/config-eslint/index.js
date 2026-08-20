@@ -68,6 +68,12 @@ export function typeAware(
         // Catch missing switch arms at lint time, not at runtime. Benign when
         // the switch is a statement (side effect only) but dangerous for
         // expression switches — a missing arm silently returns `undefined`.
+        // Default `considerDefaultExhaustiveForUnions: false` treats open unions
+        // (string | null) as incomplete even with a `default` arm, surfacing real
+        // bugs like the 24 unhandled CST_PIS_COFINS members in buildCOFINSByCST.
+        // Trade-off: flipping to `true` erases ~8 redundant (null, default) pairs
+        // but would also hide unhandled 'deleted' in WhatsApp processStatuses —
+        // a persisted-data change that strict checking alone catches. Keep strict.
         '@typescript-eslint/switch-exhaustiveness-check': 'error',
         // Type-aware: it resolves the Zod enum from the type of the position
         // the literal sits in, so it lives here rather than in the base block.
