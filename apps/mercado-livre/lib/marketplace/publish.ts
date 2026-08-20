@@ -541,12 +541,25 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     // `PUT /items/{link.id}` for a UP family. Members carry their own item ids
     // on `variacaoMercadoLivre.itemId`.
     id: parentExternalId,
-    // #706 multiorigem: the UP that backs THIS stock unit. Null for a family for
-    // the same reason `precoPublicado` is: the members are the stock units and
-    // each has its own `user_product_id` (stamped on their own links by
-    // `writeMemberLink`). `item` here is the family's FIRST member, so copying
-    // its id up would let one member speak for the family (#1142).
-    userProductId: family ? null : (item.user_product_id ?? null),
+    // #706 multiorigem: the UP that backs THIS stock unit.
+    //
+    // ⚠️ The gate is `children.length`, NOT `family`. `family` is non-null only
+    // on the User-Products branch, so gating on it would leave the LEGACY
+    // `variations[]` half unguarded — and that half publishes one item whose
+    // response carries a `user_product_id` (ML issues one for every item, 1:1
+    // with the item id before a seller is a `user_product_seller`). Stamping it
+    // would put an ITEM-level id on a listing whose stock units are its
+    // variations, and the send path would then write ONE quantity for the whole
+    // family. Reachable in exactly the #706 scenario: a conta that becomes
+    // `warehouse_management` keeps republishing its pre-existing legacy
+    // listings through this branch.
+    //
+    // `children.length > 0` is the question that actually matters — "does the
+    // ERP keep this family's stock on child produtos" — and it is the same
+    // question `importCore` asks through `args.hasVariations` and the sweep asks
+    // through `row.children.length`. A UP SINGLE item (no ERP variations)
+    // therefore does get stamped, correctly: there it is the stock unit.
+    userProductId: children.length > 0 ? null : (item.user_product_id ?? null),
     // Members are priced independently under UP (`propagatePriceToChildren`),
     // so a single family-level `precoPublicado` would be whichever member was
     // sent first — `precoSync` skips the same stamp on `variationItem` drafts
