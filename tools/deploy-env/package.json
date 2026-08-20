@@ -6,6 +6,7 @@
   "main": "./env-files.mjs",
   "exports": {
     ".": "./env-files.mjs",
+    "./build-env": "./build-env.mjs",
     "./preflight": "./preflight.mjs",
     "./package.json": "./package.json"
   },
