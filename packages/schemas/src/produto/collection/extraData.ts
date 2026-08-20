@@ -98,7 +98,7 @@ export const GOOGLE_GENDER_LABELS: Record<GoogleGender, string> = {
  * `ProdutoExtraData.googleMerchantData`. Mirrors the Flutter
  * `GoogleMerchantData` model (`models.dart:2753`) — note the snake_case wire
  * keys (`google_product_category`, `product_type`, `age_group`) kept verbatim
- * for coexistence. `.passthrough()` keeps any extra feed fields.
+ * for legacy parity. `.passthrough()` keeps any extra feed fields.
  */
 export const googleMerchantDataSchema = z
   .object({

@@ -397,7 +397,9 @@ export interface BuildPrecoDraftsResult {
  * filtered on `integracoesComProduto`) → ONE `SEM_LINK` skip, nothing else.
  *
  * Per-listing rungs (`continue` semantics): `SEM_ITEM_ID` (never published),
- * `AGUARDANDO_MIGRACAO` (`estado 'am'`, mid-UP-migration, Flutter-driven).
+ * `AGUARDANDO_MIGRACAO` (`estado 'am'`, mid-UP-migration — stamped by
+ * `itemsStatusSync` from ML's own migration tags, which is the value's only
+ * producer now that the Flutter app is switched off at the cutover, #1087).
  * The STORED status is deliberately NOT gated here — the send step GETs the
  * item fresh and runs `podeEnviarPreco` on live data.
  *
@@ -408,8 +410,8 @@ export interface BuildPrecoDraftsResult {
  * listing degenerates to the same `'item'` draft. UP with children → one
  * `'variationItem'` draft per child variação link matched by
  * `produtoMercadoLivreOuterRef === toOuterRef(<THIS listing's docPath>)`
- * (exact string match is safe — both apps write the canonical `documents/...`
- * form, see importVariations.ts), priced from the anchor
+ * (exact string match is safe — migrated docs carry the same canonical
+ * `documents/...` form, see importVariations.ts), priced from the anchor
  * (`propagatePriceToChildren`, the default) or the child's own `precos` entry;
  * an unmatched child skips `SEM_LINK`, an id-less varLink `SEM_ITEM_ID`, a
  * price-less member `PRECO_NAO_ENCONTRADO` — each per child, siblings ride.

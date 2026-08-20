@@ -7,6 +7,7 @@ import {
   handleNotificationTask,
 } from '../../lib/whatsapp/notificacao';
 import { getDb } from './lib/admin';
+import { tasksInvokerOptions } from './tasksInvoker';
 
 /**
  * Cloud Tasks dispatcher for WhatsApp Cloud API webhook notifications (#527).
@@ -27,6 +28,9 @@ import { getDb } from './lib/admin';
  */
 export const processWhatsappNotification = onTaskDispatched(
   {
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,
       minBackoffSeconds: 30,

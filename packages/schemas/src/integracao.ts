@@ -213,8 +213,8 @@ export const integracaoSchema = z
      * `user_id`), denormalized onto the doc so an inbound webhook can resolve
      * its owning integração with a single equality query — the old
      * `ContaMercadoLivre.user_id` (int?, models.dart:199). Null for channels
-     * that don't carry one. Stamped at OAuth exchange; the Flutter app already
-     * writes it for accounts it connected (dual-run parity).
+     * that don't carry one. Stamped at OAuth exchange; migrated accounts the
+     * legacy app connected already carry it (legacy wire parity).
      */
     user_id: z.number().int().nullable().default(null),
 
@@ -349,7 +349,7 @@ export const integracaoSchema = z
     // The legacy `tabelaMercadoShopsOuterRef` / `tabelaMercadoShopsPromocionalOuterRef`
     // pair is deliberately NOT modeled: Mercado Shops was discontinued by ML on
     // 2025-12-31, and neither app ever consumed the refs. Legacy docs still
-    // carrying them ride `.passthrough()` untouched (dual-run safe).
+    // carrying them ride `.passthrough()` untouched.
     operacaoOuterRef: outerRefSchema.nullable().default(null),
     operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
     depositoOuterRef: outerRefSchema.nullable().default(null),
@@ -421,7 +421,8 @@ export const integracao = { schema: integracaoSchema, meta: integracaoMeta };
  * Shopee brand cache — `integracao/{integracaoId}/brandshopee`. Mirrors the
  * legacy `BrandShopee` (`packages/canais_de_venda/shopee/lib/src/models.dart`:
  * `brand_id: int, original_brand_name: string, display_brand_name?: string`),
- * written client-side by the legacy Flutter app during dual-run. Loose
+ * written client-side by the legacy Flutter app, so the migrated corpus is in
+ * that shape. Loose
  * pass-through like the produto marketplace-link subcollections
  * (`produtoSubcollection` in `./produto/collection/subcollections.ts`) — the
  * Flutter wire shape is the source of truth and this is not validated field
@@ -472,7 +473,8 @@ export const brandShopee = { schema: brandShopeeSchema, meta: brandShopeeMeta };
  * two tokens collapse here into one doc (`access_token` = the 6h token,
  * `refresh_token` = the durable one). ⚠️ Note the two ML ones defined further
  * down are the ONE exception to the deny-all posture in this file: they carry a
- * temporary dual-run client grant so the Flutter app keeps working (#829). This
+ * temporary client grant preserving what the legacy ruleset gave (#829 — ⚠️ that
+ * grant bought a dual run which does not exist; see the block comment). This
  * store, `credenciaisWhatsapp` and `certificadoSecreto` stay deny-all — do not
  * copy the ML exception here. The genuinely divergent per-channel
  * identity/config (`shop_id` / `main_account_id` / `tabelasAtacado`,
@@ -518,23 +520,25 @@ export const credenciaisIntegracaoMeta: CollectionMetadata = {
 // cascade on `integracao` delete frees the subcollection without a rules block.
 
 /* -------------------------------------------------------------------------- */
-/*      Token6h / TokenDuravel (subcollections) — Mercado Livre dual-run       */
+/*   Token6h / TokenDuravel (subcollections) — Mercado Livre legacy grant     */
 /* -------------------------------------------------------------------------- */
 
 /**
- * ⚠️ **DUAL-RUN ONLY — remove with the Flutter decommission (#829).**
+ * ⚠️ **LEGACY-CLIENT GRANT ONLY — comes out in #829, which waits on nothing.**
  *
- * The two collections below are the OLD Flutter Mercado Livre credential shapes,
- * kept so the new app and the still-running Flutter app share one credential on
- * one ML application. Unlike every other secret store in this file they ARE
+ * The two collections below are the OLD Flutter Mercado Livre credential shapes.
+ * The wire shape is load-bearing (the migrated corpus is stored in it); the
+ * **client grant** below is not. ⚠️ It was priced against a dual run in which
+ * both apps shared one credential on one ML application — and there is no dual
+ * run (root `CLAUDE.md` rule 8). No client of *this* app reads these docs. Unlike every other secret store in this file they ARE
  * registered in `ALL_DOMAINS`, so rules-gen emits client match blocks for them.
  *
  * That is a deliberate, time-boxed reversal of the `credenciais` /
  * `certificadoSecreto` deny-all posture: **it makes a live ML `refresh_token`
  * readable by any client holding `d_integracao` read.** It is not a NEW exposure —
  * the deployed legacy ruleset already grants exactly this (`perm(request, "m2", 1)`
- * at `.old/firestore.rules:178`) — but it only survives while the Flutter client
- * still needs it. The Flutter paths that force the grant are the OAuth connect
+ * at `.old/firestore.rules:178`) — but it buys this app nothing, so #829 is
+ * removing surface rather than waiting on a decommission. The Flutter paths that force the grant are the OAuth connect
  * screen (`.old/lib/canaisDeVenda/mercadoLivre/pages/tokenInicial.dart:29-56`,
  * which client-writes BOTH docs) and the token read/refresh in `MercadoLivreApi`
  * (`.old/packages/canais_de_venda/mercado_livre/lib/src/api.dart:613,697,706`),
@@ -577,7 +581,7 @@ export type Token6h = z.infer<typeof token6hSchema>;
 
 export const token6hMeta: CollectionMetadata = {
   collectionPath: 'integracao/{integracaoId}/token6h',
-  // DUAL-RUN grant (#829) — see the block comment above. Legacy perm code `m1`.
+  // LEGACY-CLIENT grant (#829) — see the block comment above. Legacy perm `m1`.
   permissions: {
     read: PERM_INTEGRACAO_READ,
     write: PERM_INTEGRACAO_WRITE,
@@ -589,10 +593,9 @@ export const token6h = { schema: token6hSchema, meta: token6hMeta };
 
 /**
  * Mercado Livre durable OAuth credential — `integracao/{integracaoId}/tokenDuravel`.
- * This is the OLD Flutter `TokenDuravel` wire shape, used during the migration so
- * the new app and the still-running Flutter app share the same credential (same
- * ML application). #829 moves ML onto the encrypted `credenciais` store above and
- * drops this once the Flutter app is retired.
+ * This is the OLD Flutter `TokenDuravel` wire shape — how the migrated corpus
+ * stores the credential. #829 moves ML onto the encrypted `credenciais` store
+ * above and drops this along with its legacy client grant.
  *
  * Wire notes: `expires_in` is the **absolute** expiry as **int millis since
  * epoch** (Flutter's `dateTimeToJson`), NOT a seconds-duration. `expired` is a
@@ -615,7 +618,7 @@ export type TokenDuravel = z.infer<typeof tokenDuravelSchema>;
 
 export const tokenDuravelMeta: CollectionMetadata = {
   collectionPath: 'integracao/{integracaoId}/tokenDuravel',
-  // DUAL-RUN grant (#829) — see the block comment above. Legacy perm code `m2`.
+  // LEGACY-CLIENT grant (#829) — see the block comment above. Legacy perm `m2`.
   permissions: {
     read: PERM_INTEGRACAO_READ,
     write: PERM_INTEGRACAO_WRITE,

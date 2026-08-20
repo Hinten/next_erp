@@ -67,6 +67,7 @@ export function widgetKind(attr: MercadoLivreCategoriaAtributo): AttrWidgetKind 
       return 'select';
     case 'list':
       return attr.multivalued ? 'multiselect' : 'select';
+    case null:
     default:
       return 'unsupported';
   }
@@ -197,12 +198,52 @@ export function seedRows(
 }
 
 /**
+ * What the operator has typed SO FAR, stored verbatim.
+ *
+ * ⚠️ This is the on-CHANGE path and it deliberately does nothing to the text:
+ * no trim, no option matching. Both belong to {@link resolveTypedValue}, which
+ * runs on blur and again at save. Doing either here makes a space impossible to
+ * TYPE, because the input renders `row.value_name` straight back: the trim ate a
+ * trailing space before the caret moved, and the canonical snap ate it again for
+ * any text matching a known option — so `Nike Air` could not be entered at all
+ * on a category shipping `Nike` as a value.
+ *
+ * A blank-but-not-empty draft (`'  '`) is KEPT rather than cleared, so a leading
+ * space is typeable too. Nothing downstream needs a guard for it: {@link isFilled}
+ * tests `value_name.trim()`, so such a row still reads as empty for
+ * {@link validateAttr} and is still skipped by {@link attributesForSave}.
+ */
+export function draftTypedValue(
+  attr: MercadoLivreCategoriaAtributo,
+  typed: string | null,
+): AttrRow {
+  const raw = typed ?? '';
+  if (raw === '') {
+    return { id: attr.id, value_id: null, value_name: null, unit_id: null };
+  }
+  return {
+    id: attr.id,
+    // Unresolved by construction — blur and save decide whether this text is one
+    // of ML's known values.
+    value_id: null,
+    value_name: raw,
+    // ML wants the unit alongside a bare number; the wire transform appends it.
+    unit_id: attr.valueType === 'number_unit' ? attr.defaultUnit : null,
+  };
+}
+
+/**
  * Resolve what the operator typed into an ML value, matching a known option by
  * name when one exists (`cadastroProdutoMLNew.dart:1191-1211`).
  *
  * Name matching is accent- and case-insensitive. The legacy compared raw
  * strings, so `Algodao` silently fell through to free text where `Algodão` was
  * a real option — and ML then rejected the listing for an unknown value.
+ *
+ * ⚠️ Runs on BLUR and again inside {@link attributesForSave} — never on change.
+ * Both the trim and the canonical snap rewrite the text under the caret, so on
+ * the typing path they cost the operator every space they press; see
+ * {@link draftTypedValue}.
  */
 export function resolveTypedValue(
   attr: MercadoLivreCategoriaAtributo,
@@ -247,6 +288,13 @@ function normalize(s: string): string {
  * breaking every size-chart binding a Flutter user or an earlier publish
  * established. Blocked ids (`SELLER_SKU`, `PACKAGE_*`…) ARE in the metadata and
  * ARE dropped, deliberately: the server re-derives them from the produto.
+ *
+ * This is also where a free-text row is finally RESOLVED — trimmed and matched
+ * against ML's known values by {@link resolveTypedValue}. The field itself keeps
+ * the raw draft so a space is typeable ({@link draftTypedValue}), and the blur
+ * handler resolving it is only a convenience: a save reached without one (Enter
+ * on the form) would otherwise store the untrimmed draft. Doing it here means
+ * correctness does not depend on a focus event ever happening.
  */
 export function attributesForSave(
   attrs: MercadoLivreCategoriaAtributo[],
@@ -268,8 +316,21 @@ export function attributesForSave(
   }
 
   for (const attr of attrs) {
-    const row = rowById.get(attr.id);
-    if (!row || !isFilled(row)) continue; // never store an empty rendered row
+    const draft = rowById.get(attr.id);
+    if (!draft || !isFilled(draft)) continue; // never store an empty rendered row
+    // Only a free-text row is resolved. A row carrying a value_id was produced
+    // by `rowFromSelect` (or is the N/A sentinel), so its name is already ML's
+    // own and re-matching it could only move it.
+    const resolved =
+      draft.value_id == null && draft.value_name != null
+        ? resolveTypedValue(attr, draft.value_name)
+        : draft;
+    // ⚠️ Take the NAME and the ID from the resolution, never the unit. The row's
+    // own `unit_id` may have been STORED against an earlier `defaultUnit`, and
+    // `resolveTypedValue` re-derives that field from today's metadata — so
+    // adopting it wholesale would silently rewrite the unit of every saved
+    // number_unit attribute whose default has since moved.
+    const row = { ...resolved, unit_id: draft.unit_id ?? resolved.unit_id };
     out.push({
       id: attr.id,
       ...(row.value_id != null ? { value_id: row.value_id } : {}),

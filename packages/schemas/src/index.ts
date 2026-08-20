@@ -330,8 +330,9 @@ export {
 
 export {
   // ⚠️ The inbound webhook log. Unlike its Mercado Pago / WhatsApp siblings this
-  // one IS registered in ALL_DOMAINS — dual-run parity with the legacy ruleset,
-  // reverted by #829. The new app reaches it only through the Admin SDK.
+  // one IS registered in ALL_DOMAINS — literal parity with the legacy ruleset,
+  // reverted by #829 — ⚠️ that parity buys this app nothing, since there is no
+  // dual run. The new app reaches it only through the Admin SDK.
   notificacaoMercadoLivre,
   notificacaoStatusSchema,
   notificacaoMercadoLivreSchema,
@@ -342,7 +343,7 @@ export {
 } from './notificacaoMercadoLivre';
 
 export {
-  // ⚠️ DUAL-RUN ONLY (#829) — pre-sale ML questions, written exclusively by the
+  // ⚠️ LEGACY-PARITY ONLY (#829) — pre-sale ML questions, written only by the
   // legacy backend. Registered for literal parity with the legacy ruleset; the
   // new app routes questions into `chat`/`mensagem` instead (#532, #533).
   questionMercadoLivre,

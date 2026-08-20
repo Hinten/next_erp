@@ -53,7 +53,7 @@ export const historicoPreco = {
  * `produtos/{id}/historicoDeCusto` doc ("data da compra"). The old Flutter app
  * defined the model + rules but never wrote records; the Next editor now
  * records every `custo` change (`appendCustoHistory`) using the same wire
- * shape, so the two apps coexist.
+ * shape, so migrated rows resolve natively.
  */
 export const historicoCustoSchema = z
   .object({

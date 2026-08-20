@@ -14,7 +14,8 @@ import { pesoRenderInput } from './PesoField';
  * estoque, preços, impostos, kit, anexos, marketplace). This config covers the
  * scalar fields (tabbed) plus the Fotos and Vídeos tabs; the remaining
  * variações/marketplace tabs land in follow-up PRs and stay hidden via
- * `PRODUTO_EXCLUDED_FIELDS` until then (the Flutter app keeps authoring them).
+ * `PRODUTO_EXCLUDED_FIELDS` until then (the migrated corpus carries them; this
+ * app just does not edit them yet).
  */
 
 /** Tab order for the Produto ObjectView — Variações before the media tabs. */

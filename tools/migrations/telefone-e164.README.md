@@ -9,8 +9,10 @@ without the leading `+`, e.g. `5511999998888` — the format
 This app has normalized on write since the format was introduced, but there was
 never a backfill, and two things keep the old shape alive:
 
-1. **The legacy Flutter app is a live concurrent writer** and still writes raw
-   10/11-digit BR numbers (DDD + subscriber, no country code). That is why
+1. **The stored corpus is full of raw 10/11-digit BR numbers** (DDD + subscriber,
+   no country code) — that is what the legacy app wrote, and it keeps writing more
+   of them into the source project until the cutover switches it off. Those rows
+   arrive with the import and stay until this script runs, which is why
    `telefoneQueryShapes` searches both shapes.
 2. **Editing a cliente does not re-normalize it.** `ObjectView` only transforms
    fields the operator actually touched, so an untouched legacy phone is written

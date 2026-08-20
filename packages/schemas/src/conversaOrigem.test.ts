@@ -65,7 +65,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: [],
     maxTamanhoAnexoBytes: 0,
     isHtml: true,
-    temEnvio: false,
+    temEnvio: true,
   },
   // mlped — limite 350 (corrected from legacy 300 at L1014), maximoAnexos 1 (L1069), formats L1085,
   // size 25 MB (L1101), isHtml true (L1028).
@@ -76,7 +76,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt'],
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: true,
-    temEnvio: false,
+    temEnvio: true,
   },
   // mlclaims — limite 300 (L1016), maximoAnexos 3 (L1071), formats L1087,
   // size 25 MB (L1103), isHtml true (L1030).
@@ -87,7 +87,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf'],
     maxTamanhoAnexoBytes: 5_000_000,
     isHtml: true,
-    temEnvio: false,
+    temEnvio: true,
   },
 };
 
@@ -118,9 +118,13 @@ describe('ORIGEM_RULES', () => {
     expect(ORIGEM_RULES.mlperg.maxTamanhoAnexoBytes).toBe(0);
   });
 
-  it('WhatsApp is the only channel that can transmit today (#817)', () => {
+  it('lists exactly the channels that can transmit today', () => {
+    // WhatsApp sends through the #529 Firestore trigger; all THREE ML surfaces
+    // through the responder route (#533 for perguntas and post-sale, #768 for
+    // claims). site/facebook/comentario still have no sender at all, which is
+    // the half of #817 nobody had noticed.
     const comEnvio = origemConversaSchema.options.filter((o) => ORIGEM_RULES[o].temEnvio);
-    expect(comEnvio).toEqual(['whatsapp']);
+    expect(comEnvio.sort()).toEqual(['mlclaims', 'mlped', 'mlperg', 'whatsapp']);
   });
 
   it('corrects mlped to ML’s real 350-character seller cap, not the legacy 300', () => {

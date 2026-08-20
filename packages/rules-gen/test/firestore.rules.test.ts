@@ -578,13 +578,15 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
-  // ⚠️ DUAL-RUN ONLY — delete this whole block with the Flutter decommission
+  // ⚠️ LEGACY-GRANT ONLY — delete this whole block with the Flutter decommission
   // (#829). These four Mercado Livre collections are reached by the NEW app only
   // through the Admin SDK (or not at all); they carry client match blocks purely
   // so the generated ruleset reproduces the grants the deployed legacy ruleset
   // already gives the Flutter client (perm codes m1/m2/m4/mb,
-  // `.old/firestore.rules:168-191,219-224`). See #783.
-  describe('Mercado Livre dual-run client grants (#829)', () => {
+  // `.old/firestore.rules:168-191,219-224`). See #783. ⚠️ That parity buys this
+  // app nothing — there is no dual run (root `CLAUDE.md` rule 8) — so #829 is
+  // removing surface rather than waiting on a decommission.
+  describe('Mercado Livre legacy client grants (#829)', () => {
     it('{d_integracao: 1} reads the ML token stores the Flutter app depends on', async () => {
       // The Flutter OAuth connect screen writes both docs and every ML action
       // screen reads tokenDuravel through MercadoLivreApi — without these blocks
@@ -651,7 +653,7 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
 
     it('does NOT relax the sibling credential stores, even for a superuser', async () => {
-      // The dual-run exception is ML-token-only: `credenciais` and
+      // The legacy-grant exception is ML-token-only: `credenciais` and
       // `credenciaisWhatsapp` hold live refresh tokens with no legacy client
       // grant to preserve, so they must stay unregistered and default-denied.
       await seed('integracao/i-ml/credenciais/c1', { access_token: 'a', refresh_token: 'r' });

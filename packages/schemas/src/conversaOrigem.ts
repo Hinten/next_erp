@@ -151,7 +151,8 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: [],
     maxTamanhoAnexoBytes: 0,
     isHtml: true,
-    temEnvio: false, // #533
+    // #533 — the ML chat responder route transmits this origem.
+    temEnvio: true,
   },
   // permiteAnexo true (default); maximoAnexos 1 (L1069); formats L1085;
   // size 25 MB (L1101); isHtml true (L1028).
@@ -167,7 +168,8 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: FORMATS_ML,
     maxTamanhoAnexoBytes: CAP_25MB,
     isHtml: true,
-    temEnvio: false, // #533
+    // #533 — the ML chat responder route transmits this origem.
+    temEnvio: true,
   },
   // maximoAnexos 3 (L1071); isHtml true (L1030).
   mlclaims: {
@@ -185,7 +187,9 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: FORMATS_ML_CLAIMS,
     maxTamanhoAnexoBytes: 5_000_000,
     isHtml: true,
-    temEnvio: false, // #768
+    // #768 — the ML chat responder route transmits this origem too, through
+    // the claim's own send-message action.
+    temEnvio: true,
   },
 };
 

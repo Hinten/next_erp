@@ -17,8 +17,8 @@
  *
  * Collection note: the sem-auth contact is stored in `usuarios` (this repo's
  * collection) — legacy used `user`. The lookup is by the `externalId` FIELD
- * (identical hash in both apps), so a doc created by either side is found by the
- * other regardless of the doc-id/collection difference.
+ * (identical to the legacy hash), so a migrated contact is found rather than
+ * duplicated, regardless of the doc-id/collection difference.
  */
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, usuarioCollection } from '@delfrance/data/admin/collections';

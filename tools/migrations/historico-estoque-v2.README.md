@@ -22,8 +22,9 @@ cost as a dry-run; it just tallies instead of enumerating.
 ## ⚠️ Read this before scheduling the run
 
 **This belongs inside the cutover window** (root `CLAUDE.md` rule 8 / ADR 0013),
-not before it. The Flutter app still writes v1 rows, so any earlier run is
-partially undone by every write that lands afterwards. Running early is not
+not before it. The Flutter app keeps writing v1 rows into the source project
+until the window switches it off, so any earlier run is superseded by every
+legacy write that lands afterwards. Running early is not
 _harmful_ — the pass is idempotent and re-runnable — it is simply **not
 finished**. The authoritative run is the one after Flutter stops writing.
 

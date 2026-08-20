@@ -27,21 +27,23 @@ const PERM_INTEGRACAO_DELETE = 1n << 58n;
  * trigger a Firestore event was pure write cost, and an ungated create trigger
  * gave no control over the ML API call rate — the Cloud Tasks queue does both.
  * The shape still mirrors the old Flutter `NotificationMercadoLivre`
- * (models.dart:349, same collection) so the two apps coexist during dual-run;
- * the legacy app likewise only stored a doc on a processing error.
+ * (models.dart:349, same collection), which is how the migrated corpus is
+ * stored; the legacy app likewise only stored a doc on a processing error.
  *
  * Local resilience fields the legacy wire shape never had: `status`, a LOCAL
  * retry counter `tentativas` (distinct from ML's own delivery `attempts`),
  * `erro`, and `processedAt` (the last-attempt time — the sweep's window gate).
  *
- * ⚠️ **DUAL-RUN registration — remove with the Flutter decommission (#829).**
+ * ⚠️ **LEGACY-PARITY registration — remove with the Flutter decommission (#829).**
  * The new app reaches this collection only through the Admin SDK (the receiver
  * route and the nested functions), which bypasses rules, so on its own merits it
  * would stay unregistered and default-denied like its Mercado Pago and WhatsApp
  * siblings. It is registered in `ALL_DOMAINS` purely for literal parity with the
  * legacy ruleset (`match /notificacoesMercadoLivre`, perm code `m4`,
  * `.old/firestore.rules:186-191`), so that deploying the generated ruleset
- * cannot deny the legacy Flutter app anything it has today. Registration also
+ * cannot deny the legacy Flutter app anything it has today. ⚠️ That parity buys
+ * this app nothing — there is no dual run (root `CLAUDE.md` rule 8), so the
+ * registration is surface #829 removes. Registration also
  * required a carve-out in `shared/notificationResilience.test.ts`, whose blanket
  * guard otherwise forbids any `notificac*` path in `ALL_DOMAINS` — that guard
  * still bites for Mercado Pago and WhatsApp. See #783.
@@ -97,7 +99,7 @@ export type NotificacaoMercadoLivre = z.infer<typeof notificacaoMercadoLivreSche
 
 export const notificacaoMercadoLivreMeta: CollectionMetadata = {
   collectionPath: 'notificacoesMercadoLivre',
-  // DUAL-RUN grant (#829) — see the docstring above. Legacy perm code `m4`;
+  // LEGACY-CLIENT grant (#829) — see the docstring above. Legacy perm `m4`;
   // reusing the `integracao` bits keeps existing claim-holders working, exactly
   // as `brandShopee` does.
   permissions: {

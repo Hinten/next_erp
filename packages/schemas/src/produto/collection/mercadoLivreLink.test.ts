@@ -49,8 +49,8 @@ describe('produtoMercadoLivreLinkSchema', () => {
   });
 
   it('leaves `causas` null on a Flutter-written doc, which never sets it', () => {
-    // The whole reason it is additive+nullable: the still-live Flutter app
-    // writes this collection and knows nothing about the field.
+    // The whole reason it is additive+nullable: the migrated corpus is full of
+    // docs whose legacy writer knew nothing about this field.
     const parsed = produtoMercadoLivreLinkSchema.parse({
       contaOuterRef: 'documents/integracao/conta-1',
       title: 'X',

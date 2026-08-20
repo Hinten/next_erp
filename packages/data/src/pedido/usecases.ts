@@ -129,10 +129,10 @@ const CONCURRENCY_IGNORE = new Set<string>([
   ...CAMPOS_ESTOQUE_SYNC,
   // Removed derived caches (#796). `pedidoSchema` is `.passthrough()`, so a key
   // this app no longer writes still rides the raw baseline/current diff below —
-  // and the still-live Flutter `Pedido.factory` keeps recomputing all five on
-  // every integral save. Without this the operator would get a conflict modal
-  // naming a field that is not on their screen and that they cannot have
-  // authored, which is exactly the question this set answers.
+  // migrated pedidos carry all five, recomputed by the legacy `Pedido.factory`
+  // on every integral save it ever made. Without this the operator would get a
+  // conflict modal naming a field that is not on their screen and that they
+  // cannot have authored, which is exactly the question this set answers.
   'valorCusto',
   'valorFreteInicial',
   'custoFreteInicial',

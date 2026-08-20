@@ -148,6 +148,7 @@ export async function processStatuses(
       case 'failed':
         patch.estadoEnvio = ESTADO_ENVIO.erro;
         break;
+      case 'deleted':
       default:
         patch.estadoEnvio = ESTADO_ENVIO.desconhecido;
     }

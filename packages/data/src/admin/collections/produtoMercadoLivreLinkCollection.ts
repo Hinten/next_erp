@@ -4,8 +4,8 @@ import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
  * Admin-SDK handles for the Mercado Livre listing link docs, written by the
- * apps/mercado-livre publish flow in the EXACT old Flutter wire shape (dual-run
- * coexistence — the Flutter app keeps reading these). Client-side reads go
+ * apps/mercado-livre publish flow in the EXACT old Flutter wire shape (which is
+ * how the migrated corpus is stored). Client-side reads go
  * through the loose pass-through subcollection domains (`subcollections.ts`);
  * these typed handles exist so server writes can't drift from the wire format.
  * Doc ids are Firestore auto-ids (the ML item id lives in the `id` field).

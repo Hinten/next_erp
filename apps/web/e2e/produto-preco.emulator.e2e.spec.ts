@@ -42,8 +42,8 @@ import { warmRoutes } from './helpers/warmup';
  *    flush — the modification entry is written regardless;
  *  - the legacy `historicoDePrecos`/`historicoDeCusto` subcollections get no
  *    new docs at all under the new trigger.
- * Duplicate history rows from the still-live legacy Flutter app (no dedup
- * guard) and the deterministic-doc-id redelivery idempotency are covered at
+ * Duplicate history rows inherited from the legacy app (no dedup guard) and
+ * the deterministic-doc-id redelivery idempotency are covered at
  * the unit level, not here.
  *
  * Emulator-only (`e2e-emulator.yml`): served locally from `firebase.e2e.json`'s

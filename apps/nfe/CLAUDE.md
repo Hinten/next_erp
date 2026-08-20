@@ -67,8 +67,8 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    replaced — #398). When nothing resolves, emission fails loudly:
    `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
    bad sub-field (invalid stamp) — no silent fallback. The subcollection
-   names are the LEGACY Flutter wire names on purpose (#423) — both apps
-   share the database, so legacy tax config resolves natively (scope keys:
+   names are the LEGACY Flutter wire names on purpose (#423) — the migrated
+   corpus carries those names, so legacy tax config resolves natively (scope keys:
    produto = typo `impostoOpercaoOuterRef`, categoria =
    `impostoCategoriaOperacaoOuterRef`; regra docs may carry UPPERCASE
    `CFOP`, path-shaped arrays and free-form NCMs — readers normalize).

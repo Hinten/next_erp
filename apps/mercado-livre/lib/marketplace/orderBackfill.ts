@@ -264,6 +264,8 @@ async function sweepConta(
         attempts: null,
         sent: null,
         received: nowMs,
+        // Synthesised here, so there is no ML subtopic array to carry.
+        actions: null,
       };
       await scheduler.enqueue(payload);
       enqueued += 1;

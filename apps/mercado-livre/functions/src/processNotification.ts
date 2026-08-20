@@ -9,6 +9,7 @@ import {
 import { getDb } from './lib/admin';
 import { readCacheSummary } from '@delfrance/data/admin/cache';
 import { TASKS_SCHEDULER_REGION } from './options';
+import { tasksInvokerOptions } from './tasksInvoker';
 
 /**
  * Cloud Tasks dispatcher for ML webhook notifications (Step 6). The receiver
@@ -37,6 +38,9 @@ export const processMercadoLivreNotification = onTaskDispatched(
   {
     // Cloud Tasks does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
     region: TASKS_SCHEDULER_REGION,
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,
       minBackoffSeconds: 30,
@@ -54,7 +58,7 @@ export const processMercadoLivreNotification = onTaskDispatched(
     // BOTH "synced the listing" and "found no link and did nothing".
     //
     // `kind` separates a processed topic from an ignored one; `detail` carries
-    // the handler's own outcome (the items sync returns one of seven values);
+    // the handler's own outcome (the items sync returns an `ItemsSyncOutcome`);
     // `resource` names the listing, which `topic` does not; and `user_id`
     // matters most on `deferred`, where the reason naming it is written to
     // Firestore and would otherwise never reach a log.

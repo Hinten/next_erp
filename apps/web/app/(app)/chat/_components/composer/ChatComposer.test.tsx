@@ -4,12 +4,15 @@ import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { conversaSchema, type Conversa } from '@delfrance/schemas';
 
-const { batchSet, batchCommit, newDocIdMock, uploadFileMock } = vi.hoisted(() => ({
-  batchSet: vi.fn(),
-  batchCommit: vi.fn(async () => undefined),
-  newDocIdMock: vi.fn(() => 'evt-id'),
-  uploadFileMock: vi.fn(),
-}));
+const { batchSet, batchCommit, newDocIdMock, uploadFileMock, setDocMock, responderConversa } =
+  vi.hoisted(() => ({
+    batchSet: vi.fn(),
+    batchCommit: vi.fn(async () => undefined),
+    newDocIdMock: vi.fn(() => 'evt-id'),
+    uploadFileMock: vi.fn(),
+    setDocMock: vi.fn(async () => undefined),
+    responderConversa: vi.fn(),
+  }));
 
 vi.mock('@/lib/firebase/client', () => ({
   getFirebaseFirestore: () => ({}),
@@ -43,11 +46,20 @@ vi.mock('firebase/firestore', async (importActual) => {
   return {
     ...actual,
     writeBatch: () => ({ set: batchSet, commit: batchCommit }),
+    setDoc: setDocMock,
     arrayUnion: (v: unknown) => ({ __arrayUnion: v }),
   };
 });
 
+// Keep the real error CLASSES (the composer narrows on them) and stub only the
+// hook, so a route refusal can be driven with a genuine instance.
+vi.mock('@/lib/mercado-livre/client', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
+  return { ...actual, useMercadoLivreClient: () => ({ responderConversa }) };
+});
+
 import { StorageUploadError } from '@delfrance/storage';
+import { MercadoLivreClientHttpError } from '@/lib/mercado-livre/client';
 import { ChatComposer } from './ChatComposer';
 
 // gate === 'enter': the operator is not yet a participant (usuarios empty).
@@ -85,6 +97,12 @@ function wrap(node: React.ReactNode) {
 afterEach(() => {
   vi.clearAllMocks();
   batchCommit.mockImplementation(async () => undefined);
+  setDocMock.mockImplementation(async () => undefined);
+  responderConversa.mockResolvedValue({
+    conversaId: 'c1',
+    mensagemId: 'm1',
+    respostaBloqueada: null,
+  });
 });
 
 describe('ChatComposer — attachment upload + audio caption hint', () => {
@@ -201,12 +219,16 @@ describe('ChatComposer — "Entrar na conversa" gate', () => {
 });
 
 describe('ChatComposer — send capability (#817)', () => {
-  /** An ML claim thread: the inbox surface a buyer expects an answer on. */
+  /**
+   * A webchat thread. ⚠️ NOT an ML one: all three ML surfaces gained a sender
+   * (#533, #768), and this fixture has to be an origem that genuinely has none
+   * — the inert-fixture trap #813 named, hit three times in this stack.
+   */
   const conversaMlClaims: Conversa = conversaSchema.parse({
     usuarios: ['op1'],
     estadoConversa: 1,
-    origem: 'mlclaims',
-    nome: 'Reclamação',
+    origem: 'site',
+    nome: 'Visitante',
   });
 
   it('renders a read-only notice instead of the input on a channel with no sender', () => {
@@ -234,8 +256,8 @@ describe('ChatComposer — send capability (#817)', () => {
         conversa={conversaSchema.parse({
           usuarios: [],
           estadoConversa: 2,
-          origem: 'mlperg',
-          nome: 'Pergunta',
+          origem: 'site',
+          nome: 'Visitante',
         })}
         addOptimistic={vi.fn()}
         markOptimisticError={vi.fn()}
@@ -273,5 +295,129 @@ describe('ChatComposer — send capability (#817)', () => {
       />,
     );
     expect(screen.queryByTestId('composer-somente-leitura')).toBeNull();
+  });
+});
+
+describe('ChatComposer — Mercado Livre replies leave through the route (#533)', () => {
+  /** A pergunta thread the operator is already answering. */
+  const conversaPergunta: Conversa = conversaSchema.parse({
+    usuarios: ['op1'],
+    estadoConversa: 1,
+    origem: 'mlperg',
+    nome: 'Comprador',
+    integracaoOuterRef: 'documents/integracao/conta1',
+  });
+
+  function typeAndSend(texto: string) {
+    fireEvent.change(screen.getByPlaceholderText(/Digite uma mensagem/), {
+      target: { value: texto },
+    });
+    return act(async () => {
+      fireEvent.click(screen.getByLabelText('Enviar'));
+    });
+  }
+
+  it('calls the channel backend and writes NOTHING to Firestore', async () => {
+    // ⚠️ The whole point of the route. A local mensagem written first would sit
+    // in the thread claiming a send ML may still refuse — #817 inverted. The
+    // server writes the bubble only after ML accepts.
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaPergunta}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+
+    await typeAndSend('Temos sim, envio hoje!');
+
+    expect(responderConversa).toHaveBeenCalledWith({
+      integracaoId: 'conta1',
+      conversaId: 'c1',
+      texto: 'Temos sim, envio hoje!',
+    });
+    expect(setDocMock).not.toHaveBeenCalled();
+    expect(batchCommit).not.toHaveBeenCalled();
+  });
+
+  it('shows the route refusal verbatim and KEEPS the operator text', async () => {
+    // A 409 is recoverable information, not a dead end: the reason is the only
+    // thing telling the operator what to do next, and losing their draft on top
+    // of it would make the failure twice as expensive.
+    responderConversa.mockRejectedValue(
+      new MercadoLivreClientHttpError('Pergunta já respondida no Mercado Livre', 409, null),
+    );
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaPergunta}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+
+    await typeAndSend('oi');
+
+    await waitFor(() =>
+      expect(screen.getByText('Pergunta já respondida no Mercado Livre')).toBeTruthy(),
+    );
+    expect(screen.getByPlaceholderText(/Digite uma mensagem/)).toHaveProperty('value', 'oi');
+  });
+
+  it('refuses to send when the conversa names no integração', async () => {
+    // Without it there is no account to transmit through, and silently doing
+    // nothing here would reproduce #817 exactly.
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaSchema.parse({
+          usuarios: ['op1'],
+          estadoConversa: 1,
+          origem: 'mlperg',
+          nome: 'Comprador',
+        })}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+
+    await typeAndSend('oi');
+
+    expect(responderConversa).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/não resolvida para esta conversa/)).toBeTruthy());
+  });
+
+  it('hides the paperclip on mlped, whose CHANNEL does accept a file', async () => {
+    // ORIGEM_RULES.mlped.permiteAnexo is true — that states what Mercado Livre
+    // takes, not what this composer can deliver. The route sends text only, so
+    // an enabled paperclip would let an operator stage a file that handleSend
+    // then drops without a word.
+    const { container } = wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaSchema.parse({
+          usuarios: ['op1'],
+          estadoConversa: 1,
+          origem: 'mlped',
+          nome: 'Comprador',
+          integracaoOuterRef: 'documents/integracao/conta1',
+        })}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    // ...while WhatsApp, which shares permiteAnexo: true, still has one.
+    const wa = wrap(
+      <ChatComposer
+        conversaId="c2"
+        conversa={conversaFull}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    expect(wa.container.querySelector('input[type="file"]')).not.toBeNull();
   });
 });

@@ -60,6 +60,14 @@ export function renderCell(value: unknown, descriptor: FieldDescriptor): ReactNo
     case 'number':
     case 'integer':
       return typeof value === 'number' ? value.toLocaleString('pt-BR') : String(value);
+    case 'string':
+    case 'email':
+    case 'tel':
+    case 'url':
+    case 'longText':
+      return String(value);
+    case 'reference':
+      return <Text c="dimmed">…</Text>;
     case 'array':
       return Array.isArray(value) ? `${value.length} item(s)` : String(value);
     case 'object':

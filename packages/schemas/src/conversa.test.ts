@@ -21,9 +21,9 @@ describe('conversaSchema', () => {
     const out = conversaSchema.parse({});
     expect(out.clienteOuterRef).toBeNull();
     expect(out.respostaBloqueada).toBeNull();
-    // The legacy usuario link is UNCHANGED — Flutter and WhatsApp still write it,
-    // and readers fall back to it. Dropping it would strip the only contact link
-    // off every conversa the migration import brings in.
+    // The legacy usuario link is UNCHANGED — WhatsApp writes it, the migrated
+    // corpus carries it, and readers fall back to it. Dropping it would strip
+    // the only contact link off every conversa the migration import brings in.
     expect(out.usarioOuterRef).toBeNull();
   });
 
@@ -205,8 +205,8 @@ describe('datetime ms-int wire format (#484/#486)', () => {
   it('legacy-reader parity: every parsed datetime is an as-num-castable ms int', () => {
     // Mirrors the legacy Dart reader `maybeDateTimeFromJson((json[k] as num?)?.toInt())`
     // — a raw as-num cast. After the codec runs, EVERY datetime field must be a
-    // plain number so the legacy Flutter app (still reading these docs) never
-    // throws on the cast. A `< 9e12` magnitude proves it is milliseconds, not a
+    // plain number, matching how every migrated document stores it, so the
+    // magnitude check below is meaningful. A `< 9e12` magnitude proves it is milliseconds, not a
     // µs value that leaked through unscaled.
     const legacyRead = (v: unknown): number => {
       if (typeof v !== 'number') throw new TypeError('legacy as-num cast');

@@ -88,8 +88,8 @@ for one state:
 
 Distinct from the three above: the work is fully specced and unblocked — only
 its *timing* is gated. Doing it early is not merely premature, it is wrong:
-the result goes stale, or it lands in a window where the legacy Flutter app is
-still live against the same data.
+the result goes stale — the legacy app keeps writing the source project until
+the cutover switches it off, so an early run is superseded by its later writes.
 
 Pairs with a `task:` router (usually `task: ops-deploy`), never replaces it.
 Query the backlog for the cutover checklist with:

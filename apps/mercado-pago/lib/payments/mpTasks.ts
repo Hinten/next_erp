@@ -12,10 +12,15 @@
  * Transport: `firebase-admin`'s `getFunctions().taskQueue(...).enqueue(...)`. No
  * queue-path env and no google-auth-library: the queue is named after the
  * function and the invoking OIDC token is minted by the Cloud Tasks ↔ Functions
- * integration. `getFunctions(getAdminApp())` binds the default admin app (App
- * Hosting injects ADC). One-time IAM (grant the App Hosting runtime SA
- * `roles/cloudtasks.enqueuer` + `roles/iam.serviceAccountUser` on the functions
- * runtime SA) lands with the nested functions codebase's DEPLOY.md.
+ * integration. ⚠️ Minting that token is not permission to USE it: Cloud Tasks
+ * presents it to a gen2 function, which is a Cloud Run service, so the enqueuing
+ * identity also needs `roles/run.invoker` ON THE SERVICE. That third role is the
+ * one that gets forgotten, and it is the one that fails invisibly — the enqueue
+ * already returned success, so nothing here can record the 403.
+ * `getFunctions(getAdminApp())` binds the default admin app (App Hosting injects
+ * ADC). All three roles land with the nested functions codebase's DEPLOY.md; the
+ * dispatch one is applied by the deploy itself when `TASKS_INVOKER_SA` is set
+ * (#1133).
  *
  * Config:
  *   - `MERCADO_PAGO_TASKS_DISABLED=1` → `enqueue()` throws `MpTasksDisabledError`;

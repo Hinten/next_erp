@@ -55,7 +55,7 @@
  * ⚠️ UNITS: incidente datetimes are MICROSECONDS; conversa/mensagem datetimes
  * are MILLISECONDS (`claimMapping.ts` owns the conversions).
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
   type MercadoLivreApi,
@@ -84,7 +84,10 @@ import {
   buildIncidenteFromClaim,
   buildReasonMensagem,
 } from './claimMapping';
-import { resolveClaimUsuario } from './claimUsuario';
+import { claimActionability, type ClaimActionability } from './claimActionability';
+import { vincularClienteMercadoLivre } from './claimCliente';
+import { coerceToMillis } from '@delfrance/core/datetime';
+import { limparMensagensProvisorias } from './mensagemProvisoria';
 import { resolveShipmentOrderId } from './shipmentOrderId';
 import { importPedidoMercadoLivre } from './orderImport';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
@@ -117,7 +120,11 @@ export interface ClaimImportResult {
     | 'pedido-nao-encontrado'
     | 'reclamacao-do-vendedor'
     | 'sem-cliente'
+    /** No send action for the seller and no conversa existed — incidente only. */
+    | 'sem-conversa-acionavel'
     | null;
+  /** What the seller can still do, for the caller's log line. */
+  acao?: ClaimActionability;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -287,29 +294,22 @@ export async function importClaimMercadoLivre(
     return skipResult('sem-cliente');
   }
   const buyerUserId = buyer.user_id;
-  // The nickname only feeds the decorative `apelido` — a deleted/banned buyer
-  // profile (deterministic ML answer) must not poison the claim into retries.
-  let buyerNickname: string | null = null;
-  try {
-    buyerNickname = (await api.getUser(buyerUserId)).nickname ?? null;
-  } catch (err) {
-    if (err instanceof MercadoLivreHttpError) {
-      console.warn('[mercado-livre] claim: perfil do comprador indisponível', {
-        claimId,
-        buyerUserId,
-        status: err.status,
-      });
-    } else {
-      throw err;
-    }
-  }
+  // ⚠️ The `GET /users/{id}` call that used to sit here is GONE (#768). Its
+  // only product was the buyer nickname, whose only consumer was
+  // `usuario.apelido` — and the module that wrote it is deleted. It was one
+  // ML round-trip per claim notification for a value nothing reads.
 
-  const { usuarioId } = await resolveClaimUsuario(db, {
-    contaId: integracaoId,
+  // #768 — the contact is a CLIENTE. The pedido already names it; all this does
+  // is stamp the ML buyer id onto it when absent, so the cliente a pre-sale
+  // question created and the cliente this order created converge instead of
+  // forking. No usuario is created anywhere on this path any more.
+  const { clienteOuterRef: clienteRef } = await vincularClienteMercadoLivre(db, {
     clienteOuterRef,
     buyerUserId,
-    buyerNickname,
   });
+
+  // What the seller can still DO on this claim — the conversa gate below.
+  const acao = claimActionability(claim);
 
   /* ------------------------ (g) best-effort reason -------------------------- */
   let reason: MlClaimReason | undefined;
@@ -357,39 +357,93 @@ export async function importClaimMercadoLivre(
   }
 
   /* -------------------------- (i) conversa upsert (ms) ----------------------- */
+  // ⚠️ The incidente above is written for EVERY claim; the conversa is not.
+  // A chat thread the seller cannot send on is #817 with extra steps — the
+  // operator types, the reply goes nowhere. The incidente keeps the business
+  // record either way, so nothing is lost by not opening the thread.
   const conversaId = makeConversaIdClaim(integracaoId, claim.resource_id, claim.id);
+  const conversaSnap = await conversaCollection.docRef(db, {}, conversaId).get();
+
+  if (!acao.podeResponder && !conversaSnap.exists) {
+    // Nothing to answer and no history to preserve — the incidente is the
+    // import. This is the owner's "import only what we can act on" directive.
+    return {
+      pedidoId,
+      incidenteId,
+      conversaId: null,
+      skipped: 'sem-conversa-acionavel',
+      acao,
+    };
+  }
+
   const conversaFields = buildConversaFromClaim(claim, {
     buyerUserId,
-    usuarioId,
+    clienteOuterRef: clienteRef,
     contaId: integracaoId,
     contaCor: conta.cor,
     pedidoId,
     incidenteId,
+    respostaBloqueada: acao.motivo,
+    podeResponder: acao.podeResponder,
   });
-  const conversaSnap = await conversaCollection.docRef(db, {}, conversaId).get();
-  let atualizouConversa = false;
-  if (!conversaSnap.exists) {
-    // Full doc — estadoConversa fills from the schema default (naoRespondido).
-    await conversaCollection.set(db, {}, conversaId, conversaFields);
-    atualizouConversa = true;
-  } else {
-    const stored = conversaCollection.parseRead(
-      conversaSnap.data(),
-      conversaCollection.docPath({}, conversaId),
-    );
-    const incomingMs = conversaFields.ultima_modificacao as number | null;
-    const isFresh =
-      stored.ultima_modificacao == null ||
-      (incomingMs != null && stored.ultima_modificacao < incomingMs);
-    if (isFresh) {
-      // parseMerge (never a full parse: defaults would clobber stored fields),
-      // WITHOUT data_cadastro (set once on create) — estadoConversa is already
-      // absent from the mapped fields (see buildConversaFromClaim).
-      const { data_cadastro: _dataCadastro, ...patch } = conversaFields;
-      await conversaCollection.merge(db, {}, conversaId, patch);
-      atualizouConversa = true;
+
+  // ⚠️ ONE transaction, gated on a PROVIDER watermark (root CLAUDE.md rule 7,
+  // tier 2) — the same shape the post-sale message import and the WhatsApp
+  // inbound guard use.
+  //
+  // This replaced a `ultima_modificacao` freshness check plus an out-of-band
+  // close, and both halves of that were wrong. `ultima_modificacao` is a MIXED
+  // clock — operators write it on every rename and etiqueta change — so an
+  // edited conversa looked permanently "newer" than the wire. And the escape
+  // hatch only ever CLOSED: a claim that regained a send action without moving
+  // `last_updated` stayed blocked forever, while a worker holding an older
+  // no-action response could close a thread another worker had just reopened.
+  //
+  // `ultimaModificacaoIntegracao` carries `claim.last_updated` and nothing else,
+  // so the comparison is provider-vs-provider. The patch reconciles BOTH
+  // directions because `respostaBloqueada` and `atendido` simply ride it, and
+  // the gate is `>=`: when ML does not move `last_updated`, an equal snapshot
+  // still applies, which is what the old escape hatch existed for.
+  const atualizouConversa = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(conversaCollection.docRef(db, {}, conversaId));
+    if (!snap.exists) {
+      // Full doc — estadoConversa fills from the schema default (naoRespondido).
+      tx.set(
+        conversaCollection.docRef(db, {}, conversaId),
+        conversaCollection.parse(conversaFields) as DocumentData,
+      );
+      return true;
     }
-  }
+
+    // Re-derived from the tx snapshot, never from the read above — that one is
+    // stale by the time we get here, which is the whole point.
+    const stored = snap.data() as Record<string, unknown> | undefined;
+    const armazenado =
+      typeof stored?.ultimaModificacaoIntegracao === 'number'
+        ? stored.ultimaModificacaoIntegracao
+        : null;
+    const entrante = conversaFields.ultimaModificacaoIntegracao as number | null;
+
+    if (armazenado != null && entrante != null && entrante < armazenado) {
+      console.warn('[mercado-livre] claim: snapshot mais antigo ignorado', {
+        conversaId,
+        armazenado,
+        entrante,
+      });
+      return false;
+    }
+
+    // parseMerge (never a full parse: defaults would clobber stored fields),
+    // WITHOUT data_cadastro (set once on create) — estadoConversa is already
+    // absent from the mapped fields (see buildConversaFromClaim).
+    const { data_cadastro: _dataCadastro, ...patch } = conversaFields;
+    tx.set(
+      conversaCollection.docRef(db, {}, conversaId),
+      conversaCollection.parseMerge(patch) as DocumentData,
+      { merge: true },
+    );
+    return true;
+  });
 
   /* --------------------------- (j) mensagens (ms) ---------------------------- */
   const messages = await api.getClaimMessages(claimId);
@@ -405,7 +459,7 @@ export async function importClaimMercadoLivre(
         db,
         { conversaId },
         reasonId,
-        buildReasonMensagem({ reasonId, claim, reason, usuarioId }),
+        buildReasonMensagem({ reasonId, claim, reason, clienteOuterRef: clienteRef }),
       );
     }
   }
@@ -448,7 +502,7 @@ export async function importClaimMercadoLivre(
           parentMessage: msg,
           parentMessageDocId: messageDocId,
           arquivoOuterRef: ensured.arquivoOuterRef,
-          usuarioId,
+          clienteOuterRef: clienteRef,
         }),
       );
     }
@@ -458,9 +512,22 @@ export async function importClaimMercadoLivre(
       db,
       { conversaId },
       messageDocId,
-      buildClaimMessageMensagem(msg, messageDocId),
+      buildClaimMessageMensagem(msg, messageDocId, { clienteOuterRef: clienteRef }),
     );
   }
 
-  return { pedidoId, incidenteId, conversaId, skipped: null };
+  // Same expiry as the post-sale path: the claim messages just written include
+  // any reply the operator sent, so the provisional bubble covering the gap has
+  // done its job. Bounded to the newest imported message time so a reply sent
+  // after this snapshot keeps its placeholder.
+  const carimbos = messages
+    .map((m) => coerceToMillis(m.date_created))
+    .filter((t): t is number => typeof t === 'number');
+  await limparMensagensProvisorias(
+    db,
+    conversaId,
+    carimbos.length > 0 ? Math.max(...carimbos) : null,
+  );
+
+  return { pedidoId, incidenteId, conversaId, skipped: null, acao };
 }
