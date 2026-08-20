@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
+import { loadBuildEnv } from '../../tools/deploy-env/build-env.mjs';
 
 // Bundle the Cloud Functions, inlining the function region at build time.
 // Firebase can't read `process.env`/params/`.env` during codebase analysis (where
@@ -24,6 +25,10 @@ const pkgDir = dirname(fileURLToPath(import.meta.url));
  * bundled in, so the deployed package needs just those three runtime deps.
  */
 export async function bundle(outfile) {
+  // Optional repo-root `.env.functions` supplies the build-time vars below when
+  // they are not exported in the deploy shell. A real export still wins, and a
+  // missing file is a no-op — see tools/deploy-env/build-env.mjs.
+  loadBuildEnv();
   const region = process.env.FUNCTIONS_REGION || 'us-east1';
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above
