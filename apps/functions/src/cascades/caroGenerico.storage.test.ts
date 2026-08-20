@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { cascadeCaroGenerico } from '../lib/cascadeCaroGenerico';
+import { CascadeTruncatedError, cascadeCaroGenerico } from '../lib/cascadeCaroGenerico';
 
 // Integration test — requires the firestore emulator. Drives the PRODUCTION
 // core directly (trigger delivery on a named database is awkward to exercise in
@@ -64,5 +64,92 @@ describe.skipIf(!EMULATED)('cascadeCaroGenerico (emulator)', () => {
     await cascadeCaroGenerico(db, 'metodo_pgto', metodoId);
 
     expect((await ref.collection('credenciais').get()).empty).toBe(true);
+  });
+});
+
+/**
+ * `chat` (#980) — the budgeted cascade, and the only one of the four whose
+ * subtree can outlast an invocation. Same core function, so what is exercised
+ * here is the volume half: many leaf `mensagem` documents, and what happens when
+ * the walk runs out of budget half-way through them.
+ */
+describe.skipIf(!EMULATED)('cascadeCaroGenerico — chat/{conversaId}/mensagem (emulator)', () => {
+  /**
+   * Enough to be a real subcollection without slowing the lane down. Paging
+   * (`DEFAULT_PAGE_SIZE` is 300) is covered by `deleteSubtree.test.ts`; what
+   * these cases exercise is the budget contract, which is per-document.
+   */
+  const MENSAGENS = 12;
+
+  async function seedConversa(): Promise<string> {
+    const db = getDb();
+    const conversaId = `cv${randomUUID().replace(/-/g, '')}`;
+    const ref = db.collection('chat').doc(conversaId);
+    await ref.set({ nome: 'Conversa de teste', origem: 'site' });
+
+    // `void`: BulkWriter.set is fire-and-forget by design — the per-write
+    // promise is not the completion signal, `close()` below is.
+    const writer = db.bulkWriter();
+    for (let i = 0; i < MENSAGENS; i += 1) {
+      void writer.set(ref.collection('mensagem').doc(`m${String(i).padStart(3, '0')}`), {
+        texto: `mensagem ${i}`,
+      });
+    }
+    // A subcollection the schemas do not model. The migrated corpus has these,
+    // and a registry-derived sweep would orphan it silently — the same assertion
+    // `subcolecaoNaoRegistrada` makes above, on the collection where the
+    // temptation to hard-code `mensagem` is strongest.
+    void writer.set(ref.collection('anexosLegado').doc('a1'), { legado: true });
+    await writer.close();
+
+    return conversaId;
+  }
+
+  it('reclaims the whole mensagem subcollection', async () => {
+    const db = getDb();
+    const conversaId = await seedConversa();
+    const ref = db.collection('chat').doc(conversaId);
+
+    // The real entry condition: `onDocumentDeleted` fires after the delete.
+    await ref.delete();
+    await cascadeCaroGenerico(db, 'chat', conversaId, 60_000);
+
+    expect((await ref.collection('mensagem').get()).empty).toBe(true);
+    expect((await ref.collection('anexosLegado').get()).empty).toBe(true);
+  });
+
+  it('throws CascadeTruncatedError when the budget is spent, keeping what it reached', async () => {
+    const db = getDb();
+    const conversaId = await seedConversa();
+    const ref = db.collection('chat').doc(conversaId);
+
+    // A budget already in the past: the walk queues the root and stops at the
+    // first deadline check, before descending. Deterministic, unlike a small
+    // positive budget racing the emulator.
+    await expect(cascadeCaroGenerico(db, 'chat', conversaId, -1)).rejects.toBeInstanceOf(
+      CascadeTruncatedError,
+    );
+
+    // Progress is COMMITTED, not rolled back — `deleteDocumentSubtree` closes its
+    // BulkWriter before returning, which is what makes redelivery a resume.
+    expect((await ref.get()).exists).toBe(false);
+    expect((await ref.collection('mensagem').get()).size).toBe(MENSAGENS);
+  });
+
+  it('finishes the remainder on the next delivery', async () => {
+    const db = getDb();
+    const conversaId = await seedConversa();
+    const ref = db.collection('chat').doc(conversaId);
+
+    await expect(cascadeCaroGenerico(db, 'chat', conversaId, -1)).rejects.toBeInstanceOf(
+      CascadeTruncatedError,
+    );
+    // What Eventarc redelivery does: the same event, the same walk, a smaller
+    // subtree. It must resolve — a cascade that always threw would retry until
+    // the delivery window expired and leave the orphans behind anyway.
+    await expect(cascadeCaroGenerico(db, 'chat', conversaId, 60_000)).resolves.toBeUndefined();
+
+    expect((await ref.collection('mensagem').get()).empty).toBe(true);
+    expect((await ref.collection('anexosLegado').get()).empty).toBe(true);
   });
 });

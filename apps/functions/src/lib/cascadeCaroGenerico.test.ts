@@ -7,12 +7,28 @@ vi.mock('@delfrance/data/admin', () => ({
   deleteDocumentSubtree: h.deleteDocumentSubtree,
 }));
 
-import { cascadeCaroGenerico, defineCascadeCaroGenerico } from './cascadeCaroGenerico';
+import {
+  BUDGET_MS_PADRAO,
+  TIMEOUT_SECONDS_PADRAO,
+  CascadeTruncatedError,
+  cascadeCaroGenerico,
+  defineCascadeCaroGenerico,
+} from './cascadeCaroGenerico';
 
 const META: CollectionMetadata = {
   collectionPath: 'integracao',
   permissions: { read: 1n, write: 2n, delete: 4n },
 };
+
+/** The slice of a v2 trigger's `__endpoint` these tests read. */
+interface Endpoint {
+  eventTrigger: {
+    retry: boolean;
+    eventFilters: Record<string, string>;
+    eventFilterPathPatterns: Record<string, string>;
+  };
+  timeoutSeconds?: unknown;
+}
 
 /**
  * The two fields firebase-tools reads off a v2 trigger to wire Eventarc. They
@@ -20,17 +36,14 @@ const META: CollectionMetadata = {
  * `database` is an exact-match filter.
  */
 function endpointOf(fn: unknown) {
-  const { eventTrigger } = (
-    fn as {
-      __endpoint: {
-        eventTrigger: {
-          eventFilters: Record<string, string>;
-          eventFilterPathPatterns: Record<string, string>;
-        };
-      };
-    }
-  ).__endpoint;
+  const { eventTrigger } = (fn as { __endpoint: Endpoint }).__endpoint;
   return { ...eventTrigger.eventFilters, ...eventTrigger.eventFilterPathPatterns };
+}
+
+/** The runtime half of the endpoint — what `retry`/`timeoutSeconds` land in. */
+function runtimeOf(fn: unknown) {
+  const endpoint = (fn as { __endpoint: Endpoint }).__endpoint;
+  return { retry: endpoint.eventTrigger.retry, timeoutSeconds: endpoint.timeoutSeconds };
 }
 
 afterEach(() => {
@@ -55,6 +68,33 @@ describe('defineCascadeCaroGenerico', () => {
   it('honours FIREBASE_DATABASE_ID when set', () => {
     vi.stubEnv('FIREBASE_DATABASE_ID', 'staging-db');
     expect(endpointOf(defineCascadeCaroGenerico(META)).database).toBe('staging-db');
+  });
+
+  it('leaves an unbudgeted cascade at retry: false with no timeout override', () => {
+    // The three credential cascades. Their subtrees are two documents, so they
+    // cannot truncate; `retry: true` there would only redeliver a permanent
+    // failure the writer already exhausted.
+    const runtime = runtimeOf(defineCascadeCaroGenerico(META));
+    expect(runtime.retry).toBe(false);
+    // Not asserted as `undefined`: firebase-functions normalizes an omitted
+    // runtime option to its `ResetValue` sentinel — "leave the platform
+    // default" — so the assertion is that no number was pinned here.
+    expect(typeof runtime.timeoutSeconds).not.toBe('number');
+  });
+
+  it('turns retry ON exactly when a budget is given', () => {
+    // Not a separate knob on purpose: redelivery is the only reason a budget is
+    // worth having, so a budgeted trigger that did not retry would stop the walk
+    // cleanly and then drop the remainder deliberately.
+    expect(
+      runtimeOf(defineCascadeCaroGenerico(META, { budgetMs: 400_000, timeoutSeconds: 540 })),
+    ).toEqual({ retry: true, timeoutSeconds: 540 });
+  });
+
+  it('sizes the default budget to leave room inside the default timeout', () => {
+    // The BulkWriter flush happens after the deadline stops the walk; a budget
+    // that filled the timeout would throw away the progress it just made.
+    expect(BUDGET_MS_PADRAO).toBeLessThan(TIMEOUT_SECONDS_PADRAO * 1000);
   });
 });
 
@@ -83,20 +123,24 @@ describe('cascadeCaroGenerico', () => {
     await cascadeCaroGenerico(fakeDb(seen) as never, 'integracao', 'abc');
 
     expect(seen).toEqual(['integracao/abc']);
-    expect(h.deleteDocumentSubtree).toHaveBeenCalledWith(expect.anything(), {
-      path: 'integracao/abc',
-    });
+    expect(h.deleteDocumentSubtree).toHaveBeenCalledWith(
+      expect.anything(),
+      { path: 'integracao/abc' },
+      // No budget → no deadline, so the walk can never report `truncated` and
+      // the redelivery contract below stays switched off.
+      { deadline: Number.POSITIVE_INFINITY },
+    );
   });
 
   it('does not throw when the walk reports failed deletes', async () => {
-    // A cascade that partially failed must still resolve: the trigger has
-    // nothing useful to retry (the parent is already gone) and throwing would
-    // only buy a redelivery of the same walk. The report is logged instead.
+    // A permanent per-document failure must still resolve: the BulkWriter
+    // already retried it, so a redelivery reproduces it rather than reclaiming
+    // anything. The report is logged instead.
     h.deleteDocumentSubtree.mockResolvedValue({
       documentsDeleted: 2,
       collectionsVisited: 2,
       queriesIssued: 1,
-      truncated: true,
+      truncated: false,
       failedDeletes: 1,
       firstError: new Error('permission denied'),
     });
@@ -104,5 +148,42 @@ describe('cascadeCaroGenerico', () => {
     await expect(
       cascadeCaroGenerico(fakeDb([]) as never, 'metodo_pgto', 'xyz'),
     ).resolves.toBeUndefined();
+  });
+
+  it('turns budgetMs into an absolute deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-20T00:00:00Z'));
+    h.deleteDocumentSubtree.mockResolvedValue({
+      documentsDeleted: 1,
+      collectionsVisited: 1,
+      queriesIssued: 0,
+      truncated: false,
+      failedDeletes: 0,
+    });
+
+    await cascadeCaroGenerico(fakeDb([]) as never, 'chat', 'c1', 60_000);
+
+    expect(h.deleteDocumentSubtree).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      deadline: Date.now() + 60_000,
+    });
+    vi.useRealTimers();
+  });
+
+  it('throws CascadeTruncatedError when a budgeted walk runs out of time', async () => {
+    // The throw IS the resume mechanism: the trigger is defined `retry: true`,
+    // so an unhandled rejection is what makes Eventarc redeliver the event and
+    // walk the (now smaller) remainder. Everything reached is already committed
+    // — `deleteDocumentSubtree` closes its BulkWriter before returning.
+    h.deleteDocumentSubtree.mockResolvedValue({
+      documentsDeleted: 4_000,
+      collectionsVisited: 4_000,
+      queriesIssued: 14,
+      truncated: true,
+      failedDeletes: 0,
+    });
+
+    await expect(
+      cascadeCaroGenerico(fakeDb([]) as never, 'chat', 'c1', BUDGET_MS_PADRAO),
+    ).rejects.toBeInstanceOf(CascadeTruncatedError);
   });
 });

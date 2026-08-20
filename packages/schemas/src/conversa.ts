@@ -207,6 +207,20 @@ export const conversaMeta: CollectionMetadata = {
     write: PERM_CONVERSA_WRITE,
     delete: PERM_CONVERSA_DELETE,
   },
+  /**
+   * ENFORCED, by `onConversaDeleted` — the CARO GENÉRICO factory in
+   * `apps/functions/src/cascades/caroGenericoTriggers.ts` (#980). Firestore
+   * cascades nothing on its own, so before that trigger a deleted conversa left
+   * its entire `mensagem` history orphaned, permanently and invisibly.
+   *
+   * ⚠️ The trigger does not read this array. It walks whatever
+   * `listCollections()` reports, so it also reclaims subcollections the legacy
+   * corpus put under a conversa that this repo never modeled. This declaration
+   * records intent; it is not the sweep's input.
+   *
+   * ⚠️ Like every trigger in that codebase, it does nothing until
+   * `functions:storage` is deployed — a manual step.
+   */
   cascade: [{ path: 'chat/{conversaId}/mensagem', onDelete: 'cascade' }],
 };
 
