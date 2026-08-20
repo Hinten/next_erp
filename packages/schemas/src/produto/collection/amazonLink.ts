@@ -5,8 +5,8 @@ import { millisSinceEpoch } from '../../shared/datetime';
 /**
  * Typed write-side schema for the Amazon listing link doc —
  * `produtos/{id}/prodAmazon/{docId}` — in the EXACT old Flutter wire shape
- * (`ProdutoAmazon`, amazon `models.dart`): dual-run coexistence means the
- * Flutter app keeps reading the docs the new app writes.
+ * (`ProdutoAmazon`, amazon `models.dart`): the migrated corpus is stored in
+ * exactly this shape, so it has to be read and written that way.
  *
  * This is deliberately NOT a DomainSchema and NOT in `ALL_DOMAINS`: the loose
  * pass-through subcollection domain in `subcollections.ts` (leaf name

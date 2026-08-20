@@ -187,9 +187,9 @@ export function MercadoLivreEditor({
    *
    * Only User-Products listings ever land here — a legacy one is a pure string
    * transform the strip does itself. It is component state and not a Firestore
-   * field on purpose: the Flutter app is a live concurrent writer and its
-   * `Model.save()` is an unmasked `set()` over a closed field list, so a cached
-   * URL written to the link doc would vanish on its next save.
+   * field on purpose — see the ⚠️ in `lib/marketplace/anuncioUrl.ts`: a persisted
+   * URL is a cache that can go stale silently, and it costs one request to
+   * resolve.
    */
   const [urlPorLink, setUrlPorLink] = useState<Record<string, string>>({});
   /** The conta whose stock push is in flight (#819), if any. */
@@ -668,9 +668,9 @@ export function MercadoLivreEditor({
             // ⚠️ Empty string counts as NOT published, matching the backend
             // exactly: `bulkEstoquePlan` takes `link.id !== ''` as its test and
             // answers `sem-item-id` otherwise. The schema permits `''` —
-            // `id: z.string().nullable().default(null)` carries no `.min(1)` — and
-            // the Flutter app is a live concurrent writer to these same docs, so
-            // a `!= null` check leaves the same dead button one value narrower.
+            // `id: z.string().nullable().default(null)` carries no `.min(1)`, and
+            // the migrated corpus contains links stored that way, so a `!= null`
+            // check leaves the same dead button one value narrower.
             const hasPublished = contaLinks.some((l) => (l.data.id ?? '') !== '');
             const issues = blockedIssues[conta.id] ?? [];
             // Our OWN pre-flight refusals (422), mapped onto controls by the

@@ -16,9 +16,10 @@ they share.
 
 ## The contract
 
-1. **Idempotent and re-runnable.** Not optional: the Flutter app is still
-   writing, so a run before the migration window is partially undone and the
-   authoritative run is the one _inside_ it.
+1. **Idempotent and re-runnable.** Not optional: the legacy app keeps writing
+   the source project until the window switches it off, so a run before the
+   migration window is superseded and the authoritative run is the one
+   _inside_ it.
 2. **`--project <id>` is required and is matched against the service account.**
    The runner never infers the target from the environment, and `migrationDb`
    refuses when the credentials name a different project (`src/admin.ts`) — so a

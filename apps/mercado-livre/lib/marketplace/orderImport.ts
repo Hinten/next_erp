@@ -559,8 +559,8 @@ async function recordItensSemProduto(
   nowUs: number,
 ): Promise<void> {
   // A line already STORED with a produto is not a problem, whoever bound it —
-  // during the dual-run the Flutter app may have imported this same order and
-  // resolved it via its own `marketplace` denorm probe. `orderPedidoTx` dedups by
+  // the migrated corpus may already hold this order, bound by the legacy import
+  // via its own `marketplace` denorm probe. `orderPedidoTx` dedups by
   // `ensureUniqueId` and keeps the stored line, so raising an incidente for it
   // would be a false positive.
   // `?? {}` — `readPedido` soft-parses, so a pedido written by another actor
@@ -1574,7 +1574,8 @@ export async function importPedidoMercadoLivre(
 
   // Unbound lines get a visible incidente (#792) — after the pedido was written,
   // both so the subcollection has a parent and so a line the stored pedido
-  // already has bound (Flutter, dual-run) is not falsely flagged.
+  // already has bound (a legacy import, inherited with the corpus) is not
+  // falsely flagged.
   await recordItensSemProduto(db, pedidoId, itensByOrderId, mlIdsByUniqueId, pedido, nowUs);
 
   let billingInfoCache: MlBillingInfo | null = null;

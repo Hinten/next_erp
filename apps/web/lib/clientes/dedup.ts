@@ -131,7 +131,7 @@ async function querySimilarNome(
  * One-shot duplicate lookup before creating a cliente. Empty inputs skip
  * their sub-check; all sub-checks run in parallel. Telefone is matched
  * against BOTH wire shapes (normalized `55…` written by this app and the
- * raw 10/11-digit shape the live Flutter app still writes).
+ * raw 10/11-digit shape the migrated corpus is full of).
  *
  * E-mail is matched best-effort via an `in` query on the typed and lowercased
  * forms — Firestore has no case-insensitive operator, so a stored mixed-case

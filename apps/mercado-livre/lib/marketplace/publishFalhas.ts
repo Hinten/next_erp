@@ -380,8 +380,8 @@ export type EscopoFalha = 'item' | 'nao-item';
 
 /**
  * The whole failure diagnosis as a link-doc patch, so the two fields can never
- * drift apart: `errors` is the Flutter-visible `string[]` (root `CLAUDE.md`
- * dual-run) and `causas` the structure the editor highlights fields from.
+ * drift apart: `errors` is the legacy-shaped `string[]` and `causas` the
+ * structure the editor highlights fields from.
  *
  * Spread it — `{ estado: 'E', ...falhaPatch(err, err.message), ultimaModificacao }`.
  * {@link CLEAR_FALHA} is its counterpart on every path that heals a listing.

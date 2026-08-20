@@ -48,9 +48,9 @@ Tick every box before step 2.1. Most failures in this run trace back to a missed
 
 - [ ] A **staging** ML application, never production. The production application's
       callback is still shared with the live Flutter connect screen.
-- [ ] ⚠️ **Dual-run hazard.** Pointing a seller's callback at this backend without
-      disabling the legacy Flutter notification functions makes **every notification
-      process twice**.
+- [ ] ⚠️ **Cutover hazard.** A seller's callback URL is ONE registration. Pointing
+      it at this backend without disabling the legacy Flutter notification
+      functions gets the same notification ingested by **both** systems.
 - [ ] Redirect URI → `<staging backend>/api/oauth/mercado-livre/callback`
 - [ ] Notification callback → `<staging backend>/api/webhooks/mercado-livre`
 - [ ] Every topic in `KNOWN_TOPICS` subscribed (`lib/marketplace/notificacao.ts`):

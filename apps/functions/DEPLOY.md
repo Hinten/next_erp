@@ -93,8 +93,11 @@ there so the local analysis step can run.
    (and 400px/jpeg) refs built by `buildFotoRefs` resolve to real docs.
 4. The thumbnail **auto-upgrades** to the 200px derivative (no code change — PR #103
    already prefers the derivative when it exists).
-5. **Coexistence:** open the same product in the Flutter app and confirm a Flutter
-   read of the Next-uploaded+resized photo sees the same derivative shape.
+5. **Legacy wire shape:** confirm the derivative refs the resize wrote match the
+   shape the legacy reader expects (`buildFotoRefs`), so a migrated produto and a
+   newly-uploaded one are indistinguishable on read. ⚠️ This used to say "open the
+   same product in the Flutter app" — you cannot: the two apps are on different
+   projects and there is no dual run (root `CLAUDE.md` rule 8).
 
 Once step 5 passes, close **#137**. The same lane will later ship the deletion-
 lifecycle functions (#136 / #95) — see ADR 0010, the produto deletion lifecycle
@@ -113,7 +116,7 @@ Next produto editor's `onAfterSave`).
 client-side history/propagation writes** — until it's live, an edit made while
 only the OLD client code runs would record no history and propagate nothing.
 Deploying the trigger first is safe on its own (both the old client writes and
-the new trigger writes for a while, which is the accepted dual-run — see the
+the new trigger writes for a while, which is the accepted overlap — see the
 schema/trigger PR notes), so when in doubt deploy the function first and ship
 the client change after.
 

@@ -96,8 +96,8 @@ Documented at the top of the module, because each failure mode is silent:
   importer, which *creates* the produto when its SKU lookup misses — a cached miss
   manufactures a duplicate produto.
 - **OAuth credentials / tokens.** The `tokenDuravel` store's "one wins" refresh depends
-  on always reading the newest document, and races cross-process with the still-running
-  Flutter app during the dual-run migration. ML refresh tokens are single-use and
+  on always reading the newest document, and races cross-process across every
+  instance and every scheduled sweep. ML refresh tokens are single-use and
   rotate, so a cached read resurrects a rotated-out token and converts a survivable
   race into a hard `invalid_grant`.
 

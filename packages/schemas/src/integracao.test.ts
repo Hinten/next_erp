@@ -168,7 +168,7 @@ describe('integracaoSchema per-channel fields', () => {
   it('rides legacy Mercado-Shops refs through passthrough (fields no longer modeled)', () => {
     // Mercado Shops was discontinued (2025-12-31); the two refs were dropped
     // from the schema. Legacy Flutter docs still carry them — they must keep
-    // parsing and survive the round-trip untouched (dual-run guarantee).
+    // parsing and survive the round-trip untouched (legacy-wire guarantee).
     const doc = {
       ...base,
       tabelaMercadoShopsOuterRef: 'documents/listaDePrecos/ms1',
@@ -478,7 +478,7 @@ describe('integracao metas', () => {
       { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
       // #821 — holds a live PKCE code_verifier.
       { path: 'integracao/{integracaoId}/oauthState', onDelete: 'cascade' },
-      // Dual-run ML pair (#829) — they hold a live refresh_token, and the legacy
+      // Legacy-grant ML pair (#829) — they hold a live refresh_token, and legacy
       // Flutter `deleteCascade` on a conta already removed both, so leaving them
       // out would orphan a working credential.
       { path: 'integracao/{integracaoId}/token6h', onDelete: 'cascade' },
@@ -526,10 +526,10 @@ describe('integracao metas', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/*        Token6h / TokenDuravel — Mercado Livre dual-run parity (#829)        */
+/*      Token6h / TokenDuravel — Mercado Livre legacy-grant parity (#829)     */
 /* -------------------------------------------------------------------------- */
 
-describe('Mercado Livre dual-run token collections', () => {
+describe('Mercado Livre legacy-grant token collections', () => {
   it('token6hSchema parses the legacy Flutter wire shape', () => {
     // Flutter parks the raw OAuth AUTHORIZATION CODE in `token`, not an access
     // token (tokenInicial.dart:29-34), and stores `expires_in` as an absolute
@@ -563,7 +563,7 @@ describe('Mercado Livre dual-run token collections', () => {
   it.each([
     ['token6h', token6hMeta, 'integracao/{integracaoId}/token6h'],
     ['tokenDuravel', tokenDuravelMeta, 'integracao/{integracaoId}/tokenDuravel'],
-  ])('%s is a DUAL-RUN client grant on the integracao byte, not deny-all', (_name, meta, path) => {
+  ])('%s is a LEGACY client grant on the integracao byte, not deny-all', (_name, meta, path) => {
     // ⚠️ These are the ONE exception to the deny-all posture for credential
     // stores: registered so the generated ruleset reproduces the grant the
     // deployed legacy ruleset already gives the Flutter client (perm codes
@@ -581,7 +581,7 @@ describe('Mercado Livre dual-run token collections', () => {
   });
 
   it('does NOT relax the sibling credential stores', () => {
-    // The dual-run exception is ML-only. `credenciais`, `credenciaisWhatsapp`
+    // The legacy-grant exception is ML-only. `credenciais`, `credenciaisWhatsapp`
     // and `usuariosTeste` must stay deny-all and unregistered.
     const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
     expect(paths).not.toContain('integracao/{integracaoId}/credenciais');

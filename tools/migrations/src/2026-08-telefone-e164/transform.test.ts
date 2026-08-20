@@ -23,7 +23,8 @@ describe('planTelefone', () => {
 
   it('is IDEMPOTENT — an already-canonical value is skipped, not rewritten', () => {
     // This is what makes the migration re-runnable, which matters because the
-    // live Flutter app keeps writing the raw shape until the cutover.
+    // legacy app keeps writing the raw shape into the source project until the
+    // cutover switches it off.
     expect(planTelefone('5511999998888')).toEqual({
       action: 'skip',
       reason: SKIP_REASON.alreadyNormalized,

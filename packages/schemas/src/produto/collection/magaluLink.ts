@@ -4,9 +4,9 @@ import { outerRefSchema } from '../../shared/outerRef';
 /**
  * Typed write-side schema for the Magalu listing link doc —
  * `produtos/{id}/produtoMagalu2/{docId}` — in the EXACT old Flutter wire
- * shape (`ProdutoMagalu`, magalu_open_api `models.dart`): dual-run
- * coexistence means the Flutter app keeps reading the docs the new app
- * writes.
+ * shape (`ProdutoMagalu`, magalu_open_api `models.dart`): the migrated corpus
+ * is stored in exactly this shape, so it has to be read and written that
+ * way.
  *
  * This is deliberately NOT a DomainSchema and NOT in `ALL_DOMAINS`: the loose
  * pass-through subcollection domain in `subcollections.ts` (leaf name
@@ -72,9 +72,11 @@ export const produtoMagaluLinkSchema = z
     status: statusProdutoMagaluSchema.nullable().default(null),
     groupId: z.string().nullable().default(null),
     sku: z.string().nullable().default(null),
-    // Legacy `final String title` is required/non-nullable — the Flutter
-    // reader does `json['title'] as String` with no null guard; a null here
-    // crashes the still-running app during dual-run.
+    // Legacy `final String title` is required/non-nullable. ⚠️ The stated reason
+    // — a null crashing the legacy reader's `json['title'] as String` — is void
+    // (no dual run, root `CLAUDE.md` rule 8). Kept: Magalu itself rejects a
+    // titleless product, and relaxing a `.min()` on a collection field changes
+    // read behaviour, so it is not a drive-by edit.
     title: z.string().min(1),
     type: z.string().default('product'),
     description: z.string().nullable().default(null),

@@ -2,8 +2,8 @@
  * Resolve an `integracao` Mercado Livre account into a ready-to-use server
  * context: the plugin `MarketplaceChannel` (from `@delfrance/integrations-
  * mercado-livre`), the durable-token store (over the admin-only `tokenDuravel`
- * subcollection — the old Flutter wire shape, shared with the still-running
- * Flutter app during the dual-run migration), and a `resolveChannelContext()`
+ * subcollection — the old Flutter wire shape, which is how the migrated corpus
+ * stores the credential), and a `resolveChannelContext()`
  * that builds the `ChannelContext` every contract method consumes, refreshing
  * the token (concurrency-safe) when it is near expiry. Mirrors
  * apps/melhor-envio/lib/freight/melhorEnvio.ts, adapted to the marketplace contract.

@@ -40,7 +40,7 @@ const VALUES = {
 /** The caches `buildPedidoPatch` still persists — `valorCobrado` alone (#796). */
 const ALL_CACHES = ['valorCobrado'];
 
-/** Removed from `pedidoSchema`, still written by the live Flutter app. */
+/** Removed from `pedidoSchema`; still present on every migrated pedido. */
 const CACHES_REMOVIDOS = [
   'valorCusto',
   'valorFreteInicial',
@@ -191,11 +191,11 @@ describe('remotelyChangedFields', () => {
     }
   });
 
-  it('ignores the removed money caches so Flutter cannot raise a phantom conflict', () => {
+  it('ignores the removed money caches so they cannot raise a phantom conflict', () => {
     // #796. These five are gone from `pedidoSchema`, but `pedidoSchema` is
-    // `.passthrough()` and the still-live Flutter `Pedido.factory` recomputes
-    // them on every integral save — so they keep appearing in the raw diff with
-    // NOBODY on this side writing them. Without the ignore the operator gets a
+    // `.passthrough()` and every migrated pedido carries them — the legacy
+    // `Pedido.factory` recomputed them on each integral save — so they keep
+    // appearing in the raw diff with NOBODY on this side writing them. Without the ignore the operator gets a
     // conflict modal naming a field that is not on their screen.
     for (const field of CACHES_REMOVIDOS) {
       expect(isIgnoredForConcurrency(field)).toBe(true);

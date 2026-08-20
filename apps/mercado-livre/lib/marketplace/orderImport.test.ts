@@ -678,7 +678,7 @@ describe('importPedidoMercadoLivre — produto resolution per line (#792)', () =
     expect(db.docs('pedidos/pedido-1/incidentes').size).toBe(0);
   });
 
-  it('records NO incidente for a line the STORED pedido already has bound (Flutter dual-run)', async () => {
+  it('records NO incidente for a line the STORED pedido already has bound (legacy corpus)', async () => {
     const db = new FakeDb();
     seedConta(db);
     const order = makeVariationOrder({ id: 93, variationId: 34 });

@@ -81,7 +81,7 @@ export const grupoDeVariacoesSchema = z.object({
   variacoesIds: z.array(z.string()).default([]),
   variacoes: z.array(varianteSchema).nullable().optional(),
 
-  // Marketplace integration link arrays — pass-through. Flutter still
+  // Marketplace integration link arrays — pass-through. The migrated corpus
   // authors these; surfaced as opaque arrays here.
   linksVariacoesShopee: z.array(z.unknown()).nullable().optional(),
   linksVariacoesli: z.array(z.unknown()).nullable().optional(),

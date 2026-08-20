@@ -485,9 +485,9 @@ still stored in the bare `integracao/<id>` form. A conta reported `incompleto` h
 filial (or no nome) yet — `int_frete` cannot represent that, so fill the field in and
 re-run.
 
-**No legacy cutover.** Unlike the NF-e trigger, this one can ship while the Flutter
-conta screen is still live: both writers converge on the same doc via the same
-back-ref, writing the same values, and whichever runs second finds nothing to change.
+**No cutover coupling.** Unlike the NF-e trigger, this one can ship at any time:
+it converges on the same doc via the same back-ref, writing the same values, so a
+second run — a redelivery, the sweep, or the editor — finds nothing to change.
 
 ## Runtime env (stock sync, Step 10)
 
@@ -629,8 +629,9 @@ ticks, logs one info line and reads nothing. It is named in the repo-root `.env.
 `GET /orders/search` per conta and synthesises `orders_v2` notifications, so
 turning it on starts writing pedidos from live ML data. That belongs in the
 **callback-URL cutover window** (see the section at the end of this file), for the
-same reason the stock flag does: while the legacy Flutter backend is still
-importing the same orders, both would be live writers on the same documents. It
+same reason the stock flag does: until that switch the legacy backend owns order
+ingestion, and starting a second, parallel ingestion of the same ML orders would
+produce pedidos the cutover import then has to reconcile against. It
 is not a code decision and no agent may make it — flipping it is an ops action in
 a coordinated window (root `CLAUDE.md`, Critical rule 8).
 

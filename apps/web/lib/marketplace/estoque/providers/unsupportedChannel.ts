@@ -5,8 +5,8 @@ import type { StockPushChannelResult, StockPushInput, StockPushProvider } from '
  * *"Tipo de integração não suportado"*) as a provider.
  *
  * Shopee / Magalu / Amazon / Loja Integrada have no stock-push flow in this repo
- * yet — during the dual run their stock still goes out through the legacy app,
- * and saying so is more useful to an operator than silence.
+ * yet — until the cutover their stock goes out through the legacy app, and
+ * saying so is more useful to an operator than silence.
  *
  * ⚠️ It claims **no tipos**: it is the unconditional fallback in
  * `resolveStockPushProvider`, so registering a real channel never means

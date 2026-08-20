@@ -95,29 +95,29 @@ describe('registry safety', () => {
   });
 
   /**
-   * ⚠️ DUAL-RUN CARVE-OUT (#829). `notificacoesMercadoLivre` IS registered, for
+   * ⚠️ LEGACY-GRANT CARVE-OUT (#829). `notificacoesMercadoLivre` IS registered, for
    * literal parity with the legacy ruleset (`match /notificacoesMercadoLivre`,
    * perm code `m4`, `.old/firestore.rules:186-191`) so deploying the generated
-   * ruleset cannot deny the still-running Flutter app anything it has today —
-   * see #783. It is the ONLY allowed exception: the guard below must
+   * ruleset cannot deny the legacy Flutter app anything it has today — see #783.
+   * ⚠️ That parity buys this app nothing (no dual run; root `CLAUDE.md` rule 8). It is the ONLY allowed exception: the guard below must
    * keep biting for Mercado Pago and WhatsApp, whose notification logs have no
    * legacy client grant to preserve. Restore the blanket `toEqual([])` form when
    * #829 lands.
    */
-  const DUAL_RUN_REGISTERED_PATHS = ['notificacoesMercadoLivre'];
+  const LEGACY_GRANT_REGISTERED_PATHS = ['notificacoesMercadoLivre'];
 
-  it('no notification schema but the dual-run ML one is registered in ALL_DOMAINS', () => {
+  it('no notification schema but the legacy-grant ML one is in ALL_DOMAINS', () => {
     const registered = new Set<unknown>(ALL_DOMAINS);
     for (const schema of [notificacaoMercadoPagoSchema, notificacoesWhatsappSchema]) {
       expect(registered.has(schema)).toBe(false);
     }
     const registeredPaths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
     expect(registeredPaths.filter((p) => p.startsWith('notificac')).sort()).toEqual(
-      DUAL_RUN_REGISTERED_PATHS,
+      LEGACY_GRANT_REGISTERED_PATHS,
     );
   });
 
-  it('the ML dual-run registration is a real DomainSchema pair, not an accident', () => {
+  it('the ML legacy registration is a real DomainSchema pair, not an accident', () => {
     // The carve-out above weakens a safety net, so pin that it was taken
     // deliberately: the pair exists, is in ALL_DOMAINS, and points at the path
     // the legacy ruleset grants.

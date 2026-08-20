@@ -171,7 +171,7 @@ target database is `FIREBASE_DATABASE_ID` (default `default`). Re-running is
 safe (idempotent). **Run against staging first; never default `--project` to a
 production project.**
 
-## Legacy Flutter coexistence (future third-backend import)
+## Legacy Flutter data (the cutover import)
 
 This project runs on a **separate test backend**; the legacy Flutter app does
 **not** read it. A future migration will move the Flutter project onto a **third,
