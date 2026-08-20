@@ -120,7 +120,8 @@ export type ExternalId = z.infer<typeof externalIdSchema>;
  * Arquivo — file-metadata document in the `arquivos` collection. Content is in
  * Cloud Storage; this doc carries the public `url`, MIME type, and the storage
  * path (`filepath` dir + `filename`). Parity with the Flutter `Arquivo` model;
- * `.passthrough()` keeps fields the Flutter app writes that we don't model yet.
+ * `.passthrough()` keeps keys the migrated corpus carries that this repo does
+ * not model — dropping them on a round trip would lose data already stored.
  *
  * Optional fields are `.nullable()` (never bare `.optional()`) so the parsed
  * type is `T | null` and Firebase JS SDK v12 never sees `undefined`.

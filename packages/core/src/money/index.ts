@@ -38,9 +38,12 @@ export function format(value: Money, locale = 'pt-BR'): string {
 /**
  * THE canonical money rounding for the whole codebase: round a reais amount to 2
  * decimals **from its IEEE-754 double representation** — `Number(n.toFixed(2))`.
- * This is deliberate byte-parity with the live Flutter app's `duasCasasDecimais`
+ * This is deliberate byte-parity with the rounding already applied to every
+ * reais value in the migrated corpus: Flutter's `duasCasasDecimais`
  * (`.old/packages/global/lib/src/mathExtensions.dart:4-6`,
- * `double.parse(x.toStringAsFixed(2))`): both languages format the *actual*
+ * `double.parse(x.toStringAsFixed(2))`) rounded them before the export, so a
+ * re-computation here has to land on the same number or it silently disagrees
+ * with what is stored. Both languages format the *actual*
  * double to 2 decimals and reparse, so a x.xx5 boundary rounds whichever way the
  * double sitting under it actually leans — NOT a textbook half-up rule. E.g.
  * `1.005→1.00`, `2.675→2.67`, `6.555→6.55` all round DOWN because the nearest
@@ -51,8 +54,10 @@ export function format(value: Money, locale = 'pt-BR'): string {
  * Replaces the float-robust half-up implementation this helper used before
  * 2026-07-21 (string-shift + `Math.round`, which recovered the exact decimal and
  * rounded `6.555→6.56`/`1.005→1.01`) — that divergence from Dart was flagged as
- * deliberate at the time; the parity call has since been reversed, so the two
- * apps now agree byte-for-byte on every reais value they round.
+ * deliberate at the time; the parity call has since been reversed. ⚠️ It buys
+ * nothing from a RUNNING Flutter app — there is no dual run (root `CLAUDE.md`
+ * rule 8) — only agreement with the values that app already rounded and the
+ * migration carries over unchanged.
  *
  * Use this for every monetary CALCULATION (business + fiscal). Ad-hoc
  * `.toFixed(2)` / `Math.round(x*100)/100` are reserved for wire-string

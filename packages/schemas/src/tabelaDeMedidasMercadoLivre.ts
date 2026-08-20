@@ -11,10 +11,12 @@ import { millisSinceEpoch } from './shared/datetime';
  * tabela.
  *
  * The base `tabelaDeMedidasSchema` keeps the field as `z.record(z.unknown())`
- * on purpose (the live Flutter app authors it; the new medidas CRUD never
- * touches it). These schemas exist for CONSUMERS — the publish flow reads the
- * chart id / domain / rows to bind `SIZE_GRID_ID` / `SIZE_GRID_ROW_ID` at
- * export time. Everything is `.passthrough()` + optional so a legacy doc can
+ * on purpose: the migrated corpus is what authored these maps (as it did the
+ * sibling `tabelasMedidasShopee`, which this repo models nowhere), and the new
+ * medidas CRUD still never authors them. These schemas exist for CONSUMERS —
+ * the publish flow reads the chart id / domain / rows to bind `SIZE_GRID_ID` /
+ * `SIZE_GRID_ROW_ID` at export time. Everything is `.passthrough()` + optional
+ * so a legacy doc can
  * never fail the parse; `mlSizeChartsForConta` soft-parses and returns `[]`
  * on any mismatch.
  */

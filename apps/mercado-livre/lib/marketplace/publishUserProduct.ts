@@ -255,7 +255,10 @@ export async function sweepRemovedMembers(
  * and all N create/update calls — so the snapshot is minutes old by the time it
  * lands, and `parse` fills defaults for whatever it lacks, making the write a
  * genuine clobber rather than a merge. Concurrent writers to these documents are
- * named in-repo: the live Flutter app, `importVariations.ts` and
+ * named, and every one of them is in-repo — the live Flutter app is NOT among
+ * them (rule 8: no dual run, so it never writes a document this app writes).
+ * They are the `items` status webhook, the price/stock senders, a second
+ * operator in the produto editor, `importVariations.ts` and
  * `importMigration.ts` (the UPtin takeover — precisely what flips a listing into
  * this model).
  *

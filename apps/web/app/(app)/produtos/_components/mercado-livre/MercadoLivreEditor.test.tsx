@@ -170,8 +170,9 @@ describe('Enviar estoque is offered only for a PUBLISHED listing', () => {
     // ⚠️ `id != null` was one value looser than `bulkEstoquePlan`, which takes
     // `link.id !== ''` as its test and answers `sem-item-id` otherwise. The
     // schema permits `''` (`z.string().nullable().default(null)`, no `.min(1)`)
-    // and the Flutter app writes these same docs concurrently, so the dead
-    // button survived at one specific value.
+    // and the migrated corpus really does carry links stored that way — the
+    // value comes from the DATA, not from a second live writer (rule 8: no dual
+    // run) — so the dead button survived at one specific value.
     h.links = [link('L-EMPTY', { id: '' })];
     renderEditor();
     await waitFor(() => {

@@ -134,7 +134,10 @@ describe.skipIf(!EMULATED)('createTokenDuravelStore (Firestore emulator)', () =>
     const store = createTokenDuravelStore(getAdminFirestore(), integracaoId);
 
     // Exactly the A2 arrangement — the shape that makes a `current`-only delete
-    // look like it worked while a live Flutter refresh_token survives it.
+    // look like it worked while a legacy-shaped refresh_token from the migrated
+    // corpus survives it. The risk is a STORED credential outliving the
+    // disconnect, not a live app holding one — there is no dual run (root
+    // `CLAUDE.md` rule 8). Cross-reference #829.
     await store.save(tok({ access_token: 'AT-current' }));
     await rawColl(integracaoId).add(tok({ access_token: 'AT-flutter-1' }));
     await rawColl(integracaoId).add(tok({ access_token: 'AT-flutter-2' }));

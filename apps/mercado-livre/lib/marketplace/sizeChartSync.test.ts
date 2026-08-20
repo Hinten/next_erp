@@ -836,13 +836,17 @@ describe('syncSizeCharts', () => {
     expect(result.updated).toBe(false);
   });
 
-  it('rejects charts the live Flutter reader would crash on (write schema)', async () => {
+  it('rejects charts the write schema will not persist (nome, domain_id, tipo)', async () => {
     const db = new FakeDb();
     seedDoc(db, []);
     const { api } = makeApi();
 
-    // No nome/domain_id — tolerated on READ, but persisting it would throw in
-    // the Flutter fromJson (`json['nome'] as String`).
+    // No nome/domain_id — tolerated on READ, never persisted. ⚠️ The old reason
+    // (a live Flutter `json['nome'] as String` crashing) is VOID — there is no
+    // dual run — but the constraints stand on their own, as the schema's own
+    // note says: `nome` ≤ 60 IS the ML chart-name limit, `domain_id` must be the
+    // full `SITE-DOMAIN` form or ML rejects the chart, and a `tipo` outside the
+    // two ML values is unusable to every reader of the stored map, ours included.
     await expect(
       syncSizeCharts({ db: db as unknown as Firestore, api, integracaoId: CONTA }, TAB, [
         { id: '123', rows: [] },

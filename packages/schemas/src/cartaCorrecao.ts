@@ -32,7 +32,8 @@ const XCORRECAO_MAX = 1000;
  * `xMotivo` / `nProt` are extracted up-front for cheap list rendering.
  *
  * Field-name note: we keep the SEFAZ wire name `xCorrecao` (not the old Flutter
- * `justificativa`) — this is a fresh TS-only collection, no Flutter reader to
+ * `justificativa`) — this collection has no legacy corpus behind it, so
+ * unlike the ported models it carries no stored wire shape to
  * satisfy during the migration window.
  */
 export const cartaCorrecaoSchema = z.object({

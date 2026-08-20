@@ -1639,9 +1639,9 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     // `state.raw` is captured in the children loop, BEFORE the grupo reads, the
     // size-chart binding, every picture upload and all N ML calls — so by the
     // time the member link is written that snapshot is stale. Re-applying it
-    // wholesale reverts whatever the live Flutter app, `importVariations` or the
-    // UPtin takeover wrote in between; `parse` even fills defaults for what the
-    // snapshot lacks, so it is a clobber and not a merge.
+    // wholesale reverts whatever `importVariations` or the `items` status sync
+    // — the UPtin takeover included — wrote in between; `parse` even fills
+    // defaults for what the snapshot lacks, so it is a clobber and not a merge.
     const db = new FakeDb();
     seedFamily(db); // child-1 only
     seedPublishedFamily(db, ['child-1']);
