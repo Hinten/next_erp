@@ -542,7 +542,16 @@ async function registrarRejeicaoFinal(
         payload.integracaoId,
         target,
         { status: 'closed', sub_status: [] },
-        { nowMs, extra: { ...diagnostico } },
+        // ⚠️ `moderacoes: []` is spelled out, and this is the SECOND of the two
+        // places allowed to blank the field without having read `/moderations`
+        // (`reverificarAnuncio`'s 404 branch is the first). The listing is GONE:
+        // a moderation on it explains nothing, `/moderations` would 404 for it
+        // too, and — the part that makes it necessary rather than tidy — no
+        // further `items` notification can EVER arrive for a deleted item, so
+        // the self-healing this module relies on everywhere else does not exist
+        // here. Left out, a moderated listing ML deleted keeps its reason
+        // forever, next to `status: 'closed'`.
+        { nowMs, extra: { ...diagnostico, moderacoes: [] } },
       );
       return { outcome: 'erro-registrado', reason: 'anuncio-inexistente' };
     }

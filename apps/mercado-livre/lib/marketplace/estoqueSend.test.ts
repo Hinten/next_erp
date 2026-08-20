@@ -756,6 +756,45 @@ describe('processStockSendTask — terminal 4xx (last attempt verifies with ML)'
     });
   });
 
+  /**
+   * ⚠️ #1087, and the ONE hole in this module's self-healing. Everywhere else a
+   * stale moderation is refreshed by the next `items` delivery, because a
+   * moderation lifting changes the item's status — but a listing ML has DELETED
+   * fires no notification ever again. Left untouched, a moderated listing that
+   * reaches this branch keeps its reason forever, sitting next to
+   * `status: 'closed'`.
+   *
+   * This is one of exactly two writers allowed to blank `moderacoes` without
+   * having read `/moderations` (`reverificarAnuncio`'s 404 branch is the other),
+   * and it qualifies because a 404 from `GET /items` IS an answer about the
+   * listing — `/moderations` would 404 for it too.
+   */
+  it('a listing ML DELETED loses its moderation — nothing can ever refresh it', async () => {
+    const h = terminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: item not found', 404, null);
+    });
+    seedLink(h.db, {
+      estado: 'p',
+      moderacoes: [
+        {
+          nome: 'DENYLIST',
+          dataCriacao: null,
+          motivo: 'Seu anúncio foi cancelado por falsificação.',
+          remedio: null,
+          secoes: ['title'],
+          evidencias: [],
+        },
+      ],
+    });
+
+    await run(h);
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      status: 'closed',
+      moderacoes: [],
+    });
+  });
+
   it('the verification GET itself fails → conservative stop, never a false verdict', async () => {
     const h = terminal(async () => {
       throw new MercadoLivreHttpError('ML 503: unavailable', 503, null);

@@ -390,8 +390,16 @@ export type EscopoFalha = 'item' | 'nao-item';
  * rejected write of ours says nothing about ML's policy verdict on the listing:
  * writing `[]` here would erase a real moderation on the next failed stock push,
  * and there is nothing to write instead, since this module never asked ML. The
- * field is left untouched and the next `items` delivery refreshes it — which is
- * guaranteed to come, because a moderation resolving changes the item's status.
+ * field is left untouched and the next `items` delivery refreshes it, because a
+ * moderation resolving changes the item's status.
+ *
+ * ⚠️ That self-healing has ONE hole, and it is the caller's to close, not this
+ * one's: a listing ML has DELETED fires no further `items` notification ever, so
+ * nothing can refresh it. Both 404-on-`GET /items` branches therefore spell out
+ * `moderacoes: []` on top of this patch — `estoqueSend`'s and
+ * `reverificarAnuncio`'s. They are the only two writers allowed to blank the
+ * field without having read `/moderations`, and they qualify because a 404 from
+ * `GET /items` IS an answer about the listing.
  */
 export function falhaPatch(
   err: unknown,
