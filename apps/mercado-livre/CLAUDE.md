@@ -293,7 +293,7 @@ matters:
 | `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
 | `messages` | `handled` | post-sale pack thread → chat conversa/mensagem import (#532) |
 | `items_prices` | `ack` | **permanent no-op** (#803) — persists nothing |
-| `orders_feedback`, `stock-location` | `ack` | nothing to do; persists nothing |
+| `orders_feedback`, `stock-location`, `stock-locations` | `ack` | nothing to do; persists nothing |
 | `public_offers`, `public_candidates`, `user-products-families` | `ignore` | never enqueued, never persisted (#813) |
 
 ⚠️ **The ERP owns `estado` on the link doc — for User-Products listings too.**

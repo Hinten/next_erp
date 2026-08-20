@@ -241,6 +241,48 @@ Prettier-formatted and its indentation is not machine-guaranteed.
   default as the only bound on a hung SEFAZ call. Derive values from observed
   maxima, not guesses: a too-tight timeout turns "slow" into a red required check.
 
+## After the merge: who watches `main`
+
+Everything above is about a PR. `main` is a separate question, and the answer is
+**not** "nothing" — it is `ci.yml`'s `push: branches: [master, main]` (full graph,
+unfiltered) plus the five domain lanes' path-filtered `push:` nets. They work: on
+2026-08-20 `ci.yml` caught the #1109/#1114 merge-skew break four minutes after the
+merge — run `32373838109`, `Lint`, 13:21 UTC.
+
+⚠️ **The defect was never detection. It was that the red had no audience.** Every
+`report-failure` job in this repo is gated on
+`github.event_name == 'pull_request'`, so on the one event that mattered it
+reported `skipped`. The break was rediscovered 51 minutes later by #1158, a PR
+that had touched nothing related — and #1158's author had no way to know the
+failing check was not theirs.
+
+`main-red-alert.yml` is that audience. `workflow_run` on the six trunk-verifying
+workflows → one standing issue per workflow, labelled `main-red`, commented on for
+each new failure and closed on the next green run of the same workflow. Three
+things about it are load-bearing:
+
+- ⚠️ **`workflow_run` matches by workflow `name:`**, silently and with no error
+  when a name matches nothing. Renaming a lane un-alerts it. Assertion 14 in
+  `ci-lane-gates.test.js` derives the real set (every workflow with
+  `push: branches:` containing `main`, minus the two self-referential Copilot
+  bootstraps) and pins the list against it.
+- ⚠️ **`cancelled` is never an alert.** Every lane runs `cancel-in-progress: true`,
+  so merges landing minutes apart cancel each other's runs constantly — 10 of the
+  last 25 `ci.yml` runs on `main`. It costs nothing to ignore them: a cancelled run
+  exists only because a newer one superseded it, and the chain always terminates in
+  a run that concludes.
+- ⚠️ **`workflow_run` cannot fire from a PR branch** — the trigger exists only once
+  the file is on the default branch. So no PR can ever exercise this end to end.
+  The decision logic therefore lives in `.github/scripts/main-red-alert.mjs` with
+  unit tests in `packages/config-eslint/rules/main-red-alert.test.js` (the only
+  pre-merge proof), and the workflow carries a `workflow_dispatch` with a `run_id`
+  input so it can be rehearsed against a real past run afterwards.
+
+What it does **not** cover: `ci.yml` excludes eight workspaces from `turbo run test`
+and the five domain lanes' `push:` triggers are path-filtered, so a merge-skew break
+inside a lane-owned suite still runs nowhere on `main`. Same mechanism as #1167, one
+surface further in.
+
 ## Adding a lane
 
 1. Copy the `changes` + `gate` pair from `ci-mercado-livre.yml` (the simplest —
@@ -252,7 +294,11 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 3. Add it to `LANES` in `packages/config-eslint/rules/ci-lane-gates.test.js`.
    Every workflow must be in `LANES` **or** `UNGATED` with a written reason — the
    partition is what makes a gateless new lane fail loudly.
-4. Pin the gate on the ruleset (below) once it has published on one run.
+4. If it carries a `push:` trigger on `main` (every domain lane does), add its
+   `name:` **verbatim, em dash included** to `main-red-alert.yml`'s `workflows:`
+   list. Assertion 14 fails until you do; skipping it would leave that lane's red
+   `main` reported to nobody.
+5. Pin the gate on the ruleset (below) once it has published on one run.
 
 ## Pinning on the `protect-main` ruleset (id 16348427)
 
@@ -380,4 +426,13 @@ When you hit it, the fix is to classify the lane someone added concurrently, nev
 to weaken the partition. Closing the skew itself means turning on **"Require
 branches to be up to date before merging"** on `protect-main` — a ruleset setting
 with real cost (a rebase on every PR, including stacked ones), not a code change.
-Deliberately not done as of 2026-08-13.
+
+⚠️ **It is also not available yet, and that is not obvious from the GitHub UI.**
+"Require branches to be up to date" is `strict_required_status_checks_policy`,
+which lives *inside* a `required_status_checks` rule — and `protect-main`
+(id `16348427`) carries no such rule at all today, only `deletion` and
+`non_fast_forward`. So it is strictly downstream of **#1052**. Status as of
+2026-08-20: **deferred until after the Firebase migration**, because the current
+merge cadence makes serialising every merge behind a rebase-and-rerun too
+expensive. `main-red-alert.yml` is what covers the gap meanwhile — it does not
+prevent the skew, it bounds how long the result goes unnoticed. Tracked in #1167.

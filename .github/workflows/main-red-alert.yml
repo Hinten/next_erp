@@ -1,0 +1,98 @@
+name: Main health alert
+
+# `main` going red has always been DETECTED. It has never been REPORTED.
+#
+# Every lane below re-verifies the trunk after each merge — `ci.yml` unfiltered
+# over the whole graph, the five `ci-*` lanes over their own scope — and on
+# 2026-08-20 `ci.yml` caught the #1109/#1114 merge-skew break within four minutes
+# (run 32373838109, `Lint`, 13:21 UTC). Nobody saw it: `ci.yml`'s `report-failure`
+# job is gated on `github.event_name == 'pull_request'`, so it reported `skipped`
+# on the one event that mattered, and the break was rediscovered 51 minutes later
+# by #1158 — a PR that had touched nothing related.
+#
+# This workflow is the missing audience. It opens (and later closes) one standing
+# issue per workflow, labelled `main-red`.
+#
+# ⚠️ `workflow_run` matches by workflow NAME. Renaming any lane's `name:` silently
+# stops its alerts, so the list below is pinned by assertion 14 in
+# `packages/config-eslint/rules/ci-lane-gates.test.js`, which derives the real set
+# from every workflow carrying `push: branches:` with `main`.
+#
+# ⚠️ `workflow_run` only exists once this file is on the DEFAULT BRANCH — it can
+# never fire from a PR. The unit tests in
+# `packages/config-eslint/rules/main-red-alert.test.js` are therefore the only
+# pre-merge proof, and `workflow_dispatch` below is how it is rehearsed for real
+# afterwards (replay run `32373838109` and expect a red-main issue naming `Lint`).
+on:
+  workflow_run:
+    workflows:
+      - 'CI'
+      - 'CI — Freight'
+      - 'CI — Mercado Livre (Firestore emulator)'
+      - 'CI — NFe'
+      - 'CI — Rules'
+      - 'CI — Storage'
+    types: [completed]
+    # Matches the TRIGGERING run's `head_branch`, which for a PR run is the PR's
+    # source branch — so this drops every PR run before the job even starts. The
+    # script re-checks it anyway.
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Replay the alert against an existing run id (e.g. 32373838109)'
+        required: true
+
+concurrency:
+  # Per WORKFLOW, not per repo: two lanes can be red at once and each needs its
+  # own issue. ⚠️ `cancel-in-progress` stays FALSE — cancelling here does not
+  # postpone an alert, it drops it.
+  group: main-red-alert-${{ github.event.workflow_run.name || github.event.inputs.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  issues: write
+  actions: read
+  contents: read
+
+jobs:
+  alert:
+    name: Main red alert
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # On a `workflow_run` event `github.sha` is the tip of the DEFAULT BRANCH,
+      # not the triggering run's head — which is exactly what this job wants: it
+      # holds `issues: write`, so the code it executes must come from trusted
+      # `main` rather than from whatever was being tested. Same posture as
+      # `ci.yml`'s report-failure job, which pins itself to the PR base.
+      - uses: actions/checkout@v6
+
+      - uses: actions/github-script@v9
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id || github.event.inputs.run_id }}
+        with:
+          script: |
+            if (!process.env.RUN_ID) {
+              core.setFailed('No run id: neither workflow_run.id nor the run_id input was set.');
+              return;
+            }
+            // `pathToFileURL`, not a bare path or a `file://` template: the naive
+            // forms are the ones that silently do the wrong thing across platforms
+            // (see the same note in .github/scripts/e2e-affected.mjs).
+            const { pathToFileURL } = require('node:url');
+            const alerter = await import(
+              pathToFileURL(
+                `${process.env.GITHUB_WORKSPACE}/.github/scripts/main-red-alert.mjs`,
+              ).href
+            );
+            const outcome = await alerter.run({
+              github,
+              context,
+              core,
+              runId: process.env.RUN_ID,
+            });
+            core.summary
+              .addHeading('Main health alert', 3)
+              .addRaw(`\`${outcome.action}\` — ${outcome.reason ?? `issue #${outcome.issue}`}`)
+              .write();

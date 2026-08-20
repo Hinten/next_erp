@@ -52,11 +52,26 @@ const WEB_PROBE = 'apps/web/lib/testing/mantine-transitions.test.tsx';
 const UI_PROBE = 'packages/ui/src/testing/mantine-transitions.test.tsx';
 
 /**
- * The #1150 mechanism probes MUST render a bare provider: under `env="test"`
- * `Transition` short-circuits to `children({})` whichever branch `useTransition`
- * took, so their assertion would pass vacuously. This list only shrinks.
+ * Carve-outs, each of which must state WHY the bare provider is load-bearing.
+ * This list only shrinks.
+ *
+ * - The two #1150 mechanism probes: under `env="test"` `Transition` short-circuits
+ *   to `children({})` whichever branch `useTransition` took, so their assertion
+ *   would pass vacuously.
+ * - `SectionTabs.persistence.test.tsx`: `env="test"` makes Mantine skip
+ *   `<Activity>` entirely (`TabsPanel.mjs:19`), and an inactive panel having its
+ *   effects torn down and re-run is precisely what that file pins. Every OTHER
+ *   SectionTabs test keeps the helper.
+ *
+ * Note these files are still protected from the leaked timer: the lever is
+ * `DEFAULT_THEME.respectReducedMotion` in `vitest.setup.ts`, which applies to a
+ * bare provider too. That is the whole reason the fix is not `env="test"`.
  */
-const ALLOWED_BARE_PROVIDER = new Set([WEB_PROBE, UI_PROBE]);
+const ALLOWED_BARE_PROVIDER = new Set([
+  WEB_PROBE,
+  UI_PROBE,
+  'packages/ui/src/object/SectionTabs.persistence.test.tsx',
+]);
 
 /**
  * Two spellings, because either alone leaves a hole: the IMPORT (which an
