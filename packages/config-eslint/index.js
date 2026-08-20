@@ -70,6 +70,10 @@ export function typeAware(
         // The `delfrance` plugin is registered in the base block, which merges
         // with this one for the same file.
         'delfrance/prefer-schema-enum': 'error',
+        // Switch statements with side-effect arms (pure void returns) are not
+        // caught by tsc (every arm returns void, missing arm is a no-op). This
+        // rule catches missing cases at lint time. See #1095.
+        '@typescript-eslint/switch-exhaustiveness-check': 'error',
       },
     },
   ];

@@ -81,6 +81,7 @@ function formaPagamentoFromMlPaymentType(type: string | null): FormaPagamento {
     case 'prepaid_card':
     case 'voucher_card':
     case 'crypto_transfer':
+    case null:
     default:
       return FORMA_PAGAMENTO.outros;
   }

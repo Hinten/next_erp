@@ -78,6 +78,10 @@ function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
       const bound = Number(f.value);
       return (value) => value != null && Number(value) >= bound;
     }
+    case 'array-contains':
+    case 'array-contains-any':
+      // Not yet implemented in client-side filtering; fall through to no-op.
+      return () => true;
     default:
       return () => true;
   }
