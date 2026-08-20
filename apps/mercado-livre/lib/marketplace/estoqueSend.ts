@@ -58,11 +58,14 @@ import { millisToMicros } from '@delfrance/core/datetime';
 import { ESTADO_PUBLICACAO_ML, idFromRef } from '@delfrance/schemas';
 import {
   type MlItem,
+  type MlUserProductStock,
   MercadoLivreError,
   MercadoLivreHttpError,
   MercadoLivreReauthRequiredError,
+  STOCK_LOCATION_TYPE,
   createMercadoLivreApi,
   estadoFromMlStatus,
+  isVersionConflict,
 } from '@delfrance/integrations-mercado-livre';
 import {
   estoqueMercadoLivreSyncCollection,
@@ -106,7 +109,15 @@ export const mlStockSendTaskSchema = z.object({
   produtoId: z.string().min(1),
   /** The ONE MLB item this task PUTs. */
   itemId: z.string().min(1),
-  kind: z.enum(['item', 'variationItem']),
+  kind: z.enum(['item', 'variationItem', 'userProductStock']),
+  /**
+   * #706 multiorigem (`kind: 'userProductStock'`): the User Product whose stock
+   * this task writes. Null when the link doc has not been stamped yet — the
+   * handler resolves it from `itemId` and stamps it into the writeback it was
+   * going to make anyway, so the resolve is paid ONCE per listing. Always null
+   * on the two `PUT /items` kinds.
+   */
+  userProductId: z.string().min(1).nullable().default(null),
   /** UP model: the variation child behind `itemId`; null on `kind: 'item'`. */
   variacaoProdutoId: z.string().min(1).nullable().default(null),
   /** The conta's `produtoMercadoLivre` link doc id — the status-writeback target, NEVER re-resolved. */
@@ -137,6 +148,19 @@ export type MlStockSendTask = z.infer<typeof mlStockSendTaskSchema>;
 export interface StockSendApi {
   updateItem(id: string, payload: Record<string, unknown>): Promise<MlItem>;
   getItem(id: string): Promise<MlItem>;
+  /**
+   * #706 multiorigem. Returns the `x-version` alongside the body: a
+   * `PUT …/stock/type/{type}` without that header is a 400, and with a stale one
+   * a 409.
+   */
+  getUserProductStock(
+    userProductId: string,
+  ): Promise<{ stock: MlUserProductStock; version: string | null }>;
+  putUserProductSellerWarehouseStock(
+    userProductId: string,
+    version: string,
+    locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
+  ): Promise<MlUserProductStock>;
 }
 
 /** The minimal account-context surface the send needs (injectable for tests). */
@@ -332,6 +356,14 @@ export async function processStockSendTask(
     const channelCtx = await ctx.resolveChannelContext(nowMs);
     api = apiFactory({ getAccessToken: async () => channelCtx.accessToken });
 
+    // (3a) #706 multiorigem: a whole different write protocol. Branches BEFORE
+    // the `PUT /items` body build, because on a `warehouse_management` account
+    // that call is not merely wrong — ML accepts it and silently discards the
+    // quantity, which is the failure mode this issue exists to end.
+    if (payload.kind === 'userProductStock') {
+      return await enviarEstoqueUserProduct(db, api, payload, nowMs);
+    }
+
     // (3) The request body — the payload's sweep-computed numbers, VERBATIM
     // (module doc: no re-resolution, no fresh reads). The schema stays plain,
     // so the exactly-one invariant is enforced here: both null is an enqueue
@@ -419,6 +451,25 @@ export async function processStockSendTask(
       return { outcome: 'erro-registrado', reason: 'reauth' };
     }
     if (err instanceof MercadoLivreHttpError) {
+      // #706: a version conflict is the ORDINARY outcome of a read-before-write
+      // — a sale between our GET and our PUT is enough. It is checked here,
+      // ABOVE the generic 4xx arm, because that arm's ladder would spend all
+      // three queue attempts on it and then latch a perfectly healthy listing
+      // with `estado 'E'`, which only an `items` webhook or a human clears.
+      // `enviarEstoqueUserProduct` already retried once against a fresh version;
+      // reaching here means it lost twice, so hand it back to the queue's
+      // backoff, which re-reads from scratch.
+      if (isVersionConflict(err) && payload.kind === 'userProductStock') {
+        console.warn(
+          '[mercado-livre] stock-send: conflito de versão persistente — nova tentativa',
+          {
+            integracaoId: payload.integracaoId,
+            itemId: payload.itemId,
+            userProductId: payload.userProductId,
+          },
+        );
+        throw err;
+      }
       if (err.status === 429) {
         // Rate limit: stamp the per-conta pause (Retry-After when ML sent one)
         // and RETHROW — the queue's backoff retries this task into the pause
@@ -466,6 +517,222 @@ export async function processStockSendTask(
 }
 
 /* --------------------------------- helpers --------------------------------- */
+
+/* ---------------------- #706 multiorigem (seller_warehouse) ---------------- */
+
+/**
+ * Move stock on a multiorigin (`warehouse_management`) conta.
+ *
+ * `PUT /items` `available_quantity` does not work there — ML ignores it, often
+ * answering 200 OK, which is why both sweeps refused such contas outright until
+ * now. The writable path on MLB is
+ * `PUT /user-products/{id}/stock/type/seller_warehouse`, behind a
+ * read-before-write `x-version` protocol.
+ *
+ * The mandatory pre-read is what makes this cheap in the way that matters: it
+ * returns the location identifiers (`store_id` / `network_node_id`) ALONG WITH
+ * the version, so nothing has to be configured, mapped or stored per conta —
+ * this costs zero extra Firestore reads and zero extra writes over a
+ * `PUT /items` task.
+ *
+ * ⚠️ `locations` REPLACES the `seller_warehouse` set. Every location the read
+ * returned is echoed back with only the target's quantity changed; sending a
+ * bare one-element array would zero every warehouse it omitted.
+ *
+ * ⚠️ The response carries no listing `status`, so unlike the `PUT /items` path
+ * this cannot refresh `estado`/`status`/`sub_status` — and it must not invent
+ * them. The `items` webhook and the daily sweep own that data, and a wrong
+ * `status` written here would feed `podeEnviarEstoque` on the next tick.
+ */
+/**
+ * `pararComErro` for the multiorigem branch — a terminal, operator-actionable
+ * refusal. `estado 'E'` is what makes it terminal: the sweep's gate skips the
+ * listing next tick instead of re-earning the same failure 96 times a day, and
+ * an `items` webhook or the produto tab's "Reverificar anúncio" clears it.
+ */
+function pararMultiorigem(
+  db: Firestore,
+  payload: MlStockSendTask,
+  mensagem: string,
+  reason: string,
+  nowMs: number,
+): Promise<StockSendResult> {
+  console.error(`[mercado-livre] stock-send: ${mensagem}`, {
+    integracaoId: payload.integracaoId,
+    produtoId: payload.produtoId,
+    itemId: payload.itemId,
+    userProductId: payload.userProductId,
+  });
+  return pararComErro(
+    db,
+    { produtoId: payload.produtoId, linkDocId: payload.linkDocId },
+    { errors: [mensagem], causas: [] },
+    nowMs,
+    reason,
+  );
+}
+
+async function enviarEstoqueUserProduct(
+  db: Firestore,
+  api: StockSendApi,
+  payload: MlStockSendTask,
+  nowMs: number,
+): Promise<StockSendResult> {
+  const quantidade = payload.quantidade;
+  if (quantidade == null) {
+    console.error('[mercado-livre] stock-send: task multiorigem sem quantidade — descartada', {
+      integracaoId: payload.integracaoId,
+      itemId: payload.itemId,
+      sweepId: payload.sweepId,
+    });
+    return { outcome: 'dropped', reason: 'payload-sem-quantidade' };
+  }
+
+  // (1) The User Product. Stamped on the link by import/publish/the items sync;
+  // resolved here only for a listing that predates #706 — and then stamped into
+  // the writeback below, so this GET is paid ONCE per listing, not per tick.
+  let userProductId = payload.userProductId;
+  let resolvido = false;
+  if (userProductId == null) {
+    const item = await api.getItem(payload.itemId);
+    userProductId = item.user_product_id ?? null;
+    resolvido = userProductId != null;
+    if (userProductId == null) {
+      // ML knows the item and gave it no User Product. There is nothing to write
+      // to and no retry can change that, so stop the listing rather than
+      // re-earning this every tick.
+      return await pararMultiorigem(
+        db,
+        payload,
+        'anúncio sem user_product_id — estoque multiorigem não pode ser enviado',
+        'sem-user-product',
+        nowMs,
+      );
+    }
+  }
+
+  // (2) Read-before-write: the version AND the location identifiers.
+  const { stock, version } = await api.getUserProductStock(userProductId);
+  if (version == null) {
+    // Documented as always present. Absent, the write is a guaranteed 400 —
+    // saying so here beats burning the retry ladder to discover it.
+    return await pararMultiorigem(
+      db,
+      payload,
+      'ML não retornou o cabeçalho x-version do estoque — escrita impossível',
+      'sem-x-version',
+      nowMs,
+    );
+  }
+
+  const locais = (stock.locations ?? []).filter(
+    (l) => l.type === STOCK_LOCATION_TYPE.sellerWarehouse,
+  );
+
+  if (locais.length === 0) {
+    const temFull = (stock.locations ?? []).some(
+      (l) => l.type === STOCK_LOCATION_TYPE.meliFacility,
+    );
+    if (temFull) {
+      // Fulfillment: availability comes from ML's own distribution centre, and a
+      // `seller_warehouse` write returns SUCCESS while changing nothing. A skip,
+      // not an error — the listing is healthy, its stock is simply not ours.
+      console.info('[mercado-livre] stock-send: anúncio Fulfillment — estoque gerido pelo ML', {
+        integracaoId: payload.integracaoId,
+        itemId: payload.itemId,
+        userProductId,
+      });
+      return { outcome: 'skipped', reason: 'estoque-full-gerenciado-pelo-ml' };
+    }
+    return await pararMultiorigem(
+      db,
+      payload,
+      'User Product sem depósito (seller_warehouse) — configure o depósito no painel do Mercado Livre',
+      'sem-deposito-no-ml',
+      nowMs,
+    );
+  }
+
+  if (locais.length > 1) {
+    // Unreachable for the tier #706 supports: `resolverModoEstoque` routes a
+    // conta carrying `multiwarehouse` to a refusal, and ML says a seller without
+    // that tag manages exactly one depósito. Defensive rather than a guess —
+    // picking a warehouse would silently move stock in the wrong building.
+    // #1177 is where the depósito → store mapping belongs.
+    return await pararMultiorigem(
+      db,
+      payload,
+      `User Product com ${locais.length} depósitos — mapeamento multi-depósito não suportado`,
+      'multi-deposito-nao-suportado',
+      nowMs,
+    );
+  }
+
+  const alvo = locais[0]!;
+  const storeId = alvo.store_id != null ? String(alvo.store_id) : '';
+  const nodeId = alvo.network_node_id != null ? String(alvo.network_node_id) : '';
+  if (storeId === '' || nodeId === '') {
+    return await pararMultiorigem(
+      db,
+      payload,
+      'depósito do User Product sem store_id/network_node_id — escrita impossível',
+      'deposito-sem-identificadores',
+      nowMs,
+    );
+  }
+
+  // (3) The write. ONE in-process retry against a FRESH version: a conflict here
+  // means something moved this stock between our two calls (a single sale is
+  // enough), and re-reading is the documented remedy. A second conflict rethrows
+  // — into the queue's backoff, never the terminal-4xx ladder (see the `catch`
+  // in the main handler).
+  const locations = [{ store_id: storeId, network_node_id: nodeId, quantity: quantidade }];
+  try {
+    await api.putUserProductSellerWarehouseStock(userProductId, version, locations);
+  } catch (err) {
+    if (!isVersionConflict(err)) throw err;
+    console.warn('[mercado-livre] stock-send: x-version desatualizado — relendo e reenviando', {
+      integracaoId: payload.integracaoId,
+      itemId: payload.itemId,
+      userProductId,
+    });
+    const novo = await api.getUserProductStock(userProductId);
+    if (novo.version == null) throw err;
+    await api.putUserProductSellerWarehouseStock(userProductId, novo.version, locations);
+  }
+
+  // (4) Writeback — the healed diagnosis, the stamp, and (only when we had to
+  // resolve it) the User Product id, which is what keeps step (1) a one-time
+  // cost. Deliberately no `estado`/`status`/`sub_status`; see the docblock.
+  const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
+    db,
+    { produtoId: payload.produtoId },
+    payload.linkDocId,
+    {
+      ultimaModificacao: nowMs,
+      ...clearFalha(),
+      ...(resolvido ? { userProductId } : {}),
+    },
+  );
+  if (!applied) {
+    console.warn('[mercado-livre] stock-send: link removido durante o envio — writeback ignorado', {
+      integracaoId: payload.integracaoId,
+      produtoId: payload.produtoId,
+      linkDocId: payload.linkDocId,
+      itemId: payload.itemId,
+    });
+  }
+
+  console.info('[mercado-livre] stock-send: enviado (multiorigem)', {
+    integracaoId: payload.integracaoId,
+    itemId: payload.itemId,
+    userProductId,
+    storeId,
+    sweepId: payload.sweepId,
+    ageMs: nowMs - payload.sweepComputedAtMs,
+  });
+  return { outcome: 'sent', reason: null };
+}
 
 /**
  * Terminal 4xx handling (#781) — reached ONLY on the queue's last attempt, once

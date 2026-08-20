@@ -134,12 +134,12 @@ pnpm --filter @delfrance/integrations-mercado-livre test
 
 ## 3. Phase 2 — connection
 
-| #   | Step                                      | Assert                                                                                                                                                 | Result |
-| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| 2.1 | OAuth connect as the **seller** test user | token in `tokenDuravel`; `user_id` on the integração; conta panel green                                                                                |        |
-| 2.2 | Replay the same `state`                   | rejected, `reason=bad_state` (#821/T3)                                                                                                                 |        |
-| 2.3 | `GET /users/me` — check `tags`            | ⚠️ if it carries `warehouse_management`, the conta is **multiorigin**: `/enviar-estoque` will 409 `ML_CONTA_MULTIORIGEM` and Phase 5 is blocked (#706) |        |
-| 2.4 | `nickname`                                | `isContaDeTeste` should recognise it — ML mints `TETE…`, not only `TEST…`                                                                              |        |
+| #   | Step                                      | Assert                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Result |
+| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| 2.1 | OAuth connect as the **seller** test user | token in `tokenDuravel`; `user_id` on the integração; conta panel green                                                                                                                                                                                                                                                                                                                                                                                                                                                  |        |
+| 2.2 | Replay the same `state`                   | rejected, `reason=bad_state` (#821/T3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |        |
+| 2.3 | `GET /users/me` — check `tags`            | ⚠️ three outcomes (#706). No `warehouse_management` → the ordinary `PUT /items` path. `warehouse_management` ALONE → the conta is multiorigin with ONE depósito: set `MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED=1` and Phase 5 runs through `PUT /user-products/{id}/stock/type/seller_warehouse`; without the flag `/enviar-estoque` 409s `ML_CONTA_MULTIORIGEM` naming the flag. `warehouse_management` **+** `multiwarehouse` → still refused, naming #1177 — several depósitos need a mapping this ERP does not model. |        |
+| 2.4 | `nickname`                                | `isContaDeTeste` should recognise it — ML mints `TETE…`, not only `TEST…`                                                                                                                                                                                                                                                                                                                                                                                                                                                |        |
 
 ---
 
@@ -374,14 +374,14 @@ inside this run** — the run's job is evidence.
 
 ## 11. Issues this run settles
 
-| Issue                           | Outcome                         | Result |
-| ------------------------------- | ------------------------------- | ------ |
-| #1087                           | closed by completing the run    |        |
-| #831 — partial `variations` PUT | closable — §5.5                 |        |
-| #758 — PDF label branch         | closable — §7.2                 |        |
-| #957 — shipments `x-format-new` | evidence captured — §9          |        |
-| #706 — multiorigin contas       | determined at §2.3              |        |
-| #898, #1083, #1072, #707        | observed only — record evidence |        |
+| Issue                           | Outcome                                                                                                                                                 | Result |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| #1087                           | closed by completing the run                                                                                                                            |        |
+| #831 — partial `variations` PUT | closable — §5.5                                                                                                                                         |        |
+| #758 — PDF label branch         | closable — §7.2                                                                                                                                         |        |
+| #957 — shipments `x-format-new` | evidence captured — §9                                                                                                                                  |        |
+| #706 — multiorigin contas       | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got |        |
+| #898, #1083, #1072, #707        | observed only — record evidence                                                                                                                         |        |
 
 ---
 

@@ -219,6 +219,24 @@ import {
 /** The env flag gating the whole stock sync — ON only when it is exactly `'1'`. */
 export const STOCK_SYNC_FLAG_ENV = 'MERCADO_LIVRE_STOCK_SYNC_ENABLED';
 
+/**
+ * The env flag gating the **multiorigem** send path (#706) — the one that writes
+ * through `PUT /user-products/{id}/stock/type/seller_warehouse` instead of
+ * `PUT /items`.
+ *
+ * Separate from {@link STOCK_SYNC_FLAG_ENV} deliberately. That one governs the
+ * unattended blast radius of the sweeps and flips in the cutover window; this
+ * one governs a brand-new WRITE PROTOCOL against a class of account this ERP has
+ * never successfully pushed stock to. Holding it back independently is what lets
+ * the main sync go live on its own schedule while the read-before-write path is
+ * proven against a real `warehouse_management` account — for which ML has no
+ * sandbox, only test users activated on request.
+ *
+ * OFF ⇒ `resolverModoEstoque` returns the same loud refusal that shipped with
+ * #696, byte-for-byte.
+ */
+export const STOCK_MULTIORIGEM_FLAG_ENV = 'MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED';
+
 /** Cloud Tasks queue name for the stock send tasks (PR B's `onTaskDispatched`). */
 export const MERCADO_LIVRE_STOCK_SEND_QUEUE = 'sendMercadoLivreStock';
 
@@ -257,6 +275,63 @@ export function envFlag(name: string): boolean {
 /** Master flag — the sweeps and the send handler are no-ops while OFF. */
 export function isStockSyncEnabled(): boolean {
   return envFlag(STOCK_SYNC_FLAG_ENV);
+}
+
+/** #706 — is the `seller_warehouse` send path enabled? Ships OFF. */
+export function isMultiorigemEnabled(): boolean {
+  return envFlag(STOCK_MULTIORIGEM_FLAG_ENV);
+}
+
+/* ------------------------- multiorigem mode (#706) ------------------------ */
+
+/** ML account tag marking the multiorigin experience — stock lives per depósito. */
+export const TAG_WAREHOUSE_MANAGEMENT = 'warehouse_management';
+/** ML account tag marking a seller that may create MORE THAN ONE depósito. */
+export const TAG_MULTIWAREHOUSE = 'multiwarehouse';
+
+/**
+ * How this conta's stock reaches ML.
+ *
+ * - `'items'` — `PUT /items` `available_quantity`, the path every non-multiorigin
+ *   account uses and the only one that existed before #706.
+ * - `'userProduct'` — `PUT /user-products/{id}/stock/type/seller_warehouse`, the
+ *   only writable path on a `warehouse_management` account (MLB has no
+ *   `selling_address`).
+ */
+export type ModoEstoque = 'items' | 'userProduct';
+
+/** Why a conta cannot receive stock at all, or null when it can. */
+export type ModoEstoqueRecusa = 'multi-deposito' | 'multiorigem-desabilitado';
+
+export type ModoEstoqueResolution =
+  | { modo: ModoEstoque; recusa: null }
+  | { modo: null; recusa: ModoEstoqueRecusa };
+
+/**
+ * Decide from the account's OWN tags — the `GET /users/me` both sweeps and the
+ * manual push already pay once per conta, so this routing costs nothing.
+ *
+ * ⚠️ The two tags are a HIERARCHY, not a set: ML's reference says a seller with
+ * only `warehouse_management` manages exactly ONE depósito, and one carrying
+ * `multiwarehouse` as well may create several. #706 supports the first tier only,
+ * because this ERP binds ONE `depositoOuterRef` per conta — so the target
+ * location is unambiguous and needs no operator mapping. The second tier keeps
+ * the loud refusal; #1177 tracks it, and it is not a small follow-up (it widens
+ * the discovery query across N depósitos and turns one quantity per family into
+ * one per family × depósito).
+ *
+ * ⚠️ A conta with NO tags array is not multiorigin. ML omits the field rather
+ * than sending an empty one on some responses, and reading that as "unknown, be
+ * careful" would refuse every ordinary account.
+ */
+export function resolverModoEstoque(
+  tags: readonly string[] | null | undefined,
+): ModoEstoqueResolution {
+  const t = tags ?? [];
+  if (!t.includes(TAG_WAREHOUSE_MANAGEMENT)) return { modo: 'items', recusa: null };
+  if (t.includes(TAG_MULTIWAREHOUSE)) return { modo: null, recusa: 'multi-deposito' };
+  if (!isMultiorigemEnabled()) return { modo: null, recusa: 'multiorigem-desabilitado' };
+  return { modo: 'userProduct', recusa: null };
 }
 
 /** Incremental sweep fallback window (minutes) when a conta has no cursor yet. */
@@ -1381,7 +1456,16 @@ export function deveEnviarFamilia(
 
 /* -------------------------------- send tasks ------------------------------- */
 
-export type SendUnitKind = 'item' | 'variationItem';
+export type SendUnitKind =
+  | 'item'
+  | 'variationItem'
+  /**
+   * #706 multiorigem: one `PUT /user-products/{id}/stock/type/seller_warehouse`.
+   * The send unit is the USER PRODUCT, not the item — which is why a family on a
+   * multiorigin conta fans out to N tasks even under the legacy model: ML
+   * publishes no family-level bulk stock endpoint for User Products.
+   */
+  | 'userProductStock';
 
 /**
  * Hard cap on one old-model bulk task's `variations` array. Cloud Tasks
@@ -1397,6 +1481,15 @@ export const MAX_VARIATIONS_PER_TASK = 2000;
 export type SendSkipReason =
   | 'sem-link'
   | 'sem-item-id'
+  /**
+   * #706 multiorigem: this listing has no User Product to write stock to, and
+   * none can be resolved — there is no member item id to `GET`. In practice this
+   * is a legacy `variations[]` listing on a multiorigin conta: an ML variation
+   * object carries no `user_product_id` and the variation is not its own item,
+   * so nothing on either side identifies the UP. Loud, and per LISTING: the
+   * conta's other listings still send.
+   */
+  | 'sem-user-product'
   | 'aguardando-migracao'
   | 'anuncio-em-erro'
   | 'status-nao-enviavel'
@@ -1450,6 +1543,14 @@ export interface StockSendTaskDraft {
   kind: SendUnitKind;
   /** The ML item id the call targets (family MLB for `'item'`, per-variation for UP). */
   itemId: string;
+  /**
+   * #706 multiorigem: the User Product whose stock this task writes. Null when
+   * the link doc has not been stamped yet — the handler then resolves it from
+   * `itemId` with the `getItem` seam it already has, and folds the answer into
+   * the writeback it was going to make anyway (so the resolve is paid ONCE per
+   * listing, not per tick). Always null on the two `PUT /items` kinds.
+   */
+  userProductId: string | null;
   /** The conta's `produtoMercadoLivre` link doc id (writeback target). */
   linkDocId: string;
   quantidade: number | null;
@@ -1469,6 +1570,17 @@ export interface BuildSendTasksOpts {
   integracaoId: string;
   sweepId: string;
   sweepComputedAtMs: number;
+  /**
+   * How this conta's stock reaches ML (#706), from `resolverModoEstoque` on the
+   * `GET /users/me` the caller already made. Defaults to `'items'` — the path
+   * every non-multiorigin account uses and the only one that existed before.
+   */
+  modo?: ModoEstoque;
+}
+
+/** A projected `userProductId` that is actually usable, else null (#706). */
+function asUserProductId(raw: unknown): string | null {
+  return typeof raw === 'string' && raw !== '' ? raw : null;
 }
 
 function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResult {
@@ -1582,6 +1694,11 @@ export function buildSendTasks(
   // processedUpFamilies / processedUpVariationItems): each ML item id is sent
   // at most once per cycle; a duplicate drops silently (legacy debug print).
   const emittedItemIds = new Set<string>();
+  /**
+   * #706 multiorigem's own dedup set, keyed by USER PRODUCT rather than item —
+   * see the `emitUp` note below for why they cannot share one.
+   */
+  const emittedUpKeys = new Set<string>();
 
   // The legacy per-listing loop (functions.dart:275-282) — each of the
   // conta's listings gets its own gates and its own send; `continue` skips
@@ -1682,6 +1799,93 @@ export function buildSendTasks(
       reenqueues: 0,
     };
 
+    if (opts.modo === 'userProduct') {
+      // ---- #706 multiorigem: the send unit is the USER PRODUCT ------------
+      //
+      // `PUT /items` `available_quantity` is IGNORED on a `warehouse_management`
+      // account (frequently with a 200 OK), so neither of the two arms below
+      // applies here — not even the old-model bulk one. ML publishes no
+      // family-level bulk stock endpoint for User Products, so a family fans out
+      // to one task per member whichever model it is on.
+      //
+      // Dedup keys on the UP when it is known, because ONE User Product can back
+      // SEVERAL items (different sale conditions on the same variation). Two
+      // listings resolving to the same UP would otherwise race each other's
+      // `x-version` and trade 409s all tick.
+      const emitUp = (
+        produtoId: string,
+        unitItemId: string,
+        userProductId: string | null,
+        variacaoProdutoId: string | null,
+      ): void => {
+        const dedupKey = userProductId ?? `item:${unitItemId}`;
+        if (emittedUpKeys.has(dedupKey)) return; // cycle-wide dedup — silent
+        const quantidade = quantidades.get(produtoId) ?? null;
+        if (quantidade == null) {
+          skips.push({ produtoId, reason: 'kit-virtual', itemId: unitItemId, linkDocId });
+          return;
+        }
+        emittedUpKeys.add(dedupKey);
+        tasks.push({
+          ...base,
+          kind: 'userProductStock',
+          itemId: unitItemId,
+          userProductId,
+          variacaoProdutoId,
+          quantidade,
+          variations: null,
+        });
+      };
+
+      if (row.children.length === 0) {
+        emitUp(anchorId, itemId, asUserProductId(link.userProductId), null);
+        continue;
+      }
+
+      const parentRef = toOuterRef(
+        produtoMercadoLivreLinkCollection.docPath({ produtoId: anchorId }, linkDocId),
+      );
+      for (const child of row.children) {
+        const varLink = child.varLinks.find((v) => v.produtoMercadoLivreOuterRef === parentRef);
+        if (varLink == null) {
+          skips.push({ produtoId: child.produtoId, reason: 'sem-link', itemId, linkDocId });
+          continue;
+        }
+        const varItemId =
+          typeof varLink.itemId === 'string' && varLink.itemId !== '' ? varLink.itemId : null;
+        const upId = asUserProductId(varLink.userProductId);
+        if (varItemId == null && upId == null) {
+          // A legacy `variations[]` child: the variation is not its own ML item
+          // and an ML variation object carries no `user_product_id`, so there is
+          // nothing to write to AND nothing to resolve one from. Loud, because
+          // this is stock that will not reach ML and no retry can fix it — the
+          // listing has to migrate to User Products first (ML's own UPtin does
+          // this, and `estado 'am'` already parks a listing mid-migration).
+          console.error(
+            '[mercado-livre] stock-sync: variação sem User Product em conta multiorigem — estoque NÃO enviado',
+            {
+              integracaoId: opts.integracaoId,
+              produtoId: child.produtoId,
+              anchorId,
+              itemId,
+              linkDocId,
+            },
+          );
+          skips.push({
+            produtoId: child.produtoId,
+            reason: 'sem-user-product',
+            itemId,
+            linkDocId,
+          });
+          continue;
+        }
+        // `varItemId ?? itemId`: with a UP id in hand the item is only used for
+        // logging, so the family's own id is a fine stand-in.
+        emitUp(child.produtoId, varItemId ?? itemId, upId, child.produtoId);
+      }
+      continue;
+    }
+
     if (row.children.length === 0) {
       if (emittedItemIds.has(itemId)) continue; // cycle-wide dedup — silent (set above)
       // Childless family (old model or UP alike) → one item task with the
@@ -1697,6 +1901,7 @@ export function buildSendTasks(
         ...base,
         kind: 'item',
         itemId,
+        userProductId: null, // `PUT /items` carries the quantity; no UP involved
         variacaoProdutoId: null,
         quantidade,
         variations: null,
@@ -1771,6 +1976,7 @@ export function buildSendTasks(
         ...base,
         kind: 'item',
         itemId,
+        userProductId: null, // `PUT /items` carries the quantities; no UP involved
         variacaoProdutoId: null,
         quantidade: null,
         variations,
@@ -1810,6 +2016,7 @@ export function buildSendTasks(
         ...base,
         kind: 'variationItem',
         itemId: varItemId,
+        userProductId: null, // `PUT /items` on the member; no UP involved
         variacaoProdutoId: child.produtoId,
         quantidade,
         variations: null,
