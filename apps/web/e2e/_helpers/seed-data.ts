@@ -1793,7 +1793,9 @@ export async function cleanupPedidoImpressaoFixtures(prefix: string): Promise<vo
  *     string `documents/...` refs, ms-epoch `dataCadastro`), both with a
  *     7-day cut-off schedule so `getPrazoDespacho` always resolves;
  *   - a marketplace-managed pedido (`<prefix>-mkt-001`) whose `freteInicial`
- *     points at a Mercado Livre integração, for the read-only rendering.
+ *     points at a Mercado Livre integração, for the read-only rendering;
+ *   - a Motoboy-freight pedido (`<prefix>-mot-001`), for the carrier-less
+ *     generic-label etiqueta row action.
  */
 export async function seedPedidoFreteFixtures(prefix: string): Promise<{
   base: Awaited<ReturnType<typeof seedPedidoFixtures>>;
@@ -1806,6 +1808,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
   mlIntId: string;
   mlContaId: string;
   mktPedidoId: string;
+  motPedidoId: string;
 }> {
   const base = await seedPedidoFixtures(prefix);
   const clienteId = `${prefix}-cli-001`;
@@ -1817,6 +1820,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
   const mlIntId = `${prefix}-fr-ml`;
   const mlContaId = `${prefix}-conta-ml`;
   const mktPedidoId = `${prefix}-mkt-001`;
+  const motPedidoId = `${prefix}-mot-001`;
 
   // Cut-off at 23:59 every weekday: the inclusive same-day check always
   // passes, so the autofilled prazoDespacho is deterministic (today 18:00).
@@ -1946,6 +1950,48 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
       ultimaModificacao: null,
     },
   });
+  // Motoboy-freight pedido — carrier-less, so its etiqueta is the on-demand
+  // generic PDF (no printLabelId, no buy step): `EtiquetaRowAction` must
+  // light up 'imprimir' off `FREIGHT_TIPO_CAPS.motoboy` alone.
+  batch.set(db().collection('pedidos').doc(motPedidoId), {
+    ehSaida: true,
+    estado: 'pago',
+    numero: motPedidoId,
+    itens: {},
+    itensIds: [],
+    descontoTotal: 0,
+    timestamp: millisToMicros(Date.now()),
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+    freteInicial: {
+      externalId: null,
+      externalOptionId: null,
+      externalOptionIntegracao: null,
+      externalOptionData: null,
+      estado: 'iniciado',
+      integracaoFreteOuterRef: `documents/int_frete/${motoboyId}`,
+      modalidade: '0',
+      codRastreio: null,
+      valorCobrado: 15,
+      custoCalculado: null,
+      custoFinal: null,
+      ehReverso: false,
+      prazoExtra: 0,
+      prazoDespacho: null,
+      dataEntrega: null,
+      dataPrevisaoEntrega: null,
+      valor_assegurado: null,
+      transportadora: null,
+      veiculo: null,
+      reboques: null,
+      vagao: null,
+      balsa: null,
+      volumes: null,
+      integracao_path: null,
+      clienteRecebedorOuterReference: null,
+      enderecoFreteOuterReference: `documents/clientes/${clienteId}/enderecos/${enderecoId}`,
+      ultimaModificacao: null,
+    },
+  });
   await batch.commit();
 
   return {
@@ -1959,6 +2005,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
     mlIntId,
     mlContaId,
     mktPedidoId,
+    motPedidoId,
   };
 }
 

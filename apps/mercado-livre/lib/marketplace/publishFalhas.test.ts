@@ -374,4 +374,30 @@ describe('falhaPatch / clearFalha', () => {
     // A shared constant would leak a push in one plan into every other.
     expect(clearFalha().errors).not.toBe(clearFalha().errors);
   });
+
+  /**
+   * ⚠️ #1087, and the reasoning is the opposite of what "clear it with the
+   * others" suggests. `errors`/`causas` record OUR failed write, so a later
+   * success invalidates them. A moderação is ML's POLICY verdict, and nothing
+   * these callers do lifts it — two of them prove it: the stock writeback clears
+   * on a successful `PUT /items`, and a `poor_quality_thumbnail` listing is
+   * `active` and accepts stock updates WHILE moderated; the importer re-reads the
+   * item but never asks `/moderations`.
+   *
+   * Clearing there would erase a live, still-true reason and show a clean listing
+   * that is really still penalised — hiding a real problem, which is worse than
+   * the "no explanation" bug the field exists to fix.
+   *
+   * NEITHER direction touches it: `falhaPatch` cannot set one (it never asked
+   * ML), `clearFalha` must not clear one. Leaving the key absent lets
+   * `mergeIfExists` pass the stored value through untouched.
+   */
+  it('NEITHER patch touches moderacoes — only a writer that asked ML may', () => {
+    expect(clearFalha()).not.toHaveProperty('moderacoes');
+    const patch = falhaPatch(httpErr(400, DOCS_BODY), 'ML 400: Validation error', 'item', SENT);
+    expect(patch).not.toHaveProperty('moderacoes');
+    expect(falhaPatch(httpErr(403, {}), 'ML 403: forbidden', 'nao-item')).not.toHaveProperty(
+      'moderacoes',
+    );
+  });
 });
