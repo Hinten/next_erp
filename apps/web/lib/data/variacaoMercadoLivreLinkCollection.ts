@@ -17,7 +17,7 @@ import { defineCollection } from '@delfrance/data';
  *  - `id` (numeric) — a legacy variation inside the parent ML item;
  *  - `itemId` (MLB string) — User-Products, where the variation IS its own item.
  *
- * Written server-side by `publishProduto` and by the still-running Flutter app;
+ * Written server-side by `publishProduto` and the `items` status webhook;
  * rules coverage comes from `PRODUTO_SUBCOLLECTION_NAMES`, so adding this
  * handle needs no ruleset regeneration.
  */

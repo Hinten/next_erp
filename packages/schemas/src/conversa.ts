@@ -136,11 +136,11 @@ export const conversaSchema = z.object({
    * (`clientes.userCliente == documents/usuarios/<uid>`). This field removes both
    * the doc and the hop.
    *
-   * `usarioOuterRef` above STAYS: the still-running Flutter app and the existing
-   * WhatsApp pipeline both write it, and the migration import will bring in years
-   * of conversas carrying it. Readers prefer `clienteOuterRef` and fall back to
-   * the usuario hop — never the other way round, because a redelivery `merge()`
-   * onto a legacy doc leaves BOTH fields populated.
+   * `usarioOuterRef` above STAYS: the WhatsApp pipeline writes it, and the
+   * migration import brings in years of conversas carrying it. Readers prefer
+   * `clienteOuterRef` and fall back to the usuario hop — never the other way
+   * round, because a redelivery `merge()` onto a legacy doc leaves BOTH fields
+   * populated.
    */
   clienteOuterRef: outerRefSchema.nullable().default(null),
 

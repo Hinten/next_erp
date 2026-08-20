@@ -95,8 +95,8 @@ export type HorarioWhatsapp = z.infer<typeof horarioWhatsappSchema>;
 /**
  * `Horario_Whatsapp.abertura` / `.fechamento` are NOT calendar instants — they
  * encode a **wall-clock time of day** (hour + minute), and the exact wire value
- * has to stay byte-compatible with the still-running legacy Flutter app that
- * shares these `integracao` docs. Read/write it ONLY through this codec.
+ * has to stay byte-compatible with the `integracao` docs the migrated corpus
+ * carries. Read/write it ONLY through this codec.
  *
  * ── Legacy contract (source of truth) ──────────────────────────────────────
  * The legacy app anchors the time at **year 0, January 1, in the operator's

@@ -1479,8 +1479,7 @@ export interface RedriveResult {
  * Pull every notification deferred on THIS seller back into the hot lane, so the
  * next 30-minute sweep imports it (#808). Called from
  * `onIntegracaoMercadoLivreChanged` the moment an `integracao` becomes resolvable
- * for a `user_id` — the OAuth exchange stamping it, an `ativo` flip, or the
- * still-running Flutter app writing it directly.
+ * for a `user_id` — the OAuth exchange stamping it, or an `ativo` flip.
  *
  * A LATENCY optimisation over `reprocessDeferredNotifications`, never a
  * replacement: everything it misses (a doc past the page cap, a seller whose

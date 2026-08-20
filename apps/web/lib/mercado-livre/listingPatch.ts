@@ -2,10 +2,10 @@
  * What the listing editor is allowed to write to a `produtoMercadoLivre` link
  * doc, and how it detects that someone else got there first.
  *
- * Six writers touch these documents: this editor, `publishProduto`, the `items`
- * status webhook, the price sync, the stock sender, and the still-running
- * Flutter app. The browser SDK has no `lastUpdateTime` precondition, so tier 1
- * is unreachable here (`apps/web/CLAUDE.md` rule 3) and the design is:
+ * Five writers touch these documents: this editor, `publishProduto`, the
+ * `items` status webhook, the price sync, and the stock sender. The browser SDK
+ * has no `lastUpdateTime` precondition, so tier 1 is unreachable here
+ * (`apps/web/CLAUDE.md` rule 3) and the design is:
  *
  *  - **tier 0 by field disjointness** — patch only operator-owned keys, so a
  *    webhook advancing `estado` can never collide with a `descricao` edit;

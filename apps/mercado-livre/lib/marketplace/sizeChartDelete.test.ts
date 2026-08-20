@@ -181,7 +181,7 @@ describe('requestSizeChartDeletion', () => {
     seedDoc(db, [chart]);
     const { api } = makeApi({
       deleteSizeChart: vi.fn(async () => {
-        // The still-running Flutter app adds a guia while we are on the wire.
+        // The sync backend adds a guia while we are on the wire.
         seedDoc(db, [chart, outraChart]);
         return { message: 'ok' };
       }),

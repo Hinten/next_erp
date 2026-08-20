@@ -60,11 +60,11 @@ export function listingTypeLabel(id: string | null | undefined): string | null {
 /**
  * How many units this listing has sold, as cached on the link doc.
  *
- * Returns null when unknown, which is the normal state today: the field is
- * written by the server (publish + the `items` webhook) and the still-running
- * Flutter app drops any key it does not know the next time it saves the doc.
- * Both spellings are accepted — ours and ML's raw `sold_quantity` — so a doc
- * written by either side reads the same.
+ * Returns null when unknown, which is the normal state today: only the server
+ * writes it (publish + the `items` webhook), so a link neither has touched
+ * since the field existed simply has no value. Both spellings are accepted —
+ * ours and ML's raw `sold_quantity` — because the migrated corpus carries the
+ * raw one.
  */
 export function linkSoldQuantity(link: ProdutoMercadoLivreLink): number | null {
   const raw = link as unknown as Record<string, unknown>;
