@@ -6,7 +6,10 @@
       "source": ".deploy/mercado-livre-functions",
       "codebase": "mercado-livre",
       "runtime": "nodejs22",
-      "predeploy": ["node apps/mercado-livre/functions/scripts/prepare-deploy.mjs"],
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs mercado-livre",
+        "node apps/mercado-livre/functions/scripts/prepare-deploy.mjs"
+      ],
       "ignore": ["node_modules"]
     }
   ]
