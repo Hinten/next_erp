@@ -67,6 +67,18 @@ the lower doc id would hide a real defect behind a coin flip, and merging client
 is a human decision, never a side effect of a backfill. Resolve those first, then
 re-run; they become `resolvido` once one claimant remains.
 
+⚠️ **To enumerate them, use the DRY-RUN, not the report.** `--report-only` writes
+no JSONL and prints at most 20 (labelled `amostra`), so it cannot list the
+twenty-first. The dry-run logs every one:
+
+```bash
+pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- --project <project-id>
+grep '"kind":"skip"' tools/migrations/out/*-conversa-cliente-outer-ref-*-dryrun.jsonl
+```
+
+Each `skip` line carries the conversa path, the usuario id and every claiming
+cliente id.
+
 **`sem-cliente`** is usually benign — a contact that was never paired, or whose
 cliente was deleted. Writing a ref derived from the uid would aim the filter at a
 `clientes` doc that does not exist, which is strictly worse than the absent field
@@ -80,6 +92,10 @@ again:
 - `resolvido` must be **0** — everything mappable was mapped.
 - `sem-cliente` / `ambiguo` / `ref-invalida` must be **unchanged** — those are
   reported, never written, so they cannot move on their own.
+- any **conflito** count from the `--apply` run should be **0** on the re-run:
+  a conflito means another writer set `clienteOuterRef` between the read and the
+  write, so the pass left it alone. Re-running re-evaluates it against the
+  current value and it lands on `ja-normalizado`.
 - `ja-normalizado` must have grown by exactly the previous `resolvido` count.
 
 Then spot-check in the app: open `/chat`, filter by a customer who has both a
