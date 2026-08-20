@@ -562,8 +562,12 @@ export default function EditarProdutoPage() {
           const componentesKit = ehKit
             ? ((values.componentesKit as ComponentesKit | null) ?? null)
             : null;
-          // Coexistence denorm for the legacy Flutter deletion guard — the bare
-          // arquivo ids of the produto's photos (`models.dart:2022-2026`). `null`
+          // ⚠️ Denorm written on EVERY save for the legacy Flutter deletion
+          // guard — the bare arquivo ids of the produto's photos
+          // (`models.dart:2022-2026`). That guard never runs against this
+          // database (no dual run; root `CLAUDE.md` rule 8), so the reason is
+          // VOID; the field is kept because the migrated corpus carries it and
+          // dropping it is a real decision, not a drive-by edit. `null`
           // (the schema default) when there are no fotos, so an untouched produto
           // isn't churned from `null` to `[]` on an unrelated save.
           const fotoIds = deriveFotosArquivosIds(values.fotos as Foto[] | null);

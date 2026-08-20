@@ -31,15 +31,18 @@
  * ⚠️ THE ERP OWNS `estado`. This used to stand down for two kinds of link — a
  * User-Products one (`isUserProductModel`) and one still awaiting ML's UP
  * migration (`estado === 'am'`) — on the grounds that the Flutter app drove them
- * "during dual-run" and syncing here would fight it. There IS no dual-run: the
- * Flutter app is switched off when this one goes live, so that guard deferred to
- * a writer that will not exist and left `estado` with no owner at all. Under the
- * UP model `isUserProductModel` is true for every listing a `user_product_seller`
- * publishes, so it silently skipped the entire future catalogue (#1087). Nothing
- * writes `'am'` in this repo either — it only ever arrived from Flutter, and with
- * that guard in place such a link could never be corrected AND could never reach
- * the takeover below, which needs the fetched item's tags. The ONLY reason to
- * defer now is ML's own migration tags, which are ML's signal, not ours.
+ * "during dual-run" and syncing here would fight it. **There is no dual run and
+ * there never will be one** (root `CLAUDE.md` rule 8): the two apps never share a
+ * document, and the cutover turns Flutter off. So that guard deferred to a writer
+ * that will not exist and left `estado` with no owner at all. Under the UP model
+ * `isUserProductModel` is true for every listing a `user_product_seller`
+ * publishes, so it silently skipped the entire future catalogue (#1087). `'am'`
+ * had no writer here either — it only ever arrived from Flutter, and with that
+ * guard in place such a link could never be corrected AND could never reach the
+ * takeover below, which needs the fetched item's tags. The ONLY reason to defer
+ * now is ML's own migration tags, which are ML's signal, not ours — and this sync
+ * now WRITES `'am'` from them (`stampAguardandoMigracao`), so the value has a
+ * producer again for the three rungs that still gate on it.
  *
  * A cancel removes the PARENT produto's denorm entry (`removeMarketplaceEntry`
  * below) but does not walk down to the variation-children produtos. That sweep
@@ -333,7 +336,7 @@ export interface ApplyItemStatusOpts {
 
 /**
  * Write one ML item's lifecycle status onto its link doc, plus the parent
- * produto's dual-run marketplace denorm. Extracted so the `items` webhook and
+ * produto's legacy marketplace denorm. Extracted so the `items` webhook and
  * the stock sender's terminal 4xx branch (#781) refresh a listing IDENTICALLY —
  * the sender learns the listing's real state from ML instead of leaving a stale
  * `status: 'active'` behind, which is what made a rejected send retry forever.
@@ -353,8 +356,8 @@ export interface ApplyItemStatusOpts {
  * advances once the denorm has succeeded.
  *
  * The denormalized arrays are DEPRECATED (the link subcollections resolve
- * linkage now) but kept in the exact shape publish/import stamp during dual-run
- * — see the canonical cluster note on `produtoSchema` and #992, which tracks
+ * linkage now) but kept in the exact shape publish/import stamp, which is also
+ * the shape the migrated corpus carries — see the canonical cluster note on `produtoSchema` and #992, which tracks
  * deleting all three fields in one piece after the cutover.
  *
  * This path does not write the third cluster member, the legacy
@@ -384,7 +387,7 @@ export async function applyItemStatusToLink(
   // the writes below still half-applies. Closing that window entirely needs both
   // writes in one transaction — a bigger change than this one, and the residual
   // race is the same denorm drift the arrays already tolerate (they are
-  // DEPRECATED, dual-run only). `mergeIfExists` still backstops the link half.
+  // DEPRECATED). `mergeIfExists` still backstops the link half.
   const linkSnap = await produtoMercadoLivreLinkCollection
     .docRef(db, { produtoId: target.produtoId }, target.linkDocId)
     .get();
@@ -478,7 +481,7 @@ async function resolveLink(
 }
 
 /**
- * Maintain the parent produto's dual-run marketplace arrays on an estado change:
+ * Maintain the parent produto's legacy marketplace arrays on an estado change:
  * ensure-present on a live transition (idempotent arrayUnion), key-based removal
  * on a cancel (a dead listing must stop being advertised).
  *

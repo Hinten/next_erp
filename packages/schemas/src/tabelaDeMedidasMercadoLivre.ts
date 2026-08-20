@@ -86,9 +86,10 @@ export const mlSizeChartsForContaSchema = z
  * SHARED `tabelasDeMedidasMercadoLivre` map. Stricter than the read slice on
  * the fields the live Flutter app parses strictly (`json['nome'] as String`,
  * `json['domain_id'] as String`, `TipoTabelaDeMedidasML.fromJson` throwing on
- * unknown values): persisting a chart without them would crash the Flutter
- * reader during dual-run. `nome` ≤ 60 = the ML chart-name limit the legacy
- * form enforced; `domain_id` must be the FULL `SITE-DOMAIN` form.
+ * unknown values). ⚠️ Protecting that legacy reader is void — there is no dual
+ * run (root `CLAUDE.md` rule 8) — but the constraints stand on their own:
+ * `nome` ≤ 60 IS the ML chart-name limit, and `domain_id` must be the FULL
+ * `SITE-DOMAIN` form or ML rejects the chart.
  */
 export const mlSizeChartWriteSchema = mlSizeChartSchema.extend({
   nome: z.string().min(1).max(60),

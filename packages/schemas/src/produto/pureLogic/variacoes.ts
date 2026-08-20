@@ -9,7 +9,7 @@ import type { GrupoDeVariacoes, Variante } from '../../grupoDeVariacoes';
  * `remakeFakePath`). Everything here is pure so the wire-compat behavior is
  * unit-testable in isolation.
  *
- * Coexistence wire shapes (must stay byte-identical to Flutter):
+ * Legacy wire shapes (must stay byte-identical to Flutter):
  *  - `Produto.grupoDeVariacoesUid`: BARE group doc ids, de-duped, sorted by
  *    `grupo.ordem`.
  *  - `Produto.variacoesUid` (parent and children): fake paths

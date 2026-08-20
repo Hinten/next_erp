@@ -8,8 +8,8 @@
  * Identity: the sem-auth buyer contact is keyed by the `externalId` FIELD,
  * `sha256('<canalDeVendas>-<mlUserId>')` where `canalDeVendas` is the conta
  * doc's `pathWithDocuments` WITH its leading slash
- * (`/documents/integracao/<contaId>`) — byte-identical in both apps, so a doc
- * created by either side is found by the other. Legacy's DOC-ID formula
+ * (`/documents/integracao/<contaId>`) — byte-identical to the legacy formula,
+ * so a migrated contact doc is found by this app rather than duplicated. Legacy's DOC-ID formula
  * (models.dart:220, hashing `externalId + nome + apelido`, interpolating a null
  * apelido as the literal string `"null"`) is DELIBERATELY not ported: neither
  * app ever locates the doc by id — only by the `externalId` field — so this

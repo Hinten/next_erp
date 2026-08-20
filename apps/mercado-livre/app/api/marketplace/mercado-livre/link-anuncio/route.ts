@@ -4,13 +4,14 @@
  * `PERM.integracao.read`.
  *
  * This is what makes the produto tab's "ver no Mercado Livre" affordance work for
- * a **User-Products** listing, where the link doc's `id` is a FAMILY id and the
- * browser has nothing it can turn into a URL. A legacy listing never gets here —
- * `listingPermalink` builds its URL client-side with no round trip.
+ * a **User-Products** listing, whose stored `id` is `familyId ?? itemId` — two
+ * different ML resources, neither of which the browser can turn into a URL on its
+ * own. Telling them apart is `resolveAnuncioUrl`'s job, not this route's. A legacy
+ * listing never gets here — `listingPermalink` builds its URL client-side with no
+ * round trip.
  *
  * `read`, not `write`: it answers with a public URL and persists nothing (see the
- * ⚠️ in `lib/marketplace/anuncioUrl.ts` for why caching it would be a lie under
- * dual-run).
+ * ⚠️ in `lib/marketplace/anuncioUrl.ts` for why it is not cached).
  *
  * Responses: 200 `{ url }`; 404 when the link doc is missing, belongs to another
  * conta, or the listing no longer exists on ML; 409 when it was never published;

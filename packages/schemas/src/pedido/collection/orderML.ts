@@ -16,8 +16,8 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * Livre order feeding that pedido (a pack pedido holds several: doc id is
  * `String(order.id)`). Byte-for-byte mirror of the legacy Flutter `OrderML`
  * wire (`.old/packages/canais_de_venda/mercado_livre/lib/src/models.g.dart`
- * 638–676) so the still-deployed Flutter app keeps reading the docs the new
- * app writes (dual-run coexistence, same rationale as
+ * 638–676) because the migrated corpus is stored in exactly that shape and has
+ * to be read and written the same way (same rationale as
  * `produtoMercadoLivreLinkSchema`).
  *
  * This schema is READ-tolerant only — a plain `z.string()` `status` (not a

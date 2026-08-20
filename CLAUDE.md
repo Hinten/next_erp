@@ -6,8 +6,9 @@ skills in `.claude/skills/`, the ADRs under `apps/docs/`, and package READMEs.
 ## What this is
 
 `@delfrance/erp-next` (Apache-2.0) — a multi-app Next.js/Turborepo monorepo, the
-OSS rewrite of the Delfrance Flutter ERP at feature parity on the same Firebase
-backend. See `README.md` and `.github/CONTRIBUTING.md`. The Flutter app is a separate
+OSS rewrite of the Delfrance Flutter ERP at feature parity on the same data
+model. See `README.md` and `.github/CONTRIBUTING.md`. It **replaces** that app at a
+single cutover (rule 8) and never runs beside it. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
@@ -131,9 +132,13 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    it arrives, and `runTransaction`'s OCC retries the callback but does **not**
    re-derive anything captured in the closure, so a value read before an `await`
    is re-applied verbatim over the winner. A second writer is always plausible
-   here — the legacy Flutter app is a **live concurrent writer** to the same
-   documents, provider webhooks arrive out of order, and the notification sweep
-   re-drives hours-old payloads through the same handler as a fresh task. Pick
+   here — provider webhooks arrive out of order, the notification sweep re-drives
+   hours-old payloads through the same handler as a fresh task, Cloud Tasks
+   retries do the same, a trigger races the client write that fired it, and the
+   ERP is multi-user (two operators, two tabs). ⚠️ **The legacy Flutter app is NOT
+   one of them** — see rule 8; it never writes a document this app writes, and
+   after the cutover this app is the *sole* writer of the real data, which makes a
+   lost update here unattributable and unrecoverable rather than less likely. Pick
    the cheapest tier that holds. **(0) Make the race impossible** —
    `FieldValue.increment`/`maximum`/`minimum`, or a deterministic doc id from
    `event.id`; nothing to compare, nothing to drop. **(1) Native precondition** —
@@ -160,16 +165,25 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    A class-B/C site with no guard is a finding, not an inventory line.
 8. **The production data has not moved yet — everything here runs on staging.**
    The real data still sits in the legacy Flutter project on Firestore
-   **Standard**, with the Flutter app live-writing to it. It moves exactly once,
-   in a coordinated window, into a **new project on Enterprise with its own
+   **Standard**, where the Flutter app is its sole live writer. It moves exactly
+   once, in a coordinated window, into a **new project on Enterprise with its own
    billing** — phase order, what an export silently leaves behind, and the
-   rollback are ADR 0013. **Agents never run any of it.** What this means while
+   rollback are ADR 0013. ⚠️ **There is no dual run, and there never will be one.**
+   The two apps never share a document: Flutter writes only the legacy project,
+   this repo writes only staging. The cutover is one switch — the data moves, the
+   `needs-migration-window` queue is worked through, and the legacy app is turned
+   **off** in favour of this one. What *does* survive it is the legacy **data**:
+   the export carries legacy field names, wire-format enums, unnormalised phones,
+   bare outerRefs and rows these schemas do not model, so read-tolerance for
+   legacy shapes stays mandatory — that is a fact about the **corpus**, never
+   about a second live writer. **Agents never run any of it.** What this means while
    you work: anything your change needs *done* to real data or real
    infrastructure is not yours to do, and is not a TODO — **surface it and
    stop.** Backfills, seed imports, index/rule/TTL deploys, claim re-mints, URL
    rewrites, provider webhook re-registration, secret re-creation: all of it
-   belongs to that window, and a run done earlier is silently undone by the
-   still-live Flutter writer (#869 is the worked example). Say what needs
+   belongs to that window, and a run done earlier is superseded by the legacy
+   app's own later writes — it is the sole live writer on the *source* project
+   until the window switches it off (#869 is the worked example). Say what needs
    running and why it cannot happen now, **ask whether to open the tracking
    issue, and open it only once you have a yes** — the migration queue is
    curated, not a place agents append to unasked. When approved, label it
@@ -307,8 +321,9 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   the `tools/migrations` contract (`README.md`): `--project` required and matched
   against the service account, dry-run the default, JSONL log in `out/`, a pure
   `transform.ts` with unit tests. **Idempotent and re-runnable is not optional** —
-  the Flutter app is still writing, so a run before the window is partially undone
-  and the authoritative run is the one *inside* it. ⚠️ **Staging data does not
+  the legacy app keeps writing the *source* project until the window switches it
+  off, so a run before the window is partially superseded and the authoritative
+  run is the one *inside* it. ⚠️ **Staging data does not
   need to migrate.** The window moves *production* data; staging is disposable and
   re-seedable from `tools/test-fixtures`, so a script only has to be correct
   against production shapes — if staging is easier to re-seed than to fix, re-seed

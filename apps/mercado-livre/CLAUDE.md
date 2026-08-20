@@ -85,8 +85,9 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
-  `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
-  the still-running Flutter app during the dual-run migration; "one wins" refresh).
+  `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape — kept
+  because the migrated corpus carries it, not because a second app writes it;
+  "one wins" refresh).
 - `lib/marketplace/oauthState.ts` — **#821**, the connect flow's two trust anchors.
   The implementation is the SHARED module `@delfrance/data/admin/oauth-state`
   (extracted in #1034 and now serving all three OAuth channels); this file is a thin
@@ -222,13 +223,20 @@ matters:
 
 ⚠️ **The ERP owns `estado` on the link doc — for User-Products listings too.**
 `itemsStatusSync` used to defer on `isUserProductModel` and on `estado === 'am'`,
-because the Flutter app drove those during dual-run. There is no dual-run — Flutter
-is switched off at the cutover — so that guard stood down for a writer that will not
-exist, and since `isUserProductModel` is true for every listing a
-`user_product_seller` publishes, it silently skipped the entire future catalogue
+because the Flutter app drove those during a dual run. **There is no dual run and
+there never will be one** (root `CLAUDE.md` rule 8) — so that guard stood down for a
+writer that will not exist, and since `isUserProductModel` is true for every listing
+a `user_product_seller` publishes, it silently skipped the entire future catalogue
 (#1087). ML's own migration **tags** are now the only reason to defer, and each
 deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
 a sync. Do not reintroduce a link-only guard here.
+
+⚠️ The same sync is now the **producer** of `estado 'am'`, not a reader of it. That
+value never had a writer in this repo — it only ever arrived from Flutter — yet
+`publishCore.ts` blocks publish on it and `precoPlan.ts`/`bulkEstoquePlan.ts` skip on
+it. Of the send paths only the price one re-reads ML's tags itself, so this sync
+stamps its verdict (it is the only component holding the fetched item) and those
+three gate without a fetch of their own.
 
 ⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacao.ts`, not
 this table. The four dispositions differ in what they COST: `handled` and `ack`
@@ -305,8 +313,8 @@ before flipping it. `ALLOWED_ADMIN_ORIGINS`
 became REQUIRED in production with #821/T5: localhost is no longer implicitly allowed,
 so an unset value leaves the CORS allow-list empty and every browser call fails.
 The per-account OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
-(shared with the Flutter app during the dual-run migration; the move to the
-encrypted `credenciais` store is a tracked post-migration follow-up).
+(the legacy wire shape, kept so the migrated corpus resolves natively; the move to
+the encrypted `credenciais` store is a tracked post-migration follow-up).
 
 Deploy of the App Hosting backend + the functions codebase is **manual and
 coordinated** — see root `CLAUDE.md`, Critical rules. Functions deploy: `functions/DEPLOY.md`.

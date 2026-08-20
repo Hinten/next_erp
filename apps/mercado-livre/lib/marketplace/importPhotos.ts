@@ -151,7 +151,7 @@ export async function importProdutoPhotos(
   }
 
   if (newFotos.length > 0) {
-    // arrayUnion so a concurrent Flutter photo append isn't dropped (dual-run).
+    // arrayUnion (tier 0) so a concurrent photo append isn't dropped.
     await produtoCollection.docRef(db, {}, produtoId).update({
       fotos: FieldValue.arrayUnion(...newFotos),
       fotosArquivosIds: FieldValue.arrayUnion(...deriveFotosArquivosIds(newFotos)),

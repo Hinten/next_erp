@@ -3,7 +3,7 @@ import { produtoSchema } from '@delfrance/schemas';
 
 /**
  * Singleton handle for the `produtos` Firestore collection. Mirrors the
- * Flutter app's collection path so both apps coexist on the same docs.
+ * Flutter app's collection path, which is where the migrated corpus sits.
  */
 export const produtoCollection = defineCollection({
   path: 'produtos',

@@ -9,6 +9,7 @@ import {
 import { getDb } from './lib/admin';
 import { readCacheSummary } from '@delfrance/data/admin/cache';
 import { TASKS_SCHEDULER_REGION } from './options';
+import { tasksInvokerOptions } from './tasksInvoker';
 
 /**
  * Cloud Tasks dispatcher for ML webhook notifications (Step 6). The receiver
@@ -37,6 +38,9 @@ export const processMercadoLivreNotification = onTaskDispatched(
   {
     // Cloud Tasks does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
     region: TASKS_SCHEDULER_REGION,
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,
       minBackoffSeconds: 30,

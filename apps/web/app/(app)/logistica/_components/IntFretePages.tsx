@@ -104,7 +104,7 @@ export function IntFreteCreatePage({ slice }: { slice: LogisticaSlice }) {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.frete.write);
-  // `dataCadastro` is required (non-nullable) for Flutter dual-run — seed a
+  // `dataCadastro` is required (non-nullable) for legacy wire parity — seed a
   // provisional epoch so the form validates; saveRecord re-stamps on create
   // only when the value is nullish, so a real create time still comes from
   // page open here (required fields are absent from emptyDefaults).

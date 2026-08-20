@@ -30,8 +30,8 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  * bare uids — the legacy writers were inconsistent; matching is by trailing
  * segment), and free-form NCMs (matched digits-only via `normalizeNCM`, so
  * the element schema is deliberately lenient — the MacrosTab form normalizes
- * entries and rejects non-8-digit NCMs before writing). Both apps share the
- * database — no migration.
+ * entries and rejects non-8-digit NCMs before writing). Legacy-written docs
+ * resolve natively — no migration.
  *
  * `nome` is optional but recommended for UI / audit.
  *

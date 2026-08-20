@@ -5,9 +5,9 @@ import { outerRefSchema } from '../../shared/outerRef';
  * Typed write-side schemas for the Shopee listing link docs —
  * `produtos/{id}/prodshopee/{docId}` and
  * `produtos/{id}/variashopee/{docId}` — in the EXACT old Flutter wire shape
- * (`ProdutoShopee` / `VariacaoShopee`, shopee `models.dart`): dual-run
- * coexistence means the Flutter app keeps reading the docs the new app
- * writes.
+ * (`ProdutoShopee` / `VariacaoShopee`, shopee `models.dart`): the migrated
+ * corpus is stored in exactly this shape, so it has to be read and written
+ * that way.
  *
  * These are deliberately NOT DomainSchemas and NOT in `ALL_DOMAINS`: the loose
  * pass-through subcollection domains in `subcollections.ts` (leaf names

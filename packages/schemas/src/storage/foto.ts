@@ -83,7 +83,7 @@ export function buildOriginalFotoRef(arquivoId: string): FotoRefs {
  * refs are nullable because the resize Cloud Function fills them in
  * asynchronously after the upload finalizes. `grupoDeVariacoesOuterRef` /
  * `variantePath` scope a photo to a specific variation (per-variant galleries).
- * `.passthrough()` keeps any extra fields the Flutter app may write. Build the
+ * `.passthrough()` keeps any extra fields the migrated corpus carries. Build the
  * refs with `buildFotoRefs`.
  */
 export const fotoSchema = z
@@ -105,8 +105,11 @@ export type Foto = z.infer<typeof fotoSchema>;
  * derivation (`models.dart:2022-2026`): the original + the 200px/400px
  * derivative refs, deduped, with the `arquivos/` prefix stripped to the bare id.
  *
- * This denorm is a **coexistence cache** for the legacy Flutter deletion guard;
- * the new arquivo-orphan architecture tracks references via each foto's
+ * This denorm is a cache for the legacy Flutter deletion guard. ⚠️ That guard
+ * never runs against this database (no dual run; root `CLAUDE.md` rule 8), yet
+ * the field is still derived on every produto save — see the ⚠️ on the produto
+ * create/edit pages. The new arquivo-orphan architecture tracks references via
+ * each foto's
  * `arquivoOuterRef` directly (plus the `onArquivoDeleted` derivative cascade), so
  * it does not read this field. The jpeg derivative is intentionally **excluded**
  * to match the legacy wire shape — the cascade frees it via the original anyway.

@@ -176,12 +176,53 @@ gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
 # service, so that principal needs run.invoker ON THE SERVICE. Without it the
 # task is created and delivered and the service answers 403 run.routes.invoke,
 # with NO failure document written anywhere.
+#
+# ⚠ SINCE #1133 THE DEPLOY DOES THIS FOR YOU when TASKS_INVOKER_SA is set (see
+# below). Run it by hand only for a deploy without that variable.
 for FN in processMercadoLivreNotification processMercadoLivreMassImport sendMercadoLivreStock processMercadoLivrePriceSync processMercadoLivreNfeUpload; do
   gcloud run services add-iam-policy-binding "$FN" --region=us-east1 \
     --member="serviceAccount:<apphosting-runtime-sa>" \
     --role="roles/run.invoker"
 done
 ```
+
+### `TASKS_INVOKER_SA` — the third role, applied by the deploy (#1133)
+
+Export it in the shell you run `firebase deploy` from. `build.mjs` inlines it
+(esbuild `define`, exactly like `FUNCTIONS_REGION`) and every `onTaskDispatched`
+in this codebase declares it as `invoker`; firebase-tools then applies the list
+to **both** legs of the trip — `roles/run.invoker` on each function's Cloud Run
+service **and** `roles/cloudtasks.enqueuer` on its queue.
+
+```bash
+export TASKS_INVOKER_SA="<apphosting-runtime-sa>,<functions-runtime-sa>"
+firebase deploy --only functions:mercado-livre \
+  --config firebase.mercado-livre.deploy.json \
+  --project <project-id>
+```
+
+⚠️ **Name every enqueuer, comma-separated** — drop the duplicate when the two are
+the same identity. A deploy **replaces** the members of both bindings, so an
+identity left out **loses** the role.
+
+The App Hosting backend is **not** the only caller here: the order-backfill and
+`missed_feeds` sweeps, the three stock sweeps, the `onNfeAprovada` trigger and
+every self-continuation enqueue from INSIDE this codebase, as the **functions**
+runtime SA. The gcloud loop above only ever granted the App Hosting one.
+
+⚠️ **Unset ⇒ the option is omitted entirely.** The build prints a warning and the
+manual `gcloud run services add-iam-policy-binding` above stays required. It
+never guesses a value: a wrong one would lock out the legitimate caller, and a
+permissive one would be far worse. Failing toward the documented status quo is
+the intended behaviour.
+
+⚠️ A redeploy with **no** `invoker` declared does not clear an existing binding —
+firebase-tools skips `setInvokerUpdate` when the option is absent — but a service
+**create**, i.e. a new or renamed task function, leaves no binding at all. That
+silent case is what this variable exists for.
+
+Verify it took, with nobody having run gcloud:
+`gcloud run services get-iam-policy processMercadoLivreNotification --region=us-east1`.
 
 ⚠️ **The grants fail in different places, and only one of them leaves a trace.**
 
@@ -196,8 +237,6 @@ log, not just the receiver's.
 
 Verify the queue exists after the first deploy:
 `gcloud tasks queues describe processMercadoLivreNotification --location=<region>`.
-Verify the binding took:
-`gcloud run services get-iam-policy processMercadoLivreNotification --region=<region>`.
 
 ## Mass-import job queue (Step 8, #621)
 
@@ -446,9 +485,9 @@ still stored in the bare `integracao/<id>` form. A conta reported `incompleto` h
 filial (or no nome) yet — `int_frete` cannot represent that, so fill the field in and
 re-run.
 
-**No legacy cutover.** Unlike the NF-e trigger, this one can ship while the Flutter
-conta screen is still live: both writers converge on the same doc via the same
-back-ref, writing the same values, and whichever runs second finds nothing to change.
+**No cutover coupling.** Unlike the NF-e trigger, this one can ship at any time:
+it converges on the same doc via the same back-ref, writing the same values, so a
+second run — a redelivery, the sweep, or the editor — finds nothing to change.
 
 ## Runtime env (stock sync, Step 10)
 
@@ -590,8 +629,9 @@ ticks, logs one info line and reads nothing. It is named in the repo-root `.env.
 `GET /orders/search` per conta and synthesises `orders_v2` notifications, so
 turning it on starts writing pedidos from live ML data. That belongs in the
 **callback-URL cutover window** (see the section at the end of this file), for the
-same reason the stock flag does: while the legacy Flutter backend is still
-importing the same orders, both would be live writers on the same documents. It
+same reason the stock flag does: until that switch the legacy backend owns order
+ingestion, and starting a second, parallel ingestion of the same ML orders would
+produce pedidos the cutover import then has to reconcile against. It
 is not a code decision and no agent may make it — flipping it is an ops action in
 a coordinated window (root `CLAUDE.md`, Critical rule 8).
 

@@ -51,8 +51,11 @@ without `.nullable()` in the chain — the Firebase SDK rejects `undefined` in
 `addDoc`/`setDoc`. `.nullable().optional()` is correct only for server-stamped fields the
 client never writes.
 
-**Write races.** Firestore imposes no ordering, and the legacy Flutter app is a **live
-concurrent writer** to the same documents. `runTransaction` retries the callback but does
+**Write races.** Firestore imposes no ordering, and second writers are routine:
+out-of-order provider webhooks, the notification sweep re-driving hours-old payloads,
+Cloud Tasks retries, a trigger racing the client write that fired it, two operators in
+two tabs. (The legacy Flutter app is **not** one of them — it never writes a document
+this app writes; there is no dual run.) `runTransaction` retries the callback but does
 not re-derive values captured in the closure, so anything read before an `await` is
 re-applied verbatim over the winner. Flag: a `merge()`/`update()`/transaction that can
 silently lose without the author saying what happens to the loser; a predicate re-checked

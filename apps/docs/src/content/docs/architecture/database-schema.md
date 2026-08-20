@@ -15,10 +15,11 @@ produto subcollections spread in via `PRODUTO_SUBCOLLECTION_DOMAINS`). This page
 groups them into seven functional areas, each with its own ER diagram, preceded
 by a high-level map.
 
-Four of those 48 are **dual-run only** — legacy Mercado Livre collections the new
-app reaches solely through the Admin SDK, registered so the generated ruleset does
-not strip access the still-running Flutter client has today. They come back out
-with the Flutter decommission (#829); see
+Four of those 48 are **legacy-grant only** — legacy Mercado Livre collections the
+new app reaches solely through the Admin SDK, registered so the generated ruleset
+does not strip access the legacy Flutter client holds on its own project. ⚠️ Since
+there is no dual run (root `CLAUDE.md` rule 8), that grant buys nothing here and is
+pure surface: they come back out with the Flutter decommission (#829); see
 [Legacy ruleset coverage](/architecture/legacy-rules-coverage/).
 
 ## How to read these diagrams
@@ -429,12 +430,15 @@ marketplace-link subcollections (loose pass-through, written by Flutter).
 
 ⚠️ The legacy Mercado Livre token stores `token6h` and `tokenDuravel` are the one
 exception to that deny-all posture. They **are** registered, on the `integracao`
-permission bits, because the Flutter client writes them from its OAuth connect
-screen and reads `tokenDuravel` on every ML action screen — leaving them out would
-retire the Flutter ML UI the day the generated ruleset deploys (#783). The grant
-makes a live ML `refresh_token` client-readable, matching what the deployed legacy
-ruleset already does, and is reverted by #829. The same issue covers the two other
-dual-run registrations, `notificacoesMercadoLivre` and top-level `questionsML`.
+permission bits, because the legacy Flutter client writes them from its OAuth
+connect screen and reads `tokenDuravel` on every ML action screen — leaving them
+out would retire the Flutter ML UI the day the generated ruleset deploys (#783).
+The grant makes a live ML `refresh_token` **client-readable**, matching what the
+deployed legacy ruleset already does, and is reverted by #829. ⚠️ That trade was
+priced against a dual run that does not exist: no client of *this* app needs the
+grant, so #829 is removing surface that never had a reason to be here. The same
+issue covers the two other such registrations, `notificacoesMercadoLivre` and
+top-level `questionsML`.
 
 ```mermaid
 erDiagram
@@ -450,8 +454,8 @@ erDiagram
   integracao }o--o| operacao : "operacao/operacaoDevolucaoOuterRef"
   integracao }o--o| depositos : "depositoOuterRef"
   integracao ||--o{ credenciais : "sub: credenciais (admin-only, default-deny)"
-  integracao ||--o{ token6h : "sub: token6h (legacy ML, dual-run only)"
-  integracao ||--o{ tokenDuravel : "sub: tokenDuravel (legacy ML, dual-run only)"
+  integracao ||--o{ token6h : "sub: token6h (legacy ML, legacy-grant only)"
+  integracao ||--o{ tokenDuravel : "sub: tokenDuravel (legacy ML, legacy-grant only)"
   integracao ||--o{ brandshopee : "sub: brandshopee (Shopee brand cache)"
 
   produtos ||--o{ marketplace_links : "7 subs: produtoMercadoLivre, prodshopee, …"
@@ -476,8 +480,8 @@ erDiagram
 ## Legacy naming caveats
 
 Several collection ids and field names carry **deliberate typos / mismatches**
-preserved for Flutter coexistence. Do not "fix" them — the wire format is shared
-with the deployed Flutter app:
+preserved for legacy wire compatibility. Do not "fix" them — the migrated corpus
+is stored under these exact names:
 
 | Where | Kept as | Note |
 | --- | --- | --- |
@@ -549,7 +553,7 @@ subcollection, and its key outgoing references. Subcollection paths use
 | notificacaoMercadoLivre ⚠️ | `notificacoesMercadoLivre` | top | — |
 | questionMercadoLivre ⚠️ | `questionsML` | top | `contaMercadoLivreQuestionOuterRef` → integracao |
 
-⚠️ = **dual-run only**, removed by #829. See the Mercado Livre note above.
+⚠️ = **legacy-grant only**, removed by #829. See the Mercado Livre note above.
 
 Collections intentionally **absent** from `ALL_DOMAINS` so the rules generator
 default-denies them (Admin-SDK-only): `integracao/{}/credenciais`,

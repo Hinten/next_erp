@@ -7,8 +7,8 @@ import { outerRefSchema } from '../../shared/outerRef';
  * `produtos/{id}/produtoMercadoLivre/{docId}` and
  * `produtos/{id}/variacaoMercadoLivre/{docId}` — in the EXACT old Flutter wire
  * shape (`ProdutoMercadoLivre` / `VariacoesML`, models.dart 761–1684 +
- * models.g.dart): dual-run coexistence means the Flutter app keeps reading the
- * docs the new app writes.
+ * models.g.dart): the migrated corpus is stored in exactly this shape, so it
+ * has to be read and written that way.
  *
  * These are deliberately NOT DomainSchemas and NOT in `ALL_DOMAINS`: the loose
  * pass-through subcollection domains in `subcollections.ts` already cover the
@@ -181,13 +181,23 @@ export const produtoMercadoLivreLinkSchema = z
     status: z.string().nullable().default(null),
     sub_status: z.array(z.string()).nullable().default(null),
 
-    /** ML item id — null until the first successful publish. */
+    /**
+     * ML item id — null until the first successful publish.
+     *
+     * ⚠️ Under {@link isUserProductModel} this is `familyId ?? itemId`, NOT
+     * reliably a family id. Both writers fall back to the item when ML omits
+     * `family_id` (publish, import), and the UPtin takeover sets the flag on an
+     * existing link WITHOUT touching this field — so a migrated listing keeps the
+     * `MLB…` it already had. A reader that assumes one shape hands the other to
+     * the wrong ML endpoint, which answers 400, not 404; `resolveAnuncioUrl` in
+     * apps/mercado-livre is the worked example.
+     */
     id: z.string().nullable().default(null),
     sku: z.string().nullable().default(null),
     // ML plain-text descriptions run to ~50k; the old 10000 cap was a Flutter
     // FORM validator the deployed backend never enforced, so a re-import/re-publish
-    // that spreads an existing Flutter link must not fail strict-write validation
-    // on a long stored descricao (dual-run). Match the real ML limit.
+    // that spreads a migrated link must not fail strict-write validation on a
+    // long stored descricao. Match the real ML limit.
     descricao: z.string().max(50000).nullable().default(null),
 
     site_id: z.string().default('MLB'),

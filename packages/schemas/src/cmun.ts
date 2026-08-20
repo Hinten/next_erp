@@ -62,9 +62,9 @@ export const cmunMeta: CollectionMetadata = {
   // Literally uppercase `CMUN` — the legacy Flutter wire name
   // (`.old/packages/clientes/lib/src/models.dart:20`), and the only uppercase
   // collection path in this repo. Deliberate: production already holds this
-  // data under that exact id and the still-running Flutter app queries it, so
-  // sharing the collection keeps both apps on one table during the dual-run
-  // migration — the same reasoning as `integracao/{id}/tokenDuravel`. It also
+  // data under that exact id, and the migrated corpus arrives under it, so the
+  // legacy name is kept rather than modernised — the same reasoning as
+  // `integracao/{id}/tokenDuravel`. It also
   // means production needs no import; only staging does.
   collectionPath: 'CMUN',
   permissions: {

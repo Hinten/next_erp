@@ -54,7 +54,7 @@ describe('fotoSchema', () => {
     expect(fotoSchema.safeParse({ arquivoOuterRef: '' }).success).toBe(false);
   });
 
-  it('passes through extra fields the Flutter app may write', () => {
+  it('passes through extra fields the migrated corpus may carry', () => {
     const out = fotoSchema.parse({
       arquivoOuterRef: 'arquivos/p1_h',
       variantePath: 'grupos/g1/variacoes/v1',

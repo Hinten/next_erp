@@ -1105,7 +1105,7 @@ describe('fetchMovimentosDaJanela — the uncorrelated ledger pre-pass', () => {
   it('flags a group whose window holds a row with NO `movimento` key', async () => {
     // A legacy Flutter v1 row: `sum` skips it, so without this counter the
     // window would look like it moved nothing and the sweep would SKIP a real
-    // movement. Flutter is a live writer during the dual run.
+    // movement. The migrated corpus is full of such v1 rows.
     const db = new FakeDb();
     db.queuePipelinePage([
       { parentId: 'A', depositoOuterRef: DEP_REF, dq: 0, dr: 0, nDesconhecido: 1 },

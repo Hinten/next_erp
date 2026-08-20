@@ -7,8 +7,11 @@ description: How the production data leaves the legacy Flutter project for a new
 
 This repo runs against the **staging** Firebase project. The business data does
 not live there. It lives in the **legacy Flutter production project**, on
-Firestore **Standard** edition, and the Flutter app is still a live concurrent
-writer to it (ADR 0011 leans on this fact throughout).
+Firestore **Standard** edition, where the Flutter app is its **sole** live writer.
+⚠️ That is a fact about *that* project only. The two apps never share a document,
+there is no dual run, and the cutover turns the legacy app off rather than running
+the two side by side — root `CLAUDE.md` rule 8. (ADR 0011 originally read this as
+a concurrent writer on *our* documents; see its Correction.)
 
 That data has to move exactly once, and the destination cannot be the project it
 is already in. A database's **edition is fixed at creation** — there is no

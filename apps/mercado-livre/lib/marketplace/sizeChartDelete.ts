@@ -117,7 +117,8 @@ export async function requestSizeChartDeletion(
 
   const response = await api.deleteSizeChart(chartId);
 
-  // Re-read: the ML round trip is a window in which Flutter may have written.
+  // Re-read: the ML round trip is a window in which another writer may have
+  // landed (a concurrent operator, a redelivered task, the sync sweep).
   const after = await readStored(db, integracaoId, tabMediId);
   const tabelas = after.map((c) => (c.id === chartId ? { ...c, exclusaoSolicitadaEm: now } : c));
   await persist(db, integracaoId, tabMediId, tabelas);

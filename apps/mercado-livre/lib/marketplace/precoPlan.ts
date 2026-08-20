@@ -410,8 +410,8 @@ export interface BuildPrecoDraftsResult {
  * listing degenerates to the same `'item'` draft. UP with children → one
  * `'variationItem'` draft per child variação link matched by
  * `produtoMercadoLivreOuterRef === toOuterRef(<THIS listing's docPath>)`
- * (exact string match is safe — both apps write the canonical `documents/...`
- * form, see importVariations.ts), priced from the anchor
+ * (exact string match is safe — migrated docs carry the same canonical
+ * `documents/...` form, see importVariations.ts), priced from the anchor
  * (`propagatePriceToChildren`, the default) or the child's own `precos` entry;
  * an unmatched child skips `SEM_LINK`, an id-less varLink `SEM_ITEM_ID`, a
  * price-less member `PRECO_NAO_ENCONTRADO` — each per child, siblings ride.

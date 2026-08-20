@@ -8,7 +8,7 @@ import { historicoModificacaoMeta, historicoModificacaoSchema } from '@delfrance
  * `apps/functions`); this client handle is read-only (`meta.serverOwned`).
  * Supersedes the per-field `historicoDePrecos`/`historicoDeCusto`
  * subcollections as the source for `ProdutoHistoryButton` — those legacy
- * subcollections are still written by the old Flutter app but no client
+ * subcollections hold migrated rows from the old Flutter app but no client
  * code here reads them anymore.
  */
 export const historicoModificacoesCollection = defineCollection({

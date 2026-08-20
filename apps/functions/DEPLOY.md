@@ -93,8 +93,11 @@ there so the local analysis step can run.
    (and 400px/jpeg) refs built by `buildFotoRefs` resolve to real docs.
 4. The thumbnail **auto-upgrades** to the 200px derivative (no code change — PR #103
    already prefers the derivative when it exists).
-5. **Coexistence:** open the same product in the Flutter app and confirm a Flutter
-   read of the Next-uploaded+resized photo sees the same derivative shape.
+5. **Legacy wire shape:** confirm the derivative refs the resize wrote match the
+   shape the legacy reader expects (`buildFotoRefs`), so a migrated produto and a
+   newly-uploaded one are indistinguishable on read. ⚠️ This used to say "open the
+   same product in the Flutter app" — you cannot: the two apps are on different
+   projects and there is no dual run (root `CLAUDE.md` rule 8).
 
 Once step 5 passes, close **#137**. The same lane will later ship the deletion-
 lifecycle functions (#136 / #95) — see ADR 0010, the produto deletion lifecycle
@@ -113,7 +116,7 @@ Next produto editor's `onAfterSave`).
 client-side history/propagation writes** — until it's live, an edit made while
 only the OLD client code runs would record no history and propagate nothing.
 Deploying the trigger first is safe on its own (both the old client writes and
-the new trigger writes for a while, which is the accepted dual-run — see the
+the new trigger writes for a while, which is the accepted overlap — see the
 schema/trigger PR notes), so when in doubt deploy the function first and ship
 the client change after.
 
@@ -140,12 +143,50 @@ gcloud iam service-accounts add-iam-policy-binding "$FN_RUNTIME_SA" --project="$
 # needs run.invoker ON THE SERVICE. Skip this and the task is created and
 # delivered and 403s `run.routes.invoke` - with the enqueue reported as a
 # success, so nothing anywhere records the failure except the function's own log.
+#
+# ⚠ SINCE #1133 THE DEPLOY DOES THIS FOR YOU when TASKS_INVOKER_SA is set (see
+# below). Run it by hand only for a deploy without that variable.
 gcloud run services add-iam-policy-binding processarBalanco --region=<region> \
   --project="$PROJECT" \
   --member="serviceAccount:$CALLER_SA" --role="roles/run.invoker"
 ```
 
-Verify: `gcloud run services get-iam-policy processarBalanco --region=<region>`.
+### `TASKS_INVOKER_SA` — the third role, applied by the deploy (#1133)
+
+Export it in the shell you run `firebase deploy` from. `build.mjs` inlines it
+(esbuild `define`, exactly like `FUNCTIONS_REGION`) and every `onTaskDispatched`
+in this codebase declares it as `invoker`; firebase-tools then applies the list
+to **both** legs of the trip — `roles/run.invoker` on each function's Cloud Run
+service **and** `roles/cloudtasks.enqueuer` on its queue.
+
+```bash
+export TASKS_INVOKER_SA="<apphosting-runtime-sa>,<functions-runtime-sa>"
+firebase deploy --only functions:storage \
+  --config firebase.functions.deploy.json \
+  --project <project-id>
+```
+
+⚠️ **Name every enqueuer, comma-separated** — drop the duplicate when the two are
+the same identity. A deploy **replaces** the members of both bindings, so an
+identity left out **loses** the role.
+
+`processarBalanco` **re-enqueues itself** at the time-budget boundary, as the
+functions runtime SA — so `$FN_RUNTIME_SA` belongs in the list alongside
+`$CALLER_SA`.
+
+⚠️ **Unset ⇒ the option is omitted entirely.** The build prints a warning and the
+manual `gcloud run services add-iam-policy-binding` above stays required. It
+never guesses a value: a wrong one would lock out the legitimate caller, and a
+permissive one would be far worse. Failing toward the documented status quo is
+the intended behaviour.
+
+⚠️ A redeploy with **no** `invoker` declared does not clear an existing binding —
+firebase-tools skips `setInvokerUpdate` when the option is absent — but a service
+**create**, i.e. a new or renamed task function, leaves no binding at all. That
+silent case is what this variable exists for.
+
+Verify it took, with nobody having run gcloud:
+`gcloud run services get-iam-policy processarBalanco --region=<region>`.
 
 ## Known first-run gotchas (not yet executed)
 
