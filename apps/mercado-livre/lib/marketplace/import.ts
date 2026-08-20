@@ -318,11 +318,12 @@ export async function importProduto(
   // price is already folded into the full produto doc.
   //
   // ADR 0011 **tier 1**: the patch is derived from `produtoSnap`, so it asserts
-  // that read's `lastUpdateTime`. A concurrent writer of the same produto — the
-  // still-running Flutter app writes the WHOLE precos map, which a dotted path
-  // cannot defend against — fails this FAILED_PRECONDITION instead of being
-  // silently reverted, and we re-read and re-plan once (the `isAlreadyExists`
-  // precedent below; re-applying the SAME patch would defeat the guard).
+  // that read's `lastUpdateTime`. A concurrent writer of the same produto — a
+  // retrying import task, the `items` webhook, or an operator saving the produto
+  // editor — fails this FAILED_PRECONDITION instead of being silently reverted,
+  // and we re-read and re-plan once (the `isAlreadyExists` precedent below;
+  // re-applying the SAME patch would defeat the guard). The guard stands; only
+  // the cast changed — the Flutter app was never one of these writers (rule 8).
   //
   // ⚠️ Ordering: the produto merge below always writes on the update path (it
   // carries `ultimaModificacao`, #800), which BUMPS `updateTime`. Running it

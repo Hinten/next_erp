@@ -2,9 +2,10 @@
  * Firestore-backed `TokenStore` for Melhor Envio OAuth tokens
  * (`int_frete/{intFreteId}/tokenMelEnv`). Single-token semantics: `save`
  * writes a fixed `current` doc and deletes any stray docs in one
- * transaction, so at most one token ever lives (matching the legacy
- * Flutter behavior, which the still-running app reads by
- * `orderBy(expirationDate desc).first()` — a fixed id stays compatible).
+ * transaction, so at most one token ever lives. The legacy corpus stores its
+ * tokens under arbitrary ids (the old app picked one with
+ * `orderBy(expirationDate desc).first()`), so a fixed id plus the stray-delete
+ * converges whatever the migration brings in onto the single `current` doc.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { tokenMelEnvCollection } from '@delfrance/data/admin/collections';

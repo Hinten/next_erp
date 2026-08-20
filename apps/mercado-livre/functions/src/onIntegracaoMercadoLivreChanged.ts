@@ -143,8 +143,9 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
 
     // ---- conta became RESOLVABLE → re-drive its deferred notifications (#808) ----
     // The write that makes a seller resolvable is the OAuth exchange
-    // (`exchangeAndPersist`) denormalizing `user_id` onto the conta — and also the
-    // still-running Flutter app, which writes the field directly.
+    // (`exchangeAndPersist`) denormalizing `user_id` onto the conta, or an
+    // `ativo` flip. (This once also named the Flutter app as a direct writer of
+    // the field. Void — there is no dual run; root `CLAUDE.md` rule 8.)
     //
     // ⚠️ LAST on purpose, and it is the ordering — not a catch — that isolates the
     // two responsibilities. This arm is a pure LATENCY cut: the daily deferred

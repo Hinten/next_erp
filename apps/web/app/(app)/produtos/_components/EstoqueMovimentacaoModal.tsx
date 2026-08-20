@@ -250,9 +250,9 @@ export function EstoqueMovimentacaoModal({
                   {historico.map((h, i) => (
                     <Table.Tr key={i}>
                       <Table.Td>{fmtDate(h.timestamp)}</Table.Td>
-                      {/* v2 rows carry a signed `movimento`; a row written by the
-                          still-running Flutter app has none, and an em-dash is the
-                          honest rendering — never a 0, which would read as "no
+                      {/* v2 rows carry a signed `movimento`; a legacy row from the
+                          migrated corpus has none, and an em-dash is the honest
+                          rendering — never a 0, which would read as "no
                           movement" (ADR 0014). */}
                       <Table.Td>{h.movimento == null ? '—' : fmt(h.movimento)}</Table.Td>
                       <Table.Td>

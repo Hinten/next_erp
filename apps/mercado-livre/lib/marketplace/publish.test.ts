@@ -6,11 +6,12 @@ import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { type PublishDeps, publishProduto } from './publish';
 
 /**
- * Regression tests for the LEGACY-WIRE contract of the publish orchestrator: the
- * still-running Flutter app equality-queries the docs this module writes, so
- * every `*OuterRef` must be stored `documents/`-prefixed (`pathWithDocuments`)
- * and a re-publish must preserve every Flutter-authored field it doesn't own
- * (the old app persisted via `copyWith(...).save()`). Backed by an in-memory
+ * Regression tests for the LEGACY-WIRE contract of the publish orchestrator. The
+ * migrated corpus stores these docs in the old Flutter shape, so every
+ * `*OuterRef` must be written `documents/`-prefixed (`pathWithDocuments`) or our
+ * own equality queries fork into two populations, and a re-publish must preserve
+ * every Flutter-authored field it doesn't own (the old app persisted via
+ * `copyWith(...).save()`, so those keys are in the data). Backed by an in-memory
  * fake of the few Admin-SDK surfaces the handles touch.
  */
 
@@ -389,8 +390,8 @@ describe('publishProduto — legacy wire shape', () => {
     db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
     const { api } = makeApi({
       updateItem: vi.fn(async () => {
-        // The still-running Flutter app edits the listing while we are talking
-        // to ML — the window the old read-modify-write silently lost.
+        // A second operator edits the listing while we are talking to ML —
+        // the window the old read-modify-write silently lost.
         const cur = db.docs(LINKS_PATH).get('ML-DOC-1')!;
         db.seed(LINKS_PATH, 'ML-DOC-1', { ...cur, descricao: 'Editado durante a publicação' });
         return ITEM_RESPONSE;
