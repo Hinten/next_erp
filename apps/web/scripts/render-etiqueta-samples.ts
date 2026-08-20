@@ -43,11 +43,16 @@ async function main(): Promise<void> {
     const blob = await renderEtiquetaGenericaPdf(model);
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.pdf`), Buffer.from(await blob.arrayBuffer()));
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.zpl`), renderEtiquetaGenericaZpl(model), 'utf8');
-    const { contentHeightMm, scale } = buildEtiquetaGenericaLayout(model);
+    const { contentHeightMm, scale, slack } = buildEtiquetaGenericaLayout(model);
     const fill = ((contentHeightMm / LABEL_H_MM) * 100).toFixed(0);
-    const squeeze = scale < 1 ? `, shrunk to ${(scale * 100).toFixed(0)}% to fit` : '';
+    const squeeze = [
+      slack < 1 ? `padding ${(slack * 100).toFixed(0)}%` : null,
+      scale < 1 ? `type ${(scale * 100).toFixed(0)}%` : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
     process.stdout.write(
-      `etiqueta-${name}.{pdf,zpl} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze})\n`,
+      `etiqueta-${name}.{pdf,zpl} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze ? `, ${squeeze}` : ''})\n`,
     );
   }
   process.stdout.write(`\nWrote ${SAMPLES.length * 2} samples to ${OUT_DIR}\n`);

@@ -71,10 +71,45 @@ describe('genericLabelProvider', () => {
     );
   });
 
-  it('still reports printed when the agent is down (printJob downloads)', async () => {
+  it('still reports printed when the agent is down, but SAYS the label was downloaded', async () => {
+    // The row action is silent on a successful print, so without the toast an
+    // agent that is down is indistinguishable from a print that worked — the
+    // click appears to do nothing and the label is sitting in Downloads.
     const printJob = vi.fn(async () => 'downloaded' as const);
-    const out = await genericLabelProvider.emitirOuImprimir(makeInput({ printJob }));
+    const notify = vi.fn();
+    const out = await genericLabelProvider.emitirOuImprimir(makeInput({ printJob, notify }));
     expect(out).toEqual({ status: 'printed' });
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'yellow',
+        message: expect.stringContaining('etiqueta-1234.pdf'),
+      }),
+    );
+  });
+
+  it('tells the operator a downloaded ZPL is not a file they can just open', async () => {
+    // The two formats fail differently: a downloaded PDF is double-clickable, a
+    // `.zpl2` is a text file Notepad will happily print as `^XA^CI28…` source.
+    const notify = vi.fn();
+    await genericLabelProvider.emitirOuImprimir(
+      makeInput({
+        formato: 'zpl2',
+        printJob: vi.fn(async () => 'downloaded' as const),
+        notify,
+      }),
+    );
+    const message = String(notify.mock.calls[0]![0].message);
+    expect(message).toContain('etiqueta-1234.zpl2');
+    expect(message).toContain('Zebra');
+    expect(message).toContain('Bloco de Notas');
+  });
+
+  it('stays silent when the agent actually printed it', async () => {
+    const notify = vi.fn();
+    await genericLabelProvider.emitirOuImprimir(
+      makeInput({ printJob: vi.fn(async () => 'printed' as const), notify }),
+    );
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('renders real ZPL for zpl2 and sends it down the agent’s plain-text channel', async () => {

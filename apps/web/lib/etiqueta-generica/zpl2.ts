@@ -76,10 +76,19 @@ export function renderEtiquetaGenericaZpl(
         // low, subtract `zplTextHeight(...)` from the y here rather than
         // re-tuning the layout spec, which the PDF shares.
         const justify = op.align === 'center' ? 'C' : 'L';
-        out.push(
-          `^FO${mm(op.x)},${mm(op.y)}^A0N,${zplTextHeight(op.sizePt, dotsPerMm)}` +
-            `^FB${mm(op.w)},1,0,${justify},0^FD${sanitize(op.text)}^FS`,
-        );
+        const height = zplTextHeight(op.sizePt, dotsPerMm);
+        const field = (dx: number): string =>
+          `^FO${mm(op.x) + dx},${mm(op.y)}^A0N,${height}` +
+          `^FB${mm(op.w)},1,0,${justify},0^FD${sanitize(op.text)}^FS`;
+
+        out.push(field(0));
+        // `op.bold` is the one field of the text op that ZPL cannot express
+        // directly: the resident scalable font `0` has no weight axis, so
+        // `^A0N` draws the title and the body at the same weight and the PDF's
+        // emphasis hierarchy would be lost. Re-emit the field one dot to the
+        // right — the conventional ZPL double-strike — which thickens the stems
+        // enough to read as bold at 203dpi without needing a downloaded font.
+        if (op.bold) out.push(field(1));
         break;
       }
       case 'barcode': {

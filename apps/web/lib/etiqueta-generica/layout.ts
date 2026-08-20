@@ -59,6 +59,10 @@ const TITLE_GAP_MM = 1;
 const SIZE_TITLE = 12;
 const SIZE_BODY = 10;
 const SIZE_CHAVE = 7;
+const SIZE_CAPTION = 8;
+
+/** Blank vertical room above the signature rule — enough to actually sign in. */
+const SIGNATURE_ROOM_MM = 11;
 
 /** Code 128 strip height. Kept compact so a maximal reverse label still fits. */
 const BARCODE_H_MM = 10;
@@ -154,8 +158,15 @@ export interface EtiquetaGenericaLayout {
   /** Height the ops actually occupy, AFTER any shrink-to-fit. Never > `heightMm`. */
   readonly contentHeightMm: number;
   /**
-   * Shrink-to-fit factor applied to the vertical rhythm and the type. `1` for a
-   * label that fitted as designed; below `1` when it had to be squeezed.
+   * Whitespace actually used, as a fraction of the designed rhythm. `1` when the
+   * label fitted as drawn; lower when padding had to be given back. This is
+   * spent BEFORE `scale`, because tighter blocks cost the reader nothing and
+   * smaller type costs legibility.
+   */
+  readonly slack: number;
+  /**
+   * Shrink-to-fit factor applied to the vertical rhythm and the type, after the
+   * whitespace was already tightened. `1` unless the label still overflowed.
    */
   readonly scale: number;
   readonly ops: readonly EtiquetaOp[];
@@ -213,11 +224,22 @@ function fitToPage(
 }
 
 /**
- * Build the label's draw ops from a resolved model. Pure: no Firestore, no DOM,
- * no font metrics beyond the constants above — so the design is unit-testable
- * and both renderers agree line for line.
+ * Build the label's draw ops at a given whitespace `slack` (1 = the designed
+ * rhythm). Pure: no Firestore, no DOM, no font metrics beyond the constants
+ * above — so the design is unit-testable and both renderers agree line for line.
+ *
+ * `slack` only ever touches VERTICAL spacing, never the type or the wrap, so
+ * re-building at a tighter slack cannot change where a line breaks.
  */
-export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): EtiquetaGenericaLayout {
+function buildOps(
+  model: EtiquetaGenericaModel,
+  slack: number,
+): { ops: EtiquetaOp[]; heightMm: number } {
+  const pad = PAD_MM * slack;
+  const divAir = DIVIDER_AIR_MM * slack;
+  const titleGap = TITLE_GAP_MM * slack;
+  const signRoom = SIGNATURE_ROOM_MM * slack;
+
   const ops: EtiquetaOp[] = [];
   // Stroke centred on the path: inset by half a rule so the border sits inside
   // the trim on all four sides.
@@ -248,32 +270,60 @@ export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): Etiqu
   };
 
   const divider = (): void => {
-    y += DIVIDER_AIR_MM;
+    y += divAir;
     ops.push({ kind: 'rule', x: RULE_MM, y, w: LABEL_W_MM - 2 * RULE_MM, rule: RULE_MM });
-    y += DIVIDER_AIR_MM;
+    y += divAir;
+  };
+
+  /** `prefix` followed by as many underscores as still fit the line. */
+  const fillRule = (prefix: string, sizePt: number): string => {
+    const under = textWidthMm('_', sizePt, false);
+    const room = INNER_W_MM * 0.99 - textWidthMm(prefix, sizePt, false);
+    return prefix + '_'.repeat(Math.max(1, Math.floor(room / under)));
+  };
+
+  /**
+   * Proof-of-delivery block. **Not** from legacy, which had only
+   * `Recebido: ____` + a date — asked for on 2026-08-20 because customers do
+   * claim a parcel never arrived, and a signature alone does not identify who
+   * signed. Name + document + date + signature is what makes the stub
+   * evidence, so all four get a real line, and the signature gets vertical room
+   * to actually sign in rather than a caption squeezed against the line above.
+   */
+  const receiptBlock = (): void => {
+    y += pad;
+    line('Comprovante de recebimento', SIZE_TITLE, true, 'center');
+    y += titleGap;
+    line(fillRule('Nome legível: ', SIZE_BODY), SIZE_BODY, false, 'left');
+    line(fillRule('CPF / RG: ', SIZE_BODY), SIZE_BODY, false, 'left');
+    line('Data: ____/____/______', SIZE_BODY, false, 'left');
+    y += signRoom;
+    line(fillRule('', SIZE_BODY), SIZE_BODY, false, 'left');
+    line('Assinatura do recebedor', SIZE_CAPTION, false, 'center');
+    y += pad;
   };
 
   const addressBlock = (a: EtiquetaGenericaAddress, title: string): void => {
-    y += PAD_MM;
+    y += pad;
     line(title, SIZE_TITLE, true, 'center');
-    y += TITLE_GAP_MM;
+    y += titleGap;
     const logradouro = `${a.logradouro ?? DASH}${a.numero ? `, ${a.numero}` : ''}`;
     line(`Logradouro: ${logradouro}`, SIZE_BODY, false, 'left');
     line(`Bairro: ${a.bairro ?? DASH}`, SIZE_BODY, false, 'left');
     if (a.complemento) line(`Complemento: ${a.complemento}`, SIZE_BODY, false, 'left');
     line(`Cidade: ${a.cidade ?? DASH}${a.uf ? ` - ${a.uf}` : ''}`, SIZE_BODY, false, 'left');
     if (a.cep) line(`CEP: ${formatCep(a.cep)}`, SIZE_BODY, false, 'left');
-    y += PAD_MM;
+    y += pad;
   };
 
   /* -------------------------------- header ------------------------------- */
 
-  y += PAD_MM;
+  y += pad;
   line(model.title, SIZE_TITLE, true, 'center');
   if (model.subTitle) line(model.subTitle, SIZE_BODY, true, 'center');
   if (model.nfeNumero != null) {
     line(`NFe nº: ${model.nfeNumero}`, SIZE_BODY, true, 'center');
-    y += PAD_MM;
+    y += pad;
   }
   if (model.ehReverso) line('Reverso', SIZE_BODY, true, 'left');
   if (model.nfeChave) {
@@ -299,9 +349,9 @@ export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): Etiqu
       line(`Fone: ${formatTelefone(model.cliente.telefone)}`, SIZE_BODY, false, 'left');
     }
   } else {
-    y += PAD_MM;
+    y += pad;
     line('Cliente não informado', SIZE_BODY, false, 'left');
-    y += PAD_MM;
+    y += pad;
   }
 
   divider();
@@ -312,9 +362,9 @@ export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): Etiqu
   // PRESENT address on a `retiradaNaLoja` frete is suppressed outright (the
   // customer collects at the counter, so there is nothing to deliver to).
   if (!model.endereco) {
-    y += PAD_MM;
+    y += pad;
     line('Endereço não informado', SIZE_BODY, false, 'left');
-    y += PAD_MM;
+    y += pad;
   } else if (!model.ocultarEndereco) {
     addressBlock(model.endereco, model.ehReverso ? 'Retirada' : 'Entrega');
   }
@@ -344,18 +394,41 @@ export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): Etiqu
 
   if (model.ehReverso && model.enderecoReverso) {
     addressBlock(model.enderecoReverso, 'Entrega');
-  } else {
-    y += PAD_MM;
-    line('Recebido: _________________________________', SIZE_BODY, true, 'left');
-    line('Data: ____/____/______', SIZE_BODY, true, 'left');
-    y += PAD_MM;
+    divider();
   }
 
-  const fitted = fitToPage(ops, y);
+  receiptBlock();
+
+  return { ops, heightMm: y };
+}
+
+/**
+ * Whitespace steps tried, in order, before the type is allowed to shrink.
+ * Squeezing the 5mm block padding and the divider air costs the reader nothing;
+ * shrinking 10pt type on a proof-of-delivery stub costs legibility, so it is
+ * the last resort rather than the first.
+ */
+const SLACK_STEPS = [0.75, 0.55, 0.4] as const;
+
+/**
+ * Build the label. Fits it to the page in two stages — give back whitespace
+ * first, only then scale the type (see {@link fitToPage}).
+ */
+export function buildEtiquetaGenericaLayout(model: EtiquetaGenericaModel): EtiquetaGenericaLayout {
+  let slack = 1;
+  let built = buildOps(model, slack);
+  for (const step of SLACK_STEPS) {
+    if (built.heightMm <= LABEL_H_MM) break;
+    slack = step;
+    built = buildOps(model, slack);
+  }
+
+  const fitted = fitToPage(built.ops, built.heightMm);
   return {
     widthMm: LABEL_W_MM,
     heightMm: LABEL_H_MM,
-    contentHeightMm: y * fitted.scale,
+    contentHeightMm: built.heightMm * fitted.scale,
+    slack,
     scale: fitted.scale,
     ops: fitted.ops,
   };

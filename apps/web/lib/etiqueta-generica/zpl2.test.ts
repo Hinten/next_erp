@@ -83,11 +83,30 @@ describe('renderEtiquetaGenericaZpl', () => {
     expect(zpl).not.toContain('CLIENTE: ACME');
   });
 
+  it('double-strikes bold text, since ZPL font 0 has no weight axis', () => {
+    // Without this the title, `Recebedor:`, `Volumes:` and the receipt headings
+    // come out at exactly the body weight and the PDF's hierarchy is gone.
+    const zpl = renderEtiquetaGenericaZpl(MINIMAL_MODEL);
+    const fieldsFor = (text: string): string[] =>
+      zpl.split('\n').filter((l) => l.endsWith(`^FD${text}^FS`));
+
+    // Bold: two fields, one dot apart.
+    const title = fieldsFor('Pedido 12345');
+    expect(title).toHaveLength(2);
+    const xs = title.map((l) => Number(/\^FO(\d+),/.exec(l)![1]));
+    expect(xs[1]! - xs[0]!).toBe(1);
+    // …and nothing else about them differs, so the strike lands on the same line.
+    expect(title[0]!.replace(/\^FO\d+,/, '')).toBe(title[1]!.replace(/\^FO\d+,/, ''));
+
+    // Body: one field.
+    expect(fieldsFor('Cliente: Maria Aparecida de Souza')).toHaveLength(1);
+  });
+
   it('boxes the label and every divider with ^GB', () => {
     const zpl = renderEtiquetaGenericaZpl(MAXIMAL_MODEL);
-    // The outer border plus the five dividers (header, cliente, endereço,
-    // recebedor, volumes).
-    expect(zpl.match(/\^GB/g) ?? []).toHaveLength(6);
+    // The outer border plus the six dividers (header, cliente, endereço,
+    // recebedor, volumes, and the one before the receipt stub).
+    expect(zpl.match(/\^GB/g) ?? []).toHaveLength(7);
   });
 
   it.each([
