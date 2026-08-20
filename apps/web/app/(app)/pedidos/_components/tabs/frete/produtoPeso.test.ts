@@ -9,13 +9,27 @@ const batchMock = vi.mocked(getDocsByIds);
 
 const db = {} as Firestore;
 
-type Row = { pesoBrutoKg: number | null; pesoLiquidoKg: number | null; paiId: string | null };
+type Row = {
+  pesoBrutoKg: number | null;
+  pesoLiquidoKg: number | null;
+  alturaCm: number | null;
+  larguraCm: number | null;
+  profundidadeCm: number | null;
+  paiId: string | null;
+};
 const row = (over: Partial<Row> = {}): Row => ({
   pesoBrutoKg: null,
   pesoLiquidoKg: null,
+  alturaCm: null,
+  larguraCm: null,
+  profundidadeCm: null,
   paiId: null,
   ...over,
 });
+
+/** A produto that needs no parent: it has both its own weight and its own box. */
+const completo = (over: Partial<Row> = {}): Row =>
+  row({ pesoBrutoKg: 5, alturaCm: 10, larguraCm: 10, profundidadeCm: 10, ...over });
 
 /** Serve each wave from a single catalogue, echoing only the ids asked for. */
 function catalogue(docs: Record<string, Row>) {
@@ -46,7 +60,7 @@ describe('fetchProdutoPesoMap', () => {
     const map = await fetchProdutoPesoMap(db, ['p1', 'ghost']);
 
     expect(map).toEqual({
-      p1: { pesoBrutoKg: 2, pesoLiquidoKg: null, paiId: null },
+      p1: row({ pesoBrutoKg: 2 }),
       ghost: null,
     });
   });
@@ -75,17 +89,32 @@ describe('fetchProdutoPesoMap', () => {
 
     expect(batchMock).toHaveBeenCalledTimes(2);
     expect(batchMock.mock.calls[1]![2]).toEqual(['parent']);
-    expect(map.parent).toEqual({ pesoBrutoKg: 4, pesoLiquidoKg: null, paiId: null });
+    expect(map.parent).toEqual(row({ pesoBrutoKg: 4 }));
   });
 
-  it('spends no second wave when every produto carries its own weight', async () => {
-    catalogue({ child: row({ pesoBrutoKg: 5, paiId: 'parent' }) });
+  it('spends no second wave when every produto is self-sufficient', async () => {
+    catalogue({ child: completo({ paiId: 'parent' }) });
 
     await fetchProdutoPesoMap(db, ['child']);
 
-    // `paiId` is set but unused — the child has a weight, so the parent is
-    // never needed and must not cost a query.
+    // `paiId` is set but unused — the child has both its own weight and its own
+    // box, so the parent is never needed and must not cost a query.
     expect(batchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetches the parent of a produto that has a weight but NO dimensions', async () => {
+    // The dimension half of the wave-2 predicate: a variation very commonly
+    // carries a weight and no box. Gating the wave on the weight alone would
+    // leave `dimensoesPedido` with no parent to fall back to.
+    catalogue({
+      child: row({ pesoBrutoKg: 5, paiId: 'parent' }),
+      parent: completo(),
+    });
+
+    await fetchProdutoPesoMap(db, ['child']);
+
+    expect(batchMock).toHaveBeenCalledTimes(2);
+    expect(batchMock.mock.calls[1]![2]).toEqual(['parent']);
   });
 
   it('does not re-fetch a parent already present in the first wave', async () => {

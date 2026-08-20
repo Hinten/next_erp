@@ -27,6 +27,7 @@ import { collectFreteErrors } from '../freteErrors';
 import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
 import { seedFreteInicial } from './frete/seedFreteInicial';
 import { isAtivacaoDeFrete, seedVolumePadrao } from './frete/seedVolumePadrao';
+import { notificarAvisoDimensoes } from './frete/notificarAviso';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
@@ -99,7 +100,17 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   async function seedVolumeOnActivation() {
     if (marketplaceOwned || (integracaoRef != null && loadingIntegracao)) return;
     try {
-      await seedVolumePadrao({ form, db, queryClient, itens: itensFlat, marketplaceOwned });
+      const aviso = await seedVolumePadrao({
+        form,
+        db,
+        queryClient,
+        itens: itensFlat,
+        marketplaceOwned,
+      });
+      // The box the estimator produced may not be shippable as-is (#371).
+      // Surface that here rather than letting the operator discover it when the
+      // carrier rejects the quote.
+      notificarAvisoDimensoes(aviso === 'naoSemeado' ? null : aviso);
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       notifications.show({

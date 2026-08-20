@@ -14,7 +14,7 @@ import type { PedidoFormHandle } from './fields';
 import { seedFreteInicial } from './seedFreteInicial';
 import { VolumesEditor } from './VolumesEditor';
 import { loadProdutoPesoMap } from './produtoPeso';
-import { volumePadrao } from './pesoPedido';
+import { volumePadrao, type ProdutoMedidas } from './pesoPedido';
 
 vi.mock('./produtoPeso', () => ({ loadProdutoPesoMap: vi.fn() }));
 vi.mock('@mantine/notifications', () => ({ notifications: { show: vi.fn() } }));
@@ -49,10 +49,21 @@ function Host({ volumes, maxVolumes }: { volumes: VolumeFormState[] | null; maxV
 const stored = () =>
   formRef.getValues('freteInicial.volumes' as never) as unknown as VolumeFormState[] | null;
 
+/** A produto with no dimensions — these suites only exercise the weight. */
+const medidas = (over: Partial<ProdutoMedidas> = {}): ProdutoMedidas => ({
+  pesoBrutoKg: null,
+  pesoLiquidoKg: null,
+  alturaCm: null,
+  larguraCm: null,
+  profundidadeCm: null,
+  paiId: null,
+  ...over,
+});
+
 beforeEach(() => {
   loadMock.mockReset();
   notifyMock.mockReset();
-  loadMock.mockResolvedValue({ p1: { pesoBrutoKg: 3, pesoLiquidoKg: null, paiId: null } });
+  loadMock.mockResolvedValue({ p1: medidas({ pesoBrutoKg: 3 }) });
 });
 
 describe('VolumesEditor "+ Novo volume"', () => {
@@ -99,5 +110,19 @@ describe('VolumesEditor "+ Novo volume"', () => {
     await waitFor(() => expect(loadMock).toHaveBeenCalled());
     // FOB allows exactly one volume — the click must not push a second.
     await waitFor(() => expect(stored()).toEqual([volumePadrao(9)]));
+  });
+
+  it('warns about a clamped box just like the activation seed does', () => {
+    // Both paths build the same box, so both must explain it — adding a volume
+    // by hand was the one path that stayed quiet. Review finding on #1153.
+    const oversized = medidas({ pesoBrutoKg: 1, alturaCm: 80, larguraCm: 80, profundidadeCm: 2 });
+    loadMock.mockResolvedValue({ p1: oversized });
+    render(<Host volumes={null} />);
+    fireEvent.click(screen.getByRole('button', { name: '+ Novo volume' }));
+
+    return waitFor(() => {
+      expect(stored()).toHaveLength(1);
+      expect(notifyMock).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -5,7 +5,7 @@ import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import type { VolumeFormState } from '../../types';
 import type { PedidoFormHandle } from './fields';
-import { volumePadrao, type ProdutoPesoInfo } from './pesoPedido';
+import { volumePadrao, type ProdutoMedidas } from './pesoPedido';
 import { isAtivacaoDeFrete, seedVolumePadrao } from './seedVolumePadrao';
 import { loadProdutoPesoMap } from './produtoPeso';
 
@@ -33,9 +33,12 @@ function fakeForm(initial: VolumeFormState[] | null) {
 
 const db = {} as Firestore;
 const queryClient = {} as QueryClient;
-const peso = (over: Partial<ProdutoPesoInfo> = {}): ProdutoPesoInfo => ({
+const peso = (over: Partial<ProdutoMedidas> = {}): ProdutoMedidas => ({
   pesoBrutoKg: null,
   pesoLiquidoKg: null,
+  alturaCm: null,
+  larguraCm: null,
+  profundidadeCm: null,
   paiId: null,
   ...over,
 });
@@ -58,7 +61,9 @@ describe('seedVolumePadrao', () => {
       marketplaceOwned: false,
     });
 
-    expect(seeded).toBe(true);
+    // The fixture produto has no dimensions, so the estimator falls back to the
+    // default box and says so — the Volume is still seeded.
+    expect(seeded).toBe('semDimensoes');
     expect(form.current()).toEqual([volumePadrao(7.5)]);
     expect(form.setValue).toHaveBeenCalledWith('freteInicial.volumes', [volumePadrao(7.5)], {
       shouldDirty: true,
@@ -95,7 +100,7 @@ describe('seedVolumePadrao', () => {
       marketplaceOwned: true,
     });
 
-    expect(seeded).toBe(false);
+    expect(seeded).toBe('naoSemeado');
     expect(form.setValue).not.toHaveBeenCalled();
     expect(loadMock).not.toHaveBeenCalled();
   });
@@ -111,7 +116,7 @@ describe('seedVolumePadrao', () => {
       marketplaceOwned: false,
     });
 
-    expect(seeded).toBe(false);
+    expect(seeded).toBe('naoSemeado');
     expect(form.setValue).not.toHaveBeenCalled();
     expect(loadMock).not.toHaveBeenCalled();
   });
@@ -134,7 +139,7 @@ describe('seedVolumePadrao', () => {
       marketplaceOwned: false,
     });
 
-    expect(seeded).toBe(false);
+    expect(seeded).toBe('naoSemeado');
     expect(form.current()).toEqual([manual]);
   });
 
