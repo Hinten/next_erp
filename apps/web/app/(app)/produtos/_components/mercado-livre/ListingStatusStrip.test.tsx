@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import {
   ESTADO_PUBLICACAO_ML,
@@ -334,6 +334,55 @@ describe('ListingStatusStrip — moderações do Mercado Livre (#1087)', () => {
     // It still says everything ML DID give — which is more than "pausado".
     expect(alerta.textContent).toContain('POOR_QUALITY_THUMBNAIL');
     expect(alerta.textContent).toContain('Onde: Título, Fotos');
+  });
+
+  /**
+   * ⚠️ `motivo` and `remedio` are INDEPENDENT `wordings` lookups, so ML can send
+   * a REMEDY with no REASON — and the backend deliberately keeps that shape
+   * (`mapModeracoes`, "keeps a REMEDY-only entry"). Gating the remedy line on
+   * `severidade === 'com-conserto'` threw away the one actionable sentence ML
+   * had sent and left the operator with "não informou o motivo" and nothing to
+   * do about it.
+   *
+   * The whole `motivo: null` family previously fixed `remedio: null` too, which
+   * is exactly why no test could see it. The two now vary independently.
+   */
+  it('shows a remedy ML sent even when it sent no reason', () => {
+    renderStrip({
+      moderacoes: [
+        moderacaoFixture({
+          motivo: null,
+          remedio: 'Troque a foto de capa por uma nítida.',
+          secoes: ['pictures'],
+        }),
+      ],
+    });
+
+    const alerta = screen.getByTestId('ml-moderacoes');
+    expect(alerta.textContent).toContain('Como corrigir: Troque a foto de capa');
+    expect(alerta.textContent).toContain('não informou o motivo');
+    // Still not a removal: ML withheld the reason, not the way back.
+    expect(alerta.textContent).not.toContain('não pode ser reativado');
+  });
+
+  it('never shows a remedy and the no-remedy line at the same time', () => {
+    // They are mutually exclusive by construction — `sem-conserto` implies
+    // `remedio == null` — and this pins that so neither gate can drift.
+    // All FOUR combinations of the two independent wordings, not just the two
+    // the severity names.
+    for (const moderacoes of [
+      [moderacaoFixture()],
+      [moderacaoFixture({ remedio: null })],
+      [moderacaoFixture({ motivo: null })],
+      [moderacaoFixture({ motivo: null, remedio: null })],
+    ]) {
+      renderStrip({ moderacoes });
+      const texto = screen.getByTestId('ml-moderacoes').textContent ?? '';
+      const temConserto = texto.includes('Como corrigir');
+      const semConserto = texto.includes('não pode ser reativado');
+      expect(temConserto && semConserto).toBe(false);
+      cleanup();
+    }
   });
 
   /**

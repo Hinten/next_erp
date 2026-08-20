@@ -31,17 +31,24 @@ import { ML_CAUSA_CAMPO } from '@delfrance/schemas';
  * How bad one moderação is, and — the part that matters — how much the UI is
  * ENTITLED to say about it.
  *
- *  - `com-conserto`  — ML gave a reason and a remedy. Fixable; show both.
+ *  - `com-conserto`  — ML gave a reason and a remedy. Fixable.
  *  - `sem-conserto`  — ML gave a reason and NO remedy. Its docs are explicit that
  *    a removed listing answers that way *because there is no way back*, so this
  *    is the one state where the UI may say the anúncio cannot be reactivated.
- *  - `sem-motivo`    — ML named the filter and sent no prose at all.
+ *  - `sem-motivo`    — ML named the filter and gave no REASON. It may still have
+ *    sent a REMEDY: `motivo` and `remedio` are independent `wordings` lookups and
+ *    the backend keeps a REMEDY-only entry on its `nome`.
  *
- * ⚠️ `sem-motivo` must NEVER be rendered as `sem-conserto`, even though both
- * carry `remedio: null`. "ML supplied no explanation" is not "this listing cannot
- * be recovered"; conflating them tells the operator to abandon a listing that may
- * be perfectly fixable. That is the whole reason this is a three-way verdict
- * rather than a boolean on `remedio`.
+ * ⚠️ `sem-motivo` must NEVER be rendered as `sem-conserto`. "ML supplied no
+ * explanation" is not "this listing cannot be recovered"; conflating them tells
+ * the operator to abandon a listing that may be perfectly fixable. That is the
+ * whole reason this is a three-way verdict rather than a boolean on `remedio`.
+ *
+ * ⚠️ And it is a verdict about the ENTRY, not a render gate for its fields. It
+ * decides the alert colour and whether the UI may claim the anúncio is finished —
+ * nothing else. `remedio` renders whenever it is present, because
+ * `sem-motivo` does NOT imply `remedio == null`: gating that field on
+ * `com-conserto` discarded the one actionable sentence ML had sent.
  */
 export type SeveridadeModeracao = 'sem-conserto' | 'sem-motivo' | 'com-conserto';
 

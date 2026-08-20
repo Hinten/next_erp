@@ -220,13 +220,23 @@ export function ListingStatusStrip({
                       Onde: {onde}
                     </Text>
                   )}
-                  {/* ⚠️ Only `sem-conserto` may claim the anúncio is finished.
-                      `sem-motivo` carries `remedio: null` too, but there it means
-                      ML said nothing — telling the operator to give up on a
-                      listing that may be perfectly fixable is the worse error. */}
-                  {severidade === 'com-conserto' && (
+                  {/* ⚠️ Gated on the FIELD, never on the severity. `motivo` and
+                      `remedio` are independent `wordings` lookups, so ML can send
+                      a REMEDY with no REASON — the backend keeps exactly that
+                      shape (`mapModeracoes`, "keeps a REMEDY-only entry"). Gating
+                      this on `severidade === 'com-conserto'` discarded the one
+                      actionable sentence ML did send and left the operator with
+                      "não informou o motivo" and nothing to do about it. */}
+                  {moderacao.remedio != null && (
                     <Text size="xs">Como corrigir: {moderacao.remedio}</Text>
                   )}
+                  {/* ⚠️ Only `sem-conserto` may claim the anúncio is finished:
+                      ML gave a REASON and withheld the REMEDY, which its docs say
+                      means there is no way back. `sem-motivo` also has no reason,
+                      but there ML simply said nothing — telling the operator to
+                      give up on a listing that may be fixable is the worse error.
+                      Mutually exclusive with the line above by construction:
+                      `sem-conserto` implies `remedio == null`. */}
                   {severidade === 'sem-conserto' && (
                     <Text size="xs">
                       O Mercado Livre não indicou correção — este anúncio não pode ser reativado.
