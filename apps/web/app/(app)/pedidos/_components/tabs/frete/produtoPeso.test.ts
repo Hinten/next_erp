@@ -105,7 +105,7 @@ describe('fetchProdutoPesoMap', () => {
   it('fetches the parent of a produto that has a weight but NO dimensions', async () => {
     // The dimension half of the wave-2 predicate: a variation very commonly
     // carries a weight and no box. Gating the wave on the weight alone would
-    // leave `dimensoesPedido` with no parent to fall back to.
+    // leave `estimarDimensoes` with no parent to fall back to.
     catalogue({
       child: row({ pesoBrutoKg: 5, paiId: 'parent' }),
       parent: completo(),

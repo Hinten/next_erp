@@ -41,6 +41,8 @@ export * from './pureLogic/variacoes'; // variation cartesian / reconstruct / re
 export * from './pureLogic/fotosVariacao'; // per-variant gallery resolution (own → tagged → parent)
 export * from './pureLogic/kitVariacoes'; // "Gerar Variações" kit-component matcher
 export * from './pureLogic/kitEstoque'; // kit available-stock (min over limitarEstoque components)
+export * from './pureLogic/dimensoes'; // box/bag estimator + the ProdutoMedidas shape it reads
+export * from './pureLogic/dimensoesKit'; // kit weight + box rollup (the ONE impl client & server share)
 
 // === PAGE MODEL (aggregate for the screen; NOT a collection) ===
 export * from './pageModel/pageModel';

@@ -426,6 +426,17 @@ refresh; without this ADR that reads as a defect.
   trigger over `estoques` plus `produtos where componentesKitKeys array-contains …`)
   → rejected on the same arithmetic: ~2 000 writes per sale. Cheaper per write,
   identical in magnitude.
+  ⚠️ **That rejection is about STOCK, and #1152 deliberately builds the same
+  fan-out for weight and dimensions** — `recalcularDimensoesKit`
+  (`apps/functions/src/produtos/kitRollup.ts`). It is not a contradiction, and
+  the difference is *frequency*, not shape. Stock moves on **every sale**, on the
+  order-ingestion path; a produto's weight or box changes only when an operator
+  edits it, which is rare and never on a hot path. The economics that killed it
+  here are what permit it there. It is also built differently: a Cloud Tasks
+  queue rather than inline trigger work, paged with a cursor, writing only the
+  documents whose values actually differ, and dropping itself when a newer edit
+  has superseded it. Do **not** read this bullet as licence to restore a stock
+  fan-out, and do not read `kitRollup.ts` as a violation of this ADR.
 - **Keep `maxComp` in the window filter** (the status quo) → rejected. It is
   correct and unaffordable: it makes ~2 000 sibling kits candidates 96× a day.
 - **Reverse `historicoEstoque` per family**, as #695 first proposed → superseded
