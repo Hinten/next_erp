@@ -616,7 +616,7 @@ const childrenJoin = () =>
       compEstoques('childKitKeys').as('componentEstoques'),
       pipelines
         .subcollection('variacaoMercadoLivre')
-        .select('itemId', 'id', 'produtoMercadoLivreOuterRef')
+        .select('itemId', 'id', 'produtoMercadoLivreOuterRef', 'status', 'sub_status')
         .toArrayExpression()
         .as('varLinks'),
     )
