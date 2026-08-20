@@ -18,13 +18,15 @@ import { FirebaseError } from 'firebase/app';
 import { type DocumentReference, type Firestore, getDocFromServer } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
 import {
-  KIT_PESO_BRUTO_FALLBACK_KG,
-  KIT_PESO_LIQUIDO_FALLBACK_KG,
+  CAMPOS_DIMENSOES_KIT,
   custoDoKit,
+  dimensoesDoKit,
   idFromRef,
-  pesoDoKit,
+  type CampoDimensoesKit,
   type ComponentesKit,
+  type DimensoesKit,
   type Kit,
+  type ProdutoMedidas,
 } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
@@ -52,34 +54,76 @@ export function stripKitForSave(value: unknown): ComponentesKit | null {
 }
 
 /**
- * Decide which weight fields to push to the form — pure, so the sync logic is
- * unit-testable without a React render. Returns the `(field, value)` patches only
- * when syncing is on, the produto is a kit, the weight has resolved, AND the
- * form's current value differs (so a consistent kit isn't needlessly dirtied).
- * A `null` computed weight (still waiting on component reads) is skipped.
+ * Decide which of the five derived fields to push to the form — pure, so the
+ * sync logic is unit-testable without a React render. Returns the
+ * `(field, value)` patches only when syncing is on, the produto is a kit, the
+ * rollup has resolved, AND the form's current value differs (so a consistent kit
+ * isn't needlessly dirtied).
+ *
+ * ⚠️ A `null` field is SKIPPED, never written. It means one of two things and
+ * both must leave the stored value alone: the component reads are still in
+ * flight, or `dimensoesDoKit` could not derive that field at all (no component
+ * resolved a full box). Writing the estimator's `DIMENSOES_PADRAO` fallback
+ * would turn a guess into a stored measurement — the server rollup
+ * (`recalcularDimensoesKit`, #1152) skips it for exactly the same reason.
  */
-export function kitWeightFormPatches(
+export function kitDimensoesFormPatches(
   syncPesoToForm: boolean,
   ehKit: boolean,
-  pesoResult: { bruto: number | null; liquido: number | null } | null,
-  current: { pesoBrutoKg: unknown; pesoLiquidoKg: unknown },
-): Array<{ field: 'pesoBrutoKg' | 'pesoLiquidoKg'; value: number }> {
-  if (!syncPesoToForm || !ehKit || !pesoResult) return [];
-  const patches: Array<{ field: 'pesoBrutoKg' | 'pesoLiquidoKg'; value: number }> = [];
-  if (pesoResult.bruto !== null && current.pesoBrutoKg !== pesoResult.bruto) {
-    patches.push({ field: 'pesoBrutoKg', value: pesoResult.bruto });
-  }
-  if (pesoResult.liquido !== null && current.pesoLiquidoKg !== pesoResult.liquido) {
-    patches.push({ field: 'pesoLiquidoKg', value: pesoResult.liquido });
+  dimensoesResult: DimensoesKit | null,
+  current: Readonly<Partial<Record<CampoDimensoesKit, unknown>>>,
+): Array<{ field: CampoDimensoesKit; value: number }> {
+  if (!syncPesoToForm || !ehKit || !dimensoesResult) return [];
+  const patches: Array<{ field: CampoDimensoesKit; value: number }> = [];
+  for (const field of CAMPOS_DIMENSOES_KIT) {
+    const value = dimensoesResult[field];
+    if (value === null) continue;
+    if (current[field] === value) continue;
+    patches.push({ field, value });
   }
   return patches;
 }
+
+/**
+ * The component fields the kit rollup reads, projected out of a raw produto doc.
+ * Both read paths (the batched effect and `addComponent`'s validate-and-seed) go
+ * through this, so neither can cache a narrower shape than `dimensoesDoKit`
+ * expects.
+ */
+function projetarMedidas(d: Record<string, unknown> | undefined): ProdutoMedidas {
+  const num = (k: string) => (d?.[k] as number | null | undefined) ?? null;
+  return {
+    pesoBrutoKg: num('pesoBrutoKg'),
+    pesoLiquidoKg: num('pesoLiquidoKg'),
+    alturaCm: num('alturaCm'),
+    larguraCm: num('larguraCm'),
+    profundidadeCm: num('profundidadeCm'),
+    paiId: (d?.paiId as string | null | undefined) ?? null,
+  };
+}
+
+/** A component that cannot supply its own weight — the rollup needs the parent. */
+const semPesoProprio = (m: ProdutoMedidas) => m.pesoBrutoKg === null || m.pesoLiquidoKg === null;
+
+/**
+ * A component that cannot supply its own box. Any missing or non-positive axis
+ * disqualifies the whole set, because a box needs all three.
+ *
+ * ⚠️ Gating the parent read on the weight alone is the easy mistake here: a
+ * variation very commonly carries a weight but NO dimensions, and then
+ * `dimensoesDoKit` has no parent to fall back to and silently loses the kit's
+ * real box.
+ */
+const semCaixaPropria = (m: ProdutoMedidas) =>
+  !((m.alturaCm ?? 0) > 0 && (m.larguraCm ?? 0) > 0 && (m.profundidadeCm ?? 0) > 0);
 
 const fmtBRL = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtKg = (n: number | null) =>
   n === null
     ? '—'
     : `${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kg`;
+const fmtCm = (n: number | null) =>
+  n === null ? '—' : n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
 
 /**
  * Produto id from the component `CollectionSelect` value — a
@@ -182,11 +226,9 @@ export function KitManager({
   // The cache also holds each component PARENT's cost (keyed by `paiId`) so the
   // variation-child cost fallback can resolve from it.
   const [custoCache, setCustoCache] = useState<Record<string, number | null>>({});
-  // Component (+ parent) weights, filled from the SAME doc reads as the cost —
-  // feeds the dynamic kit weight (Flutter `getPesoBrutoKg`/`getPesoLiquidoKg`).
-  const [pesoCache, setPesoCache] = useState<
-    Record<string, { bruto: number | null; liquido: number | null }>
-  >({});
+  // Component (+ parent) weights AND box, filled from the SAME doc reads as the
+  // cost — feeds the dynamic kit rollup (`dimensoesDoKit`).
+  const [dimensoesCache, setDimensoesCache] = useState<Record<string, ProdutoMedidas>>({});
   // Each component id → its `paiId` (or null) — feeds the Flutter cost/weight
   // fallback: a variation child with no own value uses its parent's.
   const [paiCache, setPaiCache] = useState<Record<string, string | null>>({});
@@ -211,11 +253,11 @@ export function KitManager({
     let cancelled = false;
     const readEntry = async (id: string) => {
       const d = (await getDocFromServer(produtoCollection.docRef(db, {}, id))).data();
+      const medidas = projetarMedidas(d);
       return {
         custo: (d?.custo as number | null | undefined) ?? null,
-        bruto: (d?.pesoBrutoKg as number | null | undefined) ?? null,
-        liquido: (d?.pesoLiquidoKg as number | null | undefined) ?? null,
-        paiId: (d?.paiId as string | null | undefined) ?? null,
+        medidas,
+        paiId: medidas.paiId,
       };
     };
     (async () => {
@@ -230,7 +272,11 @@ export function KitManager({
       const neededPais = [
         ...new Set(
           comps
-            .filter((c) => c.paiId && (c.custo === null || c.bruto === null || c.liquido === null))
+            .filter(
+              (c) =>
+                c.paiId &&
+                (c.custo === null || semPesoProprio(c.medidas) || semCaixaPropria(c.medidas)),
+            )
             .map((c) => c.paiId as string),
         ),
       ].filter((pid) => !(pid in custoCache));
@@ -243,12 +289,10 @@ export function KitManager({
         ...Object.fromEntries(comps.map((cm) => [cm.id, cm.custo])),
         ...Object.fromEntries(pais.map(([pid, e]) => [pid, e.custo])),
       }));
-      setPesoCache((p) => ({
+      setDimensoesCache((p) => ({
         ...p,
-        ...Object.fromEntries(comps.map((cm) => [cm.id, { bruto: cm.bruto, liquido: cm.liquido }])),
-        ...Object.fromEntries(
-          pais.map(([pid, e]) => [pid, { bruto: e.bruto, liquido: e.liquido }]),
-        ),
+        ...Object.fromEntries(comps.map((cm) => [cm.id, cm.medidas])),
+        ...Object.fromEntries(pais.map(([pid, e]) => [pid, e.medidas])),
       }));
       setPaiCache((p) => ({ ...p, ...Object.fromEntries(comps.map((cm) => [cm.id, cm.paiId])) }));
     })().catch((err: unknown) => {
@@ -275,21 +319,15 @@ export function KitManager({
     return custoDoKit(stripKitForSave(components) ?? {}, custoCache, paiCache);
   }, [activeIds, custoCache, paiCache, components]);
 
-  // Kit weight is DYNAMIC too (Flutter `getPesoBrutoKg`/`getPesoLiquidoKg`):
-  // Σ(component peso × quantidade), with a per-component default for any missing
-  // weight (so it always computes); `null` until every component is cached.
-  const pesoResult = useMemo(() => {
-    const empty = { bruto: null as number | null, liquido: null as number | null };
-    if (activeIds.length === 0) return empty;
-    if (activeIds.some((id) => !(id in pesoCache))) return null; // wait for reads
-    const comp = stripKitForSave(components) ?? {};
-    const brutoBy = Object.fromEntries(Object.entries(pesoCache).map(([k, v]) => [k, v.bruto]));
-    const liquidoBy = Object.fromEntries(Object.entries(pesoCache).map(([k, v]) => [k, v.liquido]));
-    return {
-      bruto: pesoDoKit(comp, brutoBy, paiCache, KIT_PESO_BRUTO_FALLBACK_KG),
-      liquido: pesoDoKit(comp, liquidoBy, paiCache, KIT_PESO_LIQUIDO_FALLBACK_KG),
-    };
-  }, [activeIds, pesoCache, paiCache, components]);
+  // Kit weight AND box are DYNAMIC (Flutter `getPesoBrutoKg`/`getPesoLiquidoKg`
+  // for the weight; the box is #1152). `null` until every component is cached —
+  // and note `dimensoesDoKit` is the SAME function the `recalcularDimensoesKit`
+  // task calls, so the two directions cannot drift.
+  const dimensoesResult = useMemo(() => {
+    if (activeIds.length === 0) return null;
+    if (activeIds.some((id) => !(id in dimensoesCache))) return null; // wait for reads
+    return dimensoesDoKit(stripKitForSave(components) ?? {}, dimensoesCache);
+  }, [activeIds, dimensoesCache, components]);
 
   // Push the computed cost into the read-only `custo` form field (writing to the
   // form = an external system, the legitimate use of an effect).
@@ -300,18 +338,21 @@ export function KitManager({
     }
   }, [syncCustoToForm, ehKit, custoResult, form]);
 
-  // Push the computed weights into the form's `pesoBrutoKg`/`pesoLiquidoKg`
-  // fields (Dimensões tab). Only when they actually differ, so loading an
-  // already-consistent kit doesn't mark the form dirty.
+  // Push the computed weights and box into the "Dimensões e peso" fields. Only
+  // when they actually differ, so loading an already-consistent kit doesn't mark
+  // the form dirty.
   useEffect(() => {
-    const patches = kitWeightFormPatches(syncPesoToForm, ehKit, pesoResult, {
+    const patches = kitDimensoesFormPatches(syncPesoToForm, ehKit, dimensoesResult, {
       pesoBrutoKg: form?.getValues('pesoBrutoKg'),
       pesoLiquidoKg: form?.getValues('pesoLiquidoKg'),
+      alturaCm: form?.getValues('alturaCm'),
+      larguraCm: form?.getValues('larguraCm'),
+      profundidadeCm: form?.getValues('profundidadeCm'),
     });
     for (const { field, value } of patches) {
       form?.setValue(field, value, { shouldDirty: true });
     }
-  }, [syncPesoToForm, ehKit, pesoResult, form]);
+  }, [syncPesoToForm, ehKit, dimensoesResult, form]);
 
   const setComponent = (id: string, patch: Partial<KitDraft>) => {
     onChange({ ...components, [id]: { ...components[id], ...patch } as KitDraft });
@@ -378,14 +419,13 @@ export function KitManager({
         return;
       }
       const own = (data?.custo as number | null | undefined) ?? null;
-      const ownBruto = (data?.pesoBrutoKg as number | null | undefined) ?? null;
-      const ownLiquido = (data?.pesoLiquidoKg as number | null | undefined) ?? null;
-      const paiId = (data?.paiId as string | null | undefined) ?? null;
+      const medidas = projetarMedidas(data);
+      const paiId = medidas.paiId;
       setPaiCache((p) => ({ ...p, [id]: paiId }));
-      const missingField = own === null || ownBruto === null || ownLiquido === null;
+      const missingField = own === null || semPesoProprio(medidas) || semCaixaPropria(medidas);
       if (missingField && paiId && !(paiId in custoCache)) {
-        // Variation child missing custo/weight with an UNCACHED parent — read the
-        // parent once for the Flutter fallback (`models.dart:1271-1287` / :1487-1541).
+        // Variation child missing custo/weight/box with an UNCACHED parent — read
+        // the parent once for the Flutter fallback (`models.dart:1271-1287` / :1487-1541).
         // A parent already cached (e.g. by a sibling component) is reused.
         const pd = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
         setCustoCache((c) => ({
@@ -393,17 +433,10 @@ export function KitManager({
           [id]: own,
           [paiId]: (pd?.custo as number | null | undefined) ?? null,
         }));
-        setPesoCache((p) => ({
-          ...p,
-          [id]: { bruto: ownBruto, liquido: ownLiquido },
-          [paiId]: {
-            bruto: (pd?.pesoBrutoKg as number | null | undefined) ?? null,
-            liquido: (pd?.pesoLiquidoKg as number | null | undefined) ?? null,
-          },
-        }));
+        setDimensoesCache((p) => ({ ...p, [id]: medidas, [paiId]: projetarMedidas(pd) }));
       } else {
         setCustoCache((c) => ({ ...c, [id]: own }));
-        setPesoCache((p) => ({ ...p, [id]: { bruto: ownBruto, liquido: ownLiquido } }));
+        setDimensoesCache((p) => ({ ...p, [id]: medidas }));
       }
     } catch (err) {
       if (err instanceof FirebaseError) {
@@ -429,8 +462,15 @@ export function KitManager({
 
   const custoKit = custoResult?.custo ?? null;
   const faltando = custoResult?.faltando ?? [];
-  const pesoBrutoKit = pesoResult?.bruto ?? null;
-  const pesoLiquidoKit = pesoResult?.liquido ?? null;
+  const pesoBrutoKit = dimensoesResult?.pesoBrutoKg ?? null;
+  const pesoLiquidoKit = dimensoesResult?.pesoLiquidoKg ?? null;
+  const caixaKit =
+    dimensoesResult &&
+    dimensoesResult.alturaCm !== null &&
+    dimensoesResult.larguraCm !== null &&
+    dimensoesResult.profundidadeCm !== null
+      ? dimensoesResult
+      : null;
 
   if (!ehKit) {
     return (
@@ -446,8 +486,8 @@ export function KitManager({
     <Stack gap="xs">
       <Group justify="space-between" align="flex-start" wrap="nowrap">
         <Text size="sm" c="dimmed">
-          Produtos que compõem o kit. O custo e o peso do kit são calculados automaticamente (soma
-          dos componentes × quantidade) e preenchem os campos Custo e Dimensões.
+          Produtos que compõem o kit. O custo, o peso e as dimensões do kit são calculados
+          automaticamente a partir dos componentes e preenchem os campos Custo e Dimensões.
         </Text>
         <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
           {custoKit !== null && (
@@ -458,6 +498,12 @@ export function KitManager({
           {(pesoBrutoKit !== null || pesoLiquidoKit !== null) && (
             <Text size="xs" c="dimmed">
               Peso: {fmtKg(pesoBrutoKit)} bruto · {fmtKg(pesoLiquidoKit)} líq.
+            </Text>
+          )}
+          {caixaKit && (
+            <Text size="xs" c="dimmed">
+              Dimensões: {fmtCm(caixaKit.alturaCm)} × {fmtCm(caixaKit.larguraCm)} ×{' '}
+              {fmtCm(caixaKit.profundidadeCm)} cm
             </Text>
           )}
         </Stack>

@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
-  dimensoesPedido,
+  DIMENSOES_PADRAO,
   ESPESSURA_MAX_SACO_CM,
   FATOR_OCUPACAO,
   LIMITE_LEGAL_CM,
   LIMITE_SEM_SOBRETAXA_CM,
   LIMITE_SOMA_CM,
-} from './dimensoesPedido';
-import { DIMENSOES_PADRAO, type ProdutoMedidas } from './pesoPedido';
+  // Aliased so every assertion below stays byte-identical to the suite this
+  // file was moved from — that is what proves the move changed no behaviour.
+  estimarDimensoes as dimensoesPedido,
+  type ProdutoMedidas,
+} from './dimensoes';
 
 function medidas(over: Partial<ProdutoMedidas> = {}): ProdutoMedidas {
   return {
@@ -266,6 +269,54 @@ describe('dimensoesPedido — the legal contract holds on every path', () => {
         );
         // And the warning must match the box that was actually produced.
         if (maior > LIMITE_SEM_SOBRETAXA_CM) expect(r.aviso).not.toBeNull();
+      }
+    }
+  });
+});
+
+describe('estimarDimensoes — fatorOcupacao', () => {
+  it('defaults to FATOR_OCUPACAO, so the pedido path is unchanged by the knob', () => {
+    const itens = [{ produtoUid: 'p1', quantidade: 4 }];
+    const mapa = { p1: caixa(20, 20, 20) };
+    expect(dimensoesPedido(itens, mapa)).toEqual(
+      dimensoesPedido(itens, mapa, { fatorOcupacao: FATOR_OCUPACAO }),
+    );
+  });
+
+  it('fatorOcupacao 1 asks for less volume than the default, never more', () => {
+    // The whole point of the knob (#1152): a kit must not pay the packing
+    // allowance a second time when the pedido re-boxes it.
+    const itens = [{ produtoUid: 'p1', quantidade: 6 }];
+    const mapa = { p1: caixa(20, 20, 20) };
+    const solto = dimensoesPedido(itens, mapa);
+    const justo = dimensoesPedido(itens, mapa, { fatorOcupacao: 1 });
+    expect(volumeDe(justo.dimensoes)).toBeLessThanOrEqual(volumeDe(solto.dimensoes));
+    // ...and it still contains the real content volume.
+    expect(volumeDe(justo.dimensoes)).toBeGreaterThanOrEqual(20 * 20 * 20 * 6 * (1 - 1e-9));
+  });
+
+  it('still honours the legal minimums and the 200cm sum at fatorOcupacao 1', () => {
+    for (const [a, l, p] of [
+      [80, 80, 2],
+      [0.5, 120, 3],
+      [1, 1, 1],
+      [99, 99, 99],
+    ] as Array<[number, number, number]>) {
+      for (const q of [1, 7, 400]) {
+        const r = dimensoesPedido(
+          [{ produtoUid: 'p1', quantidade: q }],
+          { p1: caixa(a, l, p) },
+          {
+            fatorOcupacao: 1,
+          },
+        );
+        expect(somaDe(r.dimensoes), `sum ${a}x${l}x${p} q=${q}`).toBeLessThanOrEqual(
+          LIMITE_SOMA_CM,
+        );
+        expect(
+          Math.max(r.dimensoes.altura, r.dimensoes.largura, r.dimensoes.comprimento),
+          `side ${a}x${l}x${p} q=${q}`,
+        ).toBeLessThanOrEqual(LIMITE_LEGAL_CM);
       }
     }
   });

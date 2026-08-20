@@ -1183,6 +1183,20 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "componentesKitKeys",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "sku",
           "order": "ASCENDING"
         }

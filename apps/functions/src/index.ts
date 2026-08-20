@@ -13,6 +13,7 @@ export { onTabMediMediaChanged } from './arquivos/onTabMediMediaChanged';
 export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
 export { onProdutoDeleted } from './produtos/onProdutoDeleted';
 export { onProdutoChanged } from './produtos/onProdutoChanged';
+export { recalcularDimensoesKit } from './produtos/kitRollup';
 export { onProdutoExtraDataChanged } from './produtos/onProdutoExtraDataChanged';
 export { onProdutoImpostoChanged } from './produtos/onProdutoImpostoChanged';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';

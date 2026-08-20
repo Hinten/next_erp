@@ -37,7 +37,7 @@ const semPesoProprio = (p: ProdutoMedidas) =>
   (p.pesoBrutoKg ?? 0) === 0 && (p.pesoLiquidoKg ?? 0) === 0;
 
 /**
- * A produto that cannot supply its own box — `dimensoesPedido` needs the
+ * A produto that cannot supply its own box — `estimarDimensoes` needs the
  * parent. Any missing or non-positive axis disqualifies the whole set, because
  * a box needs all three.
  */
@@ -59,7 +59,7 @@ export function produtoPesoIds(produtoUids: readonly (string | null | undefined)
 /**
  * Two-wave batched lookup: every produto, then — for any variation that can
  * supply neither its own weight nor its own box — its parent too, so both
- * `pesoPedido`'s and `dimensoesPedido`'s variation→parent fallbacks resolve
+ * `pesoPedido`'s and `estimarDimensoes`'s variation→parent fallbacks resolve
  * from the same map without a second round-trip from the caller.
  */
 export async function fetchProdutoPesoMap(
@@ -86,7 +86,7 @@ export async function fetchProdutoPesoMap(
   //
   // ⚠️ The dimension half of the predicate is load-bearing: a variation very
   // commonly carries a weight but no dimensions, and gating this wave on the
-  // weight alone would leave `dimensoesPedido` with no parent to fall back to —
+  // weight alone would leave `estimarDimensoes` with no parent to fall back to —
   // silently costing the pedido its real box.
   const paiIds = [
     ...new Set(

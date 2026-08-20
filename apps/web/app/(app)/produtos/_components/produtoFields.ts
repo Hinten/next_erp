@@ -4,7 +4,7 @@ import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import { skuRenderInput } from './SkuField';
-import { pesoRenderInput } from './PesoField';
+import { dimensaoRenderInput, pesoRenderInput } from './PesoField';
 
 /**
  * Shared Produto ObjectView configuration, used by both the create (`novo`)
@@ -70,9 +70,22 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
     section: 'Dimensões e peso',
     renderInput: pesoRenderInput,
   },
-  alturaCm: { label: 'Altura (cm)', section: 'Dimensões e peso' },
-  larguraCm: { label: 'Largura (cm)', section: 'Dimensões e peso' },
-  profundidadeCm: { label: 'Profundidade (cm)', section: 'Dimensões e peso' },
+  // ...and so are the three box axes, since #1152 rolls them up too.
+  alturaCm: {
+    label: 'Altura (cm)',
+    section: 'Dimensões e peso',
+    renderInput: dimensaoRenderInput,
+  },
+  larguraCm: {
+    label: 'Largura (cm)',
+    section: 'Dimensões e peso',
+    renderInput: dimensaoRenderInput,
+  },
+  profundidadeCm: {
+    label: 'Profundidade (cm)',
+    section: 'Dimensões e peso',
+    renderInput: dimensaoRenderInput,
+  },
   crossdocking: {
     label: 'Crossdocking',
     hint: 'Prazo extra de postagem em dias',

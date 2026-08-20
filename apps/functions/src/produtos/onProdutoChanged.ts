@@ -9,6 +9,12 @@ import { getDb } from '../lib/admin';
 import { resolveUsuarioOuterRef } from '../lib/authContext';
 import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
+import { CAMPOS_ROLLUP_KIT, planejarRollupKit } from './kitRollupPayload';
+import {
+  createKitRollupScheduler,
+  isFalhaDeEnfileiramentoContivel,
+  type KitRollupScheduler,
+} from './kitRollupTasks';
 
 /**
  * Unified produto modification history
@@ -53,7 +59,20 @@ export function produtoExtraIgnores(
   before: DocumentData | undefined,
   after: DocumentData | undefined,
 ): ReadonlyArray<string> {
-  return (after ?? before)?.paiId != null ? ['precos'] : [];
+  const doc = after ?? before;
+  const ignores: string[] = [];
+  if (doc?.paiId != null) ignores.push('precos');
+  // On a KIT the weight and box are server-DERIVED — rolled up from the
+  // components by `dimensoesDoKit`, pushed in by `KitManager` on save and
+  // rewritten by `recalcularDimensoesKit` whenever a component changes (#1152).
+  // The produto form makes all five read-only for a kit, so a row here would
+  // attribute a machine's arithmetic to whoever last touched a component.
+  //
+  // ⚠️ Conditional on `ehKit`, NOT added to `PRODUTO_HISTORY_IGNORE_FIELDS`: on
+  // an ordinary produto these are exactly the operator edits most worth
+  // auditing, since they decide what the freight quote and the NF-e declare.
+  if (doc?.ehKit === true) ignores.push(...CAMPOS_ROLLUP_KIT);
+  return ignores;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -109,6 +128,40 @@ async function findChildrenToPropagate(
 }
 
 /**
+ * Fan the kit weight/box rollup out to a queue when — and only when — this write
+ * actually moved one of the five derived fields on a produto that can be a kit
+ * component. One enqueue, no Firestore reads: a component can sit in thousands
+ * of kits (ADR 0014), which is work for `recalcularDimensoesKit`, not for a
+ * trigger with a 60s timeout and no checkpoint.
+ *
+ * A failed enqueue is logged, not thrown: this trigger does not retry, there is
+ * no document to park, and throwing would only undo the history entry that
+ * already landed. The kits then wait for the next edit to any of their
+ * components — or for the one-time backfill script.
+ */
+async function enfileirarRollupDeKit(
+  scheduler: KitRollupScheduler,
+  produtoId: string,
+  before: DocumentData | undefined,
+  after: DocumentData | undefined,
+): Promise<void> {
+  const payload = planejarRollupKit(produtoId, before, after);
+  if (payload === null) return;
+  try {
+    await scheduler.enqueue(payload);
+  } catch (err: unknown) {
+    if (isFalhaDeEnfileiramentoContivel(err)) {
+      logger.error(
+        `onProdutoChanged: falha ao enfileirar o rollup de kits de ${produtoId} — os kits que o ` +
+          `contêm ficam desatualizados até a próxima edição de um componente: ${String(err)}`,
+      );
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
  * Record one modification-history entry for this produto write, then —
  * parent writes only, and only when `precos` actually changed and the parent
  * didn't opt out — propagate the new map to every existing variation child.
@@ -139,8 +192,22 @@ export async function recordProdutoModificationAndPropagate(
    * pure and drivable from the emulator suite.
    */
   usuarioOuterRef: string | null = null,
+  /**
+   * Enqueue seam for the kit weight/box rollup (#1152) — threaded in so the
+   * emulator suite and the unit tests can record enqueues instead of reaching
+   * Cloud Tasks.
+   */
+  kitScheduler: KitRollupScheduler = createKitRollupScheduler(),
 ): Promise<void> {
   if (after === undefined) return; // produto delete — no entry (see doc comment)
+
+  // ⚠️ FIRST, and gated on the RAW before/after rather than on `entry.campos`.
+  // A produto whose weight or box changed must fan out to the kits containing
+  // it even if some future ignore-list edit made that change invisible to the
+  // history — the two decisions are deliberately decoupled. `planejarRollupKit`
+  // returns null for everything else, so an ordinary produto save still costs
+  // ZERO extra reads here.
+  await enfileirarRollupDeKit(kitScheduler, produtoId, before, after);
 
   const entry = buildModificationEntry({
     before,
