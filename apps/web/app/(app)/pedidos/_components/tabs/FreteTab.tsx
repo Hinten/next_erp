@@ -49,8 +49,9 @@ export interface FreteTabProps {
  * selector gates everything: '9' (sem frete) collapses the editor but keeps
  * whatever `freteInicial` data the doc carries (legacy semantics). Picking
  * a freight modalidade on a pedido without `freteInicial` seeds the block
- * via `freteDoPedidoSchema.parse`, so every wire key starts at its Flutter
- * default.
+ * via `freteDoPedidoSchema.parse`, so every wire key starts at its schema
+ * default — Flutter's, except `modalidade` (supplied by the caller here) and
+ * `ehReverso`, both of which deliberately diverge (#1090).
  */
 export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const freteInicial = form.watch('freteInicial');
@@ -123,10 +124,13 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
     // Captured BEFORE the write below — `temFrete` is derived from watched form
     // state, so it only reflects the new modalidade on the next render.
     const wasAtivo = temFrete;
-    if (next.data === '9') {
+    if (next.data === MODALIDADE_FRETE.semTransporte) {
       // Sem frete: collapse but keep the stored data (legacy parity).
       if (freteInicial) {
-        form.setValue(fretePath('modalidade'), '9', { shouldDirty: true, shouldValidate: true });
+        form.setValue(fretePath('modalidade'), MODALIDADE_FRETE.semTransporte, {
+          shouldDirty: true,
+          shouldValidate: true,
+        });
       }
       return;
     }
