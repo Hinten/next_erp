@@ -37,7 +37,10 @@ import { describe, expect, it } from 'vitest';
  * on this assertion, the fix is almost certainly to classify a lane someone added
  * concurrently — not to weaken the partition. Closing the skew itself would mean
  * requiring branches to be up to date before merging, which is a `protect-main`
- * setting and a deliberate cost, not a code change here.
+ * setting and a deliberate cost, not a code change here — and one that cannot be
+ * turned on until #1052 gives that ruleset a `required_status_checks` rule to hang
+ * it off. Deferred until after the migration (#1167); until then a red `main` is
+ * at least REPORTED, by `main-red-alert.yml` — see assertion 14.
  *
  * ⚠️ WHY THE GATE MUST BE UNSKIPPABLE. A job skipped by `if:` still publishes a
  * check run, with conclusion `skipped`, and GitHub's required-status-check
@@ -231,6 +234,10 @@ const UNGATED = {
     'The shared engine. `workflow_call`-only — asserted separately below.',
   '.github/workflows/nfe-epec-scheduled.yml':
     'schedule + workflow_dispatch only. Never runs on a PR, so it can gate nothing.',
+  '.github/workflows/main-red-alert.yml':
+    'workflow_run + workflow_dispatch only. It reports on the TRUNK after a merge, ' +
+    'not on a PR — it cannot gate anything, and by construction it cannot even run ' +
+    'on one. Its own contract is assertion 14 below.',
   '.github/workflows/copilot-setup-steps.yml':
     'Agent environment bootstrap. Its self-referential `paths:` filter is correct: ' +
     'it is not a test lane and reports on nothing.',
@@ -1097,5 +1104,85 @@ describe('CI lanes always report', () => {
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),
     ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 14. Every workflow that verifies the TRUNK is wired to the red-main alert.
+  // ------------------------------------------------------------------
+  it('the main-red alert lists exactly the workflows that verify the trunk on push', () => {
+    const ALERT = '.github/workflows/main-red-alert.yml';
+
+    /**
+     * Push-triggered workflows that verify NOTHING about this repo, with the
+     * reason. Both are self-referentially `paths:`-filtered bootstraps (their
+     * `paths:` is their own file), so a failure there says something about the
+     * agent harness, never that `main` is broken.
+     */
+    const NOT_TRUNK_VERIFIERS = {
+      '.github/workflows/copilot-setup-steps.yml': 'agent environment bootstrap',
+      '.github/workflows/copilot-code-review.yml': 'Copilot review runner config',
+    };
+
+    /** The `name:` a workflow publishes — which is what `workflow_run` matches on. */
+    const workflowName = (source) =>
+      (source.match(/^name\s*:\s*(.+?)\s*$/m)?.[1] ?? '').replace(/^['"]|['"]$/g, '');
+
+    const verifiers = [];
+    for (const file of findByPathspec(':(glob).github/workflows/*.y*ml').sort()) {
+      if (file === ALERT || NOT_TRUNK_VERIFIERS[file]) continue;
+      const push = onSubBlock(read(file), 'push');
+      if (push === null) continue;
+      if (!push.some((l) => /^\s+branches\s*:\s*\[[^\]]*\bmain\b/.test(l))) continue;
+      verifiers.push(workflowName(read(file)));
+    }
+
+    // Anti-vacuity, both directions. Six workflows re-verify `main` after a merge
+    // (ci.yml plus the five domain lanes); a scanner that matched none would make
+    // the equality below pass over two empty lists.
+    expect(
+      verifiers.length,
+      'Parsed no trunk-verifying workflows out of .github/workflows — the scanner ' +
+        'here has rotted and this assertion now checks nothing.',
+    ).toBeGreaterThanOrEqual(6);
+
+    const onWorkflowRun = onSubBlock(read(ALERT), 'workflow_run') ?? [];
+    const at = onWorkflowRun.findIndex((l) => /^\s+workflows\s*:/.test(l));
+    const indent = at === -1 ? Infinity : onWorkflowRun[at].match(/^\s*/)[0].length;
+    const listed = [];
+    for (const line of onWorkflowRun.slice(at + 1)) {
+      const m = line.match(/^(\s+)-\s*(.+?)\s*$/);
+      if (!m || m[1].length <= indent) break;
+      listed.push(m[2].replace(/^['"]|['"]$/g, ''));
+    }
+
+    expect(
+      listed.length,
+      `Parsed no \`workflows:\` entries out of ${ALERT} — either the block moved or ` +
+        'the parser here rotted, and this assertion now checks nothing.',
+    ).toBeGreaterThan(0);
+
+    expect(
+      listed.sort(),
+      [
+        'The red-main alert no longer covers exactly the workflows that verify the trunk.',
+        '',
+        '⚠️ `workflow_run` matches by workflow NAME, with no fuzziness and no error when',
+        "a name matches nothing. So renaming a lane's `name:`, or adding a lane with a",
+        "`push:` trigger on `main`, silently leaves that lane's red trunk unreported —",
+        'the exact "detected but never reported" defect this alert was built to remove',
+        '(#1167: `ci.yml` caught the 2026-08-20 break in four minutes and told nobody,',
+        'because its report job was `pull_request`-only).',
+        '',
+        `Fix the \`workflows:\` list in ${ALERT}, copying the \`name:\` verbatim —`,
+        'em dash included.',
+      ].join('\n'),
+    ).toEqual([...verifiers].sort());
+
+    // It must stay off the PR path: a `pull_request:` trigger here would make it a
+    // gateless entry lane, which assertions 2-5 do not cover (they only walk LANES).
+    expect(
+      onSubBlock(read(ALERT), 'pull_request'),
+      `${ALERT} gained a \`pull_request:\` trigger.`,
+    ).toBeNull();
   });
 });
