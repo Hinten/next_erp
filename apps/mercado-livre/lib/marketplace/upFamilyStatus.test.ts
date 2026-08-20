@@ -85,3 +85,33 @@ describe('foldFamilyStatus', () => {
     ).toEqual({ status: 'paused', subStatus: ['out_of_stock'] });
   });
 });
+
+describe('foldFamilyStatus — the tie-break among equal-ranked members', () => {
+  const plainPaused = { status: 'paused', subStatus: null };
+  const oosPaused = { status: 'paused', subStatus: ['out_of_stock'] };
+
+  /**
+   * `rank` reads `status` alone, so two `paused` members tie — but the stock gate
+   * reads the PAIR (`paused` sends only WITH `out_of_stock`). Left to arrive-order
+   * the winner would be whichever child produto sorts first by `__name__`: same
+   * family, same member statuses, opposite stock outcome. Both orders must agree,
+   * and they must agree on the SENDABLE reading.
+   */
+  it('prefers the sendable reading regardless of member order', () => {
+    expect(foldFamilyStatus([plainPaused, oosPaused])).toEqual(oosPaused);
+    expect(foldFamilyStatus([oosPaused, plainPaused])).toEqual(oosPaused);
+  });
+
+  it('does not let the tie-break promote a LOWER-ranked member', () => {
+    // `active` outranks any `paused`, sendable or not — the ladder still governs.
+    const active = { status: 'active', subStatus: null };
+    expect(foldFamilyStatus([oosPaused, active])).toEqual(active);
+    expect(foldFamilyStatus([active, oosPaused])).toEqual(active);
+  });
+
+  it('is stable when neither tied member is sendable', () => {
+    const a = { status: 'under_review', subStatus: ['forbidden'] };
+    const b = { status: 'under_review', subStatus: null };
+    expect(foldFamilyStatus([a, b])).toEqual(a);
+  });
+});

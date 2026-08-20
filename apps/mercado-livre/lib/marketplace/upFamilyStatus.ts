@@ -17,11 +17,25 @@
  * Hence the ladder below, where `closed` ranks LAST and can only win when it is
  * the only thing left.
  *
- * Pure and total: no Firestore, no ML, no clock. The caller supplies every member
- * it knows about (with the notified one's freshly-fetched status substituted in)
- * and gets back the raw values to write, or null meaning "cannot conclude — write
- * nothing", which is always safe because the previous value stays.
+ * ⚠️ There is NO FLOOR under "cannot conclude", and that is a deliberate bias with
+ * a consequence worth naming. A family whose members were all closed BEFORE this
+ * shipped stays un-concluded until every member fires another `items`
+ * notification — and a closed listing that never changes again never fires one. So
+ * such a family keeps its old `estado` and stays selected by the sweeps. That is
+ * over-inclusion (a few wasted sends that ML rejects), never a silent drop, which
+ * is the direction this whole module is biased toward. Clearing that backlog needs
+ * a reconciliation pass, not a rule change here.
+ *
+ * Pure and total: no Firestore, no ML, no clock. `podeEnviarEstoque` is itself a
+ * pure predicate — the fold borrows the SAME definition of "sendable" the stock
+ * planner gates on rather than restating it and letting the two drift. The caller
+ * supplies every member it knows about (with the notified one's freshly-fetched
+ * status substituted in) and gets back the raw values to write, or null meaning
+ * "cannot conclude — write nothing", which is always safe because the previous
+ * value stays.
  */
+
+import { podeEnviarEstoque } from './bulkEstoquePlan';
 
 /** The member facts the fold reads. `status` null = never observed. */
 export interface FoldableMember {
@@ -84,6 +98,17 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
     if (r > winnerRank) {
       winnerRank = r;
       winner = m;
+    } else if (r === winnerRank && winner != null && !sendable(winner) && sendable(m)) {
+      // ⚠️ TIE-BREAK, and it is not cosmetic. `rank` reads `status` alone, so two
+      // `paused` members tie — but the stock gate reads the PAIR: `paused` sends
+      // only WITH `out_of_stock`. Left to arrive-order the winner would be
+      // whichever child produto sorts first by `__name__`, so the same family
+      // with the same member statuses would either keep receiving stock or stop,
+      // decided by document ordering. Stopping is the harmful direction: the
+      // out-of-stock member then never gets the `qty > 0` push ML reactivates on,
+      // and the listing stays down. Same shape as the `closed` rung above — one
+      // member's bad news speaking for the family — so it gets the same answer.
+      winner = m;
     }
   }
 
@@ -91,4 +116,9 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
   if (winnerRank === 0 && unobserved > 0) return null; // all-closed is not yet provable
 
   return { status: winner.status!, subStatus: winner.subStatus };
+}
+
+/** Whether ML would accept a stock update for this reading — the tie-break key. */
+function sendable(m: FoldableMember): boolean {
+  return podeEnviarEstoque(m.status, m.subStatus).enviar;
 }

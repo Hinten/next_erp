@@ -1139,3 +1139,65 @@ describe('syncItemStatus — concurrent family members (rule 7)', () => {
     expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplace: [], marketplaceIds: [] });
   });
 });
+
+describe('syncItemStatus — a family member never speaks for the family un-folded', () => {
+  it("a MEMBER's migration tags do not stamp `estado 'am'` on the family", async () => {
+    // Under stage-2 resolution `link` is the family PARENT. A tag branch reaching
+    // it would block publish and make BOTH planners skip every sibling because one
+    // member is tagged. The member goes to the fold instead.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'paused' },
+    ]);
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', tags: ['variations_migration_uptin'] }),
+    );
+
+    expect(out).not.toBe('deferred-migration-uptin');
+    expect(db.docData(LINK_PATH, 'link1')).not.toMatchObject({ estado: 'am' });
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' });
+  });
+
+  it('a MEMBER never triggers the #441 takeover against the family link', async () => {
+    // The takeover prunes its source. Handing it a member item id with the
+    // FAMILY's parent link would point that prune at a live family. A UPtin
+    // migration's source is a LEGACY listing, which resolves through stage 1.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }]);
+    const migrationRunner = vi.fn(async () => {});
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
+      migrationRunner,
+    );
+
+    expect(migrationRunner).not.toHaveBeenCalled();
+  });
+
+  it('a member row with no itemId is not a listing, so it cannot block a cancel forever', async () => {
+    // The legacy `variations[]` branch leaves `itemId` null. Counted as "never
+    // observed" it would make `'c'` unreachable for the family for all time — no
+    // notification can arrive for something that was never published.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }]);
+    db.seed('produtos/childZ/variacaoMercadoLivre', 'v-childZ', {
+      itemId: null,
+      produtoMercadoLivreOuterRef: FAMILY_PML_REF,
+      produtoVariacaoOuterRef: 'documents/produtos/childZ',
+      status: null,
+    });
+
+    const out = await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(out).toBe('synced-family');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c' });
+  });
+});

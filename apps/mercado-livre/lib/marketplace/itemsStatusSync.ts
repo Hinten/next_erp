@@ -207,6 +207,24 @@ export async function syncItemStatus(
     throw err; // transient (5xx/429/network) or reauth → the queue/sweep retry
   }
 
+  // ⚠️ The FAMILY branch comes FIRST, above the migration-tag branches, and the
+  // ordering is load-bearing. Under stage-2 resolution `link` is the family's
+  // PARENT — so a tag branch here would let ONE member's tags speak for the whole
+  // family un-folded: `stampAguardandoMigracao` would write `estado: 'am'` on the
+  // parent, which blocks publish and makes both the price and stock planners skip
+  // every sibling. Worse, the takeover branch would hand `migrationRunner` a
+  // MEMBER item id together with the family's parent link as the migration
+  // SOURCE, pointing a prune at a live family.
+  //
+  // Nothing is lost by skipping the tag branches here: a UPtin migration's source
+  // is by definition a LEGACY `variations[]` listing, whose parent link carries an
+  // item id and therefore resolves through stage 1, never stage 2. A stage-2
+  // resolution is already User-Products, so it cannot be the source of a
+  // migration INTO User Products.
+  if (link.member) {
+    return syncFamilyMember(db, integracaoId, item, link, link.member);
+  }
+
   // Migration-tagged item (needs the fetched item's `tags`) — the only reason
   // left to skip a listing, and it is ML's reason, not ours. The ONE takeover
   // case is this listing's source tag + it just went `closed` + a runner was
@@ -239,12 +257,6 @@ export async function syncItemStatus(
   if (tags.includes(MIGRATION_SOURCE_TAG)) {
     await stampAguardandoMigracao(db, link);
     return 'deferred-migration-source';
-  }
-
-  // A UP family member speaks for ONE of the N listings this link summarises, so
-  // its status is folded with its siblings' rather than written straight through.
-  if (link.member) {
-    return syncFamilyMember(db, integracaoId, item, link, link.member);
   }
 
   return applyResolvedStatus(
@@ -376,6 +388,12 @@ async function syncFamilyMember(
       const isNotified =
         d.id === member.docId && (d.ref.parent?.parent?.id ?? '') === member.produtoId;
       if (isNotified) notified = d;
+      // ⚠️ A row with no `itemId` is not an ML listing at all — the legacy
+      // `variations[]` branch leaves the field null (`importCore.ts`). Passing it
+      // to the fold would count it as "never observed", and since no notification
+      // can ever arrive for something that was never published, the family could
+      // NEVER conclude `'c'`. Excluded outright: absent, not unknown.
+      if (!isNotified && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
       foldable.push(
         isNotified
           ? { status, subStatus }
