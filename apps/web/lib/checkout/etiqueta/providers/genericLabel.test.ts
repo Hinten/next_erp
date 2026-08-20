@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The provider builds the model + renders the PDF through the generic-label
-// module; mock the whole barrel so the test never touches Firestore or the DOM.
+// module; mock the whole barrel so the test never touches Firestore or jsPDF.
 const { buildModelMock, renderMock } = vi.hoisted(() => ({
   buildModelMock: vi.fn(),
   renderMock: vi.fn(),
 }));
 vi.mock('@/lib/etiqueta-generica', () => ({
   buildEtiquetaGenericaModel: buildModelMock,
-  renderAndExportEtiquetaGenericaPdf: renderMock,
+  renderEtiquetaGenericaPdf: renderMock,
 }));
 
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';
@@ -63,10 +63,28 @@ describe('genericLabelProvider', () => {
     );
   });
 
-  it('still reports printed when the agent is down (printJob downloads)', async () => {
+  it('still reports printed when the agent is down, but SAYS the label was downloaded', async () => {
+    // The row action is silent on a successful print, so without the toast an
+    // agent that is down is indistinguishable from a print that worked — the
+    // click appears to do nothing and the label is sitting in Downloads.
     const printJob = vi.fn(async () => 'downloaded' as const);
-    const out = await genericLabelProvider.emitirOuImprimir(makeInput({ printJob }));
+    const notify = vi.fn();
+    const out = await genericLabelProvider.emitirOuImprimir(makeInput({ printJob, notify }));
     expect(out).toEqual({ status: 'printed' });
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'yellow',
+        message: expect.stringContaining('etiqueta-1234.pdf'),
+      }),
+    );
+  });
+
+  it('stays silent when the agent actually printed it', async () => {
+    const notify = vi.fn();
+    await genericLabelProvider.emitirOuImprimir(
+      makeInput({ printJob: vi.fn(async () => 'printed' as const), notify }),
+    );
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('warns on zpl2 but still builds the PDF', async () => {

@@ -1,7 +1,4 @@
-import {
-  buildEtiquetaGenericaModel,
-  renderAndExportEtiquetaGenericaPdf,
-} from '@/lib/etiqueta-generica';
+import { buildEtiquetaGenericaModel, renderEtiquetaGenericaPdf } from '@/lib/etiqueta-generica';
 
 import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput } from '../types';
 
@@ -32,15 +29,30 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
 
     try {
       const model = await buildEtiquetaGenericaModel(db, pedido, pedidoId, frete, intFrete);
-      const blob = await renderAndExportEtiquetaGenericaPdf(model);
+      const blob = await renderEtiquetaGenericaPdf(model);
       const fileName = `etiqueta-${pedido.numero ?? pedidoId}.pdf`;
 
-      // A print (agent up) or a download (agent down) both DELIVER the label to
-      // the operator, so either way the action succeeded — map both to 'printed'.
-      await deps.printJob(blob, { fileName, contentType: 'application/pdf', tamanho: 'etq' });
+      // A print (agent up) or a download (agent down) both DELIVER the label, so
+      // either way the action succeeded — both map to 'printed'.
+      const delivery = await deps.printJob(blob, {
+        fileName,
+        contentType: 'application/pdf',
+        tamanho: 'etq',
+      });
+      // …but they are not the same thing to the operator, and the row action is
+      // deliberately silent on a successful print. Without this, an agent that
+      // is down looks EXACTLY like a successful print: the click appears to do
+      // nothing and the label is sitting in Downloads.
+      if (delivery === 'downloaded') {
+        ui.notify({
+          title: 'Etiqueta genérica',
+          message: `Agente de impressão indisponível. A etiqueta foi baixada como "${fileName}" e precisa ser impressa manualmente.`,
+          color: 'yellow',
+        });
+      }
       return { status: 'printed' };
     } catch (err) {
-      // The Firestore derefs and the html-to-image / jsPDF render throw plain
+      // The Firestore derefs and the jsPDF render throw plain
       // Errors; keep the post-save contract best-effort — surface a toast and
       // return an `error` outcome instead of rejecting the caller (the checkout
       // is already committed). A genuinely non-Error still propagates.
