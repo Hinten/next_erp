@@ -339,6 +339,10 @@ export function describeChartValidationError(problem: {
         ? `${subject} está fora do intervalo aceito pelo Mercado Livre.`
         : `${subject} está fora do intervalo aceito pelo Mercado Livre (${range}).`;
     }
+    // `code` is `string | null`, so `null` is a member the exhaustiveness check
+    // wants named. It falls into the same branch `default` already handled — an
+    // unrecognised (or absent) code shows ML's own text.
+    case null:
     default:
       return raw;
   }
