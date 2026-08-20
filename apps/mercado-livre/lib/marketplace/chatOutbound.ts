@@ -33,6 +33,7 @@ import {
 import { postSaleAgentUserId, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { ANSWER_MENSAGEM_ID } from './questionIds';
+import { makeMensagemProvisoriaId } from './mensagemProvisoria';
 import { questionActionability } from './questionMapping';
 import { orderMessageActionability } from './orderMessageMapping';
 import { claimActionability, receiverRoleDaAcao } from './claimActionability';
@@ -216,11 +217,12 @@ async function responderMensagemPedido(
     toUserId: postSaleAgentUserId(siteId),
   });
 
-  // ML mints the message id, and it is not in the POST response — so this bubble
-  // carries a LOCAL id and no `mid`. The next `messages` notification imports the
-  // real one at its ML id; this doc is the operator's immediate feedback, and the
-  // deterministic local id keeps a double-click from writing two.
-  const mensagemId = makeLocalOutboundId(nowMs, packId);
+  // ML mints the message id and does not return it on the POST, so this bubble
+  // is PROVISIONAL: it covers the gap until the next notification brings the
+  // real message back at its ML id, and the importer deletes it then. Without
+  // that cleanup the reply stayed in the thread twice, forever.
+  // See `mensagemProvisoria.ts`.
+  const mensagemId = makeMensagemProvisoriaId(nowMs);
   await mensagemCollection.set(db, { conversaId }, mensagemId, {
     mid: null,
     conteudo: texto,
@@ -234,19 +236,6 @@ async function responderMensagemPedido(
   await conversaCollection.merge(db, {}, conversaId, { ultima_modificacao: nowMs });
 
   return { conversaId, mensagemId, respostaBloqueada: null };
-}
-
-/**
- * A local id for an outbound post-sale bubble.
- *
- * Deliberately NOT one of the importer's ML-keyed ids: ML does not return the
- * new message's id on the POST, so there is nothing to key on until the next
- * `messages` notification arrives with it. Minute-granularity plus the pack keeps
- * an accidental double-send from writing two identical bubbles, without pretending
- * to be idempotent over a real retry.
- */
-function makeLocalOutboundId(nowMs: number, packId: string): string {
-  return `local-${packId}-${Math.floor(nowMs / 60_000)}`;
 }
 
 /* -------------------------------- reclamações ------------------------------ */
@@ -290,10 +279,12 @@ async function responderReclamacao(
     message: texto,
   });
 
-  // ML mints the message id and does not return it, so this bubble carries a
-  // LOCAL id and no `mid`. The next `claims` notification imports the real one
-  // at its own deterministic id; this doc is the operator’s feedback.
-  const mensagemId = makeLocalOutboundId(nowMs, String(claimId));
+  // ML mints the message id and does not return it on the POST, so this bubble
+  // is PROVISIONAL: it covers the gap until the next notification brings the
+  // real message back at its ML id, and the importer deletes it then. Without
+  // that cleanup the reply stayed in the thread twice, forever.
+  // See `mensagemProvisoria.ts`.
+  const mensagemId = makeMensagemProvisoriaId(nowMs);
   await mensagemCollection.set(db, { conversaId }, mensagemId, {
     mid: null,
     conteudo: texto,

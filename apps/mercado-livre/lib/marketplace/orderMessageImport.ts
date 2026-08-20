@@ -37,6 +37,7 @@ import { coerceToMillis } from '@delfrance/core/datetime';
 import { ack404EhSeguro } from './notificacaoFrescor';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { makeConversaIdOrderMessage, makeOrderMensagemId } from './orderMessageIds';
+import { limparMensagensProvisorias } from './mensagemProvisoria';
 import {
   buildConversaFromPack,
   buildOrderMensagem,
@@ -301,6 +302,11 @@ export async function importOrderMessageMercadoLivre(
       buildOrderMensagem(m, { clienteOuterRef, sellerUserId: sellerId, nowMs }) as DocumentData,
     );
   }
+
+  // The real messages are in, so any provisional bubble they superseded can go.
+  // Bounded to `ultimaMensagemMs`: a reply sent AFTER this snapshot has not come
+  // back from ML yet and keeps its placeholder.
+  await limparMensagensProvisorias(db, conversaId, ultimaMensagemMs);
 
   return { conversaId, pedidoId, skipped: null };
 }

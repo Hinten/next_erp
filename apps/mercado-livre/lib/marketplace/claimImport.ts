@@ -86,6 +86,8 @@ import {
 } from './claimMapping';
 import { claimActionability, type ClaimActionability } from './claimActionability';
 import { vincularClienteMercadoLivre } from './claimCliente';
+import { coerceToMillis } from '@delfrance/core/datetime';
+import { limparMensagensProvisorias } from './mensagemProvisoria';
 import { resolveShipmentOrderId } from './shipmentOrderId';
 import { importPedidoMercadoLivre } from './orderImport';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
@@ -513,6 +515,19 @@ export async function importClaimMercadoLivre(
       buildClaimMessageMensagem(msg, messageDocId, { clienteOuterRef: clienteRef }),
     );
   }
+
+  // Same expiry as the post-sale path: the claim messages just written include
+  // any reply the operator sent, so the provisional bubble covering the gap has
+  // done its job. Bounded to the newest imported message time so a reply sent
+  // after this snapshot keeps its placeholder.
+  const carimbos = messages
+    .map((m) => coerceToMillis(m.date_created))
+    .filter((t): t is number => typeof t === 'number');
+  await limparMensagensProvisorias(
+    db,
+    conversaId,
+    carimbos.length > 0 ? Math.max(...carimbos) : null,
+  );
 
   return { pedidoId, incidenteId, conversaId, skipped: null, acao };
 }
