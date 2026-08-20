@@ -5,6 +5,7 @@ import {
   MercadoLivreNetworkError,
   MercadoLivreReauthRequiredError,
   MercadoLivreValidationError,
+  isVersionConflict,
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
 import {
@@ -15,10 +16,10 @@ import {
   shipmentLogisticType,
 } from '../src/shipmentFields';
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
   });
 }
 
@@ -627,6 +628,109 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     );
     const api = createMercadoLivreApi(cfg(fetchMock));
     await expect(api.getOrderBillingInfo(1)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+});
+
+describe('createMercadoLivreApi — User-Products stock by location (multiorigem, #706)', () => {
+  const STOCK = {
+    id: 'MLBU206642488',
+    user_id: 1234,
+    locations: [
+      { type: 'seller_warehouse', network_node_id: 'MXP123451', store_id: '9876543', quantity: 15 },
+      { type: 'meli_facility', quantity: 4 },
+    ],
+  };
+
+  it('getUserProductStock returns the parsed body AND the x-version header', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(STOCK, 200, { 'x-version': '7' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const { stock, version } = await api.getUserProductStock('MLBU206642488');
+
+    // The version is half the answer — a PUT without it is a 400.
+    expect(version).toBe('7');
+    expect(stock.locations).toHaveLength(2);
+    expect(stock.locations?.[0]?.store_id).toBe('9876543');
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/user-products/MLBU206642488/stock');
+  });
+
+  it('getUserProductStock reports version null when ML omits the header (never treated as "no version needed")', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(STOCK),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const { version } = await api.getUserProductStock('MLBU206642488');
+    expect(version).toBeNull();
+  });
+
+  it('getUserProductStock keeps an unknown location type as a plain string instead of failing the read', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ ...STOCK, locations: [{ type: 'some_future_typology', quantity: 1 }] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const { stock } = await api.getUserProductStock('MLBU206642488');
+    expect(stock.locations?.[0]?.type).toBe('some_future_typology');
+  });
+
+  it('putUserProductSellerWarehouseStock PUTs to /stock/type/seller_warehouse with x-version and the locations body', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(STOCK),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await api.putUserProductSellerWarehouseStock('MLBU206642488', '7', [
+      { store_id: '9876543', network_node_id: 'MXP123451', quantity: 12 },
+    ]);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(
+      'https://api.mercadolibre.com/user-products/MLBU206642488/stock/type/seller_warehouse',
+    );
+    expect(init!.method).toBe('PUT');
+    expect((init!.headers as Record<string, string>)['x-version']).toBe('7');
+    expect(JSON.parse(init!.body as string)).toEqual({
+      locations: [{ store_id: '9876543', network_node_id: 'MXP123451', quantity: 12 }],
+    });
+  });
+
+  it('a stale x-version surfaces as a 409 that isVersionConflict recognises', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'version mismatch' }, 409),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const err = await api
+      .putUserProductSellerWarehouseStock('MLBU206642488', '1', [
+        { store_id: '9876543', network_node_id: 'MXP123451', quantity: 12 },
+      ])
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoLivreHttpError);
+    expect(isVersionConflict(err)).toBe(true);
+    // A conflict must never be mistaken for a rate limit or a reauth.
+    expect(isVersionConflict(new MercadoLivreHttpError('rate', 429, null))).toBe(false);
+    expect(isVersionConflict(new Error('boom'))).toBe(false);
+  });
+
+  it('a missing x-version header on the WRITE is a 400 from ML, mapped like any other HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'Missing X-Version header' }, 400),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(
+      api.putUserProductSellerWarehouseStock('MLBU206642488', '', []),
+    ).rejects.toMatchObject({ constructor: MercadoLivreHttpError, status: 400 });
+  });
+
+  it('an uninitialised UP answers stock-locations not found, NOT an empty locations array', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'stock-locations not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getUserProductStock('MLBU1')).rejects.toMatchObject({
       constructor: MercadoLivreHttpError,
       status: 404,
     });

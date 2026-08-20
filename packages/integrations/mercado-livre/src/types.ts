@@ -243,6 +243,31 @@ export const orderItemSchema = z
     unit_price: z.number().nullable().optional(),
     currency_id: z.string().nullable().optional(),
     element_id: z.union([z.number(), z.string()]).nullable().optional(),
+    /**
+     * Multiorigin (`warehouse_management`) accounts only — the PHYSICAL origin
+     * of this line, per the `gestao-packs` reference: `store_id` "identifies the
+     * store or specific physical location where the stock of an item is held",
+     * `network_node_id` "represents the seller node or the specific physical
+     * location the item comes from".
+     *
+     * ⚠️ Modelled, not persisted. This ERP binds ONE depósito per conta
+     * (`integracao.depositoOuterRef`), so under the single-depósito multiorigin
+     * tier #706 supports, the origin is already known and storing it would add
+     * a `pedidos` schema change (and a ruleset regeneration) for no reader.
+     * It becomes load-bearing with `multiwarehouse` — see #1177, where a sale
+     * has to debit the depósito it actually shipped from.
+     */
+    stock: z
+      .array(
+        z
+          .object({
+            store_id: z.union([z.string(), z.number()]).nullable().optional(),
+            network_node_id: z.union([z.string(), z.number()]).nullable().optional(),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .optional(),
   })
   .passthrough();
 
@@ -871,6 +896,79 @@ export const userProductItemsSearchSchema = z
   })
   .passthrough();
 export type MlUserProductItemsSearch = z.infer<typeof userProductItemsSearchSchema>;
+
+/* ------------------ User-Products stock by location (#706) ----------------- */
+
+/**
+ * The three `stock_locations` typologies (ML "Estoque distribuído"). Only two
+ * are writable by a seller, and only ONE of those exists on MLB:
+ *
+ * - `meli_facility` — Fulfillment. **ML manages it**; a seller write is refused,
+ *   and — the dangerous part — a `seller_warehouse` write aimed at a Full
+ *   listing returns SUCCESS and changes nothing. Such a listing must be
+ *   skipped, never "sent".
+ * - `selling_address` — the seller's origin address for non-fulfillment
+ *   logistics. Writable **only on MLA and MLC**; on MLB the endpoint answers
+ *   "the site is blocked for modifications to the selling address".
+ * - `seller_warehouse` — multiple seller-managed origins. The only writable
+ *   type on MLB, and the one this ERP pushes stock through.
+ *
+ * ⚠️ A single UP can carry at most two typologies at once — either
+ * (`selling_address` + `meli_facility`) or (`seller_warehouse` + `meli_facility`).
+ */
+export const stockLocationTypeSchema = z.enum([
+  'meli_facility',
+  'selling_address',
+  'seller_warehouse',
+]);
+export type MlStockLocationType = z.infer<typeof stockLocationTypeSchema>;
+
+/** Named members of {@link stockLocationTypeSchema} (`prefer-schema-enum`). */
+export const STOCK_LOCATION_TYPE = {
+  meliFacility: 'meli_facility',
+  sellingAddress: 'selling_address',
+  sellerWarehouse: 'seller_warehouse',
+} as const satisfies Record<string, MlStockLocationType>;
+
+/**
+ * One entry of `GET /user-products/{id}/stock` → `locations[]`.
+ *
+ * ⚠️ `store_id` / `network_node_id` are present **only** on `seller_warehouse`
+ * rows — the `selling_address` and `meli_facility` shapes carry `type` +
+ * `quantity` and nothing else. `type` itself is tolerant (a new ML typology must
+ * not fail the read of a UP we can still write): unknown values survive as a
+ * plain string and are simply never selected as a write target.
+ */
+export const userProductStockLocationSchema = z
+  .object({
+    type: z.string().nullable().optional(),
+    store_id: z.union([z.string(), z.number()]).nullable().optional(),
+    network_node_id: z.union([z.string(), z.number()]).nullable().optional(),
+    quantity: z.number().nullable().optional(),
+  })
+  .passthrough();
+export type MlUserProductStockLocation = z.infer<typeof userProductStockLocationSchema>;
+
+/**
+ * `GET /user-products/{USER_PRODUCT_ID}/stock` and the response of
+ * `PUT …/stock/type/seller_warehouse`.
+ *
+ * ⚠️ The body is only half the answer — the **`x-version` response header** is
+ * the other half, and it is what the PUT must echo back. `getUserProductStock`
+ * returns both; see `MercadoLivreApi.getUserProductStock`.
+ *
+ * ⚠️ A UP whose stock was never initialised answers `stock-locations not found`
+ * rather than an empty `locations` array — the resource does not exist until a
+ * location does.
+ */
+export const userProductStockSchema = z
+  .object({
+    id: z.string().nullable().optional(),
+    user_id: z.union([z.number(), z.string()]).nullable().optional(),
+    locations: z.array(userProductStockLocationSchema).nullable().default([]),
+  })
+  .passthrough();
+export type MlUserProductStock = z.infer<typeof userProductStockSchema>;
 
 /* --------------------- Mass import seller scan (#621) --------------------- */
 
