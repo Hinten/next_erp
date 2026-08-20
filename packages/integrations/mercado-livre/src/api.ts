@@ -53,6 +53,8 @@ import {
   type MlUser,
   type MlUserProductFamily,
   type MlUserProductItemsSearch,
+  type MlUserProductStock,
+  STOCK_LOCATION_TYPE,
   activeChartDomainsSchema,
   catalogDomainSchema,
   categoryAttributesSchema,
@@ -97,6 +99,7 @@ import {
   tokenErrorSchema,
   userProductFamilySchema,
   userProductItemsSearchSchema,
+  userProductStockSchema,
   userSchema,
 } from './types';
 
@@ -285,6 +288,63 @@ export interface MercadoLivreApi {
     userProductIds: readonly string[],
     page?: { limit?: number; offset?: number },
   ): Promise<MlUserProductItemsSearch>;
+  /**
+   * `GET /user-products/{userProductId}/stock` — the per-location stock of a
+   * User Product, **plus the `x-version` header** (#706).
+   *
+   * ⚠️ The header is not an optimisation, it is the write protocol: a
+   * `PUT …/stock/type/{type}` without `x-version` is a **400**, and with a stale
+   * one a **409**. That is why this is the only reader in the client that
+   * returns headers — the version is half the answer.
+   *
+   * `version` is `null` only if ML omits the header, which the docs say cannot
+   * happen; the caller must treat that as "cannot write", never as "no version
+   * needed".
+   *
+   * ⚠️ A UP with no initialised stock answers `stock-locations not found`
+   * (a `MercadoLivreHttpError`), NOT an empty `locations` array.
+   */
+  getUserProductStock(
+    userProductId: string,
+  ): Promise<{ stock: MlUserProductStock; version: string | null }>;
+  /**
+   * `PUT /user-products/{userProductId}/stock/type/seller_warehouse` — the ONLY
+   * way to move stock on a multiorigin (`warehouse_management`) account (#706).
+   * `PUT /items` `available_quantity` is silently ignored there, frequently
+   * answering 200 OK.
+   *
+   * `version` is the `x-version` from {@link getUserProductStock}; a stale one
+   * raises `MercadoLivreHttpError` **409**, which the caller answers by
+   * re-reading and retrying — see `isVersionConflict`.
+   *
+   * ⚠️ `locations` REPLACES the `seller_warehouse` set, so a caller must echo
+   * back every location the read returned, changing only the quantities it
+   * owns. Sending a subset is how you zero a warehouse you did not mean to
+   * touch.
+   *
+   * ⚠️ A seller holding `warehouse_management` WITHOUT `multiwarehouse` manages
+   * exactly one depósito, and ML answers 400 ("seller with a single warehouse
+   * cannot update stock across multiple network nodes") to a request spanning
+   * more than one `network_node_id`.
+   *
+   * Returns the response `x-version` like {@link getUserProductStock} does. A
+   * successful write earns a NEW version, and handing it back is what lets a
+   * caller write the same UP twice without paying a second `GET` on a
+   * rate-limited endpoint family. `version` is null if ML omits the header.
+   *
+   * ⚠️ `stock` is **nullable**, and that is not defensiveness for its own sake:
+   * `parseOk` feeds the schema `null` when the body is empty, so parsing this
+   * response as a bare object would turn a bare-ack answer (204, or 200 with no
+   * body) into a `MercadoLivreValidationError` — reporting a write that LANDED
+   * as a failure. Whether ML echoes the resource here is not documented, and the
+   * wrong guess is expensive: the caller would latch the listing with a
+   * `lastError` that never clears while the quantity on ML is in fact correct.
+   */
+  putUserProductSellerWarehouseStock(
+    userProductId: string,
+    version: string,
+    locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
+  ): Promise<{ stock: MlUserProductStock | null; version: string | null }>;
   /**
    * `GET /items/{id}/migration_live_listing` — the new User-Products items a
    * legacy `variations[]` listing was migrated to (User-Products migration,
@@ -615,7 +675,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     path: string,
     schema: z.ZodType<T>,
     opts: RequestOpts = {},
-  ): Promise<{ data: T; status: number }> {
+  ): Promise<{ data: T; status: number; headers: Headers }> {
     const url = buildUrl(path, opts.query);
     // Fetch the token once; it stays valid across the (few, quick) retries.
     const token = await config.getAccessToken();
@@ -637,13 +697,15 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     );
 
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
-    if (res.ok) return { data: await parseOk(res, schema), status: res.status };
+    if (res.ok)
+      return { data: await parseOk(res, schema), status: res.status, headers: res.headers };
     throw await toHttpError(res);
   }
 
   /** `requestWithStatus` for the (overwhelming) majority of callers, which only
    * ever need the body. Reach for `requestWithStatus` when 200-vs-206 changes
-   * what the caller does — today only the order mirror, see `getOrderResponse`. */
+   * what the caller does (the order mirror, `getOrderResponse`) or when a
+   * RESPONSE HEADER is part of the answer (`x-version`, `getUserProductStock`). */
   async function request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
@@ -928,6 +990,27 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
           ...(page?.offset != null ? { offset: String(page.offset) } : {}),
         },
       }),
+    getUserProductStock: async (userProductId) => {
+      const { data, headers } = await requestWithStatus(
+        'GET',
+        `/user-products/${userProductId}/stock`,
+        userProductStockSchema,
+      );
+      return { stock: data, version: headers.get('x-version') };
+    },
+    putUserProductSellerWarehouseStock: async (userProductId, version, locations) => {
+      const { data, headers } = await requestWithStatus(
+        'PUT',
+        `/user-products/${userProductId}/stock/type/${STOCK_LOCATION_TYPE.sellerWarehouse}`,
+        // `.nullable()`, NOT the bare object: `parseOk` feeds the schema `null`
+        // for an empty body, so a bare-ack answer would raise
+        // `MercadoLivreValidationError` for a write that LANDED — see the
+        // interface docblock.
+        userProductStockSchema.nullable(),
+        { headers: { 'x-version': version }, body: { locations } },
+      );
+      return { stock: data, version: headers.get('x-version') };
+    },
     getMigrationLiveListing: (itemId) =>
       request('GET', `/items/${itemId}/migration_live_listing`, migrationLiveListingSchema),
     scanSellerItems: (sellerId, scrollId) =>
