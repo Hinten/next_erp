@@ -397,7 +397,9 @@ export interface BuildPrecoDraftsResult {
  * filtered on `integracoesComProduto`) → ONE `SEM_LINK` skip, nothing else.
  *
  * Per-listing rungs (`continue` semantics): `SEM_ITEM_ID` (never published),
- * `AGUARDANDO_MIGRACAO` (`estado 'am'`, mid-UP-migration, Flutter-driven).
+ * `AGUARDANDO_MIGRACAO` (`estado 'am'`, mid-UP-migration — stamped by
+ * `itemsStatusSync` from ML's own migration tags, which is the value's only
+ * producer now that the Flutter app is switched off at the cutover, #1087).
  * The STORED status is deliberately NOT gated here — the send step GETs the
  * item fresh and runs `podeEnviarPreco` on live data.
  *
