@@ -62,21 +62,27 @@ describe('usuarioSchema', () => {
     expect(out.externalId).toBe('a3f8...deadbeef');
   });
 
-  it('defaults apelido to null when absent', () => {
-    const out = usuarioSchema.parse({ nome: 'Sem Apelido' });
-    expect(out.apelido).toBeNull();
-  });
-
-  it('round-trips apelido — the ML buyer nickname on a sem-auth contact', () => {
-    // The ML claims import (Step 14) stores the buyer's site nickname here.
+  it('still parses a legacy doc carrying the retired `apelido` key', () => {
+    // `apelido` existed for ONE purpose — the ML buyer nickname on the sem-auth
+    // `usuarios` doc the claims import used to mint per contact. #768 deleted
+    // that module: contacts are `clientes` now, and `usuarios` is only for
+    // people who can log into the system. Nothing writes or reads it any more,
+    // so it is gone from the schema.
+    //
+    // ⚠️ The migrated corpus still HAS the key. This schema is a plain
+    // `z.object`, so Zod strips an unmodelled key rather than rejecting it —
+    // which is what makes the removal safe on the read path. Pinned here
+    // because a future `.strict()` would turn every legacy usuario doc into a
+    // parse failure, and nothing else would catch it.
     const out = usuarioSchema.parse({
       nome: 'Cliente Mercado Livre',
       apelido: 'COMPRADOR123',
       email: null,
       externalId: '92ba...5014',
     });
-    expect(out.apelido).toBe('COMPRADOR123');
-    expect(usuarioSchema.parse(out).apelido).toBe('COMPRADOR123');
+    expect(out.nome).toBe('Cliente Mercado Livre');
+    expect(out.externalId).toBe('92ba...5014');
+    expect(out).not.toHaveProperty('apelido');
   });
 });
 
