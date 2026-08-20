@@ -1740,3 +1740,93 @@ export const ML_CLAIM_ANEXO = {
   /** ML: "letras, números, pontos, hífens e sublinhados". */
   nomeArquivoPermitido: /^[a-zA-Z0-9_\-.]+$/,
 } as const;
+
+/* --------------------- Moderações / moderations (#1087) -------------------- */
+
+/**
+ * One `evidences[]` entry — WHERE ML found the infraction.
+ *
+ * `section_name` is the useful half (`pictures`, `title`, `category`, `item`);
+ * `text_matched` is the offending value itself (a picture id, a matched phrase,
+ * an internal process name).
+ */
+export const mlModerationEvidenceSchema = z
+  .object({
+    text_matched: z.string().nullable().default(null),
+    section_name: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlModerationEvidence = z.infer<typeof mlModerationEvidenceSchema>;
+
+/**
+ * One `wordings[]` entry — the human-facing text.
+ *
+ * `type` is `REASON` (why) or `REMEDY` (how to fix). ⚠️ A moderation that cannot
+ * be recovered from carries a REASON and **no** REMEDY at all; ML's docs say so
+ * outright for a removed listing. Absence is meaningful, so `type` stays a plain
+ * nullable string rather than an enum that could reject an unseen third value
+ * and take the whole moderation down with it.
+ */
+export const mlModerationWordingSchema = z
+  .object({
+    type: z.string().nullable().default(null),
+    value: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlModerationWording = z.infer<typeof mlModerationWordingSchema>;
+
+/**
+ * `GET /moderations/last_moderation/{element_id}-ITM` — ONE active moderation.
+ *
+ * ⚠️ Deliberately tolerant, and the tolerance is not defensive padding — every
+ * deviation admitted here appears in ML's OWN published responses:
+ *
+ *  - the evidence key is spelled **`evidences`** on *Gerenciar moderações* and
+ *    **`evidence`** on *Moderações com pausa* and *Moderações de imagens*. Both
+ *    are accepted; the mapper unions them.
+ *  - `wordings` is **optional**. Unlike the two above this is not something ML's
+ *    pages demonstrate — every published sample carries it. It is defensive on
+ *    purpose: those same pages already disagree with each other about
+ *    `evidence`/`evidences`, so they are plainly not an exhaustive spec, and a
+ *    missing `wordings` must degrade to "moderated, no text" rather than take the
+ *    whole read down. `mapModeracoes` keeps such an entry on its `name`.
+ *  - `date_created` arrives in TWO formats — `2021-04-14T10:47:05.270-0400` and
+ *    `2022-10-25 15:57:46.0` — so it stays a raw string here and everywhere
+ *    downstream (`delfrance/no-lossy-date-parse`).
+ *  - `id` is a stringified number in every sample, but is not persisted: the docs
+ *    warn it "deixa de existir" once the moderation resolves and must never be
+ *    used as a persistent reference.
+ *
+ * A strict schema would throw `MercadoLivreValidationError` on any of these and
+ * lose the whole explanation — which is the exact outcome this feature exists to
+ * end.
+ */
+export const mlModerationSchema = z
+  .object({
+    name: z.string().nullable().default(null),
+    id: z.union([z.string(), z.number()]).nullable().default(null),
+    date_created: z.string().nullable().default(null),
+    evidences: z.array(mlModerationEvidenceSchema).nullable().default(null),
+    /** ML's alternate spelling of {@link mlModerationSchema.shape.evidences}. */
+    evidence: z.array(mlModerationEvidenceSchema).nullable().default(null),
+    wordings: z.array(mlModerationWordingSchema).nullable().default(null),
+  })
+  .passthrough();
+export type MlModeration = z.infer<typeof mlModerationSchema>;
+
+/**
+ * The endpoint answers with an ARRAY, even though it is named
+ * `last_moderation` — every documented sample is a one-element list.
+ */
+export const mlModerationsSchema = z.array(mlModerationSchema);
+
+/**
+ * ML `element_type` suffixes for a `moderation_reference_id`
+ * (`{element_id}-{suffix}`). Only `ITM` is used here; the other two are
+ * documented so a future questions/reviews reader does not re-derive them.
+ */
+export const ML_MODERATION_ELEMENT = {
+  item: 'ITM',
+  pergunta: 'QUE',
+  avaliacao: 'REV',
+} as const;

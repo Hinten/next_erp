@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-eight exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -172,6 +172,51 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
   `ALL_DOMAINS` does not register (`variacoesml` is the one the emulator suite
   pins), so a registry walk orphans them silently. Verify live with
   `scripts/check-delete-cost.mjs`.
+- **`recalcularDimensoesKit`** (`onTaskDispatched`, `src/produtos/kitRollup.ts`)
+  — recomputes a **kit's** stored `pesoBrutoKg`/`pesoLiquidoKg`/`alturaCm`/
+  `larguraCm`/`profundidadeCm` when one of its COMPONENTS changes (#1152). The
+  rollup used to run only in the browser (`KitManager`), so editing a component
+  left every kit containing it stale forever — and `pesoPedido` reads the kit's
+  **stored** weight (legacy parity, #1093), so that stale number becomes a wrong
+  freight quote and then a carrier re-billing. `onProdutoChanged` gates on a raw
+  before/after diff of those five fields and does **one enqueue, zero reads**;
+  this worker does the fan-out.
+  ⚠️ **A queue, not inline trigger work, because the fan-out is `O(kits
+  containing the component)` — ADR 0014 measured ~2 000** for the printed-shirt
+  catalogue where every kit shares the same blank shirt + print. That ADR
+  *rejected* this exact fan-out for **stock**; the difference is frequency (a
+  sale vs. a rare operator edit), and the ADR now carries the note. Paged with a
+  `FieldPath.documentId()` cursor over
+  `componentesKitKeys array-contains-any <=30 seeds>`, projected with `.select()`
+  because Enterprise bills data scanned, and self-continuing through the
+  scheduler seam (`kitRollupTasks.ts`, the `balancoTasks.ts` shape).
+  ⚠️ **Two races, two ADR 0011 tiers, both named in the code.** *Superseded
+  input* is **tier 2** with the five VALUES as the clock: every dispatch re-reads
+  the root produto and drops the task when they no longer match the payload —
+  deliberately not `updateTime`/`ultimaModificacao`, which also advance on an
+  unrelated edit and would drop a task no successor replaces. *A concurrent
+  writer on a kit* is **tier 1**: `update(..., { lastUpdateTime })`, with the
+  `FAILED_PRECONDITION` losers re-read and retried exactly once.
+  ⚠️ **Do NOT give the task a deterministic Cloud Tasks name for dedup** — a name
+  cannot be reused for ~1h after the previous task with it completed, so an
+  A → B → A edit inside that hour would have the third enqueue silently rejected
+  and the rollup lost.
+  ⚠️ **Do NOT reach for `@delfrance/data/admin/cache` here.** A process-scoped TTL
+  cache would serve a warm instance the component's PRE-EDIT weight and persist
+  it onto every kit — the very bug this function fixes. The reads are memoized
+  per DISPATCH instead (zero staleness bound), and each distinct component set is
+  computed once, which is where the win actually is.
+  Both weight and box come from `dimensoesDoKit`
+  (`packages/schemas/src/produto/pureLogic/dimensoesKit.ts`) — **the same
+  function `KitManager` calls**, so the two directions cannot drift. The box half
+  reuses the pedido estimator with `fatorOcupacao: 1`; the pedido level applies
+  the 0.7 packing allowance, and applying it twice would declare ~2x the volume.
+  A `null` result means "not derivable" and is never written.
+  New infrastructure: its own Cloud Tasks queue (created by the deploy),
+  `KIT_ROLLUP_TASKS_REGION` / `KIT_ROLLUP_TASKS_DISABLED`, and the
+  `produtos(componentesKitKeys CONTAINS, __name__ ASC)` index for the paged
+  query. `ci-storage.yml` sets `KIT_ROLLUP_TASKS_DISABLED=1` — there is no Cloud
+  Tasks emulator and the live trigger fires on every produto write in that lane.
 - **`onPedidoChanged`** (`onDocumentWrittenWithAuthContext('pedidos/{pedidoId}')`)
   — the SOLE writer of BOTH pedido audit trails: the order state
   (`pedidos/{pedidoId}/historicoEstadoPedido`) and the freight state

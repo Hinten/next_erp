@@ -22,6 +22,22 @@
  *  - RE-ARMS the stock sweep (#781): when ML reports a listing that could receive
  *    stock again, this clears the `errors` the stock sender latched it with. That
  *    makes stale `errors` a change in their own right — see `errorsToClear` below.
+ *  - EXPLAINS a moderated listing (#1087): when ML's status/sub_status says a
+ *    moderation exists, this also reads `GET /moderations/last_moderation` and
+ *    stores its REASON/REMEDY as `moderacoes`. Without it the operator saw a
+ *    listing go `pausado` with no reason anywhere in the ERP, while ML had one
+ *    the whole time. See `fetchModeracoes` below.
+ *
+ * ⚠️ There is NO `moderations` notification topic — checked against ML's own
+ * topic list. A moderation arrives as an ordinary `items` delivery, which is why
+ * it belongs here and not in a new receiver; ML's *Gerenciar moderações* even
+ * derives the `moderation_reference_id` from this notification (`id` + `-ITM`).
+ *
+ * ⚠️ `moderacoes` is written on EVERY status write, value or `[]`, in the SAME
+ * patch as the status it explains. That is the invariant, and it is stronger than
+ * the `errors`/`causas` clearing rule it deliberately does not share: a reason
+ * cannot outlive the state it describes, because they are one write. A stale
+ * moderation on a healthy listing is indistinguishable from a real one.
  *
  * `applyItemStatusToLink` (exported at the bottom) is the shared status-writeback
  * core: this sync and the stock sender's terminal 4xx branch refresh a listing
@@ -77,9 +93,10 @@
  * observed.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
+import { ESTADO_PUBLICACAO_ML, type MlModeracao } from '@delfrance/schemas';
 import {
   type MlItem,
+  type MlModeration,
   MercadoLivreHttpError,
   createMercadoLivreApi,
   estadoFromMlStatus,
@@ -98,10 +115,17 @@ import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink
 import { foldFamilyStatus } from './upFamilyStatus';
 import type { UptinSourceLink } from './importMigration';
 import { clearFalha } from './publishFalhas';
+import { consultarModeracoes, moderacoesArmazenadas, moderacoesIguais } from './moderacoes';
 
 /** The minimal ML API surface the status-sync needs (injectable for tests). */
 export interface ItemsSyncApi {
   getItem(itemId: string): Promise<MlItem>;
+  /**
+   * `GET /moderations/last_moderation/{itemId}-ITM` (#1087). Called ONLY when
+   * the fetched item's status/sub_status says there is a moderation to read —
+   * see {@link precisaConsultarModeracao}.
+   */
+  getLastModeration(referenceId: string): Promise<MlModeration[]>;
 }
 
 /** Builds a seller-authenticated ML API for an integração (real vs test fake). */
@@ -223,7 +247,19 @@ export async function syncItemStatus(
   // resolution is already User-Products, so it cannot be the source of a
   // migration INTO User Products.
   if (link.member) {
-    return syncFamilyMember(db, integracaoId, item, link, link.member);
+    // ⚠️ Fetched HERE, not inside `syncFamilyMember`: that runs in a TRANSACTION,
+    // and a network call in a transaction window is root `CLAUDE.md` rule 7's
+    // class C — the callback re-runs on every OCC retry, so the fetch would be
+    // re-issued per attempt against a rate-limited API. The transaction receives
+    // an already-resolved value and stays free of I/O (#1087).
+    return syncFamilyMember(
+      db,
+      integracaoId,
+      item,
+      link,
+      link.member,
+      await fetchModeracoes(api, itemId, item),
+    );
   }
 
   // Migration-tagged item (needs the fetched item's `tags`) — the only reason
@@ -260,6 +296,9 @@ export async function syncItemStatus(
     return 'deferred-migration-source';
   }
 
+  // Below every deferral, so a listing ML is mid-migration never pays for a
+  // moderation it has nowhere to put: those branches stamp `estado: 'am'` and
+  // return without a status merge.
   return applyResolvedStatus(
     db,
     integracaoId,
@@ -274,7 +313,19 @@ export async function syncItemStatus(
     // their quantities on CHILD produtos, and an item-level UP id on the parent
     // link would let one number be written for the whole family (#1142).
     itemStockLivesOnChildren(item) ? null : (item.user_product_id ?? null),
+    await fetchModeracoes(api, itemId, item),
   );
+}
+
+/**
+ * ML's active moderations for one fetched listing (#1087).
+ *
+ * A thin adapter over the shared {@link consultarModeracoes} — gating, the
+ * `-ITM` reference, the 404-is-data narrow and the rethrow all live there, so
+ * this sync and `reverificarAnuncio` cannot drift on any of them.
+ */
+function fetchModeracoes(api: ItemsSyncApi, itemId: string, item: MlItem): Promise<MlModeracao[]> {
+  return consultarModeracoes(api, itemId, item.status, item.sub_status);
 }
 
 /**
@@ -294,6 +345,7 @@ async function applyResolvedStatus(
   status: string | null,
   subStatus: string[] | null,
   userProductId: string | null,
+  moderacoes: MlModeracao[],
 ): Promise<ItemsSyncOutcome> {
   const estado = estadoFromMlStatus(status);
 
@@ -323,12 +375,23 @@ async function applyResolvedStatus(
     userProductId != null &&
     userProductId !==
       (typeof link.data.userProductId === 'string' ? link.data.userProductId : null);
+  // ⚠️ `moderacoes` counts as a change in its own right, for the SAME reason
+  // `errorsToClear` does and with a sharper edge (#1087): a listing already at
+  // the right estado/status/sub_status would short-circuit on `unchanged` below
+  // and keep a moderation ML has since lifted. A stale reason on a healthy
+  // listing is indistinguishable from a real one, which makes it worse than no
+  // reason at all — so the field is compared BY VALUE, not by presence.
+  //
+  // Convergent, unlike a naive "moderations present ⇒ changed": this is false as
+  // soon as the stored value matches what ML just said, moderated or not.
+  const moderacoesChanged = !moderacoesIguais(moderacoes, moderacoesArmazenadas(link.data));
   const linkChanged =
     estadoChanged ||
     status !== currentStatus ||
     !stringArraysEqual(subStatus, currentSubStatus) ||
     userProductIdChanged ||
-    errorsToClear;
+    errorsToClear ||
+    moderacoesChanged;
 
   if (!linkChanged) return 'unchanged';
 
@@ -344,11 +407,19 @@ async function applyResolvedStatus(
       // carries no `id`: there would be no key to union or remove by, and inventing
       // one is how the arrays grow entries nothing can ever match.
       skipDenorm: !estadoChanged || denormItemId === '',
-      // Fill-only: never write null over a stored id because this particular
-      // response omitted it. The field is an identity, not an observation.
+      // `userProductId` is fill-only: never write null over a stored id because
+      // this particular response omitted it. The field is an identity, not an
+      // observation — and it collides with neither of the other two keys.
+      //
+      // ⚠️ ORDER: `moderacoes` comes LAST, so it wins over the `[]` inside
+      // `clearFalha()`. Both are "the listing is healthy" statements, but only
+      // this one was read from ML — and they genuinely disagree in the case that
+      // motivated a separate field, `active` + `poor_quality_thumbnail`, where
+      // the listing is sendable (so the latch clears) AND moderated.
       extra: {
         ...(errorsToClear ? clearFalha() : {}),
         ...(userProductIdChanged ? { userProductId } : {}),
+        moderacoes,
       },
     },
   );
@@ -373,6 +444,7 @@ async function syncFamilyMember(
   item: MlItem,
   link: ResolvedLink,
   member: ResolvedMember,
+  moderacoes: MlModeracao[],
 ): Promise<ItemsSyncOutcome> {
   const status = item.status ?? null;
   const subStatus = item.sub_status ?? null;
@@ -404,7 +476,11 @@ async function syncFamilyMember(
     // member of this family aborts this callback and it retries against the
     // value that writer committed.
     let notified: (typeof members.docs)[number] | null = null;
-    const foldable: Array<{ status: string | null; subStatus: string[] | null }> = [];
+    const foldable: Array<{
+      status: string | null;
+      subStatus: string[] | null;
+      moderacoes: MlModeracao[];
+    }> = [];
     for (const d of members.docs) {
       const raw = d.data() as Record<string, unknown>;
       const isNotified =
@@ -418,16 +494,21 @@ async function syncFamilyMember(
       if (!isNotified && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
       foldable.push(
         isNotified
-          ? { status, subStatus }
+          ? { status, subStatus, moderacoes }
           : {
               status: typeof raw.status === 'string' ? raw.status : null,
               subStatus: Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null,
+              // ⚠️ The siblings' moderations come from what is STORED on each
+              // member link — never a fetch. That is what keeps the fold free:
+              // one notification reads one moderation, and the family's answer
+              // is assembled from values already on disk.
+              moderacoes: moderacoesArmazenadas(raw),
             },
       );
     }
     // The notified member should be among its own siblings (they share the parent
     // ref it was found by); if a delete removed it, its fresh reading still counts.
-    if (!notified) foldable.push({ status, subStatus });
+    if (!notified) foldable.push({ status, subStatus, moderacoes });
 
     const notifiedRaw = (notified?.data() ?? {}) as Record<string, unknown>;
     // #706: the member's own `user_product_id` — the stock identity on a
@@ -447,7 +528,11 @@ async function syncFamilyMember(
         !stringArraysEqual(
           subStatus,
           Array.isArray(notifiedRaw.sub_status) ? (notifiedRaw.sub_status as string[]) : null,
-        ));
+        ) ||
+        // Same rule the parent gets: the member's own moderation must be able to
+        // move on its own, or a lifted one survives on a member whose raw status
+        // never changed — and the fold would then hand it to the parent.
+        !moderacoesIguais(moderacoes, moderacoesArmazenadas(notifiedRaw)));
 
     const folded = foldFamilyStatus(foldable);
 
@@ -464,12 +549,15 @@ async function syncFamilyMember(
       currentErrors.length > 0 &&
       podeEnviarEstoque(folded.status, folded.subStatus).enviar;
     const estadoChanged = folded != null && estado !== currentEstado;
+    const moderacoesChanged =
+      folded != null && !moderacoesIguais(folded.moderacoes, moderacoesArmazenadas(parent));
     const parentChanged =
       folded != null &&
       (estadoChanged ||
         folded.status !== currentStatus ||
         !stringArraysEqual(folded.subStatus, currentSubStatus) ||
-        errorsToClear);
+        errorsToClear ||
+        moderacoesChanged);
 
     // ---- WRITES.
     if (memberChanged && notified) {
@@ -478,8 +566,11 @@ async function syncFamilyMember(
         {
           status,
           sub_status: subStatus,
-          // Fill-only: never write null over a value ML simply did not send back
-          // on this response. The field is an identity, not an observation.
+          moderacoes,
+          // `userProductId` is fill-only, unlike the two above: it is an IDENTITY,
+          // not an observation, so a response that simply omitted it must never
+          // null a stored one. `moderacoes` is the opposite by design — written on
+          // every status write, value or `[]`, so a reason cannot outlive its state.
           ...(userProductId != null ? { userProductId } : {}),
         },
         { merge: true },
@@ -525,6 +616,10 @@ async function syncFamilyMember(
       sub_status: folded.subStatus,
       ultimaModificacao: Date.now(),
       ...(errorsToClear ? clearFalha() : {}),
+      // After the spread, same as the simple path: read-from-ML wins over the
+      // healed `[]`, and the family's moderation is the FOLD WINNER's — the
+      // member whose status this parent is reporting, never a union.
+      moderacoes: folded.moderacoes,
     });
 
     return 'synced-family';

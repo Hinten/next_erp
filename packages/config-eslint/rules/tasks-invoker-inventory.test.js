@@ -60,6 +60,8 @@ const INVENTORY = {
   // ---- codebase `storage` (apps/functions) --------------------------------
   'apps/functions/src/estoques/aplicarBalanco.ts':
     'processarBalanco. Enqueued by the `finalizarBalanco` callable and re-enqueued by itself at the time-budget boundary.',
+  'apps/functions/src/produtos/kitRollup.ts':
+    'recalcularDimensoesKit. Enqueued by the `onProdutoChanged` Firestore trigger (functions runtime SA) and re-enqueued by ITSELF for every continuation page and for the nested-kit cascade.',
 };
 
 /**

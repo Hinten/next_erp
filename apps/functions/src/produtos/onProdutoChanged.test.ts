@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { CAMPOS_ROLLUP_KIT } from './kitRollupPayload';
 import { PRODUTO_HISTORY_IGNORE_FIELDS, produtoExtraIgnores } from './onProdutoChanged';
 
 describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
@@ -50,5 +51,36 @@ describe('produtoExtraIgnores', () => {
 
   it('is empty when both revisions are undefined', () => {
     expect(produtoExtraIgnores(undefined, undefined)).toEqual([]);
+  });
+});
+
+describe('produtoExtraIgnores — kit rollup fields (#1152)', () => {
+  it('ignores the five derived fields on a kit write', () => {
+    expect([...produtoExtraIgnores({}, { ehKit: true })].sort()).toEqual(
+      ['alturaCm', 'larguraCm', 'pesoBrutoKg', 'pesoLiquidoKg', 'profundidadeCm'].sort(),
+    );
+  });
+
+  it('does NOT ignore them on an ordinary produto — that is the operator edit worth auditing', () => {
+    expect(produtoExtraIgnores({}, { ehKit: false })).toEqual([]);
+    expect(produtoExtraIgnores({}, {})).toEqual([]);
+  });
+
+  it('stacks with the variation-child precos rule', () => {
+    expect([...produtoExtraIgnores({}, { ehKit: true, paiId: 'pai1' })].sort()).toEqual(
+      ['alturaCm', 'larguraCm', 'pesoBrutoKg', 'pesoLiquidoKg', 'precos', 'profundidadeCm'].sort(),
+    );
+  });
+
+  it('falls back to before on a kit delete', () => {
+    expect(produtoExtraIgnores({ ehKit: true }, undefined)).toContain('pesoBrutoKg');
+  });
+
+  it('covers EVERY field the rollup writes', () => {
+    // Derived from the rollup's own field list rather than retyped, so a sixth
+    // derived field cannot start generating phantom history rows on kits.
+    expect([...produtoExtraIgnores({}, { ehKit: true })].sort()).toEqual(
+      [...CAMPOS_ROLLUP_KIT].sort(),
+    );
   });
 });
