@@ -285,6 +285,53 @@ describe('fixConversaAnonima', () => {
     expect(h.cliente.merge).toHaveBeenCalledWith(DB, {}, 'c1', { nome: 'Ana' });
   });
 
+  it('finds the cliente stored under the BARE `usuarios/<id>` shape', async () => {
+    // ⚠️ The regression this function had. It ran its own single-shape
+    // `userCliente == documents/usuarios/<id>` query, so a MIGRATED contact whose
+    // cliente stores the bare form matched nothing: the conversa `nome` was
+    // upgraded and the cliente `nome` silently was not. Exactly the population
+    // `userClienteCandidates` exists for — which is why this now goes through
+    // `findClienteIdByUsuario` instead of duplicating the query shape.
+    const extId = externalId('whatsapp', FROM);
+    h.cliente._docs.push({
+      id: 'c-legado',
+      data: { nome: 'anônimo', telefone: FROM, userCliente: `usuarios/${extId}` },
+    });
+
+    await fixConversaAnonima(
+      DB,
+      'conv1',
+      { nome: 'Anônimo' },
+      { id: extId, usuario: { nome: 'Ana' } as never },
+    );
+
+    expect(h.cliente.merge).toHaveBeenCalledWith(DB, {}, 'c-legado', { nome: 'Ana' });
+  });
+
+  it('REFUSES to rename when two clientes claim the usuario', async () => {
+    // Inherited from `findClienteIdByUsuario`. A cosmetic best-effort upgrade is
+    // not worth renaming a coin-flip cliente.
+    const extId = externalId('whatsapp', FROM);
+    h.cliente._docs.push({
+      id: 'c1',
+      data: { nome: 'anônimo', userCliente: usuarioOuterRef(extId) },
+    });
+    h.cliente._docs.push({ id: 'c2', data: { nome: 'anônimo', userCliente: `usuarios/${extId}` } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await fixConversaAnonima(
+      DB,
+      'conv1',
+      { nome: 'Anônimo' },
+      { id: extId, usuario: { nome: 'Ana' } as never },
+    );
+
+    // The conversa still gets its name — only the ambiguous cliente is skipped.
+    expect(h.conversa.merge).toHaveBeenCalledWith(DB, {}, 'conv1', { nome: 'Ana' });
+    expect(h.cliente.merge).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('is a no-op when the conversa already has a real name', async () => {
     await fixConversaAnonima(
       DB,

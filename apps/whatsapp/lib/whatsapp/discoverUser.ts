@@ -329,9 +329,17 @@ export async function discoverUserByPhoneNumber(
  * the user's name. Best-effort: the caller wraps it so a failure never blocks
  * message ingestion (legacy caught + logged the same way).
  *
- * The paired cliente is found by `userCliente == usuarioOuterRef(user.id)`
- * (legacy `Cliente.documents.userCliente__isEqualTo(user)`), so this needs the
- * resolved user's id, not the conversa id.
+ * The paired cliente is resolved through `findClienteIdByUsuario`, so this needs
+ * the resolved user's id, not the conversa id.
+ *
+ * ⚠️ It used to run its own `userCliente == usuarioOuterRef(user.id)` query
+ * (legacy `Cliente.documents.userCliente__isEqualTo(user)`) — the single-shape
+ * lookup the helper above exists to replace. A migrated contact whose cliente
+ * stores the BARE `usuarios/<id>` form matched nothing, so the conversa `nome`
+ * was upgraded and the cliente `nome` silently was not: exactly the population
+ * the dual-shape candidates were added for. Reusing the helper also inherits its
+ * ambiguity refusal — with two claimants this skips rather than renaming a
+ * coin-flip cliente, which for a cosmetic best-effort upgrade is the right call.
  *
  * @param conversaId the `chat/<id>` document id of `conversa`.
  */
@@ -351,15 +359,12 @@ export async function fixConversaAnonima(
   const { conversaCollection } = await import('@delfrance/data/admin/collections');
   await conversaCollection.merge(db, {}, conversaId, { nome });
 
-  const snap = await clienteCollection
-    .ref(db, {})
-    .where('userCliente', '==', usuarioOuterRef(user.id))
-    .limit(1)
-    .get();
-  const doc = snap.docs[0];
-  if (!doc) return;
-  const cliente = clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, doc.id));
+  const clienteId = await findClienteIdByUsuario(db, user.id);
+  if (clienteId == null) return;
+  const doc = await clienteCollection.docRef(db, {}, clienteId).get();
+  if (!doc.exists) return;
+  const cliente = clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, clienteId));
   if (isPlaceholderName(cliente.nome)) {
-    await clienteCollection.merge(db, {}, doc.id, { nome });
+    await clienteCollection.merge(db, {}, clienteId, { nome });
   }
 }
