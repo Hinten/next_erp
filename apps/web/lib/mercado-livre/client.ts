@@ -334,6 +334,18 @@ export interface MercadoLivreTiposAnuncio {
   tipos: MercadoLivreCategoriaNo[];
 }
 
+/** What a successful ML chat reply reports back. */
+export interface MercadoLivreRespostaChat {
+  conversaId: string;
+  mensagemId: string;
+  /**
+   * Non-null when the send also CLOSED the thread — answering a question is
+   * terminal, so the composer must go read-only immediately rather than wait
+   * for the next notification to import the new status.
+   */
+  respostaBloqueada: string | null;
+}
+
 /**
  * `GET /anuncio-teste` — the data ML requires a test listing to carry, resolved
  * against the live catalogue, plus whether the target account is a test user.
@@ -736,6 +748,30 @@ export interface MercadoLivreClient {
     categoryId: string;
   }): Promise<MercadoLivreTiposAnuncio>;
   /**
+   * Send a reply on a Mercado Livre conversa (PERM.mensagem.write, #533).
+   *
+   * ⚠️ SYNCHRONOUS, and that is the point: an ML reply is single-shot and its
+   * refusals are terminal — already answered, thread blocked, mediation open.
+   * A rejection arrives as `MercadoLivreClientHttpError` with a 409 and an
+   * operator-facing message, which the composer shows verbatim.
+   */
+  responderConversa(input: {
+    integracaoId: string;
+    conversaId: string;
+    texto: string;
+  }): Promise<MercadoLivreRespostaChat>;
+  /**
+   * Delete a Mercado Livre question, or block its author (PERM.mensagem.delete).
+   *
+   * ⚠️ Both are PUBLIC and not undoable from here — a deleted question leaves
+   * the listing for everyone, a blocked buyer cannot ask on any listing.
+   */
+  acaoPergunta(input: {
+    integracaoId: string;
+    conversaId: string;
+    acao: 'excluir' | 'bloquear';
+  }): Promise<{ conversaId: string; acao: 'excluir' | 'bloquear' }>;
+  /**
    * The documented test-listing data for this account (PERM.integracao.read).
    *
    * ⚠️ Read-only — it resolves what a test listing must look like and reports
@@ -1114,6 +1150,13 @@ export function createMercadoLivreClient(config: {
     anuncioTeste: (integracaoId) =>
       call<MercadoLivreAnuncioTeste>(
         `/api/marketplace/mercado-livre/anuncio-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+      ),
+    responderConversa: (input) =>
+      call<MercadoLivreRespostaChat>('/api/marketplace/mercado-livre/chat/responder', input),
+    acaoPergunta: (input) =>
+      call<{ conversaId: string; acao: 'excluir' | 'bloquear' }>(
+        '/api/marketplace/mercado-livre/chat/pergunta-acao',
+        input,
       ),
     usuariosTeste: (integracaoId) =>
       call<{ usuarios: MercadoLivreUsuarioTeste[] }>(

@@ -16,6 +16,7 @@ import {
   type MlCategoryAttribute,
   type MlCategoryListingType,
   type MlClaim,
+  type MlAnswerResult,
   type MlPackMessages,
   type MlQuestion,
   type MlClaimMessage,
@@ -63,6 +64,7 @@ import {
   mlClaimMessagesSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
+  mlAnswerResultSchema,
   mlPackMessagesSchema,
   mlQuestionSchema,
   mlClaimSearchSchema,
@@ -356,6 +358,41 @@ export interface MercadoLivreApi {
   getQuestion(questionId: number): Promise<MlQuestion>;
 
   /**
+   * `POST /answers` — answer a question (#533). Body `{ question_id, text }`.
+   *
+   * ⚠️ SINGLE-SHOT and PUBLIC. Once it lands the question flips to `ANSWERED`
+   * and the answer is visible on the listing; there is no edit and no retract.
+   * Callers must re-check the status against LIVE ML immediately before
+   * calling, never against a stored copy.
+   *
+   * ML caps an answer at 2000 characters.
+   */
+  answerQuestion(questionId: number, text: string): Promise<MlAnswerResult>;
+
+  /** `DELETE /questions/{id}` — remove a question from the listing (#533). */
+  deleteQuestion(questionId: number): Promise<void>;
+
+  /**
+   * `POST /users/{sellerId}/questions_blacklist` — stop a buyer from asking
+   * further questions on this seller's listings (#533).
+   */
+  blockUserFromQuestions(sellerId: number, buyerId: number): Promise<void>;
+
+  /**
+   * `POST /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale` — reply on
+   * a post-sale thread (#533).
+   *
+   * ⚠️ `to.user_id` must be the site’s **messaging AGENT**, not the buyer —
+   * see `postSaleAgentUserId`. ML also caps the body at the thread’s own
+   * `seller_max_message_length`, which the caller reads from a prior GET.
+   */
+  sendPackMessage(
+    packId: string,
+    sellerId: string,
+    body: { text: string; toUserId: number; attachments?: readonly string[] },
+  ): Promise<void>;
+
+  /**
    * `GET /messages/{messageId}?tag=post_sale` — ONE post-sale message, used to
    * resolve a `messages` notification's bare id to the pack it belongs to
    * (#532).
@@ -536,6 +573,22 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
   ): Promise<T> {
     const { data } = await requestWithStatus(method, path, schema, opts);
     return data;
+  }
+
+  /**
+   * A write whose RESPONSE BODY carries nothing the caller needs — ML answers
+   * these with a bare 200/201, an empty body, or a confirmation string.
+   *
+   * Still goes through the full auth/retry/error mapping: a 401 becomes a
+   * reauth error and a non-2xx becomes `MercadoLivreHttpError`, which is what
+   * lets the routes tell an operator WHY a send was refused.
+   */
+  async function requestVoid(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): Promise<void> {
+    await requestWithStatus(method, path, z.unknown(), body === undefined ? {} : { body });
   }
 
   /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
@@ -858,6 +911,37 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
           '?tag=post_sale&mark_as_read=false' +
           extra,
         mlPackMessagesSchema,
+      );
+    },
+    answerQuestion: (questionId, text) =>
+      request('POST', '/answers', mlAnswerResultSchema, {
+        body: { question_id: questionId, text },
+      }),
+    deleteQuestion: async (questionId) => {
+      await requestVoid('DELETE', `/questions/${questionId}`);
+    },
+    blockUserFromQuestions: async (sellerId, buyerId) => {
+      await requestVoid('POST', `/users/${sellerId}/questions_blacklist`, {
+        user_id: buyerId,
+      });
+    },
+    sendPackMessage: async (packId, sellerId, body) => {
+      await requestVoid(
+        'POST',
+        `/messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(sellerId)}` +
+          '?tag=post_sale',
+        {
+          // ⚠️ BOTH ids go out as STRINGS, matching ML's own documented body.
+          // The agent id is the one that must not be mistyped — sending it as a
+          // number has been observed to work, but the reference is explicit and
+          // this is not a place to be clever.
+          from: { user_id: sellerId },
+          to: { user_id: String(body.toUserId) },
+          text: body.text,
+          ...(body.attachments && body.attachments.length > 0
+            ? { attachments: [...body.attachments] }
+            : {}),
+        },
       );
     },
     getQuestion: (questionId) =>
