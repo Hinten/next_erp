@@ -20,20 +20,15 @@
  *     `MlMassImportTasksDisabledError`. Unlike the notification pipeline there
  *     is no sweep to fall back on — the caller (route or task handler) must
  *     surface this as a failed job/response, never a silent drop.
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) —
- *     see `mlTasks.ts` for why the region-qualified path is mandatory.
+ *   - `MERCADO_LIVRE_TASKS_REGION` (default `us-east1`) — see `mlTasksRegion.ts`
+ *     for why the region-qualified path is mandatory and why it must NOT fall
+ *     back to `FUNCTIONS_REGION`.
  */
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
 import { MERCADO_LIVRE_MASS_IMPORT_QUEUE, type MassImportTaskPayload } from './massImport';
-
-/** Region the mass-import function/queue live in (shared knob with mlTasks.ts). */
-function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
-}
+import { mlQueuePath } from './mlTasksRegion';
 
 /**
  * The enqueue seam. `processMassImportJob` and the `/importar-todos` route
@@ -62,7 +57,7 @@ class FirebaseMlMassImportScheduler implements MlMassImportScheduler {
   // region (the Admin SDK otherwise defaults to us-central1).
   private queue() {
     return getFunctions(getAdminApp()).taskQueue<MassImportTaskPayload>(
-      `locations/${mlTasksRegion()}/functions/${MERCADO_LIVRE_MASS_IMPORT_QUEUE}`,
+      mlQueuePath(MERCADO_LIVRE_MASS_IMPORT_QUEUE),
     );
   }
 

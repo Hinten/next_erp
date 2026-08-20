@@ -22,21 +22,16 @@
  *     same error). There is no persist-for-the-sweep fallback here: the sweep
  *     surfaces it as a per-conta failure, and the next sweep re-covers the
  *     window (never a silent drop).
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) —
- *     see `mlTasks.ts` for why the region-qualified path is mandatory.
+ *   - `MERCADO_LIVRE_TASKS_REGION` (default `us-east1`) — see `mlTasksRegion.ts`
+ *     for why the region-qualified path is mandatory and why it must NOT fall
+ *     back to `FUNCTIONS_REGION`.
  */
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
 import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from './bulkEstoquePlan';
 import { MlTasksDisabledError, type MlEnqueueOptions } from './mlTasks';
-
-/** Region the stock send function/queue live in (shared knob with mlTasks.ts). */
-function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
-}
+import { mlQueuePath } from './mlTasksRegion';
 
 /**
  * The enqueue seam. The sweeps and the task handler's pause-gate re-enqueue
@@ -56,7 +51,7 @@ class FirebaseMlStockTaskScheduler implements MlStockTaskScheduler {
   // region (the Admin SDK otherwise defaults to us-central1).
   private queue() {
     return getFunctions(getAdminApp()).taskQueue<unknown>(
-      `locations/${mlTasksRegion()}/functions/${MERCADO_LIVRE_STOCK_SEND_QUEUE}`,
+      mlQueuePath(MERCADO_LIVRE_STOCK_SEND_QUEUE),
     );
   }
 

@@ -18,11 +18,16 @@ vi.mock('firebase-functions/logger', () => ({ logger: { info: h.loggerInfo } }))
 
 vi.mock('@/lib/marketplace/mlTasks', () => ({
   createMlTaskScheduler: () => ({ enqueue: h.enqueue }),
-  // The receiver reports the region it targeted on every delivery line — that
-  // field is the whole point of the log (a queue in the wrong region is the
-  // silent drop `mlTasks.ts` warns about).
-  mlTasksRegion: () => 'us-east1',
 }));
+
+// The receiver reports the region it targeted on every delivery line — that
+// field is the whole point of the log (a queue in the wrong region is the
+// silent drop `mlTasksRegion.ts` warns about). The resolver moved out of
+// `mlTasks.ts` into its own module, shared by all five schedulers.
+vi.mock('@/lib/marketplace/mlTasksRegion', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/mlTasksRegion')>();
+  return { ...actual, mlTasksRegion: () => 'us-east1' };
+});
 
 vi.mock('@delfrance/data/admin/collections', () => ({
   notificacaoMercadoLivreCollection: {

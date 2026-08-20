@@ -52,6 +52,25 @@ runConfig:
 #                                (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
 #                                override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
+#   MERCADO_LIVRE_TASKS_REGION   Region of the five ML Cloud Tasks queues and of
+#                                every onTaskDispatched/onSchedule function in the
+#                                ML functions codebase. ⚠️ REQUIRED in prod, and
+#                                deliberately NOT this backend's own region:
+#                                Cloud Tasks and Cloud Scheduler DO NOT EXIST in
+#                                us-east5, so the whole ML functions codebase —
+#                                the four Firestore triggers included — deploys
+#                                to us-east1 instead (FUNCTIONS_REGION there
+#                                defaults to the same value; the two are set
+#                                independently and only THIS one is read here).
+#                                It must equal the TASK functions' region — a
+#                                mismatch either fails the enqueue outright (no
+#                                such queue) or, worse, produces a task whose
+#                                target URL is built from the same wrong region
+#                                and 404s on every dispatch attempt. Unset falls
+#                                back to `us-east1` in code (lib/marketplace/
+#                                mlTasksRegion.ts); set it explicitly anyway, so
+#                                the deployed region is stated where it is
+#                                configured. See functions/DEPLOY.md.
 #   MERCADO_LIVRE_CLIENT_ID      ML application id             (Secret Manager)
 #   MERCADO_LIVRE_CLIENT_SECRET  ML application secret         (Secret Manager)
 #   MERCADO_LIVRE_STATE_SECRET   HMAC key for the OAuth state  (Secret Manager)

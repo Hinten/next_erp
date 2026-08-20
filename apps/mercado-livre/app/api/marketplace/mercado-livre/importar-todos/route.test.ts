@@ -134,11 +134,25 @@ describe('POST /api/marketplace/mercado-livre/importar-todos', () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.code).toBe('ML_MASS_IMPORT_ENQUEUE_FAILED');
-    expect(body.error).toBe('cloudtasks down');
+    expect(body.error).toContain('cloudtasks down');
     expect(h.merge).toHaveBeenCalledOnce();
     const [, , id, patch] = h.merge.mock.calls[0]!;
     expect(id).toBe('job-1');
-    expect(patch).toMatchObject({ status: 'failed', erro: 'cloudtasks down' });
+    expect(patch).toMatchObject({ status: 'failed' });
+    expect((patch as { erro: string }).erro).toContain('cloudtasks down');
+  });
+
+  it('names the queue an enqueue failure was aimed at, so a region mismatch identifies itself', async () => {
+    // The bare RPC error never says which location it tried, and a wrong
+    // MERCADO_LIVRE_TASKS_REGION is the likeliest reason to land here.
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', 'us-east5');
+    h.enqueue.mockRejectedValue(new Error('cloudtasks down'));
+    const res = await POST(req({ integracaoId: 'int-1' }));
+    const body = await res.json();
+    expect(body.error).toBe(
+      'cloudtasks down (fila: locations/us-east5/functions/processMercadoLivreMassImport)',
+    );
+    vi.unstubAllEnvs();
   });
 
   it('propagates the auth failure from verifyCaller', async () => {

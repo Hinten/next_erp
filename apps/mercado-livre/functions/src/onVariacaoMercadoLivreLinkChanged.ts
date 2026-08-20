@@ -41,7 +41,7 @@ export const onVariacaoMercadoLivreLinkChanged = onDocumentWritten(
   {
     document: `${variacaoMercadoLivre.meta.collectionPath}/{docId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
-    region: process.env.FUNCTIONS_REGION ?? 'us-east5',
+    region: process.env.FUNCTIONS_REGION ?? 'us-east1',
     retry: true,
   },
   async (event) => {
