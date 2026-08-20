@@ -48,7 +48,7 @@
  * `handleNotificationTask` final-attempt persist, including tolerating a
  * secondary failure while stamping it).
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import {
   type MercadoLivreApi,
@@ -58,6 +58,7 @@ import {
 import {
   IMPORTACAO_MERCADO_LIVRE_STATUS,
   type ImportacaoMercadoLivre,
+  type ImportacaoMercadoLivreStatus,
   type MassImportOptions,
 } from '@delfrance/schemas';
 import {
@@ -155,6 +156,104 @@ export async function startMassImportJob(
     erro: null,
   });
   return jobId;
+}
+
+/** What a terminal stamp actually did — see {@link finalizeMassImportJob}. */
+export type MassImportFinalizeOutcome =
+  | 'stamped'
+  | 'not-running'
+  | 'not-found'
+  | 'wrong-integracao';
+
+/**
+ * The fields a terminal stamp may write. `status` is terminal by construction.
+ *
+ * A type alias rather than an interface, deliberately: only an alias gets an
+ * implicit index signature, which is what makes it assignable to the
+ * `Record<string, unknown>` the collection handle's `parseMerge` takes.
+ */
+export type MassImportTerminalPatch = {
+  status: Exclude<ImportacaoMercadoLivreStatus, 'running'>;
+  erro?: string | null;
+  finishedAt: number;
+  updatedAt: number;
+};
+
+/**
+ * Stamp a terminal state on a job **only while it is still `running`**.
+ *
+ * There are two writers of `status` and they do not coordinate: the task
+ * handler finishes a dispatch and stamps `completed`/`failed`, while the
+ * operator's `importar-todos/cancelar` route stamps `cancelled` at any moment.
+ * A plain `merge()` from the handler would silently overwrite a cancel that
+ * landed while the dispatch was draining its batch — the classic lost update
+ * of root `CLAUDE.md` rule 7.
+ *
+ * Class **B**: the decision to finalize is made outside the callback (the
+ * handler ran out of work; the operator clicked cancel), so the guard is
+ * explicit — `status` and `integracaoId` are re-read through `tx.get` and the
+ * write only happens on that fresh snapshot. An OCC retry re-runs both checks,
+ * so a concurrent winner turns this into a `'not-running'` no-op rather than a
+ * clobber. Nothing else in the patch is derived from the read, so there is no
+ * second stale value to worry about.
+ *
+ * `expectIntegracaoId` is the ownership check for the route: a caller may only
+ * finalize a job belonging to the conta it named.
+ */
+export async function finalizeMassImportJob(
+  db: Firestore,
+  jobId: string,
+  patch: MassImportTerminalPatch,
+  expectIntegracaoId?: string,
+): Promise<MassImportFinalizeOutcome> {
+  const ref = importacaoMercadoLivreCollection.docRef(db, {}, jobId);
+  return db.runTransaction<MassImportFinalizeOutcome>(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return 'not-found';
+    const job = importacaoMercadoLivreCollection.parseRead(
+      snap.data(),
+      importacaoMercadoLivreCollection.docPath({}, jobId),
+    );
+    if (expectIntegracaoId != null && job.integracaoId !== expectIntegracaoId) {
+      return 'wrong-integracao';
+    }
+    if (job.status !== IMPORTACAO_MERCADO_LIVRE_STATUS.running) return 'not-running';
+    tx.set(ref, importacaoMercadoLivreCollection.parseMerge(patch) as DocumentData, {
+      merge: true,
+    });
+    return 'stamped';
+  });
+}
+
+/**
+ * Operator-initiated cancel — the "Cancelar importação" action behind the job
+ * card's close button.
+ *
+ * The task handler needs no cooperation for this to take effect: it re-reads
+ * the job at the top of every dispatch and returns `'noop'` the moment the
+ * status is not `running`, so the loop stops at the next dispatch boundary
+ * (and `processMassImportJob` re-checks once more before re-enqueuing, so it
+ * does not even schedule that one). Cancelling is therefore also the recovery
+ * for a job whose task never dispatched at all — `startMassImportJob` blocks on
+ * any `running` job with no staleness bound, so without this the "Importar
+ * todos os anúncios" button stays 409 forever.
+ */
+export async function cancelMassImportJob(
+  db: Firestore,
+  args: { jobId: string; integracaoId: string; now?: number },
+): Promise<MassImportFinalizeOutcome> {
+  const nowMs = args.now ?? Date.now();
+  return finalizeMassImportJob(
+    db,
+    args.jobId,
+    {
+      status: IMPORTACAO_MERCADO_LIVRE_STATUS.cancelled,
+      erro: null,
+      finishedAt: nowMs,
+      updatedAt: nowMs,
+    },
+    args.integracaoId,
+  );
 }
 
 /** The resolved per-account dependencies `processMassImportJob` needs to scan + import. */
@@ -394,16 +493,23 @@ export async function processMassImportJob(
           'processMassImportJob: há mais trabalho pendente mas nenhum scheduler foi fornecido para reenfileirar o job.',
         );
       }
+      // A cancel that landed while this dispatch was draining must not buy one
+      // more. The next dispatch would stop at the status gate above anyway —
+      // this just declines to pay for it.
+      const atual = await readJob(db, payload.jobId);
+      if (!atual || atual.status !== IMPORTACAO_MERCADO_LIVRE_STATUS.running) return 'noop';
       await deps.scheduler.enqueue({ jobId: payload.jobId, integracaoId: payload.integracaoId });
       return 'continued';
     }
 
-    await importacaoMercadoLivreCollection.merge(db, {}, payload.jobId, {
-      status: 'completed',
+    // Guarded, not a plain merge: a cancel may have landed while this dispatch
+    // was draining, and `completed` must not overwrite it (rule 7).
+    const stamp = await finalizeMassImportJob(db, payload.jobId, {
+      status: IMPORTACAO_MERCADO_LIVRE_STATUS.completed,
       finishedAt: nowMs,
       updatedAt: nowMs,
     });
-    return 'done';
+    return stamp === 'stamped' ? 'done' : 'noop';
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     if (retryCount < MASS_IMPORT_MAX_ATTEMPTS - 1) throw err; // let the queue retry with backoff
@@ -412,8 +518,8 @@ export async function processMassImportJob(
     // notificacao.ts's handleNotificationTask) — tolerate (but log) a
     // secondary failure while stamping it, never masking the original error.
     try {
-      await importacaoMercadoLivreCollection.merge(db, {}, payload.jobId, {
-        status: 'failed',
+      await finalizeMassImportJob(db, payload.jobId, {
+        status: IMPORTACAO_MERCADO_LIVRE_STATUS.failed,
         erro: err.message,
         finishedAt: nowMs,
         updatedAt: nowMs,
