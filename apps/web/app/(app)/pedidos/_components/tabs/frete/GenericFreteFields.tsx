@@ -2,6 +2,7 @@
 
 import { Group, Select, Stack } from '@mantine/core';
 import { Controller } from 'react-hook-form';
+import type { Firestore } from 'firebase/firestore';
 import { INTEGRACAO_FRETE_LABELS, integracoesFreteSchema } from '@delfrance/schemas';
 import {
   FreteDateTimeField,
@@ -21,9 +22,11 @@ import { VolumesEditor } from './VolumesEditor';
  */
 export function GenericFreteFields({
   form,
+  db,
   disabled,
 }: {
   form: PedidoFormHandle;
+  db: Firestore;
   disabled?: boolean;
 }) {
   return (
@@ -69,7 +72,7 @@ export function GenericFreteFields({
         />
       </Group>
 
-      <VolumesEditor form={form} disabled={disabled} />
+      <VolumesEditor form={form} db={db} disabled={disabled} />
 
       <Group gap="xs" grow align="end">
         <FreteNumberField

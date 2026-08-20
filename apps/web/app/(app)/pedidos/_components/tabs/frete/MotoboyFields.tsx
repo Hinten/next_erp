@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { Alert, Group, Select, Stack } from '@mantine/core';
+import type { Firestore } from 'firebase/firestore';
 import { faixaCepOptionString, getPrazoDespacho, type IntFrete } from '@delfrance/schemas';
 import { dateToMicros } from '@delfrance/core/datetime';
 import {
@@ -23,11 +24,13 @@ import { VolumesEditor } from './VolumesEditor';
  */
 export function MotoboyFields({
   form,
+  db,
   disabled,
   integracao,
   cepDestino,
 }: {
   form: PedidoFormHandle;
+  db: Firestore;
   disabled?: boolean;
   integracao: IntFrete;
   cepDestino: string | null;
@@ -80,7 +83,7 @@ export function MotoboyFields({
 
   return (
     <Stack gap="sm">
-      <VolumesEditor form={form} disabled={disabled} />
+      <VolumesEditor form={form} db={db} disabled={disabled} />
 
       {invalidStored && <Alert color="yellow">A opção de entrega selecionada não é válida.</Alert>}
       <Select

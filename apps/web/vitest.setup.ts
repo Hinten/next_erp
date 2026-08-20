@@ -17,6 +17,15 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     ResizeObserverShim;
 }
 
+// JSDOM lacks `Element.prototype.scrollIntoView`, which Mantine's Combobox
+// calls from a `setTimeout` when its dropdown opens. Because it fires on a
+// timer, the TypeError surfaces as an *unhandled* error attributed to whatever
+// test happens to be running, long after the one that opened the dropdown —
+// and it leaves the combobox store wedged so later dropdowns never open.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() {};
+}
+
 // JSDOM lacks `window.matchMedia`, which Mantine providers query during render.
 if (typeof window !== 'undefined' && !window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {
