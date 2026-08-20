@@ -66,6 +66,15 @@ export function renderEtiquetaGenericaZpl(
         // do not strictly need it — so each anchors to its ^FO identically and
         // the column stays true. The layout has already wrapped the text, so
         // one line per block; ^FB also clips anything unexpected to the label.
+        //
+        // ⚠️ **The one thing to check on a first physical run.** ^FB and a bare
+        // ^FD are documented to anchor differently (block top vs character-cell
+        // top), which can put every ^FB line one line-height lower than the PDF
+        // draws it. Applying it uniformly makes any such offset uniform rather
+        // than mixed, and the maximal label leaves ~8mm of slack, so nothing
+        // clips either way — but if Labelary shows the whole column sitting
+        // low, subtract `zplTextHeight(...)` from the y here rather than
+        // re-tuning the layout spec, which the PDF shares.
         const justify = op.align === 'center' ? 'C' : 'L';
         out.push(
           `^FO${mm(op.x)},${mm(op.y)}^A0N,${zplTextHeight(op.sizePt, dotsPerMm)}` +
