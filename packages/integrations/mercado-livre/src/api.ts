@@ -135,8 +135,11 @@ export interface MlShipmentLabelResult {
   readonly contentType: string | null;
 }
 
-/** Raw file bytes from `downloadClaimAttachment` (claims import, Step 14). */
-export interface MlClaimAttachmentDownload {
+/**
+ * Raw file bytes from either attachment endpoint — `downloadClaimAttachment`
+ * (claims) or `downloadPostSaleAttachment` (post-sale messages).
+ */
+export interface MlAttachmentDownload {
   readonly bytes: Uint8Array;
   readonly contentType: string | null;
 }
@@ -519,7 +522,23 @@ export interface MercadoLivreApi {
    * a claim-message attachment as raw bytes (legacy `getAttachment`,
    * api.dart:1533-1539). The `filename` ML issues is the download key.
    */
-  downloadClaimAttachment(claimId: number, filename: string): Promise<MlClaimAttachmentDownload>;
+  downloadClaimAttachment(claimId: number, filename: string): Promise<MlAttachmentDownload>;
+  /**
+   * `GET /messages/attachments/{id}?tag=post_sale&site_id=MLB` — a post-sale
+   * message attachment as raw bytes.
+   *
+   * ⚠️ NOT symmetric with the claims endpoint, in three ways that each cost a
+   * round trip to discover:
+   *  - `site_id` is a REQUIRED query param here (omitting it is a documented
+   *    400, `Invalid site_id`); the claims endpoint has no such param.
+   *  - the id is the attachment's opaque `filename` from
+   *    `message_attachments[]` (`<userId>_<uuid>.<ext>`), never
+   *    `original_filename`.
+   *  - ML documents NO 404 for this route — only 400 and 500 — so a
+   *    permanently missing file arrives as a 500. The caller classifies any
+   *    non-2xx as deterministic and skips; see `orderMessageAttachments.ts`.
+   */
+  downloadPostSaleAttachment(attachmentId: string): Promise<MlAttachmentDownload>;
 
   /**
    * `GET /missed_feeds?app_id=&limit=&offset=[&topic=]` (#812) — the
@@ -784,15 +803,18 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
    * the caller can tell "empty body" from a genuine non-2xx) instead of handing
    * the importer a zero-byte file to upload.
    */
-  async function downloadClaimAttachment(
-    claimId: number,
-    filename: string,
-  ): Promise<MlClaimAttachmentDownload> {
+  /**
+   * The shared half of both attachment downloads: Bearer auth, network retry,
+   * error mapping and the empty-body guard. ONE implementation on purpose —
+   * the guard is the part most easily got wrong, and a 2xx-with-no-bytes is
+   * thrown as an HTTP error CARRYING the 2xx status so the caller can tell
+   * "empty body" from a genuine non-2xx, instead of being handed a zero-byte
+   * file to upload.
+   */
+  async function downloadAnexo(url: string): Promise<MlAttachmentDownload> {
     const token = await config.getAccessToken();
     const res = await fetchWithNetworkRetry(
-      buildUrl(
-        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
-      ),
+      url,
       {
         method: 'GET',
         headers: {
@@ -808,6 +830,37 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       throw new MercadoLivreHttpError('O Mercado Livre retornou um anexo vazio.', res.status, null);
     }
     return { bytes, contentType: res.headers.get('content-type') };
+  }
+
+  /**
+   * Binary download for claim-message attachments. The token rides the Bearer
+   * header — NEVER the legacy `access_token` query param.
+   */
+  function downloadClaimAttachment(
+    claimId: number,
+    filename: string,
+  ): Promise<MlAttachmentDownload> {
+    return downloadAnexo(
+      buildUrl(
+        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
+      ),
+    );
+  }
+
+  /**
+   * Binary download for post-sale MESSAGE attachments.
+   *
+   * ⚠️ `site_id` is REQUIRED — ML answers a documented 400 (`Invalid site_id`)
+   * without it. `MLB` is hardcoded to match the two `siteId: 'MLB'` call sites
+   * above; this backend serves one site.
+   */
+  function downloadPostSaleAttachment(attachmentId: string): Promise<MlAttachmentDownload> {
+    return downloadAnexo(
+      buildUrl(`/messages/attachments/${encodeURIComponent(attachmentId)}`, {
+        tag: 'post_sale',
+        site_id: 'MLB',
+      }),
+    );
   }
 
   return {
@@ -1082,6 +1135,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     searchClaims: (params) =>
       request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
     downloadClaimAttachment,
+    downloadPostSaleAttachment,
 
     // `buildUrl` drops every `undefined` query value, so an omitted `topic` /
     // `limit` / `offset` simply does not reach the URL — do NOT add `?? 0`

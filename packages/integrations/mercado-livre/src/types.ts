@@ -1621,6 +1621,21 @@ export const mlClaimAttachmentUploadSchema = z
 export type MlClaimAttachmentUpload = z.infer<typeof mlClaimAttachmentUploadSchema>;
 
 /**
+ * Post-sale MESSAGE attachment limits — deliberately separate from
+ * {@link ML_CLAIM_ANEXO}, which they do not match. Reusing one constant for
+ * both would silently mis-validate whichever endpoint it was not written for.
+ *
+ * ML: 25 MB, JPG/PNG/PDF/TXT, at most 25 per message, `original_filename` up to
+ * 200 chars. (Claims: 5 MB, no TXT, filename up to 125.)
+ */
+export const ML_POST_SALE_ANEXO = {
+  maxBytes: 25_000_000,
+  formatos: ['jpg', 'jpeg', 'png', 'pdf', 'txt'] as readonly string[],
+  maxPorMensagem: 25,
+  maxNomeOriginal: 200,
+} as const;
+
+/**
  * ML's claim-attachment rules, from the post-purchase reference. Enforced
  * BEFORE the upload: a rejected file wastes a write against the shared 500 rpm
  * budget and returns an error the operator cannot act on.

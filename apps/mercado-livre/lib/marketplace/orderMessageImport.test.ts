@@ -1,10 +1,30 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import type { MercadoLivreApi, MlPackMessages } from '@delfrance/integrations-mercado-livre';
 
+// Annotated with the real result UNION so a test can resolve the skip arm too:
+// inferred from the success value alone, `ok: false` would not assign.
+type AnexoResult =
+  | { ok: true; arquivoOuterRef: string }
+  | { ok: false; skipped: 'http-error' | 'empty-body' };
+
+const anexoMock = vi.hoisted(() => ({
+  ensureOrderMessageAttachmentArquivo: vi.fn(
+    async (): Promise<AnexoResult> => ({
+      ok: true,
+      arquivoOuterRef: 'documents/arquivos/ARQ-1',
+    }),
+  ),
+}));
+vi.mock('./orderMessageAttachments', async (importActual) => {
+  const actual = await importActual<typeof import('./orderMessageAttachments')>();
+  return { ...actual, ...anexoMock };
+});
+
 import { importOrderMessageMercadoLivre } from './orderMessageImport';
 import { PREFIXO_PROVISORIA, makeMensagemProvisoriaId } from './mensagemProvisoria';
+import type { Bucket } from './arquivoUpload';
 import { makeConversaIdOrderMessage } from './orderMessageIds';
 
 type DocData = Record<string, unknown>;
@@ -205,11 +225,14 @@ function api(over: ApiStubs = {}): MercadoLivreApi {
 function deps(
   db: FakeDb,
   apiOver: ApiStubs = {},
-  over: { notificacaoEnviadaMs?: number | null } = {},
+  over: { notificacaoEnviadaMs?: number | null; bucket?: Bucket | null } = {},
 ) {
   return {
     db: asDb(db),
     api: api(apiOver),
+    // Default null: the attachment path is opt-in per test, so every existing
+    // case keeps exercising the text-only flow it was written for.
+    bucket: null as Bucket | null,
     integracaoId: CONTA,
     conta: { userId: SELLER, cor: 7 },
     nowMs: NOW_MS,
@@ -644,5 +667,167 @@ describe('importOrderMessageMercadoLivre — the provisional bubble expires', ()
     await importOrderMessageMercadoLivre(deps(db), MSG_ID);
 
     expect(db.docs(`chat/${conversaId}/mensagem`).get(futuro)).toBeDefined();
+  });
+});
+
+describe('importOrderMessageMercadoLivre — attachments (#1162)', () => {
+  // Until this shipped, an attachment reached the inbox as TEXT only and the
+  // operator had to leave the ERP to see it. These pin the wiring; the download
+  // itself (cache, failure disposition) is covered in
+  // `orderMessageAttachments.test.ts`.
+
+  const BUCKET = { name: 'b' } as unknown as Bucket;
+  const ANEXO = { filename: 'u_1.jpg', original_filename: 'foto.jpg', type: null, size: 1 };
+
+  beforeEach(() => {
+    anexoMock.ensureOrderMessageAttachmentArquivo.mockClear();
+    anexoMock.ensureOrderMessageAttachmentArquivo.mockResolvedValue({
+      ok: true,
+      arquivoOuterRef: 'documents/arquivos/ARQ-1',
+    });
+  });
+
+  it('writes an attachment mensagem pointing at the stored Arquivo', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    await importOrderMessageMercadoLivre(
+      deps(
+        db,
+        {
+          getPackMessages: vi.fn(async () =>
+            packResponse({
+              messages: [msg({ message_attachments: [ANEXO] })],
+            }),
+          ),
+        },
+        { bucket: BUCKET },
+      ),
+      MSG_ID,
+    );
+
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    const mensagens = [...db.docs(`chat/${conversaId}/mensagem`).values()];
+    const anexo = mensagens.find((m) => m.anexoStorage != null);
+    expect(anexo).toBeDefined();
+    expect(anexo!.anexoStorage).toBe('documents/arquivos/ARQ-1');
+    // ...and the TEXT mensagem is still there beside it.
+    expect(mensagens.some((m) => m.anexoStorage == null)).toBe(true);
+  });
+
+  it('gives the attachment its PARENT message\u2019s direction', async () => {
+    // A buyer photo stamped `enviado` renders as OUR outgoing message — the
+    // exact bug the claims path had to fix. The fixture message is FROM the
+    // agent (i.e. the buyer side), so its attachment must read `recebido` (7).
+    const db = new FakeDb();
+    seedPedido(db);
+    await importOrderMessageMercadoLivre(
+      deps(
+        db,
+        {
+          getPackMessages: vi.fn(async () =>
+            packResponse({
+              messages: [msg({ message_attachments: [ANEXO] })],
+            }),
+          ),
+        },
+        { bucket: BUCKET },
+      ),
+      MSG_ID,
+    );
+
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    const anexo = [...db.docs(`chat/${conversaId}/mensagem`).values()].find(
+      (m) => m.anexoStorage != null,
+    );
+    expect(anexo!.estadoEnvio).toBe(7);
+  });
+
+  it('a SELLER attachment is enviado, not recebido', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    await importOrderMessageMercadoLivre(
+      deps(
+        db,
+        {
+          getPackMessages: vi.fn(async () =>
+            packResponse({
+              messages: [msg({ from: { user_id: SELLER }, message_attachments: [ANEXO] })],
+            }),
+          ),
+        },
+        { bucket: BUCKET },
+      ),
+      MSG_ID,
+    );
+
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    const anexo = [...db.docs(`chat/${conversaId}/mensagem`).values()].find(
+      (m) => m.anexoStorage != null,
+    );
+    // 3 = ESTADO_ENVIO.enviado (1 is 'salva', a draft).
+    expect(anexo!.estadoEnvio).toBe(3);
+  });
+
+  it('with NO bucket: skips every attachment but still writes the message', async () => {
+    // Degrading to text-only is the whole point — losing the customer message
+    // because Storage was unavailable would be far worse than losing the photo.
+    const db = new FakeDb();
+    seedPedido(db);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await importOrderMessageMercadoLivre(
+      deps(
+        db,
+        {
+          getPackMessages: vi.fn(async () =>
+            packResponse({
+              messages: [msg({ message_attachments: [ANEXO, ANEXO] })],
+            }),
+          ),
+        },
+        { bucket: null },
+      ),
+      MSG_ID,
+    );
+
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    const mensagens = [...db.docs(`chat/${conversaId}/mensagem`).values()];
+    expect(mensagens.some((m) => m.anexoStorage != null)).toBe(false);
+    expect(mensagens.some((m) => m.anexoStorage == null)).toBe(true);
+    expect(anexoMock.ensureOrderMessageAttachmentArquivo).not.toHaveBeenCalled();
+    // ONE warn for the whole message, not one per attachment.
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('a SKIPPED download still lets the text mensagem land', async () => {
+    // The `[n anexos]` note in the body is what tells the operator one existed.
+    const db = new FakeDb();
+    seedPedido(db);
+    anexoMock.ensureOrderMessageAttachmentArquivo.mockResolvedValue({
+      ok: false,
+      skipped: 'http-error',
+    });
+
+    await importOrderMessageMercadoLivre(
+      deps(
+        db,
+        {
+          getPackMessages: vi.fn(async () =>
+            packResponse({
+              messages: [msg({ message_attachments: [ANEXO] })],
+            }),
+          ),
+        },
+        { bucket: BUCKET },
+      ),
+      MSG_ID,
+    );
+
+    const conversaId = makeConversaIdOrderMessage(CONTA, PACK_ID);
+    const mensagens = [...db.docs(`chat/${conversaId}/mensagem`).values()];
+    expect(mensagens.some((m) => m.anexoStorage != null)).toBe(false);
+    const texto = mensagens.find((m) => m.anexoStorage == null);
+    expect(String(texto!.conteudo)).toContain('anexo');
   });
 });
