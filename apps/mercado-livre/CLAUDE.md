@@ -336,14 +336,31 @@ family at `'E'`, because `estado` lives only on the parent link. It is visible a
 self-clearing (an `items` webhook or "Reverificar anúncio"), and the log names the
 offending member — but it does stop the siblings until then.
 
-⚠️ **A member's own `status`/`sub_status` gate its send, and that is what makes
-#707's prune do anything.** The UP branch of `buildSendTasks` runs
-`podeEnviarEstoque` per member, with the same two arms as the parent link: a
-PRESENT status goes through the documented whitelist, an ABSENT one sends
-**optimistically** (#780 — the field arrived with #1142, so every Flutter-authored
-member link is null, and a listing that never changes never fires an `items`
-notification). The fields ride the `varLinks` subcollection projection in
-`stockJoinBuilders`; dropping them there silently disables the rung.
+⚠️ **A member's own `status`/`sub_status` gate its send — on BOTH child loops, and
+that is what makes #707's prune do anything.** `membroPodeEnviar` is called from
+the legacy `variations[]` builder AND the User-Products per-member loop, with the
+same two arms as the parent link: a PRESENT status goes through the documented
+whitelist, an ABSENT one sends **optimistically** (#780). Gating only ONE branch is
+the trap — the prune writes its mark on LEGACY links, so a gate that lived only on
+the UP branch made the whole self-heal a no-op: the phantom went straight back into
+`variations[]` and re-earned the identical rejection. The `THE SEAM` spec in
+`estoqueSend.test.ts` joins the two halves so that cannot pass again. Both fields
+ride the `varLinks` subcollection projection in `stockJoinBuilders`; dropping them
+there silently disables both rungs.
+
+⚠️ **A variation link is NOT backfilled by a successful send, unlike the parent.**
+`estoqueSend`'s happy-path writeback is family-scoped, and for a `variationItem`
+task it deliberately writes NO status at all — `resp` describes one member while
+`linkDocId` names the family, so writing it there is the same over-reach in the
+success direction (a member returning `paused` on an accepted PUT would make the
+next sweep skip every sibling as `status-nao-enviavel`). It writes only
+`ultimaModificacao` + `clearFalha()`, both legitimately family-wide. Reaching the
+MEMBER's own link would cost a subcollection read on the hot path — one per member
+task, 96× a day across the catalogue — to record a status that is `active` by
+construction, so it is left to the three surfaces that already write one: the
+`items` webhook, #707's prune, and the terminal-4xx fold. Consequence:
+`membroPodeEnviar`'s optimistic arm converges only through those three, which is
+the safe direction since it sends.
 
 ⚠️ **`item.variations.invalid` self-heals; it is LEGACY-MODEL ONLY (#707).** When a
 bulk `PUT /items/{id}` is refused with that cause, the terminal branch diffs the

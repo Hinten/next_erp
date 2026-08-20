@@ -658,6 +658,68 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
 });
 
 describe('processStockSendTask — writeback', () => {
+  it('a SUCCESSFUL member send writes no status to the family link', () => {
+    // The same one-member-speaks-for-the-family failure as the terminal branch,
+    // in the success direction: `resp` describes ONE member while `linkDocId`
+    // names the FAMILY. Writing `resp.status` there means a member coming back
+    // `paused` on an accepted PUT makes the next sweep skip EVERY sibling as
+    // `status-nao-enviavel`.
+    const h = makeHarness({
+      updateItem: async (): Promise<MlItem> => ({
+        id: 'MLB-MEMBER-1',
+        status: 'paused',
+        sub_status: [],
+      }),
+    });
+    h.db.seed(LINK_PATH, 'link1', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      id: 'FAM-9',
+      estado: 'p',
+      status: 'active',
+      sub_status: [],
+      isUserProductModel: true,
+      errors: ['uma falha antiga'],
+    });
+
+    return run(
+      h,
+      payload({
+        kind: 'variationItem',
+        itemId: 'MLB-MEMBER-1',
+        variacaoProdutoId: 'CHILD-1',
+        quantidade: 7,
+      }),
+    ).then((res) => {
+      expect(res).toEqual({ outcome: 'sent', reason: null });
+      const link = h.db.docs(LINK_PATH).get('link1');
+      // The family keeps whatever the fold last concluded — one member's `paused`
+      // does not become the family's.
+      expect(link).toMatchObject({ estado: 'p', status: 'active' });
+      // ...but the heal and the stamp are legitimately family-wide.
+      expect(link).toMatchObject({ errors: [], causas: [], ultimaModificacao: NOW_MS });
+    });
+  });
+
+  it('a successful SIMPLE send still writes the status through (unchanged)', async () => {
+    const h = makeHarness({
+      updateItem: async (): Promise<MlItem> => ({
+        id: 'MLB111',
+        status: 'paused',
+        sub_status: ['out_of_stock'],
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      estado: 'pa',
+      status: 'paused',
+      sub_status: ['out_of_stock'],
+    });
+  });
+
   it('merges the fresh ML status onto the payload-addressed link doc', async () => {
     const h = makeHarness({
       updateItem: async (): Promise<MlItem> => ({
@@ -1146,6 +1208,81 @@ describe('processStockSendTask — terminal 4xx, item.variations.invalid (#707)'
     // The retry re-read v2, found it live, and planned nothing.
     expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
   });
+});
+
+it('THE SEAM: what the prune writes is what the next sweep leaves out', () => {
+  // Every other prune spec asserts the mark is WRITTEN. None of them proved the
+  // planner READS it — and it did not: the gate first landed on the UP branch
+  // while the prune only ever marks LEGACY links, so the phantom went straight
+  // back into `variations[]` and the self-heal healed nothing. This spec joins
+  // the two halves, so a gate on the wrong branch can never pass again.
+  const marcado = { id: 999, status: 'closed', sub_status: ['deleted'] };
+  const row: StockFamilyRow = {
+    anchorId: 'PROD',
+    anchor: {
+      produtoId: 'PROD',
+      ehKit: false,
+      ehKitVirtual: false,
+      publicado: true,
+      componentesKit: null,
+      timestampMs: null,
+      estoque: null,
+      componentEstoques: [],
+    },
+    integracoesComProduto: [CONTA],
+    links: [
+      {
+        id: 'MLB111',
+        estado: 'p',
+        status: 'active',
+        sub_status: [],
+        isUserProductModel: false,
+        linkDocId: 'link1',
+      },
+    ],
+    children: [
+      {
+        produtoId: 'C1',
+        ehKit: false,
+        ehKitVirtual: false,
+        publicado: true,
+        componentesKit: null,
+        timestampMs: null,
+        estoque: null,
+        componentEstoques: [],
+        varLinks: [{ id: 101, produtoMercadoLivreOuterRef: PARENT_REF }],
+      },
+      {
+        produtoId: 'C2',
+        ehKit: false,
+        ehKitVirtual: false,
+        publicado: true,
+        componentesKit: null,
+        timestampMs: null,
+        estoque: null,
+        componentEstoques: [],
+        // ⚠️ Exactly the patch `podarVariacoesFantasma` merges — spelled as the
+        // stored doc, so a change to either side breaks this.
+        varLinks: [{ ...marcado, produtoMercadoLivreOuterRef: PARENT_REF }],
+      },
+    ],
+  };
+
+  const built = buildSendTasks(
+    row,
+    new Map([
+      ['C1', 3],
+      ['C2', 4],
+    ]),
+    { integracaoId: CONTA, sweepId: 'sweep-2', sweepComputedAtMs: SWEEP_MS },
+  );
+
+  // The phantom is gone; the live sibling still ships.
+  expect(built.tasks).toHaveLength(1);
+  expect(built.tasks[0]?.variations).toEqual([{ id: 101, available_quantity: 3 }]);
+  expect(built.skips).toEqual([
+    { produtoId: 'C2', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+  ]);
 });
 
 /* ------------- terminal 4xx on ONE User-Products family member ------------- */

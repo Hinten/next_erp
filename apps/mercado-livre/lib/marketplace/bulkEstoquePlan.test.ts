@@ -1927,6 +1927,68 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     });
   });
 
+  it('legacy model: a member marked CLOSED is left OUT of variations[] (#707 seam)', () => {
+    // THE rung #707 exists for. The prune marks a phantom `status: 'closed'` on
+    // its own link; if this branch does not read that, the stale id goes straight
+    // back into the payload, ML answers the identical `item.variations.invalid`,
+    // and the self-heal heals nothing.
+    const row = familyRow({
+      children: [
+        child('CH1', [
+          {
+            id: 111,
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'closed',
+            sub_status: ['deleted'],
+          },
+        ]),
+        child('CH2', [{ id: 222, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH2', 4],
+    ]);
+    const res = buildSendTasks(row, qty, OPTS);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        kind: 'item',
+        itemId: 'MLB111',
+        variacaoProdutoId: null,
+        quantidade: null,
+        // 111 is gone — only the live sibling rides the bulk payload.
+        variations: [{ id: 222, available_quantity: 4 }],
+      },
+    ]);
+    expect(res.skips).toEqual([
+      { produtoId: 'CH1', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
+  });
+
+  it('legacy model: a member with NO status still rides the payload (#780)', () => {
+    // Every Flutter-authored variation link is null here, and gating on the
+    // whitelist would be a silent, permanent stock outage for that catalogue.
+    const row = familyRow({
+      children: [child('CH1', [{ id: 111, produtoMercadoLivreOuterRef: PARENT_LINK_REF }])],
+    });
+    const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
+    expect(res.tasks[0]?.variations).toEqual([{ id: 111, available_quantity: 3 }]);
+    expect(res.skips).toEqual([]);
+  });
+
+  it('legacy model: EVERY member closed → no task at all, only skips', () => {
+    const row = familyRow({
+      children: [
+        child('CH1', [{ id: 111, produtoMercadoLivreOuterRef: PARENT_LINK_REF, status: 'closed' }]),
+      ],
+    });
+    const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toHaveLength(1);
+  });
+
   it('UP model: one variationItem task per child, deduped by itemId', () => {
     const row = familyRow({
       links: [{ isUserProductModel: true }],

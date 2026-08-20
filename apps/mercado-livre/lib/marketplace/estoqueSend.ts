@@ -401,14 +401,40 @@ export async function processStockSendTask(
     // `mergeIfExists`: `linkDocId` rides from the sweep and is never re-resolved,
     // so the link may have been deleted while this task sat in the queue. An
     // upsert would resurrect a ghost doc holding only these keys.
+    //
+    // ⚠️ A `kind: 'variationItem'` task is the EXCEPTION, and it is the same
+    // one-member-speaks-for-the-family failure the terminal branch below fixes,
+    // in the success direction: `resp` describes ONE member's ML item while
+    // `linkDocId` names the FAMILY's parent link. Writing `resp.status` there
+    // publishes one member's lifecycle as the family's, and the parent gate in
+    // `buildSendTasks` then skips EVERY sibling the moment a member comes back
+    // `paused` or `under_review` on an otherwise accepted PUT. So a member send
+    // writes no status at all — only the heal (`clearFalha`) and the stamp, both
+    // of which are legitimately family-wide.
+    //
+    // ⚠️ It does not write the MEMBER's own status either, and that is a
+    // deliberate scope limit rather than an oversight. The member's link doc id
+    // is not in the payload, so reaching it costs a subcollection read on the
+    // HOT path — one per member task, 96× a day across the catalogue — to record
+    // a value that is `active` by construction (ML just accepted a stock update
+    // for it). The rungs that genuinely need a member status all write it
+    // already: the `items` webhook, #707's prune, and the terminal-4xx fold.
+    // The consequence is that `membroPodeEnviar`'s optimistic arm converges only
+    // through those three — the safe direction, since it sends. Recorded next to
+    // the other residual in `apps/mercado-livre/CLAUDE.md`.
+    const ehMembro = payload.variacaoProdutoId != null;
     const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
       db,
       { produtoId: payload.produtoId },
       payload.linkDocId,
       {
-        estado: estadoFromMlStatus(resp.status),
-        status: resp.status ?? null,
-        sub_status: resp.sub_status ?? [],
+        ...(ehMembro
+          ? {}
+          : {
+              estado: estadoFromMlStatus(resp.status),
+              status: resp.status ?? null,
+              sub_status: resp.sub_status ?? [],
+            }),
         ultimaModificacao: nowMs,
         // A send that lands clears whatever diagnosis the last failure left
         // behind — otherwise the produto tab keeps showing a red alert for a
