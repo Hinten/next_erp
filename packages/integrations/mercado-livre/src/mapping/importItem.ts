@@ -194,6 +194,16 @@ export function skuGuessFromVariations(item: MlItem): string | null {
  * whenever the stock units are the children, because the item in hand is then
  * one member of a family, and its `user_product_id` on the family's link is the
  * "one member speaks for the family" mistake #1142 found in four places.
+ *
+ * ⚠️ Deliberately CONSERVATIVE, and the asymmetry is the point. It answers from
+ * the ML ITEM, so it says "children" for a User-Products SINGLE item too — one
+ * whose ERP produto has no variations and whose parent link really is the stock
+ * unit. That costs one `GET /items` the stock send would otherwise skip, once,
+ * and the send stamps the id itself afterwards. The opposite error writes a
+ * MEMBER's id onto a FAMILY's link, which no later read can tell from a real
+ * one. Callers that genuinely know the ERP shape ask a better question instead
+ * — `children.length` in `publish.ts`, `hasVariations` in `importCore.ts`,
+ * `row.children.length` in the sweep.
  */
 export function itemStockLivesOnChildren(item: MlItem): boolean {
   return item.family_name != null || (item.variations?.length ?? 0) > 0;
