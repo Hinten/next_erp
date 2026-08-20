@@ -29,6 +29,17 @@ type DocData = Record<string, unknown>;
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
+  /**
+   * Every executed query's collection path + clauses.
+   *
+   * The fake APPLIES `where` clauses but used to swallow them, so a test could
+   * only observe which docs came back — and "the right docs came back" is
+   * satisfied by a query with an extra term as long as the fixtures happen to
+   * pass it. #1072 turns on the anchor query carrying exactly two terms (a
+   * third breaks the declared index and silently full-scans on Enterprise),
+   * so that has to be assertable directly.
+   */
+  readonly queries: Array<{ path: string; clauses: Array<{ field: string; op: string }> }> = [];
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -40,6 +51,7 @@ class FakeDb {
   }
 
   collection(path: string) {
+    const self = this;
     const col = this.col(path);
     const clauses: Array<{ field: string; op: string; value: unknown }> = [];
     let byDocId = false;
@@ -73,6 +85,10 @@ class FakeDb {
         return { id, __col: path, __id: id };
       },
       async get() {
+        self.queries.push({
+          path,
+          clauses: clauses.map(({ field, op }) => ({ field, op })),
+        });
         let rows = [...col.entries()].filter(([, d]) =>
           clauses.every(({ field, op, value }) => matches(d[field], op, value)),
         );
@@ -590,11 +606,10 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
 });
 
 describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () => {
-  it('plans only published family anchors linked to the conta', async () => {
+  it('plans every family anchor linked to the conta', async () => {
     const db = new FakeDb();
     seedAnchor(db, 'A1');
     seedLink(db, 'A1', 'link1');
-    seedAnchor(db, 'A2', { publicado: false }); // unpublished
     seedAnchor(db, 'A3', { integracoesComProduto: ['outra-conta'] }); // other conta
     db.seed('produtos', 'C1', {
       // a variation child, never an anchor
@@ -625,6 +640,61 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
       },
     ]);
     expect(page.nextAfterAnchorId).toBeNull(); // short page — backlog drained
+  });
+
+  it('#1072: an UNPUBLISHED anchor with a live link is planned, not dropped', async () => {
+    // #804 class 1. `publicado == true` used to drop this family server-side
+    // with no skip row, so the job reported `completed` having never looked at
+    // it. `integracoesComProduto` already answers the only question that
+    // matters here — does ML have a live anúncio — so the family plans like any
+    // other and the send-time status gate decides.
+    const db = new FakeDb();
+    seedAnchor(db, 'A2', { publicado: false });
+    seedLink(db, 'A2', 'link1');
+
+    const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 });
+
+    expect(page.rows.map((r) => r.produtoId)).toEqual(['A2']);
+    // The mask still carries the flag even though the query no longer filters
+    // on it — `precoManual` rungs out on it, so a page row and a by-ids row
+    // must stay the same shape.
+    expect(page.rows[0]!.publicado).toBe(false);
+    // ...and it plans real drafts, rather than reaching a skip rung.
+    expect(buildPrecoDrafts(page.rows[0]!, OPTS)).toEqual({
+      drafts: [
+        {
+          kind: 'item',
+          itemId: 'MLB111',
+          produtoId: 'A2',
+          variacaoProdutoId: null,
+          linkDocId: 'link1',
+          preco: 10,
+        },
+      ],
+      skips: [],
+    });
+  });
+
+  it('#1072: the anchor query carries EXACTLY the two terms its index declares', async () => {
+    // The structural guard. `produtos(paiId, integracoesComProduto, __name__)`
+    // is the declared entry; a third term makes it unservable, and on
+    // Enterprise that does not throw — it full-scans and bills the bytes. The
+    // row assertions above would stay green with `publicado == true` back in
+    // place, so this is the only thing standing between a re-added term and a
+    // silent cost regression.
+    const db = new FakeDb();
+    seedAnchor(db, 'A1');
+    seedLink(db, 'A1', 'link1');
+
+    await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 });
+
+    const anchorQuery = db.queries.find(
+      (q) => q.path === 'produtos' && q.clauses.some((c) => c.op === 'array-contains'),
+    );
+    expect(anchorQuery?.clauses).toEqual([
+      { field: 'paiId', op: '==' },
+      { field: 'integracoesComProduto', op: 'array-contains' },
+    ]);
   });
 
   it('keyset: a FULL page sets nextAfterAnchorId; the resumed page drains', async () => {
@@ -742,21 +812,27 @@ describe('fetchPrecoPage — anchor filtering, keyset, joins, soft reads', () =>
 });
 
 /**
- * #804 S7's three classes, from the by-ids side. Each of these produces NO row
- * at all from `fetchPrecoPage` — the anchor query filters it out server-side —
- * which is precisely why the manual push reads anchors by key instead.
+ * #804 S7's three classes, from the by-ids side.
+ *
+ * ⚠️ The premise changed with #1072 and the difference is the whole point of
+ * this block: class 1 is no longer one of them — `fetchPrecoPage` dropped
+ * `publicado == true`, so the bulk job enumerates an unpublished produto like
+ * any other. The remaining two still produce NO row from the anchor query
+ * (`paiId` and the denorm term filter them out server-side), which is why the
+ * manual push reads anchors by key and why the reconciliation phase reports
+ * them.
  */
 describe('fetchPrecoFamiliasByIds — the manual push target set', () => {
-  it('returns an UNPUBLISHED produto that has a live link (fetchPrecoPage drops it silently)', async () => {
+  it('returns an UNPUBLISHED produto that has a live link — as does fetchPrecoPage since #1072', async () => {
     const db = new FakeDb();
     seedAnchor(db, 'A1', { publicado: false });
     seedLink(db, 'A1', 'link1');
 
-    // The bulk query sees nothing at all…
+    // The bulk query now sees it too — this used to be the silent drop.
     const page = await fetchPrecoPage(asDb(db), { integracaoId: CONTA, pageLimit: 10 });
-    expect(page.rows).toEqual([]);
+    expect(page.rows.map((r) => r.produtoId)).toEqual(['A1']);
 
-    // …while the by-ids read hands the caller a row it can report on.
+    // The by-ids read still hands the caller the same row, same shape.
     const rows = await fetchPrecoFamiliasByIds(asDb(db), {
       integracaoId: CONTA,
       anchorIds: ['A1'],
@@ -764,6 +840,8 @@ describe('fetchPrecoFamiliasByIds — the manual push target set', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.publicado).toBe(false);
     expect(rows[0]!.links).toHaveLength(1);
+    // Both paths agree — the mask keeps them the same shape.
+    expect(rows[0]).toEqual(page.rows[0]);
   });
 
   it('returns a produto whose integracoesComProduto denorm drifted (empty) but whose link is live', async () => {
