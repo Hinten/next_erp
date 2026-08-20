@@ -8,6 +8,7 @@ import {
   isVersionConflict,
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
+import { orderSchema } from '../src/types';
 import {
   __resetAvisoFormatoLegado,
   ehFormatoLegado,
@@ -697,6 +698,35 @@ describe('createMercadoLivreApi — User-Products stock by location (multiorigem
     });
   });
 
+  it('the WRITE hands back the fresh x-version it earned, so a second write needs no GET', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(STOCK, 200, { 'x-version': '8' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const res = await api.putUserProductSellerWarehouseStock('MLBU206642488', '7', [
+      { store_id: '9876543', network_node_id: 'MXP123451', quantity: 12 },
+    ]);
+    expect(res.version).toBe('8');
+    expect(res.stock?.id).toBe('MLBU206642488');
+  });
+
+  it('⚠️ a bare-ack write (204 / empty 200) is a SUCCESS, never a validation error', async () => {
+    // `parseOk` feeds the schema `null` for an empty body. Parsing this as a
+    // bare object would report a write that LANDED as a failure, and the caller
+    // would latch the listing with a lastError while ML holds the right number.
+    for (const res of [
+      new Response(null, { status: 204 }),
+      new Response('', { status: 200, headers: { 'content-type': 'application/json' } }),
+    ]) {
+      const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) => res.clone());
+      const api = createMercadoLivreApi(cfg(fetchMock));
+      const out = await api.putUserProductSellerWarehouseStock('MLBU206642488', '7', [
+        { store_id: '9876543', network_node_id: 'MXP123451', quantity: 12 },
+      ]);
+      expect(out.stock).toBeNull();
+    }
+  });
+
   it('a stale x-version surfaces as a 409 that isVersionConflict recognises', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ message: 'version mismatch' }, 409),
@@ -723,6 +753,22 @@ describe('createMercadoLivreApi — User-Products stock by location (multiorigem
     await expect(
       api.putUserProductSellerWarehouseStock('MLBU206642488', '', []),
     ).rejects.toMatchObject({ constructor: MercadoLivreHttpError, status: 400 });
+  });
+
+  it('⚠️ a malformed order-line `stock` never fails the ORDER IMPORT — it has no readers yet', async () => {
+    // Every other field on `orderItemSchema` is load-bearing and rightly fails
+    // the parse on a shape we cannot use. This one is documentation until #1177,
+    // so `.catch(null)` keeps a surprise from taking down the whole import.
+    const parsed = orderSchema.parse({
+      id: 1,
+      order_items: [
+        // ML sends an OBJECT where the array is modelled.
+        { item: { id: 'MLB1' }, quantity: 1, stock: { store_id: '1' } },
+      ],
+    });
+    expect(parsed.order_items?.[0]?.stock).toBeNull();
+    // …and the line itself survives intact.
+    expect(parsed.order_items?.[0]?.item?.id).toBe('MLB1');
   });
 
   it('an uninitialised UP answers stock-locations not found, NOT an empty locations array', async () => {
