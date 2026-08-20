@@ -200,7 +200,10 @@ export function ListingStatusStrip({
             {moderacoes.map((moderacao, i) => {
               const severidade = severidadeModeracao(moderacao);
               const onde = secoesLabel(moderacao.secoes);
-              const evidencias = moderacao.evidencias.filter((e) => e.length > 0);
+              // Already trimmed and blank-free: `moderacoesDoLink` normalises,
+              // which is also what makes the `?? …` and `!= null` tests below
+              // right rather than nearly-right.
+              const evidencias = moderacao.evidencias;
               const extras = evidencias.length - MAX_EVIDENCIAS_VISIVEIS;
               return (
                 <List.Item key={`${moderacao.nome ?? 'sem-filtro'}-${String(i)}`}>

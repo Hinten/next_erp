@@ -53,8 +53,12 @@ import { ML_CAUSA_CAMPO } from '@delfrance/schemas';
 export type SeveridadeModeracao = 'sem-conserto' | 'sem-motivo' | 'com-conserto';
 
 export function severidadeModeracao(moderacao: MlModeracao): SeveridadeModeracao {
-  if (moderacao.motivo == null) return 'sem-motivo';
-  return moderacao.remedio == null ? 'sem-conserto' : 'com-conserto';
+  // Trim-aware rather than `== null`, so this is right for a raw entry too and
+  // not only for one {@link moderacoesDoLink} already normalised. A blank
+  // `motivo` classified as `sem-conserto` would render an EMPTY reason under the
+  // red "não pode ser reativado" — the exact thing this type exists to prevent.
+  if (textoOuNull(moderacao.motivo) == null) return 'sem-motivo';
+  return textoOuNull(moderacao.remedio) == null ? 'sem-conserto' : 'com-conserto';
 }
 
 /** Alert colour per severity — the WORST entry decides the whole block. */
@@ -95,15 +99,63 @@ export function corDaModeracao(moderacoes: readonly MlModeracao[]): string {
  * documents the Flutter app and a legacy corpus can also have touched. An empty
  * entry would render an alert with no content, which is the "red alert saying
  * nothing" the whole feature exists to avoid.
+ *
+ * ⚠️ It also NORMALISES (see {@link normalizar}), and that is the contract every
+ * consumer downstream relies on: after this, a blank string is null, so
+ * `motivo == null` and `remedio != null` are correct tests rather than
+ * nearly-correct ones. Read the field off a raw link doc and they are not.
  */
 export function moderacoesDoLink(link: Pick<ProdutoMercadoLivreLink, 'moderacoes'>): MlModeracao[] {
-  return (link.moderacoes ?? []).filter(
-    (m): m is MlModeracao => m != null && (naoVazio(m.motivo) || naoVazio(m.nome)),
-  );
+  const out: MlModeracao[] = [];
+  for (const bruta of link.moderacoes ?? []) {
+    if (bruta == null) continue;
+    const m = normalizar(bruta);
+    if (m.motivo == null && m.nome == null) continue;
+    out.push(m);
+  }
+  return out;
 }
 
-function naoVazio(v: string | null | undefined): boolean {
-  return typeof v === 'string' && v.trim().length > 0;
+/**
+ * Blank-to-null, once, at the boundary — so every consumer downstream may use a
+ * plain `== null` and be right.
+ *
+ * ⚠️ This exists because the alternative is a trim-aware predicate at each of
+ * the six places a field is read, and missing ONE of them is a real defect: a
+ * `motivo: '   '` entry would clear the visibility gate on its `nome`, classify
+ * as `sem-conserto`, and render an EMPTY reason under the red "não pode ser
+ * reativado". Normalising in one place makes that unrepresentable instead of
+ * merely unlikely.
+ *
+ * Today's writer (`mapModeracoes`) already trims and nulls blanks, so nothing on
+ * disk should need this — but the module's whole premise is that it reads
+ * documents the Flutter app and a legacy corpus also touched, and it would be
+ * inconsistent to say that and then trust the strings.
+ */
+function normalizar(m: MlModeracao): MlModeracao {
+  return {
+    ...m,
+    nome: textoOuNull(m.nome),
+    motivo: textoOuNull(m.motivo),
+    remedio: textoOuNull(m.remedio),
+    secoes: textosNaoVazios(m.secoes),
+    evidencias: textosNaoVazios(m.evidencias),
+  };
+}
+
+/** A trimmed non-empty string, or null. */
+function textoOuNull(v: string | null | undefined): string | null {
+  const t = typeof v === 'string' ? v.trim() : null;
+  return t != null && t.length > 0 ? t : null;
+}
+
+function textosNaoVazios(vs: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  for (const v of vs ?? []) {
+    const t = textoOuNull(v);
+    if (t != null) out.push(t);
+  }
+  return out;
 }
 
 /**
@@ -131,7 +183,7 @@ export function secaoLabel(secao: string): string {
 
 /** `pictures, title` → `Fotos, Título`, de-duplicated, for the strip's "Onde:". */
 export function secoesLabel(secoes: readonly string[]): string {
-  return [...new Set(secoes.filter((s) => s.length > 0).map(secaoLabel))].join(', ');
+  return [...new Set(textosNaoVazios(secoes).map(secaoLabel))].join(', ');
 }
 
 /**

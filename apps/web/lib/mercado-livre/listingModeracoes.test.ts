@@ -45,6 +45,17 @@ describe('severidadeModeracao', () => {
     expect(severidadeModeracao(semTexto)).toBe('sem-motivo');
     expect(severidadeModeracao(semTexto)).not.toBe('sem-conserto');
   });
+
+  /**
+   * Trim-aware on a RAW entry too, not only on one `moderacoesDoLink` already
+   * normalised — this is exported, so it has to be right for whoever calls it.
+   */
+  it('treats a blank reason as no reason, even unnormalised', () => {
+    expect(severidadeModeracao(moderacaoFixture({ motivo: '   ', remedio: null }))).toBe(
+      'sem-motivo',
+    );
+    expect(severidadeModeracao(moderacaoFixture({ remedio: '  ' }))).toBe('sem-conserto');
+  });
 });
 
 describe('corDaModeracao', () => {
@@ -93,6 +104,41 @@ describe('moderacoesDoLink', () => {
     expect(
       moderacoesDoLink({ moderacoes: [moderacaoFixture({ motivo: null, nome: '  ' })] }),
     ).toEqual([]);
+  });
+
+  /**
+   * ⚠️ The contract every consumer downstream relies on. Without it a
+   * `motivo: '   '` entry clears the visibility gate on its `nome`, then passes
+   * a plain `motivo == null` test as a REAL reason — classified `sem-conserto`
+   * and rendered as an EMPTY reason under the red "não pode ser reativado".
+   *
+   * Normalising once here makes that unrepresentable, instead of requiring a
+   * trim-aware predicate at each of the six places a field is read and being
+   * one oversight away from the bug.
+   */
+  it('blanks become null, so `== null` is right downstream', () => {
+    const [m] = moderacoesDoLink({
+      moderacoes: [
+        moderacaoFixture({
+          nome: ' DENYLIST ',
+          motivo: '   ',
+          remedio: '\t',
+          secoes: [' title ', ''],
+        }),
+      ],
+    });
+    expect(m?.motivo).toBeNull();
+    expect(m?.remedio).toBeNull();
+    // Trimmed, not merely kept — the `nome` is what this entry survived on.
+    expect(m?.nome).toBe('DENYLIST');
+    expect(m?.secoes).toEqual(['title']);
+  });
+
+  it('a blank motivo is unexplained, never a removal', () => {
+    const [m] = moderacoesDoLink({
+      moderacoes: [moderacaoFixture({ nome: 'DENYLIST', motivo: '   ', remedio: null })],
+    });
+    expect(severidadeModeracao(m!)).toBe('sem-motivo');
   });
 });
 
