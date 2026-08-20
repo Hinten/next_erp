@@ -85,6 +85,7 @@ import {
 import {
   estoqueMercadoLivreSyncCollection,
   produtoMercadoLivreLinkCollection,
+  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import {
@@ -133,6 +134,17 @@ export const mlStockSendTaskSchema = z.object({
    * on the two `PUT /items` kinds.
    */
   userProductId: z.string().min(1).nullable().default(null),
+  /**
+   * #706 multiorigem: the MEMBER's own `variacaoMercadoLivre` doc id, when this
+   * task targets one; null for a childless listing.
+   *
+   * ⚠️ This is what makes the lazy resolve land in the right place.
+   * `produtoId`/`linkDocId` are always the ANCHOR's, so stamping without this
+   * would write a member's `MLBU…` onto the family's parent link — one member
+   * speaking for the family (#1142) — and `buildSendTasks` would never read it
+   * back, so the `GET /items` would repeat every tick instead of once.
+   */
+  varLinkDocId: z.string().min(1).nullable().default(null),
   /** UP model: the variation child behind `itemId`; null on `kind: 'item'`. */
   variacaoProdutoId: z.string().min(1).nullable().default(null),
   /** The conta's `produtoMercadoLivre` link doc id — the status-writeback target, NEVER re-resolved. */
@@ -728,16 +740,39 @@ async function enviarEstoqueUserProduct(
   }
 
   // (2) Read-before-write: the version AND the location identifiers.
-  const { stock, version } = await api.getUserProductStock(userProductId);
-  if (version == null) {
-    // Documented as always present. Absent, the write is a guaranteed 400 —
-    // saying so here beats burning the retry ladder to discover it.
+  //
+  // ⚠️ A UP whose stock was never initialised answers **404 `stock-locations not
+  // found`**, NOT an empty `locations` array — the resource does not exist until
+  // a location does. Left to the generic 4xx arm that 404 would burn all three
+  // queue attempts and then be recorded by `registrarRejeicaoFinal` with a
+  // message about the ITEM, when the actionable truth is "configure the depósito
+  // in the ML panel". Mapped here to the same rung the empty-array case uses.
+  let stock: MlUserProductStock;
+  let version: string | null;
+  try {
+    ({ stock, version } = await api.getUserProductStock(userProductId));
+  } catch (err) {
+    if (!(err instanceof MercadoLivreHttpError) || err.status !== 404) throw err;
     return await pararMultiorigem(
       db,
       payload,
-      'ML não retornou o cabeçalho x-version do estoque — escrita impossível',
-      'sem-x-version',
+      'User Product sem estoque inicializado (stock-locations not found) — configure o depósito no painel do Mercado Livre',
+      'sem-deposito-no-ml',
       nowMs,
+    );
+  }
+  if (version == null) {
+    // ⚠️ RETHROW rather than latch. ML's reference calls this header
+    // always-present, so its absence is far likelier a proxy stripping it or a
+    // one-off hiccup than a property of this listing — and `pararMultiorigem`
+    // writes `estado 'E'`, which the sweep's `anuncio-em-erro` rung then skips
+    // until an `items` webhook or "Reverificar anúncio" clears it. Latching a
+    // healthy listing on attempt 0, with no verification, is exactly what #781's
+    // ladder exists to prevent: that path only records on the LAST attempt, and
+    // only after asking ML what the listing actually is. Letting the queue retry
+    // also makes the operator message ("tente novamente") true.
+    throw new MercadoLivreError(
+      'ML não retornou o cabeçalho x-version do estoque — escrita impossível',
     );
   }
 
@@ -775,9 +810,35 @@ async function enviarEstoqueUserProduct(
     escrito = alvoNovo.locations;
   }
 
-  // (4) Writeback — the healed diagnosis, the stamp, and (only when we had to
-  // resolve it) the User Product id, which is what keeps step (1) a one-time
-  // cost. Deliberately no `estado`/`status`/`sub_status`; see the docblock.
+  // (4a) The stamp, when we had to resolve the User Product — this is what keeps
+  // step (1) a ONE-TIME cost instead of a `GET /items` every tick.
+  //
+  // ⚠️ It goes on the MEMBER's own link when the task targets one.
+  // `payload.produtoId`/`linkDocId` are always the ANCHOR's, so writing it into
+  // the parent patch below would put a member's `MLBU…` on the FAMILY's link —
+  // one member speaking for the family (#1142) — and `buildSendTasks` reads a
+  // member's id off `varLink.userProductId`, so it would never see it and would
+  // re-resolve forever.
+  if (resolvido && payload.varLinkDocId != null && payload.variacaoProdutoId != null) {
+    const stamped = await variacaoMercadoLivreLinkCollection.mergeIfExists(
+      db,
+      { produtoId: payload.variacaoProdutoId },
+      payload.varLinkDocId,
+      { userProductId },
+    );
+    if (!stamped) {
+      console.warn('[mercado-livre] stock-send: link da variação removido — stamp ignorado', {
+        integracaoId: payload.integracaoId,
+        produtoId: payload.variacaoProdutoId,
+        varLinkDocId: payload.varLinkDocId,
+      });
+    }
+  }
+
+  // (4b) Writeback on the listing — the healed diagnosis, plus the User Product
+  // id only for a CHILDLESS listing, where the parent link IS the stock unit.
+  // Deliberately no `estado`/`status`/`sub_status`; see the docblock.
+  const noParent = resolvido && payload.varLinkDocId == null && payload.variacaoProdutoId == null;
   const applied = await produtoMercadoLivreLinkCollection.mergeIfExists(
     db,
     { produtoId: payload.produtoId },
@@ -785,7 +846,7 @@ async function enviarEstoqueUserProduct(
     {
       ultimaModificacao: nowMs,
       ...clearFalha(),
-      ...(resolvido ? { userProductId } : {}),
+      ...(noParent ? { userProductId } : {}),
     },
   );
   if (!applied) {

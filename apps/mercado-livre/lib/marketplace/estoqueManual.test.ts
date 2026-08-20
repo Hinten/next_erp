@@ -248,7 +248,6 @@ describe('enviarEstoqueManual — conta guards', () => {
     ['erro-registrado', 'sem-deposito-no-ml', 'painel do ML'],
     ['erro-registrado', 'sem-user-product', 'User Products'],
     ['erro-registrado', 'multi-deposito-nao-suportado', 'mais de um depósito'],
-    ['erro-registrado', 'sem-x-version', 'versão do estoque'],
     ['erro-registrado', 'deposito-sem-identificadores', 'store_id'],
   ])(
     '#706: the %s outcome %s reaches the operator with its own message, not the fallback',

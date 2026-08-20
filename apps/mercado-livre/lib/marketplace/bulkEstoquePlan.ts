@@ -458,6 +458,7 @@ export interface RawVarLinkRow {
   itemId?: unknown;
   id?: unknown;
   userProductId?: unknown;
+  varLinkDocId?: unknown;
   produtoMercadoLivreOuterRef?: unknown;
   [key: string]: unknown;
 }
@@ -673,8 +674,19 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
         pipelines
           .subcollection('variacaoMercadoLivre')
           // `userProductId` (#706): same deal as on the parent join — projected,
-          // never filtered.
-          .select('itemId', 'id', 'produtoMercadoLivreOuterRef', 'userProductId')
+          // never filtered. `varLinkDocId` rides along for the same reason the
+          // parent join projects `linkDocId`: the send handler stamps a lazily
+          // resolved User Product back onto THIS member's link, and without the
+          // doc id it would have to write it onto the family's parent link
+          // instead — a member speaking for the family, and a stamp the planner
+          // could never read back (so the resolve would repeat every tick).
+          .select(
+            'itemId',
+            'id',
+            'produtoMercadoLivreOuterRef',
+            'userProductId',
+            pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
+          )
           .toArrayExpression()
           .as('varLinks'),
       )
@@ -1551,6 +1563,18 @@ export interface StockSendTaskDraft {
    * listing, not per tick). Always null on the two `PUT /items` kinds.
    */
   userProductId: string | null;
+  /**
+   * #706 multiorigem: the MEMBER's own `variacaoMercadoLivre` doc id, when this
+   * task targets one. Null for a childless listing, whose User Product belongs
+   * on the parent link.
+   *
+   * ⚠️ Load-bearing for the lazy resolve. `produtoId`/`linkDocId` are always the
+   * ANCHOR's, so without this the handler would stamp a member's `MLBU…` onto
+   * the family's parent link — a member speaking for the family (#1142), and a
+   * value `buildSendTasks` never reads back, so the `GET /items` would repeat
+   * every tick instead of once.
+   */
+  varLinkDocId: string | null;
   /** The conta's `produtoMercadoLivre` link doc id (writeback target). */
   linkDocId: string;
   quantidade: number | null;
@@ -1817,6 +1841,7 @@ export function buildSendTasks(
         unitItemId: string,
         userProductId: string | null,
         variacaoProdutoId: string | null,
+        varLinkDocId: string | null,
       ): void => {
         const dedupKey = userProductId ?? `item:${unitItemId}`;
         if (emittedUpKeys.has(dedupKey)) return; // cycle-wide dedup — silent
@@ -1831,6 +1856,7 @@ export function buildSendTasks(
           kind: 'userProductStock',
           itemId: unitItemId,
           userProductId,
+          varLinkDocId,
           variacaoProdutoId,
           quantidade,
           variations: null,
@@ -1838,7 +1864,9 @@ export function buildSendTasks(
       };
 
       if (row.children.length === 0) {
-        emitUp(anchorId, itemId, asUserProductId(link.userProductId), null);
+        // Childless: the parent link IS the stock unit, so a lazily resolved UP
+        // belongs on it — hence no `varLinkDocId`.
+        emitUp(anchorId, itemId, asUserProductId(link.userProductId), null, null);
         continue;
       }
 
@@ -1881,7 +1909,15 @@ export function buildSendTasks(
         }
         // `varItemId ?? itemId`: with a UP id in hand the item is only used for
         // logging, so the family's own id is a fine stand-in.
-        emitUp(child.produtoId, varItemId ?? itemId, upId, child.produtoId);
+        emitUp(
+          child.produtoId,
+          varItemId ?? itemId,
+          upId,
+          child.produtoId,
+          typeof varLink.varLinkDocId === 'string' && varLink.varLinkDocId !== ''
+            ? varLink.varLinkDocId
+            : null,
+        );
       }
       continue;
     }
@@ -1902,6 +1938,7 @@ export function buildSendTasks(
         kind: 'item',
         itemId,
         userProductId: null, // `PUT /items` carries the quantity; no UP involved
+        varLinkDocId: null,
         variacaoProdutoId: null,
         quantidade,
         variations: null,
@@ -1977,6 +2014,7 @@ export function buildSendTasks(
         kind: 'item',
         itemId,
         userProductId: null, // `PUT /items` carries the quantities; no UP involved
+        varLinkDocId: null,
         variacaoProdutoId: null,
         quantidade: null,
         variations,
@@ -2017,6 +2055,7 @@ export function buildSendTasks(
         kind: 'variationItem',
         itemId: varItemId,
         userProductId: null, // `PUT /items` on the member; no UP involved
+        varLinkDocId: null,
         variacaoProdutoId: child.produtoId,
         quantidade,
         variations: null,

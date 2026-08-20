@@ -213,7 +213,12 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     'migrar para User Products.',
   'estoque-full-gerenciado-pelo-ml':
     'Anúncio Fulfillment: a disponibilidade vem do depósito do Mercado Livre, não do seu.',
-  'sem-x-version': 'O Mercado Livre não informou a versão do estoque. Tente novamente.',
+  // ⚠️ Every #706 entry below names a HUMAN action, because each is written by a
+  // branch that latches `estado 'E'` — so "tente novamente" would be a lie: the
+  // sweep's `anuncio-em-erro` rung refuses the retry until an `items` webhook or
+  // "Reverificar anúncio" clears the latch. A missing `x-version`, which IS
+  // retryable, deliberately has no entry here: that branch throws instead of
+  // latching, and the message the operator sees is the error's own.
   'sem-deposito-no-ml':
     'O produto não tem depósito (seller_warehouse) no Mercado Livre — configure-o no painel do ML.',
   'multi-deposito-nao-suportado':

@@ -125,6 +125,7 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
     itemId: 'MLB111',
     kind: 'item',
     userProductId: null,
+    varLinkDocId: null,
     variacaoProdutoId: null,
     linkDocId: 'link1',
     quantidade: 10,
@@ -990,7 +991,7 @@ describe('processStockSendTask — multiorigem / seller_warehouse (#706)', () =>
     expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
   });
 
-  it('a missing x-version fails fast instead of burning the retry ladder on a guaranteed 400', async () => {
+  it('⚠️ a missing x-version RETHROWS for the queue — it must not latch a healthy listing', async () => {
     const h = makeHarness({
       getUserProductStock: async (id) => ({
         stock: {
@@ -1002,12 +1003,63 @@ describe('processStockSendTask — multiorigem / seller_warehouse (#706)', () =>
         version: null,
       }),
     });
+    seedLink(h.db, { estado: 'p' });
+
+    // ML's reference calls this header always-present, so its absence is far
+    // likelier a proxy or a hiccup than a property of this listing. Latching on
+    // attempt 0 with no verification is what #781's ladder exists to prevent —
+    // and the sweep would then refuse the very retry the operator is told to make.
+    await expect(run(h, UP)).rejects.toThrow(/x-version/);
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('p');
+  });
+
+  it('⚠️ a 404 from the stock read is `sem-deposito-no-ml`, not a generic 4xx', async () => {
+    // A UP whose stock was never initialised answers `stock-locations not found`,
+    // NOT an empty locations array. Left to the generic arm it would burn all
+    // three queue attempts and then be recorded with a message about the ITEM,
+    // when the actionable truth is "configure the depósito in the ML panel".
+    const h = makeHarness({
+      getUserProductStock: async () => {
+        throw new MercadoLivreHttpError('stock-locations not found', 404, null);
+      },
+    });
     seedLink(h.db);
 
     const res = await run(h, UP);
 
-    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-x-version' });
-    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-deposito-no-ml' });
+    expect((h.db.docs(LINK_PATH).get('link1')?.errors as string[])[0]).toContain(
+      'painel do Mercado Livre',
+    );
+  });
+
+  it('⚠️ a MEMBER task stamps the resolved UP on the MEMBER link, never on the family link', async () => {
+    // `produtoId`/`linkDocId` are always the ANCHOR's. Stamping there would put a
+    // member's MLBU on the family's link (#1142) AND would never be read back by
+    // `buildSendTasks`, which takes a member's id off `varLink.userProductId` —
+    // so the GET would repeat every tick instead of once.
+    const h = makeHarness({
+      getItem: async () => ({ id: 'MLB-CH1', user_product_id: 'MLBU-CHILD' }),
+    });
+    seedLink(h.db);
+    h.db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', { itemId: 'MLB-CH1' });
+
+    await run(
+      h,
+      payload({
+        kind: 'userProductStock',
+        itemId: 'MLB-CH1',
+        quantidade: 4,
+        variacaoProdutoId: 'CH1',
+        varLinkDocId: 'v1',
+      }),
+    );
+
+    expect(h.db.docs('produtos/CH1/variacaoMercadoLivre').get('v1')).toMatchObject({
+      userProductId: 'MLBU-CHILD',
+    });
+    expect(h.db.docs(LINK_PATH).get('link1')).not.toHaveProperty('userProductId');
   });
 
   it('a location without store_id / network_node_id is refused, never sent as empty strings', async () => {

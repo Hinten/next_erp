@@ -332,6 +332,7 @@ function expectedDraft(mode: StockSweepMode, integracaoId: string): Record<strin
     produtoId: 'PROD-1',
     variacaoProdutoId: null,
     userProductId: null,
+    varLinkDocId: null,
     kind: 'item',
     itemId: 'MLB1',
     linkDocId: 'link-1',
