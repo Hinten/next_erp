@@ -3,7 +3,7 @@
  * `downloadArquivoUsingLocalCache` idea (`.old/lib/global/download/downloadUsingLocalCache.dart`).
  *
  * Next-owned store (not the Flutter `localArquivoCacheDB` base64 DB) so we can
- * keep ArrayBuffer payloads + metadata without clobbering dual-run cache format.
+ * keep ArrayBuffer payloads + metadata in our own format.
  *
  * Soft-prunes oldest entries when the store exceeds {@link MAX_CACHE_ENTRIES}.
  */

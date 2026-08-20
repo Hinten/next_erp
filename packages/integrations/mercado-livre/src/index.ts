@@ -1,6 +1,7 @@
 import type { MarketplaceChannel } from '@delfrance/core/plugins';
 import { createMercadoLivreApi } from './api';
 import { getIncidentMl, importIncidentsMl } from './incidents';
+import { respondIncidentMl } from './incidentRespond';
 import { buildAuthorizeUrl } from './oauth';
 
 export * from './errors';
@@ -9,6 +10,7 @@ export * from './shipmentFields';
 export * from './oauth';
 export * from './api';
 export * from './incidents';
+export * from './incidentRespond';
 export * from './mapping/attributes';
 export * from './mapping/itemPayload';
 export * from './mapping/importItem';
@@ -79,8 +81,8 @@ export function createMercadoLivreChannel(config: MercadoLivreConfig): Marketpla
     pushTracking: async () => {
       throw new MercadoLivreNotConfiguredError();
     },
-    // Incident READ surface (claims import, Step 14). `respondIncident` stays
-    // absent on purpose — Step 14 is import-only; callers feature-detect.
+    // Incident READ + WRITE surface. The read half is the claims import
+    // (Step 14); `respondIncident` is #768 and completes the contract.
     importIncidents: (ctx, cursor) =>
       importIncidentsMl(
         createMercadoLivreApi({ getAccessToken: async () => ctx.accessToken, fetch: config.fetch }),
@@ -90,6 +92,13 @@ export function createMercadoLivreChannel(config: MercadoLivreConfig): Marketpla
       getIncidentMl(
         createMercadoLivreApi({ getAccessToken: async () => ctx.accessToken, fetch: config.fetch }),
         externalIncidentId,
+      ),
+    respondIncident: (ctx, externalIncidentId, action) =>
+      respondIncidentMl(
+        createMercadoLivreApi({ getAccessToken: async () => ctx.accessToken, fetch: config.fetch }),
+        ctx,
+        externalIncidentId,
+        action,
       ),
     oauthFlow: {
       start(

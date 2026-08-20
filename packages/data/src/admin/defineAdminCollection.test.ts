@@ -17,7 +17,7 @@ const handle = defineAdminCollection({
   schema,
 });
 
-// A `.passthrough()` schema (legacy-coexistence) — unknown keys are preserved,
+// A `.passthrough()` schema (legacy corpus) — unknown keys are preserved,
 // not rejected, on write.
 const looseSchema = z.object({ nome: z.string().min(1) }).passthrough();
 const looseHandle = defineAdminCollection({ path: 'loose', schema: looseSchema });

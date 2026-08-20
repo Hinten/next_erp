@@ -543,8 +543,7 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
     case CST_PIS_COFINS.semIncidenciaContribuicao:
     case CST_PIS_COFINS.suspensaoContribuicao:
       return { COFINSNT: { CST: cfg.CST } };
-    // Remaining cases: all credit/outgoing/other operations
-    // handled by COFINSOutr below with zeros for XSD choice compliance
+    // All remaining cases fall through to COFINSOutr (credit/presumed + acquisition + others)
     case CST_PIS_COFINS.outrasOperacoesSaida:
     case CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno:
     case CST_PIS_COFINS.creditoExclusivoNaoTributadaMercadoInterno:
@@ -569,6 +568,7 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
     case CST_PIS_COFINS.aquisicaoSubstituicaoTributaria:
     case CST_PIS_COFINS.outrasOperacoesEntrada:
     case CST_PIS_COFINS.outrasOperacoes:
+    default:
       // COFINSOutr — same XSD shape + same posture as PISOutr above:
       // emit vBC + pCOFINS + vCOFINS with zeros so xmllint-wasm /
       // SEFAZ accept the xs:choice.

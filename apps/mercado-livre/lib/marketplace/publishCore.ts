@@ -212,10 +212,15 @@ export function publishModeIssues(args: {
   const issues: string[] = [];
 
   // Mid-UPtin: ML is mid-flight creating one item per variation and rejects any
-  // change to the source item (404 while migrating). The stock planner, the
-  // price planner and the items status-sync all have this rung already; publish
-  // was the only writer without it. Legacy blocked the whole export here, above
-  // the UP/legacy fork (`exportarProdutos.dart:141-147`).
+  // change to the source item (404 while migrating). The stock planner and the
+  // price planner carry the same rung; publish was the only writer without it.
+  // ⚠️ The items status-sync does NOT read `'am'` — it WRITES it. It is the only
+  // component that observes ML's migration tags on its own schedule (it holds the
+  // fetched item), so it stamps the verdict and these three gate on it without a
+  // fetch of their own. `'am'` has no other producer: it used to arrive only from
+  // the Flutter app, which is switched off at the cutover (#1087). Legacy blocked
+  // the whole export here, above the UP/legacy fork
+  // (`exportarProdutos.dart:141-147`).
   if (args.estado === 'am') {
     issues.push(
       'anúncio em migração para o modelo User Products (UPtin) — aguarde a conclusão antes de publicar',

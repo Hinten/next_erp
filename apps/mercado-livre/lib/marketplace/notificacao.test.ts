@@ -573,19 +573,202 @@ describe('handleNotificationTask', () => {
     expect(db.docs(NOTIF).size).toBe(0);
   });
 
-  it('a data-bearing topic with no importer yet PARKS — never a silent done', async () => {
-    // The #813 headline: acking `questions`/`messages` makes them
-    // indistinguishable from processed work, so the cutover loses them with no
-    // failure doc, no parked doc and no warn line.
+  it('has NO park topic left — every data-bearing topic now has an importer', () => {
+    // #813 introduced `park` for topics carrying real data with no importer:
+    // `questions` and `messages`. #532 gave both one, so the arm is now empty.
+    //
+    // It is deliberately KEPT rather than deleted. It still fires for a
+    // `handled` topic whose dispatch branch went missing (see the guard below),
+    // which is the regression it was really built to catch, and it is where the
+    // next data-bearing ML topic lands before its importer exists.
+    // Cast: TypeScript now NARROWS the union to exclude 'park', which is itself
+    // the proof — but the runtime assertion is what survives someone re-adding one.
+    const park = (Object.entries(TOPIC_DISPOSITION) as Array<[string, string]>)
+      .filter(([, d]) => d === 'park')
+      .map(([t]) => t);
+    expect(park).toEqual([]);
+  });
+
+  it('routes a questions notification to the question importer (#532)', async () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
+    const questionImportRunner = vi.fn(async () => ({
+      conversaId: 'conv-1',
+      clienteId: 'cli-1',
+      skipped: null,
+    }));
+
     const r = await handleNotificationTask(
       asDb(db),
       payloadOf({ topic: 'questions', resource: '/questions/123' }),
       0,
+      { questionImportRunner },
     );
-    expect(r.outcome).toBe('parked');
-    expect(db.docs(NOTIF).get('N1')!.status).toBe('parked');
+
+    // ⚠️ The 4th argument is the payload's own `sent`. The importer needs it to
+    // tell a 404 that means "deleted" from a 404 that means "ML has not
+    // propagated this question yet" — acking the second one loses a real
+    // customer question permanently. Dropping it here would silently restore
+    // that behaviour, because `undefined` reads as "no timestamp" ⇒ ack.
+    expect(questionImportRunner).toHaveBeenCalledWith(
+      expect.anything(),
+      'conta-A',
+      123,
+      1_700_000_000_000,
+    );
+    expect(r.outcome).toBe('done');
+    // A processed question persists NOTHING — the whole point of the failures-only store.
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('passes a NULL sent through rather than inventing one', async () => {
+    // A payload with no freshness claim must reach the importer as `null`, so it
+    // takes the "cannot defend this with a window" branch instead of being
+    // treated as fresh forever.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const questionImportRunner = vi.fn(async () => ({
+      conversaId: 'conv-1',
+      clienteId: 'cli-1',
+      skipped: null,
+    }));
+
+    await handleNotificationTask(
+      asDb(db),
+      payloadOf({ topic: 'questions', resource: '/questions/123', sent: null }),
+      0,
+      { questionImportRunner },
+    );
+
+    expect(questionImportRunner).toHaveBeenCalledWith(expect.anything(), 'conta-A', 123, null);
+  });
+
+  it('routes a messages notification to the order-message importer (#532)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderMessageImportRunner = vi.fn(async () => ({
+      conversaId: 'conv-1',
+      pedidoId: 'ped-1',
+      skipped: null,
+    }));
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        topic: 'messages',
+        resource: 'fd1d2e37ad004ede9e0bf25d1215002d',
+        actions: ['created'],
+      }),
+      0,
+      { orderMessageImportRunner },
+    );
+
+    // ⚠️ The 4th argument is the payload's own `sent`, and it is load-bearing:
+    // the receiver delays `messages` precisely because ML can 404 a message it
+    // has not propagated yet, and the importer uses this clock to tell that
+    // race apart from a real deletion. Dropping it reads as "no timestamp" ⇒ ack
+    // ⇒ a silently lost message.
+    expect(orderMessageImportRunner).toHaveBeenCalledWith(
+      expect.anything(),
+      'conta-A',
+      'fd1d2e37ad004ede9e0bf25d1215002d',
+      1_700_000_000_000,
+    );
+    expect(r.outcome).toBe('done');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('does NOT import on a read receipt — it carries no content', async () => {
+    // `messages` is a SUBTOPIC topic. Acting on `["read"]` would spend two ML
+    // calls (and a slice of the 500 rpm post-sale budget) to write nothing.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderMessageImportRunner = vi.fn();
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        topic: 'messages',
+        resource: 'fd1d2e37ad004ede9e0bf25d1215002d',
+        actions: ['read'],
+      }),
+      0,
+      { orderMessageImportRunner },
+    );
+
+    expect(orderMessageImportRunner).not.toHaveBeenCalled();
+    expect(r.outcome).toBe('done');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('imports when ML sends no actions array at all', async () => {
+    // Absence is not a read receipt. Older deliveries (and `missed_feeds`
+    // replays predating the typed field) carry none, and dropping those would
+    // lose real messages.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderMessageImportRunner = vi.fn(async () => ({
+      conversaId: null,
+      pedidoId: null,
+      skipped: null,
+    }));
+
+    await handleNotificationTask(
+      asDb(db),
+      payloadOf({ topic: 'messages', resource: 'fd1d2e37ad004ede9e0bf25d1215002d' }),
+      0,
+      { orderMessageImportRunner },
+    );
+
+    expect(orderMessageImportRunner).toHaveBeenCalled();
+  });
+
+  it('accepts a HEX messages resource that the numeric parser would reject', async () => {
+    // `parseOrderResourceId` matches digits only. Reusing it here would
+    // classify the entire `messages` topic as malformed and silently drop it —
+    // the failure class #813 was filed about.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderMessageImportRunner = vi.fn(async () => ({
+      conversaId: null,
+      pedidoId: null,
+      skipped: null,
+    }));
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        topic: 'messages',
+        resource: 'abcdef0123456789abcdef0123456789',
+        actions: ['created'],
+      }),
+      0,
+      { orderMessageImportRunner },
+    );
+
+    expect(r.outcome).toBe('done');
+    expect(orderMessageImportRunner).toHaveBeenCalledWith(
+      expect.anything(),
+      'conta-A',
+      'abcdef0123456789abcdef0123456789',
+      1_700_000_000_000,
+    );
+  });
+
+  it('drops a questions notification whose resource carries no id', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const questionImportRunner = vi.fn();
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ topic: 'questions', resource: '/questions/nao-numerico' }),
+      0,
+      { questionImportRunner },
+    );
+
+    expect(questionImportRunner).not.toHaveBeenCalled();
+    expect(r.outcome).toBe('dropped');
   });
 
   it('no active account → DEFERRED, not failed: the seller may connect tomorrow (#808)', async () => {
@@ -816,7 +999,7 @@ describe('handleNotificationTask', () => {
    * found no link and one that rewrote the listing both resolve. On the first
    * live run (#1087) the task handler logged a bare success for every delivery
    * while the listing status never changed, and nothing on the box could say
-   * which of the seven `ItemsSyncOutcome` values had actually occurred.
+   * which `ItemsSyncOutcome` had actually occurred.
    *
    * `detail` is that value. Dropping it again would restore the blindness while
    * leaving every other assertion in this file green — so it is asserted here,
@@ -834,10 +1017,13 @@ describe('handleNotificationTask', () => {
     expect(r).toMatchObject({ outcome: 'done', kind: 'done', detail: 'no-link' });
   });
 
-  it('reports `deferred-up` for a User-Products link, so a deliberate skip is legible', async () => {
+  // #1087, end to end: this reported `deferred-up` for the whole UP catalogue.
+  // The link doc is the shape a UP single-item publish writes — `id` is the MLB
+  // item, so the collectionGroup lookup DOES resolve it (`publish.ts`'s
+  // `parentExternalId` only carries a family id when the produto has variations).
+  it('a User-Products link now syncs, and the ML call it needs actually happens', async () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
-    // isUserProductModel → itemsStatusSync skips before any ML call (#441).
     db.seed('produtos/prod1/produtoMercadoLivre', 'link1', {
       id: 'MLB1',
       contaOuterRef: 'documents/integracao/conta-A',
@@ -846,16 +1032,41 @@ describe('handleNotificationTask', () => {
       sub_status: null,
       isUserProductModel: true,
     });
-    const resolveItemsApi = vi.fn(async () => ({ getItem: vi.fn() }) as never);
+    const getItem = vi.fn(async () => ({ id: 'MLB1', status: 'under_review' }));
+    const resolveItemsApi = vi.fn(async () => ({ getItem }) as never);
     const r = await handleNotificationTask(
       asDb(db),
       payloadOf({ id: 'N10c', resource: '/items/MLB1', topic: 'items' }),
       0,
       { resolveItemsApi },
     );
-    expect(r).toMatchObject({ outcome: 'done', detail: 'deferred-up' });
-    // The skip is the point: it must cost no ML call.
-    expect(resolveItemsApi).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ outcome: 'done', detail: 'synced' });
+    expect(resolveItemsApi).toHaveBeenCalled();
+  });
+
+  it('a migration-tagged listing still defers, under its own name', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    db.seed('produtos/prod1/produtoMercadoLivre', 'link1', {
+      id: 'MLB1',
+      contaOuterRef: 'documents/integracao/conta-A',
+      estado: 'p',
+      status: 'active',
+      sub_status: null,
+      isUserProductModel: false,
+    });
+    const getItem = vi.fn(async () => ({
+      id: 'MLB1',
+      status: 'active',
+      tags: ['variations_migration_uptin'],
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N10e', resource: '/items/MLB1', topic: 'items' }),
+      0,
+      { resolveItemsApi: vi.fn(async () => ({ getItem }) as never) },
+    );
+    expect(r).toMatchObject({ outcome: 'done', detail: 'deferred-migration-uptin' });
   });
 
   it('reports the `kind` even where there is no detail — an ignored topic is not a processed one', async () => {

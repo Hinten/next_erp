@@ -91,7 +91,7 @@ describe('auditPedidoPago — kinds', () => {
   });
 });
 
-describe('auditPedidoPago — dual-run reporting', () => {
+describe('auditPedidoPago — legacy-shape reporting', () => {
   it('marks a row whose payments came only from the legacy singular path', () => {
     const row = auditPedidoPago(PATH, pedido({ valorCobrado: 100 }), [
       pag({ valor: 10, status_pagamento: STATUS_PAGAMENTO.recusado, fonte: 'pagamento' }),

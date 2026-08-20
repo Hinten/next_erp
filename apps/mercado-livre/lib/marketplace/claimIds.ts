@@ -108,16 +108,6 @@ export function makeAttachmentMensagemId(contaId: string, filename: string): str
 }
 
 /**
- * The `usuarios` `externalId` for one ML buyer on one conta. Mirrors
- * `Usuario.getOrCreateUsuarioSemAuth(canalDeVendas: conta.docId!.path!,
- * externalId: getClientId)` (models.dart:3891-3904) — the legacy user-dedup
- * key the claims import resolves buyers by.
- */
-export function usuarioExternalIdMl(contaId: string, mlUserId: number): string {
-  return generateUid(contaPathLegacyMl(contaId), String(mlUserId));
-}
-
-/**
  * Replicate Dart `DateTime.parse(iso).toString()` for the claim-message id
  * preimage.
  *

@@ -7,7 +7,7 @@ import type { PricePushChannelResult, PricePushInput, PricePushProvider } from '
  * useful to an operator than silence.
  *
  * Shopee / Magalu / Amazon / Loja Integrada have no price-push flow in this repo
- * yet — during the dual run their prices still go out through the legacy app.
+ * yet — until the cutover their prices go out through the legacy app.
  *
  * ⚠️ It claims **no tipos**: it is the unconditional fallback in
  * `resolvePricePushProvider`, so registering a real channel never means

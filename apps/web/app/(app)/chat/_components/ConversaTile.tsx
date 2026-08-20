@@ -56,6 +56,7 @@ function DeliveryTick({ estado }: { estado: EstadoEnvioMensagem | undefined }) {
     case ESTADO_ENVIO.excluido:
     case ESTADO_ENVIO.banida:
     case ESTADO_ENVIO.desconhecido:
+    default:
       return null;
   }
 }

@@ -102,9 +102,10 @@ export const PERM = {
   // Arquivo — file/storage metadata (`arquivos` collection): product images +
   // derivatives, videos, attachments, chat media. Cross-domain, so it gets its
   // own byte. Mirrored by `arquivoMeta` in packages/schemas/src/storage/arquivo.ts.
-  // NOTE: coexistence coordination point — the Flutter-deployed storage.rules
-  // still gates Storage by the legacy `q1` claim; this bit is consumed by the
-  // Next side (data layer + the future rules phase), not by the live rules yet.
+  // NOTE: the legacy `storage.rules` gates Storage by the old `q1` claim, and
+  // migrated users carry claims minted under that layout; this bit is consumed
+  // by the Next side (data layer + the future rules phase), not by the live
+  // rules yet.
   arquivo: {
     read: 1n << 80n,
     write: 1n << 81n,
@@ -144,9 +145,11 @@ export const PERM = {
   },
   // CMUN — the CEP-faixa → IBGE município table (legacy Flutter `TabelaoCmun`,
   // permCode 'c2'). Byte 13; bits 102-103 are the spare tail of byte 12 and
-  // cannot hold a three-bit domain. Reads must stay grantable: the Flutter app
-  // still queries this collection during the dual run, and a collection with no
-  // readable rules block is denied outright. Writes are `serverOwned` — the
+  // cannot hold a three-bit domain. Reads stay grantable: a collection with no
+  // readable rules block is denied outright. ⚠️ The original reason — the legacy
+  // Flutter app querying this collection alongside us — is void (no dual run,
+  // root `CLAUDE.md` rule 8); the grant is harmless (the table is public CEP →
+  // IBGE data) but no longer load-bearing. Writes are `serverOwned` — the
   // ruleset denies every client write regardless of this bit; it exists so the
   // generator has a single PERM bit per action, which `claims-map.ts` requires.
   // Mirrored by `cmunMeta` in packages/schemas/src/cmun.ts.

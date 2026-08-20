@@ -25,6 +25,20 @@ const pkgDir = dirname(fileURLToPath(import.meta.url));
  */
 export async function bundle(outfile) {
   const region = process.env.FUNCTIONS_REGION || 'us-east1';
+  // Service accounts allowed to enqueue AND dispatch this codebase's task
+  // functions, comma-separated. Inlined for the same reason as the region above
+  // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase
+  // analysis, before any env exists — and per PROJECT, so it cannot be a
+  // constant. ⚠️ The list is AUTHORITATIVE: a deploy REPLACES the members of
+  // both bindings it drives, so it must name every enqueuer. See DEPLOY.md.
+  const tasksInvoker = process.env.TASKS_INVOKER_SA || '';
+  if (!tasksInvoker) {
+    console.warn(
+      '[build] TASKS_INVOKER_SA is unset — `invoker` will be OMITTED from every ' +
+        'onTaskDispatched, leaving roles/run.invoker + roles/cloudtasks.enqueuer to ' +
+        'the manual gcloud grants in DEPLOY.md.',
+    );
+  }
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,
@@ -46,6 +60,7 @@ export async function bundle(outfile) {
     ],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.TASKS_INVOKER_SA': JSON.stringify(tasksInvoker),
     },
   });
   return region;

@@ -26,6 +26,18 @@
  *    windows strictly by `timestamp` (`useMensagensWindow.ts`). Deterministic
  *    message-time keeps re-processing idempotent; a redelivery rewrites the
  *    legacy wall-clock value (deliberate deviation).
+ *  - **Identity is a CLIENTE, never a usuario** (#768). Legacy minted a
+ *    sem-auth `usuarios` doc per buyer; `usuarios` is now only for people
+ *    who can log in, so the buyer rides `clienteOuterRef` /
+ *    `clienteMensagemOuterRef` and `claimUsuario.ts` is gone.
+ *  - ⚠️ **`estadoEnvio` comes from `sender_role`**, not a constant. Legacy
+ *    stamped `enviado` on EVERY claim message, buyer ones included, and the
+ *    thread only rendered them correctly because the synthetic usuario made
+ *    `MensagemBubble`'s second test pass. This import writes no `user_id`,
+ *    so direction rests on `estadoEnvio` alone.
+ *  - The chat CONVERSA is gated on the seller still holding a send action
+ *    (`claimActionability.ts`); the INCIDENTE is written for EVERY claim —
+ *    it is pedido business history and outlives the claim being answerable.
  *  - Incidente `comentarios` uses the RAW wire `resource` — legacy
  *    interpolated the Dart enum toString (`'_ResourceClaims.order …'`,
  *    models.dart:3915). Create-only field; deliberate cleanup, not parity.
@@ -65,6 +77,10 @@ const STAGE_DISPLAY: Readonly<Record<string, string>> = {
   dispute: 'Mediação',
   recontact: 'Recontato',
   none: 'Nenhum',
+  // Not in the legacy enum — ML added it for `ml_case` claims (buyer ↔ Mercado
+  // Livre). Without it the raw slug `stale` reached the operator as a conversa
+  // title.
+  stale: 'Com o Mercado Livre',
 };
 
 // `_ResourceClaims.displayName` (models.dart:3737-3750) + `pack`, which the
@@ -102,11 +118,19 @@ export function tipoIncidenteFromClaimType(type: string | null): TipoIncidente {
     case TIPO_INCIDENTE.devolucao:
     case TIPO_INCIDENTE.cancelamentoPeloVendedor:
       return type;
+    // ⚠️ ML's reference contradicts ITSELF on this one: the claim-detail field
+    // table documents the type as `return`, while the search-response example
+    // ships `"type": "returns"` — and `TIPO_INCIDENTE.devolucao` is the plural.
+    // Matching only the plural filed every singular-spelled return claim as
+    // `outros`, silently, forever. Accept both.
+    case 'return':
+      return TIPO_INCIDENTE.devolucao;
     case 'change':
       return TIPO_INCIDENTE.troca;
     case null:
-      return TIPO_INCIDENTE.outros;
     default:
+      // service / fulfillment / ml_case and anything ML adds next: no closer
+      // TipoIncidente exists, and legacy THREW here.
       return TIPO_INCIDENTE.outros;
   }
 }
@@ -115,23 +139,70 @@ export function tipoIncidenteFromClaimType(type: string | null): TipoIncidente {
  * ML resolution `reason` → `TipoResolucao` — the #364 fix over legacy's
  * hardcoded `item_devolvido` (models.dart:4128). Unknown/null reasons → outro.
  */
+/**
+ * ML `resolution.reason` → `TipoResolucao`.
+ *
+ * ⚠️ Rebuilt against ML's CURRENT published `resolution.reason` list
+ * ("Gerenciar reclamações" → resolution.reason), which is ~30 values. The old
+ * table covered 16 and a third of those are not in ML's vocabulary at all
+ * (`refunded`, `partial_refund`, `expired`, `closed_by_buyer`, `buyer_regret`,
+ * `withdrawn`, …) — so most real closures were landing on `outro` while the
+ * table looked complete. The invented keys are KEPT: they cost nothing, and if
+ * any of them is a value ML once sent, dropping it would regress history.
+ */
 const TIPO_RESOLUCAO_BY_REASON: Readonly<Record<string, TipoResolucao>> = {
+  // ── produto devolvido / trocado ──────────────────────────────────────────
   item_returned: TIPO_RESOLUCAO.itemDevolvido,
+  item_changed: TIPO_RESOLUCAO.enviadoOutroItem,
   product_exchanged: TIPO_RESOLUCAO.enviadoOutroItem,
   item_replaced: TIPO_RESOLUCAO.enviadoOutroItem,
+  // ── dinheiro de volta ────────────────────────────────────────────────────
   payment_refunded: TIPO_RESOLUCAO.pagamentoDevolvidoIntegralmente,
   refunded: TIPO_RESOLUCAO.pagamentoDevolvidoIntegralmente,
+  reimbursed: TIPO_RESOLUCAO.pagamentoDevolvidoIntegralmente,
   charged_back: TIPO_RESOLUCAO.pagamentoDevolvidoIntegralmente,
+  coverage_decision: TIPO_RESOLUCAO.pagamentoDevolvidoIntegralmente,
   partial_refunded: TIPO_RESOLUCAO.pagamentoDevolvidoParcialmente,
   partial_refund: TIPO_RESOLUCAO.pagamentoDevolvidoParcialmente,
+  // ── ninguém agiu a tempo ─────────────────────────────────────────────────
   timeout: TIPO_RESOLUCAO.inatividadeDoCliente,
   expired: TIPO_RESOLUCAO.inatividadeDoCliente,
   complainant_timeout: TIPO_RESOLUCAO.inatividadeDoCliente,
   respondent_timeout: TIPO_RESOLUCAO.inatividadeDoCliente,
-  closed_by_buyer: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  return_expired: TIPO_RESOLUCAO.inatividadeDoCliente,
+  change_expired: TIPO_RESOLUCAO.inatividadeDoCliente,
+  warehouse_timeout: TIPO_RESOLUCAO.inatividadeDoCliente,
+  // ── encerrada sem que nada mudasse de mãos ───────────────────────────────
+  already_shipped: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  buyer_claim_opened: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  buyer_dispute_opened: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  cancel_installation: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
   cancelled_by_buyer: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  change_cancelled_buyer: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  change_cancelled_meli: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  change_cancelled_seller: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  closed_by_buyer: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
   buyer_regret: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  found_missing_parts: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  low_cost: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  no_bpp: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  opened_claim_by_mistake: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  prefered_to_keep_product: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  product_delivered: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  rep_resolution: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  return_canceled: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  seller_asked_to_close_claim: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  seller_did_not_help: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  seller_explained_functions: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  seller_sent_product: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  shipment_not_stopped: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  warehouse_decision: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
   withdrawn: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  worked_out_with_seller: TIPO_RESOLUCAO.encerradoSemNenhumaAcao,
+  // ⚠️ `not_delivered` is deliberately NOT mapped: ML documents it as "produto
+  // não entregue", which says what happened and nothing about how the money or
+  // the item moved. Guessing `encerradoSemNenhumaAcao` there would assert a
+  // fact the payload does not carry; `outro` is the honest answer.
 };
 
 export function tipoResolucaoFromReason(reason: string | null): TipoResolucao {
@@ -205,11 +276,16 @@ export function buildIncidenteFromClaim(
 
 export interface ConversaFromClaimContext {
   buyerUserId: number;
-  usuarioId: string;
+  /** `documents/clientes/<id>` — the buyer, resolved from the pedido (#768). */
+  clienteOuterRef: string | null;
   contaId: string;
   contaCor: number | null;
   pedidoId: string;
   incidenteId: string;
+  /** Null while the seller can still message; otherwise why they cannot. */
+  respostaBloqueada: string | null;
+  /** Whether the seller still holds a send action — drives `atendido`. */
+  podeResponder: boolean;
 }
 
 /**
@@ -234,11 +310,27 @@ export function buildConversaFromClaim(
     id: String(claim.id),
     nome: `${resourceDisplay} ${claim.resource_id}(${claim.id}) - ${stageDisplay} ${statusDisplay}`.trim(),
     sender_id: String(ctx.buyerUserId),
-    atendido: claim.status === CLAIM_STATUS_CLOSED,
+    // ⚠️ The ACTIONABILITY, not `status === closed` — same rule as the other two
+    // ML importers. An OPEN claim whose seller holds only non-message actions is
+    // unanswerable too, and leaving it `atendido: false` put a blocked thread
+    // back in the operator queue with a reason but no closure.
+    //
+    // `status === closed` is not OR-ed in on purpose: ML empties
+    // `available_actions` when a claim closes, so it already implies this — while
+    // a closed claim that somehow DOES still list a send action would otherwise
+    // be marked handled and given a live composer at the same time.
+    atendido: !ctx.podeResponder,
     cor_etiqueta: ctx.contaCor ?? 0,
     data_cadastro: coerceToMillis(claim.date_created),
     ultima_modificacao: coerceToMillis(claim.last_updated ?? claim.date_created),
-    usarioOuterRef: toOuterRef(`usuarios/${ctx.usuarioId}`),
+    // ⚠️ NO `usarioOuterRef` and no `user_id`: the buyer is a cliente now
+    // (#768). The field stays on the schema for the docs the Flutter app and
+    // WhatsApp still write, and `useClienteLink` falls back to it for those.
+    clienteOuterRef: ctx.clienteOuterRef,
+    respostaBloqueada: ctx.respostaBloqueada,
+    // The PROVIDER clock the out-of-order guard compares, kept apart from
+    // `ultima_modificacao`, which operators also write (rename, etiqueta).
+    ultimaModificacaoIntegracao: coerceToMillis(claim.last_updated ?? claim.date_created),
     integracaoOuterRef: toOuterRef(`integracao/${ctx.contaId}`),
     pedidoOuterRef: toOuterRef(`pedidos/${ctx.pedidoId}`),
     incidenteOuterRef: toOuterRef(`pedidos/${ctx.pedidoId}/incidentes/${ctx.incidenteId}`),
@@ -252,28 +344,62 @@ export function buildConversaFromClaim(
 // `data_cadastro` is `.nullish()` with no default, so it is set explicitly on
 // every builder below.
 
+/** `sender_role` values that mean "the seller wrote this". */
+const ROLE_RESPONDENT = 'respondent';
+
+/**
+ * Whether a claim message is OURS. Everything that is not the respondent —
+ * the complainant, the mediator, an unknown future role — renders as inbound,
+ * which is the safe direction: showing someone else's message as ours is a
+ * misattribution an operator cannot detect, while the reverse is obvious.
+ */
+export function claimMessageDoVendedor(msg: MlClaimMessage): boolean {
+  return (msg.sender_role ?? '').trim().toLowerCase() === ROLE_RESPONDENT;
+}
+
+/** ML message `status` values meaning the counterparty never saw it. */
+const STATUS_NAO_ENTREGUE: ReadonlySet<string> = new Set(['rejected', 'moderated']);
+
 /**
  * One claim message → mensagem fields (`ClaimsMessage.toMensagem`,
- * models.dart:3582-3598). `docId` is `makeClaimMessageId`'s digest — it
- * doubles as `mid`, and as `midGroup` only when the message carries
- * attachments (the attachment mensagens point back at it). NO user fields —
- * legacy's plain `Mensagem(...)` constructor set none. `timestamp` is the
- * deliberate deviation documented in the module doc (legacy stored the
- * import-time wall clock, `timestamp ??= DateTime.now()`).
+ * models.dart:3582-3598). `docId` doubles as `mid`, and as `midGroup` only
+ * when the message carries attachments (the attachment mensagens point at it).
+ * `timestamp` is the deliberate deviation documented in the module doc (legacy
+ * stored the import-time wall clock, `timestamp ??= DateTime.now()`).
+ *
+ * ⚠️ **`estadoEnvio` is derived from `sender_role`.** Legacy hardcoded
+ * `enviado` on every message including the buyer's, and `MensagemBubble` only
+ * rendered those correctly because the synthetic usuario satisfied its second
+ * test (`user_id === customerUid`). This import writes no `user_id`, so
+ * direction rests on `estadoEnvio` alone.
+ *
+ * ⚠️ A `rejected`/`moderated` message of OURS is one ML did not deliver — it
+ * filters the counterparty's moderated messages out of this endpoint but returns
+ * ours. It lands as `erro`, so the thread shows it was never seen rather than
+ * quietly claiming it was.
  */
 export function buildClaimMessageMensagem(
   msg: MlClaimMessage,
   docId: string,
+  ctx: { clienteOuterRef: string | null },
 ): Record<string, unknown> {
   const ms = coerceToMillis(msg.date_created);
+  const doVendedor = claimMessageDoVendedor(msg);
+  const naoEntregue = STATUS_NAO_ENTREGUE.has((msg.status ?? '').trim().toLowerCase());
   return {
-    estadoEnvio: ESTADO_ENVIO.enviado,
+    estadoEnvio: doVendedor
+      ? naoEntregue
+        ? ESTADO_ENVIO.erro
+        : ESTADO_ENVIO.enviado
+      : ESTADO_ENVIO.recebido,
     tipo: TIPO_MENSAGEM.comum,
     conteudo: msg.message,
     mid: docId,
     midGroup: msg.attachments.length > 0 ? docId : null,
     data_cadastro: ms,
     timestamp: ms,
+    // Only an inbound message carries the contact — an outbound one is ours.
+    clienteMensagemOuterRef: doVendedor ? null : ctx.clienteOuterRef,
   };
 }
 
@@ -288,18 +414,19 @@ export function buildReasonMensagem(args: {
   reasonId: string;
   claim: MlClaim;
   reason: MlClaimReason | undefined;
-  usuarioId: string;
+  clienteOuterRef: string | null;
 }): Record<string, unknown> {
-  const { reasonId, claim, reason, usuarioId } = args;
+  const { reasonId, claim, reason, clienteOuterRef } = args;
   return {
-    estadoEnvio: ESTADO_ENVIO.salva,
+    // The buyer's stated reason for opening the claim — inbound, so it must
+    // render on the customer side like any message they wrote.
+    estadoEnvio: ESTADO_ENVIO.recebido,
     tipo: TIPO_MENSAGEM.comum,
     conteudo: reason?.detail ?? reason?.name ?? MOTIVO_DESCONHECIDO,
     mid: reasonId,
     data_cadastro: coerceToMillis(reason?.date_created ?? claim.date_created),
     timestamp: coerceToMillis(reason?.last_updated ?? reason?.date_created ?? claim.date_created),
-    usarioMensagemOuterRef: toOuterRef(`usuarios/${usuarioId}`),
-    user_id: usuarioId,
+    clienteMensagemOuterRef: clienteOuterRef,
   };
 }
 
@@ -316,18 +443,32 @@ export function buildAttachmentMensagem(args: {
   parentMessage: MlClaimMessage;
   parentMessageDocId: string;
   arquivoOuterRef: string;
-  usuarioId: string;
+  clienteOuterRef: string | null;
 }): Record<string, unknown> {
   const ms = coerceToMillis(args.parentMessage.date_created);
+  // An attachment belongs to whoever sent the message carrying it, so it takes
+  // the PARENT's direction. Legacy stamped every one `salva`, which rendered
+  // the buyer's photos as drafts of ours.
+  const doVendedor = claimMessageDoVendedor(args.parentMessage);
+  // ⚠️ ...and the parent's DELIVERY too. An attachment on a message ML
+  // rejected was never seen either, so showing it as `enviado` while the
+  // message itself correctly reads `erro` presents the same failed delivery
+  // as two different outcomes.
+  const naoEntregue = STATUS_NAO_ENTREGUE.has(
+    (args.parentMessage.status ?? '').trim().toLowerCase(),
+  );
   return {
-    estadoEnvio: ESTADO_ENVIO.salva,
+    estadoEnvio: doVendedor
+      ? naoEntregue
+        ? ESTADO_ENVIO.erro
+        : ESTADO_ENVIO.enviado
+      : ESTADO_ENVIO.recebido,
     tipo: TIPO_MENSAGEM.comum,
     mid: args.filename,
     midGroup: args.parentMessageDocId,
     anexoStorage: args.arquivoOuterRef,
     data_cadastro: ms,
     timestamp: ms,
-    usarioMensagemOuterRef: toOuterRef(`usuarios/${args.usuarioId}`),
-    user_id: args.usuarioId,
+    clienteMensagemOuterRef: doVendedor ? null : args.clienteOuterRef,
   };
 }

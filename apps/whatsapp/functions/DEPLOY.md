@@ -106,10 +106,75 @@ gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
 # service, so that principal needs run.invoker ON THE SERVICE. Without it the
 # task is created and delivered and the service answers 403 run.routes.invoke,
 # with NO failure document written anywhere.
+#
+# ⚠ SINCE #1133 THE DEPLOY DOES THIS FOR YOU when TASKS_INVOKER_SA is set (see
+# below). Run it by hand only for a deploy without that variable.
 gcloud run services add-iam-policy-binding processWhatsappNotification --region=<region> \
   --member="serviceAccount:<apphosting-runtime-sa>" \
   --role="roles/run.invoker"
 ```
+
+### The deploy aborts if `TASKS_INVOKER_SA` is missing (#1133)
+
+`predeploy` runs `node tools/deploy-env/preflight.mjs whatsapp` **before** the
+artifact is built. It prints every build-time value that is about to be baked into
+the bundle — and whether each came from your shell or from a `build.mjs` default —
+then refuses to continue if either of these is true:
+
+- **`TASKS_INVOKER_SA` is unset or blank.** Without it `invoker` is omitted, no
+  `roles/run.invoker` is granted, and the dispatch leg 403s _after_ the enqueue
+  reported success — so nothing writes a failure document anywhere. This used to be
+  a `console.warn` that scrolled past.
+- **the task/schedule region has no Cloud Tasks** (`us-east5`). That deploy fails
+  every queue and schedule function at once while the Firestore triggers succeed —
+  the asymmetric failure list from #1108, now refused up front instead.
+
+Run it by hand any time; it changes nothing:
+
+```bash
+node tools/deploy-env/preflight.mjs whatsapp
+```
+
+⚠️ It does **not** run in CI. `predeploy` hooks are skipped under
+`emulators:exec`, which is deliberate — the emulators have no IAM layer, so the
+lanes are unaffected either way.
+
+### `TASKS_INVOKER_SA` — the third role, applied by the deploy (#1133)
+
+Export it in the shell you run `firebase deploy` from. `build.mjs` inlines it
+(esbuild `define`, exactly like `FUNCTIONS_REGION`) and every `onTaskDispatched`
+in this codebase declares it as `invoker`; firebase-tools then applies the list
+to **both** legs of the trip — `roles/run.invoker` on each function's Cloud Run
+service **and** `roles/cloudtasks.enqueuer` on its queue.
+
+```bash
+export TASKS_INVOKER_SA="<apphosting-runtime-sa>,<functions-runtime-sa>"
+firebase deploy --only functions:whatsapp \
+  --config firebase.whatsapp.deploy.json \
+  --project <project-id>
+```
+
+⚠️ **Name every enqueuer, comma-separated** — drop the duplicate when the two are
+the same identity. A deploy **replaces** the members of both bindings, so an
+identity left out **loses** the role.
+
+Today the receiver route is the only enqueuer, but the functions runtime SA
+becomes one the moment a handler re-enqueues — list it now rather than
+rediscovering the 403 later.
+
+⚠️ **Unset ⇒ the option is omitted entirely.** The build prints a warning and the
+manual `gcloud run services add-iam-policy-binding` above stays required. It
+never guesses a value: a wrong one would lock out the legitimate caller, and a
+permissive one would be far worse. Failing toward the documented status quo is
+the intended behaviour.
+
+⚠️ A redeploy with **no** `invoker` declared does not clear an existing binding —
+firebase-tools skips `setInvokerUpdate` when the option is absent — but a service
+**create**, i.e. a new or renamed task function, leaves no binding at all. That
+silent case is what this variable exists for.
+
+Verify it took, with nobody having run gcloud:
+`gcloud run services get-iam-policy processWhatsappNotification --region=<region>`.
 
 Until this is granted the enqueue fails; the receiver then **falls back** to
 persisting the notification as `failed` (the reprocess sweep drains it) and still

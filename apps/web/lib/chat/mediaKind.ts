@@ -40,6 +40,7 @@ export function tipoForFiletype(filetype: Filetype): TipoMensagem {
     case FILETYPE.unknown:
     case FILETYPE.unsupported:
     case FILETYPE.reaction:
+    default:
       return TIPO_MENSAGEM.comum;
   }
 }
@@ -77,17 +78,18 @@ export function mediaSubObject(
     case FILETYPE.html:
     case FILETYPE.txt:
     case FILETYPE.error:
-    case FILETYPE.unknown:
-    case FILETYPE.file:
-    case FILETYPE.document:
     case FILETYPE.application:
-    case FILETYPE.reaction:
     case FILETYPE.fallback:
+    case FILETYPE.file:
     case FILETYPE.interactive:
     case FILETYPE.button:
     case FILETYPE.order:
     case FILETYPE.system:
+    case FILETYPE.unknown:
+    case FILETYPE.document:
     case FILETYPE.unsupported:
+    case FILETYPE.reaction:
+    default:
       return { genericDocument: { genericDocument: arquivoRef, caption } };
   }
 }

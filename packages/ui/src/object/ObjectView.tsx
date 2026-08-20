@@ -146,9 +146,9 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
   /**
    * Turn the ADR 0011 **tier 3** concurrency guard off for this screen.
    *
-   * On by default. Every ERP record has at least two writers — the Flutter app
-   * still writes the same documents, and several are also written by triggers
-   * and webhooks — so a save that loses should say so rather than silently
+   * On by default. Every ERP record has at least two writers — another operator
+   * in another tab, and for many of them a trigger, a webhook or a scheduled
+   * sweep — so a save that loses should say so rather than silently
    * revert the winner. When it fires, the operator gets the diff and chooses.
    *
    * Reach for this only when a screen genuinely cannot express its write as a

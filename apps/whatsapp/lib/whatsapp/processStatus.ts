@@ -49,8 +49,12 @@ function toEpochMs(v: unknown): number | null {
  * (`true` = the legacy `break`) or skipped (`false` = the legacy `continue`). A
  * status strictly newer than the last update bypasses this and always applies.
  *
- * ⚠️ Parameter typed to the webhook's literal union to enable exhaustiveness
- * checking; the caller ensures this invariant via valuePayloadSchema.
+ * ⚠️ The parameter is the webhook's own literal union, not `string`, so the
+ * exhaustiveness check covers this switch — widened to `string` the `deleted`
+ * arm below would be indistinguishable from a `default`. Safe at runtime too:
+ * `statusUpdateSchema.status` is a `z.enum`, so a value outside the five never
+ * reaches here parsed (and an unparsed one would fall out returning `undefined`,
+ * which is falsy — the same "skip" the old `default` gave).
  */
 function shouldApplyStale(
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted',
@@ -155,9 +159,17 @@ export async function processStatuses(
         patch.estadoEnvio = ESTADO_ENVIO.erro;
         break;
       case 'deleted':
+        // ⚠️ Persisted-state change (was `desconhecido` via the `default`).
+        // `excluido` had no writer anywhere in the repo, yet the thread already
+        // renders it (`ConversaTile.tsx`, `MensagemStatusIcon.tsx`) — the
+        // messaging layer was waiting for exactly this. Messages already stamped
+        // `desconhecido` by a previous `deleted` keep that value until their next
+        // status update; nothing backfills them.
         patch.estadoEnvio = ESTADO_ENVIO.excluido;
         break;
       default:
+        // Unreachable through `statusUpdateSchema`'s enum; an unparsed value
+        // still lands somewhere honest rather than leaving `estadoEnvio` unset.
         patch.estadoEnvio = ESTADO_ENVIO.desconhecido;
     }
 

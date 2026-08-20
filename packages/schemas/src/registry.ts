@@ -86,11 +86,14 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   mensagem,
   integracao,
   brandShopee,
-  // ⚠️ DUAL-RUN ONLY — remove all four with the Flutter decommission (#829).
+  // ⚠️ LEGACY-GRANT ONLY — all four come out in #829, which waits on nothing.
   // These are legacy Mercado Livre collections the NEW app touches only through
   // the Admin SDK (or not at all). They are registered so the generated ruleset
   // reproduces the client grants the deployed legacy ruleset already gives the
-  // Flutter app, which would otherwise be default-denied on the day we deploy.
+  // Flutter app, ~~which would otherwise be default-denied on the day we
+  // deploy~~ — ⚠️ VOID: the generated ruleset never governs a database the
+  // Flutter client connects to, so nothing is denied on any day. There is no
+  // dual run (root `CLAUDE.md` rule 8) and this parity buys this app nothing.
   // See #783. `tokenDuravel`/`token6h` are the load-bearing pair (the Flutter
   // OAuth connect screen and every ML action screen read them client-side);
   // `notificacoesMercadoLivre` and `questionsML` are defensive parity.

@@ -85,8 +85,9 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
-  `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
-  the still-running Flutter app during the dual-run migration; "one wins" refresh).
+  `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape — kept
+  because the migrated corpus carries it, not because a second app writes it;
+  "one wins" refresh).
 - `lib/marketplace/oauthState.ts` — **#821**, the connect flow's two trust anchors.
   The implementation is the SHARED module `@delfrance/data/admin/oauth-state`
   (extracted in #1034 and now serving all three OAuth channels); this file is a thin
@@ -125,6 +126,80 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   that helper puts the RAW BODY into `MercadoLivreValidationError`, and `respond.ts`
   logs a validation error's payload straight to the log stream — the exact route #1015
   leaked an OAuth token response by.
+- `app/api/marketplace/mercado-livre/chat/{responder,pergunta-acao}` +
+  `lib/marketplace/chatOutbound.ts` — **#533**: answering a pergunta or a post-sale
+  thread from the unified inbox, plus ML's two question-moderation actions.
+  ⚠️ **HTTP, not a Firestore trigger, and that is the design.** WhatsApp sends by
+  writing a mensagem and letting `sendOutbound` transmit it, which buys free retries —
+  worth it when failures are TRANSIENT. ML's are not: a reply is single-shot and its
+  refusals are terminal and operator-actionable (already answered, thread blocked,
+  mediation open, grant dead), so the operator must see the real reason with their
+  text still on screen. A refusal is `ChatOutboundRefusedError` → **409 carrying its
+  own code**, which the composer renders verbatim.
+  ⚠️ `conversa.respostaBloqueada` is a UI hint written by the importer and STALE BY
+  CONSTRUCTION — a question can be answered on ML's own site between the last import
+  and the click. The spine never trusts it: it re-reads the question or the pack and
+  that read is the authority (it is also where the LIVE `seller_max_message_length`
+  comes from, so nothing hardcodes 350).
+  ⚠️ **Send FIRST, write second.** A mensagem written before the ML call leaves a
+  phantom reply whenever ML refuses — #817 inverted: instead of a message that never
+  sends, a message that never existed.
+  ⚠️ `pergunta-acao` is gated on **`PERM.mensagem.delete`**, not `.write`: a deleted
+  question leaves the listing for everyone and a blocked buyer cannot ask on any of
+  the seller's items, and neither is undoable from here. Neither action writes to the
+  thread — ML changes the question's `status` and the importer is the one writer of
+  that state.
+- `lib/marketplace/claim{Import,Mapping,Ids,Attachments,Actionability,Cliente}.ts` —
+  **Step 14 + #768**: one ML claim → an Incidente on the pedido, plus a chat Conversa
+  and its Mensagens, at the BYTE-EXACT legacy doc ids so re-processing a claim the
+  Flutter app already imported UPDATES those docs instead of forking them.
+  ⚠️ **The Incidente and the Conversa are gated DIFFERENTLY, and that asymmetry is
+  the design.** The incidente is pedido business history — refunds, returns, the
+  mediation outcome — and stays valuable long after the claim closes, so it is
+  written for EVERY claim. The conversa is a surface an attendant is expected to
+  answer in, so it is created (and kept answerable) only while
+  `players[role=respondent].available_actions` still holds a `send_message_to_*` —
+  `claimActionability.ts`. A thread nobody can reply on is #817 with extra steps.
+  ⚠️ It closes, it never deletes: a claim that stops being answerable keeps every
+  message it ever had and gains `respostaBloqueada` + `atendido`. That close runs
+  OUTSIDE the `ultima_modificacao` freshness gate, because ML does not reliably bump
+  `last_updated` when the actions drain away — inside the gate a dead thread would
+  keep an open composer. `estadoConversa` is operator triage state and is never
+  touched by any of it.
+  ⚠️ **Identity is a CLIENTE** (#768). `claimUsuario.ts` — which minted a sem-auth
+  `usuarios` doc per ML buyer — is deleted; `usuarios` is now only for people who can
+  log in. The pedido already names the cliente, so `claimCliente.ts` does exactly one
+  thing: stamp `idMercadoLivre` when absent, so the cliente a pre-sale QUESTION
+  created and the cliente the ORDER created converge instead of forking. It is
+  fill-only-when-absent — a disagreeing stored id is logged and left for a human.
+  ⚠️ `estadoEnvio` on a claim mensagem comes from `sender_role`, NOT a constant.
+  Legacy stamped `enviado` on every message including the buyer's, and it only
+  rendered right because the synthetic usuario satisfied `MensagemBubble`'s second
+  test (`user_id === customerUid`). Nothing writes `user_id` now, so direction rests
+  on `estadoEnvio` alone. A `rejected`/`moderated` message of OURS lands as `erro` —
+  ML never delivered it.
+  ⚠️ The mensagem doc id stays the legacy five-field digest even though ML now
+  publishes a per-message `hash`. Re-keying would rewrite every already-imported
+  message under a new id — a thread-wide duplication of history — to fix a collision
+  case ML itself flags with `repeated`. The field is modelled, not used.
+- **Claim RESPOND** (#768) — `chatOutbound.ts` gained an `mlclaims` branch and
+  `packages/integrations/mercado-livre/src/incidentRespond.ts` implements
+  `respondIncident`, the last unimplemented `MarketplaceChannel` member.
+  ⚠️ Every action is gated on `players[role=respondent].available_actions`, read
+  LIVE on each call — ML decides what a seller may do from the stage and status,
+  and the list empties as the claim closes. An unavailable action is a 400, so
+  the gate refuses first and names what IS available.
+  ⚠️ **`receiver_role` is derived, never assumed.** Once a mediation opens ML
+  routes the seller through the mediator and REFUSES a message aimed at the
+  complainant, so `send_message_to_mediator` outranks
+  `send_message_to_complainant` wherever both appear.
+  ⚠️ **Partial refund is a PERCENTAGE off an allow-list, never an amount.** The
+  contract carries `refundAmount` in minor units like every other channel; ML
+  accepts only the percentages `GET …/partial-refund/available-offers` returns,
+  rejects 100% on that endpoint, and — the dangerous part — **defaults a MISSING
+  percentage to 50%**. So an amount with no exact offer is refused with the list
+  of real ones rather than rounded to the nearest: a refund is not a value worth
+  approximating.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -214,11 +289,29 @@ matters:
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
 | `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9) |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
-| `claims` | `handled` | claim → incidente/conversa/mensagens import (Step 14) |
+| `claims` | `handled` | incidente ALWAYS; conversa/mensagens only while answerable (Step 14 / #768) |
+| `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
+| `messages` | `handled` | post-sale pack thread → chat conversa/mensagem import (#532) |
 | `items_prices` | `ack` | **permanent no-op** (#803) — persists nothing |
 | `orders_feedback`, `stock-location` | `ack` | nothing to do; persists nothing |
-| `questions`, `messages` | `park` | data-bearing, importer pending (#532/#533) |
 | `public_offers`, `public_candidates`, `user-products-families` | `ignore` | never enqueued, never persisted (#813) |
+
+⚠️ **The ERP owns `estado` on the link doc — for User-Products listings too.**
+`itemsStatusSync` used to defer on `isUserProductModel` and on `estado === 'am'`,
+because the Flutter app drove those during a dual run. **There is no dual run and
+there never will be one** (root `CLAUDE.md` rule 8) — so that guard stood down for a
+writer that will not exist, and since `isUserProductModel` is true for every listing
+a `user_product_seller` publishes, it silently skipped the entire future catalogue
+(#1087). ML's own migration **tags** are now the only reason to defer, and each
+deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
+a sync. Do not reintroduce a link-only guard here.
+
+⚠️ The same sync is now the **producer** of `estado 'am'`, not a reader of it. That
+value never had a writer in this repo — it only ever arrived from Flutter — yet
+`publishCore.ts` blocks publish on it and `precoPlan.ts`/`bulkEstoquePlan.ts` skip on
+it. Of the send paths only the price one re-reads ML's tags itself, so this sync
+stamps its verdict (it is the only component holding the fetched item) and those
+three gate without a fetch of their own.
 
 ⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacao.ts`, not
 this table. The four dispositions differ in what they COST: `handled` and `ack`
@@ -295,8 +388,8 @@ before flipping it. `ALLOWED_ADMIN_ORIGINS`
 became REQUIRED in production with #821/T5: localhost is no longer implicitly allowed,
 so an unset value leaves the CORS allow-list empty and every browser call fails.
 The per-account OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
-(shared with the Flutter app during the dual-run migration; the move to the
-encrypted `credenciais` store is a tracked post-migration follow-up).
+(the legacy wire shape, kept so the migrated corpus resolves natively; the move to
+the encrypted `credenciais` store is a tracked post-migration follow-up).
 
 Deploy of the App Hosting backend + the functions codebase is **manual and
 coordinated** — see root `CLAUDE.md`, Critical rules. Functions deploy: `functions/DEPLOY.md`.

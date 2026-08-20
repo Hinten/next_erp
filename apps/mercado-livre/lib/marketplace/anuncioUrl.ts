@@ -17,12 +17,13 @@
  * {@link isFamilyId}: the two shapes address different endpoints, and sending an
  * item id to the families one is a 400 (`invalid value for id`), not a 404.
  *
- * ⚠️ The answer is deliberately NOT persisted on the link doc. The Flutter app is
- * a live concurrent writer during dual-run and its `Model.save()` is an UNMASKED
- * `set()` over a closed field list (`web_database/lib/src/types.dart:598,626`;
- * `_$ProdutoMercadoLivreToJson` has no catch-all bucket), so any field this app
- * adds is wiped by the next Flutter save, publish or import. A cached URL that
- * silently disappears is worse than one resolved when asked for.
+ * ⚠️ The answer is deliberately NOT persisted on the link doc. ⚠️ The original
+ * reason is VOID — it assumed a dual run in which the legacy `Model.save()`, an
+ * UNMASKED `set()` over a closed field list
+ * (`web_database/lib/src/types.dart:598,626`; `_$ProdutoMercadoLivreToJson` has
+ * no catch-all bucket), would wipe any field this app added. There is no dual
+ * run (root `CLAUDE.md` rule 8). The decision stands on its own: a persisted URL
+ * is a cache that can go stale silently, and resolving costs one request.
  *
  * Cost: ONE ML request either way. The old app spent two — it read the first
  * variation's `itemId` from Firestore, then `GET /items/{id}` just to learn

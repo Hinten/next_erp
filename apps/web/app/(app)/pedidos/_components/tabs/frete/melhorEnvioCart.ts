@@ -17,6 +17,7 @@ import {
   type CartInsertRequest,
   type VolumeInput,
   buildCartItem,
+  toVolumeInput,
 } from '@delfrance/integrations-freight-br/http-client';
 import type { Endereco, Filial, ItemDoPedido } from '@delfrance/schemas';
 
@@ -139,12 +140,7 @@ export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertR
     unitaryValue: it.precoDeVenda - (it.descontoUnitario ?? 0),
   }));
 
-  const volumes: VolumeInput[] = (frete.volumes ?? []).map((v) => ({
-    width: v.dimensoes?.largura ?? null,
-    height: v.dimensoes?.altura ?? null,
-    length: v.dimensoes?.comprimento ?? null,
-    weight: v.pesoBruto ?? v.pesoLiquido ?? null,
-  }));
+  const volumes: VolumeInput[] = (frete.volumes ?? []).map(toVolumeInput);
 
   return buildCartItem({
     service,

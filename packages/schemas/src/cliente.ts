@@ -14,7 +14,7 @@ const PERM_CLIENTE_DELETE = 1n << 2n;
 /**
  * Tipo de cliente — wire format mirrors the Flutter `tipoCliente` enum
  * (string codes '0'/'1'/'2'). Preserving the wire format is required for
- * coexistence with the live app.
+ * parity with the migrated corpus.
  */
 export const TIPO_CLIENTE_LABELS = {
   '0': 'Pessoa Física',

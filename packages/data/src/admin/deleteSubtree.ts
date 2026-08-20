@@ -40,8 +40,8 @@ import type {
  *
  * ⚠️ **Do not replace `listCollections()` with a registry-derived list.** It is
  * tempting — `ALL_DOMAINS` knows most of these paths — but it is wrong, not
- * merely slower. Flutter still writes subcollections this repo deliberately does
- * not register: `packages/schemas/src/produto/collection/subcollections.ts`
+ * merely slower. The migrated corpus holds subcollections this repo deliberately
+ * does not register: `packages/schemas/src/produto/collection/subcollections.ts`
  * documents `variacoesml` as a legacy spelling that never matched production,
  * and `apps/functions/src/produtos/onProdutoDeleted.storage.test.ts` seeds
  * exactly that name and asserts it is reclaimed. A registry walk orphans it

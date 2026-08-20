@@ -42,9 +42,9 @@
  * No Bearer token and OUT of the `proxy.ts` CORS matcher — it's a server→server
  * call from ML, not a browser request.
  *
- * ⚠️ DUAL-RUN: switching a seller's ML callback URL here MUST be paired with
- * disabling the legacy Flutter notification functions (see functions/DEPLOY.md)
- * or every notification is double-processed.
+ * ⚠️ CUTOVER: a seller's ML callback URL is ONE registration. Switching it here
+ * MUST be paired with disabling the legacy Flutter notification functions (see
+ * functions/DEPLOY.md), or the same notification is ingested by both systems.
  */
 import { NextResponse } from 'next/server';
 import { logger } from 'firebase-functions/logger';
@@ -81,6 +81,15 @@ const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'payments',
   'shipments',
   'claims',
+  // #532 — the handler re-fetches `GET /questions/{id}`, and ML is eventually
+  // consistent: an immediate read can 404, or return the status from BEFORE the
+  // change the notification is about. Reading a stale `ANSWERED` would classify
+  // a freshly-asked question as unanswerable and refuse to open its thread.
+  'questions',
+  // #532 — the handler re-fetches the announced message and then its pack;
+  // ML is eventually consistent, so an immediate read can 404 on a message it
+  // has only just accepted.
+  'messages',
 ]);
 const REFETCH_SCHEDULE_DELAY_SECONDS = 10;
 

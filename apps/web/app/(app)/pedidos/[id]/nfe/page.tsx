@@ -59,6 +59,7 @@ function estadoColor(estado: EstadoNFe): MantineColor {
     case ESTADO_NFE.aguardandoResposta:
     case ESTADO_NFE.processamentoCompleto:
     case ESTADO_NFE.processamentoCancelado:
+    default:
       return 'yellow';
   }
 }

@@ -75,7 +75,7 @@ async function* pagesByDocId(coll: CollectionReference): AsyncGenerator<QueryDoc
  * so identifying ML pedidos costs nothing per document.
  *
  * Both the canonical `documents/integracao/<id>` form and the bare
- * `integracao/<id>` one are accepted: the dual-run corpus contains both.
+ * `integracao/<id>` one are accepted: the legacy corpus contains both.
  */
 async function mlIntegracaoRefs(ctx: MigrationContext): Promise<Set<string>> {
   const snap = await ctx.db.collection('integracao').get();

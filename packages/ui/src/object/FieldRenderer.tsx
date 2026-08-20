@@ -338,10 +338,21 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                 rightSection={clearButton}
               />
             );
+          case 'string':
+            return (
+              <TextInput
+                {...field}
+                value={valueString}
+                label={label}
+                description={hint}
+                error={error}
+                disabled={!editable}
+                rightSection={clearButton}
+              />
+            );
           case 'object':
           case 'array':
           case 'unknown':
-          case 'string':
           default:
             return (
               <TextInput

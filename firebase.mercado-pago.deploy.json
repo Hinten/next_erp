@@ -6,7 +6,10 @@
       "source": ".deploy/mercado-pago-functions",
       "codebase": "mercado-pago",
       "runtime": "nodejs22",
-      "predeploy": ["node apps/mercado-pago/functions/scripts/prepare-deploy.mjs"],
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs mercado-pago",
+        "node apps/mercado-pago/functions/scripts/prepare-deploy.mjs"
+      ],
       "ignore": ["node_modules"]
     }
   ]

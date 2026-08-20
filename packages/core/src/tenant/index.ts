@@ -14,8 +14,8 @@ export const databaseMapSchema = z
 
 /**
  * GrupoEconomico — top-level tenant entity. Mirrors the Flutter package
- * `packages/grupo_economico/lib/src/models.dart` shape so both apps coexist
- * against the same Firestore documents during the migration.
+ * `packages/grupo_economico/lib/src/models.dart` shape, which is how the
+ * migrated corpus stores these documents.
  *
  * The Flutter base class injects `docId`, `createTime`, `updateTime`,
  * `readTime`. Those are managed by the data layer (Firestore metadata),

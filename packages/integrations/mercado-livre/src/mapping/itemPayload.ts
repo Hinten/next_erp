@@ -362,7 +362,6 @@ export function estadoFromMlStatus(status: string | null | undefined): EstadoPub
       return ESTADO_PUBLICACAO.underReview;
     case null:
     case undefined:
-      return ESTADO_PUBLICACAO.error;
     default:
       return ESTADO_PUBLICACAO.error;
   }

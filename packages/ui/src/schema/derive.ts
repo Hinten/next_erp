@@ -114,7 +114,6 @@ function detectKind(inner: ZodTypeAny, override?: string): FieldKind {
     case 'unknown':
       return 'unknown';
     case undefined:
-      return 'unknown';
     default:
       return 'unknown';
   }

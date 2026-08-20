@@ -55,7 +55,9 @@ itself when `.old/` is absent; the parser tests always run.
 
 Four Mercado Livre collections (`token6h`, `tokenDuravel`,
 `notificacoesMercadoLivre`, `questionsML`) are currently registered **only** to
-keep that grant alive during dual-run — #829 removes them.
+keep the legacy client's grant alive — #829 removes them. ⚠️ Two of the four are
+OAuth token stores, and the grant was priced against a dual run that does not
+exist (root `CLAUDE.md` rule 8): no client of _this_ app needs it.
 
 Each `gen:` invocation writes **one** file, so a schema change needs **both**.
 
