@@ -141,6 +141,19 @@ export interface MercadoLivrePriceSyncStatus {
   planejados: number;
   enviados: number;
   pulados: number;
+  /**
+   * Anúncios the job could not have enumerated — a drifted denorm, a link on a
+   * variation child, or a malformed `paiId` (#1072).
+   *
+   * ⚠️ This is a SUBSET of `pulados`, not a sibling of it: each finding is
+   * recorded through the same `registerSkip` that increments `pulados`, so it
+   * rides the shared `skips` sample where the operator can actually read the
+   * rows. What this counter adds is that it is exact and uncapped — the `skips`
+   * list stops at 200 and can be exhausted by the plan phase alone, so on a
+   * drifted catalogue the count is the only honest number. Zero is what makes
+   * `completed` mean what it says.
+   */
+  naoEnumerados: number;
   falhas: number;
   pausas: number;
   /** The first skips, for display — capped server-side; `pulados` stays exact. */

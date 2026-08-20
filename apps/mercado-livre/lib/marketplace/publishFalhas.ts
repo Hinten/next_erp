@@ -384,7 +384,22 @@ export type EscopoFalha = 'item' | 'nao-item';
  * structure the editor highlights fields from.
  *
  * Spread it — `{ estado: 'E', ...falhaPatch(err, err.message), ultimaModificacao }`.
- * {@link CLEAR_FALHA} is its counterpart on every path that heals a listing.
+ * {@link clearFalha} is its counterpart on every path that heals a listing.
+ *
+ * ⚠️ Deliberately does NOT carry `moderacoes` (#1087), in either direction. A
+ * rejected write of ours says nothing about ML's policy verdict on the listing:
+ * writing `[]` here would erase a real moderation on the next failed stock push,
+ * and there is nothing to write instead, since this module never asked ML. The
+ * field is left untouched and the next `items` delivery refreshes it, because a
+ * moderation resolving changes the item's status.
+ *
+ * ⚠️ That self-healing has ONE hole, and it is the caller's to close, not this
+ * one's: a listing ML has DELETED fires no further `items` notification ever, so
+ * nothing can refresh it. Both 404-on-`GET /items` branches therefore spell out
+ * `moderacoes: []` on top of this patch — `estoqueSend`'s and
+ * `reverificarAnuncio`'s. They are the only two writers allowed to blank the
+ * field without having read `/moderations`, and they qualify because a 404 from
+ * `GET /items` IS an answer about the listing.
  */
 export function falhaPatch(
   err: unknown,
@@ -409,6 +424,22 @@ export function falhaPatch(
  * Clearing one of the two fields without the other is the failure mode this
  * exists to prevent: a `causas` entry outliving its `errors` paints a red field
  * on a healthy listing, which is indistinguishable from a fresh rejection.
+ *
+ * ⚠️ It deliberately does **NOT** clear `moderacoes` (#1087), even though that
+ * field has the same "stale is worse than absent" property. `errors`/`causas`
+ * record OUR failed write, so a later success genuinely invalidates them — but a
+ * moderação is ML's POLICY verdict on the listing, and nothing this module's
+ * callers do implies ML lifted it. Two of them prove it: the stock writeback
+ * clears on a successful `PUT /items`, and a `poor_quality_thumbnail` listing is
+ * `active` and accepts stock updates **while moderated**; an import re-reads the
+ * item but never asks `/moderations`. Clearing there would erase a live,
+ * still-true reason and show a clean listing that is really still penalised —
+ * the inverse of the bug, and worse, because it hides a real problem instead of
+ * merely failing to explain one.
+ *
+ * The rule instead: **only a writer that just asked ML about moderation may
+ * write `moderacoes`** — `itemsStatusSync` and `reverificarAnuncio`, each of
+ * which sets it in the same patch as the status it explains, value or `[]`.
  *
  * A function rather than a shared constant so each call site owns its arrays —
  * a spread copies the object but not the empty arrays inside it, and one caller

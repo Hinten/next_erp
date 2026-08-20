@@ -1127,6 +1127,24 @@
       ]
     },
     {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracoesComProduto",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "estoques",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
@@ -1164,6 +1182,20 @@
       "fields": [
         {
           "fieldPath": "contaOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtoMercadoLivre",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "contaOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
           "order": "ASCENDING"
         }
       ]

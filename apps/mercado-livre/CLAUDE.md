@@ -293,7 +293,7 @@ matters:
 | `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
 | `messages` | `handled` | post-sale pack thread → chat conversa/mensagem import (#532) |
 | `items_prices` | `ack` | **permanent no-op** (#803) — persists nothing |
-| `orders_feedback`, `stock-location` | `ack` | nothing to do; persists nothing |
+| `orders_feedback`, `stock-location`, `stock-locations` | `ack` | nothing to do; persists nothing |
 | `public_offers`, `public_candidates`, `user-products-families` | `ignore` | never enqueued, never persisted (#813) |
 
 ⚠️ **The ERP owns `estado` on the link doc — for User-Products listings too.**
@@ -305,6 +305,44 @@ a `user_product_seller` publishes, it silently skipped the entire future catalog
 (#1087). ML's own migration **tags** are now the only reason to defer, and each
 deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
 a sync. Do not reintroduce a link-only guard here.
+
+⚠️ **A moderation is NOT its own topic — it arrives on `items`.** ML publishes no
+`moderations` notification topic (checked against its topic list); a policy pause
+reaches us as an ordinary `items` delivery, and ML's *Gerenciar moderações* derives
+the `moderation_reference_id` straight from it (`id` + **`-ITM`**). So the reason
+lives in `itemsStatusSync`, not in a new receiver, and `TOPIC_DISPOSITION` is
+unchanged. The sync reads `GET /moderations/last_moderation/{id}-ITM` only when the
+fetched item's status says there is one (`precisaConsultarModeracao` in
+`lib/marketplace/moderacoes.ts`) — `under_review`, or a moderation `sub_status` —
+so a healthy listing still costs exactly one `GET /items/{id}`, and a
+moderation-endpoint outage cannot stall the `items` stream. A **404 is data**
+("not moderated"); everything else rethrows, because persisting `[]` after a
+failed read records "not moderated" and is indistinguishable from healthy.
+
+⚠️ **`moderacoes` is a SEPARATE field from `errors`/`causas`, and the reason is the
+#781 stock re-arm.** `errors` is cleared whenever `podeEnviarEstoque(...).enviar` —
+deliberately, so a `closed`/`under_review` listing keeps its diagnosis. Moderation
+needs the opposite on both sides: it must SURVIVE on a listing ML still calls
+`active` (`poor_quality_thumbnail` — live, but losing exposure) and VANISH the moment
+ML stops reporting one, even mid-review. Sharing `errors` would have wiped the first
+case on the very write that set it. The invariant that replaces the clearing rule is
+stronger: `moderacoes` is written in the **same patch** as the `status` it explains,
+on every status write, value or `[]` — so a reason cannot outlive its state.
+
+⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and only a writer that
+just asked ML may touch it.** `errors`/`causas` record OUR failed write, so a later
+success invalidates them; a moderação is ML's verdict and nothing we do lifts it. Two
+`clearFalha()` callers prove the point — the stock writeback fires on a successful
+`PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
+updates **while moderated**; the importer re-reads the item but never asks
+`/moderations`. Clearing there would erase a live reason and show a clean listing that
+is really still penalised, which hides a real problem rather than merely failing to
+explain one. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
+unconditionally, so clear-only would erase the reason the operator pressed the button
+to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER and the parent takes the
+**fold winner's** (`upFamilyStatus.ts`) — never a union, or the parent would show a
+reason for a sibling it is not reporting. Siblings' values come off disk, so the fold
+costs no extra ML call.
 
 ⚠️ **A User-Products FAMILY's `estado` is a FOLD of its members, never one member's
 status.** A family's parent link carries the FAMILY id, so a member's `items`

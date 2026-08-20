@@ -996,6 +996,45 @@ describe('processStockSendTask — terminal 4xx (last attempt verifies with ML)'
     });
   });
 
+  /**
+   * ⚠️ #1087, and the ONE hole in this module's self-healing. Everywhere else a
+   * stale moderation is refreshed by the next `items` delivery, because a
+   * moderation lifting changes the item's status — but a listing ML has DELETED
+   * fires no notification ever again. Left untouched, a moderated listing that
+   * reaches this branch keeps its reason forever, sitting next to
+   * `status: 'closed'`.
+   *
+   * This is one of exactly two writers allowed to blank `moderacoes` without
+   * having read `/moderations` (`reverificarAnuncio`'s 404 branch is the other),
+   * and it qualifies because a 404 from `GET /items` IS an answer about the
+   * listing — `/moderations` would 404 for it too.
+   */
+  it('a listing ML DELETED loses its moderation — nothing can ever refresh it', async () => {
+    const h = terminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: item not found', 404, null);
+    });
+    seedLink(h.db, {
+      estado: 'p',
+      moderacoes: [
+        {
+          nome: 'DENYLIST',
+          dataCriacao: null,
+          motivo: 'Seu anúncio foi cancelado por falsificação.',
+          remedio: null,
+          secoes: ['title'],
+          evidencias: [],
+        },
+      ],
+    });
+
+    await run(h);
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      status: 'closed',
+      moderacoes: [],
+    });
+  });
+
   it('the verification GET itself fails → conservative stop, never a false verdict', async () => {
     const h = terminal(async () => {
       throw new MercadoLivreHttpError('ML 503: unavailable', 503, null);
@@ -1353,10 +1392,20 @@ describe('processStockSendTask — terminal 4xx on a UP family member (#1142)', 
     });
     seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: 'active' });
     seedUpMember(h.db, 'CHILD-2', 'm2', { itemId: 'MLB-m2', status: 'closed' });
+    // The parent carries a moderation and the members carry none — so the write
+    // below DOES land (estado moves to 'c'), and only the field-level gate keeps
+    // a caller that never read `/moderations` from blanking it on the way past.
+    h.db.docs(LINK_PATH).set('link1', {
+      ...h.db.docs(LINK_PATH).get('link1'),
+      moderacoes: [{ codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' }],
+    });
 
     await run(h, memberPayload());
 
     expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'c', status: 'closed' });
+    expect(h.db.docs(LINK_PATH).get('link1')?.moderacoes).toEqual([
+      { codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' },
+    ]);
   });
 
   it('a healthy member latches the FAMILY, but never with a member-keyed denorm', async () => {
@@ -1401,6 +1450,58 @@ describe('processStockSendTask — terminal 4xx on a UP family member (#1142)', 
     expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E' });
   });
 
+  it('a member 404 does NOT blank the FAMILY moderacoes (#1087 × #1142)', () => {
+    // The merge decision this pins. The non-member 404 arm blanks `moderacoes`
+    // because the LISTING is gone and no further `items` notification can ever
+    // arrive to heal it (#1087). A MEMBER disappearing says nothing of the sort:
+    // the family listing is still there, still notifiable, and possibly still
+    // moderated — blanking on one member's 404 erases a live reason for every
+    // sibling.
+    const h = memberTerminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+    });
+    h.db.seed(LINK_PATH, 'link1', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      id: 'FAM-9',
+      estado: 'p',
+      status: 'active',
+      sub_status: [],
+      isUserProductModel: true,
+      moderacoes: [{ codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' }],
+    });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: 'active' });
+    seedUpMember(h.db, 'CHILD-2', 'm2', { itemId: 'MLB-m2', status: 'active' });
+
+    return run(h, memberPayload()).then(() => {
+      expect(h.db.docs(LINK_PATH).get('link1')?.moderacoes).toEqual([
+        { codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' },
+      ]);
+      // ...and the member link gains no invented moderation either.
+      expect(h.db.docs(varPath(CHILD)).get('m1')).not.toHaveProperty('moderacoes');
+    });
+  });
+
+  it('a NON-member 404 still blanks moderacoes (main #1087, unchanged)', async () => {
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      updateItem: async (): Promise<MlItem> => {
+        throw new MercadoLivreHttpError('ML 400: invalid quantity', 400, null);
+      },
+      getItem: async () => {
+        throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+      },
+    });
+    seedLink(h.db, { moderacoes: [{ codigo: 'x', motivo: 'y' }] });
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'anuncio-inexistente' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      status: 'closed',
+      moderacoes: [],
+    });
+  });
+
   it('a member link belonging to ANOTHER listing is not mistaken for this one', async () => {
     const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'active', sub_status: [] }));
     seedUpMember(h.db, CHILD, 'm1', {
@@ -1427,5 +1528,43 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
       status: 'active',
       errors: [],
     });
+  });
+
+  /**
+   * ⚠️ #1087, and it is the OPPOSITE of the rule above. A successful stock
+   * update proves our payload was fine; it proves nothing about ML's POLICY
+   * verdict on the listing. The case is real, not hypothetical: a
+   * `poor_quality_thumbnail` moderation leaves the listing `active`, and an
+   * active listing accepts stock updates — so a send lands on a moderated
+   * listing routinely.
+   *
+   * Clearing `moderacoes` here would erase a live, still-true reason and show a
+   * clean listing that is really still penalised. Hiding a real problem is worse
+   * than the "no explanation" bug the field was added to fix, so this path — which
+   * never called `/moderations` — must leave it exactly as it found it.
+   */
+  it('does NOT clear a live moderation it never asked ML about', async () => {
+    const moderacao = {
+      nome: 'WATERMARK',
+      dataCriacao: null,
+      motivo: "A foto de capa contém marcas d'água.",
+      remedio: 'Corrija suas fotos de capa.',
+      secoes: ['pictures'],
+      evidencias: [],
+    };
+    const h = makeHarness();
+    seedLink(h.db, {
+      estado: 'p',
+      errors: ['ML 400: invalid quantity'],
+      moderacoes: [moderacao],
+    });
+
+    await run(h);
+
+    const link = h.db.docs(LINK_PATH).get('link1');
+    // The stock diagnosis cleared…
+    expect(link).toMatchObject({ errors: [] });
+    // …and the policy reason survived untouched.
+    expect(link).toMatchObject({ moderacoes: [moderacao] });
   });
 });

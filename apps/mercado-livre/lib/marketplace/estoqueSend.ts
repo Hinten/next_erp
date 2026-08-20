@@ -439,6 +439,13 @@ export async function processStockSendTask(
         // A send that lands clears whatever diagnosis the last failure left
         // behind — otherwise the produto tab keeps showing a red alert for a
         // fault that has since healed (#781).
+        //
+        // ⚠️ `clearFalha()` covers `errors`/`causas` and deliberately NOT
+        // `moderacoes` (#1087). A successful stock update says nothing about
+        // ML's policy verdict: a `poor_quality_thumbnail` listing is `active`
+        // and takes stock updates WHILE moderated, so clearing here would erase
+        // a live reason and show a clean listing that is still penalised. This
+        // path never asked `/moderations`, so it leaves the field alone.
         ...clearFalha(),
       },
     );
@@ -643,15 +650,35 @@ async function registrarRejeicaoFinal(
         // `closed` to the member's own link and re-derives the parent from EVERY
         // member — so `estado 'c'` can only land once every observed one is
         // closed, which is `foldFamilyStatus`'s whole contract.
-        await applyMemberStatusAndFold(db, payload.integracaoId, membro.foldTarget, {
-          status: fechado.status,
-          subStatus: fechado.sub_status,
-        });
+        //
+        // ⚠️ `moderacoes` is passed `null`, NOT `[]`, and the difference matters
+        // here more than anywhere. The non-member arm below blanks the field
+        // because the LISTING is gone — no further `items` notification can ever
+        // arrive for it, so a moderation left behind is immortal (#1087). A
+        // MEMBER disappearing says nothing of the sort: the family listing is
+        // still there, still notifiable, and possibly still moderated. Blanking
+        // on one member's 404 would erase a live reason for the siblings.
+        await applyMemberStatusAndFold(
+          db,
+          payload.integracaoId,
+          membro.foldTarget,
+          { status: fechado.status, subStatus: fechado.sub_status },
+          null,
+        );
         return await gravarDiagnostico(db, target, diagnostico, nowMs, 'membro-inexistente');
       }
+      // ⚠️ `moderacoes: []` is spelled out, and this is the SECOND of the two
+      // places allowed to blank the field without having read `/moderations`
+      // (`reverificarAnuncio`'s 404 branch is the first). The listing is GONE:
+      // a moderation on it explains nothing, `/moderations` would 404 for it
+      // too, and — the part that makes it necessary rather than tidy — no
+      // further `items` notification can EVER arrive for a deleted item, so
+      // the self-healing this module relies on everywhere else does not exist
+      // here. Left out, a moderated listing ML deleted keeps its reason
+      // forever, next to `status: 'closed'`.
       await applyItemStatusToLink(db, payload.integracaoId, target, fechado, {
         nowMs,
-        extra: { ...diagnostico },
+        extra: { ...diagnostico, moderacoes: [] },
       });
       return { outcome: 'erro-registrado', reason: 'anuncio-inexistente' };
     }
@@ -679,10 +706,16 @@ async function registrarRejeicaoFinal(
   if (membro != null) {
     // Record what ML said about THIS member on the member's own link, and let the
     // fold decide what that means for the family.
-    await applyMemberStatusAndFold(db, payload.integracaoId, membro.foldTarget, {
-      status: item.status ?? null,
-      subStatus: item.sub_status ?? null,
-    });
+    // `null` moderacoes: this branch verified the member's STATUS, never its
+    // moderation — it has no `/moderations` read to report, and inventing `[]`
+    // would clear a live reason off the family (#1087).
+    await applyMemberStatusAndFold(
+      db,
+      payload.integracaoId,
+      membro.foldTarget,
+      { status: item.status ?? null, subStatus: item.sub_status ?? null },
+      null,
+    );
     if (!sendable) {
       return await gravarDiagnostico(db, target, diagnostico, nowMs, 'anuncio-nao-enviavel');
     }
