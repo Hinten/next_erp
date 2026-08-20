@@ -37,7 +37,10 @@ function textOps(model: EtiquetaGenericaModel): Extract<EtiquetaOp, { kind: 'tex
 
 describe('buildEtiquetaGenericaLayout — legacy element order', () => {
   it('reproduces the legacy label for a plain motoboy pedido', () => {
-    expect(texts(MINIMAL_MODEL)).toEqual([
+    // Fill rules are sized from the font metrics, so collapse their long
+    // underscore runs rather than pinning a count a metrics fix would churn.
+    // The 8+ threshold leaves the fixed `____/____/______` date mask intact.
+    expect(texts(MINIMAL_MODEL).map((t) => t.replace(/_{8,}/g, '___'))).toEqual([
       'Pedido 12345',
       'Motoboy Centro (Motoboy)',
       'Cliente: Maria Aparecida de Souza',
@@ -48,9 +51,38 @@ describe('buildEtiquetaGenericaLayout — legacy element order', () => {
       'Complemento: Apto 74B',
       'Cidade: São Paulo - SP',
       'CEP: 01415-002',
-      'Recebido: _________________________________',
+      // The proof-of-delivery stub — see `receiptBlock`. Legacy had only
+      // `Recebido: ___` + a date, which proves a parcel was handed over but not
+      // to WHOM, and that is the half that gets disputed.
+      'Comprovante de recebimento',
+      'Nome legível: ___',
+      'CPF / RG: ___',
       'Data: ____/____/______',
+      '___',
+      'Assinatura do recebedor',
     ]);
+  });
+
+  it('puts the receipt stub on every label, whatever the tipo', () => {
+    for (const model of [MINIMAL_MODEL, COM_NFE_MODEL, REVERSO_MODEL, RETIRADA_MODEL]) {
+      const drawn = texts(model);
+      expect(drawn).toContain('Comprovante de recebimento');
+      expect(drawn).toContain('Assinatura do recebedor');
+      expect(drawn.some((t) => t.startsWith('Nome legível:'))).toBe(true);
+      expect(drawn.some((t) => t.startsWith('CPF / RG:'))).toBe(true);
+      expect(drawn).toContain('Data: ____/____/______');
+    }
+  });
+
+  it('leaves real room to sign in, not just a caption under a line', () => {
+    const ops = textOps(MINIMAL_MODEL);
+    const signRule = ops.findIndex((op) => /^_+$/.test(op.text));
+    expect(signRule).toBeGreaterThan(0);
+    // The gap between the last filled field and the signature rule is what the
+    // recebedor actually signs in; a rule butted against the line above is
+    // unusable with a pen.
+    const gap = ops[signRule]!.y - ops[signRule - 1]!.y;
+    expect(gap).toBeGreaterThan(8);
   });
 
   it('adds the NF-e number, the Code 128 and the grouped chave when an NF-e is authorized', () => {
@@ -75,10 +107,13 @@ describe('buildEtiquetaGenericaLayout — legacy element order', () => {
     expect(drawn).toContain('Reverso');
     // The customer's address is now the COLLECTION point…
     expect(drawn).toContain('Retirada');
-    // …and the filial sede is the delivery target, replacing the signature lines.
+    // …and the filial sede is the delivery target.
     expect(drawn).toContain('Entrega');
     expect(drawn).toContain('Logradouro: Avenida Industrial, 900');
-    expect(drawn).not.toContain('Data: ____/____/______');
+    // The receipt stub still follows it — the filial signs for the return too.
+    expect(drawn.indexOf('Comprovante de recebimento')).toBeGreaterThan(
+      drawn.indexOf('Logradouro: Avenida Industrial, 900'),
+    );
   });
 
   it('prints no address block at all for retiradaNaLoja, but still says so when it is missing', () => {
@@ -114,8 +149,10 @@ describe('buildEtiquetaGenericaLayout — legacy geometry', () => {
     const rules = buildEtiquetaGenericaLayout(MAXIMAL_MODEL).ops.filter(
       (op): op is Extract<EtiquetaOp, { kind: 'rule' }> => op.kind === 'rule',
     );
-    // Legacy: header, cliente, endereço, recebedor, volumes.
-    expect(rules).toHaveLength(5);
+    // Legacy: header, cliente, endereço, recebedor, volumes — plus one after
+    // the reverse Entrega block, which now precedes the receipt stub instead of
+    // being the last thing on the label.
+    expect(rules).toHaveLength(6);
     for (const rule of rules) {
       expect(rule.x).toBeCloseTo(0.353, 3);
       expect(rule.x + rule.w).toBeCloseTo(LABEL_W_MM - 0.353, 3);
