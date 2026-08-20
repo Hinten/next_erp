@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { FirebaseError } from 'firebase/app';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 
@@ -25,7 +25,7 @@ const ROW: SnapshotRow<Row> = { id: '1', path: 'x/1', data: { name: 'a' } };
  */
 function renderWithAction(action: ActionConfig<Row>, onActionComplete?: () => void) {
   return render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <ActionSidePanel
         actions={[action]}
         selectedRows={[ROW]}
@@ -33,7 +33,7 @@ function renderWithAction(action: ActionConfig<Row>, onActionComplete?: () => vo
         onToggleCollapsed={() => {}}
         onActionComplete={onActionComplete}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

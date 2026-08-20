@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const h = vi.hoisted(() => ({ categorias: vi.fn(), sugerirCategorias: vi.fn() }));
@@ -35,7 +35,7 @@ function show() {
     defaultOptions: { queries: { retryDelay: 0 } },
   });
   render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <QueryClientProvider client={qc}>
         <CategoriaPickerModal
           opened
@@ -46,7 +46,7 @@ function show() {
           onSelect={vi.fn()}
         />
       </QueryClientProvider>
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

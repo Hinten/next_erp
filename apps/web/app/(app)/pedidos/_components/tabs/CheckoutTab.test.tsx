@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
   ESTADO_FRETE,
   MODALIDADE_FRETE,
@@ -87,9 +87,9 @@ vi.mock('@/lib/auth', () => ({
 
 function renderTab(pedidoId?: string) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <CheckoutTab pedidoId={pedidoId} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

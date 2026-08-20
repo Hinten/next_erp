@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import { XmlBlock } from './XmlBlock';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 describe('XmlBlock', () => {
@@ -44,9 +44,9 @@ describe('XmlBlock', () => {
     const callsAfterMount = parseSpy.mock.calls.length;
 
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <XmlBlock label="Retorno SEFAZ" value={value} prettyJson />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.getByText(/"cStat": "104"/)).toBeDefined();
     // useMemo on (value, prettyJson) — the re-render must not parse again.

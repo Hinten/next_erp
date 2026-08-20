@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 // `useUsuarioNomes` pulls in the auth claims, the usuarios handle and the
 // Firestore client at module scope; this suite is about the tri-state RENDER
@@ -16,9 +16,9 @@ import { UsuarioNome, uidFromUsuarioRef } from './UsuarioNome';
 
 function renderNome(outerRef: string | null | undefined, nomes: Record<string, string> = {}) {
   return render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <UsuarioNome outerRef={outerRef} nomes={nomes} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

@@ -460,6 +460,16 @@ export interface RawVarLinkRow {
   userProductId?: unknown;
   varLinkDocId?: unknown;
   produtoMercadoLivreOuterRef?: unknown;
+  /**
+   * The MEMBER's own raw ML status pair (#1142). Projected because the UP branch
+   * of {@link buildSendTasks} gates each member on it: under User Products a
+   * member is its own ML item, and the family fold on the parent link ranks
+   * `closed` LAST on purpose, so the parent can read `active` while one member is
+   * gone. Null means never observed (every Flutter-authored row) and sends
+   * OPTIMISTICALLY — see the rung itself for why.
+   */
+  status?: unknown;
+  sub_status?: unknown;
   [key: string]: unknown;
 }
 
@@ -673,17 +683,23 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
         compEstoques('childKitKeys').as('componentEstoques'),
         pipelines
           .subcollection('variacaoMercadoLivre')
-          // `userProductId` (#706): same deal as on the parent join — projected,
-          // never filtered. `varLinkDocId` rides along for the same reason the
-          // parent join projects `linkDocId`: the send handler stamps a lazily
-          // resolved User Product back onto THIS member's link, and without the
-          // doc id it would have to write it onto the family's parent link
-          // instead — a member speaking for the family, and a stamp the planner
-          // could never read back (so the resolve would repeat every tick).
+          // `status`/`sub_status` ride along for the UP branch's per-MEMBER gate;
+          // `userProductId` (#706) for the multiorigem send unit. Both are the
+          // same deal as on the parent join — projected, never filtered, so
+          // neither adds a query or an index.
+          //
+          // `varLinkDocId` is there for the same reason the parent join projects
+          // `linkDocId`: the send handler stamps a lazily resolved User Product
+          // back onto THIS member's link, and without the doc id it would have to
+          // write it onto the family's parent link instead — a member speaking
+          // for the family, and a stamp the planner could never read back (so the
+          // resolve would repeat every tick).
           .select(
             'itemId',
             'id',
             'produtoMercadoLivreOuterRef',
+            'status',
+            'sub_status',
             'userProductId',
             pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
           )
@@ -1612,6 +1628,53 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
 }
 
 /**
+ * Does this variation link's OWN raw ML status allow a send?
+ *
+ * Both child loops consult it, and that is the point: the legacy branch is where
+ * #707's prune writes `status: 'closed'`, and the User-Products branch is where a
+ * member's own lifecycle diverges from its family's. A gate on only one of them
+ * is a mark nothing reads (the prune) or a member sent to forever (UP).
+ *
+ * Two arms, the same shape the PARENT link's gate above takes:
+ *
+ *  - status ABSENT → send **optimistically** (#780). `status` on a variation link
+ *    arrived with #1142, so every Flutter-authored row is null, and a listing that
+ *    never changes never fires an `items` notification — gating on the whitelist
+ *    would be a silent, permanent stock outage for the inherited catalogue.
+ *  - status PRESENT → the documented whitelist decides, and an undocumented value
+ *    stays loud (status tracking, per Lucas).
+ *
+ * ⚠️ Unlike the parent, a variation link is NOT backfilled by a successful send:
+ * `estoqueSend`'s happy-path writeback is family-scoped and deliberately writes no
+ * member status (writing one there is how a single member's `paused` used to stop
+ * its whole family). So the optimistic arm converges only through an `items`
+ * notification, the #707 prune, or the terminal-4xx fold. That is the safe
+ * direction — it sends — and it is why the rungs that DO write a member status
+ * matter. See the residual note in `apps/mercado-livre/CLAUDE.md`.
+ */
+function membroPodeEnviar(
+  varLink: RawVarLinkRow,
+  ctx: { integracaoId: string; produtoId: string; itemId: string },
+): boolean {
+  if (varLink.status == null) return true; // #780 — legacy-authored, never observed
+  const gate = podeEnviarEstoque(
+    typeof varLink.status === 'string' ? varLink.status : null,
+    Array.isArray(varLink.sub_status)
+      ? varLink.sub_status.filter((s): s is string => typeof s === 'string')
+      : null,
+  );
+  if (gate.desconhecido) {
+    console.warn('[mercado-livre] stock-sync: status de membro fora do conjunto documentado', {
+      integracaoId: ctx.integracaoId,
+      produtoId: ctx.produtoId,
+      itemId: ctx.itemId,
+      status: varLink.status,
+    });
+  }
+  return gate.enviar;
+}
+
+/**
  * Pure assembly: resolve one family row + its sweep-time quantities into
  * send-task drafts, reproducing the legacy PER-LISTING loop
  * (functions.dart:275-282: `allMarketplaceTarget(contaId)` yields EVERY
@@ -1972,6 +2035,26 @@ export function buildSendTasks(
           skips.push({ produtoId: child.produtoId, reason: 'sem-item-id', itemId, linkDocId });
           continue;
         }
+        // ⚠️ THE rung #707 exists for. The prune marks a phantom variation
+        // `status: 'closed'` on its OWN link, and this is what reads it — without
+        // it the stale id goes straight back into `variations[]` on the next
+        // sweep, ML answers the identical `item.variations.invalid`, and the
+        // self-heal heals nothing while paying a second full retry ladder.
+        if (
+          !membroPodeEnviar(varLink, {
+            integracaoId: opts.integracaoId,
+            produtoId: child.produtoId,
+            itemId,
+          })
+        ) {
+          skips.push({
+            produtoId: child.produtoId,
+            reason: 'status-nao-enviavel',
+            itemId,
+            linkDocId,
+          });
+          continue;
+        }
         const quantidade = quantidades.get(child.produtoId) ?? null;
         if (quantidade == null) {
           skips.push({ produtoId: child.produtoId, reason: 'kit-virtual', itemId, linkDocId });
@@ -2039,6 +2122,27 @@ export function buildSendTasks(
         continue;
       }
       if (emittedItemIds.has(varItemId)) continue; // cycle-wide dedup — silent (set above)
+      // The MEMBER's own gate. Under User Products a member is its own ML item
+      // with its own lifecycle, so the family's folded status cannot answer for
+      // it — `foldFamilyStatus` ranks `closed` LAST precisely so one dead member
+      // cannot cancel a live family, which means the parent can read `active`
+      // while this member is gone. Without this rung that member is sent to on
+      // every tick, earns a 4xx, and rides the whole #781 ladder, 96× a day.
+      if (
+        !membroPodeEnviar(varLink, {
+          integracaoId: opts.integracaoId,
+          produtoId: child.produtoId,
+          itemId: varItemId,
+        })
+      ) {
+        skips.push({
+          produtoId: child.produtoId,
+          reason: 'status-nao-enviavel',
+          itemId: varItemId,
+          linkDocId,
+        });
+        continue;
+      }
       const quantidade = quantidades.get(child.produtoId) ?? null;
       if (quantidade == null) {
         skips.push({

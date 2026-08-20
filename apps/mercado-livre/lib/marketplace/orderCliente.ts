@@ -77,8 +77,8 @@
  *    fired on that path. One text for one meaning is worth the divergence; the
  *    cost is that a shipment-sourced endereço hitting a fallback — and every
  *    one WITHOUT a complemento, now `null` instead of "Não informado" — hashes
- *    to a different `makeEnderecoId` than the still-running Flutter writer
- *    produces. `ensureEndereco` creates and never overwrites, so the effect is
+ *    to a different `makeEnderecoId` than the endereços already in the migrated
+ *    corpus. `ensureEndereco` creates and never overwrites, so the effect is
  *    a duplicate document, never a lost one.
  *  - Every field is clamped to `NFE_ENDERECO_LIMITES` at import. `enderecoSchema`
  *    is looser than the NF-e `TEndereco` XSD in both directions, so an
@@ -194,7 +194,7 @@ export function billingInfoToClienteFields(info: MlBillingInfo): ClienteImportFi
     // classification at all, for the NF-e reader to default.
     //
     // The stored value is the canonical IE_SENTINELA token, never ML's raw
-    // phrasing, so it also matches the still-running Flutter reader verbatim.
+    // phrasing, so it matches the tokens already in the migrated corpus verbatim.
     // A real `state_registration` is stored unchanged — the NF-e generator
     // strips it to digits at emission.
     const contribuinte = normalizarIe(billingInfo?.taxes?.taxpayer_type?.description);

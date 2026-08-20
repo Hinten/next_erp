@@ -73,10 +73,11 @@ export const historicoFreteInicialSchema = z
      * marketplace import, scripts) correctly store `null` rather than guess —
      * see `resolveUsuarioOuterRef`.
      *
-     * Adding a key is safe for the still-running Flutter reader: its generated
-     * `fromJson` (`.old/packages/pedido/lib/src/models.g.dart:710-720`) reads
-     * seven named keys and has no `checkKeys` call, so unknown keys are simply
-     * ignored.
+     * Adding a key needed no compatibility argument: nothing outside this repo
+     * reads these docs (root `CLAUDE.md` rule 8 — there is no dual run). The
+     * original note reasoned about the legacy `fromJson`
+     * (`.old/packages/pedido/lib/src/models.g.dart:710-720`) ignoring unknown
+     * keys; true, and irrelevant.
      */
     usuarioHistoricoFreteInicialOuterRef: outerRefSchema
       .nullable()

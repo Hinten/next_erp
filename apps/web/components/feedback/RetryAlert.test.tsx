@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import { RetryAlert, type RetryAlertProps } from './RetryAlert';
 
 function show(props: Partial<RetryAlertProps> = {}) {
   render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <RetryAlert message="Não foi possível carregar." {...props} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

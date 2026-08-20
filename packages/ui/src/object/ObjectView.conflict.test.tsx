@@ -10,7 +10,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
@@ -68,18 +68,17 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 }
 
 /**
- * ⚠️ `env="test"` is load-bearing, not decoration. Without it Mantine's `Modal`
- * keeps its Transition pending forever in jsdom: the Root element renders (and
- * `<body>` even gets `data-scroll-locked`), but it stays EMPTY, so every query
- * for the modal's own content fails while the modal is genuinely open. The repo
- * convention throughout `apps/web`'s component tests.
+ * `MantineTestProvider` renders the `Modal` inline rather than through a portal,
+ * which is what keeps its content inside this tree. It is no longer what stops
+ * the Transition hanging — `vitest.setup.ts` drives every transition duration to
+ * 0 (#1150).
  */
 function Wrap({ children }: { children: React.ReactNode }) {
   return (
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <Notifications />
       {children}
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

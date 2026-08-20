@@ -22,10 +22,11 @@ const PERM_FRETE_DELETE = 1n << 90n;
  * TableView/ObjectView happy and stays byte-compatible (same approach as
  * `integracaoSchema`).
  *
- * Wire conventions (must match the still-running Flutter app):
- *   - `dataCadastro` is a **required** ms-since-epoch int. Flutter declares
- *     it `late final DateTime` with `dateTimeFromJson(int)` — a missing or
- *     null value crashes the Flutter read. Always stamp it on create.
+ * Wire conventions (must match the shapes the migrated corpus stores):
+ *   - `dataCadastro` is a **required** ms-since-epoch int — this schema
+ *     declares it required, so a missing or null value fails the read here.
+ *     (The original reason was that it crashed the Flutter read; that is void,
+ *     rule 8. The rule survives on its own terms.) Always stamp it on create.
  *   - `prazoExtra` is a **non-nullable** Dart `int` (constructor default 0).
  *     Write the number, never null. Extra key on tipos that don't use it is
  *     ignored by `json_serializable`.

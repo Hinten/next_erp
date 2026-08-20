@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { SearchBar } from './SearchBar';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider>{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 describe('SearchBar', () => {

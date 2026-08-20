@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import type { HistoricoModificacao } from '@delfrance/schemas';
@@ -80,7 +80,7 @@ function extra(
 
 function renderFeed(props: { extraEntries?: ListEntry[]; pageSize?: number } = {}) {
   return render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <ModificacaoHistoryFeed
         db={db}
         collection={collection}
@@ -88,7 +88,7 @@ function renderFeed(props: { extraEntries?: ListEntry[]; pageSize?: number } = {
         pageSize={props.pageSize ?? 2}
         extraEntries={props.extraEntries}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

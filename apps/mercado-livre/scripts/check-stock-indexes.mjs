@@ -623,6 +623,8 @@ const childrenJoin = () =>
           'itemId',
           'id',
           'produtoMercadoLivreOuterRef',
+          'status',
+          'sub_status',
           'userProductId',
           pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
         )

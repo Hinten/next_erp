@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import { NA_VALUE_ID, type AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
@@ -42,9 +42,9 @@ function renderField(
 ) {
   const onChange = vi.fn();
   render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <AttributeField attr={a} row={row} onChange={onChange} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
   return onChange;
 }
@@ -74,9 +74,9 @@ function renderControlled(a: MercadoLivreCategoriaAtributo, initial?: AttrRow) {
     );
   }
   render(
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <Harness />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
   return reported;
 }
