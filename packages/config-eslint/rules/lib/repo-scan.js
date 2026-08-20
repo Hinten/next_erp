@@ -65,18 +65,28 @@ const RETRY_BACKOFF_MS = 100;
 /** `JSON.stringify([args, input, tolerateExitCode])` → stdout. */
 const memo = new Map();
 
-/** How many `git` processes were actually spawned. Read by this module's guard. */
-let spawnCount = 0;
+/**
+ * How many times a call MISSED the memo and had to go to git.
+ *
+ * ⚠️ Cache misses, NOT process spawns — and the distinction is load-bearing. A
+ * retried command spawns two or three processes for ONE logical call, so a
+ * per-attempt counter would make this module's own `toBe(1)` assertions go red
+ * exactly when `isTransient()` fires: under the lock contention and process
+ * pressure the retry exists to absorb. That would read as "the memo is broken"
+ * while the memo was fine and the retry was doing its job — a new flake surface
+ * inside a flake fix. Counted once per miss, before the retry loop.
+ */
+let cacheMisses = 0;
 
 /** Test seam. Nothing in a normal run should need this. */
 export function __resetRepoScanCache() {
   memo.clear();
-  spawnCount = 0;
+  cacheMisses = 0;
 }
 
 /** Test seam: proves the memo is doing what the whole module exists to do. */
-export function __repoScanSpawnCount() {
-  return spawnCount;
+export function __repoScanMissCount() {
+  return cacheMisses;
 }
 
 /**
@@ -138,9 +148,15 @@ export function runGit(args, options = {}) {
   const cached = memo.get(key);
   if (cached !== undefined) return cached;
 
+  // ⚠️ HERE, not inside the loop and not after the call. Inside the loop it
+  // counts attempts (see `cacheMisses`); after the call it would skip the
+  // `tolerateExitCode` path entirely — a no-match `git grep` THROWS and returns
+  // from the catch below, so a post-call increment would report zero for a scan
+  // that really did run.
+  cacheMisses += 1;
+
   for (let attempt = 1; ; attempt += 1) {
     try {
-      spawnCount += 1;
       const stdout = execFileSync('git', args, {
         cwd: REPO_ROOT,
         encoding: 'utf8',

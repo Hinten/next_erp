@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   REPO_ROOT,
-  __repoScanSpawnCount,
+  __repoScanMissCount,
   __resetRepoScanCache,
   gitCheckAttr,
   gitGrep,
@@ -19,10 +19,15 @@ import {
  * was its own `git` process, and the resulting cost is what made the workspace
  * suite flake on Vitest's default 5000ms timeout (see `repo-scan.js`).
  *
- * ⚠️ The memoization assertions below count SPAWNS, not results. Asserting that
- * two calls return the same array would pass just as well with the memo deleted
- * — the repo does not change between them — so it would guard nothing. The
- * spawn counter is the only thing that can tell the two apart.
+ * ⚠️ The memoization assertions below count CACHE MISSES, not results. Asserting
+ * that two calls return the same array would pass just as well with the memo
+ * deleted — the repo does not change between them — so it would guard nothing.
+ * The miss counter is the only thing that can tell the two apart.
+ *
+ * Misses rather than process spawns on purpose: a retried command spawns two or
+ * three processes for one logical call, and counting attempts would red these
+ * assertions under exactly the contention the retry absorbs. Proven in
+ * `repo-scan.retry.test.js`, which is where the retry itself is covered.
  */
 
 /** Narrow, cheap scope: this directory only. */
@@ -49,10 +54,10 @@ describe('the git spawn is memoized', () => {
   it('runs git ONCE for N identical calls', () => {
     __resetRepoScanCache();
     const first = gitGrep({ patterns: 'export function', pathspecs: SELF });
-    expect(__repoScanSpawnCount()).toBe(1);
+    expect(__repoScanMissCount()).toBe(1);
 
     for (let i = 0; i < 5; i += 1) gitGrep({ patterns: 'export function', pathspecs: SELF });
-    expect(__repoScanSpawnCount()).toBe(1);
+    expect(__repoScanMissCount()).toBe(1);
 
     // ...and the memo is not just handing back an empty answer.
     expect(first).toContain('packages/config-eslint/rules/lib/required-index.js');
@@ -62,13 +67,13 @@ describe('the git spawn is memoized', () => {
     __resetRepoScanCache();
     gitGrep({ patterns: 'export function', pathspecs: SELF });
     gitGrep({ patterns: 'deriveRequiredIndex', pathspecs: SELF });
-    expect(__repoScanSpawnCount()).toBe(2);
+    expect(__repoScanMissCount()).toBe(2);
   });
 
   it('ORs several patterns in ONE spawn', () => {
     __resetRepoScanCache();
     const both = gitGrep({ patterns: ['collectionGroupOf', 'MAX_ATTEMPTS'], pathspecs: SELF });
-    expect(__repoScanSpawnCount()).toBe(1);
+    expect(__repoScanMissCount()).toBe(1);
     expect(both).toContain('packages/config-eslint/rules/lib/required-index.js');
     expect(both).toContain('packages/config-eslint/rules/lib/repo-scan.js');
   });
@@ -115,7 +120,7 @@ describe('gitCheckAttr', () => {
   it('answers an empty path list without spawning git', () => {
     __resetRepoScanCache();
     expect(gitCheckAttr('eol', [])).toEqual({});
-    expect(__repoScanSpawnCount()).toBe(0);
+    expect(__repoScanMissCount()).toBe(0);
   });
 
   it('reads the attribute .gitattributes pins, and reports unset paths', () => {
