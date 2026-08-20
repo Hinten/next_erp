@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Arquivo } from '@delfrance/schemas';
 import { FILETYPE } from '@delfrance/schemas';
 import type { Mensagem } from '@delfrance/schemas';
@@ -14,7 +14,7 @@ vi.mock('../../_hooks/useArquivo', () => ({ useArquivo: useArquivoMock }));
 import { MensagemMedia, hasMedia } from './MensagemMedia';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 function arq(partial: Partial<Arquivo>): Arquivo {

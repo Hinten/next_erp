@@ -86,8 +86,9 @@ const WEEKDAYS: ReadonlyArray<{ key: keyof PeriodoWhatsapp; label: string }> = [
  *
  * The abertura/fechamento wire values are read/written ONLY through the
  * legacy-exact codec (`msToHHMM`/`hhmmToMs` → `encodeHorarioMs`/`decodeHorarioMs`
- * in `@delfrance/schemas`) so they stay byte-compatible with the still-running
- * Flutter app — see that codec's doc comment for the year-0/local anchor.
+ * in `@delfrance/schemas`) so they stay byte-compatible with the values the
+ * migrated corpus already stores — see that codec's doc comment for the
+ * year-0/local anchor.
  */
 function HorarioFuncionamentoInput({ value, onChange, disabled, label, hint }: FieldRenderProps) {
   const periods = (value as PeriodoWhatsapp[] | null) ?? [];

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
   ORIGEM_CONVERSA,
   TIPO_MENSAGEM,
@@ -93,7 +93,7 @@ function conversa(partial: Partial<Conversa> = {}): Conversa {
 }
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 afterEach(() => {
@@ -150,9 +150,9 @@ describe('ConversaTile', () => {
       loading: false,
     };
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <ConversaTile id="c1" conversa={conversa()} active={false} href="/chat/c1" meuUid="op1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.queryByLabelText('Enviado')).toBeNull();
     expect(screen.queryByLabelText('Erro no envio')).toBeNull();

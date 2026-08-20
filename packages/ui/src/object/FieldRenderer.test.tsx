@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import type { FieldConfig } from '../schema/types';
@@ -21,7 +21,7 @@ function Harness({
   const form = useForm<Record<string, unknown>>({ defaultValues: values });
   const descriptors = extractFieldsFromSchema(schema);
   return (
-    <MantineProvider>
+    <MantineTestProvider>
       <form onSubmit={form.handleSubmit((v) => onSubmit?.(v))}>
         {descriptors.map((d) => (
           <FieldRenderer
@@ -33,7 +33,7 @@ function Harness({
         ))}
         <button type="submit">submit</button>
       </form>
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

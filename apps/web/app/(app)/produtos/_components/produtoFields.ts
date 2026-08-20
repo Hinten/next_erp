@@ -1,10 +1,11 @@
+import { z } from 'zod';
 import type { FieldConfig } from '@delfrance/ui';
-import type { Produto } from '@delfrance/schemas';
+import { type Produto, produtoPageBaseSchema } from '@delfrance/schemas';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import { skuRenderInput } from './SkuField';
-import { pesoRenderInput } from './PesoField';
+import { dimensaoRenderInput, pesoRenderInput } from './PesoField';
 
 /**
  * Shared Produto ObjectView configuration, used by both the create (`novo`)
@@ -17,6 +18,12 @@ import { pesoRenderInput } from './PesoField';
  * `PRODUTO_EXCLUDED_FIELDS` until then (the migrated corpus carries them; this
  * app just does not edit them yet).
  */
+
+/**
+ * The Mercado Livre tab, named once so the section list, the schema anchor and
+ * the page's `persistentSections` can never drift apart.
+ */
+export const SECTION_MERCADO_LIVRE = 'Mercado Livre';
 
 /** Tab order for the Produto ObjectView — Variações before the media tabs. */
 export const PRODUTO_SECTIONS: string[] = [
@@ -32,7 +39,43 @@ export const PRODUTO_SECTIONS: string[] = [
   'Fotos',
   'Vídeos',
   'Anexos',
+  SECTION_MERCADO_LIVRE,
 ];
+
+/**
+ * What both produto pages hand to `<ObjectView schema={…}>`: the produto page
+ * model plus the `mercadoLivre` UI anchor — a key whose only job is to give the
+ * Mercado Livre tab a field descriptor (the tab is self-contained; nothing is
+ * read from or written to the form value). Shared by both pages so the tab
+ * exists in create mode too, where it renders a "salve o produto" message
+ * instead of the editor.
+ *
+ * ⚠️ NOT `produtoPageSchema` — `@delfrance/schemas` already exports that name
+ * for a DIFFERENT schema (`produtoPageBaseSchema.superRefine(refineProdutoPage)`:
+ * the refined aggregate, with no `mercadoLivre` anchor), and both produto pages
+ * import from both modules. Either is a plausible `schema=` value, so a wrong
+ * auto-import would be silent: the refined one drops the ML tab's field
+ * descriptor and the tab renders empty; this one drops the cross-field rules.
+ */
+export const produtoObjectViewSchema = produtoPageBaseSchema.extend({
+  mercadoLivre: z.null().default(null),
+});
+
+/**
+ * Sections whose content must survive a tab switch fully mounted — passed to
+ * `ObjectView.persistentSections`. Mercado Livre is the one: its listing forms
+ * hold unsaved edits, in-flight requests and the flush closure the edit page
+ * calls in `onAfterSave`, all of which the default `<Activity mode="hidden">`
+ * suspension tears down and re-runs (see the docblock on `MercadoLivreTab`).
+ *
+ * ⚠️ Lives here, beside `SECTION_MERCADO_LIVRE`, because nothing enforces the
+ * pairing: a page that renders `MercadoLivreTab` in a tabset WITHOUT this still
+ * looks right — the lazy gate keeps working through `useSectionActive()` —
+ * while silently restoring all three bugs (discarded edits, a "Salvar
+ * alterações" from another tab that skips the listing writes, and a leave-guard
+ * that reports nothing pending). One import beats one omission.
+ */
+export const PRODUTO_PERSISTENT_SECTIONS: string[] = [SECTION_MERCADO_LIVRE];
 
 /**
  * Per-field labels + section (tab) assignment. Fields not listed here fall to
@@ -70,9 +113,22 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
     section: 'Dimensões e peso',
     renderInput: pesoRenderInput,
   },
-  alturaCm: { label: 'Altura (cm)', section: 'Dimensões e peso' },
-  larguraCm: { label: 'Largura (cm)', section: 'Dimensões e peso' },
-  profundidadeCm: { label: 'Profundidade (cm)', section: 'Dimensões e peso' },
+  // ...and so are the three box axes, since #1152 rolls them up too.
+  alturaCm: {
+    label: 'Altura (cm)',
+    section: 'Dimensões e peso',
+    renderInput: dimensaoRenderInput,
+  },
+  larguraCm: {
+    label: 'Largura (cm)',
+    section: 'Dimensões e peso',
+    renderInput: dimensaoRenderInput,
+  },
+  profundidadeCm: {
+    label: 'Profundidade (cm)',
+    section: 'Dimensões e peso',
+    renderInput: dimensaoRenderInput,
+  },
   crossdocking: {
     label: 'Crossdocking',
     hint: 'Prazo extra de postagem em dias',
@@ -128,7 +184,14 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
  * page's `transactionWrites`. `id` is the produto id, present only for the
  * cross-document self-reference check; `impostos` lands with its own tab.
  */
-export const PRODUTO_TRANSIENT_FIELDS: string[] = ['id', 'extraData', 'estoques', 'impostos'];
+export const PRODUTO_TRANSIENT_FIELDS: string[] = [
+  'id',
+  'extraData',
+  'estoques',
+  'impostos',
+  // Pure UI anchor for the Mercado Livre tab — see `produtoObjectViewSchema`.
+  'mercadoLivre',
+];
 
 /**
  * Fields hidden from the Produto ObjectView for now. Kit components and

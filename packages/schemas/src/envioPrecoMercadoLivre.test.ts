@@ -31,6 +31,11 @@ describe('envioPrecoMercadoLivreSchema', () => {
       baixarPreco: false,
       afterAnchorId: null,
       planejamentoConcluido: false,
+      afterLinkPath: null,
+      reconciliacaoConcluida: false,
+      reconciliacaoPaginas: 0,
+      naoEnumerados: 0,
+      linksReconciliados: 0,
       fila: [],
       planejados: 0,
       enviados: 0,
@@ -43,6 +48,50 @@ describe('envioPrecoMercadoLivreSchema', () => {
       finishedAt: null,
       erro: null,
     });
+  });
+
+  it('#1072: a job doc written BEFORE the reconciliation phase existed still parses', () => {
+    // The resume-compat case. A `running` job checkpointed by the previous
+    // deploy carries none of these keys; the defaults must fill them so the
+    // phase simply starts, rather than the parse throwing mid-dispatch.
+    const parsed = envioPrecoMercadoLivreSchema.parse({
+      integracaoId: 'INT1',
+      status: 'running',
+      afterAnchorId: 'PROD40',
+      planejamentoConcluido: true,
+      planejados: 12,
+      enviados: 12,
+      startedAt: 1718003600000,
+      updatedAt: 1718003600000,
+    });
+    expect(parsed).toMatchObject({
+      afterLinkPath: null,
+      reconciliacaoConcluida: false,
+      reconciliacaoPaginas: 0,
+      naoEnumerados: 0,
+      linksReconciliados: 0,
+    });
+  });
+
+  it('#1072: naoEnumerados is independent of pulados', () => {
+    // They answer different questions — "looked at, then not sent" vs "never
+    // looked at" — and only the second one makes `completed` mean what it says.
+    const parsed = envioPrecoMercadoLivreSchema.parse({
+      integracaoId: 'INT1',
+      status: 'completed',
+      pulados: 3,
+      naoEnumerados: 41,
+      linksReconciliados: 900,
+      afterLinkPath: 'produtos/P1/produtoMercadoLivre/link1',
+      reconciliacaoConcluida: true,
+      startedAt: 1718003600000,
+      updatedAt: 1718003600000,
+    });
+    expect(parsed.pulados).toBe(3);
+    expect(parsed.naoEnumerados).toBe(41);
+    expect(parsed.linksReconciliados).toBe(900);
+    expect(parsed.afterLinkPath).toBe('produtos/P1/produtoMercadoLivre/link1');
+    expect(parsed.reconciliacaoConcluida).toBe(true);
   });
 
   it('parses a full in-progress job (mid-fila, mid-plan)', () => {

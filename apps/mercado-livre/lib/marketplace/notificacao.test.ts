@@ -252,7 +252,8 @@ function seedConta(db: FakeDb, id: string, userId: number, ativo = true): void {
  * tables, and `notificacao.ts` says in as many words not to attach a handler.
  * Every other inert-looking topic is a handler waiting to happen:
  * `questions`/`messages` are `park` today and become `handled` in #532, and
- * `stock-location` is one stock feature away from the same fate. Pointing these
+ * `stock-location`/`stock-locations` are one stock feature away from the same
+ * fate — BOTH spellings, so neither is a candidate either. Pointing these
  * fixtures at a topic that later grows a branch is how ~20 unrelated tests
  * suddenly assert the wrong thing (which is exactly what this move repaired).
  *
@@ -528,6 +529,41 @@ describe('TOPIC_DISPOSITION', () => {
     // else entirely, silently. See the INERT_TOPIC docblock.
     expect(isKnownTopic(INERT_TOPIC)).toBe(true);
     expect(TOPIC_DISPOSITION[INERT_TOPIC]).toBe('ack');
+  });
+
+  it('recognises BOTH stock-location spellings as ack (#1129)', () => {
+    // ML's own Notificações reference disagrees with itself: the section is
+    // headed "Stock-Locations" and its example payload says
+    // `"topic": "stock-location"`. Live traffic (#1087, 2026-08-19) sent the
+    // PLURAL, which the table did not know — so every stock change on a
+    // User-Products listing parked a document. Neither key is a typo; do not
+    // delete one while "tidying".
+    for (const topic of ['stock-location', 'stock-locations'] as const) {
+      expect(isKnownTopic(topic), `'${topic}' must be a known topic`).toBe(true);
+      expect(TOPIC_DISPOSITION[topic], `'${topic}' must be ack`).toBe('ack');
+      // `ack`, never `ignore`: the delivery is recognised work-we-have-none-for
+      // and must report `done`, not `dropped/ignorado` (#813).
+      expect(isIgnoredTopic(topic)).toBe(false);
+      expect(shouldEnqueueTopic(topic)).toBe(true);
+    }
+  });
+
+  it('a plural stock-locations delivery persists NOTHING — the #1129 cost', async () => {
+    // The assertion that actually pins the bug. Before the plural key existed
+    // this fell through to `handler-pendente` → park, writing one PERMANENT
+    // document per delivery under ML's per-delivery `_id`. `outcome` alone is
+    // not enough: the document count is the whole issue.
+    for (const topic of ['stock-location', 'stock-locations'] as const) {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ topic, resource: '/user-products/MLBU4855642248/stock' }),
+        0,
+      );
+      expect(r, `topic '${topic}'`).toMatchObject({ outcome: 'done', integracaoId: 'conta-A' });
+      expect(db.docs(NOTIF).size, `topic '${topic}' parked a document`).toBe(0);
+    }
   });
 });
 

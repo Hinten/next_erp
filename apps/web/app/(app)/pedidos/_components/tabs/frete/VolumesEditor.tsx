@@ -19,7 +19,7 @@ import type { VolumeFormState } from '../../types';
 import type { PedidoFormHandle } from './fields';
 import { fretePath } from './fields';
 import { pesoPedido, volumePadrao } from './pesoPedido';
-import { dimensoesPedido, type EstimativaDimensoes } from './dimensoesPedido';
+import { estimarDimensoes, type EstimativaDimensoes } from '@delfrance/schemas';
 import { notificarAvisoDimensoes } from './notificarAviso';
 import { loadProdutoPesoMap } from './produtoPeso';
 
@@ -61,7 +61,7 @@ export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorP
         itens.map((i) => i.produtoUid),
       );
       peso = pesoPedido(itens, medidas);
-      estimativa = dimensoesPedido(itens, medidas);
+      estimativa = estimarDimensoes(itens, medidas);
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       notifications.show({

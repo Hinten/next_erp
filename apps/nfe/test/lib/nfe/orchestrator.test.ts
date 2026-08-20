@@ -42,6 +42,7 @@ import {
   AMBIENTE_NFE,
   ESTADO_NFE,
   FORMA_PAGAMENTO,
+  freteDoPedidoSchema,
   pagamentoSchema,
   type NFeConfig,
   type Pagamento,
@@ -2672,6 +2673,26 @@ describe('buildCobrFromPagamentos', () => {
     expect(out?.dup?.[0]?.vDup).toBe('120.00');
     expect(out?.fat?.vOrig).toBe('120.00');
   });
+
+  it('a frete stored WITHOUT modalidade does NOT trigger the override (#1090)', () => {
+    // Same trap as the vPag override below: the CIF check is what keeps a
+    // third-party freight out of <cobr>, and an absent modalidade used to read
+    // back as CIF. Parsed through the real schema on purpose — the value under
+    // test is the DEFAULT, so a `as never` cast would test nothing.
+    const frete = freteDoPedidoSchema.parse({ estado: 'iniciado', valorCobrado: 20 });
+    const out = __internal.buildCobrFromPagamentos(
+      [
+        pagamento({
+          valor: 100,
+          forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+          duplicata: true,
+        }),
+      ],
+      { vNF: 120, frete },
+    );
+    expect(out?.dup?.[0]?.vDup).toBe('100.00');
+    expect(out?.fat?.vOrig).toBe('100.00');
+  });
 });
 
 describe('buildInfAdic', () => {
@@ -2793,6 +2814,20 @@ describe('buildPaymentsFromPagamentos — frete-emitente single-payment override
     const out = __internal.buildPaymentsFromPagamentos(
       [pagamento({ valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.pix })],
       { vNF: 149.9, frete: { modalidade: '1', valorCobrado: 49.9 } as never },
+    );
+    expect(out[0]?.vPag).toBe(100);
+  });
+
+  it('a frete stored WITHOUT modalidade → NO override (#1090)', () => {
+    // The default this exercises is `freteDoPedidoSchema`'s, which is what
+    // `bundle.ts:parseFreteFromPedido` hands the orchestrator. It used to be
+    // '0' (CIF), so a block missing the key silently made the single payment
+    // absorb a freight the store never paid. Do not replace the parse with a
+    // cast — the cast is what hides the regression.
+    const frete = freteDoPedidoSchema.parse({ estado: 'iniciado', valorCobrado: 49.9 });
+    const out = __internal.buildPaymentsFromPagamentos(
+      [pagamento({ valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.pix })],
+      { vNF: 149.9, frete },
     );
     expect(out[0]?.vPag).toBe(100);
   });

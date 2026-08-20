@@ -36,7 +36,8 @@
  *    picks the newest valid token by query, and its three reads are load-bearing
  *    precisely *because* they are fresh: the re-check honours a refresh that
  *    landed mid-flight, and the loser fallback exists to observe a write another
- *    process (or the still-running Flutter app) made microseconds earlier. ML
+ *    process — a concurrent function instance, a Cloud Tasks retry — made
+ *    microseconds earlier. ML
  *    refresh tokens are single-use and rotate, so a cached read resurrects a
  *    rotated-out token and turns a survivable race into `invalid_grant`.
  *

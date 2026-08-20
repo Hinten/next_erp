@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import type { FieldDescriptor } from '../schema/types';
 import { renderCell } from './cell-renderers';
 import { z } from 'zod';
@@ -10,9 +10,9 @@ import { z } from 'zod';
 // container which would otherwise pollute `textContent` assertions.
 function wrap(node: React.ReactNode) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <div data-testid="cell">{node}</div>
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

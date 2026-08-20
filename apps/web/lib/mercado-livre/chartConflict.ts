@@ -2,10 +2,10 @@
  * The one lost-update guard the size-chart editor can actually implement.
  *
  * Guias live in `tabMedi.tabelasDeMedidasMercadoLivre[<conta>].tabelas`, an
- * ARRAY, and a Firestore `merge()` replaces an array wholesale. Three writers
- * touch that key — this editor, the sync backend, and the still-running Flutter
- * app — so writing a list the editor loaded minutes ago would silently drop
- * whatever landed in between.
+ * ARRAY, and a Firestore `merge()` replaces an array wholesale. Two writers
+ * touch that key — this editor (which two operators can open at once) and the
+ * sync backend — so writing a list the editor loaded minutes ago would silently
+ * drop whatever landed in between.
  *
  * The browser SDK has no `lastUpdateTime` precondition (root `CLAUDE.md` rule 7
  * tier 1 is unreachable here) and the merge is not a transaction, so the only

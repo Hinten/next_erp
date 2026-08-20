@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import { ESTADO_NFE } from '@delfrance/schemas';
 import type { NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
@@ -18,7 +18,13 @@ const { snapState, queryState, dereferenceMock } = vi.hoisted(() => ({
   },
   queryState: {
     current: {
-      data: null as { nome?: string | null; cpf_cnpj?: string | null; tipo?: string | null } | null,
+      // Shared by every `useQuery` call site the mocked hook stands in for:
+      // `ClienteCell`'s cliente doc (an object) and the `intFreteTipo` lookup
+      // `FreteCell`/`EtiquetaRowAction` both make (a bare tipo string).
+      data: null as
+        | { nome?: string | null; cpf_cnpj?: string | null; tipo?: string | null }
+        | string
+        | null,
       isLoading: false,
     },
   },
@@ -80,7 +86,7 @@ vi.mock('next/navigation', () => ({
 import { ClienteCell, FreteCell, ImpCell, NFCell, VlrCell } from './PedidoCells';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 /** Build a fully-typed NFe doc with the given estado + overrides. */
@@ -178,9 +184,9 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       setSnap({ data: [rowFromNFe(makeNFe(ESTADO_NFE.aprovada, { chave: '3'.repeat(44) }))] });
     });
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <NFCell pedidoId="p1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.getByText('Aprovada')).toBeTruthy();
     expect(screen.queryByText('Gerado')).toBeNull();
@@ -191,9 +197,9 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       });
     });
     rerender(
-      <MantineProvider env="test">
+      <MantineTestProvider>
         <NFCell pedidoId="p1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(screen.getByText('Rejeitada')).toBeTruthy();
   });
@@ -441,6 +447,11 @@ describe('ClienteCell — static cached read', () => {
 });
 
 describe('FreteCell — passthrough', () => {
+  afterEach(() => {
+    dereferenceMock.mockReset();
+    queryState.current = { data: null, isLoading: false };
+  });
+
   it('renders DASH when freteInicial is absent', () => {
     wrap(<FreteCell pedido={{ freteInicial: null } as unknown as Pedido} pedidoId="p1" />);
     expect(screen.getByText('—')).toBeTruthy();
@@ -454,6 +465,55 @@ describe('FreteCell — passthrough', () => {
       />,
     );
     expect(screen.getByText('Entregue')).toBeTruthy();
+  });
+
+  it('opens the etiqueta HoverCard for a generic-label tipo, even with no bought label/quote', () => {
+    // motoboy/outros have no printLabelId/externalOptionId/externalOptionIntegracao
+    // to key off — only the resolved `int_frete` tipo says the on-demand PDF
+    // is available (#376).
+    dereferenceMock.mockReturnValue({ id: 'mot-1', path: 'int_frete/mot-1' });
+    queryState.current = { data: 'motoboy', isLoading: false };
+    const { container } = wrap(
+      <FreteCell
+        pedido={
+          {
+            freteInicial: {
+              estado: 'iniciado',
+              integracaoFreteOuterRef: { path: 'int_frete/mot-1' },
+              printLabelId: null,
+              externalOptionId: null,
+              externalOptionIntegracao: null,
+            },
+          } as unknown as Pedido
+        }
+        pedidoId="p1"
+      />,
+    );
+    // Mantine encodes the variant on a data attribute on the Badge root —
+    // present only on the HoverCard branch, absent from the plain-text one.
+    expect(container.querySelector('[data-variant]')).toBeTruthy();
+  });
+
+  it('keeps the lightweight tooltip for a non-generic tipo with nothing to act on yet', () => {
+    dereferenceMock.mockReturnValue({ id: 'ret-1', path: 'int_frete/ret-1' });
+    queryState.current = { data: 'retiradaNaLoja', isLoading: false };
+    const { container } = wrap(
+      <FreteCell
+        pedido={
+          {
+            freteInicial: {
+              estado: 'iniciado',
+              integracaoFreteOuterRef: { path: 'int_frete/ret-1' },
+              printLabelId: null,
+              externalOptionId: null,
+              externalOptionIntegracao: null,
+            },
+          } as unknown as Pedido
+        }
+        pedidoId="p1"
+      />,
+    );
+    expect(container.querySelector('[data-variant]')).toBeNull();
   });
 });
 

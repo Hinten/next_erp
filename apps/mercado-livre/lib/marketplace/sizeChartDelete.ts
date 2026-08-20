@@ -16,9 +16,10 @@
  *    `ACTIVE` means it is still linked and the operator has to unlink first.
  *
  * ⚠️ Both rebuild the chart array from a FRESH read of the doc, keyed by ML
- * chart id — never from anything the caller passed. The still-running Flutter
- * app writes the same map, and a full-array merge built from stale client state
- * would silently drop whatever it added (root CLAUDE.md rule 7).
+ * chart id — never from anything the caller passed. The sync backend and a
+ * second operator's editor write the same map, and a full-array merge built from
+ * stale client state would silently drop whatever they added (root CLAUDE.md
+ * rule 7).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {

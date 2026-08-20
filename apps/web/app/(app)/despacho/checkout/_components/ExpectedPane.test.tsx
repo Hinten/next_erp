@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
 import type { EngineProduto, ExpectedItem } from '@delfrance/schemas';
@@ -81,9 +81,9 @@ describe('ExpectedPane', () => {
     ]);
     return render(
       <QueryClientProvider client={new QueryClient()}>
-        <MantineProvider>
+        <MantineTestProvider>
           <ExpectedPane db={{} as Firestore} expected={expected} produtos={produtos} />
-        </MantineProvider>
+        </MantineTestProvider>
       </QueryClientProvider>,
     );
   }
