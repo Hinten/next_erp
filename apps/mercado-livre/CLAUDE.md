@@ -146,6 +146,39 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   the seller's items, and neither is undoable from here. Neither action writes to the
   thread — ML changes the question's `status` and the importer is the one writer of
   that state.
+- `lib/marketplace/claim{Import,Mapping,Ids,Attachments,Actionability,Cliente}.ts` —
+  **Step 14 + #768**: one ML claim → an Incidente on the pedido, plus a chat Conversa
+  and its Mensagens, at the BYTE-EXACT legacy doc ids so re-processing a claim the
+  Flutter app already imported UPDATES those docs instead of forking them.
+  ⚠️ **The Incidente and the Conversa are gated DIFFERENTLY, and that asymmetry is
+  the design.** The incidente is pedido business history — refunds, returns, the
+  mediation outcome — and stays valuable long after the claim closes, so it is
+  written for EVERY claim. The conversa is a surface an attendant is expected to
+  answer in, so it is created (and kept answerable) only while
+  `players[role=respondent].available_actions` still holds a `send_message_to_*` —
+  `claimActionability.ts`. A thread nobody can reply on is #817 with extra steps.
+  ⚠️ It closes, it never deletes: a claim that stops being answerable keeps every
+  message it ever had and gains `respostaBloqueada` + `atendido`. That close runs
+  OUTSIDE the `ultima_modificacao` freshness gate, because ML does not reliably bump
+  `last_updated` when the actions drain away — inside the gate a dead thread would
+  keep an open composer. `estadoConversa` is operator triage state and is never
+  touched by any of it.
+  ⚠️ **Identity is a CLIENTE** (#768). `claimUsuario.ts` — which minted a sem-auth
+  `usuarios` doc per ML buyer — is deleted; `usuarios` is now only for people who can
+  log in. The pedido already names the cliente, so `claimCliente.ts` does exactly one
+  thing: stamp `idMercadoLivre` when absent, so the cliente a pre-sale QUESTION
+  created and the cliente the ORDER created converge instead of forking. It is
+  fill-only-when-absent — a disagreeing stored id is logged and left for a human.
+  ⚠️ `estadoEnvio` on a claim mensagem comes from `sender_role`, NOT a constant.
+  Legacy stamped `enviado` on every message including the buyer's, and it only
+  rendered right because the synthetic usuario satisfied `MensagemBubble`'s second
+  test (`user_id === customerUid`). Nothing writes `user_id` now, so direction rests
+  on `estadoEnvio` alone. A `rejected`/`moderated` message of OURS lands as `erro` —
+  ML never delivered it.
+  ⚠️ The mensagem doc id stays the legacy five-field digest even though ML now
+  publishes a per-message `hash`. Re-keying would rewrite every already-imported
+  message under a new id — a thread-wide duplication of history — to fix a collision
+  case ML itself flags with `repeated`. The field is modelled, not used.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -233,7 +266,7 @@ matters:
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
 | `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9) |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
-| `claims` | `handled` | claim → incidente/conversa/mensagens import (Step 14) |
+| `claims` | `handled` | incidente ALWAYS; conversa/mensagens only while answerable (Step 14 / #768) |
 | `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
 | `messages` | `handled` | post-sale pack thread → chat conversa/mensagem import (#532) |
 | `items_prices` | `ack` | **permanent no-op** (#803) — persists nothing |
