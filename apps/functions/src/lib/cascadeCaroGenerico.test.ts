@@ -10,6 +10,7 @@ vi.mock('@delfrance/data/admin', () => ({
 import {
   BUDGET_MS_PADRAO,
   TIMEOUT_SECONDS_PADRAO,
+  assertBudgetFitsTimeout,
   CascadeTruncatedError,
   cascadeCaroGenerico,
   defineCascadeCaroGenerico,
@@ -95,6 +96,24 @@ describe('defineCascadeCaroGenerico', () => {
     // The BulkWriter flush happens after the deadline stops the walk; a budget
     // that filled the timeout would throw away the progress it just made.
     expect(BUDGET_MS_PADRAO).toBeLessThan(TIMEOUT_SECONDS_PADRAO * 1000);
+  });
+
+  it('rejects a caller whose own budget/timeout pair does not fit', () => {
+    // The constants above are only the DEFAULT pair; the guard is what covers a
+    // future call site that passes its own. Equal is a failure too — the budget
+    // has to leave room for the flush, not merely match the timeout.
+    expect(() => assertBudgetFitsTimeout('chat', 540_000, 540)).toThrow(/must be\s+less than/);
+    expect(() => assertBudgetFitsTimeout('chat', 600_000, 540)).toThrow(/budgetMs/);
+    expect(() => assertBudgetFitsTimeout('chat', 400_000, 540)).not.toThrow();
+  });
+
+  it('runs the guard when a cascade is defined with both knobs', () => {
+    // Reaches the guard through the real entry point, so the wiring is covered
+    // and not just the helper: Firebase evaluates this at codebase analysis, so
+    // a bad pair must break the deploy rather than ship.
+    expect(() =>
+      defineCascadeCaroGenerico(META, { budgetMs: 600_000, timeoutSeconds: 540 }),
+    ).toThrow(/must be\s+less than/);
   });
 });
 

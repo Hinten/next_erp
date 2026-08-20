@@ -128,8 +128,36 @@ export interface CascadeCaroGenericoOptions {
    * omitting it means the walk has no deadline and cannot report `truncated`.
    */
   budgetMs?: number;
-  /** `timeoutSeconds` for the generated trigger. Must exceed `budgetMs`. */
+  /**
+   * `timeoutSeconds` for the generated trigger. Must exceed `budgetMs` — the
+   * walk stops at the budget and then still has to flush the BulkWriter, so a
+   * timeout at or below it kills the invocation before the progress commits.
+   * Enforced by {@link assertBudgetFitsTimeout} at definition time.
+   */
   timeoutSeconds?: number;
+}
+
+/**
+ * Fail at MODULE LOAD if a cascade's budget cannot fit inside its timeout.
+ *
+ * Deliberately a throw rather than a lint rule or a clamp: both values are
+ * literals at every call site, so the mistake is fully decidable here, and the
+ * failure mode it prevents is silent — the runtime would kill the invocation
+ * mid-flush and the remainder would look like an ordinary truncation. Firebase
+ * evaluates this during codebase analysis, so a bad pair breaks `deploy` and
+ * the functions emulator rather than shipping.
+ */
+export function assertBudgetFitsTimeout(
+  collectionPath: string,
+  budgetMs: number,
+  timeoutSeconds: number,
+): void {
+  if (budgetMs < timeoutSeconds * 1000) return;
+  throw new Error(
+    `defineCascadeCaroGenerico(${collectionPath}): budgetMs (${budgetMs}) must be ` +
+      `less than timeoutSeconds (${timeoutSeconds}) in ms (${timeoutSeconds * 1000}) — ` +
+      'the walk stops at the budget and still has to flush the BulkWriter.',
+  );
 }
 
 /**
@@ -199,6 +227,9 @@ export function defineCascadeCaroGenerico(
   options: CascadeCaroGenericoOptions = {},
 ) {
   const { budgetMs, timeoutSeconds } = options;
+  if (budgetMs !== undefined && timeoutSeconds !== undefined) {
+    assertBudgetFitsTimeout(meta.collectionPath, budgetMs, timeoutSeconds);
+  }
   return onDocumentDeleted(
     {
       document: `${meta.collectionPath}/{docId}`,
