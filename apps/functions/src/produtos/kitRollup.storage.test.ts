@@ -3,7 +3,7 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 
-import { processarKitRollup } from './kitRollup';
+import { CacheMedidas, processarKitRollup, processarPagina } from './kitRollup';
 import { lerValoresRollup, type KitRollupPayload, type ValoresRollup } from './kitRollupPayload';
 import type { KitRollupScheduler } from './kitRollupTasks';
 
@@ -318,5 +318,77 @@ describe.skipIf(!EMULATED)('recalcularDimensoesKit core (emulator)', () => {
     expect((await lerRollup(db, externo)).pesoBrutoKg).toBe(2);
     // `visitados` carries `interno`, so a cycle cannot re-enqueue it forever.
     for (const p of sched2.enfileirados) expect(p.visitados).toContain(interno);
+  });
+
+  // ---- the tier-1 precondition itself ------------------------------------
+  //
+  // `processarPagina` is driven directly here because the conflict has to be
+  // FORCED: read a page, let someone else write the kit, then hand the worker
+  // the now-stale snapshots. Nothing else in the suite exercises
+  // `lastUpdateTime` or the reconcile path behind it.
+
+  async function lerPagina(db: Firestore, seedId: string) {
+    const snap = await db
+      .collection('produtos')
+      .where('componentesKitKeys', 'array-contains-any', [seedId])
+      .get();
+    return snap.docs;
+  }
+
+  it('a losing lastUpdateTime write is reconciled from a FRESH read', async () => {
+    const db = getDb();
+    const comp = freshId('c');
+    const kitId = freshId('k');
+    await criarComponente(db, comp, { pesoBrutoKg: 5, pesoLiquidoKg: 4 });
+    await criarKit(db, kitId, { [comp]: 1 });
+
+    const docsAntigos = await lerPagina(db, comp);
+    // Someone else writes the kit → our captured updateTime is now stale.
+    await db.collection('produtos').doc(kitId).update({ nome: 'renomeado' });
+
+    const cache = new CacheMedidas(db);
+    const { alterados, conflitos } = await processarPagina(db, docsAntigos, cache);
+
+    expect(conflitos).toBe(1);
+    expect(alterados).toEqual([kitId]);
+    expect((await lerRollup(db, kitId)).pesoBrutoKg).toBe(5);
+  });
+
+  it('NEVER fabricates a weight when the winning writer changed componentesKit', async () => {
+    // The regression this exists for: the retry used to recompute against the
+    // page's frozen memo, so a component added by the winner was unknown, took
+    // the crude 0.3kg fallback and contributed nothing to the box — then wrote
+    // that plausible number over the correct rollup the winner had just saved.
+    const db = getDb();
+    const compA = freshId('c');
+    const compB = freshId('c');
+    const kitId = freshId('k');
+    await criarComponente(db, compA, { pesoBrutoKg: 2, pesoLiquidoKg: 1.8 });
+    await criarComponente(db, compB, { pesoBrutoKg: 7, pesoLiquidoKg: 6 });
+    await criarKit(db, kitId, { [compA]: 1 });
+
+    const docsAntigos = await lerPagina(db, compA);
+    // The operator saves the kit from the Kit tab, adding a second component.
+    await db
+      .collection('produtos')
+      .doc(kitId)
+      .update({
+        componentesKit: {
+          [compA]: { quantidade: 1, limitarEstoque: true, timestamp: null },
+          [compB]: { quantidade: 1, limitarEstoque: true, timestamp: null },
+        },
+        componentesKitKeys: [compA, compB].sort(),
+      });
+
+    const cache = new CacheMedidas(db);
+    const { conflitos } = await processarPagina(db, docsAntigos, cache);
+    expect(conflitos).toBe(1);
+
+    const rollup = await lerRollup(db, kitId);
+    // 2 + 7, from both components' REAL weights.
+    expect(rollup.pesoBrutoKg).toBe(9);
+    expect(rollup.pesoLiquidoKg).toBe(7.8);
+    // The fabricated value the stale memo produced: 2 + KIT_PESO_BRUTO_FALLBACK_KG.
+    expect(rollup.pesoBrutoKg).not.toBe(2.3);
   });
 });

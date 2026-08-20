@@ -73,6 +73,7 @@ import {
   KITS_POR_PAGINA,
   PROFUNDIDADE_MAX_KIT,
   SEEDS_POR_CONSULTA,
+  chaveComposicao,
   kitRollupPayloadSchema,
   lerValoresRollup,
   limitarSeeds,
@@ -86,6 +87,8 @@ import {
   createKitRollupScheduler,
   type KitRollupScheduler,
 } from './kitRollupTasks';
+
+export { chaveComposicao };
 
 /** The produto fields a component contributes to the rollup. */
 const CAMPOS_MEDIDAS = [...CAMPOS_ROLLUP_KIT, 'paiId'] as const;
@@ -169,20 +172,6 @@ export class CacheMedidas {
 /* -------------------------------------------------------------------------- */
 
 /**
- * A canonical key for a component map. ADR 0014's decisive number is that
- * thousands of kits share the SAME components, so keying the computation on the
- * composition collapses a whole page into a handful of `dimensoesDoKit` calls.
- * Sorted, so two kits listing the same components in a different insertion order
- * share one entry.
- */
-export function chaveComposicao(componentes: ComponentesKit | null | undefined): string {
-  return Object.entries(componentes ?? {})
-    .map(([id, kit]) => `${id}:${kit.quantidade}`)
-    .sort()
-    .join('|');
-}
-
-/**
  * Only the fields that actually differ. Two consequences, both required: a
  * redelivery or a no-op change writes NOTHING, and a `null` (not derivable) is
  * never written over a stored value.
@@ -205,6 +194,25 @@ export function patchDimensoes(
 function ehKitComComponentes(snap: DocumentSnapshot | QueryDocumentSnapshot): boolean {
   const componentes = snap.get('componentesKit') as ComponentesKit | null | undefined;
   return snap.get('ehKit') === true && Object.keys(componentes ?? {}).length > 0;
+}
+
+/**
+ * Is every component of this kit present in the medidas map?
+ *
+ * ⚠️ The backstop for the one mistake that produces a WRONG stored number rather
+ * than a missing one. `dimensoesDoKit` does not distinguish "this component has
+ * no weight" from "this component was never loaded" — both take the crude
+ * 0.3/0.25 kg fallback and contribute nothing to the box — so computing against
+ * a map that does not cover the component set fabricates a plausible value and
+ * writes it over a correct one. An id mapped to `null` IS covered: that means
+ * "read succeeded, the produto does not exist", which the fallback handles
+ * correctly. The failure is the id being absent from the map entirely.
+ */
+function componentesCobertos(
+  componentes: ComponentesKit,
+  medidas: Record<string, ProdutoMedidas | null>,
+): boolean {
+  return Object.keys(componentes).every((id) => id in medidas);
 }
 
 function isPrecondicaoFalhou(err: unknown): boolean {
@@ -236,8 +244,16 @@ interface Raiz {
  * documents store microseconds — ADR 0011's named cross-unit trap.)
  */
 async function carregarRaiz(db: Firestore, rootId: string): Promise<Raiz | null> {
-  const snap = await produtoCollection.docRef(db, {}, rootId).get();
-  if (!snap.exists) return null;
+  // ⚠️ Projected like every other read here. This one runs at the TOP of every
+  // dispatch AND again before each self-continuation, so on the ~2 000-kit
+  // catalogue an unprojected version pulled the whole root document — including
+  // the `nome_embedding` vector, `fotos` and the marketplace denorms — about
+  // fourteen times per fan-out, for five numbers and a `paiId`. Enterprise bills
+  // data scanned.
+  const [snap] = await db.getAll(produtoCollection.docRef(db, {}, rootId), {
+    fieldMask: [...CAMPOS_MEDIDAS],
+  });
+  if (!snap?.exists) return null;
   const data = snap.data();
   return { medidas: projetarMedidas(data), valores: lerValoresRollup(data) };
 }
@@ -317,6 +333,15 @@ export async function processarPagina(
 
   for (const doc of kits) {
     const componentes = doc.get('componentesKit') as ComponentesKit;
+    if (!componentesCobertos(componentes, medidas)) {
+      // Unreachable — `cache.carregar` above covered exactly these ids. Kept as
+      // the backstop for the fabrication failure mode described on the helper.
+      logger.error(
+        `${KIT_ROLLUP_QUEUE}: kit ${doc.id} tem componentes não carregados — ignorado para não ` +
+          `gravar um peso/caixa fabricado`,
+      );
+      continue;
+    }
     const chave = chaveComposicao(componentes);
     let derivado = porComposicao.get(chave);
     if (!derivado) {
@@ -364,28 +389,53 @@ export async function processarPagina(
   await Promise.all(escritas);
   if (falhas.length > 0) throw falhas[0];
 
-  alterados.push(...(await reconciliarConflitos(db, conflitantes, porComposicao, medidas)));
+  alterados.push(...(await reconciliarConflitos(db, conflitantes, porComposicao, cache)));
   return { alterados, ignorados, conflitos: conflitantes.length };
 }
 
 /**
  * One bounded retry for the kits a concurrent writer beat us to: re-read,
- * recompute from the SAME memo, and write against the fresh `updateTime`.
- * Losing twice means a genuinely hot document — logged, and converged by the
- * next edit to any of its components rather than retried forever.
+ * recompute, and write against the fresh `updateTime`. Losing twice means a
+ * genuinely hot document — logged, and converged by the next edit to any of its
+ * components rather than retried forever.
+ *
+ * ⚠️ It takes the CACHE, not the page's frozen medidas map, and loads the
+ * re-read components before recomputing. `FAILED_PRECONDITION` means someone
+ * rewrote this kit, and the likeliest rewrite is an operator saving it from the
+ * Kit tab — i.e. exactly the write that CHANGES `componentesKit`. Recomputing a
+ * new component set against the old map silently gives every unknown id the
+ * crude {@link KIT_PESO_BRUTO_FALLBACK_KG} 0.3/0.25 kg and no box contribution,
+ * then writes that plausible-looking number cleanly over the correct rollup the
+ * operator's own save had just pushed. That is the bug this whole function
+ * exists to prevent, reintroduced on the retry path.
  */
 async function reconciliarConflitos(
   db: Firestore,
   conflitantes: readonly DocumentReference[],
   porComposicao: ReadonlyMap<string, DimensoesKit>,
-  medidas: Record<string, ProdutoMedidas | null>,
+  cache: CacheMedidas,
 ): Promise<string[]> {
   if (conflitantes.length === 0) return [];
   const snaps = await db.getAll(...conflitantes);
+  const kits = snaps.filter((snap) => snap.exists && ehKitComComponentes(snap));
+  // One batched load covering whatever the winning writer added. Already-known
+  // ids are a memo hit, so a conflict that did NOT change the composition costs
+  // no extra read at all.
+  await cache.carregar(
+    kits.flatMap((snap) => Object.keys(snap.get('componentesKit') as ComponentesKit)),
+  );
+  const medidas = cache.mapa();
+
   const alterados: string[] = [];
-  for (const snap of snaps) {
-    if (!snap.exists || !ehKitComComponentes(snap)) continue;
+  for (const snap of kits) {
     const componentes = snap.get('componentesKit') as ComponentesKit;
+    if (!componentesCobertos(componentes, medidas)) {
+      logger.error(
+        `${KIT_ROLLUP_QUEUE}: kit ${snap.id} tem componentes não carregados na reconciliação — ` +
+          `ignorado para não gravar um peso/caixa fabricado`,
+      );
+      continue;
+    }
     const derivado =
       porComposicao.get(chaveComposicao(componentes)) ?? dimensoesDoKit(componentes, medidas);
     const patch = patchDimensoes(lerValoresRollup(snap.data()), derivado);

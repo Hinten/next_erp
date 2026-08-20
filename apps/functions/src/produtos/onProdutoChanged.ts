@@ -9,7 +9,7 @@ import { getDb } from '../lib/admin';
 import { resolveUsuarioOuterRef } from '../lib/authContext';
 import { PRODUTO_HISTORY_ROOT } from '../lib/historyRoots';
 import { buildModificationEntry, recordModification } from '../lib/modificationHistory';
-import { CAMPOS_ROLLUP_KIT, planejarRollupKit } from './kitRollupPayload';
+import { CAMPOS_ROLLUP_KIT, planejarRollupKit, type KitRollupPayload } from './kitRollupPayload';
 import {
   createKitRollupScheduler,
   isFalhaDeEnfileiramentoContivel,
@@ -134,18 +134,21 @@ async function findChildrenToPropagate(
  * of kits (ADR 0014), which is work for `recalcularDimensoesKit`, not for a
  * trigger with a 60s timeout and no checkpoint.
  *
- * A failed enqueue is logged, not thrown: this trigger does not retry, there is
- * no document to park, and throwing would only undo the history entry that
- * already landed. The kits then wait for the next edit to any of their
+ * A failed enqueue is logged, not thrown: this trigger does not retry and there
+ * is no document to park. The kits then wait for the next edit to any of their
  * components — or for the one-time backfill script.
+ *
+ * ⚠️ The payload is DECIDED early (from the raw before/after) but DISPATCHED
+ * last, after the history row has landed. An earlier revision enqueued first,
+ * which made a failed enqueue also cost the operator's audit row on a trigger
+ * that never retries — so `TASKS_INVOKER_SA` missing the functions runtime SA
+ * would have turned "the kits stay stale" into "the edit is also unaudited".
  */
 async function enfileirarRollupDeKit(
   scheduler: KitRollupScheduler,
   produtoId: string,
-  before: DocumentData | undefined,
-  after: DocumentData | undefined,
+  payload: KitRollupPayload | null,
 ): Promise<void> {
-  const payload = planejarRollupKit(produtoId, before, after);
   if (payload === null) return;
   try {
     await scheduler.enqueue(payload);
@@ -201,13 +204,13 @@ export async function recordProdutoModificationAndPropagate(
 ): Promise<void> {
   if (after === undefined) return; // produto delete — no entry (see doc comment)
 
-  // ⚠️ FIRST, and gated on the RAW before/after rather than on `entry.campos`.
+  // ⚠️ DECIDED here, from the RAW before/after rather than from `entry.campos`.
   // A produto whose weight or box changed must fan out to the kits containing
   // it even if some future ignore-list edit made that change invisible to the
   // history — the two decisions are deliberately decoupled. `planejarRollupKit`
-  // returns null for everything else, so an ordinary produto save still costs
-  // ZERO extra reads here.
-  await enfileirarRollupDeKit(kitScheduler, produtoId, before, after);
+  // is pure, so an ordinary produto save still costs ZERO extra reads here.
+  // The DISPATCH waits until the bottom: see `enfileirarRollupDeKit`.
+  const rollup = planejarRollupKit(produtoId, before, after);
 
   const entry = buildModificationEntry({
     before,
@@ -220,32 +223,38 @@ export async function recordProdutoModificationAndPropagate(
     eventTimeMicros,
     usuarioOuterRef,
   });
-  if (entry === null) return;
 
-  await recordModification(db, PRODUTO_HISTORY_ROOT, produtoId, entry);
+  // An empty diff writes no entry and propagates nothing — but it must NOT skip
+  // the rollup below, which is decided independently.
+  if (entry !== null) {
+    await recordModification(db, PRODUTO_HISTORY_ROOT, produtoId, entry);
 
-  // Propagation is gated on the entry's `campos` — never on custo alone, a
-  // custo edit never touches a child's precos — AND on the opt-out field.
-  // `!== false` treats a missing field (every produto written before this
-  // field existed) the same as the schema default `true`. Variation children
-  // never reach here on their own write (their `precos` diff is suppressed by
-  // `produtoExtraIgnores`, so `entry.campos` never contains it), but the
-  // `paiId == null` check stays as defense-in-depth.
-  const shouldPropagate =
-    after.paiId == null &&
-    entry.campos.includes('precos') &&
-    after.propagatePriceToChildren !== false;
-  const childWrites = shouldPropagate
-    ? await findChildrenToPropagate(db, produtoId, (after.precos as PrecosMap) ?? null)
-    : [];
-  if (childWrites.length > 0) {
-    await commitChunked(db, childWrites);
+    // Propagation is gated on the entry's `campos` — never on custo alone, a
+    // custo edit never touches a child's precos — AND on the opt-out field.
+    // `!== false` treats a missing field (every produto written before this
+    // field existed) the same as the schema default `true`. Variation children
+    // never reach here on their own write (their `precos` diff is suppressed by
+    // `produtoExtraIgnores`, so `entry.campos` never contains it), but the
+    // `paiId == null` check stays as defense-in-depth.
+    const shouldPropagate =
+      after.paiId == null &&
+      entry.campos.includes('precos') &&
+      after.propagatePriceToChildren !== false;
+    const childWrites = shouldPropagate
+      ? await findChildrenToPropagate(db, produtoId, (after.precos as PrecosMap) ?? null)
+      : [];
+    if (childWrites.length > 0) {
+      await commitChunked(db, childWrites);
+    }
+
+    logger.info(
+      `onProdutoChanged: ${produtoId} → entry ${entry.eventId} (${entry.campos.join(', ')}), ` +
+        `${childWrites.length} filho(s) propagado(s)`,
+    );
   }
 
-  logger.info(
-    `onProdutoChanged: ${produtoId} → entry ${entry.eventId} (${entry.campos.join(', ')}), ` +
-      `${childWrites.length} filho(s) propagado(s)`,
-  );
+  // LAST on purpose — a failed enqueue must not cost the history row above.
+  await enfileirarRollupDeKit(kitScheduler, produtoId, rollup);
 }
 
 /* -------------------------------------------------------------------------- */

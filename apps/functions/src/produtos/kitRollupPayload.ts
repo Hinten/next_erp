@@ -8,7 +8,11 @@
  * Firestore and no firebase-functions runtime in the way.
  */
 import { z } from 'zod';
-import { CAMPOS_DIMENSOES_KIT, type CampoDimensoesKit } from '@delfrance/schemas';
+import {
+  CAMPOS_DIMENSOES_KIT,
+  type CampoDimensoesKit,
+  type ComponentesKit,
+} from '@delfrance/schemas';
 
 /**
  * The produto fields the rollup DERIVES, and therefore also the exact fields
@@ -85,6 +89,24 @@ export const kitRollupPayloadSchema = z.object({
 
 export type KitRollupPayload = z.infer<typeof kitRollupPayloadSchema>;
 
+/**
+ * A canonical key for a component map: sorted `id:quantidade` pairs.
+ *
+ * Two jobs. In the worker it collapses a page into a handful of `dimensoesDoKit`
+ * calls — ADR 0014's decisive number is that thousands of kits share the SAME
+ * components. In {@link planejarRollupKit} it answers "did this write change the
+ * kit's COMPOSITION", which a reference comparison cannot: `before` and `after`
+ * are freshly parsed objects on every delivery, so `before.componentesKit !==
+ * after.componentesKit` is ALWAYS true and would make the gate fire on our own
+ * rollup writes.
+ */
+export function chaveComposicao(componentes: ComponentesKit | null | undefined): string {
+  return Object.entries(componentes ?? {})
+    .map(([id, kit]) => `${id}:${kit.quantidade}`)
+    .sort()
+    .join('|');
+}
+
 /** Read the five rollup values off a raw produto document. */
 export function lerValoresRollup(data: Record<string, unknown> | undefined): ValoresRollup {
   const out = {} as ValoresRollup;
@@ -117,6 +139,23 @@ export function limitarSeeds(ids: readonly string[]): {
 }
 
 /**
+ * Did this write change the kit's component map?
+ *
+ * ⚠️ Compared through {@link chaveComposicao}, never by reference or by a
+ * shallow `!==`. `before`/`after` are freshly parsed objects on every delivery,
+ * so an object-valued field always compares unequal — which would make the gate
+ * treat our OWN rollup write as a composition change and enqueue a task per kit
+ * we write: ~2 000 of them per component edit, the exact fan-out the `ehKit`
+ * gate exists to prevent.
+ */
+function composicaoMudou(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
+  return (
+    chaveComposicao(before.componentesKit as ComponentesKit | null | undefined) !==
+    chaveComposicao(after.componentesKit as ComponentesKit | null | undefined)
+  );
+}
+
+/**
  * Decide whether a produto write must fan out to the kits containing it, and
  * build the task payload if so. Pure — no Firestore, no firebase-functions — so
  * the gate that keeps a normal produto write at ZERO extra reads is unit-tested
@@ -134,11 +173,21 @@ export function limitarSeeds(ids: readonly string[]): {
  *     re-enters this trigger as a `componentesKit` change on each kit.
  *  2. **A create.** A produto that did not exist a moment ago is in no kit's
  *     `componentesKitKeys`, so the fan-out could only ever match nothing.
- *  3. **The produto is itself a kit.** Those five fields are this rollup's
- *     OUTPUT (the form locks them), so re-entry after our own write must not
- *     fan out again. A kit that is itself a component — which #239 forbids and
- *     the UI enforces — is reached by the worker's nested probe instead, which
- *     is a strict superset and costs one keys-only query per 30 changed kits.
+ *  3. **The produto is a kit whose COMPOSITION did not change.** Those five
+ *     fields are this rollup's OUTPUT (the form locks them), so re-entry after
+ *     our own write — which touches nothing else — must not fan out again.
+ *
+ *     ⚠️ The composition carve-out is load-bearing, not defensive. A kit N that
+ *     is itself a component of K (which #239 forbids and the UI enforces, but
+ *     the migrated corpus and the picker-less agent/MCP path #347 can still
+ *     produce) has TWO ways its weight moves: a component of N changed — the
+ *     worker's nested probe covers that, because it fans out from the kits it
+ *     just wrote — or an operator edited **N's own `componentesKit`**, which the
+ *     worker never sees. Gating on `ehKit` alone dropped that second path
+ *     silently, leaving K stale forever with no successor task, while the
+ *     cascade machinery (`existeKitAninhado`, `PROFUNDIDADE_MAX_KIT`,
+ *     `visitados`) existed precisely for it. Same carve-out covers a produto
+ *     flipped to `ehKit: true` in the write that changes its weight.
  *  4. **No rollup field actually moved.** This is what makes an ordinary produto
  *     save (nome, preço, foto, stock) cost nothing at all.
  */
@@ -149,7 +198,7 @@ export function planejarRollupKit(
 ): KitRollupPayload | null {
   if (after === undefined) return null;
   if (before === undefined) return null;
-  if (after.ehKit === true) return null;
+  if (after.ehKit === true && !composicaoMudou(before, after)) return null;
 
   const rootValores = lerValoresRollup(after);
   if (!valoresRollupDiferem(lerValoresRollup(before), rootValores)) return null;

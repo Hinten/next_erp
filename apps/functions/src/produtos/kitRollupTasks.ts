@@ -23,7 +23,8 @@
  *     `??` would keep `''` and yield `locations//functions/…`, which drops the
  *     task silently.
  */
-import { getFunctions } from 'firebase-admin/functions';
+import { FirebaseAppError } from 'firebase-admin/app';
+import { FirebaseFunctionsError, getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../lib/admin';
 import type { KitRollupPayload } from './kitRollupPayload';
@@ -91,26 +92,33 @@ export function createKitRollupScheduler(): KitRollupScheduler {
   return new FirebaseKitRollupScheduler();
 }
 
-/** A gRPC status code — the shape every Cloud Tasks transport failure carries. */
-function isGrpcCodedError(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null) return false;
-  const code = (err as { code?: unknown }).code;
-  return typeof code === 'number' && Number.isInteger(code) && code >= 1 && code <= 16;
-}
-
 /**
  * Whether a failed enqueue may be logged and swallowed rather than thrown.
  *
  * A Firestore trigger does NOT retry by default and there is no job document to
- * park, so throwing here would only lose the modification-history write that
- * already succeeded. The containment is bounded to the two expected families —
- * the kill switch and a transport failure — because anything else is a coding
- * bug (root `CLAUDE.md` rule 6: never a bare catch).
+ * park, so throwing here buys nothing. The containment is bounded to the three
+ * expected families — the kill switch, the transport, and a credential that
+ * could not be resolved — because anything else is a coding bug (root
+ * `CLAUDE.md` rule 6: never a bare catch).
+ *
+ * ⚠️ **Match on the CLASS, never on a gRPC `code` number.** This queue's
+ * transport is `firebase-admin/functions`' `FunctionsApiClient` — HTTP, not
+ * gRPC — and it throws {@link FirebaseFunctionsError}, whose `code` is a STRING
+ * (`functions/permission-denied`, …). An earlier revision reused the numeric
+ * `code >= 1 && code <= 16` idiom copied from the Mercado Livre sweeps; it
+ * matched **nothing**, so the one failure this file exists to survive —
+ * `TASKS_INVOKER_SA` not naming the functions runtime SA, i.e. a 403 on the
+ * enqueue — rethrew instead. A guard that never fires is worse than no guard,
+ * because it reads as covered.
  *
  * What a swallowed enqueue costs: the kits stay stale until the next edit to any
  * of their components, or until the one-time backfill script runs. That is the
  * accepted trade; a backstop sweep is deliberately not built.
  */
 export function isFalhaDeEnfileiramentoContivel(err: unknown): boolean {
-  return err instanceof KitRollupTasksDisabledError || isGrpcCodedError(err);
+  return (
+    err instanceof KitRollupTasksDisabledError ||
+    err instanceof FirebaseFunctionsError ||
+    err instanceof FirebaseAppError
+  );
 }
