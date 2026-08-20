@@ -22,8 +22,8 @@ description: >-
 # Freight integrations
 
 The freight domain ports the legacy Flutter ERP's despacho/frete flow with
-**byte-compatible Firestore wire shapes** (the Flutter app still runs on the
-same backend, so a field rename or shape drift corrupts live data). The only
+**byte-compatible Firestore wire shapes** (the migrated corpus is stored in
+them, so a field rename or shape drift orphans inherited data). The only
 **live** provider today is **Melhor Envio** (ME) — a shipping aggregator with an
 OAuth API for quoting, buying and printing labels across many carriers (Correios,
 Jadlog, …). The architecture is built so other providers (marketplace freight,

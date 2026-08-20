@@ -10,6 +10,7 @@ import { getNFeRuntime } from '../../lib/nfe/runtime';
 import { RECONCILE_FUNCTION, createTaskScheduler, taskPayloadSchema } from '../../lib/nfe/tasks';
 import { safeErrorShape } from '../../lib/nfe/log';
 import { getDb } from './lib/admin';
+import { tasksInvokerOptions } from './tasksInvoker';
 
 /**
  * Cloud Tasks dispatcher for the async NF-e reconciler. apps/nfe enqueues two
@@ -95,6 +96,9 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
  */
 export const reconciliarNfe = onTaskDispatched(
   {
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: { maxAttempts: 5, minBackoffSeconds: 30, maxBackoffSeconds: 300, maxDoublings: 3 },
     rateLimits: { maxConcurrentDispatches: 5, maxDispatchesPerSecond: 10 },
     // Cert secrets are declared once in src/options.ts (setGlobalOptions) for the

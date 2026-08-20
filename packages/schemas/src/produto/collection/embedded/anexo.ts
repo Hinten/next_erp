@@ -11,7 +11,7 @@ import { ARQUIVOS_COLLECTION } from '../../../storage/arquivo';
  * bare arquivo-ref shape as `Foto.arquivoOuterRef`, not the
  * `documents/<col>/<id>` form used for cross-model references).
  *
- * `.passthrough()` keeps any extra fields the Flutter app may write.
+ * `.passthrough()` keeps any extra fields the migrated corpus may carry.
  */
 export const anexoSchema = z
   .object({

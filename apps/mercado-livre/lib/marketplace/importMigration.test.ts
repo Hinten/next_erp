@@ -178,7 +178,7 @@ function parentDocId(colPath: string): string {
 
 /**
  * Resolve one patch field against the CURRENT stored value — expands a real
- * `FieldValue.arrayUnion(...)` sentinel (the dual-run denorm writes `import.ts`
+ * `FieldValue.arrayUnion(...)` sentinel (the legacy denorm writes `import.ts`
  * performs on the SAME produto this module later prunes) into an actual
  * array-union so both writers' effects compose correctly, instead of the
  * simpler import.test.ts FakeDb which only ever inspects the raw patch object
@@ -377,7 +377,7 @@ describe('handleUptinMigration — fresh migration', () => {
     // parent denorm cleaned: the OLD (source-listing) marketplace entry is gone
     // and stamped deleted under the MATCHED entry's own key (models.dart's
     // `toStatusKey`) — but TP1's OWN entry for the family it now hosts (stamped
-    // by `importProduto`'s own dual-run denorm write, `relevantData.isUserProductModel`)
+    // by `importProduto`'s own legacy denorm write, `relevantData.isUserProductModel`)
     // correctly SURVIVES the cleanup (a DIFFERENT externalId, no match).
     const tp1 = db.docs('produtos').get(TP1)!;
     const marketplace = tp1.marketplace as Array<Record<string, unknown>>;

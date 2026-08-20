@@ -23,6 +23,7 @@ import {
   WHATSAPP_ANEXO_LIMITS,
   type Conversa,
   type Filetype,
+  idFromRef,
   toOuterRef,
 } from '@delfrance/schemas';
 import { StorageUploadError, uploadFile } from '@delfrance/storage';
@@ -31,6 +32,11 @@ import { newDocId } from '@/lib/data/newDocId';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { composerGate } from '@/lib/chat/composerGate';
+import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
+  useMercadoLivreClient,
+} from '@/lib/mercado-livre/client';
 import { enterConversa, resolveActor } from '@/lib/chat/conversaActions';
 import { clearDraft, getDraft, setDraft } from '@/lib/chat/draft';
 import { getSendKey, sendKeyAction, setSendKey, type SendKey } from '@/lib/chat/sendKey';
@@ -41,6 +47,20 @@ import { SendKeySettings } from './SendKeySettings';
 import { AttachmentChips, type PendingAttachment } from './AttachmentChips';
 
 const DRAFT_SAVE_DEBOUNCE_MS = 400;
+
+/**
+ * Origens whose reply leaves through the CHANNEL BACKEND (an authenticated HTTP
+ * route) rather than by writing a mensagem for a Firestore trigger to transmit.
+ *
+ * WhatsApp uses the trigger shape, which buys free retries — worth it when
+ * failures are transient. Mercado Livre replies are single-shot and their
+ * refusals are terminal and operator-actionable, so they go synchronously and
+ * the operator sees the real reason with their text still on screen (#533).
+ */
+const ORIGENS_ROTA: ReadonlySet<string> = new Set([
+  ORIGEM_CONVERSA.mercadoLivrePerguntas,
+  ORIGEM_CONVERSA.mercadoLivrePedido,
+]);
 
 export interface ChatComposerProps {
   conversaId: string;
@@ -185,6 +205,24 @@ function ComposerInput({
   const rules = ORIGEM_RULES[conversa.origem];
   const [text, setText] = useState(() => getDraft(conversaId));
   const [sending, setSending] = useState(false);
+  const mlClient = useMercadoLivreClient();
+  /**
+   * Whether this origem sends through the channel BACKEND rather than by
+   * writing a mensagem for a trigger to pick up.
+   *
+   * Derived from the origem, not from a hardcoded list of channels, so the day
+   * a fourth surface gains a route it changes here and nowhere else.
+   */
+  const enviaPorRota = ORIGENS_ROTA.has(conversa.origem);
+  /**
+   * ⚠️ NARROWER than `rules.permiteAnexo` on purpose. That flag states what the
+   * CHANNEL accepts (mlped takes one 25 MB file); this states what the composer
+   * can actually deliver, and the #533 responder route sends text only. Leaving
+   * the paperclip enabled would let an operator stage a file that `handleSend`
+   * then silently drops — the exact #817 failure mode, one layer down.
+   * Post-sale attachment upload is tracked separately.
+   */
+  const podeAnexar = rules.permiteAnexo && !enviaPorRota;
   const [sendError, setSendError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sendKey, setSendKeyState] = useState<SendKey>('ctrlEnter');
@@ -235,7 +273,7 @@ function ComposerInput({
   }
 
   function validateAndAdd(files: File[]) {
-    if (!rules.permiteAnexo) {
+    if (!podeAnexar) {
       notifications.show({ color: 'red', message: 'Este canal não permite anexos.' });
       return;
     }
@@ -315,7 +353,24 @@ function ComposerInput({
     setSendError(null);
     setSending(true);
     try {
-      if (attachmentsToSend.length === 0) {
+      if (enviaPorRota) {
+        // ⚠️ Mercado Livre does NOT go through the Firestore-write path. The
+        // reply is single-shot and its refusals are terminal, so the route
+        // sends to ML first and only then appends the mensagem — a write here
+        // would leave a phantom reply whenever ML says no.
+        //
+        // No optimistic bubble either: the server writes the real one, and an
+        // optimistic twin would have to be reconciled against a doc id only
+        // the server knows.
+        const integracaoId = conversa.integracaoOuterRef
+          ? idFromRef(conversa.integracaoOuterRef)
+          : null;
+        if (!mlClient || !integracaoId) {
+          setSendError('Conta do Mercado Livre não resolvida para esta conversa.');
+          return;
+        }
+        await mlClient.responderConversa({ integracaoId, conversaId, texto: body });
+      } else if (attachmentsToSend.length === 0) {
         // Text-only — the #529 outbound contract write (salva / tipo 'c' / mid null).
         const docId = newDocId();
         const write = buildTextMensagem({ text: body, uid, now: Date.now() });
@@ -351,7 +406,17 @@ function ComposerInput({
       clearDraft(conversaId);
       setAttachments([]);
     } catch (err) {
-      if (err instanceof FirebaseError) {
+      // A route refusal (409) carries the operator-facing reason ML gave — an
+      // already-answered question, a blocked thread, an expired window. It is
+      // shown verbatim, because paraphrasing it would lose the only thing that
+      // tells the operator what to do next.
+      if (
+        err instanceof MercadoLivreClientHttpError ||
+        err instanceof MercadoLivreClientNetworkError
+      ) {
+        setSendError(err.message);
+        for (const id of sentIds) markOptimisticError(id);
+      } else if (err instanceof FirebaseError) {
         setSendError(err.message);
         for (const id of sentIds) markOptimisticError(id);
       } else {
@@ -387,10 +452,10 @@ function ComposerInput({
       p="sm"
       style={{ borderTop: '1px solid var(--mantine-color-gray-2)' }}
       onDragOver={(e) => {
-        if (rules.permiteAnexo) e.preventDefault();
+        if (podeAnexar) e.preventDefault();
       }}
       onDrop={(e) => {
-        if (!rules.permiteAnexo) return;
+        if (!podeAnexar) return;
         e.preventDefault();
         const files = Array.from(e.dataTransfer.files);
         if (files.length > 0) validateAndAdd(files);
@@ -405,7 +470,7 @@ function ComposerInput({
       <AttachmentChips attachments={attachments} onRemove={removeAttachment} />
 
       <Group align="flex-end" gap="xs" wrap="nowrap">
-        {rules.permiteAnexo && (
+        {podeAnexar && (
           <FileButton
             resetRef={resetFileRef}
             multiple

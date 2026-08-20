@@ -21,16 +21,17 @@ import { planDepositoOuterRef } from './transform';
  *
  * ---- ⚠️ WHEN. Inside the cutover window (root `CLAUDE.md` rule 8 / ADR 0013),
  * and **after** the historicoEstoque v1 → v2 pass (#933). Two reasons, in order:
- * the Flutter app is still writing, so an earlier run is partially undone by
- * every write that lands after it; and the v2 pass itself authors canonical
+ * the legacy app keeps writing the source project until the window switches it
+ * off, so an earlier run is superseded by every legacy write that lands after
+ * it; and the v2 pass itself authors canonical
  * `depositoOuterRef` values on the rows it converts, so running it first leaves
  * this pass strictly less to do. Running early is not harmful — the pass is
  * idempotent — it is simply not finished.
  *
  * ---- ⚠️ This normalizes DATA ONLY. Nothing in the read path is narrowed by it:
  * the sweep's two-form disjunction and its accumulate-don't-overwrite aggregate
- * stay exactly as they are, because Flutter keeps writing until it is
- * decommissioned. Tightening readers to a single encoding is a separate,
+ * stay exactly as they are, because the migrated corpus carries both
+ * encodings. Tightening readers to a single encoding is a separate,
  * post-cutover question (#836).
  *
  * ---- Cost, honestly: two collection-group scans plus one root-collection scan,

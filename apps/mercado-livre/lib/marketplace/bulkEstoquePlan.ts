@@ -73,7 +73,7 @@
  *    it was dead weight — the surviving composite's leading two fields
  *    already serve it as a prefix.
  *    ⚠️ That surviving composite is PERMANENT — do not let a future index
- *    audit read it as legacy dual-run debt. The A/B spike (#890, staging
+ *    audit read it as legacy-migration debt. The A/B spike (#890, staging
  *    2026-08-07) measured the alternative: dropping the array and gating the
  *    conta with a link post-filter reads ×7.5 the data (48.27 KiB vs 6.41), and
  *    on Enterprise a post-filter cannot reduce data scanned at all. Shape A
@@ -177,8 +177,8 @@
  * is `desconhecido` — never sent, loudly logged (status tracking, per Lucas).
  *
  * ---- Legacy-authored links (#780): `status`/`sub_status` arrived with the
- * `items` status-sync (#440); the Flutter app authoring the same docs during
- * dual-run never wrote them, so EVERY pre-cutover link has `status == null`.
+ * `items` status-sync (#440); the legacy app that authored the migrated links
+ * never wrote them, so EVERY inherited link has `status == null`.
  * Gating those out would make the flag flip a total, silent stock outage — a
  * listing that never changes never fires `items`, so it never self-heals. They
  * are therefore sent OPTIMISTICALLY, on a `buildSendTasks` rung of their own
@@ -946,8 +946,8 @@ export type FetchMovimentosDaJanela = (
  * the 128 MiB budget and can `RESOURCE_EXHAUSTED` — this one is not optional.
  *
  * Fails OPEN **explicitly**, not by omission. A row whose `movimento` key is
- * absent (a Flutter-era v1 row — and Flutter is a live concurrent writer during
- * the dual run) is skipped by `sum`, which on its own would make the window look
+ * absent (a legacy-era v1 row — the migrated corpus is full of them) is skipped
+ * by `sum`, which on its own would make the window look
  * like it moved nothing and let {@link deveEnviarFamilia} SKIP a real movement.
  * So the aggregate also counts those rows per group and reports
  * {@link MovimentoDaJanela.desconhecido}; the reconstruction then drops the pair
@@ -1482,7 +1482,9 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
  * Per-listing rungs (legacy `continue` semantics — the skip is pushed and the
  * OTHER listings still send): `'sem-link'` (listing without a doc id,
  * defensive — server-projected), `'sem-item-id'` (never published),
- * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration, Flutter-driven),
+ * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration — stamped by
+ * `itemsStatusSync` from ML's own migration tags, which is the value's only
+ * producer now that the Flutter app is switched off at the cutover, #1087),
  * `'anuncio-em-erro'` (`estado 'E'` — the send handler verified with ML that the
  * anúncio is healthy and it was our PAYLOAD that was refused, so re-sending it
  * unchanged only re-earns the rejection, #781), `'status-nao-enviavel'`
@@ -1606,9 +1608,8 @@ export function buildSendTasks(
 
     if (link.status == null) {
       // #780 — LEGACY-authored link. `status`/`sub_status` arrived with the
-      // `items` status-sync (#440); the Flutter app authoring the same docs
-      // during dual-run never wrote them, so EVERY pre-cutover link is null
-      // here. Running them through the whitelist would answer "não enviável"
+      // `items` status-sync (#440); the legacy app that authored the migrated
+      // links never wrote them, so EVERY inherited link is null here. Running them through the whitelist would answer "não enviável"
       // for the whole catalogue, making the flag flip a total, silent stock
       // outage — and a listing that never changes never fires `items`, so it
       // would never self-heal either.
@@ -1695,8 +1696,8 @@ export function buildSendTasks(
       continue;
     }
 
-    // Exact string match is safe here — both apps write the canonical
-    // `documents/...` form for this field (see importVariations.ts).
+    // Exact string match is safe here — this field is always the canonical
+    // `documents/...` form, in migrated docs too (see importVariations.ts).
     const parentLinkOuterRef = toOuterRef(
       produtoMercadoLivreLinkCollection.docPath({ produtoId: anchorId }, linkDocId),
     );

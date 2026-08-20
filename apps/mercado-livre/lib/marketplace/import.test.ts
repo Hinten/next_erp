@@ -337,7 +337,7 @@ describe('importProduto — create', () => {
     });
     const link = [...db.docs(`produtos/${pid}/produtoMercadoLivre`).values()][0]!;
     expect(link).toMatchObject({ id: 'MLB123', estado: 'p', status: 'active' });
-    // dual-run denorm applied
+    // legacy denorm applied
     expect(db.updates.some((u) => u.path === `produtos/${pid}`)).toBe(true);
   });
 
@@ -616,7 +616,7 @@ describe('importProduto — legacy variations[] listing (#520)', () => {
       const [, estoqueData] = [...estoques.entries()][0]!;
       expect(typeof estoqueData.quantidade).toBe('number');
 
-      // dual-run denorm: the child's marketplace entry carries externalParentId
+      // legacy denorm: the child's marketplace entry carries externalParentId
       // (the parent's own entry never does — models.dart `ProdMarketplace` json).
       const update = db.updates.find(
         (u) => u.path === `produtos/${childId}` && 'marketplace' in u.patch,

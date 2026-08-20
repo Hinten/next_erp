@@ -76,7 +76,7 @@ describe('POST /api/webhooks/mercado-livre', () => {
     expect(h.create).not.toHaveBeenCalled(); // happy path writes nothing
   });
 
-  it('refetch-delay topics (orders_v2/orders/payments/shipments/claims) enqueue with a 10s schedule delay', async () => {
+  it('refetch-delay topics (orders/payments/shipments/claims/questions) enqueue with a 10s schedule delay', async () => {
     await POST(req({ _id: 'N2', resource: '/orders/2', topic: 'orders_v2', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
 
@@ -86,6 +86,15 @@ describe('POST /api/webhooks/mercado-livre', () => {
 
     h.enqueue.mockClear();
     await POST(req({ _id: 'N3c', resource: '/claims/4', topic: 'claims', user_id: 1 }));
+    expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
+
+    // ⚠️ `questions` is load-bearing here and was NOT covered. The importer
+    // reads `status`/`hold`/`suspected_spam` to decide whether a thread opens
+    // at all, and ML's question GET is eventually consistent — without the
+    // delay the first read can 404 or report a status that has not settled.
+    // Dropping this entry would fail nothing else in the suite.
+    h.enqueue.mockClear();
+    await POST(req({ _id: 'N3q', resource: '/questions/5', topic: 'questions', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
   });
 

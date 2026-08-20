@@ -1,5 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [".env.functions"],
   "globalEnv": [
     "NODE_ENV",
     "CI",
@@ -9,6 +10,7 @@
     "FIREBASE_SERVICE_ACCOUNT_PATH",
     "FIREBASE_DATABASE_ID",
     "FUNCTIONS_REGION",
+    "TASKS_INVOKER_SA",
     "E2E_SU_EMAIL",
     "E2E_SU_PASSWORD",
     "PLAYWRIGHT_BASE_URL",

@@ -42,20 +42,37 @@ describe('composerGate — participation (unchanged behaviour)', () => {
 describe('composerGate — send capability (#817)', () => {
   it('is read-only on every origem with no outbound sender', () => {
     // The bug as reported was about Mercado Livre, but site/facebook/comentario
-    // have no sender either and were dropping replies the same way.
-    for (const origem of [
-      'mlperg',
-      'mlped',
-      'mlclaims',
-      'site',
-      'facebook',
-      'comentario',
-    ] as const) {
+    // have no sender either and were dropping replies the same way — and after
+    // #533 + #768 all three ML surfaces send, so these are the only ones left.
+    for (const origem of ['site', 'facebook', 'comentario'] as const) {
       expect(composerGate(base({ origem })), origem).toEqual({
         kind: 'somente-leitura',
         motivo: SEM_ENVIO_MOTIVO,
       });
     }
+  });
+
+  it('lets the two ML surfaces that gained a route through (#533)', () => {
+    // The seam working as intended: flipping `temEnvio` in ORIGEM_RULES was
+    // the only edit this file needed.
+    expect(composerGate(base({ origem: ORIGEM_CONVERSA.mercadoLivrePerguntas }))).toEqual({
+      kind: 'compose',
+    });
+    expect(composerGate(base({ origem: ORIGEM_CONVERSA.mercadoLivrePedido }))).toEqual({
+      kind: 'compose',
+    });
+  });
+
+  it('still blocks an ML thread the channel marked unanswerable', () => {
+    // A channel having a sender does not make every one of its threads live.
+    expect(
+      composerGate(
+        base({
+          origem: ORIGEM_CONVERSA.mercadoLivrePerguntas,
+          respostaBloqueada: 'Pergunta já respondida no Mercado Livre',
+        }),
+      ).kind,
+    ).toBe('somente-leitura');
   });
 
   it('leaves WhatsApp completely unaffected', () => {

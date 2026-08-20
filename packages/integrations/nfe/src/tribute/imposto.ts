@@ -543,6 +543,31 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
     case CST_PIS_COFINS.semIncidenciaContribuicao:
     case CST_PIS_COFINS.suspensaoContribuicao:
       return { COFINSNT: { CST: cfg.CST } };
+    // All remaining cases fall through to COFINSOutr (credit/presumed + acquisition + others)
+    case CST_PIS_COFINS.outrasOperacoesSaida:
+    case CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoExclusivoNaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoExclusivoExportacao:
+    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoNaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoNaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoExportacao:
+    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoNaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoOutrasOperacoes:
+    case CST_PIS_COFINS.aquisicaoSemDireitoCredito:
+    case CST_PIS_COFINS.aquisicaoComIsencao:
+    case CST_PIS_COFINS.aquisicaoComSuspensao:
+    case CST_PIS_COFINS.aquisicaoAliquotaZero:
+    case CST_PIS_COFINS.aquisicaoSemIncidencia:
+    case CST_PIS_COFINS.aquisicaoSubstituicaoTributaria:
+    case CST_PIS_COFINS.outrasOperacoesEntrada:
+    case CST_PIS_COFINS.outrasOperacoes:
     default:
       // COFINSOutr — same XSD shape + same posture as PISOutr above:
       // emit vBC + pCOFINS + vCOFINS with zeros so xmllint-wasm /

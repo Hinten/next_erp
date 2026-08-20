@@ -629,8 +629,8 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     // doc. Re-asserting them on every stamp was a blind last-write-wins
     // overwrite of two fields this code never read (ADR 0011), and it would
     // silently re-encode a `depositoOuterRef` stored in the bare form the
-    // outerRef invariant tolerates — which the Flutter app may still be writing
-    // during the dual run. Both values below are deliberately "wrong"; the point
+    // outerRef invariant tolerates — a shape the migrated corpus carries in
+    // quantity. Both values below are deliberately "wrong"; the point
     // is that the stamp is not the thing that gets to decide.
     const db = getDb();
     const { depositoId, pedidoId, kitId } = await seedKit(db);

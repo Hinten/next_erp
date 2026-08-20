@@ -62,7 +62,7 @@ export interface PagoAuditRow {
   lastMarketplaceUpdate: number | null;
   /**
    * `pagamentos` (this app), `pagamento` (legacy Flutter, singular), or both.
-   * A row sourced ENTIRELY from the singular path is a dual-run artefact rather
+   * A row sourced ENTIRELY from the singular path is a legacy artefact rather
    * than a defect — reading only the plural path would report it as unpaid.
    */
   fonte: 'pagamentos' | 'pagamento' | 'ambos';

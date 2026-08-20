@@ -36,7 +36,7 @@ const PERM_FRETE_DELETE = 1n << 90n;
  *   - `mapa` / `faixaCep` / `horarioDeCorte` / `enderecoDeOrigem` /
  *     `client_id` / `client_secret` are `includeIfNull: false` on the
  *     Flutter side but their `fromJson` helpers all tolerate explicit null,
- *     so `.nullable().default(null)` is read-safe for both apps.
+ *     so `.nullable().default(null)` is read-safe against migrated docs.
  */
 
 /* -------------------------------------------------------------------------- */

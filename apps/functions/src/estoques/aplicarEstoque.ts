@@ -208,7 +208,9 @@ export async function aplicarMovimento(
  * direct client `writeBatch` from PR #217). Enforces auth + `PERM.estoque.write`
  * itself (the Admin SDK bypasses Firestore rules), validates the payload, then
  * dispatches to the per-op write path. Firestore rules stay open for Flutter
- * coexistence (ADR 0010); this is the trusted write path for the OSS app.
+ * coexistence (ADR 0010). ⚠️ That justification is void — there is no dual run
+ * (root `CLAUDE.md` rule 8) — so whether `estoques` should now be `serverOwned`
+ * is an open question; this is the trusted write path for the OSS app.
  */
 export const aplicarEstoque = onCall(async (request) => {
   if (!request.auth) {

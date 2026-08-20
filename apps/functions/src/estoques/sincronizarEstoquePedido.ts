@@ -629,8 +629,8 @@ async function aplicarPlano(
  * overwrite** of fields this function never read — ADR 0011's own hazard, and the
  * reason the create-only split exists. It also stops the stamp from silently
  * re-encoding a `depositoOuterRef` written in the bare `depositos/<id>` form the
- * outerRef invariant tolerates, which the Flutter app may still be writing during
- * the dual run.
+ * outerRef invariant tolerates — a shape the migrated corpus carries in
+ * quantity.
  *
  * ⚠️ Two costs this buys, both named rather than hidden. Firestore has no
  * set-if-missing for a string, so the caller must READ the sold kits' estoque docs

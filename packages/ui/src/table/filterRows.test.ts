@@ -8,6 +8,12 @@ function rows(...data: Row[]): SnapshotRow<Row>[] {
   return data.map((d, i) => ({ id: String(i), path: `x/${i}`, data: d }));
 }
 
+type TagRow = { tags?: string[] | null };
+
+function tagRows(...data: TagRow[]): SnapshotRow<TagRow>[] {
+  return data.map((d, i) => ({ id: String(i), path: `x/${i}`, data: d }));
+}
+
 describe('applyColumnFilters', () => {
   it('returns rows unchanged when there are no filters', () => {
     const input = rows({ nome: 'Alice' }, { nome: 'Bob' });
@@ -84,6 +90,37 @@ describe('applyColumnFilters', () => {
     );
     expect(result).toHaveLength(1);
     expect(result[0]!.data.freteInicial?.estado).toBe('entregue');
+  });
+
+  // `array-contains` is not reachable from the built-in ColumnFilter UI (it only
+  // emits contains/eq/lt/lte/gt/gte), but `buildPipeline` can wire it by hand as
+  // an extraFilter — and then the client-side fallback has to agree with what the
+  // server pipeline would have returned.
+  it('array-contains matches a row whose array holds the value', () => {
+    const result = applyColumnFilters(
+      tagRows({ tags: ['novo', 'promo'] }, { tags: ['usado'] }, { tags: [] }, {}),
+      { tags: { op: 'array-contains', value: 'promo' } },
+    );
+    expect(result.map((r) => r.data.tags)).toEqual([['novo', 'promo']]);
+  });
+
+  it('array-contains excludes non-array and missing values', () => {
+    const result = applyColumnFilters(tagRows({ tags: null }, {}), {
+      tags: { op: 'array-contains', value: 'promo' },
+    });
+    expect(result).toHaveLength(0);
+  });
+
+  it('array-contains-any throws instead of silently returning the wrong rows', () => {
+    // `ColumnFilterValue.value` is a scalar, so the candidate LIST this op needs
+    // can never arrive. Degrading to a one-candidate `array-contains` would look
+    // like it worked; `filterExpr` throws on the same shape mismatch and so does
+    // this fallback.
+    expect(() =>
+      applyColumnFilters(tagRows({ tags: ['promo'] }), {
+        tags: { op: 'array-contains-any', value: 'promo' },
+      }),
+    ).toThrow(/array-contains-any/);
   });
 
   it('AND-combines multiple column filters', () => {

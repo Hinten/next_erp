@@ -28,25 +28,56 @@
  * through the SAME code, so the sender can never again leave a stale
  * `status: 'active'` behind for the sweep's gate to trip over.
  *
- * Scope (7a): SIMPLE listings. User-Products links and a listing still
- * mid-migration (`estado === 'am'`) are DEFERRED — a UP link or an
- * awaiting-migration listing is driven by the Flutter app during dual-run;
- * syncing `estado` here would fight it. A cancel removes the PARENT produto's
- * denorm entry (`removeMarketplaceEntry` below) but does not walk down to the
- * variation-children produtos. That sweep was once deferred to #438; it is now
- * moot rather than pending — the whole denorm cluster is deleted at the cutover
- * (#992), and leaving stale entries behind is already the norm everywhere else
- * (canonical note on `produtoSchema`).
+ * ⚠️ THE ERP OWNS `estado`. This used to stand down for two kinds of link — a
+ * User-Products one (`isUserProductModel`) and one still awaiting ML's UP
+ * migration (`estado === 'am'`) — on the grounds that the Flutter app drove them
+ * "during dual-run" and syncing here would fight it. **There is no dual run and
+ * there never will be one** (root `CLAUDE.md` rule 8): the two apps never share a
+ * document, and the cutover turns Flutter off. So that guard deferred to a writer
+ * that will not exist and left `estado` with no owner at all. Under the UP model
+ * `isUserProductModel` is true for every listing a `user_product_seller`
+ * publishes, so it silently skipped the entire future catalogue (#1087). `'am'`
+ * had no writer here either — it only ever arrived from Flutter, and with that
+ * guard in place such a link could never be corrected AND could never reach the
+ * takeover below, which needs the fetched item's tags. The ONLY reason to defer
+ * now is ML's own migration tags, which are ML's signal, not ours — and this sync
+ * now WRITES `'am'` from them (`stampAguardandoMigracao`), so the value has a
+ * producer again for the three rungs that still gate on it.
+ *
+ * A cancel removes the PARENT produto's denorm entry (`removeMarketplaceEntry`
+ * below) but does not walk down to the variation-children produtos. That sweep
+ * was once deferred to #438; it is now moot rather than pending — the whole
+ * denorm cluster is deleted at the cutover (#992), and leaving stale entries
+ * behind is already the norm everywhere else (canonical note on `produtoSchema`).
  *
  * #441 (UP migration takeover): a `variations_migration_source`-tagged listing
  * that has gone `closed` is the ML-side signal that a legacy `variations[]`
  * listing finished migrating to User-Products — `migrationRunner`, when
  * supplied, runs that takeover (see `importMigration.ts`'s `handleUptinMigration`,
  * wired as the default by `notificacao.ts`) INSTEAD of the normal estado merge.
- * Every other migration-tag case (the `variations_migration_uptin` tag, a
- * source-tagged item not yet `closed`, or no runner supplied) still defers.
+ * Every other migration-tag case defers, each under its OWN outcome — see the
+ * `ItemsSyncOutcome` note — and STAMPS `estado: 'am'`, since this sync is the
+ * only component that reads ML's migration tags on its own schedule and three
+ * other rungs gate on that value (`stampAguardandoMigracao` below).
+ *
+ * #1142 (User-Products FAMILIES): a family's parent link carries the FAMILY id,
+ * so a member's `items` delivery matches no parent link by `id` — `resolveLink`
+ * therefore has a SECOND stage that comes in through `variacaoMercadoLivre.itemId`
+ * and hops up the parent ref. What arrives is one of N listings the parent link
+ * summarises, so it is NOT written straight through: each member's raw status is
+ * recorded on its OWN link and the parent takes a FOLD of all of them
+ * (`upFamilyStatus.ts`).
+ *
+ * ⚠️ The fold exists for one transition. `estado` feeds `linkHasLiveListing`,
+ * which drives `produtos.integracoesComProduto` — the anchor pre-filter BOTH ML
+ * sweeps open with — so letting a single member's `closed` set the family to
+ * `'c'` would drop a produto whose siblings are still selling out of the stock
+ * and price sweeps, with nothing logged and nothing failing. `'c'` is written
+ * only when every observed member is closed, and never while one was never
+ * observed.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
 import {
   type MlItem,
   MercadoLivreHttpError,
@@ -56,11 +87,14 @@ import {
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
+  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { podeEnviarEstoque } from './bulkEstoquePlan';
 import { refMatchesIntegracao } from './linkRefs';
+import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink';
+import { foldFamilyStatus } from './upFamilyStatus';
 import type { UptinSourceLink } from './importMigration';
 import { clearFalha } from './publishFalhas';
 
@@ -84,13 +118,15 @@ export const resolveItemsApiFromContext: ItemsApiResolver = async (db, integraca
   return createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 };
 
-/** ML `tags` marking a listing that is part of an in-progress UP migration (#441). */
-const MIGRATION_TAGS: ReadonlySet<string> = new Set([
-  'variations_migration_source',
-  'variations_migration_uptin',
-]);
-/** The specific tag that, combined with `status === 'closed'`, hands off to `migrationRunner`. */
+/**
+ * The two ML `tags` marking a listing in an in-progress UP migration (#441).
+ * Kept as separate constants rather than one set: the pair is no longer
+ * interchangeable, since each now reports its own outcome and only the SOURCE
+ * one can trigger the takeover. `precoDraftSend.ts` matches the same pair by
+ * its `variations_migration_` prefix.
+ */
 const MIGRATION_SOURCE_TAG = 'variations_migration_source';
+const MIGRATION_UPTIN_TAG = 'variations_migration_uptin';
 
 /**
  * Executes the #441 UP-migration takeover for a `variations_migration_source`
@@ -108,16 +144,36 @@ export type MigrationRunner = (
 
 export type ItemsSyncOutcome =
   | 'synced' // the link (and maybe parent denorm) was updated
+  | 'synced-family' // a UP family MEMBER moved and the family's summary changed with it
+  | 'synced-member' // the member was recorded, but the family's summary did not move
   | 'unchanged' // estado/status/sub_status all already current (idempotent no-op)
   | 'no-link' // no linked produto for this item on this account
-  | 'deferred-up' // a User-Products / migrating listing — deferred to #441
   | 'migrated' // a migration-source listing went closed → #441 takeover ran
+  | 'deferred-migration-source' // ML is migrating this listing; it has not closed yet
+  | 'deferred-migration-uptin' // the migration DESTINATION listing — never a takeover trigger
+  | 'no-migration-runner' // the takeover was due and no runner was supplied (a WIRING defect)
   | 'item-gone' // the listing 404s (deleted) — nothing to sync
   | 'link-removido'; // the link doc was deleted mid-writeback — nothing was applied
 //   ⚠️ `link-removido` exists because `applyItemStatusToLink` returns FALSE when
 //   the doc vanished between the read and the write, and that boolean used to be
 //   discarded — so a refused write reported 'synced'. Reporting success for work
 //   that did not happen is the defect this whole outcome union guards against.
+//
+//   ⚠️ Which is why the three deferrals above are three values and not one. They
+//   used to be a single `'deferred-up'` shared with the two Flutter-era guards
+//   that are now gone, and that collapse is exactly what cost a day of debugging
+//   in the first live run: the log said a skip happened but not WHICH, so a bug
+//   (the UP guard) was indistinguishable from ML doing normal migration work.
+//   `'no-migration-runner'` is not a listing state at all — it means the takeover
+//   was due and nobody wired the runner. Today `notificacao.ts` always defaults
+//   one in, so it should never appear in production; if it ever does, that is the
+//   point of it having a name.
+//
+//   ⚠️ `'synced-family'` vs `'synced-member'` splits the same way, and for the
+//   same reason (#1142): both mean the notified MEMBER's status was recorded, but
+//   only the first also moved the family's summary. Collapsing them would make
+//   "the fold declined to conclude" look identical to "the family updated", which
+//   is the exact ambiguity that made the original bug invisible.
 
 /**
  * Sync one ML item's lifecycle status onto its linked `produtoMercadoLivre` doc.
@@ -126,9 +182,10 @@ export type ItemsSyncOutcome =
  * LINK-FIRST: the ML API (and its token refresh) is resolved LAZILY, only once a
  * syncable link is confirmed. `items` fires for every change to ANY of the
  * seller's listings, most of which this ERP hasn't linked — resolving the link
- * from Firestore first skips the external call entirely for `no-link` and the
- * UP/`am` deferrals, so a `no-link` notification never depends on ML availability
- * or burns a quota/token refresh.
+ * from Firestore first skips the external call entirely for `no-link`, so such a
+ * notification never depends on ML availability or burns a quota/token refresh.
+ * Every REMAINING deferral costs one `GET /items/{id}`, and must: they turn on
+ * the item's `tags`, which only ML can answer for.
  */
 export async function syncItemStatus(
   db: Firestore,
@@ -140,14 +197,6 @@ export async function syncItemStatus(
   const link = await resolveLink(db, itemId, integracaoId);
   if (!link) return 'no-link';
 
-  // Cheap (link-only) User-Products / migration guard → #441: a UP link or a
-  // listing still awaiting migration (`estado === 'am'`) is driven by the Flutter
-  // app during dual-run; touching `estado` here would fight it. Skipped BEFORE any
-  // ML call — the migration-TAG case (which needs the fetched item) is checked below.
-  if (link.data.isUserProductModel === true || link.data.estado === 'am') {
-    return 'deferred-up';
-  }
-
   const api = await resolveApi(db, integracaoId);
   let item: MlItem;
   try {
@@ -158,14 +207,38 @@ export async function syncItemStatus(
     throw err; // transient (5xx/429/network) or reauth → the queue/sweep retry
   }
 
-  // Migration-tagged item (needs the fetched item's `tags`). The ONE takeover
-  // case — this listing's source tag + it just went `closed` + a runner was
-  // supplied — hands off to the #441 UP-migration branch INSTEAD of the normal
-  // estado merge below. Every other tag combination (the uptin tag, a
-  // source-tagged item still open, or no runner supplied) keeps deferring, same
-  // as before #441 existed.
+  // ⚠️ The FAMILY branch comes FIRST, above the migration-tag branches, and the
+  // ordering is load-bearing. Under stage-2 resolution `link` is the family's
+  // PARENT — so a tag branch here would let ONE member's tags speak for the whole
+  // family un-folded: `stampAguardandoMigracao` would write `estado: 'am'` on the
+  // parent, which blocks publish and makes both the price and stock planners skip
+  // every sibling. Worse, the takeover branch would hand `migrationRunner` a
+  // MEMBER item id together with the family's parent link as the migration
+  // SOURCE, pointing a prune at a live family.
+  //
+  // Nothing is lost by skipping the tag branches here: a UPtin migration's source
+  // is by definition a LEGACY `variations[]` listing, whose parent link carries an
+  // item id and therefore resolves through stage 1, never stage 2. A stage-2
+  // resolution is already User-Products, so it cannot be the source of a
+  // migration INTO User Products.
+  if (link.member) {
+    return syncFamilyMember(db, integracaoId, item, link, link.member);
+  }
+
+  // Migration-tagged item (needs the fetched item's `tags`) — the only reason
+  // left to skip a listing, and it is ML's reason, not ours. The ONE takeover
+  // case is this listing's source tag + it just went `closed` + a runner was
+  // supplied: it hands off to the #441 UP-migration branch INSTEAD of the normal
+  // estado merge below. Every other combination defers, but each says which.
   const tags = item.tags ?? [];
-  if (tags.includes(MIGRATION_SOURCE_TAG) && item.status === 'closed' && migrationRunner) {
+  if (tags.includes(MIGRATION_SOURCE_TAG) && item.status === 'closed') {
+    // Due — but only a supplied runner can actually take over. Reporting the
+    // two apart is the difference between "ML is mid-migration" (normal) and
+    // "the takeover never ran because nobody wired it" (a defect).
+    if (!migrationRunner) {
+      await stampAguardandoMigracao(db, link);
+      return 'no-migration-runner';
+    }
     const sourceLink: UptinSourceLink = {
       produtoId: link.produtoId,
       linkDocId: link.docId,
@@ -174,13 +247,46 @@ export async function syncItemStatus(
     await migrationRunner(db, integracaoId, itemId, sourceLink);
     return 'migrated';
   }
-  if (tags.some((t) => MIGRATION_TAGS.has(t))) {
-    return 'deferred-up';
+  // Of the two DEFERRALS the uptin one is tested first (the takeover above still
+  // outranks both): that tag marks the migration's DESTINATION, so a listing
+  // carrying both must not report as a source still waiting to close.
+  if (tags.includes(MIGRATION_UPTIN_TAG)) {
+    await stampAguardandoMigracao(db, link);
+    return 'deferred-migration-uptin';
+  }
+  if (tags.includes(MIGRATION_SOURCE_TAG)) {
+    await stampAguardandoMigracao(db, link);
+    return 'deferred-migration-source';
   }
 
-  const estado = estadoFromMlStatus(item.status);
-  const status = item.status ?? null;
-  const subStatus = item.sub_status ?? null;
+  return applyResolvedStatus(
+    db,
+    integracaoId,
+    link,
+    itemId,
+    item.status ?? null,
+    item.sub_status ?? null,
+  );
+}
+
+/**
+ * Write one already-decided status onto a parent link, with the #781 re-arm and
+ * the coarse-transition denorm gate.
+ *
+ * Shared by both paths so a family and a simple listing converge through
+ * IDENTICAL rules — the two differ only in where the status came from (the
+ * fetched item vs the fold) and in `denormItemId`, which must be the key the
+ * denorm was originally stamped with.
+ */
+async function applyResolvedStatus(
+  db: Firestore,
+  integracaoId: string,
+  link: ResolvedLink,
+  denormItemId: string,
+  status: string | null,
+  subStatus: string[] | null,
+): Promise<ItemsSyncOutcome> {
+  const estado = estadoFromMlStatus(status);
 
   const currentEstado = typeof link.data.estado === 'string' ? link.data.estado : null;
   const currentStatus = typeof link.data.status === 'string' ? link.data.status : null;
@@ -212,19 +318,218 @@ export async function syncItemStatus(
   const applied = await applyItemStatusToLink(
     db,
     integracaoId,
-    { produtoId: link.produtoId, linkDocId: link.docId, itemId },
-    item,
+    { produtoId: link.produtoId, linkDocId: link.docId, itemId: denormItemId },
+    { status, sub_status: subStatus },
     {
       nowMs: Date.now(),
       // The denorm is a COARSE-transition-only write (legacy gate) — skip it when
-      // only status/sub_status/errors moved.
-      skipDenorm: !estadoChanged,
+      // only status/sub_status/errors moved. Also skipped outright when the parent
+      // carries no `id`: there would be no key to union or remove by, and inventing
+      // one is how the arrays grow entries nothing can ever match.
+      skipDenorm: !estadoChanged || denormItemId === '',
       extra: errorsToClear ? clearFalha() : {},
     },
   );
 
   // It already warns; the point here is that the CALLER learns nothing was written.
   return applied ? 'synced' : 'link-removido';
+}
+
+/**
+ * The User-Products FAMILY path (#1142): record what ML said about THIS member,
+ * then re-derive the family's summary from every member.
+ *
+ * ⚠️ The denorm key is the PARENT link's own `id`, never the notified member's.
+ * Publish and import both stamped `produtos.marketplace` with the family id
+ * (member ids go on the CHILD produtos, in a different shape), so keying on the
+ * member would `arrayUnion` an entry nothing ever removes AND leave the cancel
+ * arm's `externalId` filter matching nothing — a removal that silently no-ops.
+ */
+async function syncFamilyMember(
+  db: Firestore,
+  integracaoId: string,
+  item: MlItem,
+  link: ResolvedLink,
+  member: ResolvedMember,
+): Promise<ItemsSyncOutcome> {
+  const status = item.status ?? null;
+  const subStatus = item.sub_status ?? null;
+
+  const parentRef = produtoMercadoLivreLinkCollection.docRef(
+    db,
+    { produtoId: link.produtoId },
+    link.docId,
+  );
+  const produtoRef = produtoCollection.docRef(db, {}, link.produtoId);
+  const siblingQuery = familyMemberQuery(db, member.pmlOuterRef);
+
+  return db.runTransaction(async (tx): Promise<ItemsSyncOutcome> => {
+    // ---- READS. All of them, before any write (Firestore's rule), and every
+    // input below is re-derived from THESE — never from `link.data` or
+    // `member.raw`, which were captured before the ML fetch and are stale by
+    // exactly the width of that round trip.
+    const [members, parentSnap, produtoSnap] = await Promise.all([
+      tx.get(siblingQuery),
+      tx.get(parentRef),
+      tx.get(produtoRef),
+    ]);
+    if (!parentSnap.exists) return 'link-removido';
+    const parent = (parentSnap.data() ?? {}) as Record<string, unknown>;
+
+    // ---- Re-derive the fold from the transaction's OWN view of every member.
+    // Reading the siblings INSIDE the transaction is the whole guard: the read
+    // set includes every member doc, so a concurrent task writing a DIFFERENT
+    // member of this family aborts this callback and it retries against the
+    // value that writer committed.
+    let notified: (typeof members.docs)[number] | null = null;
+    const foldable: Array<{ status: string | null; subStatus: string[] | null }> = [];
+    for (const d of members.docs) {
+      const raw = d.data() as Record<string, unknown>;
+      const isNotified =
+        d.id === member.docId && (d.ref.parent?.parent?.id ?? '') === member.produtoId;
+      if (isNotified) notified = d;
+      // ⚠️ A row with no `itemId` is not an ML listing at all — the legacy
+      // `variations[]` branch leaves the field null (`importCore.ts`). Passing it
+      // to the fold would count it as "never observed", and since no notification
+      // can ever arrive for something that was never published, the family could
+      // NEVER conclude `'c'`. Excluded outright: absent, not unknown.
+      if (!isNotified && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
+      foldable.push(
+        isNotified
+          ? { status, subStatus }
+          : {
+              status: typeof raw.status === 'string' ? raw.status : null,
+              subStatus: Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null,
+            },
+      );
+    }
+    // The notified member should be among its own siblings (they share the parent
+    // ref it was found by); if a delete removed it, its fresh reading still counts.
+    if (!notified) foldable.push({ status, subStatus });
+
+    const notifiedRaw = (notified?.data() ?? {}) as Record<string, unknown>;
+    const memberChanged =
+      notified != null &&
+      (status !== (typeof notifiedRaw.status === 'string' ? notifiedRaw.status : null) ||
+        !stringArraysEqual(
+          subStatus,
+          Array.isArray(notifiedRaw.sub_status) ? (notifiedRaw.sub_status as string[]) : null,
+        ));
+
+    const folded = foldFamilyStatus(foldable);
+
+    // ---- Parent decision, re-derived from the tx-fresh parent snapshot.
+    const estado = folded ? estadoFromMlStatus(folded.status) : null;
+    const currentEstado = typeof parent.estado === 'string' ? parent.estado : null;
+    const currentStatus = typeof parent.status === 'string' ? parent.status : null;
+    const currentSubStatus = Array.isArray(parent.sub_status)
+      ? (parent.sub_status as string[])
+      : null;
+    const currentErrors = Array.isArray(parent.errors) ? parent.errors : [];
+    const errorsToClear =
+      folded != null &&
+      currentErrors.length > 0 &&
+      podeEnviarEstoque(folded.status, folded.subStatus).enviar;
+    const estadoChanged = folded != null && estado !== currentEstado;
+    const parentChanged =
+      folded != null &&
+      (estadoChanged ||
+        folded.status !== currentStatus ||
+        !stringArraysEqual(folded.subStatus, currentSubStatus) ||
+        errorsToClear);
+
+    // ---- WRITES.
+    if (memberChanged && notified) {
+      tx.set(notified.ref, { status, sub_status: subStatus }, { merge: true });
+    }
+
+    if (!folded || !parentChanged) {
+      // Either the members do not support a conclusion (every observed one closed,
+      // some never observed — see `foldFamilyStatus`), or the summary already
+      // matches. Saying which happened is the difference between "nothing to do"
+      // and "recorded, cannot summarise yet".
+      return memberChanged ? 'synced-member' : 'unchanged';
+    }
+
+    // ⚠️ The denorm key is the PARENT link's own `id`, never the notified member's.
+    // Publish and import both stamped `produtos.marketplace` with the family id
+    // (member ids go on the CHILD produtos, in a different shape), so keying on the
+    // member would arrayUnion an entry nothing ever removes AND leave the cancel
+    // arm's `externalId` filter matching nothing.
+    const familyItemId = typeof parent.id === 'string' ? parent.id : '';
+    if (estadoChanged && familyItemId !== '' && produtoSnap.exists) {
+      // Same transaction as the link write, so the denorm-first ordering
+      // `applyItemStatusToLink` needs does not apply here: there is no window in
+      // which one landed and the other did not.
+      const produtoRaw = (produtoSnap.data() ?? {}) as Record<string, unknown>;
+      if (estado === ESTADO_PUBLICACAO_ML.cancelado) {
+        const patch = removeMarketplaceEntry(produtoRaw, integracaoId, familyItemId);
+        if (patch) tx.update(produtoRef, patch);
+      } else {
+        tx.update(produtoRef, {
+          marketplace: FieldValue.arrayUnion({
+            integracaoUid: integracaoId,
+            externalId: familyItemId,
+          }),
+          marketplaceIds: FieldValue.arrayUnion(familyItemId),
+        });
+      }
+    }
+
+    tx.update(parentRef, {
+      estado,
+      status: folded.status,
+      sub_status: folded.subStatus,
+      ultimaModificacao: Date.now(),
+      ...(errorsToClear ? clearFalha() : {}),
+    });
+
+    return 'synced-family';
+  });
+}
+
+/**
+ * Record ML's "this listing is mid-UP-migration" verdict on the link doc as
+ * `estado: 'am'`.
+ *
+ * ⚠️ Without this, `'am'` has no PRODUCER at all. It never had one in this repo —
+ * the value only ever arrived from the Flutter app — and the guard removed above
+ * was the last thing keeping the Flutter-era values alive, since the normal merge
+ * below now overwrites `'am'` the moment ML reports no migration tag. Three rungs
+ * still gate on it: `publishCore.ts` (blocks publish), `precoPlan.ts`
+ * (`AGUARDANDO_MIGRACAO`) and `bulkEstoquePlan.ts` (`aguardando-migracao`). Of the
+ * send paths only the price one re-reads the tags itself
+ * (`precoDraftSend.ts`'s `MIGRATION_TAG_PREFIX`); `estoqueSend.ts` and `publish.ts`
+ * check NOTHING. So a listing ML is mid-flight rebuilding would be published to
+ * and stock-pushed, earning the 404 `publishCore.ts` describes.
+ *
+ * This sync is the only component that observes those tags on its own schedule —
+ * it is holding the fetched item right here — so it is the only one that can
+ * answer, and discarding that into a return string would leave the three rungs
+ * reading as live protection nothing can trigger.
+ *
+ * ⚠️ It clears the way every other field here does: the next delivery reporting no
+ * migration tag runs the normal merge and overwrites `'am'` with the real status.
+ * That is this module's ordinary staleness, not a new class of it — and unlike a
+ * static listing, one mid-migration is by definition changing, with a terminal
+ * event (`closed`) this module already depends on firing. `reverificarAnuncio` is
+ * the manual escape if ML ever drops a tag without a notification.
+ *
+ * Idempotent: writes only when the value actually moves, so a redelivery is free.
+ */
+async function stampAguardandoMigracao(db: Firestore, link: ResolvedLink): Promise<void> {
+  if (link.data.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) return;
+  // `mergeIfExists`, never `merge` — same reason as the writeback below: the link
+  // was resolved earlier and an upsert would resurrect a ghost with no schema.
+  await produtoMercadoLivreLinkCollection.mergeIfExists(
+    db,
+    { produtoId: link.produtoId },
+    link.docId,
+    {
+      estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao,
+      ultimaModificacao: Date.now(),
+    },
+  );
 }
 
 /** The link doc one status refresh targets, plus the ML item id the denorm keys on. */
@@ -251,7 +556,7 @@ export interface ApplyItemStatusOpts {
 
 /**
  * Write one ML item's lifecycle status onto its link doc, plus the parent
- * produto's dual-run marketplace denorm. Extracted so the `items` webhook and
+ * produto's legacy marketplace denorm. Extracted so the `items` webhook and
  * the stock sender's terminal 4xx branch (#781) refresh a listing IDENTICALLY —
  * the sender learns the listing's real state from ML instead of leaving a stale
  * `status: 'active'` behind, which is what made a rejected send retry forever.
@@ -271,8 +576,8 @@ export interface ApplyItemStatusOpts {
  * advances once the denorm has succeeded.
  *
  * The denormalized arrays are DEPRECATED (the link subcollections resolve
- * linkage now) but kept in the exact shape publish/import stamp during dual-run
- * — see the canonical cluster note on `produtoSchema` and #992, which tracks
+ * linkage now) but kept in the exact shape publish/import stamp, which is also
+ * the shape the migrated corpus carries — see the canonical cluster note on `produtoSchema` and #992, which tracks
  * deleting all three fields in one piece after the cutover.
  *
  * This path does not write the third cluster member, the legacy
@@ -302,7 +607,7 @@ export async function applyItemStatusToLink(
   // the writes below still half-applies. Closing that window entirely needs both
   // writes in one transaction — a bigger change than this one, and the residual
   // race is the same denorm drift the arrays already tolerate (they are
-  // DEPRECATED, dual-run only). `mergeIfExists` still backstops the link half.
+  // DEPRECATED). `mergeIfExists` still backstops the link half.
   const linkSnap = await produtoMercadoLivreLinkCollection
     .docRef(db, { produtoId: target.produtoId }, target.linkDocId)
     .get();
@@ -356,16 +661,46 @@ export async function applyItemStatusToLink(
 
 /* -------------------------------------------------------------------------- */
 
+/** The family member a notification came in through, when it did (#1142). */
+interface ResolvedMember {
+  /** The variation CHILD produto owning the member link. */
+  produtoId: string;
+  /** The `variacaoMercadoLivre` doc id. */
+  docId: string;
+  /** The member link's raw payload. */
+  raw: Record<string, unknown>;
+  /** The parent's outer ref — the key the sibling fold reads by. */
+  pmlOuterRef: string;
+}
+
 interface ResolvedLink {
   produtoId: string;
   docId: string;
   data: Record<string, unknown>;
+  /**
+   * Set ONLY when the item resolved through a User-Products family member rather
+   * than the parent link's own `id`. Its presence is what selects the fold path:
+   * the notified item is one of N listings this link summarises, so its status
+   * cannot be written straight through.
+   */
+  member?: ResolvedMember;
 }
 
 /**
- * Resolve the `produtoMercadoLivre` link for `itemId` on this account — the same
- * cross-app key the import + Flutter app match on: a collectionGroup query on the
- * `id` field, filtered to this integração's `contaOuterRef`.
+ * Resolve the `produtoMercadoLivre` link for `itemId` on this account.
+ *
+ * TWO stages, and the order is the cost model. First the parent link's own `id`
+ * — the cross-app key the import and the Flutter app match on, and the answer for
+ * every simple listing and every UP single-item one. Only on a miss does it try
+ * the User-Products FAMILY route, where the notified id belongs to a member and
+ * the parent carries the FAMILY id instead (`publish.ts`: `familyId ?? itemIds[0]`),
+ * so a member's delivery matches no parent link at all (#1142).
+ *
+ * The second stage costs one more indexed group query, paid only by items the
+ * first stage could not place — which includes every genuinely unlinked item, the
+ * bulk of the `items` stream. That is the deliberate trade: a family's status was
+ * previously unreachable, and the alternative (querying members first) would tax
+ * the common case instead.
  */
 async function resolveLink(
   db: Firestore,
@@ -382,6 +717,25 @@ async function resolveLink(
     const produtoId = d.ref.parent?.parent?.id;
     if (produtoId) return { produtoId, docId: d.id, data };
   }
+
+  // Stage 2 — a UP family member. Ownership is proven through the PARENT's
+  // `contaOuterRef` inside the resolver, never the member's own (which is null on
+  // every pre-#920 row until the backfill runs).
+  const member = await resolveUpFamilyByMemberItemId(db, itemId, integracaoId);
+  if (member) {
+    return {
+      produtoId: member.produtoId,
+      docId: member.linkDocId,
+      data: member.linkRaw,
+      member: {
+        produtoId: member.childProdutoId ?? '',
+        docId: member.memberDocId,
+        raw: member.memberRaw,
+        pmlOuterRef: member.pmlOuterRef,
+      },
+    };
+  }
+
   // ⚠️ "no link exists" and "a link exists but belongs to another conta" are
   // very different problems with the same symptom, and both used to leave the
   // caller with a bare `no-link`. The candidate count separates them: 0 means the
@@ -396,7 +750,7 @@ async function resolveLink(
 }
 
 /**
- * Maintain the parent produto's dual-run marketplace arrays on an estado change:
+ * Maintain the parent produto's legacy marketplace arrays on an estado change:
  * ensure-present on a live transition (idempotent arrayUnion), key-based removal
  * on a cancel (a dead listing must stop being advertised).
  *

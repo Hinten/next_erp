@@ -205,9 +205,9 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
    * read-modify-write re-applying a snapshot captured many awaits earlier
    * (the doc is read at the top of this function; the ML round trip, the chart
    * binding and every picture upload happen in between). Root `CLAUDE.md` rule
-   * 7 names that shape exactly, and the still-running Flutter app is a LIVE
-   * concurrent writer to these same documents — as are the items webhook, the
-   * price sync and the stock sender. An operator's `descricao` edit landing
+   * 7 names that shape exactly, and these documents have several live concurrent
+   * writers — the items webhook, the price sync, the stock sender and the
+   * operator in the editor. An operator's `descricao` edit landing
    * during a publish was silently reverted to whatever we read at the start.
    *
    * Patching only publish-owned fields makes the race impossible rather than
@@ -550,7 +550,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     isUserProductModel: input.isUserProductSeller,
     // #799 bug 7: the attributes we just sent, minus the ones rebuilt from
     // the produto on every publish (appending those back would duplicate
-    // them). Without this a produto never touched by Flutter keeps
+    // them). Without this a produto the legacy app never published keeps
     // `attributes: null` forever and the editor has nothing to load.
     // `id` is optional on MlAttribute for ML's id-less custom characteristic,
     // which only ever appears in a variation's combinations — never here. The
@@ -565,7 +565,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     ultimaModificacao: now,
   });
 
-  // ---- Dual-run denorm stamps (DEAD WEIGHT — see the schema note) ---------
+  // ---- Legacy denorm stamps (DEAD WEIGHT — see the schema note) ---------
   // ⛔ `marketplace` / `marketplaceIds` have NO QUERY CONSUMERS in this repo —
   // nothing filters, projects or orders by them, and the only reads are these
   // fields' own read-modify-write maintenance (`stampChildMarketplace` below is
@@ -598,8 +598,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   //  2. ~~COUPLING~~ — BROKEN by #920. The array used to be removable only by
   //     deriving it from `marketplace`, which is why the three were an
   //     all-or-nothing cluster; the triggers derive it from the links instead.
-  //  3. DUAL-RUN — the Flutter backend above. Lifts at the decommission, and
-  //     takes `marketplace` + `marketplaceIds` + these stamps with it.
+  //  3. ~~DUAL-RUN~~ — VOID. This assumed the Flutter backend read these stamps
+  //     while running alongside us; there is no dual run (root `CLAUDE.md`
+  //     rule 8), so nothing outside this repo consumes them and #992 waits on
+  //     no decommission. `marketplace` + `marketplaceIds` go with them.
   //
   // The stamps run once the ML item write has SUCCEEDED (the error path above
   // never stamps) — a later failure (e.g. the description step) leaves them in
@@ -869,7 +871,7 @@ async function loadTabelaBinding(
 }
 
 /**
- * Dual-run stamp for a VARIATION CHILD's deprecated `marketplace` arrays —
+ * Legacy stamp for a VARIATION CHILD's deprecated `marketplace` arrays —
  * legacy read-clean-write semantics (`exportarProdutos.dart` variation loop):
  * drop stale same-conta entries for this listing (a recreated variation gets a
  * new ML id) and parent-shaped entries wrongly sitting on a child, then append

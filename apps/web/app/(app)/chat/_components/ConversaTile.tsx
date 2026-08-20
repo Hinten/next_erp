@@ -52,6 +52,10 @@ function DeliveryTick({ estado }: { estado: EstadoEnvioMensagem | undefined }) {
       return <IconClock size={14} color="var(--mantine-color-gray-5)" aria-label="Enviando" />;
     case ESTADO_ENVIO.enviado:
       return <IconChecks size={14} color="var(--mantine-color-gray-5)" aria-label="Enviado" />;
+    case ESTADO_ENVIO.recebido:
+    case ESTADO_ENVIO.excluido:
+    case ESTADO_ENVIO.banida:
+    case ESTADO_ENVIO.desconhecido:
     default:
       return null;
   }

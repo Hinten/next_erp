@@ -174,7 +174,7 @@ describe('onIntegracaoMercadoLivreChanged wiring', () => {
       expect(core.sincronizarIntFreteDaConta).not.toHaveBeenCalled();
     });
 
-    it('re-drives on create when the conta already carries a user_id (Flutter dual-run)', async () => {
+    it('re-drives on create when the conta already carries a user_id (legacy corpus)', async () => {
       await run(null, conta({ user_id: 999 }));
       expect(notif.redriveDeferredForUserId).toHaveBeenCalledWith(admin.db, 999);
     });

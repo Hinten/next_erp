@@ -45,6 +45,7 @@ import {
 } from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
+import { tasksInvokerOptions } from '../tasksInvoker';
 import { movimentoEstoqueWrite } from './aplicarEstoque';
 import {
   BALANCO_MAX_ATTEMPTS,
@@ -705,6 +706,9 @@ export const finalizarBalanco = onCall(async (request) => {
  */
 export const processarBalanco = onTaskDispatched(
   {
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: {
       maxAttempts: BALANCO_MAX_ATTEMPTS,
       minBackoffSeconds: 10,

@@ -3,7 +3,7 @@
  * for User-Products (#521). Called from `import.ts` once the parent produto +
  * its `produtoMercadoLivre` link exist: writes one child produto per usable
  * entry — its own produto doc, `variacaoMercadoLivre` link, estoque, and the
- * dual-run `marketplace` denorm — using the taxonomy resolved by
+ * legacy `marketplace` denorm — using the taxonomy resolved by
  * `importTaxonomia` (#519) and the pure assembly in
  * `importCore.assembleVariationChildPlan`.
  *
@@ -83,6 +83,13 @@ export interface ImportVariationChildrenResult {
  */
 export interface ImportVariationChildrenUpOptions {
   parentLinkDocId: string;
+  /**
+   * The member item's own raw ML status (#1142). Under User Products each member
+   * IS its own listing, so this is the item's own `status`/`sub_status` — the
+   * durable input the family `estado` fold reads.
+   */
+  status: string | null;
+  subStatus: string[] | null;
 }
 
 export async function importVariationChildren(
@@ -146,7 +153,9 @@ export async function importVariationChildren(
       existingLinkRaw: resolved?.linkRaw ?? null,
       existingEstoqueQty: existingStock?.quantidade ?? null,
       existingEstoqueReservada: existingStock?.reservada ?? null,
-      up: up ? { itemId: mappedVariation.variationId } : null,
+      up: up
+        ? { itemId: mappedVariation.variationId, status: up.status, subStatus: up.subStatus }
+        : null,
       now,
     };
     let plan = assembleVariationChildPlan(args);
@@ -218,7 +227,7 @@ export async function importVariationChildren(
       .docRef(db, { produtoId }, linkDocId)
       .set(variacaoMercadoLivreLinkCollection.parse(plan.link));
 
-    // Dual-run denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
+    // Legacy denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
     // this repo, deleted at the decommission. Canonical note on
     // `produtoSchema`; the lock list is at `publish.ts`'s parent stamp).
     // Child entries carry `externalParentId` (the
@@ -390,8 +399,8 @@ async function resolveExistingChild(args: ResolveExistingChildArgs): Promise<Res
     if (numericId != null) {
       // Both filters server-side: a variation id is only unique within its item, so
       // filtering the parent-link ref in memory would pull every same-id link doc
-      // across the whole DB. Exact string equality is safe here (both apps write the
-      // same `documents/...` form) — unlike the parent's tolerant refMatchesIntegracao.
+      // across the whole DB. Exact string equality is safe here (migrated docs
+      // carry the same `documents/...` form) — unlike the parent's tolerant refMatchesIntegracao.
       const linkSnap = await variacaoMercadoLivreLinkCollection
         .groupQuery(db)
         .where('id', '==', numericId)
@@ -550,7 +559,7 @@ function numericVariationId(variationId: string): number | null {
 }
 
 /**
- * Stable hex hash for deterministic child produto ids (dual-run convergence) —
+ * Stable hex hash for deterministic child produto ids (legacy-id convergence) —
  * a local copy of `import.ts`'s helper (same 3-liner) rather than a cross-import,
  * to avoid a module cycle between the parent and children orchestrators.
  */

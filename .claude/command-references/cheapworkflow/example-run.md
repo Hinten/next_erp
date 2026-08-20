@@ -3,8 +3,8 @@
 Fictional but realistic slice: **issue #312 — port the payment-webhook
 reconciliation module** from a legacy service into `apps/payments`. The
 approved plan names one deliberately hard component: `reconcileLedger.ts`, a
-concurrent read-modify-write over a shared ledger doc that both the old and
-new service mutate during a dual-run migration.
+concurrent read-modify-write over a shared ledger doc that an out-of-order
+provider webhook and the reprocess sweep can both mutate at once.
 
 This file shows the FULL sequence: contract-locking → the Fable authorization
 ask → the script with haiku/sonnet/fable implementers and opus/fable
@@ -36,7 +36,7 @@ read-modify-write on a doc two services mutate, where a lost update corrupts
 money. So the main loop asks — and waits:
 
 > This slice has one extremely complex component: `reconcileLedger.ts` — a
-> concurrent ledger merge both services write during dual-run; a lost update
+> concurrent ledger merge a webhook and a sweep both write; a lost update
 > here corrupts balances. I'd like to escalate two agents to **Fable** (our
 > top tier, costs more than the default ladder):
 > 1. the **implementer** of `reconcileLedger.ts` (+ its tests),

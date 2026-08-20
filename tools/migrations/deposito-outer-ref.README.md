@@ -23,8 +23,9 @@ before an `--apply` run, not after it.
 
 **Inside the cutover window, and after #933.** Two reasons, in that order:
 
-1. The Flutter app is a **live writer** on `estoques`. A run before it stops is
-   partially undone by every write that lands afterwards. The pass is idempotent,
+1. The Flutter app is the **sole live writer** on `estoques` in the _source_
+   project until the window switches it off. A run before that is superseded by
+   every legacy write that lands afterwards. The pass is idempotent,
    so an early run is not _harmful_ — it is simply not finished, and the
    authoritative run is the one inside the window.
 2. The `historicoEstoque` v1 → v2 pass (#933) **authors canonical
@@ -33,7 +34,7 @@ before an `--apply` run, not after it.
 
 **This normalizes data only — no reader is narrowed.** The Mercado Livre sweep's
 two-form disjunction and its accumulate-don't-overwrite aggregate stay exactly as
-they are, because Flutter keeps writing until it is decommissioned. Tightening
+they are, because the migrated corpus carries both encodings. Tightening
 readers to a single encoding is a separate, post-cutover question (#836). That
 also means this pass can be skipped or re-run freely without breaking anything:
 nothing depends on it having happened.

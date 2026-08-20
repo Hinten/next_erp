@@ -6,7 +6,10 @@
       "source": ".deploy/nfe-functions",
       "codebase": "nfe",
       "runtime": "nodejs22",
-      "predeploy": ["node apps/nfe/functions/scripts/prepare-deploy.mjs"],
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs nfe",
+        "node apps/nfe/functions/scripts/prepare-deploy.mjs"
+      ],
       "ignore": ["node_modules"]
     }
   ]

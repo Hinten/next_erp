@@ -16,7 +16,13 @@ import {
   type MlCategoryAttribute,
   type MlCategoryListingType,
   type MlClaim,
+  type MlAnswerResult,
+  type MlPackMessages,
+  type MlQuestion,
   type MlClaimMessage,
+  type MlClaimAttachmentUpload,
+  type MlExpectedResolution,
+  type MlPartialRefundOffers,
   type MlClaimReason,
   type MlClaimSearch,
   type MlDomainDiscovery,
@@ -59,8 +65,14 @@ import {
   migrationLiveListingSchema,
   mlBillingInfoSchema,
   mlClaimMessagesSchema,
+  mlClaimAttachmentUploadSchema,
+  mlExpectedResolutionsSchema,
+  mlPartialRefundOffersSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
+  mlAnswerResultSchema,
+  mlPackMessagesSchema,
+  mlQuestionSchema,
   mlClaimSearchSchema,
   mlMissedFeedsSchema,
   mlPaymentSchema,
@@ -342,6 +354,89 @@ export interface MercadoLivreApi {
   /** `GET /catalog_domains/{id}` — domain label for pickers. */
   getCatalogDomain(domainId: string): Promise<MlCatalogDomain>;
 
+  /**
+   * `GET /questions/{questionId}?api_version=4` — one pre-sale question (#532).
+   *
+   * `api_version=4` is NOT optional: without it ML returns the legacy shape,
+   * which omits `buyer_id` and nests the asker differently. The importer keys
+   * the contact on that id, so the older shape would silently lose it.
+   */
+  getQuestion(questionId: number): Promise<MlQuestion>;
+
+  /**
+   * `POST /answers` — answer a question (#533). Body `{ question_id, text }`.
+   *
+   * ⚠️ SINGLE-SHOT and PUBLIC. Once it lands the question flips to `ANSWERED`
+   * and the answer is visible on the listing; there is no edit and no retract.
+   * Callers must re-check the status against LIVE ML immediately before
+   * calling, never against a stored copy.
+   *
+   * ML caps an answer at 2000 characters.
+   */
+  answerQuestion(questionId: number, text: string): Promise<MlAnswerResult>;
+
+  /** `DELETE /questions/{id}` — remove a question from the listing (#533). */
+  deleteQuestion(questionId: number): Promise<void>;
+
+  /**
+   * `POST /users/{sellerId}/questions_blacklist` — stop a buyer from asking
+   * further questions on this seller's listings (#533).
+   */
+  blockUserFromQuestions(sellerId: number, buyerId: number): Promise<void>;
+
+  /**
+   * `POST /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale` — reply on
+   * a post-sale thread (#533).
+   *
+   * ⚠️ `to.user_id` must be the site’s **messaging AGENT**, not the buyer —
+   * see `postSaleAgentUserId`. ML also caps the body at the thread’s own
+   * `seller_max_message_length`, which the caller reads from a prior GET.
+   */
+  sendPackMessage(
+    packId: string,
+    sellerId: string,
+    body: { text: string; toUserId: number; attachments?: readonly string[] },
+  ): Promise<void>;
+
+  /**
+   * `GET /messages/{messageId}?tag=post_sale` — ONE post-sale message, used to
+   * resolve a `messages` notification's bare id to the pack it belongs to
+   * (#532).
+   *
+   * ⚠️ `mark_as_read=false` is deliberate. The plain GET MARKS THE THREAD READ
+   * as a side effect, and an importer must not silently clear the buyer's
+   * unread state — that is an operator decision, and ML surfaces unread
+   * counts the seller relies on.
+   */
+  getMessage(messageId: string): Promise<MlPackMessages>;
+
+  /**
+   * `GET /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale` — a pack's
+   * whole thread, WITH the `conversation_status` that says whether we can
+   * still reply (#532). Same `mark_as_read=false` reasoning as above.
+   *
+   * When a pack id is absent ML accepts the ORDER id in the same position,
+   * keeping the `/packs/` path — that fallback is the caller's to apply.
+   */
+  /**
+   * `GET /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale&mark_as_read=false`
+   * — ONE page of a post-sale thread, plus `conversation_status` and the live
+   * `seller_max_message_length`.
+   *
+   * ⚠️ **Paginated, with a default page of 10.** Callers that need the whole
+   * thread must loop on `paging.total`; a bare call returns the first ten
+   * messages and nothing says so.
+   *
+   * ⚠️ `mark_as_read=false` is not optional. The plain GET marks the thread
+   * read as a side effect, and an importer must not clear the unread state the
+   * seller relies on.
+   */
+  getPackMessages(
+    packId: string,
+    sellerId: string,
+    paginacao?: { limit?: number; offset?: number },
+  ): Promise<MlPackMessages>;
+
   /** `GET /post-purchase/v1/claims/{claimId}` — one claim (claims import, Step 14). */
   getClaim(claimId: number): Promise<MlClaim>;
   /**
@@ -357,6 +452,61 @@ export interface MercadoLivreApi {
    * because `request()` ALWAYS sends the Bearer header.
    */
   getClaimReason(reasonId: string): Promise<MlClaimReason>;
+
+  /* ---------------------- Claim respond + resolve (#768) ---------------- */
+
+  /**
+   * `POST /post-purchase/v1/claims/{id}/actions/send-message`.
+   *
+   * ⚠️ `receiverRole` is not cosmetic. Once a mediation is open ML routes the
+   * seller's messages through the mediator and a message aimed at the
+   * complainant is refused — derive it from the available action rather than
+   * guessing (`receiverRoleDaAcao`).
+   *
+   * ⚠️ `attachments` must be OMITTED, not empty: ML validates the keys it is
+   * given, so `[]` invites a 422 for nothing.
+   */
+  sendClaimMessage(
+    claimId: number,
+    body: { receiverRole: string; message: string; attachments?: readonly string[] },
+  ): Promise<void>;
+
+  /**
+   * `POST /post-purchase/v1/claims/{id}/attachments` — multipart, returns the
+   * key a message then references.
+   *
+   * ⚠️ 5 MB, JPG/PNG/PDF, filename ≤125 chars of `[a-zA-Z0-9_\-.]` — and the
+   * key EXPIRES in 48h if no message claims it (see `ML_CLAIM_ANEXO`).
+   */
+  uploadClaimAttachment(
+    claimId: number,
+    file: { data: Uint8Array; filename: string; contentType: string },
+  ): Promise<MlClaimAttachmentUpload>;
+
+  /** `POST …/actions/open-dispute` — escalate to a Mercado Livre mediator. */
+  openClaimDispute(claimId: number): Promise<MlClaim>;
+
+  /** `POST …/expected-resolutions/refund` — refund the buyer in full; closes the claim. */
+  refundClaim(claimId: number): Promise<MlExpectedResolution[]>;
+
+  /** `POST …/expected-resolutions/allow-return` — accept the product back. */
+  allowClaimReturn(claimId: number): Promise<MlExpectedResolution[]>;
+
+  /**
+   * `GET …/partial-refund/available-offers` — the ONLY percentages ML accepts.
+   * Read this before offering one; see {@link partialRefundClaim}.
+   */
+  getClaimPartialRefundOffers(claimId: number): Promise<MlPartialRefundOffers>;
+
+  /**
+   * `POST …/expected-resolutions/partial-refund` with `{ percentage }`.
+   *
+   * ⚠️ The percentage MUST come from `getClaimPartialRefundOffers`. ML answers
+   * `400 "Percentage not found 35.0"` for anything else, refuses 100% here
+   * (that is the full-refund endpoint), and silently defaults to 50% if none
+   * is sent at all — which would refund half the order by omission.
+   */
+  partialRefundClaim(claimId: number, percentage: number): Promise<MlExpectedResolution[]>;
   /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
   searchClaims(params: {
     status?: string;
@@ -486,8 +636,34 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     return data;
   }
 
-  /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
-  async function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
+  /**
+   * A write whose RESPONSE BODY carries nothing the caller needs — ML answers
+   * these with a bare 200/201, an empty body, or a confirmation string.
+   *
+   * Still goes through the full auth/retry/error mapping: a 401 becomes a
+   * reauth error and a non-2xx becomes `MercadoLivreHttpError`, which is what
+   * lets the routes tell an operator WHY a send was refused.
+   */
+  async function requestVoid(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): Promise<void> {
+    await requestWithStatus(method, path, z.unknown(), body === undefined ? {} : { body });
+  }
+
+  /**
+   * Multipart upload — same auth/retry/error mapping as `request`, no JSON body.
+   *
+   * Generic over the endpoint because claims upload attachments through the
+   * identical machinery at a different path (#768).
+   */
+  async function uploadMultipart<T>(
+    path: string,
+    file: { data: Uint8Array; filename: string; contentType: string },
+    schema: z.ZodType<T>,
+    mensagemDeRede: string,
+  ): Promise<T> {
     const token = await config.getAccessToken();
     const form = new FormData();
     // Uint8Array → ArrayBuffer slice so the Blob owns plain bytes.
@@ -498,7 +674,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     form.append('file', new Blob([bytes], { type: file.contentType }), file.filename);
 
     const res = await fetchWithNetworkRetry(
-      buildUrl('/pictures/items/upload'),
+      buildUrl(path),
       {
         method: 'POST',
         headers: {
@@ -509,10 +685,19 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         },
         body: form,
       },
+      mensagemDeRede,
+    );
+    if (res.ok) return parseOk(res, schema);
+    throw await toHttpError(res);
+  }
+
+  function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
+    return uploadMultipart(
+      '/pictures/items/upload',
+      file,
+      pictureUploadSchema,
       'Falha de rede ao enviar imagem ao Mercado Livre',
     );
-    if (res.ok) return parseOk(res, pictureUploadSchema);
-    throw await toHttpError(res);
   }
 
   /**
@@ -784,9 +969,114 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCatalogDomain: (domainId) =>
       request('GET', `/catalog_domains/${domainId}`, catalogDomainSchema),
 
+    getMessage: (messageId) =>
+      request(
+        'GET',
+        `/messages/${encodeURIComponent(messageId)}?tag=post_sale&mark_as_read=false`,
+        mlPackMessagesSchema,
+      ),
+    getPackMessages: (packId, sellerId, paginacao) => {
+      // ML rejects a non-positive `limit` with a 400, so only send what the
+      // caller actually asked for.
+      const extra =
+        (paginacao?.limit != null && paginacao.limit > 0
+          ? `&limit=${String(paginacao.limit)}`
+          : '') +
+        (paginacao?.offset != null && paginacao.offset > 0
+          ? `&offset=${String(paginacao.offset)}`
+          : '');
+      return request(
+        'GET',
+        `/messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(sellerId)}` +
+          '?tag=post_sale&mark_as_read=false' +
+          extra,
+        mlPackMessagesSchema,
+      );
+    },
+    answerQuestion: (questionId, text) =>
+      request('POST', '/answers', mlAnswerResultSchema, {
+        body: { question_id: questionId, text },
+      }),
+    deleteQuestion: async (questionId) => {
+      await requestVoid('DELETE', `/questions/${questionId}`);
+    },
+    blockUserFromQuestions: async (sellerId, buyerId) => {
+      await requestVoid('POST', `/users/${sellerId}/questions_blacklist`, {
+        user_id: buyerId,
+      });
+    },
+    sendPackMessage: async (packId, sellerId, body) => {
+      await requestVoid(
+        'POST',
+        `/messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(sellerId)}` +
+          '?tag=post_sale',
+        {
+          // ⚠️ BOTH ids go out as STRINGS, matching ML's own documented body.
+          // The agent id is the one that must not be mistyped — sending it as a
+          // number has been observed to work, but the reference is explicit and
+          // this is not a place to be clever.
+          from: { user_id: sellerId },
+          to: { user_id: String(body.toUserId) },
+          text: body.text,
+          ...(body.attachments && body.attachments.length > 0
+            ? { attachments: [...body.attachments] }
+            : {}),
+        },
+      );
+    },
+    getQuestion: (questionId) =>
+      request('GET', `/questions/${questionId}?api_version=4`, mlQuestionSchema),
     getClaim: (claimId) => request('GET', `/post-purchase/v1/claims/${claimId}`, mlClaimSchema),
     getClaimMessages: (claimId) =>
       request('GET', `/post-purchase/v1/claims/${claimId}/messages`, mlClaimMessagesSchema),
+    sendClaimMessage: async (claimId, body) => {
+      await requestVoid('POST', `/post-purchase/v1/claims/${claimId}/actions/send-message`, {
+        receiver_role: body.receiverRole,
+        message: body.message,
+        // Omitted when empty — ML validates the keys it is handed.
+        ...(body.attachments && body.attachments.length > 0
+          ? { attachments: [...body.attachments] }
+          : {}),
+      });
+    },
+    uploadClaimAttachment: (claimId, file) =>
+      uploadMultipart(
+        `/post-purchase/v1/claims/${claimId}/attachments`,
+        file,
+        mlClaimAttachmentUploadSchema,
+        'Falha de rede ao enviar anexo da reclamação ao Mercado Livre',
+      ),
+    openClaimDispute: (claimId) =>
+      request('POST', `/post-purchase/v1/claims/${claimId}/actions/open-dispute`, mlClaimSchema, {
+        body: {},
+      }),
+    refundClaim: (claimId) =>
+      request(
+        'POST',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions/refund`,
+        mlExpectedResolutionsSchema,
+        { body: {} },
+      ),
+    allowClaimReturn: (claimId) =>
+      request(
+        'POST',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions/allow-return`,
+        mlExpectedResolutionsSchema,
+        { body: {} },
+      ),
+    getClaimPartialRefundOffers: (claimId) =>
+      request(
+        'GET',
+        `/post-purchase/v1/claims/${claimId}/partial-refund/available-offers`,
+        mlPartialRefundOffersSchema,
+      ),
+    partialRefundClaim: (claimId, percentage) =>
+      request(
+        'POST',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions/partial-refund`,
+        mlExpectedResolutionsSchema,
+        { body: { percentage } },
+      ),
     getClaimReason: (reasonId) =>
       request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
     searchClaims: (params) =>

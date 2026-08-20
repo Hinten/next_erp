@@ -232,7 +232,8 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     const depositoId = 'dep1';
     const ref = estoqueRef(db, produtoId, depositoId);
 
-    // Rules stay open for Flutter coexistence — a legacy writer can leave garbage.
+    // Rules stay open (ADR 0010) and the migrated corpus carries garbage rows —
+    // the tolerance is still needed, the "live legacy writer" reason is not.
     await ref.set({ quantidade: 'muito', quantidadeReservada: 'abc', ultimaModificacao: 'nunca' });
     await aplicarMovimento(
       db,

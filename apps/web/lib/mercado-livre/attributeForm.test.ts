@@ -6,6 +6,7 @@ import {
   type AttrRow,
   applySuggestions,
   attributesForSave,
+  draftTypedValue,
   isFilled,
   isNumericAttr,
   naRow,
@@ -87,6 +88,56 @@ describe('validateAttr', () => {
     );
     expect(validateAttr(required, { value_id: null, value_name: 'Acme' })).toBeNull();
     expect(validateAttr(attr({ id: 'X' }), undefined)).toBeNull();
+  });
+});
+
+describe('draftTypedValue', () => {
+  // The reported bug: an operator could not type a space into an attribute.
+  // `resolveTypedValue` on the change path trimmed the text the input renders
+  // back, so the space vanished before the caret moved.
+  it('KEEPS a trailing space, so a multi-word value is typeable', () => {
+    expect(draftTypedValue(attr({ id: 'BRAND' }), 'Nike ')).toEqual({
+      id: 'BRAND',
+      value_id: null,
+      value_name: 'Nike ',
+      unit_id: null,
+    });
+  });
+
+  it('does NOT snap to a known option while typing', () => {
+    // The second stripper: on a category shipping `Nike`, resolving on change
+    // matched `Nike ` back to `Nike` and ate the space again — `Nike Air` was
+    // unreachable however slowly you typed it.
+    const brand = attr({ id: 'BRAND', values: [{ id: 'B1', name: 'Nike' }] });
+    expect(draftTypedValue(brand, 'Nike ')).toEqual({
+      id: 'BRAND',
+      value_id: null,
+      value_name: 'Nike ',
+      unit_id: null,
+    });
+  });
+
+  it('keeps a blank draft so a LEADING space is typeable too', () => {
+    // Harmless: `isFilled` tests the trimmed name, so the row still reads as
+    // empty everywhere it matters.
+    const row = draftTypedValue(attr({ id: 'MODEL' }), '  ');
+    expect(row.value_name).toBe('  ');
+    expect(isFilled(row)).toBe(false);
+  });
+
+  it('clears the row only when the field is truly empty', () => {
+    expect(draftTypedValue(attr({ id: 'MODEL' }), '')).toEqual({
+      id: 'MODEL',
+      value_id: null,
+      value_name: null,
+      unit_id: null,
+    });
+  });
+
+  it('attaches the default unit to a number_unit draft', () => {
+    expect(
+      draftTypedValue(attr({ id: 'LENGTH', valueType: 'number_unit', defaultUnit: 'cm' }), '55'),
+    ).toEqual({ id: 'LENGTH', value_id: null, value_name: '55', unit_id: 'cm' });
   });
 });
 
@@ -184,6 +235,48 @@ describe('attributesForSave', () => {
       null,
     );
     expect(out).toEqual([{ id: 'LENGTH', value_name: '55', unit_id: 'cm' }]);
+  });
+
+  it('TRIMS a free-text draft, so a save without a blur stores clean text', () => {
+    // The field holds the raw draft so a space is typeable; blur normally
+    // resolves it, but Enter on the form saves without one. This is the boundary
+    // that makes correctness independent of a focus event.
+    const out = attributesForSave(
+      [brand],
+      [{ id: 'BRAND', value_id: null, value_name: '  Nike Air ', unit_id: null }],
+      null,
+    );
+    expect(out).toEqual([{ id: 'BRAND', value_name: 'Nike Air' }]);
+  });
+
+  it('resolves an unblurred draft to ML’s value id when it names a known value', () => {
+    const material = attr({ id: 'MATERIAL', values: [{ id: 'M1', name: 'Algodão' }] });
+    const out = attributesForSave(
+      [material],
+      [{ id: 'MATERIAL', value_id: null, value_name: 'algodao ', unit_id: null }],
+      null,
+    );
+    expect(out).toEqual([{ id: 'MATERIAL', value_id: 'M1', value_name: 'Algodão' }]);
+  });
+
+  it('leaves an id-bearing row alone rather than re-matching it', () => {
+    // A `rowFromSelect` pick and the N/A sentinel already carry ML's own value;
+    // re-resolving by name could only move them.
+    const out = attributesForSave(
+      [attr({ id: 'BRAND', values: [{ id: 'B1', name: 'Nike' }] })],
+      [naRow('BRAND')],
+      null,
+    );
+    expect(out).toEqual([{ id: 'BRAND', value_id: NA_VALUE_ID, value_name: 'N/A' }]);
+  });
+
+  it('drops a whitespace-only draft instead of storing a blank', () => {
+    const out = attributesForSave(
+      [brand],
+      [{ id: 'BRAND', value_id: null, value_name: '   ', unit_id: null }],
+      null,
+    );
+    expect(out).toEqual([]);
   });
 });
 

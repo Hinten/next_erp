@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { Group, Stack } from '@mantine/core';
+import type { Firestore } from 'firebase/firestore';
 import { getPrazoDespacho, type IntFrete } from '@delfrance/schemas';
 import { dateToMicros } from '@delfrance/core/datetime';
 import { FreteDateTimeField, FreteNumberField, fretePath, type PedidoFormHandle } from './fields';
@@ -18,11 +19,13 @@ import { VolumesEditor } from './VolumesEditor';
  */
 export function RetiradaFields({
   form,
+  db,
   disabled,
   integracao,
   isCreate,
 }: {
   form: PedidoFormHandle;
+  db: Firestore;
   disabled?: boolean;
   integracao: IntFrete;
   isCreate: boolean;
@@ -45,7 +48,7 @@ export function RetiradaFields({
 
   return (
     <Stack gap="sm">
-      <VolumesEditor form={form} disabled={disabled} />
+      <VolumesEditor form={form} db={db} disabled={disabled} />
 
       <Group gap="xs" grow align="end">
         <FreteNumberField

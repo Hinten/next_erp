@@ -240,6 +240,29 @@ function normalizeValue(value: string): string {
 }
 
 /**
+ * What the operator has typed SO FAR into a free-text chart attribute.
+ *
+ * ⚠️ The on-CHANGE path, and it deliberately leaves the text alone — the trim and
+ * the known-value match in {@link resolveChartAttributeValue} both rewrite the
+ * string the input renders back, which cost the operator every space they
+ * pressed. Blur resolves it; {@link resolveChartAttributeValue} runs again when
+ * the chart body is assembled, so an unblurred draft never reaches ML.
+ *
+ * The empty `id` is the existing "free text, no value_id" marker.
+ *
+ * ⚠️ Unlike `draftTypedValue` on the produto side, a BLANK draft still counts as
+ * no answer here. An answered chart-level attribute is what opens `answered` and
+ * puts the value into the grid-spec query KEY, so keeping `'  '` would spend a
+ * real Mercado Livre round trip asking about a whitespace brand. The cost is
+ * that a LEADING space cannot start an empty box — a trailing one, which is what
+ * blocks typing, is unaffected.
+ */
+export function draftChartAttributeValue(typed: string): ChartSpecValue | null {
+  if (typed.trim() === '') return null;
+  return { id: '', name: typed };
+}
+
+/**
  * What the operator typed into a free-text chart attribute, as an ML value.
  *
  * A known option wins when the text matches one — accent- and case-insensitively,
@@ -247,6 +270,9 @@ function normalizeValue(value: string): string {
  * value ML does not recognise (the same trap `attributeForm.ts` documents).
  * Otherwise the raw text goes as `name` with **no id**: an invented `value_id`
  * is rejected outright.
+ *
+ * ⚠️ Runs on BLUR and again in `buildChart` — never on change; see
+ * {@link draftChartAttributeValue}.
  */
 export function resolveChartAttributeValue(
   attribute: GridTemplateAttribute,
@@ -368,9 +394,11 @@ export function chartLevelAttributes(
  * Empty ⇒ the domain has no measure-type concept (footwear) and `measure_type`
  * must be omitted from the create body entirely.
  *
- * ⚠️ `MIXED_MEASURE` is NOT offered even though ML supports it: the live
- * Flutter reader's `TipoTabelaDeMedidasML.fromJson` throws on an unknown value,
- * so writing one would crash it during the dual-run.
+ * ⚠️ `MIXED_MEASURE` is NOT offered even though ML supports it. ⚠️ The stated
+ * reason — the legacy reader's `TipoTabelaDeMedidasML.fromJson` throwing on an
+ * unknown value — is void (no dual run; root `CLAUDE.md` rule 8). Kept because
+ * `mlSizeChartWriteSchema` still rejects it and widening the type is a real
+ * feature decision, not a drive-by edit.
  */
 export function detectMeasureTypes(specs: unknown): ChartMeasureType[] {
   const attrs = collectAttributes(specs);

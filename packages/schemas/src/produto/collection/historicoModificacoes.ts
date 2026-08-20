@@ -24,8 +24,8 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
  *
  * This supersedes the per-field `historicoDePrecos`/`historicoDeCusto`
  * subcollections (`./historicos.ts`) for produto writes made through this app:
- * those two stay registered (and are still written by the legacy Flutter app
- * for its own dual-run), but the Next trigger no longer writes them.
+ * those two stay registered (the migrated corpus holds rows in them), but the
+ * Next trigger no longer writes them.
  *
  * The pedido-rooted twin is
  * `../../pedido/collection/historicoModificacoes.ts`; the two metas are pinned

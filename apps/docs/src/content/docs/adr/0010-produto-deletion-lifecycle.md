@@ -40,10 +40,13 @@ All three share the **same delete event** and the **same deployment surface**
 (`apps/functions`, codebase `storage`), so they are designed together here even
 though they ship in phases.
 
-**Coexistence constraint.** The Flutter app still runs its own `deleteCascade`
-on its deletes, and the `manutencaoFotosProduto` Cloud Function still cleans up
-photo orphans. Every function added here must therefore be **idempotent** and
-tolerate already-clean docs.
+**Idempotency constraint.** The `manutencaoFotosProduto` Cloud Function also
+cleans up photo orphans, Eventarc delivers every trigger at least once, and the
+migrated corpus arrives with legacy cascades already partly applied. Every
+function added here must therefore be **idempotent** and tolerate already-clean
+docs. (An earlier draft credited this to a concurrent Flutter `deleteCascade`;
+there is no dual run — root `CLAUDE.md` rule 8 — and the requirement is unchanged
+without it.)
 
 **Emulator constraint.** Firestore **pipeline queries do not run in the
 emulator** — the venue for the storage CI suite (`ci-storage.yml`). Phase 2's
@@ -71,8 +74,8 @@ phase the work so the debris-producing deletes are covered first.
   `produtos where paiId == id`, not descendants) with a per-child walk, closing
   **#199** and retiring the client-side children cascade (`deleteProdutoCascade`
   now deletes only the parent doc; the inbound-reference guard stays
-  client-side). Idempotent; tolerant of partially-cleaned docs (Flutter may have
-  already swept some). Fully exercisable on the Firestore emulator in
+  client-side). Idempotent; tolerant of partially-cleaned docs (the migrated
+  corpus arrives partly swept, and Eventarc redelivers). Fully exercisable on the Firestore emulator in
   `ci-storage.yml`.
 
   > **Amended 2026-07 (#728/#729).** The walk was originally
@@ -222,8 +225,9 @@ not this one). No automated deploy workflow yet.
 - **Easier:** Next-side deletes stop producing orphans (Phase 1); the orphan set
   becomes bounded and then reconcilable (Phase 2); users eventually delete
   referenced produtos in one operation (Phase 3).
-- **Harder / new risk:** idempotency is now a hard requirement because Flutter
-  cascades concurrently during coexistence; the cross-package remote-delist
+- **Harder / new risk:** idempotency is now a hard requirement — at-least-once
+  trigger delivery, a second photo-orphan sweep, and a corpus that arrives
+  partly cascaded; the cross-package remote-delist
   (Phase 3) introduces partial-failure states that need explicit handling.
 - **Cost:** both sweeps are bounded (BATCH 100). The unreferenced sweep's candidate
   batch is regex-scoped server-side (only product photos/videos load) and reads only

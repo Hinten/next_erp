@@ -70,6 +70,27 @@ export function typeAware(
         // The `delfrance` plugin is registered in the base block, which merges
         // with this one for the same file.
         'delfrance/prefer-schema-enum': 'error',
+        // Switch statements with side-effect arms (pure void returns) are not
+        // caught by tsc (every arm returns void, missing arm is a no-op). This
+        // rule catches missing cases at lint time. See #1095.
+        //
+        // ⚠️ The options are DELIBERATELY the defaults, and the one that costs
+        // something is `considerDefaultExhaustiveForUnions: false`: a switch over
+        // an OPEN union (`string | null`) is reported as incomplete even when a
+        // `default` already answers it, so ~8 sites now name `case null` and fall
+        // through. That redundancy is the price of the two gaps this rule actually
+        // found — both switches HAD a `default`, so the permissive setting would
+        // have missed both: the 24 unhandled `CST_PIS_COFINS` members in
+        // `buildCOFINSByCST`, and the unhandled `'deleted'` in the WhatsApp
+        // `processStatuses`, which was silently persisting the wrong `estadoEnvio`.
+        // Flipping to `true` erases the churn and the protection together.
+        //
+        // ⚠️ Naming the members does NOT mean deleting the `default`. Most of
+        // these switch over values read back from Firestore, where a legacy-written
+        // value outside the enum is expected (rule 8) — dropping the `default`
+        // turns that into a silent `undefined` return. Name the cases AND keep the
+        // fallback; the rule is satisfied either way.
+        '@typescript-eslint/switch-exhaustiveness-check': 'error',
       },
     },
   ];

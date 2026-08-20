@@ -2,7 +2,7 @@
  * Product-import orchestration (IO layer, ML→ERP): fetches a Mercado Livre item,
  * maps it (plugin `importItem`), resolves/creates the ERP produto, and writes the
  * produto + extraData + estoque + `produtoMercadoLivre` link in the exact Flutter
- * wire shape (dual-run). The inverse of `publish.ts`.
+ * wire shape (legacy parity). The inverse of `publish.ts`.
  *
  * Three ML listing models, all supported:
  *  - simple (no `variations[]`, no `family_name`) — one produto;
@@ -21,7 +21,7 @@
  * stock never clobbered unless `sobrescreverEstoque` (and never written on a
  * PARENT that has variations/members at all — stock lives on the children).
  *
- * Dedup / dual-run convergence: the produto is resolved by the link doc's `id`
+ * Dedup / legacy-id convergence: the produto is resolved by the link doc's `id`
  * (== ML item id for a simple listing, == family id for User-Products; a
  * collectionGroup query — the same key the Flutter app matches on), then by
  * `sku`. A FRESH produto's id is always a deterministic hash — NOT the
@@ -391,7 +391,7 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Dual-run denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
+  // Legacy denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
   // this repo, deleted at the decommission. Canonical note on `produtoSchema`;
   // do not repair, do not add a reader).
   //
@@ -444,7 +444,7 @@ export async function importProduto(
           parentInfo,
           [up!.member],
           taxonomia,
-          { parentLinkDocId: linkDocId },
+          { parentLinkDocId: linkDocId, status: mapped.status, subStatus: mapped.subStatus },
         )
       : await importVariationChildren(
           { db, integracaoId, options, depositoOuterRef: deps.depositoOuterRef, now },
@@ -761,7 +761,7 @@ function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | 
   return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
 }
 
-/** Stable hex hash for deterministic produto / link ids (dual-run convergence). */
+/** Stable hex hash for deterministic produto / link ids (legacy-id convergence). */
 function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }

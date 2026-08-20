@@ -6,6 +6,7 @@ import {
   chartLevelAttributes,
   columnAttributeIds,
   detectMeasureTypes,
+  draftChartAttributeValue,
   extractChartAttributes,
   extractColumns,
   extractGridTemplates,
@@ -485,6 +486,27 @@ describe('chartLevelAttributes', () => {
     const byId = new Map(chartLevelAttributes(tshirtDomainSpec, tshirtGrid).map((a) => [a.id, a]));
     expect(byId.get('GENDER')?.kind).toBe('select');
     expect(byId.get('BRAND')?.kind).toBe('text');
+  });
+});
+
+describe('draftChartAttributeValue', () => {
+  it('KEEPS a trailing space, so a multi-word brand is typeable', () => {
+    // Resolving on the change path trimmed the text the input renders back, so
+    // the space vanished before the caret moved — and the known-value snap ate
+    // it a second time, putting "Nike Air" out of reach on a domain shipping
+    // "Nike".
+    expect(draftChartAttributeValue('Nike ')).toEqual({ id: '', name: 'Nike ' });
+  });
+
+  it('treats a blank draft as no answer at all', () => {
+    // An answered chart attribute goes into the grid-spec query KEY, so a
+    // whitespace one would spend a real ML round trip.
+    expect(draftChartAttributeValue('  ')).toBeNull();
+    expect(draftChartAttributeValue('')).toBeNull();
+  });
+
+  it('still keeps the spaces around text that IS an answer', () => {
+    expect(draftChartAttributeValue(' Nike ')).toEqual({ id: '', name: ' Nike ' });
   });
 });
 

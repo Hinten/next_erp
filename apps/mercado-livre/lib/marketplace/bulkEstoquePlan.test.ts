@@ -1105,7 +1105,7 @@ describe('fetchMovimentosDaJanela — the uncorrelated ledger pre-pass', () => {
   it('flags a group whose window holds a row with NO `movimento` key', async () => {
     // A legacy Flutter v1 row: `sum` skips it, so without this counter the
     // window would look like it moved nothing and the sweep would SKIP a real
-    // movement. Flutter is a live writer during the dual run.
+    // movement. The migrated corpus is full of such v1 rows.
     const db = new FakeDb();
     db.queuePipelinePage([
       { parentId: 'A', depositoOuterRef: DEP_REF, dq: 0, dr: 0, nDesconhecido: 1 },
@@ -1605,7 +1605,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
-  it("estado 'am' (mid-UP-migration, Flutter-driven) → aguardando-migracao", () => {
+  it("estado 'am' (mid-UP-migration, stamped by itemsStatusSync) → aguardando-migracao", () => {
     expect(run(familyRow({ links: [{ estado: 'am' }] })).skips).toEqual([
       { produtoId: 'PROD', reason: 'aguardando-migracao', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
@@ -1724,7 +1724,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
   });
 
   // `estado: 'am'` keeps winning over the legacy arm — a listing awaiting
-  // migration is Flutter-driven and must not be touched (#441).
+  // migration must not be touched (#441). `itemsStatusSync` stamps that value
+  // from ML's own migration tags; it is no longer a Flutter-written one (#1087).
   it('estado `am` still wins over the legacy arm', () => {
     expect(
       run(familyRow({ links: [{ estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao, status: null }] }))

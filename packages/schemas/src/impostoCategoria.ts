@@ -23,8 +23,8 @@ const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 98n;
  * any operação; otherwise only matches the specified operação
  * (`operacao/<id>`). Same ROLE as the produto-level pointer, different key —
  * `impostoProduto` keeps Flutter's typo key `impostoOpercaoOuterRef` (no
- * second "a"). Both apps share the database, so legacy-written docs resolve
- * natively — no migration, no dual-read.
+ * second "a"). The migrated corpus is keyed that way, so legacy-written docs
+ * resolve natively — no migration, no dual-read.
  *
  * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
  * engine via `@delfrance/schemas`) — see `impostoProduto` for the rationale.

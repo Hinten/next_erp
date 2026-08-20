@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
+import { loadBuildEnv } from '../../../tools/deploy-env/build-env.mjs';
 
 // Bundle the Mercado Pago Cloud Functions (codebase `mercado-pago`) into a
 // single self-contained ESM file, inlining the function region (Firebase reads
@@ -12,10 +13,28 @@ import { dirname, join } from 'node:path';
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 
 export async function bundle(outfile) {
+  // Optional repo-root `.env.functions` supplies the build-time vars below when
+  // they are not exported in the deploy shell. A real export still wins, and a
+  // missing file is a no-op — see tools/deploy-env/build-env.mjs.
+  loadBuildEnv();
   // Default to us-east5 — the MP backend's deploy region. Must match the
   // enqueuer's MERCADO_PAGO_TASKS_REGION default (mpTasks.ts) or tasks target a
   // queue that doesn't exist in this region and silently drop.
   const region = process.env.FUNCTIONS_REGION || 'us-east5';
+  // Service accounts allowed to enqueue AND dispatch this codebase's task
+  // functions, comma-separated. Inlined for the same reason as the region above
+  // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase
+  // analysis, before any env exists — and per PROJECT, so it cannot be a
+  // constant. ⚠️ The list is AUTHORITATIVE: a deploy REPLACES the members of
+  // both bindings it drives, so it must name every enqueuer. See DEPLOY.md.
+  const tasksInvoker = process.env.TASKS_INVOKER_SA || '';
+  if (!tasksInvoker) {
+    console.warn(
+      '[build] TASKS_INVOKER_SA is unset — `invoker` will be OMITTED from every ' +
+        'onTaskDispatched, leaving roles/run.invoker + roles/cloudtasks.enqueuer to ' +
+        'the manual gcloud grants in DEPLOY.md.',
+    );
+  }
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,
@@ -26,6 +45,7 @@ export async function bundle(outfile) {
     external: ['firebase-admin', 'firebase-admin/*', 'firebase-functions', 'firebase-functions/*'],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.TASKS_INVOKER_SA': JSON.stringify(tasksInvoker),
     },
     // ESM output has no `require`, but bundled CommonJS deps may call it
     // dynamically → inject a real `require` via createRequire so those resolve.

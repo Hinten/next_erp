@@ -128,7 +128,7 @@ export interface ImportPlan {
   estoque: { docId: string; data: Record<string, unknown> } | null;
   /** The `produtoMercadoLivre` link doc (full set, spread-existing). */
   link: Record<string, unknown>;
-  /** ML item id, for the dual-run `arrayUnion` denorm (applied by IO). */
+  /** ML item id, for the legacy `arrayUnion` denorm (applied by IO). */
   denormItemId: string;
 }
 
@@ -209,7 +209,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
       },
     };
   } else {
-    // Update: fill-nulls only — never overwrite existing ERP data (dual-run).
+    // Update: fill-nulls only — never overwrite existing ERP data (legacy parity).
     // Prices are NOT in this patch (see precosOps) so the legacy precos map is
     // never re-validated. Every field here fills only a currently-null value.
     const patch: Record<string, unknown> = { ultimaModificacao: now };
@@ -366,7 +366,7 @@ function lastSegment(ref: string): string {
  * OWN MLB item — there's no numeric ML "variation id" the way `variations[]`
  * has one. The `up` flag swaps only the `variacaoMercadoLivre` link's identity
  * fields (`itemId` set to the member's MLB id, numeric `id` never stamped) and
- * adds the dual-run `relevantData.isUserProductModel` marker to the denorm
+ * adds the legacy `relevantData.isUserProductModel` marker to the denorm
  * entry — every other field (sku, nome, precos, dims/categoria, taxonomy) is
  * assembled identically to the #520 `variations[]` path.
  */
@@ -411,7 +411,7 @@ export interface VariationChildAssembleArgs {
    * #520 `variations[]` behavior (numeric `id` derived from `variationId`,
    * `itemId` preserved-or-null).
    */
-  up: { itemId: string } | null;
+  up: { itemId: string; status: string | null; subStatus: string[] | null } | null;
 }
 
 export interface VariationChildPlan {
@@ -422,7 +422,7 @@ export interface VariationChildPlan {
   /** The `variacaoMercadoLivre` link doc (full set, spread-existing). */
   link: Record<string, unknown>;
   /**
-   * Dual-run `marketplace`/`marketplaceIds` denorm entry (applied by IO).
+   * Legacy `marketplace`/`marketplaceIds` denorm entry (applied by IO).
    * `relevantData` is set ONLY in User-Products mode (#521) — the parity
    * marker (`isUserProductModel: true`) that must byte-match Flutter's
    * `ProdMarketplace.relevantData` (`includeIfNull: false`, so it's simply
@@ -631,6 +631,14 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     // D-C (#521): the SAME rule applies in User-Products mode — the child's sku
     // is always the member's own SELLER_SKU, never the parent's familyId.
     sku: mappedVariation.sku,
+    // #1142 User-Products: the member's OWN raw ML status, so a family's `estado`
+    // can be a fold of its members rather than whichever one was imported. Legacy
+    // `variations[]` members are not separate listings and have no status of their
+    // own, so they keep whatever the spread carried (null).
+    status: args.up ? args.up.status : ((existingLink.status as string | null | undefined) ?? null),
+    sub_status: args.up
+      ? args.up.subStatus
+      : ((existingLink.sub_status as string[] | null | undefined) ?? null),
     attributes: mappedVariation.combos
       .map(comboToWireAttribute)
       .filter((a): a is Record<string, unknown> => a !== null),

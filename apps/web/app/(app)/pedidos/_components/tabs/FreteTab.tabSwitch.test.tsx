@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider, Tabs } from '@mantine/core';
 import { useForm, type UseFormReturn } from 'react-hook-form';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { Firestore } from 'firebase/firestore';
 import type { Pedido } from '@delfrance/schemas';
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
@@ -60,21 +62,26 @@ function FreteHost({
     formRef = form;
   }, [form]);
   const [tab, setTab] = useState<string | null>('frete');
+  const [queryClient] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
   return (
-    <MantineProvider>
-      <Tabs value={tab} onChange={setTab} keepMounted={false}>
-        <Tabs.List>
-          <Tabs.Tab value="frete">Frete</Tabs.Tab>
-          <Tabs.Tab value="outra">Outra</Tabs.Tab>
-        </Tabs.List>
-        <Tabs.Panel value="frete" pt="md">
-          {children(form)}
-        </Tabs.Panel>
-        <Tabs.Panel value="outra" pt="md">
-          Outra aba
-        </Tabs.Panel>
-      </Tabs>
-    </MantineProvider>
+    <QueryClientProvider client={queryClient}>
+      <MantineProvider>
+        <Tabs value={tab} onChange={setTab} keepMounted={false}>
+          <Tabs.List>
+            <Tabs.Tab value="frete">Frete</Tabs.Tab>
+            <Tabs.Tab value="outra">Outra</Tabs.Tab>
+          </Tabs.List>
+          <Tabs.Panel value="frete" pt="md">
+            {children(form)}
+          </Tabs.Panel>
+          <Tabs.Panel value="outra" pt="md">
+            Outra aba
+          </Tabs.Panel>
+        </Tabs>
+      </MantineProvider>
+    </QueryClientProvider>
   );
 }
 
@@ -86,7 +93,11 @@ function switchTo(value: 'frete' | 'outra') {
 
 describe('FobFields — state survives a tab switch (#472)', () => {
   it('keeps valorCobrado and codRastreio after unmount/remount', () => {
-    render(<FreteHost frete={freteWith()}>{(form) => <FobFields form={form} />}</FreteHost>);
+    render(
+      <FreteHost frete={freteWith()}>
+        {(form) => <FobFields form={form} db={{} as Firestore} />}
+      </FreteHost>,
+    );
 
     const rastreio = () => screen.getByLabelText(/Código de rastreio/) as HTMLInputElement;
     const valor = () => screen.getByLabelText(/^Valor cobrado/) as HTMLInputElement;
@@ -113,7 +124,11 @@ describe('FobFields — state survives a tab switch (#472)', () => {
   });
 
   it('re-hydrates a frete write made while the tab is unmounted', () => {
-    render(<FreteHost frete={freteWith()}>{(form) => <FobFields form={form} />}</FreteHost>);
+    render(
+      <FreteHost frete={freteWith()}>
+        {(form) => <FobFields form={form} db={{} as Firestore} />}
+      </FreteHost>,
+    );
 
     switchTo('outra');
     act(() => {
@@ -145,6 +160,7 @@ describe('MelhorEnvioFields — quote Select re-seeds from form (#472 / PR #210)
         {(form) => (
           <MelhorEnvioFields
             form={form}
+            db={{} as Firestore}
             integracao={integracao}
             cepDestino="04567890"
             intFreteId="int-me-1"

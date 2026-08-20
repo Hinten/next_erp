@@ -23,12 +23,17 @@ import { MERCADO_LIVRE_NOTIFICATION_QUEUE, TASK_MAX_ATTEMPTS } from '@/lib/marke
  */
 const originalFunctionsRegion = process.env.FUNCTIONS_REGION;
 process.env.FUNCTIONS_REGION = 'us-east5';
+const originalTasksInvokerSa = process.env.TASKS_INVOKER_SA;
+process.env.TASKS_INVOKER_SA =
+  'apphosting@p.iam.gserviceaccount.com,1-compute@developer.gserviceaccount.com';
 
 // ⚠️ Keep at the TOP LEVEL — see index.test.ts for why a hook would flake.
 const { processMercadoLivreNotification } = await import('./processNotification');
 
 afterAll(() => {
   process.env.FUNCTIONS_REGION = originalFunctionsRegion;
+  if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
+  else process.env.TASKS_INVOKER_SA = originalTasksInvokerSa;
 });
 
 function endpoint(): Record<string, unknown> {
@@ -46,6 +51,20 @@ describe('processMercadoLivreNotification (#823)', () => {
     // Present at all — an unbounded dispatch rate against the ML API is how a
     // notification burst turns into a 429 storm.
     expect(taskQueueTrigger?.rateLimits).toBeDefined();
+  });
+
+  it('carries the deploy-time invoker list onto taskQueueTrigger (#1133)', () => {
+    // The option is what makes `firebase deploy` grant roles/run.invoker on this
+    // service and roles/cloudtasks.enqueuer on its queue, instead of a human
+    // remembering a gcloud command per project per function. `tasksInvoker.test.ts`
+    // covers the value; this asserts it actually reaches the endpoint manifest,
+    // which is the only thing firebase-tools reads.
+    const taskQueueTrigger = endpoint().taskQueueTrigger as { invoker?: string[] };
+
+    expect(taskQueueTrigger.invoker).toEqual([
+      'apphosting@p.iam.gserviceaccount.com',
+      '1-compute@developer.gserviceaccount.com',
+    ]);
   });
 
   it('binds both ML app secrets (#778 — without them every doc parks as a false transient)', () => {

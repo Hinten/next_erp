@@ -48,9 +48,9 @@ Tick every box before step 2.1. Most failures in this run trace back to a missed
 
 - [ ] A **staging** ML application, never production. The production application's
       callback is still shared with the live Flutter connect screen.
-- [ ] ⚠️ **Dual-run hazard.** Pointing a seller's callback at this backend without
-      disabling the legacy Flutter notification functions makes **every notification
-      process twice**.
+- [ ] ⚠️ **Cutover hazard.** A seller's callback URL is ONE registration. Pointing
+      it at this backend without disabling the legacy Flutter notification
+      functions gets the same notification ingested by **both** systems.
 - [ ] Redirect URI → `<staging backend>/api/oauth/mercado-livre/callback`
 - [ ] Notification callback → `<staging backend>/api/webhooks/mercado-livre`
 - [ ] Every topic in `KNOWN_TOPICS` subscribed (`lib/marketplace/notificacao.ts`):
@@ -82,6 +82,13 @@ the live-test path for stock is the synchronous `/enviar-estoque` route.
 - [ ] App Hosting runtime SA has `roles/cloudtasks.enqueuer` **and**
       `roles/iam.serviceAccountUser` (`functions/DEPLOY.md`). Without them every enqueue
       fails and the whole channel silently degrades to sweep-only mode.
+- [ ] **`roles/run.invoker` on each of the five task functions** — the DISPATCH leg.
+      Deployed with `TASKS_INVOKER_SA` set (#1133) this is automatic; verify with
+      `gcloud run services get-iam-policy processMercadoLivreNotification --region=us-east1`.
+      ⚠️ Missing, it writes NO failure document: the receiver logs `enfileirado`, the
+      task 403s at the function, and an empty `notificacoesMercadoLivre` reads as health.
+      The list must also carry the **functions** runtime SA — the sweeps and every
+      self-continuation enqueue as that identity, not the App Hosting one.
 - [ ] `gcloud tasks queues describe processMercadoLivreNotification --location=<region>`
       returns a queue.
 

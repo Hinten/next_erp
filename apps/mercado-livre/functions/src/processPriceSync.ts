@@ -12,6 +12,7 @@ import {
 } from '../../lib/marketplace/precoSync';
 import { getDb } from './lib/admin';
 import { TASKS_SCHEDULER_REGION } from './options';
+import { tasksInvokerOptions } from './tasksInvoker';
 
 /**
  * Cloud Tasks dispatcher for the ML manual bulk price-sync job (Step 11 PR-C).
@@ -45,6 +46,9 @@ export const processMercadoLivrePriceSync = onTaskDispatched(
   {
     // Cloud Tasks does not exist in us-east5 — see TASKS_SCHEDULER_REGION.
     region: TASKS_SCHEDULER_REGION,
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
     retryConfig: {
       maxAttempts: PRICE_SYNC_MAX_ATTEMPTS,
       minBackoffSeconds: 30,

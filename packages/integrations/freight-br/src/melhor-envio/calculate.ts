@@ -27,6 +27,39 @@ export interface VolumeInput {
   readonly weight?: number | null;
 }
 
+/**
+ * A stored `freteInicial.volumes` entry — the Flutter wire shape, whose axis
+ * names do not line up with the API's (`largura`→`width`, `altura`→`height`,
+ * `comprimento`→`length`).
+ */
+export interface FreteVolumeLike {
+  readonly pesoBruto?: number | null;
+  readonly pesoLiquido?: number | null;
+  readonly dimensoes?: {
+    readonly altura?: number | null;
+    readonly largura?: number | null;
+    readonly comprimento?: number | null;
+  } | null;
+}
+
+/**
+ * Map a stored pedido Volume onto the loose {@link VolumeInput} the quote and
+ * cart builders take — gross weight preferred over net, `null` for anything
+ * absent so {@link normalizeVolume} applies the defaults in ONE place.
+ *
+ * Shared because the same axis remapping was previously written out at every
+ * call site, and getting one axis wrong there is invisible: the payload still
+ * validates and the quote is just quietly for the wrong box.
+ */
+export function toVolumeInput(v: FreteVolumeLike): VolumeInput {
+  return {
+    width: v.dimensoes?.largura ?? null,
+    height: v.dimensoes?.altura ?? null,
+    length: v.dimensoes?.comprimento ?? null,
+    weight: v.pesoBruto ?? v.pesoLiquido ?? null,
+  };
+}
+
 export function normalizeVolume(v: VolumeInput): DimensionsWeight {
   return {
     width: v.width ?? DEFAULT_DIM,

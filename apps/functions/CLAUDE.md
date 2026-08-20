@@ -110,8 +110,8 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
   query** — variations are one level deep, so it could never find anything. The
   client `deleteProdutoCascade` now deletes ONLY the parent doc (the
   inbound-reference guard stays client-side); this trigger is the sole cascade,
-  with no dependency on the client/e2e cleanup. Idempotent (Flutter still
-  cascades on its own deletes).
+  with no dependency on the client/e2e cleanup. Idempotent — Eventarc delivers
+  at least once, so never assume a first run.
 - **`onEstoqueDeleted`** (`onDocumentDeleted('produtos/{produtoId}/estoques/{estoqueId}')`)
   — sweeps a single estoque's `historicoEstoque`, core `cascadeEstoqueDeletion`
   (exported for the emulator suite — the test used to re-implement the sweep
@@ -265,7 +265,9 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
   estoque write path for the web client (replaces the direct client `writeBatch`
   from PR #217). Enforces auth + `PERM.estoque.write` itself (the `su` super-user
   claim short-circuits, like the rules) since the Admin SDK bypasses Firestore
-  rules; rules stay OPEN for Flutter coexistence (ADR 0010). Split per op into
+  rules; the ruleset stays OPEN on `estoques` (ADR 0010). ⚠️ That was justified by
+  a dual run which does not exist (root `CLAUDE.md` rule 8) — tightening it to
+  `serverOwned` is an open question, not a settled design. Split per op into
   the exported (no-auth) `aplicarLocalizacao` / `aplicarMovimento` cores the
   emulator suite drives directly. **Movements** (#387, the old Flutter backend's
   transform design): ONE atomic **read-free WriteBatch** — the merge-set is the
@@ -322,7 +324,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-seven exports:
   (`BALANCO_QUEUE` in `balancoTasks.ts`) — rename both together, and note the
   queue is NEW infrastructure the deploy has to create.
 - ⚠️ Every trigger and callable above is a **second writer** on a document the
-  web client, the still-running Flutter app, or another handler may be writing at
+  web client, another handler, or a retry of this very trigger may be writing at
   the same instant — pick a tier from root `CLAUDE.md` Critical rule 7 and record
   which one at the call site (ADR 0011). `aplicarEstoque` is the tier-0
   reference (commutative/monotonic transforms, nothing to compare);

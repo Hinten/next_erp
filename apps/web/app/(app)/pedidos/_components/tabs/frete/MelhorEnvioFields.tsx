@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { Alert, Button, Group, Select, Stack } from '@mantine/core';
+import type { Firestore } from 'firebase/firestore';
 import type { IntFrete } from '@delfrance/schemas';
 import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import {
@@ -12,6 +13,7 @@ import {
   FreightValidationError,
   buildCalculatePayload,
   isErroredOption,
+  toVolumeInput,
 } from '@delfrance/integrations-freight-br/http-client';
 
 import { useFreightClient } from '@/lib/freight/client';
@@ -41,6 +43,7 @@ import { EtiquetaMelhorEnvioPanel } from './EtiquetaMelhorEnvioPanel';
  */
 export function MelhorEnvioFields({
   form,
+  db,
   disabled,
   integracao,
   cepDestino,
@@ -48,6 +51,7 @@ export function MelhorEnvioFields({
   pedidoId,
 }: {
   form: PedidoFormHandle;
+  db: Firestore;
   disabled?: boolean;
   integracao: IntFrete;
   cepDestino: string | null;
@@ -84,12 +88,7 @@ export function MelhorEnvioFields({
       const payload = buildCalculatePayload({
         fromPostalCode: cepOrigem,
         toPostalCode: cepDestino,
-        volumes: volumes.map((v) => ({
-          width: v.dimensoes?.largura ?? null,
-          height: v.dimensoes?.altura ?? null,
-          length: v.dimensoes?.comprimento ?? null,
-          weight: v.pesoBruto ?? v.pesoLiquido ?? null,
-        })),
+        volumes: volumes.map(toVolumeInput),
         insuranceValue: valorAssegurado,
       });
       setQuotes(await client.calculate(intFreteId, payload));
@@ -173,7 +172,7 @@ export function MelhorEnvioFields({
 
   return (
     <Stack gap="sm">
-      <VolumesEditor form={form} disabled={disabled} />
+      <VolumesEditor form={form} db={db} disabled={disabled} />
 
       {!cepOrigem && (
         <Alert color="yellow">

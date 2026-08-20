@@ -14,8 +14,8 @@ import {
 
 /**
  * GOLDEN VECTORS — hand-computed, byte-for-byte fixed. These lock the WhatsApp
- * identity formulas to the legacy Flutter output so the dual-run handlers derive
- * identical conversa/mensagem doc ids on the shared database. Each 64-char hex is
+ * identity formulas to the legacy Flutter output so a new inbound event derives
+ * the same doc id as the migrated conversa it belongs to. Each 64-char hex is
  * the lowercase SHA-256 of the documented UTF-8 input string. Recompute with:
  *   node -e 'console.log(require("crypto").createHash("sha256").update(S,"utf8").digest("hex"))'
  * A change to any of these is a WIRE BREAK, not a test to "fix".

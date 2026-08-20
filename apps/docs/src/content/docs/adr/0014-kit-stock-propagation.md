@@ -125,8 +125,8 @@ subcollection probe never needed one (#932).
 scalars with no transform, so writing them on every stamp is a blind
 last-write-wins overwrite of fields this code never read — ADR 0011's own hazard —
 and it would silently re-encode a `depositoOuterRef` stored in the bare
-`depositos/<id>` form the outerRef invariant tolerates, which the Flutter app may
-still be writing during the dual run.
+`depositos/<id>` form the outerRef invariant tolerates — a shape the migrated
+corpus carries in quantity (see the Correction at the end of this ADR).
 
 **The cost of that split, stated rather than buried.** Firestore has no
 set-if-missing for a string, so the sync must READ the sold kits' estoque docs —
@@ -211,7 +211,8 @@ db.pipeline().collectionGroup('historicoEstoque')
 
 **Failing open is an explicit accumulator, not an emergent property.** `sum`
 silently skips a row that carries no `movimento` — a legacy Flutter v1 row, and
-Flutter is a *live concurrent writer* through the whole dual run. Left at that,
+the migrated corpus is full of them (see the Correction at the end of this ADR:
+they arrive with the import and never stop existing). Left at that,
 such a window sums to zero, `anterior` reconstructs to `atual`, and the sweep
 concludes "nothing changed" about a movement that certainly happened: a silent
 skip, the one failure mode this design cannot tolerate. So the aggregate
@@ -365,8 +366,9 @@ A `.transform()`/`preprocess`/`.catch(0)` is not the fix either: those apply on
 **write** (`parseForWrite`, and `parseMergePatch` through `.partial()`), so they
 would launder a bad value at rest and destroy the evidence — while still reaching
 none of the paths that matter, since the sweep reads raw pipeline rows, the import
-reads a bare `.data()`, and the Flutter app plus every Admin SDK writer bypass the
-schema entirely (root `CLAUDE.md` rule 7 — assume a second writer).
+reads a bare `.data()`, every Admin SDK writer bypasses the schema entirely, and
+the migrated rows were never written through it at all (root `CLAUDE.md` rule 7 —
+assume a second writer).
 
 The three concerns are separate:
 
@@ -410,9 +412,11 @@ refresh; without this ADR that reads as a defect.
 - The Mercado Livre listing import writes estoque with a plain `merge` and **no
   history row** (`apps/mercado-livre/lib/marketplace/import.ts`). That leaves a
   hole in the sums and is tracked separately.
-- `historicoEstoque` is deliberately **not** `serverOwned` — the Flutter app still
-  writes rows during the dual run — so the ledger is client-writable and only as
-  trustworthy as that. Revisit when the Flutter sender is decommissioned (#431).
+- `historicoEstoque` is deliberately **not** `serverOwned`, so the ledger is
+  client-writable and only as trustworthy as that. ⚠️ The stated reason — "the
+  Flutter app still writes rows during the dual run" — is **void**; see the
+  Correction at the end of this ADR. Whether it should now be `serverOwned` is an
+  open question, still tracked against the Flutter sender's retirement (#431).
 
 ## Alternatives considered
 
@@ -441,3 +445,21 @@ refresh; without this ADR that reads as a defect.
 ## Status
 
 Accepted.
+
+## Correction (2026-08-19)
+
+This ADR repeatedly justifies itself with a **dual run** in which the legacy
+Flutter app concurrently writes the same documents. **That never existed.**
+Flutter writes only the legacy production project, this repo writes only staging,
+and the cutover turns the legacy app off (root `CLAUDE.md` rule 8, ADR 0013).
+
+**Every design decision here still stands, for a different reason.** What the
+argument actually needs is not a live second writer but the **migrated corpus**:
+legacy v1 `historicoEstoque` rows with no `movimento`, `depositoOuterRef` values
+in the bare `depositos/<id>` form, and rows never written through these schemas
+all arrive with the import and persist afterwards. So the accumulator must still
+fail open loudly, the write must still not blind-stamp fields it never read, and
+the reconstruction must still count what it cannot explain.
+
+The one item that loses its rationale outright is `historicoEstoque` staying
+client-writable rather than `serverOwned` — flagged inline above.
