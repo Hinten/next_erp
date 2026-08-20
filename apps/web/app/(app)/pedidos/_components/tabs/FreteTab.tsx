@@ -27,6 +27,7 @@ import { collectFreteErrors } from '../freteErrors';
 import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
 import { seedFreteInicial } from './frete/seedFreteInicial';
 import { isAtivacaoDeFrete, seedVolumePadrao } from './frete/seedVolumePadrao';
+import { notificarAvisoDimensoes } from './frete/notificarAviso';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
@@ -109,21 +110,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
       // The box the estimator produced may not be shippable as-is (#371).
       // Surface that here rather than letting the operator discover it when the
       // carrier rejects the quote.
-      if (aviso === 'excedeu60') {
-        notifications.show({
-          color: 'yellow',
-          title: 'Volume acima de 60cm',
-          message:
-            'O volume estimado passa de 60cm em algum lado — a maioria das transportadoras cobra adicional. Considere dividir o pedido.',
-        });
-      } else if (aviso === 'excedeuLimiteLegal') {
-        notifications.show({
-          color: 'orange',
-          title: 'Volume acima do limite dos Correios',
-          message:
-            'O pedido não cabe em um único volume dentro do limite dos Correios (100cm por lado, 200cm somados). As medidas foram limitadas — divida o pedido em mais volumes.',
-        });
-      }
+      notificarAvisoDimensoes(aviso === 'naoSemeado' ? null : aviso);
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       notifications.show({

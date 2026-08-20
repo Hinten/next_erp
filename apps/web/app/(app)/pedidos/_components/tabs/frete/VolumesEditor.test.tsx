@@ -111,4 +111,18 @@ describe('VolumesEditor "+ Novo volume"', () => {
     // FOB allows exactly one volume — the click must not push a second.
     await waitFor(() => expect(stored()).toEqual([volumePadrao(9)]));
   });
+
+  it('warns about a clamped box just like the activation seed does', () => {
+    // Both paths build the same box, so both must explain it — adding a volume
+    // by hand was the one path that stayed quiet. Review finding on #1153.
+    const oversized = medidas({ pesoBrutoKg: 1, alturaCm: 80, larguraCm: 80, profundidadeCm: 2 });
+    loadMock.mockResolvedValue({ p1: oversized });
+    render(<Host volumes={null} />);
+    fireEvent.click(screen.getByRole('button', { name: '+ Novo volume' }));
+
+    return waitFor(() => {
+      expect(stored()).toHaveLength(1);
+      expect(notifyMock).toHaveBeenCalledTimes(1);
+    });
+  });
 });

@@ -154,14 +154,60 @@ function ajustarCaixa(
   return cabe(volumeDe(caixa), volume) ? caixa : null;
 }
 
-/** Whole centimetres (a box must CONTAIN the volume), then the legal minimums. */
+/** The floor each axis may never go below, in the same shape as a box. */
+const MINIMOS: DimensoesCm = {
+  altura: MIN_ALTURA_CM,
+  largura: MIN_LARGURA_CM,
+  comprimento: MIN_COMPRIMENTO_CM,
+};
+const EIXOS = ['altura', 'largura', 'comprimento'] as const;
+
+/**
+ * Whole centimetres (a box must CONTAIN the volume, and real cartons are
+ * integers), then the legal minimums — and finally the legal SUM.
+ *
+ * ⚠️ The minimums clamp **up**, so on a very flat box they can push the sum past
+ * the ceiling the growth above carefully respected: a 2cm axis becomes 11cm and
+ * `98 + 98 + 2` turns into `98 + 98 + 11 = 207`. Give the excess back from the
+ * largest axis — most room, least proportional loss — never taking any axis
+ * below its own minimum. Every exit goes through here, so this is the one place
+ * the sum contract can be enforced for good.
+ */
 function finalizar(d: DimensoesCm): DimensoesCm {
-  const altura = Math.max(MIN_ALTURA_CM, Math.ceil(d.altura));
-  const largura = Math.max(MIN_LARGURA_CM, Math.ceil(d.largura));
-  const comprimento = Math.max(MIN_COMPRIMENTO_CM, Math.ceil(d.comprimento));
-  const caixa = { altura, largura, comprimento };
+  const caixa: DimensoesCm = {
+    altura: Math.max(MIN_ALTURA_CM, Math.ceil(d.altura)),
+    largura: Math.max(MIN_LARGURA_CM, Math.ceil(d.largura)),
+    comprimento: Math.max(MIN_COMPRIMENTO_CM, Math.ceil(d.comprimento)),
+  };
+
+  for (let passo = 0; passo < 64 && somaDe(caixa) > LIMITE_SOMA_CM; passo++) {
+    const alvo = EIXOS.filter((e) => caixa[e] > MINIMOS[e]).sort((a, b) => caixa[b] - caixa[a])[0];
+    if (!alvo) break;
+    const excesso = somaDe(caixa) - LIMITE_SOMA_CM;
+    caixa[alvo] = Math.max(MINIMOS[alvo], caixa[alvo] - excesso);
+  }
+
   if (somaDe(caixa) >= MIN_SOMA_CM) return caixa;
-  return { ...caixa, comprimento: comprimento + (MIN_SOMA_CM - somaDe(caixa)) };
+  return { ...caixa, comprimento: caixa.comprimento + (MIN_SOMA_CM - somaDe(caixa)) };
+}
+
+/**
+ * The warning a finished box earns, derived from the box itself rather than from
+ * which branch produced it.
+ *
+ * Deriving it is what keeps the bag path honest: `SACOS_PADRAO` stocks 50×60 and
+ * 50×70, so a mailer can carry a 70cm side, and hardcoding `aviso: null` there
+ * meant the one operator packing a long flat item was the only one never told
+ * about the surcharge.
+ *
+ * A box that no longer holds the volume — because {@link finalizar} had to trim
+ * it back under the legal sum — is reported as over the limit, since that is
+ * exactly what it is.
+ */
+function classificar(dimensoes: DimensoesCm, volumeExigido: number): AvisoDimensoes | null {
+  if (!cabe(volumeDe(dimensoes), volumeExigido)) return 'excedeuLimiteLegal';
+  const maior = Math.max(dimensoes.altura, dimensoes.largura, dimensoes.comprimento);
+  return maior > LIMITE_SEM_SOBRETAXA_CM ? 'excedeu60' : null;
 }
 
 /**
@@ -242,16 +288,25 @@ export function dimensoesPedido(
   volume /= FATOR_OCUPACAO;
 
   const saco = escolherSaco(volume, maiorLado, ladoMedio, menorLado);
-  if (saco) return { dimensoes: finalizar(saco), embalagem: 'saco', aviso: null };
+  if (saco) {
+    const dimensoes = finalizar(saco);
+    return { dimensoes, embalagem: 'saco', aviso: classificar(dimensoes, volume) };
+  }
 
   // `Math.ceil` in `finalizar` can add up to 1cm per axis, so hold 3cm of the
   // sum allowance back rather than rounding our way past the legal limit.
   const somaMax = LIMITE_SOMA_CM - 3;
   const semSobretaxa = ajustarCaixa(pisos, volume, LIMITE_SEM_SOBRETAXA_CM, somaMax);
-  if (semSobretaxa) return { dimensoes: finalizar(semSobretaxa), embalagem: 'caixa', aviso: null };
+  if (semSobretaxa) {
+    const dimensoes = finalizar(semSobretaxa);
+    return { dimensoes, embalagem: 'caixa', aviso: classificar(dimensoes, volume) };
+  }
 
   const legal = ajustarCaixa(pisos, volume, LIMITE_LEGAL_CM, somaMax);
-  if (legal) return { dimensoes: finalizar(legal), embalagem: 'caixa', aviso: 'excedeu60' };
+  if (legal) {
+    const dimensoes = finalizar(legal);
+    return { dimensoes, embalagem: 'caixa', aviso: classificar(dimensoes, volume) };
+  }
 
   // Beyond what Correios accepts in one parcel. The pedido does NOT fit, so
   // there is no "right" box — return the LARGEST legal one, keeping the item's
@@ -268,11 +323,7 @@ export function dimensoesPedido(
     for (let i = 0; i < 3; i++) maximo[i] = Math.min(maximo[i]! * escala, LIMITE_LEGAL_CM);
   }
   return {
-    dimensoes: finalizar({
-      altura: maximo[0]!,
-      largura: maximo[1]!,
-      comprimento: maximo[2]!,
-    }),
+    dimensoes: finalizar({ altura: maximo[0]!, largura: maximo[1]!, comprimento: maximo[2]! }),
     embalagem: 'caixa',
     aviso: 'excedeuLimiteLegal',
   };

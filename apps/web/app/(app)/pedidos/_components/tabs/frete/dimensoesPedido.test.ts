@@ -223,3 +223,50 @@ describe('dimensoesPedido — box sizing', () => {
     expect(volumeDe(dois.dimensoes)).toBeGreaterThan(volumeDe(um.dimensoes));
   });
 });
+
+describe('dimensoesPedido — the legal contract holds on every path', () => {
+  it('a very flat oversized pedido still respects the 200cm sum', () => {
+    // Regression: the minimums clamp UP, so a 2cm third axis became 11cm AFTER
+    // the growth had already spent the sum allowance — 98+98+2 turned into
+    // 98+98+11 = 207. Review finding on #1153.
+    const r = dimensoesPedido([{ produtoUid: 'p1', quantidade: 20 }], { p1: caixa(80, 80, 2) });
+    expect(somaDe(r.dimensoes)).toBeLessThanOrEqual(LIMITE_SOMA_CM);
+  });
+
+  it('a long flat item in the 50×70 bag is reported as over 60cm', () => {
+    // Regression: the bag branch hardcoded `aviso: null`, so the two largest
+    // stocked bags (50×60, 50×70) silently skipped the surcharge warning the
+    // equivalent box would have raised. Review finding on #1153.
+    const r = dimensoesPedido([{ produtoUid: 'p1', quantidade: 1 }], { p1: caixa(2, 48, 65) });
+    expect(r.embalagem).toBe('saco');
+    expect(r.dimensoes.comprimento).toBe(70);
+    expect(r.aviso).toBe('excedeu60');
+  });
+
+  it('holds the sum and side limits across a sweep of awkward shapes', () => {
+    // The two regressions above were both found by sampling rather than by
+    // reasoning, so keep sampling.
+    const formas: Array<[number, number, number]> = [
+      [80, 80, 2],
+      [73.6, 83.9, 2.5],
+      [41.4, 1, 73],
+      [2, 48, 65],
+      [1, 1, 1],
+      [99, 99, 99],
+      [0.5, 120, 3],
+      [30, 30, 30],
+    ];
+    for (const [a, l, p] of formas) {
+      for (const q of [1, 3, 16, 20, 23, 200]) {
+        const r = dimensoesPedido([{ produtoUid: 'p1', quantidade: q }], { p1: caixa(a, l, p) });
+        const maior = Math.max(r.dimensoes.altura, r.dimensoes.largura, r.dimensoes.comprimento);
+        expect(maior, `side for ${a}x${l}x${p} q=${q}`).toBeLessThanOrEqual(LIMITE_LEGAL_CM);
+        expect(somaDe(r.dimensoes), `sum for ${a}x${l}x${p} q=${q}`).toBeLessThanOrEqual(
+          LIMITE_SOMA_CM,
+        );
+        // And the warning must match the box that was actually produced.
+        if (maior > LIMITE_SEM_SOBRETAXA_CM) expect(r.aviso).not.toBeNull();
+      }
+    }
+  });
+});
