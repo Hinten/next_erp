@@ -94,6 +94,15 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
   fields?: Record<string, FieldConfig>;
   /** Section names → renders a Mantine tabs view. Omit for a flat layout. */
   sections?: string[];
+  /**
+   * Sections whose content must stay FULLY mounted — effects included — while
+   * another tab is active (see `SectionTabs`). Every other section keeps the
+   * default: rendered but with its effects suspended until it is opened, so an
+   * unvisited tab costs no listener and no fetch. Opt a section in only when it
+   * holds work that a tab switch would destroy — an unsaved sub-form, an
+   * in-flight request, a registered flush closure.
+   */
+  persistentSections?: readonly string[];
 
   /**
    * Derive additional top-level fields from the (already per-field
@@ -281,6 +290,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   excludedFields = [],
   fields: fieldOverrides = {},
   sections,
+  persistentSections,
   deriveOnSave,
   validate,
   transientFields = [],
@@ -990,6 +1000,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                 value={effectiveSection}
                 onChange={setActiveSection}
                 errorSections={errorSections}
+                persistentSections={persistentSections}
               />
             ) : (
               fieldsBlock(grouped['default'] ?? visibleDescriptors)
