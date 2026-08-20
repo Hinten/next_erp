@@ -1,5 +1,6 @@
+import { z } from 'zod';
 import type { FieldConfig } from '@delfrance/ui';
-import type { Produto } from '@delfrance/schemas';
+import { type Produto, produtoPageBaseSchema } from '@delfrance/schemas';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
@@ -18,6 +19,12 @@ import { pesoRenderInput } from './PesoField';
  * app just does not edit them yet).
  */
 
+/**
+ * The Mercado Livre tab, named once so the section list, the schema anchor and
+ * the page's `persistentSections` can never drift apart.
+ */
+export const SECTION_MERCADO_LIVRE = 'Mercado Livre';
+
 /** Tab order for the Produto ObjectView — Variações before the media tabs. */
 export const PRODUTO_SECTIONS: string[] = [
   'Dados gerais',
@@ -32,7 +39,19 @@ export const PRODUTO_SECTIONS: string[] = [
   'Fotos',
   'Vídeos',
   'Anexos',
+  SECTION_MERCADO_LIVRE,
 ];
+
+/**
+ * The produto page model plus the `mercadoLivre` UI anchor — a key whose only
+ * job is to give the Mercado Livre tab a field descriptor (the tab is
+ * self-contained; nothing is read from or written to the form value). Shared by
+ * both pages so the tab exists in create mode too, where it renders a
+ * "salve o produto" message instead of the editor.
+ */
+export const produtoPageSchema = produtoPageBaseSchema.extend({
+  mercadoLivre: z.null().default(null),
+});
 
 /**
  * Per-field labels + section (tab) assignment. Fields not listed here fall to
@@ -128,7 +147,14 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
  * page's `transactionWrites`. `id` is the produto id, present only for the
  * cross-document self-reference check; `impostos` lands with its own tab.
  */
-export const PRODUTO_TRANSIENT_FIELDS: string[] = ['id', 'extraData', 'estoques', 'impostos'];
+export const PRODUTO_TRANSIENT_FIELDS: string[] = [
+  'id',
+  'extraData',
+  'estoques',
+  'impostos',
+  // Pure UI anchor for the Mercado Livre tab — see `produtoPageSchema`.
+  'mercadoLivre',
+];
 
 /**
  * Fields hidden from the Produto ObjectView for now. Kit components and

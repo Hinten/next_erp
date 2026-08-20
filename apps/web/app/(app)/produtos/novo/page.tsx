@@ -14,7 +14,6 @@ import {
   type ProdutoExtraData,
   type Video,
   deriveFotosArquivosIds,
-  produtoPageBaseSchema,
   produtoPageIssues,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -34,12 +33,15 @@ import { KitManager, stripKitForSave } from '../_components/KitManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
+import { MercadoLivreTab } from '../_components/mercado-livre/MercadoLivreTab';
 import {
   PRODUTO_CREATE_DEFAULTS,
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
   PRODUTO_TRANSIENT_FIELDS,
+  SECTION_MERCADO_LIVRE,
   produtoFieldOverrides,
+  produtoPageSchema,
 } from '../_components/produtoFields';
 
 export default function NovoProdutoPage() {
@@ -205,6 +207,16 @@ export default function NovoProdutoPage() {
           />
         ),
       },
+      mercadoLivre: {
+        label: 'Mercado Livre',
+        section: SECTION_MERCADO_LIVRE,
+        // Shows the tab with "Salve o produto para continuar" rather than
+        // hiding it: every listing action is keyed on a produto that exists, and
+        // a tab that simply is not there reads as a missing feature. No
+        // `persistentSections` here — there is nothing to keep alive until the
+        // produto is saved, and the save navigates to the edit page.
+        renderInput: () => <MercadoLivreTab produtoId={null} db={db} />,
+      },
     }),
     [db, storage, listas, listasSnap.error?.message],
   );
@@ -220,7 +232,7 @@ export default function NovoProdutoPage() {
         }
       />
       <ObjectView
-        schema={produtoPageBaseSchema}
+        schema={produtoPageSchema}
         collection={produtoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}

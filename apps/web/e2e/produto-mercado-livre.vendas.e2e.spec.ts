@@ -38,7 +38,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     test.setTimeout(240_000);
     await Promise.all([
       seedMercadoLivreFixtures(prefix, 3).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
-      warmRoutes(browser, ['/produtos/__aquecimento__/editar']),
+      warmRoutes(browser, ['/produtos/novo', '/produtos/__aquecimento__/editar']),
     ]);
   });
 
@@ -188,5 +188,44 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(
       page.getByText('Não foi possível contatar o serviço do Mercado Livre.'),
     ).toBeVisible({ timeout: 15_000 });
+  });
+
+  test('keeps the tab open with its state when another tab is visited', async ({ page }) => {
+    await page.goto(`/produtos/${produtoId}/editar`);
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    const card = page.getByTestId(`ml-conta-${contaLinked}`);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+
+    // A piece of state that lives INSIDE the listing form and is persisted
+    // nowhere: the descrição disclosure. The seed stores `descricao: null`, so
+    // it starts closed. Chosen over typing into a field on purpose — it proves
+    // the form survived without leaving the page dirty for the next test.
+    const descricao = card.getByTestId('ml-descricao-wrapper');
+    await expect(descricao).toHaveAttribute('data-open', 'false');
+    await card.getByRole('button', { name: 'Descrição do anúncio' }).click();
+    await expect(descricao).toHaveAttribute('data-open', 'true');
+
+    await page.getByRole('tab', { name: 'Fotos' }).click();
+    await expect(page.getByRole('tab', { name: 'Fotos' })).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    // Still open: the panel was never suspended, so neither the Firestore
+    // listeners nor the listing form were torn down and rebuilt.
+    await expect(descricao).toHaveAttribute('data-open', 'true');
+  });
+
+  test('shows the tab with a "save first" message on the create screen', async ({ page }) => {
+    await page.goto('/produtos/novo');
+    await expect(page.getByRole('heading', { name: 'Novo produto' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+
+    // No produtoId yet — publishing, the stock push and the link subcollection
+    // all need a produto that exists, so the tab explains itself instead of
+    // disappearing.
+    await expect(page.getByText('Salve o produto para continuar.')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole('button', { name: 'Preparar anúncio' })).toHaveCount(0);
   });
 });
