@@ -319,6 +319,46 @@ siblings are still selling out of the stock and price sweeps, silently. The deno
 is keyed on the parent link's own `id`, matching what publish and import stamped;
 member ids belong to the CHILD produtos.
 
+⚠️ **The `items` webhook is NOT the only surface that learns one member's status,
+and the other one is the stock sender.** `buildSendTasks` emits one
+`kind: 'variationItem'` task per UP member carrying the **family's** `linkDocId`
+next to the **member's** `itemId`, so `estoqueSend`'s terminal 4xx branch (#781)
+verifies a MEMBER and used to write that verdict straight to the parent through
+`applyItemStatusToLink` — one member speaking for the family, which for `closed`
+is the silent sweep drop the paragraph above describes. Both callers now land on
+the same fold: `applyMemberStatusAndFold` (exported from `itemsStatusSync.ts`) is
+the one writer of a member's status, and the member path never reaches
+`applyItemStatusToLink` at all — so the denorm can never be keyed on a member id.
+A member whose link cannot be resolved takes the conservative `estado 'E'` stop
+instead, which is loud and bounded; `estado 'c'` from one member is not an option.
+The residual: a HEALTHY member whose payload ML refused still latches the whole
+family at `'E'`, because `estado` lives only on the parent link. It is visible and
+self-clearing (an `items` webhook or "Reverificar anúncio"), and the log names the
+offending member — but it does stop the siblings until then.
+
+⚠️ **A member's own `status`/`sub_status` gate its send, and that is what makes
+#707's prune do anything.** The UP branch of `buildSendTasks` runs
+`podeEnviarEstoque` per member, with the same two arms as the parent link: a
+PRESENT status goes through the documented whitelist, an ABSENT one sends
+**optimistically** (#780 — the field arrived with #1142, so every Flutter-authored
+member link is null, and a listing that never changes never fires an `items`
+notification). The fields ride the `varLinks` subcollection projection in
+`stockJoinBuilders`; dropping them there silently disables the rung.
+
+⚠️ **`item.variations.invalid` self-heals; it is LEGACY-MODEL ONLY (#707).** When a
+bulk `PUT /items/{id}` is refused with that cause, the terminal branch diffs the
+family's `variacaoMercadoLivre` links against the live `variations[].id` from the
+verification GET it already made, and marks the phantoms `status: 'closed'` +
+`sub_status: ['deleted']` — it does **not** delete them (the link carries the
+member's `sku` + `attributes`, and legacy only ever rewrote the child's dead-weight
+`marketplace` denorm array, never a `VariacoesML` doc). Two things not to
+"simplify": the diff is guarded on `item.family_name == null`, exactly as
+`.old/…/utils/produtos.dart:454` is — under User Products there is no `variations[]`
+array and members are keyed by `itemId`, so a legacy-shaped diff would mark live
+members closed. And a prune that marked something SKIPS the `estado 'E'` latch, so
+the next sweep re-sends the corrected payload; a prune that marked nothing keeps
+#781's latch, so the 96×/day loop cannot reopen.
+
 ⚠️ The same sync is now the **producer** of `estado 'am'`, not a reader of it. That
 value never had a writer in this repo — it only ever arrived from Flutter — yet
 `publishCore.ts` blocks publish on it and `precoPlan.ts`/`bulkEstoquePlan.ts` skip on

@@ -365,7 +365,14 @@ const childrenSub = () => ({
           kind: 'arraySubquery',
           stages: [
             { stage: 'subcollection', args: ['variacaoMercadoLivre'] },
-            { stage: 'select', args: ['itemId', 'id', 'produtoMercadoLivreOuterRef'] },
+            {
+              stage: 'select',
+              // `status`/`sub_status` ride along for the UP branch's per-MEMBER gate:
+              // under User Products a member is its own ML item, and the parent's
+              // folded status ranks `closed` LAST, so the family can read `active`
+              // while one member is gone.
+              args: ['itemId', 'id', 'produtoMercadoLivreOuterRef', 'status', 'sub_status'],
+            },
           ],
         }),
       ],
@@ -1993,6 +2000,87 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       { produtoId: 'CH3', reason: 'sem-item-id', linkDocId: 'link1' },
       { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB-CHV', linkDocId: 'link1' },
     ]);
+  });
+
+  it('UP model: a member ML reports as CLOSED is skipped, its siblings still send', () => {
+    // Under User Products a member is its own ML item, and `foldFamilyStatus`
+    // ranks `closed` LAST on purpose — so the PARENT can read `active` while one
+    // member is gone. Without a per-member rung that member is sent to on every
+    // tick, earns a 4xx and rides the whole #781 ladder, 96× a day, forever.
+    // This is also what makes #707's `status: 'closed'` mark actionable.
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'closed',
+            sub_status: ['deleted'],
+          },
+        ]),
+        child('CH2', [
+          {
+            itemId: 'MLB-CH2',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'active',
+            sub_status: [],
+          },
+        ]),
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH2', 4],
+    ]);
+    const res = buildSendTasks(row, qty, OPTS);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        kind: 'variationItem',
+        itemId: 'MLB-CH2',
+        variacaoProdutoId: 'CH2',
+        quantidade: 4,
+        variations: null,
+      },
+    ]);
+    expect(res.skips).toEqual([
+      { produtoId: 'CH1', reason: 'status-nao-enviavel', itemId: 'MLB-CH1', linkDocId: 'link1' },
+    ]);
+  });
+
+  it('UP model: a member with NO status sends optimistically (#780, the inherited catalogue)', () => {
+    // `status` on a member link arrived with #1142, so EVERY Flutter-authored row
+    // is null here — and a listing that never changes never fires an `items`
+    // notification, so gating on the whitelist would be a silent, permanent stock
+    // outage for the whole migrated catalogue. Same arm the parent link takes.
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
+    });
+    const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
+    expect(res.tasks).toHaveLength(1);
+    expect(res.skips).toEqual([]);
+  });
+
+  it('UP model: paused + out_of_stock still sends (ML reactivates on qty > 0)', () => {
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'paused',
+            sub_status: ['out_of_stock'],
+          },
+        ]),
+      ],
+    });
+    expect(buildSendTasks(row, new Map([['CH1', 3]]), OPTS).tasks).toHaveLength(1);
   });
 
   it('childless UP family degenerates to a single item task with the anchor quantity', () => {

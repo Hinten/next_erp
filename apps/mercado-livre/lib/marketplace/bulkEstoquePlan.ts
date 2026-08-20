@@ -382,6 +382,16 @@ export interface RawVarLinkRow {
   itemId?: unknown;
   id?: unknown;
   produtoMercadoLivreOuterRef?: unknown;
+  /**
+   * The MEMBER's own raw ML status pair (#1142). Projected because the UP branch
+   * of {@link buildSendTasks} gates each member on it: under User Products a
+   * member is its own ML item, and the family fold on the parent link ranks
+   * `closed` LAST on purpose, so the parent can read `active` while one member is
+   * gone. Null means never observed (every Flutter-authored row) and sends
+   * OPTIMISTICALLY — see the rung itself for why.
+   */
+  status?: unknown;
+  sub_status?: unknown;
   [key: string]: unknown;
 }
 
@@ -591,7 +601,7 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
         compEstoques('childKitKeys').as('componentEstoques'),
         pipelines
           .subcollection('variacaoMercadoLivre')
-          .select('itemId', 'id', 'produtoMercadoLivreOuterRef')
+          .select('itemId', 'id', 'produtoMercadoLivreOuterRef', 'status', 'sub_status')
           .toArrayExpression()
           .as('varLinks'),
       )
@@ -1787,6 +1797,57 @@ export function buildSendTasks(
         continue;
       }
       if (emittedItemIds.has(varItemId)) continue; // cycle-wide dedup — silent (set above)
+      // ---- The MEMBER's own status gate, mirroring the parent's above.
+      //
+      // Under User Products each member is its own ML item with its own
+      // lifecycle, so the family's folded status cannot answer for it: a member
+      // ML has closed sits under a parent the fold still reports `active`
+      // (`foldFamilyStatus` ranks `closed` LAST precisely so one dead member
+      // cannot cancel a live family). Without this rung that member is sent to
+      // on every tick, earns a 4xx, and rides the whole #781 ladder — 3 PUTs and
+      // a GET, 96× a day, forever.
+      //
+      // Same two-arm shape as the parent, and for the same reasons:
+      //  - status ABSENT → send OPTIMISTICALLY (#780). Every member link the
+      //    Flutter app authored has a null here (the field arrived with #1142),
+      //    and a listing that never changes never fires an `items` notification,
+      //    so gating on the whitelist would be a silent, permanent stock outage
+      //    for the inherited catalogue. The send is its own backfill: both of its
+      //    outcomes now write the member's real status back — the happy path via
+      //    `estoqueSend`'s writeback, the terminal one via `applyMemberStatusAndFold`.
+      //  - status PRESENT → the documented whitelist decides, and an undocumented
+      //    value stays loud (status tracking, per Lucas).
+      //
+      // ⚠️ This is what makes #707's `status: 'closed'` mark actionable rather
+      // than decorative: the prune writes it, and this rung is what reads it.
+      if (varLink.status != null) {
+        const memberGate = podeEnviarEstoque(
+          typeof varLink.status === 'string' ? varLink.status : null,
+          Array.isArray(varLink.sub_status)
+            ? varLink.sub_status.filter((s): s is string => typeof s === 'string')
+            : null,
+        );
+        if (memberGate.desconhecido) {
+          console.warn(
+            '[mercado-livre] stock-sync: status de membro fora do conjunto documentado',
+            {
+              integracaoId: opts.integracaoId,
+              produtoId: child.produtoId,
+              itemId: varItemId,
+              status: varLink.status,
+            },
+          );
+        }
+        if (!memberGate.enviar) {
+          skips.push({
+            produtoId: child.produtoId,
+            reason: 'status-nao-enviavel',
+            itemId: varItemId,
+            linkDocId,
+          });
+          continue;
+        }
+      }
       const quantidade = quantidades.get(child.produtoId) ?? null;
       if (quantidade == null) {
         skips.push({

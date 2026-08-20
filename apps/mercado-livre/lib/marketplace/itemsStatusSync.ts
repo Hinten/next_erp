@@ -222,7 +222,18 @@ export async function syncItemStatus(
   // resolution is already User-Products, so it cannot be the source of a
   // migration INTO User Products.
   if (link.member) {
-    return syncFamilyMember(db, integracaoId, item, link, link.member);
+    return applyMemberStatusAndFold(
+      db,
+      integracaoId,
+      {
+        produtoId: link.produtoId,
+        linkDocId: link.docId,
+        memberProdutoId: link.member.produtoId,
+        memberDocId: link.member.docId,
+        pmlOuterRef: link.member.pmlOuterRef,
+      },
+      { status: item.status ?? null, subStatus: item.sub_status ?? null },
+    );
   }
 
   // Migration-tagged item (needs the fetched item's `tags`) — the only reason
@@ -335,6 +346,20 @@ async function applyResolvedStatus(
   return applied ? 'synced' : 'link-removido';
 }
 
+/** The two ends of one User-Products family write: the parent, and the member. */
+export interface MemberFoldTarget {
+  /** The FAMILY anchor produto — where the parent link lives. */
+  produtoId: string;
+  /** The family's `produtoMercadoLivre` doc id. */
+  linkDocId: string;
+  /** The variation CHILD produto owning the member link. */
+  memberProdutoId: string;
+  /** The `variacaoMercadoLivre` doc id. */
+  memberDocId: string;
+  /** The parent's outer ref — the key the sibling fold reads by. */
+  pmlOuterRef: string;
+}
+
 /**
  * The User-Products FAMILY path (#1142): record what ML said about THIS member,
  * then re-derive the family's summary from every member.
@@ -344,24 +369,32 @@ async function applyResolvedStatus(
  * (member ids go on the CHILD produtos, in a different shape), so keying on the
  * member would `arrayUnion` an entry nothing ever removes AND leave the cancel
  * arm's `externalId` filter matching nothing — a removal that silently no-ops.
+ *
+ * ⚠️ Exported because the `items` webhook is NOT the only surface that learns
+ * one member's status: the stock sender's terminal 4xx branch (#781) fetches the
+ * member item it could not update, and under User Products that fetch answers for
+ * ONE member of N. Writing it straight to the parent — which is what the shared
+ * `applyItemStatusToLink` does — lets a single member speak for the family, and
+ * for `closed` that silently drops the produto out of both sweeps. Both callers
+ * must therefore land on this same fold, exactly as they already share
+ * `applyItemStatusToLink` for the non-family case.
  */
-async function syncFamilyMember(
+export async function applyMemberStatusAndFold(
   db: Firestore,
   integracaoId: string,
-  item: MlItem,
-  link: ResolvedLink,
-  member: ResolvedMember,
+  target: MemberFoldTarget,
+  observed: { status: string | null; subStatus: string[] | null },
 ): Promise<ItemsSyncOutcome> {
-  const status = item.status ?? null;
-  const subStatus = item.sub_status ?? null;
+  const status = observed.status;
+  const subStatus = observed.subStatus;
 
   const parentRef = produtoMercadoLivreLinkCollection.docRef(
     db,
-    { produtoId: link.produtoId },
-    link.docId,
+    { produtoId: target.produtoId },
+    target.linkDocId,
   );
-  const produtoRef = produtoCollection.docRef(db, {}, link.produtoId);
-  const siblingQuery = familyMemberQuery(db, member.pmlOuterRef);
+  const produtoRef = produtoCollection.docRef(db, {}, target.produtoId);
+  const siblingQuery = familyMemberQuery(db, target.pmlOuterRef);
 
   return db.runTransaction(async (tx): Promise<ItemsSyncOutcome> => {
     // ---- READS. All of them, before any write (Firestore's rule), and every
@@ -386,7 +419,7 @@ async function syncFamilyMember(
     for (const d of members.docs) {
       const raw = d.data() as Record<string, unknown>;
       const isNotified =
-        d.id === member.docId && (d.ref.parent?.parent?.id ?? '') === member.produtoId;
+        d.id === target.memberDocId && (d.ref.parent?.parent?.id ?? '') === target.memberProdutoId;
       if (isNotified) notified = d;
       // ⚠️ A row with no `itemId` is not an ML listing at all — the legacy
       // `variations[]` branch leaves the field null (`importCore.ts`). Passing it
