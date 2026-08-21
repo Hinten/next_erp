@@ -838,10 +838,16 @@ describe('TableView', () => {
       );
       buildPipelineSpy.mockClear();
       fireEvent.click(screen.getByText('Tipo'));
-      expect(buildPipelineSpy.mock.calls.length).toBeGreaterThan(0);
-      for (const call of buildPipelineSpy.mock.calls) {
-        expect(call[1]).toMatchObject({ orderBy: [{ field: 'nome', direction: 'asc' }] });
-      }
+      // The click DID re-query (otherwise the two assertions below are vacuous)...
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+      );
+      // ...and it never issued the sort the user asked for.
+      expect(buildPipelineSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'tipo', direction: 'asc' }] }),
+      );
     });
 
     it('falls back to the declared default once cleared', () => {
