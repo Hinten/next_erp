@@ -9,12 +9,18 @@ import {
   type ConversaOrdem,
   type ConversaTab,
 } from '@/lib/chat/conversaConstraints';
+import {
+  aplicarFiltroCliente,
+  aplicarTab,
+  limparClienteAoFiltrar,
+  resolverFiltroCliente,
+} from '@/lib/chat/clienteFilterParam';
 
 /**
  * The inbox list state, mirrored in the URL query so it survives navigation
  * to `/chat/[id]` and back and is shareable/deep-linkable. Params:
  *   `tab` · `ordem` · `integracao` · `etiqueta` · `cliente` · `busca`
- * (`cliente` holds the resolved `usarioOuterRef`, i.e. `documents/usuarios/<uid>`;
+ * (`cliente` holds `documents/clientes/<id>`;
  * `busca` holds the cross-conversation search term — its PRESENCE, even empty,
  * puts the list pane in global-search mode so the state survives navigation into
  * a thread and back).
@@ -24,7 +30,7 @@ export interface ConversaFiltersState {
   ordem: ConversaOrdem;
   integracaoId: string | null;
   etiqueta: number | null;
-  /** Resolved `usarioOuterRef` of the cliente filter (or null). */
+  /** `documents/clientes/<id>` of the cliente filter (or null). */
   clienteRef: string | null;
   /** Cross-conversation search term, or null when not in search mode. */
   busca: string | null;
@@ -68,7 +74,11 @@ export function useConversaFilters(): ConversaFiltersState {
   const ordem = parseOrdem(searchParams.get('ordem'), tab);
   const integracaoId = searchParams.get('integracao') || null;
   const etiqueta = parseEtiqueta(searchParams.get('etiqueta'));
-  const clienteRef = searchParams.get('cliente') || null;
+  // ⚠️ Resolved against the WHOLE URL, not just its own param. Every param
+  // here is deep-linkable by design, so a bookmarked or hand-edited
+  // `?tab=pendentes&cliente=…` would otherwise reach Firestore as a shape no
+  // index covers — see the INVARIANT in `clienteFilterParam.ts`.
+  const clienteRef = resolverFiltroCliente(searchParams, tab);
   // NOT `|| null`: an empty `?busca=` means "search mode on, blank input" and
   // must stay distinct from an absent param (search mode off).
   const busca = searchParams.get('busca');
@@ -86,39 +96,50 @@ export function useConversaFilters(): ConversaFiltersState {
   );
 
   const setTab = useCallback(
-    (nextTab: ConversaTab) =>
-      commit((p) => {
-        if (nextTab === 'atendimento') p.delete('tab');
-        else p.set('tab', nextTab);
-        // Each tab has its own default ordering; drop an explicit ordem so the
-        // new tab falls back to its default (legacy per-tab order state).
-        p.delete('ordem');
-      }),
+    (nextTab: ConversaTab) => commit((p) => aplicarTab(p, nextTab)),
     [commit],
   );
 
+  // ⚠️ These three CLEAR the cliente filter — the third leg of the invariant,
+  // alongside `aplicarFiltroCliente` and `aplicarTab`. Each adds a clause to
+  // the same query, so pairing one with a cliente is a composite nothing
+  // indexes. The UI disables them while a chip is showing; this is the belt
+  // to that braces.
   const setOrdem = useCallback(
     (nextOrdem: ConversaOrdem) =>
       commit((p) => {
         if (nextOrdem === DEFAULT_ORDEM[parseTab(p.get('tab'))]) p.delete('ordem');
         else p.set('ordem', nextOrdem);
+        limparClienteAoFiltrar(p);
       }),
     [commit],
   );
 
   const setIntegracao = useCallback(
-    (id: string | null) => commit((p) => (id ? p.set('integracao', id) : p.delete('integracao'))),
+    (id: string | null) =>
+      commit((p) => {
+        if (id) p.set('integracao', id);
+        else p.delete('integracao');
+        limparClienteAoFiltrar(p);
+      }),
     [commit],
   );
 
   const setEtiqueta = useCallback(
     (cor: number | null) =>
-      commit((p) => (cor != null ? p.set('etiqueta', String(cor)) : p.delete('etiqueta'))),
+      commit((p) => {
+        if (cor != null) p.set('etiqueta', String(cor));
+        else p.delete('etiqueta');
+        limparClienteAoFiltrar(p);
+      }),
     [commit],
   );
 
+  // ⚠️ The cliente filter is EXCLUSIVE with the tab, the ordering, the etiqueta
+  // and the integração — see the INVARIANT note in `clienteFilterParam.ts`,
+  // which owns every mutation so the property is directly assertable.
   const setCliente = useCallback(
-    (ref: string | null) => commit((p) => (ref ? p.set('cliente', ref) : p.delete('cliente'))),
+    (ref: string | null) => commit((p) => aplicarFiltroCliente(p, ref)),
     [commit],
   );
 
