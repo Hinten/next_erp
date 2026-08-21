@@ -42,12 +42,14 @@ describe('formatPedidoNumero', () => {
     expect(sorted).toEqual(['VEN-000001', 'VEN-000002', 'VEN-000010', 'VEN-000100']);
   });
 
-  it('groups by prefix then sequence under a global numero sort (the /pedidos default order)', () => {
-    // `pedidoMeta.defaultQuery` orders by `numero` desc (lexical). With the
-    // prefix leading, a global sort groups by operação (alphabetically) and
-    // orders by sequence within each prefix — it is NOT a single cross-operação
-    // sequence order. Asserted ascending here for readability; the list uses
-    // desc. This intentional behavior is what the format guarantees.
+  it('groups by prefix then sequence under a global numero sort', () => {
+    // A lexical sort over `numero` groups by operação (alphabetically) and only
+    // then orders by sequence within each prefix — it is NOT a single
+    // cross-operação sequence order, and NOT a recency order.
+    //
+    // ⚠️ This is why `numero desc` is no longer the /pedidos default sort
+    // (#159 moved it to `timestamp desc`). The behaviour asserted here still
+    // governs the Número COLUMN sort, which is what the format guarantees.
     const nums = [
       formatPedidoNumero('VEN', 2),
       formatPedidoNumero('NUL', 10),

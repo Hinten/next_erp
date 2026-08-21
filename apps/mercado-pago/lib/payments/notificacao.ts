@@ -2,7 +2,7 @@
  * Mercado Pago webhook ingestion core (#531) — the queue-based resilient
  * pipeline shared by the receiver route, the `onTaskDispatched` task handler,
  * and the `onSchedule` reprocess sweep. Mirrors
- * `apps/mercado-livre/lib/marketplace/notificacao.ts`, adapted marketplace →
+ * `apps/mercado-livre/lib/marketplace/notificacoes/notificacao.ts`, adapted marketplace →
  * payments.
  *
  * Flow (see the receiver route + the future functions/DEPLOY.md):

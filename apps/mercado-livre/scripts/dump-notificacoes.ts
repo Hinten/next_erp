@@ -30,7 +30,7 @@ import { notificacaoMercadoLivreCollection } from '@delfrance/data/admin/collect
 import type { Query } from 'firebase-admin/firestore';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
-import { TOPIC_DISPOSITION } from '../lib/marketplace/notificacao';
+import { TOPIC_DISPOSITION } from '../lib/marketplace/notificacoes/notificacao';
 
 function log(message: string): void {
   // eslint-disable-next-line no-console -- CLI output

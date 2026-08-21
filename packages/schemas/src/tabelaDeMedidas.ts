@@ -52,6 +52,7 @@ export const tabelaDeMedidasMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'ultimaModificacao', direction: 'desc' }],
     limit: 50,
+    columns: ['nome', 'codigo', 'dataCadastro', 'ultimaModificacao'],
   },
 };
 

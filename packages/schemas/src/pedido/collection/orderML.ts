@@ -23,7 +23,7 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * This schema is READ-tolerant only — a plain `z.string()` `status` (not a
  * strict enum) and passthrough on every nested/opaque block. Byte-exact WRITE
  * parity (which keys are omitted vs. written-as-null) is
- * `buildOrderMLWire`'s job (`apps/mercado-livre/lib/marketplace/orderMLWire.ts`),
+ * `buildOrderMLWire`'s job (`apps/mercado-livre/lib/marketplace/pedidos/orderMLWire.ts`),
  * not this schema's — mirrors how `produtoMercadoLivreLinkSchema` leaves wire
  * parity to its own writer.
  *
@@ -61,7 +61,7 @@ export const orderMLSchema = z
      * `pending_cancel`, `cancelled`, `invalid`. Kept a plain string (not a
      * strict enum) so an ML-added status never fails the read; the estado
      * mapping lives in `estadoPedidoFromOrderStatus`
-     * (`apps/mercado-livre/lib/marketplace/orderStatusMaps.ts`).
+     * (`apps/mercado-livre/lib/marketplace/pedidos/orderStatusMaps.ts`).
      */
     status: z.string(),
     status_detail: z.string().nullable().optional(),

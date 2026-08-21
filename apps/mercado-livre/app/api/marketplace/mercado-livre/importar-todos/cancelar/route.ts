@@ -25,7 +25,7 @@ import { NextResponse } from 'next/server';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { cancelMassImportJob } from '@/lib/marketplace/massImport';
+import { cancelMassImportJob } from '@/lib/marketplace/mass-import/massImport';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

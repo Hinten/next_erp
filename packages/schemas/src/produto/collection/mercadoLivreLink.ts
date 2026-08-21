@@ -108,7 +108,7 @@ export const ML_CAUSA_TIPO = {
  * references[], message}` (ML developers site, *Guia para produtos →
  * Validações*). It is NOT universal: a 403 carries no `cause` at all and other
  * endpoints spell it `causes`, so the parser
- * (`apps/mercado-livre/lib/marketplace/publishFalhas.ts`) is deliberately
+ * (`apps/mercado-livre/lib/marketplace/core/publishFalhas.ts`) is deliberately
  * tolerant and this schema keeps every field optional but `mensagem`.
  */
 export const mlCausaSchema = z
@@ -170,7 +170,7 @@ export function campoAtributo(id: string): string {
  * The wire shape is `GET /moderations/last_moderation/{item_id}-ITM` (ML
  * developers site, *Moderações → Gerenciar moderações*), whose entries carry
  * `{name, id, date_created, evidences[], wordings[]}`. The mapper
- * (`apps/mercado-livre/lib/marketplace/moderacoes.ts`) is deliberately tolerant:
+ * (`apps/mercado-livre/lib/marketplace/anuncios/moderacoes.ts`) is deliberately tolerant:
  * ML's own docs spell the evidence key BOTH `evidences` and `evidence` on
  * different pages, and several documented responses carry no `wordings` at all.
  *

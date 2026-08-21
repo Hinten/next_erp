@@ -37,8 +37,9 @@ export async function bundle(outfile) {
   // Inlined for the same reason as FUNCTIONS_REGION: their `region:` option is
   // read during codebase analysis, before any env is available.
   // ⚠️ This is also the ENQUEUER's region — apps/mercado-livre/lib/marketplace/
-  // mlTasks.ts builds a region-qualified queue name from the same variable, and
-  // a mismatch makes the Admin SDK target us-central1 and SILENTLY DROP the task.
+  // notificacoes/mlTasks.ts builds a region-qualified queue name from the same
+  // variable, and a mismatch makes the Admin SDK target us-central1 and
+  // SILENTLY DROP the task.
   const tasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION || 'us-east1';
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above

@@ -12,7 +12,7 @@ const ruleTester = new RuleTester({
 });
 
 /** A server surface — the rule is active here. */
-const SERVER = '/repo/apps/mercado-livre/lib/marketplace/estoqueSweep.ts';
+const SERVER = '/repo/apps/mercado-livre/lib/marketplace/estoque/estoqueSweep.ts';
 /** A client surface — local time is CORRECT here, so the rule is inactive. */
 const CLIENT = '/repo/apps/web/app/(app)/pedidos/_components/PedidoCells.tsx';
 
@@ -73,7 +73,7 @@ ruleTester.run('no-ambient-timezone', rule, {
     {
       name: 'server tests are exempt',
       code: 'const h = d.getHours();',
-      filename: '/repo/apps/mercado-livre/lib/marketplace/estoqueSweep.test.ts',
+      filename: '/repo/apps/mercado-livre/lib/marketplace/estoque/estoqueSweep.test.ts',
     },
     {
       name: 'a scheduled function timeZone option is the CRON zone, not a format call',

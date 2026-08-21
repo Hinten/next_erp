@@ -181,6 +181,15 @@ export const operacaoMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    columns: [
+      'nome',
+      'tipo',
+      'movimentaEstoque',
+      'padrao',
+      'cfop',
+      'cfopInterestadual',
+      'timestamp',
+    ],
   },
 };
 

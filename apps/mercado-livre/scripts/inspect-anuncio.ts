@@ -52,8 +52,8 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
-import { loadMercadoLivreContext } from '../lib/marketplace/mercadoLivre';
-import { refMatchesIntegracao } from '../lib/marketplace/linkRefs';
+import { loadMercadoLivreContext } from '../lib/marketplace/core/mercadoLivre';
+import { refMatchesIntegracao } from '../lib/marketplace/core/linkRefs';
 
 function log(message: string): void {
   // eslint-disable-next-line no-console -- CLI output

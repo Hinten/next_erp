@@ -21,7 +21,6 @@ export default function VariacoesPage() {
       collection={grupoDeVariacoesCollection}
       db={getFirebaseFirestore()}
       meta={grupoDeVariacoesMeta}
-      defaultColumns={['nome', 'codigo', 'ordem', 'permiteFotos']}
       rowHref={(id) => `/variacoes/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/variacoes/novo">

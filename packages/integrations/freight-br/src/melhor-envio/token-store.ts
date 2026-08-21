@@ -26,7 +26,7 @@
  * Frete tab re-quotes on every edit) and `getAccessToken` is wired **per ME API
  * call**, so one `comprar` flow re-enters this function several times.
  *
- * Same shape as `apps/mercado-livre/lib/marketplace/tokenStore.ts` and
+ * Same shape as `apps/mercado-livre/lib/marketplace/core/tokenStore.ts` and
  * `apps/mercado-pago/lib/payments/mercadoPago.ts` (#820) — all three OAuth
  * channels now read alike.
  *

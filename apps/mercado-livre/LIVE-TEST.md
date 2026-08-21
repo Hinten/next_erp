@@ -29,7 +29,7 @@ Therefore:
 | E-mail verification code = **the last 4 or 6 digits of the user id** | There is no inbox                                             |
 
 Listing rules ML imposes, all already encoded in
-[`lib/marketplace/anuncioTeste.ts`](lib/marketplace/anuncioTeste.ts):
+[`lib/marketplace/conta/anuncioTeste.ts`](lib/marketplace/conta/anuncioTeste.ts):
 
 - title exactly `Item de Teste – Por favor, NÃO OFERTAR!`
 - category `Outros` «na medida do possível» (on MLB it is a **leaf** under
@@ -53,7 +53,7 @@ Tick every box before step 2.1. Most failures in this run trace back to a missed
       functions gets the same notification ingested by **both** systems.
 - [ ] Redirect URI → `<staging backend>/api/oauth/mercado-livre/callback`
 - [ ] Notification callback → `<staging backend>/api/webhooks/mercado-livre`
-- [ ] Every topic in `KNOWN_TOPICS` subscribed (`lib/marketplace/notificacao.ts`):
+- [ ] Every topic in `KNOWN_TOPICS` subscribed (`lib/marketplace/notificacoes/notificacao.ts`):
       `orders_v2`, `orders`, `items`, `shipments`, `payments`, `items_prices`, `claims`,
       `orders_feedback`, `questions`, `messages`, `stock-location` / `stock-locations`
 - [ ] ⚠️ Stock is **one** DevCenter checkbox ("Stock-Locations"), not two. The backend
@@ -276,8 +276,8 @@ delete charts last.
 
 ### 7.1 The money map — assert every row
 
-The mapping lives in [`orderMapping.ts`](lib/marketplace/orderMapping.ts) and
-[`orderPaymentMapping.ts`](lib/marketplace/orderPaymentMapping.ts). Both were ported
+The mapping lives in [`orderMapping.ts`](lib/marketplace/pedidos/orderMapping.ts) and
+[`orderPaymentMapping.ts`](lib/marketplace/pedidos/orderPaymentMapping.ts). Both were ported
 verbatim from the Flutter app and **have never been checked against a real order**.
 
 | Field                      | Formula in code                                                                 | What to verify                                                                                                                                                                                     | Result |

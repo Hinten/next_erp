@@ -5,7 +5,7 @@
  * subcollection), and the flows the routes drive — the consent URL, a
  * `resolveAccessToken()` that refreshes on expiry (persisting MP's rotated
  * refresh token), and `exchangeAndPersist()` for the OAuth callback. Mirrors
- * apps/mercado-livre/lib/marketplace/mercadoLivre.ts, adapted to the payments
+ * apps/mercado-livre/lib/marketplace/core/mercadoLivre.ts, adapted to the payments
  * (metodo_pgto) domain.
  *
  * The refresh is concurrency-safe the same way the Mercado Livre store is: MP's

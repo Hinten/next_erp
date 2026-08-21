@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Same split as the sibling wiring tests: the IO core is stubbed (covered by
-// `lib/marketplace/integracoesComProduto.test.ts`), the pure gates stay REAL, and
+// `lib/marketplace/anuncios/integracoesComProduto.test.ts`), the pure gates stay REAL, and
 // the CloudFunction is driven through `.run(event)`.
 //
 // `lerLinkPai` is the ONE IO seam left real-adjacent: it is stubbed to a canned
@@ -16,10 +16,10 @@ const core = vi.hoisted(() => ({
   removerContaSeOrfa: vi.fn(async () => true),
   sobrevivemVariacoesDoProduto: vi.fn(() => async () => false),
 }));
-vi.mock('../../lib/marketplace/integracoesComProduto', async () => {
-  const real = await vi.importActual<typeof import('../../lib/marketplace/integracoesComProduto')>(
-    '../../lib/marketplace/integracoesComProduto',
-  );
+vi.mock('../../lib/marketplace/anuncios/integracoesComProduto', async () => {
+  const real = await vi.importActual<
+    typeof import('../../lib/marketplace/anuncios/integracoesComProduto')
+  >('../../lib/marketplace/anuncios/integracoesComProduto');
   return { ...real, ...core, lerLinkPai: () => paiReader.fn };
 });
 

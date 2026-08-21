@@ -38,6 +38,9 @@ import { EnviNfeFilterBar } from './EnviNfeFilterBar';
 import { useVerificarEnviNfeAction } from './useVerificarEnviNfeAction';
 import { VerificarResultadosModal } from './VerificarResultadosModal';
 
+// Kept local rather than moved to `defaultQuery.columns`: this screen passes no
+// `meta` — `enviNfe` has no CollectionMetadata — so there is nowhere to declare
+// it. The sort/limit are page-owned for the same reason.
 const DEFAULT_COLUMNS = [
   'timestamp',
   'estado',

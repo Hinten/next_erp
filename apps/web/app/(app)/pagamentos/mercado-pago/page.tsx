@@ -40,7 +40,6 @@ export default function MercadoPagoPage() {
         collection={metodoPagamentoCollection}
         db={db}
         meta={metodoPagamentoMeta}
-        defaultColumns={['nome', 'hasLinkPagamento', 'user_id']}
         rowHref={(id) => `/pagamentos/mercado-pago/${id}`}
         renderNewButton={() => (
           <Button component={Link} href="/pagamentos/mercado-pago/novo">
