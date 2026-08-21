@@ -68,10 +68,12 @@ import { ListingStatusStrip } from './ListingStatusStrip';
  * its live status, its editable fields, and the Publicar/Republicar action that
  * drives `POST /publicar` on the apps/mercado-livre backend.
  *
- * The link docs are read live (the same documents the Flutter app reads) and
- * edited through their own transaction, so listing edits are decoupled from the
- * produto form's save — but they still ride along with it, through the flush ref
- * the page wires into `ObjectView`'s `onAfterSave`.
+ * The link docs are read live and edited through their own transaction, so
+ * listing edits are decoupled from the produto form's save — but they still ride
+ * along with it, through the flush ref the page wires into `ObjectView`'s
+ * `onAfterSave`. Live because the backend mutates these docs while the tab is
+ * open: the `/publicar` route, the `items` status sync, and the price and stock
+ * senders all write the same link doc.
  */
 
 /**

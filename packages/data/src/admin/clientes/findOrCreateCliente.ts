@@ -170,8 +170,11 @@ async function pageCandidates(
  * data migration (`tools/migrations`), not a side effect of an unrelated
  * import. Doing it here would bump `ultimaModificacao` on documents that did
  * not otherwise change, churning `clienteMeta.defaultQuery`'s sort and the
- * TableView update monitor, against a collection the Flutter app writes
- * concurrently.
+ * TableView update monitor — both OURS, and both index-MANDATORY under root
+ * `CLAUDE.md` rule 1, so on Enterprise every needless bump is re-sorted, re-read
+ * and BILLED as data scanned. The concurrency on this collection is ours too:
+ * the importers, the channel webhooks and two operators in two tabs — not the
+ * Flutter app, which writes no document this app writes (rule 8).
  *
  * The stored form differs by field on purpose: `cpf_cnpj` HAS a canonical form
  * the schema enforces (`^[0-9A-Z]*$` rejects punctuation), so the normalized

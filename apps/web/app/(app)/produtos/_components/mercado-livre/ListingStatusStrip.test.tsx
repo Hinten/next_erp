@@ -122,8 +122,8 @@ describe('ListingStatusStrip', () => {
   });
 
   it('offers nothing for a UP family whose id is empty — the backend calls that unpublished', () => {
-    // `''` is legal in the schema (no `.min(1)`) and the Flutter app writes
-    // these docs concurrently; the route answers 409 for it.
+    // `''` is in the migrated corpus, which is why the schema has no `.min(1)`
+    // and the strip must render it, not crash; the route answers 409 for it.
     renderStrip({ ...FAMILIA, id: '' }, vi.fn(), { onAbrirAnuncio: vi.fn() });
 
     expect(screen.queryByRole('button', { name: 'ver no Mercado Livre' })).toBeNull();

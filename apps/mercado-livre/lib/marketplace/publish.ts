@@ -252,8 +252,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // on `err.message`. Persisting the message alone left the operator a screen
   // saying only that something was invalid, with no way to learn what — so
   // `causas` carries the parsed causes (already resolved to form controls) and
-  // `errors` carries one readable line each, for the Flutter reader and for
-  // anyone reading the raw doc.
+  // `errors` carries one readable line each, for the listing editor's error
+  // strip and for anyone reading the raw doc.
   //
   // `attributesSent` is what makes a POSITIONAL `item.attributes[3]` resolvable
   // — it counts the array we sent, including the derived attributes the editor
@@ -903,11 +903,15 @@ async function stampChildMarketplace(
 ): Promise<void> {
   // A genuine read-clean-write: `arrayUnion` cannot express "drop every stale
   // entry for this conta", so this is the one place publish needs a
-  // compare-and-set (root CLAUDE.md rule 7, tier 1). The child produto is
-  // written by the live Flutter app too, and the previous unconditional merge
-  // re-applied an array derived from a snapshot that may already have lost.
-  // On a precondition failure we re-READ and re-DERIVE — never re-apply the
-  // patch computed from the losing snapshot.
+  // compare-and-set (root CLAUDE.md rule 7, tier 1). ⚠️ The old reason — a
+  // live Flutter writer on the child produto — is VOID (rule 8: there is no
+  // dual run). The guard survives because this repo races ITSELF on that same
+  // doc: `importVariations.ts` arrayUnions these very arrays,
+  // `onVariacaoMercadoLivreLinkChanged` writes `integracoesComProduto` beside
+  // them, and a retried Cloud Task or a second operator re-drives this publish.
+  // The previous unconditional merge re-applied an array derived from a
+  // snapshot that may already have lost. On a precondition failure we re-READ
+  // and re-DERIVE — never re-apply the patch computed from the losing snapshot.
   const ref = produtoCollection.docRef(db, {}, childId);
   for (let attempt = 0; ; attempt++) {
     const snap = await ref.get();

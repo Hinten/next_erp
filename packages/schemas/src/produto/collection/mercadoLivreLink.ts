@@ -250,7 +250,9 @@ export const produtoMercadoLivreLinkSchema = z
      * (`deleted`/`suspended`/`freezed`/`out_of_stock`/…), stamped on import +
      * the `items` status-sync (#440). `estado` is the derived short code; these
      * keep the raw values so a product-maintenance bot can filter by ML status.
-     * Additive/nullable — the Flutter reader ignores them (no rules change).
+     * Additive/nullable: the migrated corpus simply lacks the keys and nothing
+     * outside this repo reads these docs. No rules change — the generated
+     * ruleset covers this collection through the parent produto's permissions.
      */
     status: z.string().nullable().default(null),
     sub_status: z.array(z.string()).nullable().default(null),
@@ -295,9 +297,10 @@ export const produtoMercadoLivreLinkSchema = z
 
     /**
      * Structured detail behind {@link errors} — ML's `cause[]` parsed and
-     * resolved to form controls. Additive and nullable, so it is invisible to
-     * the Flutter reader exactly like `status`/`sub_status` above; `errors`
-     * keeps its `string[]` wire type because Flutter reads THAT one.
+     * resolved to form controls. Additive and nullable, handled exactly like
+     * `status`/`sub_status` above: the migrated corpus carries neither key, so
+     * our reader takes the `null` default. `errors` keeps its `string[]` wire
+     * type because that is the shape already stored in the corpus.
      *
      * ⚠️ Cleared EVERYWHERE `errors` is cleared (publish success, the stock
      * writeback, `itemsStatusSync`, `reverificarAnuncio`, import). A surviving
