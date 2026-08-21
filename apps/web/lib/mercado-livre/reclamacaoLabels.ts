@@ -99,3 +99,34 @@ export function formatarPrazo(iso: string | null): string | null {
     minute: '2-digit',
   });
 }
+
+/** The claim's own lifecycle state (`opened` / `closed`). */
+const STATUS_RECLAMACAO: Record<string, string> = {
+  opened: 'aberta',
+  closed: 'encerrada',
+};
+
+/** How far the claim has escalated (`claim` / `dispute` / `recontact`). */
+const ETAPA_RECLAMACAO: Record<string, string> = {
+  claim: 'reclamação',
+  dispute: 'mediação',
+  recontact: 'recontato',
+  none: 'sem etapa',
+};
+
+/**
+ * ⚠️ The two most prominent elements on the panel were the only untranslated
+ * ones: `status` and `stage` fell through as raw English into a pt-BR screen, and
+ * they are what an operator reads FIRST to decide whether the claim is still
+ * live. Same raw-value fallback as everything else here, so a stage ML has not
+ * shipped yet degrades identically rather than blanking.
+ */
+export function rotuloStatusReclamacao(v: string | null): string {
+  if (v == null || v === '') return '—';
+  return STATUS_RECLAMACAO[v] ?? v;
+}
+
+export function rotuloEtapaReclamacao(v: string | null): string {
+  if (v == null || v === '') return '—';
+  return ETAPA_RECLAMACAO[v] ?? v;
+}
