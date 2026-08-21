@@ -46,11 +46,18 @@ export const TRANSPORTE_ENVIO = {
  * Whether this origem's reply leaves through the channel BACKEND rather than by
  * writing a mensagem for a trigger to pick up.
  *
- * Takes a plain `string` because `Conversa.origem` is read off a stored document
- * and the corpus carries values these schemas do not model: an unknown origem is
- * not route-based, which is the safe answer (the composer falls back to the
- * Firestore path, exactly as it did before this table existed).
+ * ⚠️ Takes `OrigemConversa`, deliberately NOT a widened `string`. It briefly took
+ * a string, reasoning that the migrated corpus carries origens these schemas do
+ * not model (true — `parseSoftRead` returns the raw document on a parse failure)
+ * and that an unknown one should fall back to the Firestore path. **That fallback
+ * does not exist**: `composerGate` (`composerGate.ts:64`) and `ChatComposer`
+ * (`:205`) both index `ORIGEM_RULES[origem]` unguarded and throw first, so an
+ * unmodelled origem is a `TypeError` on the thread page long before this function
+ * is reached. The widening bought a safety the call path does not have, and cost
+ * the one guarantee this module exists for — `enviaPorRota('mlclaim')` (typo)
+ * would compile and silently answer `false`, which is exactly the failure class
+ * #768 shipped.
  */
-export function enviaPorRota(origem: string): boolean {
-  return TRANSPORTE_ENVIO[origem as OrigemConversa] === 'rota';
+export function enviaPorRota(origem: OrigemConversa): boolean {
+  return TRANSPORTE_ENVIO[origem] === 'rota';
 }

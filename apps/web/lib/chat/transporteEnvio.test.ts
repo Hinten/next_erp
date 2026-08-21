@@ -63,9 +63,17 @@ describe('enviaPorRota', () => {
     expect(enviaPorRota(ORIGEM_CONVERSA.whatsapp)).toBe(false);
   });
 
-  it('is false for an origem the schemas do not model', () => {
-    // The migrated corpus carries origens this app never registered; an unknown
-    // one must fall back to the Firestore branch rather than throw.
-    expect(enviaPorRota('canal-que-nao-existe')).toBe(false);
+  it('rejects a mistyped origem AT COMPILE TIME', () => {
+    // ⚠️ This replaced a test asserting that an unmodelled origem "falls back to
+    // the Firestore branch". It does not: `composerGate.ts:64` and
+    // `ChatComposer.tsx:205` index `ORIGEM_RULES[origem]` unguarded and throw
+    // first, so an unknown origem is a TypeError on the thread page — the old
+    // test asserted a property of this function that its only caller contradicts.
+    //
+    // The property worth pinning is the one the narrow parameter buys:
+    // `enviaPorRota('mlclaim')` must not compile. A silent `false` from a typo is
+    // exactly the failure #768 shipped.
+    // @ts-expect-error — a value outside OrigemConversa must not be accepted.
+    expect(() => enviaPorRota('mlclaim')).toBeDefined();
   });
 });
