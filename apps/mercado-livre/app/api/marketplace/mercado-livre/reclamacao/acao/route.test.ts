@@ -96,6 +96,10 @@ describe('POST /reclamacao/acao — the 50%-default defence', () => {
     const res = await POST(req({ ...OK, acao: 'reembolso_parcial', percentualExibido: 50 }));
     expect(res.status).toBe(409);
     expect(h.resolver).not.toHaveBeenCalled();
+    // ⚠️ The ORDERING is the property, not merely that it refused: validation
+    // running AFTER the account load would still return 409 here. Asserting the
+    // credential was never resolved is what pins "before touching the account".
+    expect(h.loadCtx).not.toHaveBeenCalled();
     // The refusal happens in the domain module, which the route reaches only
     // after loading the account — so this asserts the resolver never ran, which
     // is the call that would have reached ML.
@@ -155,6 +159,10 @@ describe('POST /reclamacao/acao — the action allow-list', () => {
       expect(res.status).toBe(400);
       expect(h.loadCtx).not.toHaveBeenCalled();
       expect(h.resolver).not.toHaveBeenCalled();
+      // ⚠️ The ORDERING is the property, not merely that it refused: validation
+      // running AFTER the account load would still return 409 here. Asserting the
+      // credential was never resolved is what pins "before touching the account".
+      expect(h.loadCtx).not.toHaveBeenCalled();
     },
   );
 
@@ -164,6 +172,10 @@ describe('POST /reclamacao/acao — the action allow-list', () => {
       const res = await POST(req({ ...OK, claimId }));
       expect(res.status, `claimId=${String(claimId)}`).toBe(400);
       expect(h.resolver).not.toHaveBeenCalled();
+      // ⚠️ The ORDERING is the property, not merely that it refused: validation
+      // running AFTER the account load would still return 409 here. Asserting the
+      // credential was never resolved is what pins "before touching the account".
+      expect(h.loadCtx).not.toHaveBeenCalled();
     }
   });
 });
