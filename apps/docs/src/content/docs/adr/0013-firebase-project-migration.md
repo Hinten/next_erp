@@ -172,21 +172,44 @@ Both pass every gate, so the decision is cost against latency:
 | | `us-east4` — N. Virginia | `us-central1` — Iowa |
 |---|---|---|
 | Latency from São Paulo | **~115–130 ms** — the best any App Hosting region offers | ~150–165 ms |
-| Cloud Functions / Cloud Run | Tier 1 | Tier 1 |
-| Cloud Storage, Firestore | ~8–15% above baseline (GCS Standard ≈ `$0.023/GB` vs `$0.020`) | **baseline — Google's cheapest US region** |
+| Cloud Functions / Cloud Run | Tier 1 — **identical price** | Tier 1 |
+| Firestore Enterprise write units | `$0.30` / M (list) — **≈ +15%** | **`$0.26` / M — the base rate every published figure quotes** |
+| Firestore Enterprise read units | scales with the same multiplier | `$0.05` / M |
+| Cloud Storage Standard | `≈ $0.023` / GB-month — **≈ +15%** | `$0.020` / GB-month |
 | `getFunctions().taskQueue()` fallback | fallback stays `us-central1`, so the #1108 **silent task drop** stays possible | fallback **is** the real region, so that failure mode becomes a no-op |
 | New Firebase / Firestore features | usually later | usually first |
 
-The `us-central1` row deserves its weight: when an enqueuer's region is missing or
+⚠️ **Confirm the rates in the console's pricing calculator before committing.** The
+figures above come from published pricing summaries, not from a rate card read at
+decision time, and the choice is permanent.
+
+Two things the table is saying that are easy to miss. **Compute is a tie** — both are
+Cloud Run Tier 1 and price identically, so the whole delta lands on Firestore and
+Cloud Storage. And on Enterprise the billing unit is **data scanned**, which is this
+project's dominant cost line, so a ~15% regional multiplier applies to the largest
+number on the invoice, permanently.
+
+The `us-central1` row deserves its weight too: when an enqueuer's region is missing or
 mismatched the Admin SDK resolves `us-central1`, the queue does not exist there, and
 the task is **silently dropped while the route still returns 200**
 (`tools/deploy-env/preflight.mjs`, #1108). Choosing `us-central1` turns that trap into
 a harmless default; choosing `us-east4` leaves it live and keeps the preflight
 cross-check load-bearing.
 
-**Current leaning: `us-east4`** — the latency is what operators feel all day, and the
-price delta lands on stored bytes and data scanned rather than on compute. Not final:
-record the outcome in #1115 before running Phase 0 step 2.
+So the trade is explicit: **`us-central1` is the cheaper region and the safer one;
+`us-east4` buys ~30 ms per round trip for Brazilian operators and pays ~15% on
+Firestore and Storage for it.** Neither is wrong — but "cheapest" and "lowest latency"
+are not the same answer here, and the decision should not be recorded as though they
+were.
+
+⚠️ **Keep the magnitudes straight.** Consolidating into *one* region — whichever one —
+is the change that removes the inter-region data-transfer charge entirely, because
+same-region traffic between Google Cloud services is free. The `us-central1` vs
+`us-east4` delta is a second-order ~15% on a subset of lines. Do not let the tie-break
+delay the consolidation.
+
+**Current leaning: `us-east4`**, accepting the ~15% for the latency. Not final: record
+the outcome in #1115 before running Phase 0 step 2.
 
 ### Phase 1 — the freeze
 
