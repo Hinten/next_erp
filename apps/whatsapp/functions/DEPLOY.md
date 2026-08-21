@@ -194,16 +194,31 @@ The legacy Flutter pipeline runs as two Cloud Run services (deployed via
   that this codebase's `processWhatsappNotification` replaces.
 
 **Only one of the two pipelines may be registered as Meta's webhook callback
-URL at a time.** Both sides create/append the same `Conversa`/`Mensagem` docs
-from the same inbound Meta payload — running both concurrently against the
-same WhatsApp Business Account double-processes (and double-shows) every
-inbound message.
+URL at a time** — and only one _can_ be, which is why the risk is a gap rather
+than an overlap.
+
+⚠️ **Correction (2026-08-21).** This used to add that "both sides create/append
+the same `Conversa`/`Mensagem` docs". **They cannot — there is no dual run**
+(root `CLAUDE.md` rule 8); the legacy stack writes only the legacy project. The
+rest of the original sentence was already right, and is the whole reason the step
+survives: both stacks act **against the same WhatsApp Business Account**, so a
+legacy service left running keeps sending and receiving on the real WABA.
 
 **When you point the Meta App Dashboard's webhook callback URL at
 `https://<this-app>/api/webhooks/whatsapp`, you MUST disable
 `distribuidorWhastappCloudApi` (or unsubscribe its Meta App subscription) in
-the same window**, so a redelivery never lands on both pipelines. Until the
-cutover the webhook URL still points at the legacy Cloud Run service and this
-backend's queue never runs, so there is no overlap either side of a _correctly
-sequenced_ cutover. Verify by tailing this backend's receiver logs for the
-first live inbound message before decommissioning `processarNotificacoesWhatsapp`.
+the same window** — **in that order: repoint first, disable second.**
+
+⚠️ **Disabling first loses messages silently.** `distribuidorWhastappCloudApi`
+(`.old/…/whatsapp_cloud_api/lib/functions.dart:37-81`) enqueues a Cloud Task and
+**returns `Response.ok('OK')` immediately** — its own comment says the point is
+to "responder a request em até 250ms". So while it is still the registered
+callback it keeps acking 200 with nothing behind it, and Meta, having received a
+200, never redelivers. Taking the receiver down instead is not the answer either:
+Meta disables a subscription that keeps failing.
+
+Until the cutover the webhook URL still points at the legacy Cloud Run service
+and this backend's queue never runs, so there is no overlap either side of a
+_correctly sequenced_ cutover. Verify by tailing this backend's receiver logs for
+the first live inbound message before decommissioning
+`processarNotificacoesWhatsapp`.

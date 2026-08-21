@@ -174,9 +174,33 @@ above are in place.
 notification URL for a connected account, you MUST disable the legacy Flutter
 Cloud Run services (`distribuidorDeNotificacoesMercadoPago`,
 `updateGrupoEconomicoMercadoPago`) for that same account in the same window.**
-Both sides reconcile the same `pedido`/payment state from the same MP payment —
-running both concurrently double-processes a notification. Until the cutover
-the webhook URL still points at the legacy services and this backend's queue
-never runs, so there is no overlap either side of a _correctly sequenced_
-cutover. See #564 for the full step-by-step (application creation, secrets,
-webhook registration, re-consent, legacy service teardown).
+⚠️ **Correction (2026-08-21).** This used to justify the step with "both sides
+reconcile the same `pedido`/payment state … running both concurrently
+double-processes a notification". **That reason is void — there is no dual run**
+(root `CLAUDE.md` rule 8). The legacy stack writes only the legacy project, so
+the two never touch one document. What is genuinely shared is the **Mercado Pago
+account**: both stacks hold live credentials for it, so a legacy service left
+running keeps acting on the seller's real MP account and burning its rate limit.
+
+⚠️ **MP's legacy receiver is a forwarding ROUTER, not an ack-fast enqueuer — do
+not copy the ordering rule from the Mercado Livre runbook.**
+`distribuidorDeNotificacoesMercadoPago`
+(`.old/packages/pagamento/mercado_pago/lib/functions.dart:18-53`) resolves
+`targetInstanceUid` against
+`GrupoEconomcioPrivateData.mercadoPagoInstanceIdMercadoPagoUrlMap`, POSTs the body
+to that per-instance URL, and **propagates the downstream status** (non-200 →
+`Response.internalServerError()`). Two consequences:
+
+- **The flip is probably a map edit, not a dashboard edit.** The URL MP is
+  registered against belongs to the router; which backend serves a given account
+  is the map entry. Confirm which layer holds the registration before the window.
+- **A disabled downstream is not silent here.** Unlike Mercado Livre and
+  WhatsApp — whose receivers ack 200 the moment they enqueue — this one answers
+  non-200 when the target is gone, so MP retries instead of dropping. That makes
+  the ordering less dangerous, not safe: MP still disables a webhook that keeps
+  failing.
+
+Until the cutover the webhook URL still points at the legacy services and this
+backend's queue never runs, so there is no overlap either side of a _correctly
+sequenced_ cutover. See #564 for the full step-by-step (application creation,
+secrets, webhook registration, re-consent, legacy service teardown).
