@@ -862,14 +862,14 @@ describe('TableView', () => {
       );
       buildPipelineSpy.mockClear();
       rerender(
-        <MantineProvider env="test">
+        <MantineTestProvider>
           <TableView
             schema={testSchema}
             collection={fakeCollection()}
             db={{} as never}
             meta={recencyMeta}
           />
-        </MantineProvider>,
+        </MantineTestProvider>,
       );
       expect(buildPipelineSpy).toHaveBeenCalledWith(
         expect.anything(),
