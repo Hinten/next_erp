@@ -626,6 +626,7 @@ const childrenJoin = () =>
           'status',
           'sub_status',
           'userProductId',
+          pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
         )
         .toArrayExpression()
         .as('varLinks'),

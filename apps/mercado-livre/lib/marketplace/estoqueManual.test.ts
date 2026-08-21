@@ -10,7 +10,11 @@ import {
   resolverAnchors,
   toPushOutcome,
 } from './estoqueManual';
-import { STOCK_SEND_MAX_ATTEMPTS, type StockFamilyRow } from './bulkEstoquePlan';
+import {
+  STOCK_MULTIORIGEM_FLAG_ENV,
+  STOCK_SEND_MAX_ATTEMPTS,
+  type StockFamilyRow,
+} from './bulkEstoquePlan';
 import type { StockSendResult } from './estoqueSend';
 
 vi.mock('./itemsStatusSync', async (importOriginal) => {
@@ -199,7 +203,7 @@ describe('enviarEstoqueManual — conta guards', () => {
     expect(deps.api.getMe).not.toHaveBeenCalled();
   });
 
-  it('refuses a multiorigin conta — ML SILENTLY IGNORES stock PUTs there', async () => {
+  it('refuses a multiorigin conta while the flag is off — ML SILENTLY IGNORES stock PUTs there', async () => {
     // Without this probe the button would report a confident "enviado" for a
     // call ML dropped on the floor — the worst outcome for a trust feature.
     const deps = baseDeps({
@@ -217,6 +221,90 @@ describe('enviarEstoqueManual — conta guards', () => {
     ).rejects.toBeInstanceOf(ManualPushGuardError);
     expect(deps.sendTask).not.toHaveBeenCalled();
   });
+
+  it('#706: with the flag on, a single-depósito multiorigin conta SENDS through seller_warehouse', async () => {
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    const deps = baseDeps({
+      api: {
+        getItem: vi.fn(),
+        getMe: vi.fn().mockResolvedValue({ id: 1, tags: ['normal', 'warehouse_management'] }),
+      },
+    });
+
+    const res = await enviarEstoqueManual(
+      fakeDb({ PROD: { paiId: null, nome: 'Camiseta' } }),
+      { integracaoId: CONTA, produtoIds: ['PROD'] },
+      deps as never,
+    );
+
+    expect(res.listings.length + res.produtosSemEnvio.length).toBeGreaterThan(0);
+    expect(deps.sendTask).toHaveBeenCalled();
+    const task = deps.sendTask.mock.calls[0]![1] as { kind: string };
+    expect(task.kind).toBe('userProductStock');
+  });
+
+  it.each([
+    ['skipped', 'estoque-full-gerenciado-pelo-ml', 'Fulfillment'],
+    ['erro-registrado', 'sem-deposito-no-ml', 'painel do ML'],
+    ['erro-registrado', 'sem-x-version', 'Reverificar anúncio'],
+    ['erro-registrado', 'sem-user-product', 'User Products'],
+    ['erro-registrado', 'multi-deposito-nao-suportado', 'mais de um depósito'],
+    ['erro-registrado', 'deposito-sem-identificadores', 'store_id'],
+  ])(
+    '#706: the %s outcome %s reaches the operator with its own message, not the fallback',
+    async (outcome, reason, trecho) => {
+      // The handler's `reason` rides `toPushOutcome` straight into `motivo`, and
+      // `mensagemDe` looks it up. A reason with no entry silently degrades to
+      // "Não enviado.", which is exactly what this surface exists to avoid.
+      process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+      const deps = baseDeps({
+        api: {
+          getItem: vi.fn(),
+          getMe: vi.fn().mockResolvedValue({ id: 1, tags: ['warehouse_management'] }),
+        },
+        sendTask: vi.fn().mockResolvedValue({ outcome, reason } as StockSendResult),
+      });
+
+      const res = await enviarEstoqueManual(
+        fakeDb({ PROD: { paiId: null, nome: 'Camiseta' } }),
+        { integracaoId: CONTA, produtoIds: ['PROD'] },
+        deps as never,
+      );
+
+      const listing = res.listings[0]!;
+      expect(listing.motivo).toBe(reason);
+      expect(listing.mensagem).toContain(trecho);
+      expect(listing.mensagem).not.toBe('Não enviado.');
+    },
+  );
+
+  it('#706: multiwarehouse keeps refusing even with the flag on, naming the mapping gap', async () => {
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    const deps = baseDeps({
+      api: {
+        getItem: vi.fn(),
+        getMe: vi
+          .fn()
+          .mockResolvedValue({ id: 1, tags: ['warehouse_management', 'multiwarehouse'] }),
+      },
+    });
+
+    const err = await enviarEstoqueManual(
+      fakeDb({ PROD: { paiId: null } }),
+      { integracaoId: CONTA, produtoIds: ['PROD'] },
+      deps as never,
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ManualPushGuardError);
+    expect((err as ManualPushGuardError).message).toContain('múltiplos depósitos');
+    expect(deps.sendTask).not.toHaveBeenCalled();
+  });
+});
+
+afterEach(() => {
+  // #706 — the multiorigem flag is per-test opt-in; leaking it would silently
+  // change the routing of every spec that follows.
+  delete process.env[STOCK_MULTIORIGEM_FLAG_ENV];
 });
 
 /* ---------------------------------- the run --------------------------------- */

@@ -54,6 +54,7 @@ import {
   envInt,
   fetchStockFamiliesByIds,
   quantidadesDaFamilia,
+  resolverModoEstoque,
 } from './bulkEstoquePlan';
 import { type StockContextLoader, type StockSendResult, processStockSendTask } from './estoqueSend';
 import type { LinkStatusTarget } from './itemsStatusSync';
@@ -206,6 +207,27 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   'produto-nao-encontrado': 'Produto não encontrado.',
   'familia-nao-encontrada': 'Produto não encontrado ou não é um produto pai.',
   'sem-deposito': 'A conta não tem depósito configurado.',
+  'sem-user-product':
+    'Anúncio com variações antigas em conta multiorigem: o Mercado Livre não expõe um ' +
+    'User Product por variação, então o estoque só pode ser enviado depois que o anúncio ' +
+    'migrar para User Products.',
+  'estoque-full-gerenciado-pelo-ml':
+    'Anúncio Fulfillment: a disponibilidade vem do depósito do Mercado Livre, não do seu.',
+  // ⚠️ Every #706 entry below names a HUMAN action rather than inviting a retry,
+  // because each is written by a branch that latches `estado 'E'` — and the
+  // sweep's `anuncio-em-erro` rung then REFUSES that retry until an `items`
+  // webhook or "Reverificar anúncio" clears the latch. `sem-x-version` is the
+  // one that can heal by itself, so it only reaches here after the retry ladder
+  // has already failed; earlier attempts throw and surface the error's own text.
+  'sem-x-version':
+    'O Mercado Livre não informou a versão do estoque em nenhuma tentativa. Use ' +
+    '"Reverificar anúncio" antes de tentar de novo.',
+  'sem-deposito-no-ml':
+    'O produto não tem depósito (seller_warehouse) no Mercado Livre — configure-o no painel do ML.',
+  'multi-deposito-nao-suportado':
+    'O produto tem estoque em mais de um depósito do Mercado Livre; o mapeamento ainda não é suportado.',
+  'deposito-sem-identificadores':
+    'O depósito do Mercado Livre veio sem identificadores (store_id / network_node_id).',
   'conta-pausada': 'Não tentado: o Mercado Livre limitou as requisições desta conta.',
   'tempo-esgotado': 'Não tentado: o tempo do envio se esgotou. Tente com menos produtos.',
   'anuncio-inexistente': 'O anúncio não existe mais no Mercado Livre.',
@@ -224,6 +246,9 @@ const MOTIVO_POR_SKIP: Record<string, string> = {
   'nao-publicado': 'nao-publicado',
   'conta-fora-do-produto': 'conta-fora-do-produto',
   'variations-excede-limite': 'variacoes-excede-limite',
+  // #706: already channel-neutral enough to pass through — the message above
+  // carries the ML wording, not the key.
+  'sem-user-product': 'sem-user-product',
 };
 
 function mensagemDe(motivo: string, fallback = 'Não enviado.'): string {
@@ -407,17 +432,26 @@ export async function enviarEstoqueManual(
     );
   }
 
-  // (2) Multiorigin guard. NOT optional: ML SILENTLY IGNORES `PUT /items` stock
-  // on a `warehouse_management` conta, so without this probe the button would
-  // report a confident "enviado" for a call ML dropped on the floor — the worst
-  // possible outcome for a feature whose entire purpose is trust. One
-  // `GET /users/me` per request, never per listing.
+  // (2) Multiorigin ROUTING (#706). Still not optional, and still one
+  // `GET /users/me` per request rather than per listing: ML SILENTLY IGNORES
+  // `PUT /items` stock on a `warehouse_management` conta, so sending one there
+  // would report a confident "enviado" for a call ML dropped on the floor — the
+  // worst possible outcome for a feature whose entire purpose is trust.
+  //
+  // What changed is that the probe now also says WHICH path to take. A conta
+  // with `warehouse_management` and no `multiwarehouse` manages exactly one
+  // depósito — which is what this ERP models — so its stock goes out through
+  // the User-Products endpoint instead. The refusal survives for the two cases
+  // that are genuinely unsupported, each naming its own remedy.
   const user = await api.getMe();
-  if ((user.tags ?? []).includes('warehouse_management')) {
+  const { modo, recusa } = resolverModoEstoque(user.tags);
+  if (recusa != null) {
     throw new ManualPushGuardError(
       'ML_CONTA_MULTIORIGEM',
       409,
-      'Conta multiorigem (warehouse_management): o envio de estoque por anúncio não se aplica.',
+      recusa === 'multi-deposito'
+        ? 'Conta multiorigem com múltiplos depósitos: o mapeamento depósito → loja do Mercado Livre ainda não é suportado.'
+        : 'Conta multiorigem (warehouse_management): o envio por seller_warehouse está desabilitado nesta instalação.',
     );
   }
 
@@ -520,6 +554,7 @@ export async function enviarEstoqueManual(
       sweepId: `manual-${args.integracaoId}-${nowMs}`,
       // Manual quantities are computed NOW, so the handler's `ageMs` reads ~0.
       sweepComputedAtMs: nowMs,
+      modo,
     });
     skips.push(...built.skips);
     for (const task of built.tasks) tarefas.push({ task, row });
