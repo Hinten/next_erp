@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
-import { NA_VALUE_ID, type AttrRow } from '@/lib/mercado-livre/attributeForm';
+import { NA_VALUE_ID, seedRow, type AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
 import { AttributeField } from './AttributeField';
 
@@ -236,5 +236,188 @@ describe('AttributeField', () => {
     renderField(a, { id: 'X', value_id: null, value_name: 'valor antigo', unit_id: null });
     expect(screen.getByLabelText('Estranho')).toHaveProperty('value', 'valor antigo');
     expect(screen.getByLabelText('Estranho')).toHaveProperty('readOnly', true);
+  });
+});
+
+/**
+ * `number_unit` — the half of an attribute that used to be invisible.
+ *
+ * ML stores a measurement as a number PLUS a unit (`value_name` + `unit_id`),
+ * and until this block existed the field rendered only the number: the unit was
+ * stamped from `attr.defaultUnit` behind the operator's back and there was
+ * nothing on screen to show which one had been chosen.
+ */
+describe('AttributeField — number_unit', () => {
+  function volume(over: Partial<MercadoLivreCategoriaAtributo> = {}) {
+    return attr({
+      id: 'VOLUME',
+      name: 'Volume',
+      valueType: 'number_unit',
+      defaultUnit: 'ml',
+      allowedUnits: [
+        { id: 'ml', name: 'ml' },
+        { id: 'l', name: 'l' },
+      ],
+      ...over,
+    });
+  }
+
+  const UNIT = 'Unidade de Volume';
+
+  it('shows the unit as a picker when ML allows a choice', () => {
+    renderField(volume(), { id: 'VOLUME', value_id: null, value_name: '355', unit_id: 'ml' });
+    expect(combo(UNIT)).toHaveProperty('value', 'ml');
+  });
+
+  it('shows a FIXED unit as plain text rather than a dropdown nobody can use', () => {
+    renderField(volume({ allowedUnits: [{ id: 'ml', name: 'ml' }] }));
+    expect(screen.queryByRole('combobox', { name: UNIT })).toBeNull();
+    expect(screen.getByText('ml')).toBeDefined();
+  });
+
+  it('spells out the inch unit, whose id is a bare double quote', () => {
+    renderField(
+      volume({
+        defaultUnit: '"',
+        allowedUnits: [
+          { id: '"', name: '"' },
+          { id: 'cm', name: 'cm' },
+        ],
+      }),
+    );
+    // Two barely visible tick marks would read as a blank option.
+    expect(combo(UNIT)).toHaveProperty('value', 'pol. (")');
+  });
+
+  it('keeps the number when the unit changes — and DROPS a stale value_id', () => {
+    // ⚠️ On a number_unit, ML's value_id names the PAIR: 3681798 IS "355 mL".
+    // Carried over to litres it describes a different measurement, outranks the
+    // value name at ML, and skips the resolution in `attributesForSave`.
+    const onChange = renderField(volume(), {
+      id: 'VOLUME',
+      value_id: '3681798',
+      value_name: '355',
+      unit_id: 'ml',
+    });
+    fireEvent.click(combo(UNIT));
+    fireEvent.click(screen.getByText('l'));
+    expect(onChange).toHaveBeenCalledWith({
+      id: 'VOLUME',
+      value_id: null,
+      value_name: '355',
+      unit_id: 'l',
+    });
+  });
+
+  it('keeps the unit when the number changes', () => {
+    // This is the bug itself: the handler used to re-read `attr.defaultUnit`,
+    // so the operator's pick died on the next keystroke.
+    const onChange = renderField(volume(), {
+      id: 'VOLUME',
+      value_id: null,
+      value_name: '1',
+      unit_id: 'l',
+    });
+    fireEvent.change(combo('Volume'), { target: { value: '2' } });
+    expect(onChange).toHaveBeenCalledWith({
+      id: 'VOLUME',
+      value_id: null,
+      value_name: '2',
+      unit_id: 'l',
+    });
+  });
+
+  it('keeps the unit when the number is CLEARED', () => {
+    // Emptying the box says nothing about the unit; dropping it here snapped the
+    // picker back to `defaultUnit` behind the operator's back.
+    const onChange = renderField(volume(), {
+      id: 'VOLUME',
+      value_id: null,
+      value_name: '1',
+      unit_id: 'l',
+    });
+    fireEvent.change(combo('Volume'), { target: { value: '' } });
+    expect(onChange).toHaveBeenCalledWith({
+      id: 'VOLUME',
+      value_id: null,
+      value_name: null,
+      unit_id: 'l',
+    });
+  });
+
+  it('reports NOTHING when an untouched IMPORTED field is blurred', () => {
+    // The headline regression. `GET /items` answers `'355 mL'` with no unit_id,
+    // so the box used to hold "355 mL"; the first blur ran it through
+    // `digitsOnly` and stamped `defaultUnit` — tabbing past the field silently
+    // restated the measurement and raised unsaved changes.
+    const a = volume();
+    const seeded = seedRow(a, { id: 'VOLUME', value_id: '3681798', value_name: '355 mL' });
+    // The pair id goes with the pair: `3681798` IS '355 mL', and nothing can
+    // rebuild it from the bare '355' the box now holds.
+    expect(seeded).toEqual({
+      id: 'VOLUME',
+      value_id: null,
+      value_name: '355',
+      unit_id: 'ml',
+    });
+    const reported = renderControlled(a, seeded);
+    fireEvent.blur(combo('Volume'));
+    expect(reported).not.toHaveBeenCalled();
+    expect(combo('Volume')).toHaveProperty('value', '355');
+    expect(combo(UNIT)).toHaveProperty('value', 'ml');
+  });
+
+  it('reports NOTHING when an untouched BARE NUMBER is blurred', () => {
+    // Legacy Flutter rows store the number with no unit at all. `seedRow` fills
+    // in the one the picker shows so the row and the screen agree — without
+    // that, this blur resolved to `defaultUnit` and reported a phantom edit.
+    const a = volume();
+    const reported = renderControlled(a, seedRow(a, { id: 'VOLUME', value_name: '355' }));
+    fireEvent.blur(combo('Volume'));
+    expect(reported).not.toHaveBeenCalled();
+  });
+
+  it('disables both halves together', () => {
+    const a = volume();
+    render(
+      <MantineTestProvider>
+        <AttributeField
+          attr={a}
+          row={{ id: 'VOLUME', value_id: null, value_name: '355', unit_id: 'ml' }}
+          onChange={vi.fn()}
+          disabled
+        />
+      </MantineTestProvider>,
+    );
+    expect(combo('Volume')).toHaveProperty('disabled', true);
+    expect(combo(UNIT)).toHaveProperty('disabled', true);
+  });
+
+  it('keeps the error message reachable from the input', () => {
+    // The message is rendered OUTSIDE the input so flagging a required attribute
+    // cannot shove the unit picker off the baseline — which costs Mantine's own
+    // wiring. `aria-errormessage` puts it back: Mantine overwrites an
+    // `aria-describedby` passed in, but forwards this one.
+    render(
+      <MantineTestProvider>
+        <AttributeField
+          attr={volume({ required: true })}
+          row={{ id: 'VOLUME', value_id: null, value_name: null, unit_id: 'ml' }}
+          onChange={vi.fn()}
+          error="Este campo é obrigatório"
+        />
+      </MantineTestProvider>,
+    );
+    const input = combo('Volume');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    const id = input.getAttribute('aria-errormessage');
+    expect(id).not.toBeNull();
+    expect(document.getElementById(id!)?.textContent).toBe('Este campo é obrigatório');
+  });
+
+  it('leaves a plain number attribute with no unit control at all', () => {
+    // Guards the widgetKind split from quietly drifting back together.
+    renderField(attr({ id: 'QTD', name: 'Quantidade', valueType: 'number' }));
+    expect(screen.queryByRole('combobox', { name: /Unidade/ })).toBeNull();
   });
 });

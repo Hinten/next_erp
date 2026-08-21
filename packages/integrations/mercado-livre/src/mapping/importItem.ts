@@ -140,24 +140,59 @@ export function isKitFromAttributes(attrs: readonly MlItemAttribute[] | null | u
 }
 
 /**
+ * A measurement ML stated in `value_struct`, as the number and unit we store.
+ *
+ * ⚠️ This is the only unit an item response carries. `value_name` bakes it into
+ * the text (`'355 mL'`) and `unit_id` is a field we SEND, never one ML returns —
+ * so without reading the struct, every imported measurement lands unitless and
+ * with its unit stranded inside the value.
+ *
+ * ⚠️ There is deliberately NO fallback that parses the unit out of `value_name`.
+ * This layer sees no category metadata, so it cannot tell a real unit from the
+ * tail of an ordinary string, and a blind split would turn a BRAND of
+ * `'Nike Air'` into `'Nike'` — exactly the silent corruption being fixed. When
+ * ML sends no struct the value is left whole; the editor splits it there, where
+ * `allowedUnits` is on hand to match against.
+ */
+function measurementFromStruct(attr: MlItemAttribute): { value: string; unit: string } | null {
+  const struct = attr.value_struct;
+  if (struct == null) return null;
+  const { number, unit } = struct;
+  if (typeof number !== 'number' || !Number.isFinite(number)) return null;
+  if (typeof unit !== 'string' || unit.trim() === '') return null;
+  return { value: String(number), unit: unit.trim() };
+}
+
+/**
  * Map an item's `attributes[]` to the inline link-doc `attributes`, dropping the
  * ids the publish path re-derives from produto fields (so a re-publish never
  * sends a duplicate id). Empty-value attributes are filtered (publish parity).
+ *
+ * A `number_unit` is stored as the number and the unit APART — the shape the
+ * editor renders and `attributeToMercadoLivre` folds back into `'355 mL'`.
  */
 export function attributesFromItem(
   attrs: readonly MlItemAttribute[] | null | undefined,
 ): MlAttribute[] {
   const mapped: MlAttribute[] = (attrs ?? [])
     .filter((a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id))
-    .map((a) => ({
-      id: a.id as string,
-      value_id: a.value_id ?? null,
-      name: a.name ?? null,
-      value_name: a.value_name ?? null,
-      attribute_group_id: a.attribute_group_id ?? null,
-      attribute_group_name: a.attribute_group_name ?? null,
-      unit_id: a.unit_id ?? null,
-    }));
+    .map((a) => {
+      const measurement = measurementFromStruct(a);
+      return {
+        id: a.id as string,
+        // The struct describes the (number, unit) PAIR, so ML's `value_id` names
+        // that pair too. Splitting them means the id no longer matches the
+        // `value_name` we store, and nothing downstream can rebuild it — drop it
+        // and let ML resolve the value from its name, as it does for every
+        // measurement an operator types.
+        value_id: measurement != null ? null : (a.value_id ?? null),
+        name: a.name ?? null,
+        value_name: measurement?.value ?? a.value_name ?? null,
+        attribute_group_id: a.attribute_group_id ?? null,
+        attribute_group_name: a.attribute_group_name ?? null,
+        unit_id: a.unit_id ?? measurement?.unit ?? null,
+      };
+    });
   return attributesWithValue(mapped);
 }
 

@@ -3,7 +3,7 @@
 import type { ReactNode } from 'react';
 import { Alert, Badge, Group, Loader, Paper, SimpleGrid, Text } from '@mantine/core';
 
-import type { AttrRow } from '@/lib/mercado-livre/attributeForm';
+import { emptyRow, type AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { AttributeField } from './AttributeField';
@@ -174,14 +174,10 @@ export function AtributosSection({
           <Paper key={attr.id} p="xs" radius="sm" bg={stripeBg(index)}>
             <AttributeField
               attr={attr}
-              row={
-                rowById.get(attr.id) ?? {
-                  id: attr.id,
-                  value_id: null,
-                  value_name: null,
-                  unit_id: null,
-                }
-              }
+              // `emptyRow`, not a literal: a `number_unit` blank carries the
+              // unit its picker renders, and a row that disagrees with the
+              // screen reports a phantom edit on the next blur.
+              row={rowById.get(attr.id) ?? emptyRow(attr)}
               onChange={(next) =>
                 onRowsChange(
                   rows.some((r) => r.id === next.id)

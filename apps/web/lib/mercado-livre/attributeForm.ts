@@ -10,6 +10,7 @@
  * No React and no IO, so every rule below is unit-testable on its own.
  */
 import type { MercadoLivreCategoriaAtributo } from './client';
+import { unitLabel } from './units';
 
 /** One attribute row in form state. */
 export interface AttrRow {
@@ -53,16 +54,21 @@ export function isNaRow(row: Pick<AttrRow, 'value_id'>): boolean {
 }
 
 /** Which control an attribute renders as (`cadastroProdutoMLNew.dart:1179-1384`). */
-export type AttrWidgetKind = 'text' | 'select' | 'multiselect' | 'unsupported';
+export type AttrWidgetKind = 'text' | 'number_unit' | 'select' | 'multiselect' | 'unsupported';
 
 export function widgetKind(attr: MercadoLivreCategoriaAtributo): AttrWidgetKind {
   switch (attr.valueType) {
     case 'string':
     case 'number':
-    case 'number_unit':
       // Free text WITH suggestions: ML often ships known values for these but
       // still accepts anything, so a hard Select would block legitimate input.
       return 'text';
+    case 'number_unit':
+      // The same free-text box PLUS the unit it is measured in. Mercado Livre
+      // keeps the two apart on the wire (`value_name` + `unit_id`), and a
+      // number whose unit the operator can neither see nor choose is not a
+      // measurement — 355 is a very different bottle in ml than in l.
+      return 'number_unit';
     case 'boolean':
       return 'select';
     case 'list':
@@ -71,6 +77,145 @@ export function widgetKind(attr: MercadoLivreCategoriaAtributo): AttrWidgetKind 
     default:
       return 'unsupported';
   }
+}
+
+/* ---------------------------------- units ---------------------------------- */
+
+/** A bare number, in either decimal convention — what a unit may sit next to. */
+const NUMERIC = /^-?\d+(?:[.,]\d+)?$/;
+
+/**
+ * The units an operator may pick for a `number_unit` attribute.
+ *
+ * ML's order is preserved: `allowed_units` is a deliberate list, and sorting it
+ * would reshuffle every picker for no gain.
+ *
+ * ⚠️ `defaultUnit` and the row's CURRENT unit are appended when the allow-list
+ * does not already carry them. Both really happen — ML ships categories whose
+ * `default_unit` is absent from `allowed_units`, and a category's allow-list can
+ * narrow after a listing was saved. Dropping the stored unit would leave the
+ * Select showing a value it cannot offer, which reads as "the unit changed by
+ * itself"; the same "never silently drop what is stored" rule
+ * {@link selectOptions} applies to values.
+ */
+export function unitOptions(
+  attr: MercadoLivreCategoriaAtributo,
+  current: string | null = null,
+): Array<{ value: string; label: string }> {
+  const out: Array<{ value: string; label: string }> = [];
+  const seen = new Set<string>();
+
+  function push(id: string | null | undefined): void {
+    const value = (id ?? '').trim();
+    if (value === '' || seen.has(value)) return;
+    seen.add(value);
+    // `unitLabel`, not ML's `name`: for INCHES both are the bare `"` character,
+    // which renders as a blank-looking option.
+    out.push({ value, label: unitLabel(value) });
+  }
+
+  // ⚠️ `?? []` despite the type saying otherwise. This object crossed an HTTP
+  // boundary, so the annotation is an assertion rather than a guarantee, and
+  // `allowedUnits` is the one field no code path read before this change — a
+  // response that predates it, or any ML drift, would otherwise throw here and
+  // blank the WHOLE attribute grid over a unit. Same degrade-never-throw rule
+  // the rest of the ML metadata layer follows.
+  for (const u of attr.allowedUnits ?? []) push(u.id);
+  push(attr.defaultUnit);
+  push(current);
+  return out;
+}
+
+/**
+ * The unit a row is measured in: what it stores, else the category default,
+ * else the only unit on offer.
+ *
+ * Never null for an attribute ML gave any unit at all, which is what lets the
+ * field render one without first making the operator choose.
+ */
+export function effectiveUnit(
+  attr: MercadoLivreCategoriaAtributo,
+  row: Pick<AttrRow, 'unit_id'> | undefined,
+): string | null {
+  const stored = (row?.unit_id ?? '').trim();
+  if (stored !== '') return stored;
+  const fallback = (attr.defaultUnit ?? '').trim();
+  if (fallback !== '') return fallback;
+  return unitOptions(attr)[0]?.value ?? null;
+}
+
+/**
+ * Split a value that carries its own unit — `'355 mL'` → `355` + `mL`.
+ *
+ * ⚠️ This exists because Mercado Livre answers `GET /items` with the unit baked
+ * INTO the value name and **no `unit_id`** (the pair lives in `value_struct`),
+ * so every imported or Flutter-written listing stores it that way. See
+ * {@link seedRow} for what goes wrong when it is left whole.
+ *
+ * Only a unit the category actually knows is recognised, matched
+ * case-insensitively but returned in ML's own casing (`mL`, never the `ml` the
+ * operator typed), and **longest first** so `mm` wins over `m` on `'55 mm'`.
+ * Anything else is left alone: the head must be a bare number, so a value this
+ * cannot classify degrades to exactly the old behaviour rather than being
+ * guessed at.
+ */
+export function splitNumberUnit(
+  attr: MercadoLivreCategoriaAtributo,
+  valueName: string | null,
+): { value: string; unit: string | null } {
+  const raw = (valueName ?? '').trim();
+  if (raw === '') return { value: raw, unit: null };
+
+  const units = unitOptions(attr)
+    .map((u) => u.value)
+    .sort((a, b) => b.length - a.length);
+  const lower = raw.toLowerCase();
+
+  for (const unit of units) {
+    if (!lower.endsWith(unit.toLowerCase())) continue;
+    const head = raw.slice(0, raw.length - unit.length).trim();
+    if (!NUMERIC.test(head)) continue;
+    return { value: head, unit };
+  }
+  return { value: raw, unit: null };
+}
+
+/**
+ * A unit only ever rides on a `number_unit`. Passing one for a `string` or
+ * `list` attribute is ignored rather than trusted, so a caller cannot poison a
+ * row that has no measurement in it.
+ */
+function unitFor(attr: MercadoLivreCategoriaAtributo, unitId: string | null): string | null {
+  return attr.valueType === 'number_unit' ? unitId : null;
+}
+
+/**
+ * Suggestions for a `number_unit`'s number box, on the unit currently selected.
+ *
+ * The box holds a bare number now, so ML's own `'355 mL'` values cannot be
+ * offered as they are. ⚠️ And a value on ANOTHER unit is not a suggestion at
+ * all: offering the `1` from `'1 L'` while the box reads millilitres would put a
+ * 1000× error one click away.
+ */
+export function numberUnitOptions(
+  attr: MercadoLivreCategoriaAtributo,
+  unitId: string | null,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const v of attr.values) {
+    const name = (v.name ?? '').trim();
+    if (name === '') continue;
+    const split = splitNumberUnit(attr, name);
+    if (split.unit != null && unitId != null && split.unit.toLowerCase() !== unitId.toLowerCase()) {
+      continue;
+    }
+    if (seen.has(split.value)) continue;
+    seen.add(split.value);
+    out.push(split.value);
+  }
+  return out;
 }
 
 /**
@@ -175,18 +320,66 @@ export function validateAttr(
   return 'Este campo é obrigatório';
 }
 
-/** Seed a form row from the stored wire value (or an empty one). */
+/**
+ * Seed a form row from the stored wire value (or an empty one).
+ *
+ * ⚠️ A `number_unit` whose unit is baked into the VALUE gets split back apart
+ * here. Mercado Livre answers `GET /items` with `value_name: '355 mL'` and no
+ * `unit_id` — the pair rides in `value_struct` — so every listing imported
+ * before that was read, and every one the Flutter app wrote, stores it whole.
+ *
+ * Left whole it lands in the number box, and the first blur runs it through
+ * `digitsOnly` (→ `'355'`) and stamps the category's `defaultUnit` over it. So
+ * merely TABBING PAST the field restated the measurement in another unit, with
+ * nothing on screen to show for it. Splitting at seed keeps the seller's own
+ * unit and makes that blur a no-op, because the resolution now matches the row.
+ */
 export function seedRow(
   attr: MercadoLivreCategoriaAtributo,
   stored: AttrWire | undefined,
 ): AttrRow {
-  if (!stored) return { id: attr.id, value_id: null, value_name: null, unit_id: null };
-  return {
+  const row: AttrRow = {
     id: attr.id,
-    value_id: stored.value_id ?? null,
-    value_name: stored.value_name ?? null,
-    unit_id: stored.unit_id ?? null,
+    value_id: stored?.value_id ?? null,
+    value_name: stored?.value_name ?? null,
+    unit_id: stored?.unit_id ?? null,
   };
+  // The N/A sentinel's `'N/A'` is a marker, not a measurement, so it carries no
+  // unit — and every other value type has none to carry.
+  if (attr.valueType !== 'number_unit' || isNaRow(row)) return row;
+
+  // A stored `unit_id` is already this app's canonical shape; only reach for the
+  // value when there is none to be found on the row itself.
+  const split = row.unit_id == null ? splitNumberUnit(attr, row.value_name) : null;
+  return {
+    ...row,
+    // ⚠️ A split DROPS `value_id`. On a `number_unit` that id names the PAIR —
+    // ML's 3681798 *is* `'355 mL'` — and nothing downstream can reconstruct it
+    // from the bare `'355'` left in the box, so a row that kept it would lose it
+    // again on the first blur and report a phantom edit for it. The split row is
+    // now in the same shape `draftTypedValue` produces for a typed measurement,
+    // where the id is always null and ML resolves the value from its name.
+    value_id: split?.unit != null ? null : row.value_id,
+    value_name: split?.unit != null ? split.value : row.value_name,
+    // ⚠️ ALWAYS a unit, even on an EMPTY row and even when nothing could be
+    // split out. The field renders `effectiveUnit` whatever the row holds, so a
+    // row that disagrees with what is on screen makes the very next blur resolve
+    // to something different and report a change — raising unsaved changes on a
+    // listing nobody edited, from a single tab keypress. Rows the operator never
+    // fills are still dropped at save time by `isFilled`.
+    unit_id: row.unit_id ?? split?.unit ?? effectiveUnit(attr, undefined),
+  };
+}
+
+/**
+ * The row a field starts from when nothing is stored.
+ *
+ * Defined through {@link seedRow} rather than as its own literal so the
+ * "a `number_unit` row always carries its unit" rule above has exactly one
+ * implementation — the three places that need a blank row cannot drift from it.
+ */
+export function emptyRow(attr: MercadoLivreCategoriaAtributo): AttrRow {
+  return seedRow(attr, undefined);
 }
 
 export function seedRows(
@@ -212,14 +405,24 @@ export function seedRows(
  * space is typeable too. Nothing downstream needs a guard for it: {@link isFilled}
  * tests `value_name.trim()`, so such a row still reads as empty for
  * {@link validateAttr} and is still skipped by {@link attributesForSave}.
+ *
+ * ⚠️ `unitId` is the unit the FIELD is currently on, passed in rather than
+ * re-derived from `attr.defaultUnit`. Reaching for the default here is what made
+ * the unit unpickable: whatever the operator chose was overwritten on the very
+ * next keystroke.
  */
 export function draftTypedValue(
   attr: MercadoLivreCategoriaAtributo,
   typed: string | null,
+  unitId: string | null,
 ): AttrRow {
   const raw = typed ?? '';
   if (raw === '') {
-    return { id: attr.id, value_id: null, value_name: null, unit_id: null };
+    // ⚠️ The unit SURVIVES an empty box. Clearing the number is not a statement
+    // about the unit, and dropping it here snaps the picker back to
+    // `defaultUnit` behind the operator's back. Harmless downstream: `isFilled`
+    // reads only the id and the name, so the row still counts as empty.
+    return { id: attr.id, value_id: null, value_name: null, unit_id: unitFor(attr, unitId) };
   }
   return {
     id: attr.id,
@@ -228,7 +431,7 @@ export function draftTypedValue(
     value_id: null,
     value_name: raw,
     // ML wants the unit alongside a bare number; the wire transform appends it.
-    unit_id: attr.valueType === 'number_unit' ? attr.defaultUnit : null,
+    unit_id: unitFor(attr, unitId),
   };
 }
 
@@ -244,14 +447,21 @@ export function draftTypedValue(
  * Both the trim and the canonical snap rewrite the text under the caret, so on
  * the typing path they cost the operator every space they press; see
  * {@link draftTypedValue}.
+ *
+ * ⚠️ `unitId` is the unit the row is already on, same as {@link draftTypedValue}.
+ * Note the MATCHED branch still returns no unit: a value carrying one of ML's
+ * own ids is identified by that id, and {@link attributesForSave} lets the
+ * draft's unit win regardless.
  */
 export function resolveTypedValue(
   attr: MercadoLivreCategoriaAtributo,
   typed: string | null,
+  unitId: string | null,
 ): AttrRow {
   const trimmed = (typed ?? '').trim();
   if (trimmed.length === 0) {
-    return { id: attr.id, value_id: null, value_name: null, unit_id: null };
+    // See the matching branch in `draftTypedValue`: an empty box keeps its unit.
+    return { id: attr.id, value_id: null, value_name: null, unit_id: unitFor(attr, unitId) };
   }
   const match = attr.values.find((v) => v.name != null && normalize(v.name) === normalize(trimmed));
   if (match) {
@@ -262,7 +472,7 @@ export function resolveTypedValue(
     value_id: null,
     value_name: trimmed,
     // ML wants the unit alongside a bare number; the wire transform appends it.
-    unit_id: attr.valueType === 'number_unit' ? attr.defaultUnit : null,
+    unit_id: unitFor(attr, unitId),
   };
 }
 
@@ -323,13 +533,16 @@ export function attributesForSave(
     // own and re-matching it could only move it.
     const resolved =
       draft.value_id == null && draft.value_name != null
-        ? resolveTypedValue(attr, draft.value_name)
+        ? resolveTypedValue(attr, draft.value_name, draft.unit_id)
         : draft;
-    // ⚠️ Take the NAME and the ID from the resolution, never the unit. The row's
-    // own `unit_id` may have been STORED against an earlier `defaultUnit`, and
-    // `resolveTypedValue` re-derives that field from today's metadata — so
-    // adopting it wholesale would silently rewrite the unit of every saved
-    // number_unit attribute whose default has since moved.
+    // ⚠️ Take the NAME and the ID from the resolution, never the unit. Two
+    // reasons, and the second outlives the first: `resolveTypedValue` returns no
+    // unit at all when the text matched one of ML's enumerated values, so
+    // adopting the resolution wholesale would drop the operator's pick — and the
+    // row's `unit_id` may have been STORED against an earlier `defaultUnit`, so
+    // if anyone ever lets this function re-derive the unit from today's metadata
+    // again, this `??` is the only thing standing between that and silently
+    // rewriting the unit of every saved measurement.
     const row = { ...resolved, unit_id: draft.unit_id ?? resolved.unit_id };
     out.push({
       id: attr.id,
@@ -366,13 +579,28 @@ export function applySuggestions(
   );
   return rows.map((row) => {
     const s = byId.get(row.id);
-    if (!s) return row;
-    return {
+    const attr = rendered.get(row.id);
+    if (!s || !attr) return row;
+    const next: AttrRow = {
       id: row.id,
       value_id: s.value_id ?? null,
       value_name: s.value_name ?? null,
       unit_id: s.unit_id ?? null,
     };
+    // ⚠️ A model asked for a measurement can still answer `'355 ml'`. Left whole
+    // that reaches Mercado Livre as `'355 ml ml'`, because the wire transform
+    // appends `unit_id` to the value name. Splitting also RECOVERS the unit the
+    // model stated, which is better information than the category default the
+    // suggestion would otherwise carry.
+    if (attr.valueType === 'number_unit' && next.value_id == null && next.value_name != null) {
+      const split = splitNumberUnit(attr, next.value_name);
+      return {
+        ...next,
+        value_name: split.value,
+        unit_id: split.unit ?? next.unit_id ?? effectiveUnit(attr, row),
+      };
+    }
+    return next;
   });
 }
 

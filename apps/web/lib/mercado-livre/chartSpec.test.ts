@@ -13,8 +13,8 @@ import {
   mainAttributeCandidates,
   maxRows,
   resolveChartAttributeValue,
-  unitLabel,
 } from './chartSpec';
+import { unitLabel } from './units';
 
 /**
  * Mirrors the real `?section=grids` response for `MLB-T_SHIRTS`, transcribed
