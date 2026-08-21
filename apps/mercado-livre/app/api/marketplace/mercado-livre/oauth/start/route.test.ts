@@ -18,14 +18,14 @@ vi.mock('@/lib/firebase/admin', () => ({
   getAdminFirestore: () => ({}),
 }));
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
 // The attempt record is Firestore-backed; only its inputs matter here.
-vi.mock('@/lib/marketplace/oauthState', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/oauthState')>();
+vi.mock('@/lib/marketplace/conta/oauthState', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/conta/oauthState')>();
   return {
     ...actual,
     mercadoLivreOauthState: { ...actual.mercadoLivreOauthState, put: h.putOauthState },

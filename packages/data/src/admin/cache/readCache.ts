@@ -28,11 +28,11 @@
  *
  * 2. **Read-modify-write.** Any value the caller conditionally writes back. The
  *    decision would be made on stale data and the write would clobber whatever
- *    landed in between. `apps/mercado-livre/lib/marketplace/import.ts` is the
+ *    landed in between. `apps/mercado-livre/lib/marketplace/importacao/import.ts` is the
  *    cautionary shape: it CREATES the produto when the SKU lookup misses, so a
  *    cached miss manufactures a duplicate produto.
  *
- * 3. **OAuth credentials / tokens.** `apps/mercado-livre/lib/marketplace/tokenStore.ts`
+ * 3. **OAuth credentials / tokens.** `apps/mercado-livre/lib/marketplace/core/tokenStore.ts`
  *    picks the newest valid token by query, and its three reads are load-bearing
  *    precisely *because* they are fresh: the re-check honours a refresh that
  *    landed mid-flight, and the loser fallback exists to observe a write another

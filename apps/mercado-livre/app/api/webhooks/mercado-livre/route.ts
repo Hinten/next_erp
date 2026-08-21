@@ -56,9 +56,9 @@ import {
   parseNotificationBody,
   persistNotificationFailure,
   shouldEnqueueTopic,
-} from '@/lib/marketplace/notificacao';
-import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/mlTasks';
-import { checkApplicationId } from '@/lib/marketplace/webhookOrigin';
+} from '@/lib/marketplace/notificacoes/notificacao';
+import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/notificacoes/mlTasks';
+import { checkApplicationId } from '@/lib/marketplace/notificacoes/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

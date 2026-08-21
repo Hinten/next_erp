@@ -18,10 +18,13 @@ import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { isLeafCategory } from '@/lib/marketplace/categoriaAtributos';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { getCategoriaCached, getCategoriasRaizCached } from '@/lib/marketplace/mlMetadataCache';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import { isLeafCategory } from '@/lib/marketplace/categorias/categoriaAtributos';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import {
+  getCategoriaCached,
+  getCategoriasRaizCached,
+} from '@/lib/marketplace/categorias/mlMetadataCache';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

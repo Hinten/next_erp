@@ -20,13 +20,16 @@ import type { MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { getCategoriaCached, getSugestaoCategoriasCached } from '@/lib/marketplace/mlMetadataCache';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import {
+  getCategoriaCached,
+  getSugestaoCategoriasCached,
+} from '@/lib/marketplace/categorias/mlMetadataCache';
 import {
   isMercadoLivreError,
   isMercadoLivreRequestError,
   mercadoLivreErrorResponse,
-} from '@/lib/marketplace/respond';
+} from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

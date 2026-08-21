@@ -273,7 +273,7 @@ Verify the queue exists after the first deploy:
 same way `processMercadoLivreNotification` does — no separate Terraform/gcloud
 queue-creation step. It reuses the **same** enqueuer IAM grant (above): both the
 `/importar-todos` route and the task handler's own self-continuation enqueue
-via `createMlMassImportScheduler()` (`lib/marketplace/mlMassImportTasks.ts`),
+via `createMlMassImportScheduler()` (`lib/marketplace/mass-import/mlMassImportTasks.ts`),
 which is the same App Hosting runtime SA → functions runtime SA path already
 granted `roles/cloudtasks.enqueuer` / `roles/iam.serviceAccountUser`. It also
 reuses the notification pipeline's `MERCADO_LIVRE_TASKS_DISABLED` /
@@ -304,7 +304,7 @@ here too.)
 same way the other queues do — no separate queue-creation step. IAM is covered
 by the existing grants (above): both the `/atualizar-precos` route and the task
 handler's own self-continuation enqueue via `createMlPriceSyncScheduler()`
-(`lib/marketplace/mlPriceSyncTasks.ts`), the same App Hosting runtime SA →
+(`lib/marketplace/preco/mlPriceSyncTasks.ts`), the same App Hosting runtime SA →
 functions runtime SA path already granted `roles/cloudtasks.enqueuer` /
 `roles/iam.serviceAccountUser` — verify the grants exist, don't re-grant. It
 also reuses the shared `MERCADO_LIVRE_TASKS_DISABLED` /
@@ -333,7 +333,7 @@ panel to make them syncable again.
 The three tunables (`MERCADO_LIVRE_PRECO_PAGE_LIMIT`,
 `MERCADO_LIVRE_PRECO_ITEMS_PER_DISPATCH`, `MERCADO_LIVRE_PRECO_RATE_PAUSE_MIN`)
 are non-secret values read LAZILY from `process.env` by the getters in
-`lib/marketplace/precoPlan.ts` (unset/blank/invalid → the code default). They
+`lib/marketplace/preco/precoPlan.ts` (unset/blank/invalid → the code default). They
 are **function-runtime env** and ride exactly the same mechanism — and the same
 constraints — as the stock knobs: see "Setting (1)" under _Runtime env (stock
 sync, Step 10)_ below. The queue's `rateLimits` (1 concurrent dispatch / 1
@@ -347,7 +347,7 @@ same way the other queues do — no separate queue-creation step. IAM is covered
 by the existing grants (above) — verify they exist, don't re-grant. Note the
 enqueuer here is the **functions runtime SA itself**: `onNfeAprovada` runs in
 THIS codebase and enqueues via `createMlNfeUploadScheduler()`
-(`lib/marketplace/mlNfeUploadTasks.ts`) — the same identity the stock sweeps
+(`lib/marketplace/nfe/mlNfeUploadTasks.ts`) — the same identity the stock sweeps
 and the price-sync self-continuation already enqueue as. Secrets: the task
 handler binds the same two ML secrets per-function
 (`src/processNfeUpload.ts`, mirroring the mass import) — if they are already
@@ -522,7 +522,7 @@ second run — a redelivery, the sweep, or the editor — finds nothing to chang
 
 The stock sync has no Secret Manager needs of its own — every knob is a
 **non-secret** value read LAZILY from `process.env` by the getters in
-`lib/marketplace/bulkEstoquePlan.ts` (unset/blank/invalid → the code default), plus
+`lib/marketplace/estoque/bulkEstoquePlan.ts` (unset/blank/invalid → the code default), plus
 the master flag `MERCADO_LIVRE_STOCK_SYNC_ENABLED` (`'1'` and nothing else turns
 it on). Three separate places matter, and they are NOT interchangeable:
 

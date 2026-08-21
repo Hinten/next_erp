@@ -27,17 +27,17 @@ import {
   escolherDescendenteTeste,
   escolherTipoAnuncioTeste,
   isContaDeTeste,
-} from '@/lib/marketplace/anuncioTeste';
+} from '@/lib/marketplace/conta/anuncioTeste';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { isLeafCategory } from '@/lib/marketplace/categoriaAtributos';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
+import { isLeafCategory } from '@/lib/marketplace/categorias/categoriaAtributos';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
 import {
   getCategoriaCached,
   getCategoriasRaizCached,
   getListingTypesCached,
-} from '@/lib/marketplace/mlMetadataCache';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+} from '@/lib/marketplace/categorias/mlMetadataCache';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 /** Enough to diagnose a rename; a full site tree does not belong in a log line. */
 const MAX_RAIZES_LOGADAS = 40;

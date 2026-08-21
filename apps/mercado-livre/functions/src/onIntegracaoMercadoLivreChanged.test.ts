@@ -9,11 +9,11 @@ const core = vi.hoisted(() => ({
   desativarIntFreteDaConta: vi.fn(async () => ({ action: 'desativado' })),
   sincronizarIntFreteDaConta: vi.fn(async () => ({ action: 'criado', intFreteId: 'if-1' })),
 }));
-vi.mock('../../lib/marketplace/intFreteSync', async () => {
+vi.mock('../../lib/marketplace/frete/intFreteSync', async () => {
   // `ehContaMercadoLivre` / `mudouCampoSincronizado` are the trigger's free gates —
   // keep them REAL so the zero-read assertions below test the actual predicate.
-  const real = await vi.importActual<typeof import('../../lib/marketplace/intFreteSync')>(
-    '../../lib/marketplace/intFreteSync',
+  const real = await vi.importActual<typeof import('../../lib/marketplace/frete/intFreteSync')>(
+    '../../lib/marketplace/frete/intFreteSync',
   );
   return { ...real, ...core };
 });
@@ -29,10 +29,10 @@ const notif = vi.hoisted(() => ({
     truncado: false,
   })),
 }));
-vi.mock('../../lib/marketplace/notificacao', async () => {
-  const real = await vi.importActual<typeof import('../../lib/marketplace/notificacao')>(
-    '../../lib/marketplace/notificacao',
-  );
+vi.mock('../../lib/marketplace/notificacoes/notificacao', async () => {
+  const real = await vi.importActual<
+    typeof import('../../lib/marketplace/notificacoes/notificacao')
+  >('../../lib/marketplace/notificacoes/notificacao');
   return { ...real, ...notif };
 });
 

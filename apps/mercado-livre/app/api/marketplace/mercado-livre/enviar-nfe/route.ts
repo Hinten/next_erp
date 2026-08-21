@@ -30,15 +30,15 @@ import { nfev4Collection } from '@delfrance/data/admin/collections';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { MlTasksDisabledError } from '@/lib/marketplace/mlTasks';
-import { createMlNfeUploadScheduler } from '@/lib/marketplace/mlNfeUploadTasks';
+import { MlTasksDisabledError } from '@/lib/marketplace/notificacoes/mlTasks';
+import { createMlNfeUploadScheduler } from '@/lib/marketplace/nfe/mlNfeUploadTasks';
 import {
   type NfeUploadDispatch,
   type PedidoUploadCheck,
   decideNfeUploadDispatch,
   nfeUploadTaskSchema,
   shouldUploadForPedido,
-} from '@/lib/marketplace/nfeUpload';
+} from '@/lib/marketplace/nfe/nfeUpload';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

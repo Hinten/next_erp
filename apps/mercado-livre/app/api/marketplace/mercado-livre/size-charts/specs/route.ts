@@ -11,8 +11,8 @@ import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

@@ -24,10 +24,10 @@ import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collect
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { refMatchesIntegracao } from '@/lib/marketplace/linkRefs';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { reverificarAnuncio } from '@/lib/marketplace/reverificarAnuncio';
+import { refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
+import { reverificarAnuncio } from '@/lib/marketplace/anuncios/reverificarAnuncio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

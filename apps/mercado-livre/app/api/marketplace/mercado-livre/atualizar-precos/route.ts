@@ -23,10 +23,10 @@ import { envioPrecoMercadoLivreCollection } from '@delfrance/data/admin/collecti
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { PriceSyncAlreadyRunningError, startPriceSyncJob } from '@/lib/marketplace/precoSync';
-import { createMlPriceSyncScheduler } from '@/lib/marketplace/mlPriceSyncTasks';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
+import { PriceSyncAlreadyRunningError, startPriceSyncJob } from '@/lib/marketplace/preco/precoSync';
+import { createMlPriceSyncScheduler } from '@/lib/marketplace/preco/mlPriceSyncTasks';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

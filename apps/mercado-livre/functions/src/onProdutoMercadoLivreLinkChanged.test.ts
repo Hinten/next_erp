@@ -9,13 +9,13 @@ const core = vi.hoisted(() => ({
   removerContaSeOrfa: vi.fn(async () => true),
   sobrevivemLinksDoProduto: vi.fn(() => async () => false),
 }));
-vi.mock('../../lib/marketplace/integracoesComProduto', async () => {
+vi.mock('../../lib/marketplace/anuncios/integracoesComProduto', async () => {
   // `planLinkChange` / `contaIdFromRef` are the trigger's free gates — keep them
   // REAL so the zero-read assertions below exercise the actual predicate rather
   // than a stub that would pass no matter what the trigger does.
-  const real = await vi.importActual<typeof import('../../lib/marketplace/integracoesComProduto')>(
-    '../../lib/marketplace/integracoesComProduto',
-  );
+  const real = await vi.importActual<
+    typeof import('../../lib/marketplace/anuncios/integracoesComProduto')
+  >('../../lib/marketplace/anuncios/integracoesComProduto');
   return { ...real, ...core };
 });
 

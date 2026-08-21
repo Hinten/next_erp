@@ -1,6 +1,9 @@
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { MERCADO_LIVRE_NOTIFICATION_QUEUE, TASK_MAX_ATTEMPTS } from '@/lib/marketplace/notificacao';
+import {
+  MERCADO_LIVRE_NOTIFICATION_QUEUE,
+  TASK_MAX_ATTEMPTS,
+} from '@/lib/marketplace/notificacoes/notificacao';
 
 /**
  * `processNotification.ts` had no test at all (#823). Its BEHAVIOUR is covered

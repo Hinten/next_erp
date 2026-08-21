@@ -19,14 +19,14 @@ import { IMPORTACAO_MERCADO_LIVRE_STATUS, type MassImportOptions } from '@delfra
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 import {
   finalizeMassImportJob,
   MassImportAlreadyRunningError,
   startMassImportJob,
-} from '@/lib/marketplace/massImport';
-import { createMlMassImportScheduler } from '@/lib/marketplace/mlMassImportTasks';
+} from '@/lib/marketplace/mass-import/massImport';
+import { createMlMassImportScheduler } from '@/lib/marketplace/mass-import/mlMassImportTasks';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

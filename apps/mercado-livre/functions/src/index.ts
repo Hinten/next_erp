@@ -9,17 +9,20 @@ import {
   MERCADO_LIVRE_NOTIFICATION_QUEUE,
   reprocessDeferredNotifications,
   reprocessNotifications,
-} from '../../lib/marketplace/notificacao';
-import { MERCADO_LIVRE_MASS_IMPORT_QUEUE } from '../../lib/marketplace/massImport';
+} from '../../lib/marketplace/notificacoes/notificacao';
+import { MERCADO_LIVRE_MASS_IMPORT_QUEUE } from '../../lib/marketplace/mass-import/massImport';
 import {
   ORDER_BACKFILL_FLAG_ENV,
   runOrderBackfillSweep,
-} from '../../lib/marketplace/orderBackfill';
-import { MISSED_FEEDS_FLAG_ENV, runMissedFeedsSweep } from '../../lib/marketplace/missedFeedsSweep';
-import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/bulkEstoquePlan';
-import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/precoSync';
-import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfeUpload';
-import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';
+} from '../../lib/marketplace/notificacoes/orderBackfill';
+import {
+  MISSED_FEEDS_FLAG_ENV,
+  runMissedFeedsSweep,
+} from '../../lib/marketplace/notificacoes/missedFeedsSweep';
+import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoque/bulkEstoquePlan';
+import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/preco/precoSync';
+import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfe/nfeUpload';
+import { createMlTaskScheduler } from '../../lib/marketplace/notificacoes/mlTasks';
 import { getDb } from './lib/admin';
 import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 import * as notificationHandlers from './processNotification';

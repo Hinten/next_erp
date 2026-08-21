@@ -16,10 +16,10 @@ const core = vi.hoisted(() => ({
   removerContaSeOrfa: vi.fn(async () => true),
   sobrevivemVariacoesDoProduto: vi.fn(() => async () => false),
 }));
-vi.mock('../../lib/marketplace/integracoesComProduto', async () => {
-  const real = await vi.importActual<typeof import('../../lib/marketplace/integracoesComProduto')>(
-    '../../lib/marketplace/integracoesComProduto',
-  );
+vi.mock('../../lib/marketplace/anuncios/integracoesComProduto', async () => {
+  const real = await vi.importActual<
+    typeof import('../../lib/marketplace/anuncios/integracoesComProduto')
+  >('../../lib/marketplace/anuncios/integracoesComProduto');
   return { ...real, ...core, lerLinkPai: () => paiReader.fn };
 });
 
