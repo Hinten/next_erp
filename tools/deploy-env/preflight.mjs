@@ -104,7 +104,7 @@ const CODEBASES = {
       MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES: '2',
       MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND: '2',
     },
-    deployShellSource: 'apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts',
+    deployShellSource: 'apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts',
     // Read at RUNTIME by the enqueuer inside the deployed function, so a value in
     // `.env.deploy` (copied into the artifact by prepare-deploy.mjs) overrides
     // the inlined one. Printed, not validated — this script cannot see that file.

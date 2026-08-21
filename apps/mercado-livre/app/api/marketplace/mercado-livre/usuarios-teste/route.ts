@@ -43,14 +43,14 @@ import type { UsuarioTesteMercadoLivre } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { createTestUserStore } from '@/lib/marketplace/testUserStore';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
+import { createTestUserStore } from '@/lib/marketplace/conta/testUserStore';
 import {
   TestUserGuardError,
   codigosVerificacaoEmail,
   criarUsuariosTeste,
-} from '@/lib/marketplace/testUsers';
+} from '@/lib/marketplace/conta/testUsers';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

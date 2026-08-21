@@ -24,7 +24,7 @@
 //
 // NOT flagged:
 //   - any of the above WITH an explicit `timeZone` — that is the correct shape,
-//     and `apps/mercado-livre/lib/marketplace/estoqueSweep.ts` already does it
+//     and `apps/mercado-livre/lib/marketplace/estoque/estoqueSweep.ts` already does it
 //     (it decides cron-slot ownership in `America/Sao_Paulo`, deliberately)
 //   - `getUTC*`, `setUTC*`, `Date.UTC(...)`, epoch arithmetic
 //   - `n.toLocaleString('pt-BR', { style: 'currency' })` — `toLocaleString` is

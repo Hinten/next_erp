@@ -6,9 +6,9 @@ import {
   STOCK_SEND_MAX_ATTEMPTS,
   concurrentDispatches,
   dispatchesPerSecond,
-} from '../../lib/marketplace/bulkEstoquePlan';
-import { processStockSendTask } from '../../lib/marketplace/estoqueSend';
-import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
+} from '../../lib/marketplace/estoque/bulkEstoquePlan';
+import { processStockSendTask } from '../../lib/marketplace/estoque/estoqueSend';
+import { createMlStockTaskScheduler } from '../../lib/marketplace/estoque/mlStockTasks';
 import { getDb } from './lib/admin';
 import { readCacheSummary } from '@delfrance/data/admin/cache';
 import { TASKS_SCHEDULER_REGION } from './options';

@@ -14,10 +14,13 @@ import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { SizeChartNotFoundError, verifySizeChartDeletion } from '@/lib/marketplace/sizeChartDelete';
-import { TabelaDeMedidasNotFoundError } from '@/lib/marketplace/sizeChartSync';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
+import {
+  SizeChartNotFoundError,
+  verifySizeChartDeletion,
+} from '@/lib/marketplace/size-charts/sizeChartDelete';
+import { TabelaDeMedidasNotFoundError } from '@/lib/marketplace/size-charts/sizeChartSync';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

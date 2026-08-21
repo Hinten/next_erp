@@ -46,7 +46,7 @@ progress dialog or the produtos page.
 1. **A backend route** `POST /api/marketplace/<canal>/enviar-precos` in
    `apps/<canal>`, returning the same envelope
    `{ listings[], produtosSemEnvio[], pausadoAte }` that
-   `apps/mercado-livre/lib/marketplace/precoManual.ts` documents. Nothing in
+   `apps/mercado-livre/lib/marketplace/preco/precoManual.ts` documents. Nothing in
    that envelope is Mercado-Livre-specific by design (`anuncioId`, not `itemId`).
 2. **`providers/<canal>.ts`** exporting a `PricePushProvider`:
    - `tipos` — the `IntegracaoTipo` values it claims. Each tipo may be claimed

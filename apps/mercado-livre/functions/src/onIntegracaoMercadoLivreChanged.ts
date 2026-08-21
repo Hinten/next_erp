@@ -8,8 +8,11 @@ import {
   ehContaMercadoLivre,
   mudouCampoSincronizado,
   sincronizarIntFreteDaConta,
-} from '../../lib/marketplace/intFreteSync';
-import { redriveDeferredForUserId, userIdResolvivel } from '../../lib/marketplace/notificacao';
+} from '../../lib/marketplace/frete/intFreteSync';
+import {
+  redriveDeferredForUserId,
+  userIdResolvivel,
+} from '../../lib/marketplace/notificacoes/notificacao';
 import { getDb } from './lib/admin';
 
 /**

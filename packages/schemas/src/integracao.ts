@@ -741,7 +741,7 @@ export const USUARIO_TESTE_ROLE = {
  * dropped write is an **unrecoverable** credential that has permanently consumed
  * one of ten slots. That is why `password` is stored in the clear here rather
  * than shown once and discarded, and why the mint flow persists each user before
- * minting the next (`apps/mercado-livre/lib/marketplace/testUsers.ts`).
+ * minting the next (`apps/mercado-livre/lib/marketplace/conta/testUsers.ts`).
  *
  * **Admin-only / default-deny** — same posture as `credenciaisIntegracao` and
  * `credenciaisWhatsapp`: deliberately left OUT of `ALL_DOMAINS`, so rules-gen

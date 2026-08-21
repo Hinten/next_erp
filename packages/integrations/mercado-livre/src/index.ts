@@ -55,7 +55,7 @@ export interface MercadoLivreConfig {
  * caller routed through the plugin contract where it should have called the
  * backend.
  *
- * ⚠️ Operator-visible: `apps/mercado-livre/lib/marketplace/respond.ts` maps this
+ * ⚠️ Operator-visible: `apps/mercado-livre/lib/marketplace/core/respond.ts` maps this
  * message into a 501 body (`code: 'ML_NOT_IMPLEMENTED'`). Keep it diagnostic.
  * Folding these four into the contract is part of #815.
  */

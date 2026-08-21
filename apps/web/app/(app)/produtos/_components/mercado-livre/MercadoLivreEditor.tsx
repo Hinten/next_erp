@@ -208,7 +208,7 @@ export function MercadoLivreEditor({
    *
    * Only User-Products listings ever land here — a legacy one is a pure string
    * transform the strip does itself. It is component state and not a Firestore
-   * field on purpose — see the ⚠️ in `lib/marketplace/anuncioUrl.ts`: a persisted
+   * field on purpose — see the ⚠️ in `apps/mercado-livre/lib/marketplace/anuncios/anuncioUrl.ts`: a persisted
    * URL is a cache that can go stale silently, and it costs one request to
    * resolve.
    */
