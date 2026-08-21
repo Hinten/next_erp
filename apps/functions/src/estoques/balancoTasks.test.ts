@@ -4,7 +4,7 @@ import { MissingRegionError } from '@delfrance/core/region';
 
 // Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
 // binding. The scheduler's own env-driven wiring runs real. Mirrors
-// apps/mercado-livre/lib/marketplace/mlStockTasks.test.ts's pattern.
+// apps/mercado-livre/lib/marketplace/estoque/mlStockTasks.test.ts's pattern.
 const h = vi.hoisted(() => ({
   enqueue: vi.fn(async (_payload: unknown) => {}),
   taskQueue: vi.fn(),

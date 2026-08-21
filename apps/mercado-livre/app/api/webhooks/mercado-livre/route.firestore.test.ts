@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { __resetWebhookOriginState } from '@/lib/marketplace/webhookOrigin';
+import { __resetWebhookOriginState } from '@/lib/marketplace/notificacoes/webhookOrigin';
 
 import { POST } from './route';
 

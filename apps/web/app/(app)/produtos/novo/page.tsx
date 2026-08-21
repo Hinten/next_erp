@@ -237,9 +237,10 @@ export default function NovoProdutoPage() {
         currentUserUid={user?.uid ?? ''}
         defaultValues={PRODUTO_CREATE_DEFAULTS}
         sections={PRODUTO_SECTIONS}
-        // Paired with `PRODUTO_SECTIONS` on both pages so the two can never
-        // disagree. Free here: the create-mode tab is a single <Alert> with no
-        // effects, since there is no produto to load anything for yet.
+        // Holds `SECTION_MERCADO_LIVRE`, which both pages' section lists end
+        // with, so the two can never disagree. Free here: the create-mode tab is
+        // a single <Alert> with no effects, since there is no produto to load
+        // anything for yet.
         persistentSections={PRODUTO_PERSISTENT_SECTIONS}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}

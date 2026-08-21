@@ -345,6 +345,14 @@ export async function criarSaidaComDevolucao(
           ...(values as unknown as Record<string, unknown>),
           entradasRelacionadas: [devolucaoId],
           numero: numeros[0],
+          // `values` comes from PedidoForm, which seeds `timestamp: null` — so
+          // without this the saída lands undated while the devolução written in
+          // the SAME transaction gets `timestamp: now` from
+          // `buildDevolucaoPedido`. `/pedidos` orders by `timestamp desc` and
+          // null sorts last, so an undated pedido goes to the bottom of the
+          // list it was just created from. Same create-only nullish coalesce as
+          // `createPedidoWithNumero`.
+          timestamp: values.timestamp ?? port.now(),
         },
       });
       ops.push({
@@ -557,6 +565,10 @@ export async function criarEntradaDevolucaoIntegral(
             ...(args.values as unknown as Record<string, unknown>),
             saidasRelacionadas: [args.originId],
             numero: numeros[0],
+            // See the sibling stamp in `criarSaidaComDevolucao`: `args.values`
+            // carries PedidoForm's `timestamp: null`, and an undated pedido
+            // sorts last under the `/pedidos` `timestamp desc` default.
+            timestamp: args.values.timestamp ?? port.now(),
           },
         },
         {

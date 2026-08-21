@@ -5,7 +5,7 @@ import { TIPO_CLIENTE, type ClienteResolveFields } from '@delfrance/schemas';
 import { buildClienteUpdatePatch, findOrCreateCliente } from './findOrCreateCliente';
 
 /* ------------------------------ fake Firestore ---------------------------- */
-// Copied from apps/mercado-livre/lib/marketplace/orderCliente.test.ts, where
+// Copied from apps/mercado-livre/lib/marketplace/pedidos/orderCliente.test.ts, where
 // this suite lived before #786 promoted the module. packages/data cannot import
 // from apps/, and per-suite in-memory fakes are this repo's convention
 // (pedidoReconcile.test.ts, notifications/pipeline.test.ts).

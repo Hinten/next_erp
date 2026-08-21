@@ -363,6 +363,13 @@ describe('criarSaidaComDevolucao', () => {
       entradasRelacionadas: [result.devolucaoId],
     });
 
+    // Both docs written by this transaction carry a creation stamp. `values`
+    // is PedidoForm state, which seeds `timestamp: null` — leaving the saída
+    // undated would sink it to the bottom of the `timestamp desc` /pedidos
+    // default while its own paired devolução sorted normally (#159).
+    expect(docs.get(PEDIDO_PATH(result.saidaId))).toMatchObject({ timestamp: NOW });
+    expect(docs.get(PEDIDO_PATH(result.devolucaoId))).toMatchObject({ timestamp: NOW });
+
     const saida = docs.get(PEDIDO_PATH(result.saidaId));
     expect(saida).toMatchObject({ numero: 'VEN-000011', ehSaida: true });
     expect(saida?.entradasRelacionadas).toEqual([result.devolucaoId]);
@@ -612,6 +619,11 @@ describe('criarEntradaDevolucaoIntegral', () => {
       numero: 'DEV-000006',
       ehSaida: false,
       saidasRelacionadas: ['o1'],
+      // Stamped at write time (#159). The seed reached the form through
+      // DEVOLUCAO_INTEGRAL_STRIP_KEYS, which drops `timestamp` and re-parses so
+      // the schema default refills it as null — so the coalesce here is what
+      // keeps the entrada out of the bottom of the `timestamp desc` list.
+      timestamp: NOW,
     });
     expect(docs.get(PEDIDO_PATH('o1'))).toMatchObject({
       entradasRelacionadas: ['prev', entradaId],

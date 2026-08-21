@@ -11,7 +11,7 @@ import {
   resolverContaRefDaVariacao,
   sobrevivemVariacoesDoProduto,
   variacaoPodeMudarMembership,
-} from '../../lib/marketplace/integracoesComProduto';
+} from '../../lib/marketplace/anuncios/integracoesComProduto';
 import { getDb } from './lib/admin';
 
 /**

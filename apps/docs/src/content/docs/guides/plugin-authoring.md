@@ -67,7 +67,7 @@ The example registers a flat-rate `TaxProvider` and exercises every public surfa
 In-tree channels are wired the other way round: **one App Hosting backend per channel**, and the channel object is constructed **per request** from the Firestore `integracao` document that the request names. Mercado Livre is the worked example — every ML route calls:
 
 ```ts
-// apps/mercado-livre/lib/marketplace/mercadoLivre.ts
+// apps/mercado-livre/lib/marketplace/core/mercadoLivre.ts
 const channel = createMercadoLivreChannel(mercadoLivreConfig());
 ```
 

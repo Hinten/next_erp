@@ -4,7 +4,7 @@
  * (`.old/packages/clientes/lib/src/models.dart:254-419`), minus the `userPath`
  * dedup step and the vector-embedding generation.
  *
- * It lived in `apps/mercado-livre/lib/marketplace/orderCliente.ts` until #786.
+ * It lived in `apps/mercado-livre/lib/marketplace/pedidos/orderCliente.ts` until #786.
  * Every channel that imports an order needs the same resolution, and the copy
  * that existed had a defect worth never writing twice:
  *
@@ -320,7 +320,7 @@ export async function findOrCreateCliente(
       value: identityValue(fields.idMercadoLivre),
     },
     // The legacy `userPath` dedup step is intentionally skipped — see
-    // apps/mercado-livre/lib/marketplace/orderCliente.ts's header doc.
+    // apps/mercado-livre/lib/marketplace/pedidos/orderCliente.ts's header doc.
     {
       key: CLIENTE_MATCH_KEY.telefone,
       op: 'in',

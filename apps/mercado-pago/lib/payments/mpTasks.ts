@@ -1,7 +1,7 @@
 /**
  * Task scheduler for the Mercado Pago webhook processor — backed by a **Firebase
  * Functions task queue** (`onTaskDispatched`), not raw Cloud Tasks / Terraform.
- * Mirrors `apps/mercado-livre/lib/marketplace/mlTasks.ts`.
+ * Mirrors `apps/mercado-livre/lib/marketplace/notificacoes/mlTasks.ts`.
  *
  * The receiver enqueues the lean notification payload onto the
  * `processMercadoPagoNotification` queue (auto-provisioned by the function on

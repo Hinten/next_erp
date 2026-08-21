@@ -8,7 +8,7 @@
  *
  * That matters because the flag has exactly one reader: the Mercado Livre order
  * import's shipment↔pedido item cross-check
- * (`apps/mercado-livre/lib/marketplace/orderImport.ts`, #669). The check asks ML
+ * (`apps/mercado-livre/lib/marketplace/pedidos/orderImport.ts`, #669). The check asks ML
  * what it is about to ship and refuses to price a pedido whose lines disagree —
  * and `hasUserInteraction` is the operator's override, the statement that a
  * human has taken ownership of this line-up so ML's own is no longer the

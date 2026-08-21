@@ -360,6 +360,7 @@ export const metodoPagamentoMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    columns: ['nome', 'hasLinkPagamento', 'user_id'],
   },
 };
 

@@ -1,0 +1,105 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MissingRegionError } from '@delfrance/core/region';
+
+// Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
+// binding. The scheduler's own env-driven wiring runs real. Mirrors
+// mlMassImportTasks.test.ts's pattern.
+const h = vi.hoisted(() => ({
+  enqueue: vi.fn(async (_payload: unknown, _opts?: unknown) => {}),
+  taskQueue: vi.fn(),
+  getFunctions: vi.fn(),
+}));
+
+vi.mock('firebase-admin/functions', () => ({
+  getFunctions: (...args: unknown[]) => {
+    h.getFunctions(...args);
+    return { taskQueue: h.taskQueue };
+  },
+}));
+
+vi.mock('../../firebase/admin', () => ({ getAdminApp: () => ({ __app: true }) }));
+
+const { createMlTaskScheduler, MlTasksDisabledError } = await import('./mlTasks');
+
+const payload = {
+  id: 'N1',
+  resource: '/orders/123',
+  topic: 'orders_v2',
+  user_id: 55,
+  application_id: 999,
+  attempts: 1,
+  sent: 1_700_000_000_000,
+  received: 1_700_000_000_000,
+  actions: null,
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.taskQueue.mockReturnValue({ enqueue: h.enqueue });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe('createMlTaskScheduler', () => {
+  it('enqueues onto the region-qualified processMercadoLivreNotification queue', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', 'southamerica-east1');
+    const scheduler = createMlTaskScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/southamerica-east1/functions/processMercadoLivreNotification',
+    );
+    expect(h.enqueue).toHaveBeenCalledWith(payload, undefined);
+  });
+
+  it('REFUSES to enqueue when nothing is configured', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
+    const scheduler = createMlTaskScheduler();
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank MERCADO_LIVRE_TASKS_REGION as unset, and unset now throws', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', '');
+    const scheduler = createMlTaskScheduler();
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+  });
+
+  it('IGNORES FUNCTIONS_REGION — the queue does not live in the codebase region', async () => {
+    // Where Cloud Tasks does not exist the queue functions are pinned separately
+    // while the Firestore triggers stay in the data region. A FUNCTIONS_REGION
+    // fallback used to sit in this resolver; on a backend where that variable
+    // names the data region it would resolve a queue that does not exist, and the
+    // Admin SDK would silently target us-central1. So a FUNCTIONS_REGION that is
+    // set must NOT rescue an unset MERCADO_LIVRE_TASKS_REGION — it throws.
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', 'us-east5');
+    const scheduler = createMlTaskScheduler();
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+  });
+
+  it('passes scheduleDelaySeconds through to the underlying queue.enqueue (order-family delay, Step 9)', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', 'us-central1');
+    const scheduler = createMlTaskScheduler();
+    await scheduler.enqueue(payload, { scheduleDelaySeconds: 10 });
+    expect(h.enqueue).toHaveBeenCalledWith(payload, { scheduleDelaySeconds: 10 });
+  });
+
+  it('the disabled valve throws MlTasksDisabledError instead of enqueuing', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '1');
+    const scheduler = createMlTaskScheduler();
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MlTasksDisabledError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+});

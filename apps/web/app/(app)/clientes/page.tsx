@@ -139,7 +139,6 @@ export default function ClientesPage() {
           collection={clienteCollection}
           db={db}
           meta={clienteMeta}
-          defaultColumns={['nome', 'tipo', 'cpf_cnpj', 'email', 'telefone', 'ultimaModificacao']}
           rowHref={(id) => `/clientes/${id}`}
           queryOverride={queryOverride}
           renderNewButton={() => (

@@ -9,7 +9,7 @@ import type { ExpandSpec } from '@delfrance/core';
  * provides one, so the fallback chain below is the design, not a shortcut:
  *
  *  - `ensureUniqueId` is a real, stable id — but ONLY on Mercado Livre lines
- *    (`apps/mercado-livre/lib/marketplace/orderIds.ts` derives it as a sha256 of
+ *    (`apps/mercado-livre/lib/marketplace/pedidos/orderIds.ts` derives it as a sha256 of
  *    `orderId`/`mktplaceId`/index, and the ML merge is keyed on it). Lines
  *    created in `apps/web` are written with `ensureUniqueId: null` and nothing
  *    ever fills it in.

@@ -1,4 +1,5 @@
 import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
+import { nowMicros } from '@delfrance/core';
 import type { Pedido } from '@delfrance/schemas';
 import { PEDIDO_COUNTER_DOC_ID, mintNumeros, operacaoNumeroPrefix } from '@delfrance/data/pedido';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
@@ -63,9 +64,19 @@ export async function createPedidoWithNumero(
     // This function is only ever reached from `NovoPedidoView` — an operator
     // pressing "Salvar" — so the pedido is human-authored by construction. See
     // `marcarInteracaoDoUsuario` for why the flag has to be written.
+    // Stamp the creation time. `PedidoForm` seeds `timestamp: null` and nothing
+    // downstream filled it, so until #159 EVERY pedido created here landed with
+    // a null `timestamp` — which left the "Criação" column permanently blank and,
+    // now that `pedidoMeta.defaultQuery` orders by `timestamp desc`, would sort
+    // brand-new pedidos to the BOTTOM of /pedidos (null sorts last in DESC).
+    //
+    // Create-only nullish coalesce, the same shape `saveRecord` uses for its
+    // `createdAtField`: an explicit value (e.g. a caller replaying an import)
+    // wins, and re-running the transaction on contention re-derives nothing —
+    // `nowMicros()` is read per attempt, which is fine for a creation stamp.
     tx.set(
       pedidoCollection.docRef(db, {}, pedidoId),
-      marcarInteracaoDoUsuario({ ...values, numero }),
+      marcarInteracaoDoUsuario({ ...values, numero, timestamp: values.timestamp ?? nowMicros() }),
     );
   });
   return { id: pedidoId, numero };
