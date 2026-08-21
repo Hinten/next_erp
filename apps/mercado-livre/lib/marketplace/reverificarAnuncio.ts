@@ -53,8 +53,9 @@ export interface ReverificacaoResultado {
  * truth now", so a stale diagnosis must not survive it.
  *
  * ⚠️ `moderacoes` is RE-FETCHED here, not merely cleared with them (#1087), and
- * this is the one place where "let `clearFalha()` handle it" would introduce a
- * bug. The clear above is unconditional, so on a listing ML has genuinely
+ * this is one of two places where "let `clearFalha()` handle it" would introduce
+ * a bug — the importer is the other, for the same reason and with the same fix.
+ * The clear above is unconditional, so on a listing ML has genuinely
  * moderated a clear-only re-check would erase the reason the operator pressed
  * the button to see and leave a bare "pausado" until the next `items` delivery —
  * which, for a listing nobody touches, is the delivery that never comes. That is

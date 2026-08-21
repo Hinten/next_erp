@@ -429,17 +429,21 @@ export function falhaPatch(
  * field has the same "stale is worse than absent" property. `errors`/`causas`
  * record OUR failed write, so a later success genuinely invalidates them — but a
  * moderação is ML's POLICY verdict on the listing, and nothing this module's
- * callers do implies ML lifted it. Two of them prove it: the stock writeback
- * clears on a successful `PUT /items`, and a `poor_quality_thumbnail` listing is
- * `active` and accepts stock updates **while moderated**; an import re-reads the
- * item but never asks `/moderations`. Clearing there would erase a live,
+ * callers do implies ML lifted it. The stock writeback proves it: it clears on a
+ * successful `PUT /items`, and a `poor_quality_thumbnail` listing is `active` and
+ * accepts stock updates **while moderated**. Clearing there would erase a live,
  * still-true reason and show a clean listing that is really still penalised —
  * the inverse of the bug, and worse, because it hides a real problem instead of
  * merely failing to explain one.
  *
  * The rule instead: **only a writer that just asked ML about moderation may
- * write `moderacoes`** — `itemsStatusSync` and `reverificarAnuncio`, each of
- * which sets it in the same patch as the status it explains, value or `[]`.
+ * write `moderacoes`** — `itemsStatusSync`, `reverificarAnuncio` and, since the
+ * import gained its own gated read, the IMPORTER; each sets it in the same patch
+ * as the status it explains, value or `[]`. ⚠️ The importer is why this docblock
+ * no longer cites it as a second example of a caller that clears without asking:
+ * it calls `clearFalha()` AND reads `/moderations`, and its own `moderacoes` key
+ * is spread on top of this patch. What it does not do is DERIVE the field from
+ * this one — see `assembleImportPlan`.
  *
  * A function rather than a shared constant so each call site owns its arrays —
  * a spread copies the object but not the empty arrays inside it, and one caller

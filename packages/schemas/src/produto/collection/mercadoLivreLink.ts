@@ -347,16 +347,34 @@ export const produtoMercadoLivreLinkSchema = z
      * VANISH the moment ML stops reporting one, even mid-review. Sharing `errors`
      * would have wiped the first case on the very write that set it.
      *
-     * ⚠️ The invariant that replaces that rule, and it is stronger: `moderacoes`
-     * is written in the SAME patch as the `status`/`sub_status` it explains, on
-     * every status write, either to a value or to `[]`. A reason outliving the
-     * state it explains is therefore impossible by construction rather than by
-     * discipline — which matters, because a stale moderação on a healthy listing
-     * is indistinguishable from a real one.
+     * ⚠️ The invariant that replaces that rule: `moderacoes` is written in the
+     * SAME patch as the `status`/`sub_status` it explains — never on its own,
+     * never left behind by a writer that moved the status. A reason outliving the
+     * state it explains is what that prevents, and it matters because a stale
+     * moderação on a healthy listing is indistinguishable from a real one.
+     *
+     * ⚠️ It holds UNCONDITIONALLY in the direction that produces that bug. Every
+     * writer can tell from the item's own `status`/`sub_status` whether ML is
+     * reporting a moderation at all (`precisaConsultarModeracao`, a pure
+     * predicate), so a listing ML calls healthy is written `[]` with no ML call —
+     * the stale reason is cleared for free, on every path, including the mass
+     * import that deliberately skips the lookup.
+     *
+     * ⚠️ It is QUALIFIED in the other direction, and the qualification is the
+     * third value: `null` means **"never asked"**, distinct from `[]` = "asked,
+     * ML reported none". A writer that could not or would not ask about a
+     * genuinely moderated listing omits the key rather than inventing `[]`, so
+     * the stored value stands. Both cases are the importer's: the mass path
+     * (`lerModeracoes: false`) and a `/moderations` call that failed. Both
+     * self-heal through the `items` webhook or "Reverificar anúncio". Collapsing
+     * `null` into `[]` would record "not moderated" about a listing nobody asked
+     * about — on disk byte-identical to a healthy one, which is the exact state
+     * the 404-is-data narrow and the transient rethrow exist to prevent.
+     * `applyMemberStatusAndFold` relies on the same three-valued contract.
      *
      * ⚠️ **Only a writer that just asked ML about moderation may touch this
-     * field** — today `itemsStatusSync` and `reverificarAnuncio`. It is NOT in
-     * `clearFalha()`, and that omission is deliberate: `errors`/`causas` record
+     * field** — today `itemsStatusSync`, `reverificarAnuncio` and the importer.
+     * It is NOT in `clearFalha()`, and that omission is deliberate: `errors`/`causas` record
      * OUR failed write, which a later success invalidates, but a moderação is
      * ML's verdict and nothing we do lifts it. The stock writeback calls
      * `clearFalha()` after a successful `PUT /items` — and a
@@ -455,8 +473,16 @@ export const variacaoMercadoLivreLinkSchema = z
      * Storing it per member is what keeps that fold free: `foldFamilyStatus` reads
      * the siblings' stored values and never has to `GET` a moderation per member.
      *
-     * ⚠️ Same rule as the parent's copy: written in the SAME patch as this
-     * member's `status`/`sub_status`, value or `[]`, never on its own.
+     * ⚠️ Same rule as the parent's copy, including the `null` = "never asked"
+     * third value: written in the SAME patch as this member's
+     * `status`/`sub_status`, value or `[]`, never on its own.
+     *
+     * ⚠️ A LEGACY `variations[]` member never gets one, exactly as it never gets
+     * a `status`. It is not a listing of its own — it has no ML item id, no
+     * lifecycle and therefore nothing for ML to moderate — so every writer of a
+     * legacy member link (the importer, #707's phantom prune) leaves whatever was
+     * stored alone rather than writing `[]`. Only the User-Products branch, where
+     * a member IS its own item, ever populates this.
      */
     moderacoes: z.array(mlModeracaoSchema).nullable().default(null),
   })

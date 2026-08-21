@@ -335,6 +335,21 @@ moderation-endpoint outage cannot stall the `items` stream. A **404 is data**
 ("not moderated"); everything else rethrows, because persisting `[]` after a
 failed read records "not moderated" and is indistinguishable from healthy.
 
+⚠️ **The IMPORT is the third writer of `moderacoes`, and it diverges on failure
+deliberately.** It reads through the same gate — so a healthy listing still costs
+one `GET /items/{id}` — but places the call ABOVE every write (`importCategoriaChain`
+and `resolveTaxonomia` both write Firestore before `assembleImportPlan` runs, so a
+read below them could orphan docs), and it does **not** rethrow: for the other two
+writers the status write IS the unit of work, while here a throw discards a produto,
+its extraData, its stock, its photos and its children over a diagnostic. It degrades
+to `null` — the field's **third value, "never asked"**, distinct from `[]` = "asked,
+none" — which omits the key so the stored reason stands. ⚠️ The **mass import**
+(`lerModeracoes: false`) takes the same `null` path on purpose: a catalogue drain must
+not pay a lookup per moderated listing. What neither skips is the free half — a
+listing whose own `status`/`sub_status` warrant no moderation is written `[]` with no
+ML call at all, so even a full re-import clears every stale reason. Both `null` cases
+self-heal through an `items` delivery or "Reverificar anúncio".
+
 ⚠️ **`moderacoes` is a SEPARATE field from `errors`/`causas`, and the reason is the
 #781 stock re-arm.** `errors` is cleared whenever `podeEnviarEstoque(...).enviar` —
 deliberately, so a `closed`/`under_review` listing keeps its diagnosis. Moderation
@@ -346,12 +361,12 @@ stronger: `moderacoes` is written in the **same patch** as the `status` it expla
 on every status write, value or `[]` — so a reason cannot outlive its state.
 
 ⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and only a writer that
-just asked ML may touch it.** `errors`/`causas` record OUR failed write, so a later
-success invalidates them; a moderação is ML's verdict and nothing we do lifts it. Two
-`clearFalha()` callers prove the point — the stock writeback fires on a successful
-`PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
-updates **while moderated**; the importer re-reads the item but never asks
-`/moderations`. Clearing there would erase a live reason and show a clean listing that
+just asked ML may touch it** — today `itemsStatusSync`, `reverificarAnuncio` and the
+**importer**. `errors`/`causas` record OUR failed write, so a later success
+invalidates them; a moderação is ML's verdict and nothing we do lifts it. The stock
+writeback proves the point — it fires on a successful `PUT /items`, and a
+`poor_quality_thumbnail` listing is `active` and accepts stock updates **while
+moderated**. Clearing there would erase a live reason and show a clean listing that
 is really still penalised, which hides a real problem rather than merely failing to
 explain one. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
 unconditionally, so clear-only would erase the reason the operator pressed the button

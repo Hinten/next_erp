@@ -331,7 +331,7 @@ export async function syncItemStatus(
  *
  * A thin adapter over the shared {@link consultarModeracoes} — gating, the
  * `-ITM` reference, the 404-is-data narrow and the rethrow all live there, so
- * this sync and `reverificarAnuncio` cannot drift on any of them.
+ * this sync, `reverificarAnuncio` and the importer cannot drift on any of them.
  */
 function fetchModeracoes(api: ItemsSyncApi, itemId: string, item: MlItem): Promise<MlModeracao[]> {
   return consultarModeracoes(api, itemId, item.status, item.sub_status);

@@ -28,6 +28,16 @@
  * seller_custom_field, which ML does not keep unique across a seller's items
  * (reusing it as the id would collide two distinct listings onto one produto).
  *
+ * ML MODERATIONS (#1087): the import is the THIRD writer of the link doc's
+ * `moderacoes`, after the `items` webhook and `reverificarAnuncio`. It reads them
+ * through the SAME gate (`precisaConsultarModeracao` — a healthy listing costs no
+ * extra call) and writes them in the same patch as the `status` they explain, so
+ * a re-import of a listing whose moderation ML lifted clears the old reason
+ * instead of carrying it forward on the spread. Two deliberate divergences from
+ * the other two writers, both on `lerModeracoesDoItem`: the read sits ABOVE every
+ * write, and a transient failure degrades to "never asked" rather than throwing
+ * away the whole produto. See that function.
+ *
  * `ImportDeps.upParentOverride` (#441): the UP resolution cascade can be
  * bypassed to force the family parent onto a caller-named produto — used by
  * `importMigration.ts` when ML migrates a legacy `variations[]` listing to
@@ -39,6 +49,7 @@ import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
   type MappedUpMember,
   type MercadoLivreApi,
+  type MlItem,
   type MlItemAttribute,
   MercadoLivreError,
   mapMlItemToImport,
@@ -46,7 +57,7 @@ import {
   mapUpMemberToImport,
   skuGuessFromVariations,
 } from '@delfrance/integrations-mercado-livre';
-import { PRODUTO_EXTRA_DATA_DOC_ID, toOuterRef } from '@delfrance/schemas';
+import { type MlModeracao, PRODUTO_EXTRA_DATA_DOC_ID, toOuterRef } from '@delfrance/schemas';
 import {
   estoqueCollection,
   produtoCollection,
@@ -63,6 +74,7 @@ import {
   assembleImportPlan,
 } from './importCore';
 import { importCategoriaChain } from './importCategoria';
+import { consultarModeracoes, precisaConsultarModeracao } from './moderacoes';
 import { resolveTaxonomia } from './importTaxonomia';
 import { importVariationChildren } from './importVariations';
 import { resolveFamilySiblingIds } from './importFamily';
@@ -104,6 +116,25 @@ export interface ImportDeps {
    * behavior is byte-identical when this field is absent.
    */
   upParentOverride?: { produtoId: string };
+  /**
+   * Whether this import may spend an ML `/moderations` call (#1087) — default
+   * TRUE (absent ⇒ read it). Set `false` by the MASS import alone, which drains a
+   * whole catalogue and must not pay a per-moderated-listing lookup.
+   *
+   * ⚠️ It gates the NETWORK read, never the write. A listing whose own
+   * `status`/`sub_status` warrant no moderation still lands `moderacoes: []`
+   * here, because {@link precisaConsultarModeracao} answers that from the item
+   * we already fetched — so even the mass import clears a stale reason off every
+   * healthy listing for free. Only "moderated, and we deliberately did not ask"
+   * degrades to `null`, and it self-heals through the `items` webhook or the
+   * operator's "Reverificar anúncio".
+   *
+   * A DEPS flag rather than an `ImportOptions` one on purpose: this is a
+   * per-path cost decision, not an operator choice, so it must never reach
+   * `sanitizeOptions` and become a checkbox. Same shape as `familyFanOut`
+   * above — and, like it, the fan-out inherits it through the `...deps` spread.
+   */
+  lerModeracoes?: boolean;
 }
 
 export interface ImportResult {
@@ -162,6 +193,29 @@ export async function importProduto(
   if (item.seller_id != null && item.seller_id !== deps.sellerUserId) {
     throw new MercadoLivreImportError([`anúncio ${itemId} pertence a outro vendedor`]);
   }
+
+  // ---- ML moderations (#1087) -------------------------------------------
+  // Read HERE, above every write, and the placement is load-bearing rather than
+  // stylistic: `importCategoriaChain` and `resolveTaxonomia` below both WRITE
+  // Firestore before `assembleImportPlan` is ever reached, so a read placed after
+  // either one could leave orphan `categorias`/`grupoDeVariacoes` docs behind.
+  // Same property `reverificarAnuncio` states at its own call site — "before the
+  // write, and outside it".
+  //
+  // Below the guards, equally deliberately: `closed` + `moderation_penalty` is a
+  // moderation reading, so a read above them would spend an ML call on a listing
+  // the import rejects anyway.
+  //
+  // `item.status`/`item.sub_status` (the raw item), matching `itemsStatusSync`
+  // and `reverificarAnuncio` — `mapped` does not exist yet and carries the same
+  // two values regardless.
+  const moderacoes = await lerModeracoesDoItem(
+    api,
+    itemId,
+    item,
+    deps.lerModeracoes !== false,
+    integracaoId,
+  );
 
   // User-Products model (#521) — each variation is its OWN MLB item; this call
   // imports `itemId` as ONE family member (parent + this member as a child),
@@ -303,6 +357,7 @@ export async function importProduto(
     hasVariations: ownsChildren,
     parentGrupoUids,
     parentVariacoesUid,
+    moderacoes,
     now,
   });
 
@@ -461,6 +516,12 @@ export async function importProduto(
             // this member — its `user_product_id` belongs on the member's own
             // link, never on the family's parent link (#706, #1142).
             userProductId: mapped.userProductId,
+            // …and by the same token the moderation just read describes THIS
+            // member (#1087). The family parent takes the same value, which is
+            // the importer's standing convention for `estado`/`status` and is
+            // what keeps the parent internally consistent: one listing, one
+            // status, one reason. Deliberately NOT a fold — see `upFamilyStatus`.
+            moderacoes,
           },
         )
       : await importVariationChildren(
@@ -580,6 +641,74 @@ function resolveParentPrecosForChildren(
 /** Insertion-order de-dup (`Set` preserves first-seen order). */
 function uniqueFirstSeen(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+/**
+ * ML's active moderations for the item being imported (#1087), or `null` meaning
+ * **"never asked"** — the third value the link doc's `moderacoes` carries, which
+ * makes the write omit the key rather than record a `[]` nobody confirmed.
+ *
+ * The import is the THIRD writer of that field, after the `items` webhook and
+ * `reverificarAnuncio`, and it qualifies under the same rule they do: only a
+ * writer that just asked ML may touch it. What differs is the failure posture,
+ * and the difference is deliberate.
+ *
+ * ⚠️ **A transient failure does NOT fail the import.** `consultarModeracoes`
+ * rethrows everything but a 404, and its two other callers let it — for them the
+ * status write IS the whole unit of work, so writing nothing and retrying costs
+ * nothing. Here it would throw away a produto, its extraData, its stock, its
+ * photos and its children over a diagnostic. The listing is not left blind
+ * either way: `estado`/`status`/`sub_status` are recorded from the item we
+ * already hold, so the operator still sees THAT the anúncio is moderated — only
+ * ML's prose for WHY is missing, and one "Reverificar anúncio" fetches it.
+ *
+ * ⚠️ Degrading to `null`, never to `[]`. `[]` means "asked, ML reported none"
+ * and on disk is byte-identical to a healthy listing — it would record
+ * "not moderated" about a listing we failed to ask about, and on a re-import it
+ * would erase a real, still-true reason. `null` leaves the stored value alone.
+ *
+ * ⚠️ The `enabled` flag gates the NETWORK read only. A listing that fails
+ * {@link precisaConsultarModeracao} still returns `[]` — that verdict comes from
+ * the item already in hand, costs no call, and is what keeps a lifted moderation
+ * from outliving the status it explained. So even the mass import, which passes
+ * `enabled: false`, still self-heals every healthy listing it touches.
+ *
+ * ⚠️ The `MercadoLivreError` narrow also swallows `MercadoLivreReauthRequiredError`
+ * (it extends that class), and that is accepted rather than overlooked: the grant
+ * is proven live by the `api.getItem` this function runs after, so reaching here
+ * with a dead one means it died in between — and at that point the item is
+ * already in hand and nothing the import still NEEDS is an ML call (the
+ * description and the categoria chain are both best-effort, and the one directly
+ * below narrows identically). Degrading produces a correct produto from data we
+ * already have; rethrowing would discard it to report a token that the next
+ * operation will report anyway.
+ *
+ * Never throws for an ML failure. A non-ML error (a bug, a Firestore fault)
+ * still propagates — the catch narrows rather than swallowing.
+ */
+async function lerModeracoesDoItem(
+  api: MercadoLivreApi,
+  itemId: string,
+  item: MlItem,
+  enabled: boolean,
+  integracaoId: string,
+): Promise<MlModeracao[] | null> {
+  // Free, and the half of the invariant worth keeping everywhere: ML's own
+  // status says there is nothing to explain, so any stored reason is stale.
+  if (!precisaConsultarModeracao(item.status, item.sub_status)) return [];
+  if (!enabled) return null;
+  try {
+    return await consultarModeracoes(api, itemId, item.status, item.sub_status);
+  } catch (err) {
+    if (!(err instanceof MercadoLivreError)) throw err;
+    console.warn('[mercado-livre] import: falha ao consultar moderações — motivo não atualizado', {
+      integracaoId,
+      itemId,
+      status: item.status,
+      erro: err.message,
+    });
+    return null;
+  }
 }
 
 /* -------------------------------------------------------------------------- */

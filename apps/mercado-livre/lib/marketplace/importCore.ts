@@ -15,13 +15,25 @@
  *  - price: written on create (`importarPreco`) or overwrite (`sobrescreverPreco`);
  *  - the produto-field update is gated by `atualizarProdutoPai`
  *    (`completarDadosProdutoPai`).
+ *
+ * ⚠️ `moderacoes` (#1087) is SUPPLIED by the IO layer, never derived here. The
+ * gate (`precisaConsultarModeracao`), the 404-is-data narrow and the transient
+ * degrade all live in `moderacoes.ts` + `import.ts` so this module stays pure and
+ * so the importer, the `items` sync and `reverificarAnuncio` cannot drift on any
+ * of them. All this file decides is WHERE the value lands in the two link docs.
  */
 import type {
   MappedMlItem,
   MappedMlVariation,
   MlItemAttribute,
 } from '@delfrance/integrations-mercado-livre';
-import { CONDICAO_PRODUTO, makeEstoqueUid, reservaEfetiva, toOuterRef } from '@delfrance/schemas';
+import {
+  CONDICAO_PRODUTO,
+  type MlModeracao,
+  makeEstoqueUid,
+  reservaEfetiva,
+  toOuterRef,
+} from '@delfrance/schemas';
 import type { TaxonomiaResolution } from './taxonomiaCore';
 import { clearFalha } from './publishFalhas';
 
@@ -107,6 +119,25 @@ export interface ImportAssembleArgs {
    */
   existingEstoqueQty: number | null;
   existingEstoqueReservada: number | null;
+  /**
+   * ML's ACTIVE moderations for this listing (#1087), read by the IO layer
+   * BEFORE any write — `[]` means "asked, ML reported none", which is what a
+   * listing whose own `status`/`sub_status` warrant no moderation gets for free,
+   * with no ML call at all.
+   *
+   * ⚠️ `null` is a THIRD value and means **"never asked"** — a deliberate skip
+   * (the mass import) or a `/moderations` call that failed. It makes the link
+   * write OMIT the key entirely, so the create falls to the schema default and
+   * an update keeps whatever was stored. Never collapse it to `[]`: on disk that
+   * would be byte-identical to a healthy listing, i.e. recording "not moderated"
+   * about a listing nobody asked about. The same three-valued contract
+   * `applyMemberStatusAndFold` relies on.
+   *
+   * Required and deliberately NOT defaulted, exactly like `falhaPatch`'s
+   * arguments next door: a default would be silently wrong at whichever call
+   * site forgot it, and there is only one production caller to update.
+   */
+  moderacoes: MlModeracao[] | null;
   now: number;
 }
 
@@ -330,6 +361,23 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     video_id: mapped.videoId,
     attributes: mapped.attributes,
     ...clearFalha(),
+    // ML's policy verdict (#1087), in the SAME patch as the `status` it explains
+    // — the invariant on `produtoMercadoLivreLinkSchema.moderacoes`.
+    //
+    // ⚠️ AFTER `...existingLink` is LOAD-BEARING: that spread is what carries a
+    // stored moderation forward, so a value read on THIS run has to override it.
+    // Without that, a re-import of a listing whose moderation ML has since
+    // LIFTED keeps showing the old reason on a now-`active` anúncio — worse than
+    // no reason at all, because a stale one is indistinguishable from a real one.
+    //
+    // ⚠️ AFTER `...clearFalha()` is structural insurance rather than a live
+    // collision: `clearFalha()` carries no `moderacoes` today (a moderação is
+    // ML's verdict, not our failed write), and this ordering — the same one
+    // `itemsStatusSync` and `reverificarAnuncio` use — means it never can.
+    //
+    // ⚠️ A CONDITIONAL spread, not a plain key. `null` = "never asked" and must
+    // leave the field alone; see the `moderacoes` docblock on the args above.
+    ...(args.moderacoes != null ? { moderacoes: args.moderacoes } : {}),
     ultimaModificacao: now,
     dataCadastro: (existingLink.dataCadastro as number | undefined) ?? now,
   };
@@ -431,6 +479,15 @@ export interface VariationChildAssembleArgs {
      * entry carries no `user_product_id`, exactly like `itemId` above.
      */
     userProductId: string | null;
+    /**
+     * ML's active moderations on THIS member's own item (#1087), read by the IO
+     * layer beside the `status`/`sub_status` they explain — moderation is per ML
+     * item, and under User Products a member IS its own item.
+     *
+     * `null` = "never asked" and omits the write, exactly as on the parent's
+     * {@link ImportAssembleArgs.moderacoes}.
+     */
+    moderacoes: MlModeracao[] | null;
   } | null;
 }
 
@@ -665,6 +722,18 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     sub_status: args.up
       ? args.up.subStatus
       : ((existingLink.sub_status as string[] | null | undefined) ?? null),
+    // #1087 — physically adjacent to the two lines above because the invariant
+    // is that ML's reason and the state it explains move in ONE patch.
+    //
+    // ⚠️ A legacy `variations[]` member is NOT a listing of its own, has no
+    // status to explain (see `status` right above) and therefore never gets a
+    // moderation written: whatever the spread carried stands. That symmetry is
+    // what keeps #707's phantom prune — which writes only legacy member links —
+    // free of stale reasons it never read.
+    moderacoes:
+      args.up && args.up.moderacoes != null
+        ? args.up.moderacoes
+        : ((existingLink.moderacoes as MlModeracao[] | null | undefined) ?? null),
     attributes: mappedVariation.combos
       .map(comboToWireAttribute)
       .filter((a): a is Record<string, unknown> => a !== null),

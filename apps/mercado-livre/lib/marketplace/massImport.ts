@@ -459,6 +459,15 @@ export async function processMassImportJob(
           bucket: ctx.bucket,
           options: toImportOptions(job.options),
           familyFanOut: false,
+          // #1087: no `/moderations` lookup on the mass path. This drain walks a
+          // whole catalogue, and a per-moderated-listing call would spend ML's
+          // rate budget on a diagnostic the operator can pull per-listing with
+          // "Reverificar anúncio". ⚠️ It suppresses the CALL, not the write — a
+          // listing whose own status warrants no moderation still lands
+          // `moderacoes: []` (that verdict comes from the item already fetched),
+          // so a full re-import still clears every stale reason for free. Only a
+          // genuinely moderated listing degrades to "never asked".
+          lerModeracoes: false,
         };
         const res = await importProduto(importDeps, itemId);
         imported += 1;
