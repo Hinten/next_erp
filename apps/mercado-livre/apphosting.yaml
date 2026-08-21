@@ -71,8 +71,12 @@ runConfig:
 
 env:
   # ⚠️ The queue region this backend ENQUEUES to. Not a secret, and NOT optional.
-  # No enqueuer defaults it any more: `requireRegion` throws on the first enqueue
-  # if neither MERCADO_LIVRE_TASKS_REGION nor FUNCTIONS_REGION is set here.
+  # No enqueuer defaults it any more: `requireRegion` throws on the first enqueue.
+  #
+  # ⚠️ FUNCTIONS_REGION does NOT rescue an unset value for the webhook path.
+  # `mlTasks.ts` is deliberately single-candidate — the queue does not live in the
+  # codebase region, so falling back to it would resolve a queue that does not
+  # exist. The other four enqueuers do fall through; this one must be set.
   #
   # A throw is the goal. When these fell back to a literal, an unset value
   # produced a well-formed path to a queue that does not exist — the Admin SDK

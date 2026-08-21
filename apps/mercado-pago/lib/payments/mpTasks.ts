@@ -41,7 +41,10 @@ import { MERCADO_PAGO_NOTIFICATION_QUEUE, type MpNotificationPayload } from './n
 
 /** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
 function mpTasksRegion(): string {
-  return requireRegion(['MERCADO_PAGO_TASKS_REGION', 'FUNCTIONS_REGION'], process.env);
+  return requireRegion({
+    MERCADO_PAGO_TASKS_REGION: process.env.MERCADO_PAGO_TASKS_REGION,
+    FUNCTIONS_REGION: process.env.FUNCTIONS_REGION,
+  });
 }
 
 /**

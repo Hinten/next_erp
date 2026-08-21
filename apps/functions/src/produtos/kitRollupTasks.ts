@@ -45,7 +45,10 @@ export const KIT_ROLLUP_QUEUE = 'recalcularDimensoesKit';
 export const KIT_ROLLUP_MAX_ATTEMPTS = 5;
 
 function kitRollupTasksRegion(): string {
-  return requireRegion(['KIT_ROLLUP_TASKS_REGION', 'FUNCTIONS_REGION'], process.env);
+  return requireRegion({
+    KIT_ROLLUP_TASKS_REGION: process.env.KIT_ROLLUP_TASKS_REGION,
+    FUNCTIONS_REGION: process.env.FUNCTIONS_REGION,
+  });
 }
 
 /**

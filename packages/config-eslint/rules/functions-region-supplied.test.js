@@ -54,6 +54,12 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
  */
 const REGION_COMMANDS = [
   { command: 'functions build', variable: 'FUNCTIONS_REGION' },
+  // ⚠️ `ci.yml` is the lane with no `paths:` on `pull_request:` — it runs on
+  // EVERY PR — and its `turbo run build` compiles apps/functions through
+  // `node build.mjs` → `requireBuildRegion('FUNCTIONS_REGION')`, which throws.
+  // The dependency was measured (ci.yml's own `env:` comment records it); it
+  // simply is not a shape the entries above match.
+  { command: 'turbo run build', variable: 'FUNCTIONS_REGION' },
   { command: 'prepare-deploy', variable: 'FUNCTIONS_REGION' },
   { command: 'test:firestore', variable: 'MERCADO_LIVRE_TASKS_REGION' },
   { command: 'test:tasks', variable: 'MERCADO_LIVRE_TASKS_REGION' },
@@ -67,6 +73,7 @@ const REGION_COMMANDS = [
  * defend against.
  */
 const KNOWN_BUILDERS = [
+  '.github/workflows/ci.yml',
   '.github/workflows/ci-mercado-livre.yml',
   '.github/workflows/ci-storage.yml',
   '.github/workflows/copilot-setup-steps.yml',
@@ -99,6 +106,12 @@ const read = (file) => readFileSync(resolve(REPO_ROOT, file), 'utf8').split('\r\
  * to the next one. A hand-rolled slice, not a YAML parse, for the reason
  * `ci-lane-gates.test.js` documents — `on:` is a YAML 1.1 boolean, so a naive parse
  * keys that block as `true` and a test reading it passes vacuously over every file.
+ *
+ * ⚠️ A WORKFLOW-level `env:` block (indent 0) is not attributed to any job by
+ * this split, so a region hoisted there would read as missing. That is the
+ * intended reading rather than a gap: the failure message says to put it on the
+ * job, because a reader checking one job should not have to scan the file to
+ * learn whether it is covered. No workflow uses a top-level `env:` today.
  *
  * ⚠️ JOB level is the whole point. The first version of this guard asked whether the
  * FILE mentioned the variable anywhere, and that is exactly how two failures got

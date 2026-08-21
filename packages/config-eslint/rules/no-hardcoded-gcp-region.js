@@ -39,7 +39,7 @@
  * literal — that is where a per-project value belongs — so workflows,
  * `apphosting.yaml` and `.env*` are out of scope by construction. The risk THERE is
  * the opposite one: a surface that forgets to supply the variable now breaks the
- * build. `no-hardcoded-gcp-region-workflows.test.js` is that backstop.
+ * build. `functions-region-supplied.test.js` is that backstop.
  *
  * SEVERITY: error. There are zero remaining sites, so it cannot be a ratchet — and
  * the failure it guards is silent data loss plus a recurring bill.
