@@ -140,13 +140,23 @@ backends need it.
 | `us-central1` (Iowa) | ✅ every service |
 | `us-east4` (N. Virginia) | ✅ every service |
 | `us-east5` (Columbus) | ❌ neither Cloud Tasks nor Cloud Scheduler |
-| `us-east1` (S. Carolina) | ❌ no App Hosting |
+| `us-east1` (S. Carolina) | ❌ no App Hosting — **and it would otherwise win**, see below |
 | `southamerica-east1` (São Paulo) | ❌ no App Hosting — despite being the latency-optimal choice for a Brazilian operation |
 
 `us-east5` is not a hypothetical: it is what failed **11 of 15** Mercado Livre
 functions on 2026-08-19 — the 5 `onTaskDispatched` plus the 6 `onSchedule`, while the
 4 Firestore triggers deployed cleanly, and that asymmetry was the diagnosis. The repo
 provisions **10 Cloud Tasks queues and 12 Cloud Scheduler jobs** in total.
+
+⚠️ **`us-east1` is the expensive exclusion, and it is worth understanding why.** It
+has Cloud Tasks, Cloud Scheduler, Firestore Enterprise and Tier-1 Functions; it sits on
+the US East Coast, so its latency to Brazil is comparable to `us-east4`'s; and it is
+one of the three **baseline-priced** US regions (with `us-central1` and `us-west1` — the
+trio Google's Always Free quotas apply to), so it does **not** carry `us-east4`'s ~15%
+premium. On every axis that matters it is `us-east4`'s equal or better — it is simply
+not an App Hosting region, and seven backends need one. That is also where most of the
+functions already run today, which is why the current layout looks so nearly right.
+**If App Hosting ever reaches `us-east1`, this decision should be reopened.**
 
 Both survivors cover everything this project uses: Firestore Enterprise **with the
 Pipelines API**, the 128 declared composite indexes, App Hosting, Cloud Functions gen2
