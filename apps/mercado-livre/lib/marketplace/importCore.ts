@@ -317,6 +317,16 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     freteGratis: mapped.freteGratis,
     precoPublicado: firstNonEmpty(mapped.precoPromocional, mapped.precoNormal),
     isUserProductModel: mapped.isUserProductModel,
+    // #706 multiorigem: the UP that backs THIS stock unit. Stamped ONLY when the
+    // listing has no children, and that gate is the whole point — `args.mapped`
+    // is one ML item, so under User Products it is one MEMBER of the family,
+    // and its `user_product_id` on the FAMILY's parent link would be exactly the
+    // "one member speaks for the family" mistake #1142 found in four places. The
+    // members' ids live on their own `variacaoMercadoLivre` links. A legacy
+    // `variations[]` listing is excluded for the same reason from the other
+    // side: its stock units are the variations, so an item-level UP id here
+    // would let one quantity be written for the whole family.
+    userProductId: args.hasVariations ? null : mapped.userProductId,
     video_id: mapped.videoId,
     attributes: mapped.attributes,
     ...clearFalha(),
@@ -411,7 +421,17 @@ export interface VariationChildAssembleArgs {
    * #520 `variations[]` behavior (numeric `id` derived from `variationId`,
    * `itemId` preserved-or-null).
    */
-  up: { itemId: string; status: string | null; subStatus: string[] | null } | null;
+  up: {
+    itemId: string;
+    status: string | null;
+    subStatus: string[] | null;
+    /**
+     * This member's own ML `user_product_id` — the stock identity on a
+     * multiorigin conta (#706). Only the UP path has one: an ML `variations[]`
+     * entry carries no `user_product_id`, exactly like `itemId` above.
+     */
+    userProductId: string | null;
+  } | null;
 }
 
 export interface VariationChildPlan {
@@ -614,6 +634,12 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
       ? ((existingLink.id as number | null | undefined) ?? null)
       : numericVariationId(mappedVariation.variationId),
     itemId: args.up ? args.up.itemId : ((existingLink.itemId as string | null | undefined) ?? null),
+    // #706 multiorigem: same rule as `itemId` right above — a UP member has its
+    // own `user_product_id`, a legacy `variations[]` entry has none to derive
+    // from, so that half is preserved-or-null rather than ever computed here.
+    userProductId: args.up
+      ? args.up.userProductId
+      : ((existingLink.userProductId as string | null | undefined) ?? null),
     produtoVariacaoOuterRef: toOuterRef(`produtos/${args.produtoId}`),
     produtoMercadoLivreOuterRef: parent.linkOuterRef,
     // #920: the conta, denormalized onto the child link the same way the parent

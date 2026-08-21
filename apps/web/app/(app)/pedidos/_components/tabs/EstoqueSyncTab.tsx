@@ -34,8 +34,8 @@ const MOVIMENTOS_LIMIT = 50;
 
 const fmtQtd = (n: number) =>
   n.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-/** Signed movement. `null` is *unknown*, not zero — a row written by the still-running
- *  Flutter app carries no `movimento` (ADR 0014), and rendering it as 0 would claim
+/** Signed movement. `null` is *unknown*, not zero — a legacy row from the migrated
+ *  corpus carries no `movimento` (ADR 0014), and rendering it as 0 would claim
  *  nothing moved. */
 const fmtDelta = (n: number | null) => (n == null ? '—' : n > 0 ? `+${fmtQtd(n)}` : fmtQtd(n));
 /** historicoEstoque timestamps are ms-epoch. */

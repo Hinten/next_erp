@@ -10,7 +10,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { MercadoLivreUsuarioTeste } from '@/lib/mercado-livre/client';
 
@@ -40,12 +40,13 @@ const { MercadoLivreClientHttpError } = await import('@/lib/mercado-livre/client
 function renderPanel(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    // ⚠️ `env="test"` disables Mantine's Transition timers. Without it a leaked
-    // timer fires after teardown and reds an UNRELATED file with
-    // `window is not defined` — this component mounts a <Modal>.
-    <MantineProvider env="test">
+    // The leaked-timer protection comes from `vitest.setup.ts`
+    // (`DEFAULT_THEME.respectReducedMotion` + the `prefers-reduced-motion`
+    // matchMedia shim), not from this provider — this component mounts a
+    // <Modal>. See #1150.
+    <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
   render(<UsuariosTesteDevPanel integracaoId="i1" />, { wrapper });
 }

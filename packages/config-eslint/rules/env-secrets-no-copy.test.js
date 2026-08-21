@@ -1,7 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { gitGrep } from './lib/repo-scan.js';
 
 /**
  * Nothing executable may reach for a `.env.secrets*` file, and no `.env*` copy may
@@ -20,7 +18,6 @@ import { describe, expect, it } from 'vitest';
  * project's `gcf-sources-*` bucket. `.env.secrets` matched it. The shape, not just
  * that one instance, is what has to stay gone.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * Files whose job IS to name the pattern: the allowlist classifier that rejects
@@ -48,38 +45,36 @@ const CODE_PATHSPECS = ['*.mjs', '*.cjs', '*.js', '*.ts', '*.tsx'];
 
 /**
  * `git grep` over the INDEX plus untracked-but-not-ignored files, so a violation is
- * caught before it is ever committed. Exit code 1 means "no matches", which is the
- * outcome we want — anything else is a real failure worth surfacing.
+ * caught before it is ever committed — see `lib/repo-scan.js`, which owns the
+ * spawn, the memo and the "exit 1 means no matches" handling for every guard here.
  */
-function gitGrep(pattern, pathspecs) {
-  try {
-    return execFileSync(
-      'git',
-      [
-        'grep',
-        '--no-color',
-        '-n',
-        '--fixed-strings',
-        '--untracked',
-        pattern,
-        '--',
-        ...pathspecs,
-        ...EXCLUDED,
-      ],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
-    )
-      .split('\n')
-      .filter(Boolean);
-  } catch (err) {
-    // execFileSync throws on a non-zero exit; git grep exits 1 with no matches.
-    if (err instanceof Error && 'status' in err && err.status === 1) return [];
-    throw err;
-  }
+function scan(patterns, pathspecs) {
+  return gitGrep({
+    patterns,
+    pathspecs: [...pathspecs, ...EXCLUDED],
+    mode: 'fixed',
+    list: false,
+  });
 }
 
 describe('.env.secrets is unreachable from executable code', () => {
+  // ------------------------------------------------------------------
+  // 0. POSITIVE CONTROL. Both assertions below assert an EMPTY result, which is
+  //    the one shape that passes just as happily when the scan is broken as
+  //    when the repo is clean — a wrong pathspec, an exclusion that swallows
+  //    the tree, a `git grep` that never ran. Neither surface has any other
+  //    proof it was read, so prove it here: shorter patterns that MUST match.
+  // ------------------------------------------------------------------
+  it('the scan actually reaches both surfaces', () => {
+    // `.env` (not `.env.secrets`) — workflows and firebase configs name the
+    // template files constantly.
+    expect(scan('.env', CONFIG_PATHSPECS).length).toBeGreaterThan(0);
+    // `startsWith(` (not `startsWith('.env`) — over a hundred source files.
+    expect(scan('startsWith(', CODE_PATHSPECS).length).toBeGreaterThan(0);
+  });
+
   it('no workflow, config, script or manifest references it', () => {
-    const hits = gitGrep('.env.secrets', CONFIG_PATHSPECS);
+    const hits = scan('.env.secrets', CONFIG_PATHSPECS);
     expect(
       hits,
       [
@@ -94,10 +89,10 @@ describe('.env.secrets is unreachable from executable code', () => {
   });
 
   it('no `.env*` selection is written as a prefix match', () => {
-    const hits = [
-      ...gitGrep("startsWith('.env", CODE_PATHSPECS),
-      ...gitGrep('startsWith(".env', CODE_PATHSPECS),
-    ];
+    // Both quote styles in ONE spawn (`git grep` ORs its `-e` patterns). Two
+    // separate scans is what made this the slowest `it()` in the workspace and
+    // the one that tipped over the default 5s timeout most often.
+    const hits = scan(["startsWith('.env", 'startsWith(".env'], CODE_PATHSPECS);
     expect(
       hits,
       [

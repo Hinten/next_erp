@@ -154,9 +154,9 @@ const CODEBASES = {
     backendVar: null,
     backendManifest: null,
     deployShell: {},
-    // ⚠️ The one queue with NO sweep behind it, and its region has a runtime
+    // ⚠️ Neither queue has a sweep behind it, and both regions have a runtime
     // override the inlined value does not cover.
-    runtimeOverrides: ['BALANCO_TASKS_REGION'],
+    runtimeOverrides: ['BALANCO_TASKS_REGION', 'KIT_ROLLUP_TASKS_REGION'],
   },
 };
 

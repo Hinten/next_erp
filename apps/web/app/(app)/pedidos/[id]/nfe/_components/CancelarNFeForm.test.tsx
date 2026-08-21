@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { NFeRejectedError } from '@delfrance/integrations-nfe/http-provider';
 
 const { cancelarMock, showErrorMock, notifShowMock } = vi.hoisted(() => ({
@@ -23,7 +23,7 @@ vi.mock('@mantine/notifications', () => ({
 import { CancelarNFeForm } from './CancelarNFeForm';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 const VALID_XJUST = 'Cancelamento por erro de digitacao no pedido';

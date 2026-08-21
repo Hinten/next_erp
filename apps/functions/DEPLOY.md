@@ -120,12 +120,26 @@ the new trigger writes for a while, which is the accepted overlap — see the
 schema/trigger PR notes), so when in doubt deploy the function first and ship
 the client change after.
 
-## ⚠️ One-time IAM - `processarBalanco` is a Cloud Tasks target
+## ⚠️ One-time IAM - two Cloud Tasks targets live here
 
-This codebase hosts an `onTaskDispatched` function (`processarBalanco`,
-`src/estoques/aplicarBalanco.ts`) enqueued from apps/web's balanco flow via
-`firebase-admin`'s `taskQueue()`. That needs **three** grants, and this file
-documented none of them until the first Mercado Livre live run hit the third.
+This codebase hosts **two** `onTaskDispatched` functions, both enqueued via
+`firebase-admin`'s `taskQueue()`:
+
+| Function                 | Source                           | Enqueued by                                                        |
+| ------------------------ | -------------------------------- | ------------------------------------------------------------------ |
+| `processarBalanco`       | `src/estoques/aplicarBalanco.ts` | apps/web's balanço flow (the `finalizarBalanco` callable) + itself |
+| `recalcularDimensoesKit` | `src/produtos/kitRollup.ts`      | the `onProdutoChanged` Firestore trigger + itself (#1152)          |
+
+Each needs **three** grants, and this file documented none of them until the
+first Mercado Livre live run hit the third. Run the block below **once per
+function** — substitute the function name in step 3.
+
+⚠️ `recalcularDimensoesKit` is enqueued by a **Firestore trigger**, so its
+`$CALLER_SA` is the functions runtime SA, not an App Hosting backend. Its queue
+has **no sweep behind it**: a dropped enqueue or a 403 on the dispatch leg leaves
+every kit containing the edited component quoting a stale weight and box, with
+nothing to notice. The only recovery is the next edit to one of those
+components — or the one-time backfill script.
 
 ```bash
 PROJECT=<project-id>
@@ -195,9 +209,11 @@ firebase deploy --only functions:storage \
 the same identity. A deploy **replaces** the members of both bindings, so an
 identity left out **loses** the role.
 
-`processarBalanco` **re-enqueues itself** at the time-budget boundary, as the
-functions runtime SA — so `$FN_RUNTIME_SA` belongs in the list alongside
-`$CALLER_SA`.
+Both functions **re-enqueue themselves** — `processarBalanco` at the time-budget
+boundary, `recalcularDimensoesKit` for every continuation page — as the functions
+runtime SA, so `$FN_RUNTIME_SA` belongs in the list alongside `$CALLER_SA`.
+`recalcularDimensoesKit` is enqueued by a Firestore trigger running as that same
+identity, so for it the two are one and the same.
 
 ⚠️ **Unset ⇒ the option is omitted entirely.** The build prints a warning and the
 manual `gcloud run services add-iam-policy-binding` above stays required. It
@@ -210,8 +226,9 @@ firebase-tools skips `setInvokerUpdate` when the option is absent — but a serv
 **create**, i.e. a new or renamed task function, leaves no binding at all. That
 silent case is what this variable exists for.
 
-Verify it took, with nobody having run gcloud:
-`gcloud run services get-iam-policy processarBalanco --region=<region>`.
+Verify it took, with nobody having run gcloud — **once per function**:
+`gcloud run services get-iam-policy processarBalanco --region=<region>` and
+`gcloud run services get-iam-policy recalcularDimensoesKit --region=<region>`.
 
 ## Known first-run gotchas (not yet executed)
 

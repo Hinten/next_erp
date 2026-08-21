@@ -32,6 +32,7 @@ import {
   type MlListingPrices,
   type MlMigrationLiveListing,
   type MlMissedFeeds,
+  type MlModeration,
   type MlOrder,
   type MlOrderSearch,
   type MlPack,
@@ -52,6 +53,8 @@ import {
   type MlUser,
   type MlUserProductFamily,
   type MlUserProductItemsSearch,
+  type MlUserProductStock,
+  STOCK_LOCATION_TYPE,
   activeChartDomainsSchema,
   catalogDomainSchema,
   categoryAttributesSchema,
@@ -67,6 +70,7 @@ import {
   mlClaimMessagesSchema,
   mlClaimAttachmentUploadSchema,
   mlExpectedResolutionsSchema,
+  mlModerationsSchema,
   mlPartialRefundOffersSchema,
   mlClaimReasonSchema,
   mlClaimSchema,
@@ -95,6 +99,7 @@ import {
   tokenErrorSchema,
   userProductFamilySchema,
   userProductItemsSearchSchema,
+  userProductStockSchema,
   userSchema,
 } from './types';
 
@@ -135,8 +140,11 @@ export interface MlShipmentLabelResult {
   readonly contentType: string | null;
 }
 
-/** Raw file bytes from `downloadClaimAttachment` (claims import, Step 14). */
-export interface MlClaimAttachmentDownload {
+/**
+ * Raw file bytes from either attachment endpoint — `downloadClaimAttachment`
+ * (claims) or `downloadPostSaleAttachment` (post-sale messages).
+ */
+export interface MlAttachmentDownload {
   readonly bytes: Uint8Array;
   readonly contentType: string | null;
 }
@@ -168,6 +176,22 @@ export interface MercadoLivreApi {
    */
   criarUsuarioTeste(siteId: string): Promise<MlTestUser>;
   getItem(id: string): Promise<MlItem>;
+  /**
+   * `GET /moderations/last_moderation/{referenceId}` — the ACTIVE moderation(s)
+   * on one element, with ML's own REASON and REMEDY texts (#1087).
+   *
+   * ⚠️ `referenceId` is `{element_id}-{element_type}`, NOT a bare item id — for a
+   * listing that is `` `${itemId}-ITM` `` ({@link ML_MODERATION_ELEMENT}). The ML
+   * docs derive it straight from an `/items` notification, which is what makes
+   * this callable from the status-sync with no extra lookup. Passing a bare item
+   * id is a silent miss, not an error.
+   *
+   * ⚠️ A **404 means "not moderated"** — the ordinary answer for a healthy
+   * listing, and data rather than a failure. Callers must narrow it
+   * (`err instanceof MercadoLivreHttpError && err.status === 404`) and treat it
+   * as an empty result; anything else is transient and must rethrow.
+   */
+  getLastModeration(referenceId: string): Promise<MlModeration[]>;
   /** `GET /items/{id}/prices` — the listing's price set, consulted on the `items_prices` webhook topic (Step 11). */
   getPrices(itemId: string): Promise<MlItemPrices>;
   getOrder(id: number | string): Promise<MlOrder>;
@@ -267,6 +291,63 @@ export interface MercadoLivreApi {
     userProductIds: readonly string[],
     page?: { limit?: number; offset?: number },
   ): Promise<MlUserProductItemsSearch>;
+  /**
+   * `GET /user-products/{userProductId}/stock` — the per-location stock of a
+   * User Product, **plus the `x-version` header** (#706).
+   *
+   * ⚠️ The header is not an optimisation, it is the write protocol: a
+   * `PUT …/stock/type/{type}` without `x-version` is a **400**, and with a stale
+   * one a **409**. That is why this is the only reader in the client that
+   * returns headers — the version is half the answer.
+   *
+   * `version` is `null` only if ML omits the header, which the docs say cannot
+   * happen; the caller must treat that as "cannot write", never as "no version
+   * needed".
+   *
+   * ⚠️ A UP with no initialised stock answers `stock-locations not found`
+   * (a `MercadoLivreHttpError`), NOT an empty `locations` array.
+   */
+  getUserProductStock(
+    userProductId: string,
+  ): Promise<{ stock: MlUserProductStock; version: string | null }>;
+  /**
+   * `PUT /user-products/{userProductId}/stock/type/seller_warehouse` — the ONLY
+   * way to move stock on a multiorigin (`warehouse_management`) account (#706).
+   * `PUT /items` `available_quantity` is silently ignored there, frequently
+   * answering 200 OK.
+   *
+   * `version` is the `x-version` from {@link getUserProductStock}; a stale one
+   * raises `MercadoLivreHttpError` **409**, which the caller answers by
+   * re-reading and retrying — see `isVersionConflict`.
+   *
+   * ⚠️ `locations` REPLACES the `seller_warehouse` set, so a caller must echo
+   * back every location the read returned, changing only the quantities it
+   * owns. Sending a subset is how you zero a warehouse you did not mean to
+   * touch.
+   *
+   * ⚠️ A seller holding `warehouse_management` WITHOUT `multiwarehouse` manages
+   * exactly one depósito, and ML answers 400 ("seller with a single warehouse
+   * cannot update stock across multiple network nodes") to a request spanning
+   * more than one `network_node_id`.
+   *
+   * Returns the response `x-version` like {@link getUserProductStock} does. A
+   * successful write earns a NEW version, and handing it back is what lets a
+   * caller write the same UP twice without paying a second `GET` on a
+   * rate-limited endpoint family. `version` is null if ML omits the header.
+   *
+   * ⚠️ `stock` is **nullable**, and that is not defensiveness for its own sake:
+   * `parseOk` feeds the schema `null` when the body is empty, so parsing this
+   * response as a bare object would turn a bare-ack answer (204, or 200 with no
+   * body) into a `MercadoLivreValidationError` — reporting a write that LANDED
+   * as a failure. Whether ML echoes the resource here is not documented, and the
+   * wrong guess is expensive: the caller would latch the listing with a
+   * `lastError` that never clears while the quantity on ML is in fact correct.
+   */
+  putUserProductSellerWarehouseStock(
+    userProductId: string,
+    version: string,
+    locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
+  ): Promise<{ stock: MlUserProductStock | null; version: string | null }>;
   /**
    * `GET /items/{id}/migration_live_listing` — the new User-Products items a
    * legacy `variations[]` listing was migrated to (User-Products migration,
@@ -519,7 +600,23 @@ export interface MercadoLivreApi {
    * a claim-message attachment as raw bytes (legacy `getAttachment`,
    * api.dart:1533-1539). The `filename` ML issues is the download key.
    */
-  downloadClaimAttachment(claimId: number, filename: string): Promise<MlClaimAttachmentDownload>;
+  downloadClaimAttachment(claimId: number, filename: string): Promise<MlAttachmentDownload>;
+  /**
+   * `GET /messages/attachments/{id}?tag=post_sale&site_id=MLB` — a post-sale
+   * message attachment as raw bytes.
+   *
+   * ⚠️ NOT symmetric with the claims endpoint, in three ways that each cost a
+   * round trip to discover:
+   *  - `site_id` is a REQUIRED query param here (omitting it is a documented
+   *    400, `Invalid site_id`); the claims endpoint has no such param.
+   *  - the id is the attachment's opaque `filename` from
+   *    `message_attachments[]` (`<userId>_<uuid>.<ext>`), never
+   *    `original_filename`.
+   *  - ML documents NO 404 for this route — only 400 and 500 — so a
+   *    permanently missing file arrives as a 500. The caller classifies any
+   *    non-2xx as deterministic and skips; see `orderMessageAttachments.ts`.
+   */
+  downloadPostSaleAttachment(attachmentId: string): Promise<MlAttachmentDownload>;
 
   /**
    * `GET /missed_feeds?app_id=&limit=&offset=[&topic=]` (#812) — the
@@ -597,7 +694,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     path: string,
     schema: z.ZodType<T>,
     opts: RequestOpts = {},
-  ): Promise<{ data: T; status: number }> {
+  ): Promise<{ data: T; status: number; headers: Headers }> {
     const url = buildUrl(path, opts.query);
     // Fetch the token once; it stays valid across the (few, quick) retries.
     const token = await config.getAccessToken();
@@ -619,13 +716,15 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     );
 
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
-    if (res.ok) return { data: await parseOk(res, schema), status: res.status };
+    if (res.ok)
+      return { data: await parseOk(res, schema), status: res.status, headers: res.headers };
     throw await toHttpError(res);
   }
 
   /** `requestWithStatus` for the (overwhelming) majority of callers, which only
    * ever need the body. Reach for `requestWithStatus` when 200-vs-206 changes
-   * what the caller does — today only the order mirror, see `getOrderResponse`. */
+   * what the caller does (the order mirror, `getOrderResponse`) or when a
+   * RESPONSE HEADER is part of the answer (`x-version`, `getUserProductStock`). */
   async function request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
@@ -784,15 +883,18 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
    * the caller can tell "empty body" from a genuine non-2xx) instead of handing
    * the importer a zero-byte file to upload.
    */
-  async function downloadClaimAttachment(
-    claimId: number,
-    filename: string,
-  ): Promise<MlClaimAttachmentDownload> {
+  /**
+   * The shared half of both attachment downloads: Bearer auth, network retry,
+   * error mapping and the empty-body guard. ONE implementation on purpose —
+   * the guard is the part most easily got wrong, and a 2xx-with-no-bytes is
+   * thrown as an HTTP error CARRYING the 2xx status so the caller can tell
+   * "empty body" from a genuine non-2xx, instead of being handed a zero-byte
+   * file to upload.
+   */
+  async function downloadAnexo(url: string): Promise<MlAttachmentDownload> {
     const token = await config.getAccessToken();
     const res = await fetchWithNetworkRetry(
-      buildUrl(
-        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
-      ),
+      url,
       {
         method: 'GET',
         headers: {
@@ -808,6 +910,37 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       throw new MercadoLivreHttpError('O Mercado Livre retornou um anexo vazio.', res.status, null);
     }
     return { bytes, contentType: res.headers.get('content-type') };
+  }
+
+  /**
+   * Binary download for claim-message attachments. The token rides the Bearer
+   * header — NEVER the legacy `access_token` query param.
+   */
+  function downloadClaimAttachment(
+    claimId: number,
+    filename: string,
+  ): Promise<MlAttachmentDownload> {
+    return downloadAnexo(
+      buildUrl(
+        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
+      ),
+    );
+  }
+
+  /**
+   * Binary download for post-sale MESSAGE attachments.
+   *
+   * ⚠️ `site_id` is REQUIRED — ML answers a documented 400 (`Invalid site_id`)
+   * without it. `MLB` is hardcoded to match the two `siteId: 'MLB'` call sites
+   * above; this backend serves one site.
+   */
+  function downloadPostSaleAttachment(attachmentId: string): Promise<MlAttachmentDownload> {
+    return downloadAnexo(
+      buildUrl(`/messages/attachments/${encodeURIComponent(attachmentId)}`, {
+        tag: 'post_sale',
+        site_id: 'MLB',
+      }),
+    );
   }
 
   return {
@@ -838,6 +971,11 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
     getItem: (id) =>
       request('GET', `/items/${id}`, itemSchema, { query: { include_attributes: 'all' } }),
+    // `-L` in ML's documented curl: this resource REDIRECTS, and `fetch` follows
+    // redirects by default, so nothing extra is needed here — noted because the
+    // docs make a point of the flag and its absence looks like an omission.
+    getLastModeration: (referenceId) =>
+      request('GET', `/moderations/last_moderation/${referenceId}`, mlModerationsSchema),
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
     getOrderResponse: async (id) => {
@@ -905,6 +1043,27 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
           ...(page?.offset != null ? { offset: String(page.offset) } : {}),
         },
       }),
+    getUserProductStock: async (userProductId) => {
+      const { data, headers } = await requestWithStatus(
+        'GET',
+        `/user-products/${userProductId}/stock`,
+        userProductStockSchema,
+      );
+      return { stock: data, version: headers.get('x-version') };
+    },
+    putUserProductSellerWarehouseStock: async (userProductId, version, locations) => {
+      const { data, headers } = await requestWithStatus(
+        'PUT',
+        `/user-products/${userProductId}/stock/type/${STOCK_LOCATION_TYPE.sellerWarehouse}`,
+        // `.nullable()`, NOT the bare object: `parseOk` feeds the schema `null`
+        // for an empty body, so a bare-ack answer would raise
+        // `MercadoLivreValidationError` for a write that LANDED — see the
+        // interface docblock.
+        userProductStockSchema.nullable(),
+        { headers: { 'x-version': version }, body: { locations } },
+      );
+      return { stock: data, version: headers.get('x-version') };
+    },
     getMigrationLiveListing: (itemId) =>
       request('GET', `/items/${itemId}/migration_live_listing`, migrationLiveListingSchema),
     scanSellerItems: (sellerId, scrollId) =>
@@ -1082,6 +1241,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     searchClaims: (params) =>
       request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
     downloadClaimAttachment,
+    downloadPostSaleAttachment,
 
     // `buildUrl` drops every `undefined` query value, so an omitted `topic` /
     // `limit` / `offset` simply does not reach the URL — do NOT add `?? 0`

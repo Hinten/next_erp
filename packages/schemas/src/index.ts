@@ -281,9 +281,17 @@ export {
   credenciaisIntegracaoMeta,
   // ⚠️ `token6h` / `tokenDuravel` are the ONE exception to the deny-all rule
   // above: the old Flutter Mercado Livre credential shapes, REGISTERED in
-  // ALL_DOMAINS so the generated ruleset keeps granting the still-running
-  // Flutter client the access its own ruleset gives it today. Time-boxed —
-  // #829 reverts them to the bare-constant deny-all shape.
+  // ALL_DOMAINS so the generated ruleset would keep granting the Flutter client
+  // the access its own ruleset gives it.
+  //
+  // ⚠️ That justification is VOID (root `CLAUDE.md` rule 8, #1168). The Flutter
+  // client reads the LEGACY project, governed by the LEGACY ruleset — nothing
+  // it does depends on a grant emitted here, and the two apps never share a
+  // document. So this exception never needed to exist, and what it actually
+  // does is leave two OAuth token stores CLIENT-READABLE, exposing a live
+  // `refresh_token`. #829 removes them; its premise is no longer "after Flutter
+  // is decommissioned" but "this was never load-bearing". Left in place here
+  // deliberately — a rules change is a coordinated deploy, not a comment sweep.
   token6h,
   token6hSchema,
   token6hMeta,

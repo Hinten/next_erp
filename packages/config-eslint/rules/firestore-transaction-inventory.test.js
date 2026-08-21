@@ -1,7 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { gitGrep } from './lib/repo-scan.js';
 
 /**
  * Every source file that runs a Firestore transaction is inventoried here, with
@@ -79,7 +77,6 @@ import { describe, expect, it } from 'vitest';
  * and the notification sweep re-drives hours-old payloads through the same
  * handler as a fresh task. See root `CLAUDE.md` Critical rule 7 and ADR 0011.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * The BARE WORD, deliberately — not `runTransaction\(`.
@@ -171,7 +168,7 @@ const INVENTARIO = {
   'apps/whatsapp/lib/whatsapp/credentialStore.ts':
     'Two sites. `:113` is the only **tier 1 INSIDE a transaction**: the registro pin write-back rides `tx.update(currentRef, data, { lastUpdateTime: options.expectedVersion })`, so a token stored meanwhile fails `FAILED_PRECONDITION` instead of being reverted (#1004). ⚠️ Tier 1 outside one also exists and is arguably the better template — `import.ts:341` and `publish.ts:631` both do `ref.update(patch, { lastUpdateTime })`; they carry no `runTransaction`, so they are out of THIS inventory (see #839 §2). `:158` is a purge — reads the whole lineage with one `tx.get(collRef)` and deletes it.',
   'apps/melhor-envio/lib/freight/tokenStore.ts':
-    'C — the token comes from an OAuth round-trip before the transaction. Reads the whole lineage with `tx.get(collRef)`, writes the `current` doc and prunes Flutter’s auto-id siblings; "one wins" is the accepted outcome for a refresh. ⚠️ #966 is the open tier-1 follow-up here.',
+    'C — the token comes from an OAuth round-trip before the transaction. Reads the whole lineage with `tx.get(collRef)`, writes the `current` doc and prunes Flutter’s auto-id siblings. Since #966 the write is GUARDED: tier 2, update-if-newer in **ms** on `expirationDate`, re-derived from the callback’s own `tx.get` so an OCC retry re-decides instead of replaying the captured patch — a token that is not strictly newer is dropped and the STORED one is returned, which is why `save()` returns a token at all (the loser of a write race walks away with the winner’s credential instead of an error). ⚠️ The comparison is against the `current` doc ONLY, never the strays: a legacy auto-id doc carrying a bogus far-future `expirationDate` would otherwise reject every write forever — ADR 0011’s wrong-way default, the shape that made the legacy ML shipment guard reject everything. Strays are pruned in both branches. ⚠️ Tier 2 rather than the tier 1 this entry used to promise: the guard has to live behind the `TokenStore` port in `@delfrance/integrations-freight-br`, which is deliberately `firebase-admin`-free, so a `lastUpdateTime` cannot cross it without leaking a `Timestamp` or inventing an opaque version wrapper plus a conflict error class; tier 2 rides the transaction that already exists here. The clock only orders two credentials that are each valid ~30 days, so instance skew cannot pick a harmful winner. The `force` option bypasses the guard for the authorization-code flow — a human who just re-consented always wins.',
   'apps/mercado-pago/lib/payments/credentialStore.ts':
     'C — same lineage-collapse shape as the melhor-envio store, same "one wins" refresh contract.',
   'apps/mercado-livre/lib/marketplace/intFreteSync.ts':
@@ -182,8 +179,12 @@ const INVENTARIO = {
     'C — same shape for shipments. Tier 2 in **µs**, null-tolerant the OPPOSITE way from the payment import (a null stored OR mapped stamp skips), which the file docblock spells out; the pedido stamp is the monotonic `maiorUs(stored, now)`.',
   'apps/mercado-livre/lib/marketplace/nfeUpload.ts':
     'C — stamps `freteInicial.estado = "error"` after an ML upload attempt. Re-reads the pedido and takes the new stamp from `maiorUsNfe(coerceToMicros(pedido.ultimaModificacao), nowUs)`, so it can only move forward (**µs**).',
+  'apps/mercado-livre/lib/marketplace/estoqueSend.ts':
+    'C — one site (`podarVariacoesFantasma`, #707), and the whole decision straddles a network call: ML’s live `variations[].id` set comes from the verification `GET /items/{id}` the terminal 4xx branch just made. Guard: the STORED half is re-read with `tx.get(familyMemberQuery(...))` INSIDE the callback and `planejarPoda` runs on that snapshot, so the member docs join the read set and a concurrent import or publish rewriting a member’s `id` aborts this attempt instead of losing to it. Losing here is the expensive direction — it would mark a LIVE variation `closed`, which `buildSendTasks` then skips, silently stopping that variation’s stock. The ML half is deliberately NOT re-derived: it cannot be read inside a transaction, and it is exactly one round trip old. `planejarPoda`’s already-`closed` rung makes a replay write nothing (tier 0 by idempotence). The file’s OTHER writes are not transactional and stay out of scope: the link writebacks go through `mergeIfExists`, and the User-Products member path delegates its fold to `itemsStatusSync.applyMemberStatusAndFold`, which carries its own entry above.',
   'apps/mercado-livre/lib/marketplace/itemsStatusSync.ts':
     'C — a `GET /items/{id}` precedes the transaction, and its `status` reaches the write. Guard for THAT value: it is re-fetched from ML at processing time rather than taken from the notification payload, so two out-of-order deliveries for the same item both write the live state. The transaction exists for a different race (#1142): a User-Products FAMILY’s `estado` is a FOLD over its members, so the sibling read MUST sit in the read set — with `maxConcurrentDispatches: 3` and ML fanning out one notification per member item, two members of one family are processed at once, and a fold decided against a stale sibling parks the family at `estado "c"` while another member is live. That drops the conta from `integracoesComProduto`, the anchor pre-filter both sweeps open with, silently. Everything else is re-derived inside: `currentEstado`, the member’s stored status and the denorm arrays all come from the callback’s own `tx.get`, never from the `resolveLink` snapshot captured before the ML round trip. The parent link write and the denorm write share the transaction, so the denorm-first ordering `applyItemStatusToLink` needs does not apply here — there is no window in which one landed and the other did not.',
+  'apps/mercado-livre/lib/marketplace/massImport.ts':
+    'One site (`finalizeMassImportJob`), class **B** and the reason it exists: `status` has TWO writers that do not coordinate — the task handler stamping `completed`/`failed` at the end of a dispatch, and the `importar-todos/cancelar` route stamping `cancelled` at any moment. The decision to finalize is made outside the callback, so the guard is named and explicit: `status` (still `running`?) and `integracaoId` (the ownership check) are BOTH re-derived from the `tx.get` snapshot, and a concurrent winner turns the call into a `not-running` no-op instead of a clobber. Nothing else in the patch comes from the read. It was three unguarded `merge()`s before the cancel action existed.',
   'apps/mercado-livre/lib/marketplace/integracoesComProduto.ts':
     'Tier 0 — the write is `FieldValue.arrayRemove(integracaoId)`, commutative, so there is no loser. The read set is a DIFFERENT collection by design: `sobrevivem(tx)` re-derives membership from its own `tx.get` and aborts the removal when a link survives.',
   'apps/web/lib/checkout/saveCheckout.ts':
@@ -218,6 +219,8 @@ const INVENTARIO = {
     'Comment only — records why the token refresh is NOT a transaction (a retried callback would re-fire the single-use refresh_token).',
   'apps/mercado-pago/lib/payments/mercadoPago.ts':
     'Comment only — same reasoning for the Mercado Pago refresh.',
+  'packages/integrations/freight-br/src/melhor-envio/token-store.ts':
+    'Comment only, and not Firestore at all — this package is `firebase-admin`-free and talks to the injected `TokenStore` port. The header records the same reasoning as the two above (a retried callback would re-fire the non-idempotent ME refresh grant) plus why refresh-token rotation is no longer load-bearing: the guarding happens in the port implementation, `apps/melhor-envio/lib/freight/tokenStore.ts`, listed above.',
   'packages/data/src/admin/cache/readCache.ts':
     'Comment only — rule 1 of the read cache: never cache anything read inside a transaction, because a `tx.get` is a lock.',
   'packages/data/src/pedido/usecases.ts':
@@ -228,20 +231,7 @@ const INVENTARIO = {
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */
 function ficheirosComTransacao() {
-  try {
-    return execFileSync(
-      'git',
-      ['grep', '-l', '--no-color', '-E', '--untracked', PATTERN, '--', ...PATHSPECS],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
-    )
-      .split('\n')
-      .filter(Boolean)
-      .sort();
-  } catch (err) {
-    // execFileSync throws on a non-zero exit; git grep exits 1 with no matches.
-    if (err instanceof Error && 'status' in err && err.status === 1) return [];
-    throw err;
-  }
+  return gitGrep({ patterns: PATTERN, pathspecs: PATHSPECS, mode: 'extended' });
 }
 
 describe('every Firestore transaction is inventoried with its race class', () => {

@@ -3,23 +3,25 @@
  * candidates for a set of item combos, runs the pure `planTaxonomia` (#519
  * matching cascade), and persists whatever it couldn't match.
  *
- * ## The legacy embedded-array hazard
+ * ## The embedded-array hazard
  * `grupoDeVariacoes.variacoes` is an EMBEDDED array on the grupo doc, not a
- * subcollection — and the legacy Flutter app treats the whole doc as one
- * `copyWith`-and-save unit (its own variation editor reads the full doc,
- * mutates the in-memory model, and overwrites the array wholesale). That
- * means a bare "read the array, push an entry, write it back" from this side
- * can lose a concurrent Flutter write with no Firestore-level signal at all —
- * Firestore only protects against contention on documents it's tracking
- * INSIDE a transaction, not against a stale in-memory array a Flutter session
- * had already loaded before this transaction committed. `db.runTransaction`
- * closes the window against concurrent ERP-side writers (this module retries
- * on contention and always mutates the freshly re-read doc) but cannot close
- * it against a Flutter `copyWith`-save that started before and lands after —
- * an inherent risk of the embedded-array-plus-whole-doc-save pattern the
- * legacy app chose. Nothing below can make that racier than it already is;
- * re-planning against the latest read on every attempt is the best available
- * mitigation.
+ * subcollection, and it is edited as one whole-doc save: apps/web's variação
+ * editor (`app/(app)/variacoes/_components/grupoFields.tsx` +
+ * `VarianteEditor.tsx`) loads the grupo, mutates the in-memory `variacoes`
+ * list and writes the whole array back. ⚠️ The reason this note USED to give —
+ * a concurrent Flutter `copyWith`-save landing under us — is VOID: there is no
+ * dual run (root `CLAUDE.md` rule 8). The pattern is ours now, and so are the
+ * writers: two notification tasks importing different listings that share one
+ * grupo, a Cloud Tasks retry, the reprocess sweep re-driving an hours-old
+ * payload, and an operator saving that editor. A bare "read the array, push an
+ * entry, write it back" from this side loses one of them with no
+ * Firestore-level signal at all. `db.runTransaction` closes the window against
+ * every server-side writer (this module retries on contention and always
+ * mutates the freshly re-read doc); what it cannot close is a browser save
+ * whose in-memory array was loaded before this transaction committed — inherent
+ * to embedded-array-plus-whole-doc-save, wherever it is written. Nothing below
+ * makes that racier than it already is; re-reading and re-planning against the
+ * latest doc on every attempt is the best available mitigation.
  *
  * ## Per-grupo transactions, not one big transaction
  * One `db.runTransaction` per grupo that needs a write (mirrors the outer

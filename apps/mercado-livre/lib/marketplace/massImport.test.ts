@@ -4,6 +4,7 @@ import { MercadoLivreError, type MercadoLivreApi } from '@delfrance/integrations
 import type { MassImportOptions } from '@delfrance/schemas';
 
 import {
+  cancelMassImportJob,
   MASS_IMPORT_FAILURES_CAP,
   MASS_IMPORT_ITEMS_PER_DISPATCH,
   MASS_IMPORT_MAX_ATTEMPTS,
@@ -544,6 +545,129 @@ describe('startMassImportJob', () => {
     });
     expect(db.docs('importacoesMercadoLivre').get(otherId)).toMatchObject({
       integracaoId: 'conta-B',
+    });
+  });
+});
+
+/* ------------------------------- cancelamento ------------------------------ */
+
+describe('cancelMassImportJob', () => {
+  const IMPORT_CTX = {
+    sellerUserId: 55,
+    tabelaNormalOuterRef: 'documents/tabelasDePrecos/tabNormal',
+    depositoOuterRef: 'documents/depositos/dep1',
+  };
+
+  it('unblocks a job stuck `running` with no worker — the whole reason it exists', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'job-stuck');
+
+    // An enqueue that succeeded and then never dispatched (a queue/function
+    // region mismatch, a missing run.invoker grant) leaves exactly this: a
+    // `running` job no worker will ever finish. The already-running guard has
+    // no staleness bound, so the button stays 409 until someone clears it.
+    await expect(
+      startMassImportJob(asDb(db), { integracaoId: 'conta-A', options: BASE_OPTIONS }),
+    ).rejects.toBeInstanceOf(MassImportAlreadyRunningError);
+
+    const outcome = await cancelMassImportJob(asDb(db), {
+      jobId: 'job-stuck',
+      integracaoId: 'conta-A',
+      now: CLOCK_NOW,
+    });
+
+    expect(outcome).toBe('stamped');
+    expect(db.docs('importacoesMercadoLivre').get('job-stuck')).toMatchObject({
+      status: 'cancelled',
+      finishedAt: CLOCK_NOW,
+      updatedAt: CLOCK_NOW,
+    });
+    await expect(
+      startMassImportJob(asDb(db), { integracaoId: 'conta-A', options: BASE_OPTIONS }),
+    ).resolves.toEqual(expect.any(String));
+  });
+
+  it('refuses a terminal job, a missing job and another conta’s job', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'job-done', { status: 'completed', finishedAt: CLOCK_NOW });
+    seedJob(db, 'job-de-outra-conta');
+
+    await expect(
+      cancelMassImportJob(asDb(db), { jobId: 'job-done', integracaoId: 'conta-A' }),
+    ).resolves.toBe('not-running');
+    await expect(
+      cancelMassImportJob(asDb(db), { jobId: 'nao-existe', integracaoId: 'conta-A' }),
+    ).resolves.toBe('not-found');
+    // The ownership check is what lets the route 404 without revealing whether
+    // the id belongs to somebody else's account.
+    await expect(
+      cancelMassImportJob(asDb(db), { jobId: 'job-de-outra-conta', integracaoId: 'conta-B' }),
+    ).resolves.toBe('wrong-integracao');
+    expect(db.docs('importacoesMercadoLivre').get('job-de-outra-conta')).toMatchObject({
+      status: 'running',
+    });
+  });
+
+  it('a cancel landing MID-DISPATCH is not overwritten by the completion stamp', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'job-race');
+    const api = makeApi({ scan: { results: [], scroll_id: null } });
+    const deps = runDeps(db, api, {
+      // Fires AFTER the dispatch's opening status read and BEFORE its terminal
+      // stamp — the exact window an unguarded merge() clobbered.
+      resolveImportDeps: async () => {
+        await cancelMassImportJob(asDb(db), {
+          jobId: 'job-race',
+          integracaoId: 'conta-A',
+          now: CLOCK_NOW,
+        });
+        return { api, ...IMPORT_CTX };
+      },
+    });
+
+    const outcome = await processMassImportJob(
+      deps,
+      { jobId: 'job-race', integracaoId: 'conta-A' },
+      0,
+    );
+
+    expect(outcome).toBe('noop');
+    expect(db.docs('importacoesMercadoLivre').get('job-race')).toMatchObject({
+      status: 'cancelled',
+    });
+  });
+
+  it('a cancel landing MID-DISPATCH stops the self-continuation too', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'job-race2');
+    // Already linked, so the page drains to nothing and no import runs; the
+    // non-null scroll_id is what would otherwise re-enqueue.
+    db.seed('produtos/prod-MLB1/produtoMercadoLivre', 'lnk-MLB1', {
+      id: 'MLB1',
+      contaOuterRef: 'documents/integracao/conta-A',
+    });
+    const api = makeApi({ scan: { results: ['MLB1'], scroll_id: 'SCROLL-1' } });
+    const deps = runDeps(db, api, {
+      resolveImportDeps: async () => {
+        await cancelMassImportJob(asDb(db), {
+          jobId: 'job-race2',
+          integracaoId: 'conta-A',
+          now: CLOCK_NOW,
+        });
+        return { api, ...IMPORT_CTX };
+      },
+    });
+
+    const outcome = await processMassImportJob(
+      deps,
+      { jobId: 'job-race2', integracaoId: 'conta-A' },
+      0,
+    );
+
+    expect(outcome).toBe('noop');
+    expect(deps.scheduler!.enqueue).not.toHaveBeenCalled();
+    expect(db.docs('importacoesMercadoLivre').get('job-race2')).toMatchObject({
+      status: 'cancelled',
     });
   });
 });

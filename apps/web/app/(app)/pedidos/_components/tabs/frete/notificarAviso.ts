@@ -1,7 +1,7 @@
 'use client';
 
 import { notifications } from '@mantine/notifications';
-import type { AvisoDimensoes } from './dimensoesPedido';
+import type { AvisoDimensoes } from '@delfrance/schemas';
 
 /**
  * Tell the operator when the estimated box is not shippable as-is (#371).

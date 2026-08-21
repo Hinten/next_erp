@@ -45,7 +45,7 @@ export function ConversaListPane({ activeId }: { activeId?: string }) {
     uid,
     integracaoId: filters.integracaoId,
     etiqueta: filters.etiqueta,
-    usarioOuterRef: filters.clienteRef,
+    clienteOuterRef: filters.clienteRef,
   });
 
   const [selectionMode, setSelectionMode] = useState(false);

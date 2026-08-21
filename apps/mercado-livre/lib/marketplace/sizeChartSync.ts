@@ -18,7 +18,8 @@
  *    legacy behavior so one bad chart never blocks the others;
  *  - the write-back merges ONLY `tabelasDeMedidasMercadoLivre.<integracaoId>`
  *    (Firestore deep merge), preserving other contas' entries and the Shopee
- *    map the still-running Flutter app authors.
+ *    map the legacy app authored, which the migrated corpus carries and this
+ *    repo models nowhere.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {

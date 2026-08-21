@@ -7,7 +7,8 @@
 
 /**
  * True when a stored `contaOuterRef` points at `integracaoId`. Tolerates both
- * the canonical `documents/integracao/<id>` form the Flutter app writes and a
+ * the canonical `documents/integracao/<id>` form the migrated corpus stores —
+ * the Flutter writer is gone, the stored refs remain — and a
  * bare `integracao/<id>`.
  */
 export function refMatchesIntegracao(ref: unknown, integracaoId: string): boolean {

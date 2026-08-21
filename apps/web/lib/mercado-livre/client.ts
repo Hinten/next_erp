@@ -109,7 +109,8 @@ export interface MercadoLivreMassImportFailure {
 
 /** Progress snapshot of a mass-import job (`GET importar-todos/status`). */
 export interface MercadoLivreMassImportStatus {
-  status: 'running' | 'completed' | 'failed';
+  /** `cancelled` is operator-initiated — see `cancelMassImport`. */
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   scanned: number;
   imported: number;
   created: number;
@@ -140,6 +141,19 @@ export interface MercadoLivrePriceSyncStatus {
   planejados: number;
   enviados: number;
   pulados: number;
+  /**
+   * Anúncios the job could not have enumerated — a drifted denorm, a link on a
+   * variation child, or a malformed `paiId` (#1072).
+   *
+   * ⚠️ This is a SUBSET of `pulados`, not a sibling of it: each finding is
+   * recorded through the same `registerSkip` that increments `pulados`, so it
+   * rides the shared `skips` sample where the operator can actually read the
+   * rows. What this counter adds is that it is exact and uncapped — the `skips`
+   * list stops at 200 and can be exhausted by the plan phase alone, so on a
+   * drifted catalogue the count is the only honest number. Zero is what makes
+   * `completed` mean what it says.
+   */
+  naoEnumerados: number;
   falhas: number;
   pausas: number;
   /** The first skips, for display — capped server-side; `pulados` stays exact. */
@@ -687,6 +701,21 @@ export interface MercadoLivreClient {
     jobId: string;
   }): Promise<MercadoLivreMassImportStatus>;
   /**
+   * Cancel a running mass import (PERM.integracao.write) — stamps the job
+   * `cancelled`, which the task handler observes at its next dispatch: an
+   * in-flight batch finishes and nothing further is scheduled.
+   *
+   * It is also how a job that is `running` with no worker gets cleared — until
+   * it is terminal, `startMassImport` keeps answering 409
+   * `ML_MASS_IMPORT_RUNNING`. A job that already finished comes back as a 409
+   * `MercadoLivreClientHttpError` with `code: 'ML_MASS_IMPORT_NOT_RUNNING'`;
+   * an unknown or foreign jobId 404s.
+   */
+  cancelMassImport(input: {
+    integracaoId: string;
+    jobId: string;
+  }): Promise<{ status: 'cancelled' }>;
+  /**
    * Kick off the manual bulk price sync ("Atualizar preços") for the account
    * (PERM.integracao.write) — pushes each linked produto's tabela-normal price
    * to its ML listings, checkpointed server-side. Poll progress with
@@ -1152,6 +1181,11 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreMassImportStatus>(
         `/api/marketplace/mercado-livre/importar-todos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
       ),
+    cancelMassImport: (input) =>
+      call<{ status: 'cancelled' }>('/api/marketplace/mercado-livre/importar-todos/cancelar', {
+        integracaoId: input.integracaoId,
+        jobId: input.jobId,
+      }),
     startPriceSync: (input) =>
       call<{ jobId: string }>('/api/marketplace/mercado-livre/atualizar-precos', {
         integracaoId: input.integracaoId,

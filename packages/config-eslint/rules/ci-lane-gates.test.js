@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+
+import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red-alert.mjs';
+import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
 
 /**
  * Every PR-triggered lane must ALWAYS publish a check, and that check must tell
@@ -37,7 +38,10 @@ import { describe, expect, it } from 'vitest';
  * on this assertion, the fix is almost certainly to classify a lane someone added
  * concurrently — not to weaken the partition. Closing the skew itself would mean
  * requiring branches to be up to date before merging, which is a `protect-main`
- * setting and a deliberate cost, not a code change here.
+ * setting and a deliberate cost, not a code change here — and one that cannot be
+ * turned on until #1052 gives that ruleset a `required_status_checks` rule to hang
+ * it off. Deferred until after the migration (#1167); until then a red `main` is
+ * at least REPORTED, by `main-red-alert.yml` — see assertion 14.
  *
  * ⚠️ WHY THE GATE MUST BE UNSKIPPABLE. A job skipped by `if:` still publishes a
  * check run, with conclusion `skipped`, and GitHub's required-status-check
@@ -57,7 +61,6 @@ import { describe, expect, it } from 'vitest';
  * and its indentation is not machine-guaranteed. Hence `jobBlocks` derives the
  * indent width, and assertion 0 is a synthetic positive control.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * The pinned contract, one entry per gated lane.
@@ -231,6 +234,10 @@ const UNGATED = {
     'The shared engine. `workflow_call`-only — asserted separately below.',
   '.github/workflows/nfe-epec-scheduled.yml':
     'schedule + workflow_dispatch only. Never runs on a PR, so it can gate nothing.',
+  '.github/workflows/main-red-alert.yml':
+    'workflow_run + workflow_dispatch only. It reports on the TRUNK after a merge, ' +
+    'not on a PR — it cannot gate anything, and by construction it cannot even run ' +
+    'on one. Its own contract is assertion 14 below.',
   '.github/workflows/copilot-setup-steps.yml':
     'Agent environment bootstrap. Its self-referential `paths:` filter is correct: ' +
     'it is not a test lane and reports on nothing.',
@@ -247,11 +254,7 @@ const UNGATED = {
 
 /** Same discovery shape as `env-example-location.test.js` — see its long note. */
 function findByPathspec(pathspec) {
-  const ls = (...args) =>
-    execFileSync('git', [...args, '--', pathspec], { cwd: REPO_ROOT, encoding: 'utf8' })
-      .split('\n')
-      .filter(Boolean);
-  return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
+  return gitLsFiles(pathspec);
 }
 
 /**
@@ -288,6 +291,52 @@ function onSubBlock(source, key) {
   for (const line of body.slice(start + 1)) {
     if (line.trim() && line.match(/^\s*/)[0].length <= indent) break;
     out.push(line);
+  }
+  return out;
+}
+
+/**
+ * The values of the YAML list under `key:` within `lines`, in EITHER spelling.
+ *
+ * ⚠️ FLOW STYLE IS NOT THE ONLY SPELLING, and a scan that only knows
+ * `branches: [main]` carries exactly the silent hole it was written to close. A
+ * lane spelled
+ *
+ *     push:
+ *       branches:
+ *         - master
+ *         - main
+ *
+ * is invisible to the flow-only regex, so assertion 14 would pass while a
+ * trunk-verifying workflow sat missing from `main-red-alert.yml`. Both spellings
+ * are legal YAML and GitHub accepts both; every one of this repo's lanes happens
+ * to use flow style today, which is precisely what makes the hole quiet. Caught in
+ * review on #1181, reproduced with a scratch block-style workflow that assertion
+ * 14 then failed to notice.
+ *
+ * Returns `null` when the key is absent, so "no list" and "empty list" stay
+ * distinguishable.
+ */
+export function yamlListUnder(lines, key) {
+  const at = lines.findIndex((l) => new RegExp(`^\\s+${key}\\s*:`).test(l));
+  if (at === -1) return null;
+  const header = lines[at];
+
+  const flow = header.match(/:\s*\[(.*)\]\s*$/);
+  if (flow) {
+    return flow[1]
+      .split(',')
+      .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean);
+  }
+
+  const indent = header.match(/^\s*/)[0].length;
+  const out = [];
+  for (const line of lines.slice(at + 1)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    const m = line.match(/^(\s+)-\s*(.+?)\s*$/);
+    if (!m || m[1].length <= indent) break;
+    out.push(m[2].replace(/^['"]|['"]$/g, ''));
   }
   return out;
 }
@@ -406,6 +455,28 @@ describe('CI lanes always report', () => {
     expect(onSubBlock(fixture, 'push').some((l) => /^\s+paths\s*:/.test(l))).toBe(true);
     expect(onSubBlock(fixture, 'pull_request').some((l) => /^\s+paths\s*:/.test(l))).toBe(false);
     expect(onSubBlock(fixture, 'schedule')).toBeNull();
+
+    // ⚠️ BOTH list spellings, because assertion 14 decides which workflows verify
+    // the trunk by reading `push: branches:` — and a flow-only parser silently
+    // misses a block-style lane, which is a guard that passes while the thing it
+    // guards is missing. This control is the regression test for that.
+    expect(yamlListUnder(onSubBlock(fixture, 'push'), 'branches')).toEqual(['main']);
+    const blockStyle = [
+      'on:',
+      '  push:',
+      '    branches:',
+      '      # a comment inside the list',
+      '      - master',
+      "      - 'main'",
+      '    paths:',
+      "      - 'a/**'",
+      'jobs:',
+      '  j:',
+      '    if: always()',
+      '',
+    ].join('\n');
+    expect(yamlListUnder(onSubBlock(blockStyle, 'push'), 'branches')).toEqual(['master', 'main']);
+    expect(yamlListUnder(onSubBlock(blockStyle, 'push'), 'nope')).toBeNull();
 
     // ...and it still reads real files in this repo.
     expect(Object.keys(jobBlocks(read('.github/workflows/ci.yml')))).toEqual([
@@ -1096,6 +1167,138 @@ describe('CI lanes always report', () => {
         '',
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 14. Every workflow that verifies the TRUNK is wired to the red-main alert.
+  // ------------------------------------------------------------------
+  it('the main-red alert lists exactly the workflows that verify the trunk on push', () => {
+    const ALERT = '.github/workflows/main-red-alert.yml';
+
+    /**
+     * Push-triggered workflows that verify NOTHING about this repo, with the
+     * reason. Both are self-referentially `paths:`-filtered bootstraps (their
+     * `paths:` is their own file), so a failure there says something about the
+     * agent harness, never that `main` is broken.
+     */
+    const NOT_TRUNK_VERIFIERS = {
+      '.github/workflows/copilot-setup-steps.yml': 'agent environment bootstrap',
+      '.github/workflows/copilot-code-review.yml': 'Copilot review runner config',
+    };
+
+    /** The `name:` a workflow publishes — which is what `workflow_run` matches on. */
+    const workflowName = (source) =>
+      (source.match(/^name\s*:\s*(.+?)\s*$/m)?.[1] ?? '').replace(/^['"]|['"]$/g, '');
+
+    const verifiers = [];
+    for (const file of findByPathspec(':(glob).github/workflows/*.y*ml').sort()) {
+      if (file === ALERT || NOT_TRUNK_VERIFIERS[file]) continue;
+      const push = onSubBlock(read(file), 'push');
+      if (push === null) continue;
+      if (!(yamlListUnder(push, 'branches') ?? []).includes('main')) continue;
+      verifiers.push(workflowName(read(file)));
+    }
+
+    // Anti-vacuity, both directions. Six workflows re-verify `main` after a merge
+    // (ci.yml plus the five domain lanes); a scanner that matched none would make
+    // the equality below pass over two empty lists.
+    expect(
+      verifiers.length,
+      'Parsed no trunk-verifying workflows out of .github/workflows — the scanner ' +
+        'here has rotted and this assertion now checks nothing.',
+    ).toBeGreaterThanOrEqual(6);
+
+    const listed = yamlListUnder(onSubBlock(read(ALERT), 'workflow_run') ?? [], 'workflows') ?? [];
+
+    expect(
+      listed.length,
+      `Parsed no \`workflows:\` entries out of ${ALERT} — either the block moved or ` +
+        'the parser here rotted, and this assertion now checks nothing.',
+    ).toBeGreaterThan(0);
+
+    expect(
+      listed.sort(),
+      [
+        'The red-main alert no longer covers exactly the workflows that verify the trunk.',
+        '',
+        '⚠️ `workflow_run` matches by workflow NAME, with no fuzziness and no error when',
+        "a name matches nothing. So renaming a lane's `name:`, or adding a lane with a",
+        "`push:` trigger on `main`, silently leaves that lane's red trunk unreported —",
+        'the exact "detected but never reported" defect this alert was built to remove',
+        '(#1167: `ci.yml` caught the 2026-08-20 break in four minutes and told nobody,',
+        'because its report job was `pull_request`-only).',
+        '',
+        `Fix the \`workflows:\` list in ${ALERT}, copying the \`name:\` verbatim —`,
+        'em dash included.',
+      ].join('\n'),
+    ).toEqual([...verifiers].sort());
+
+    // It must stay off the PR path: a `pull_request:` trigger here would make it a
+    // gateless entry lane, which assertions 2-5 do not cover (they only walk LANES).
+    expect(
+      onSubBlock(read(ALERT), 'pull_request'),
+      `${ALERT} gained a \`pull_request:\` trigger.`,
+    ).toBeNull();
+  });
+
+  // ------------------------------------------------------------------
+  // 15. The alerter's third-party carve-out tracks the lane manifests.
+  // ------------------------------------------------------------------
+  it('the alerter excuses exactly the live jobs, and recognises every gate and scope', () => {
+    // A job classed `live_scope` / `live_enabled` is a suite that calls a THIRD
+    // PARTY — SEFAZ homologação, the Melhor Envio sandbox. Both lanes run theirs on
+    // every path-matching merge to `main`, because the `changes` job short-circuits
+    // to run=true on non-PR events and ci-nfe.yml passes `true` for the live
+    // verdict as well. So an outage there reds a `main` run without the trunk being
+    // broken, and `main-red-alert.mjs` has to know which jobs those are.
+    const live = [
+      ...new Set(
+        Object.values(LANES)
+          .flatMap((lane) => lane.jobs)
+          .filter((job) => /(?:^|:|\+)live_/.test(job.class))
+          .map((job) => job.check),
+      ),
+    ];
+
+    expect(
+      live.length,
+      'Parsed no live-classed jobs out of LANES — the class filter here has rotted ' +
+        'and this assertion now checks nothing.',
+    ).toBeGreaterThanOrEqual(2);
+
+    expect(
+      [...THIRD_PARTY_JOBS].sort(),
+      [
+        "`THIRD_PARTY_JOBS` in .github/scripts/main-red-alert.mjs and this file's lane",
+        'manifests disagree about which suites call a third party.',
+        '',
+        'Too FEW entries and a SEFAZ or Melhor Envio outage opens a `🚨 main is red`',
+        'issue about a trunk that is fine — the noise class that gets a label ignored.',
+        'Too MANY and a genuinely broken suite is written off as someone else being',
+        'down, which is the "reported to nobody" failure this alert exists to remove.',
+      ].join('\n'),
+    ).toEqual(live.sort());
+
+    // The gate reds whenever a job it certifies fails, so a live failure always
+    // arrives as `[<live job>, <gate>]`. The alerter drops derived jobs before
+    // asking whether anything of ours failed — which only works if it recognises
+    // every gate and scope this repo publishes...
+    const derived = Object.values(LANES).flatMap((lane) => [lane.gate, lane.scope]);
+    expect(derived.length).toBeGreaterThanOrEqual(14);
+    expect(
+      derived.filter((name) => !DERIVED_JOB.test(name)),
+      '`DERIVED_JOB` in main-red-alert.mjs no longer matches every gate/scope name. ' +
+        'An unrecognised gate counts as "something of ours failed", so a third-party ' +
+        'outage would alert anyway.',
+    ).toEqual([]);
+
+    // ...and only those. A suite job swallowed by this regex would be dropped from
+    // the decision, and a real failure could then read as an outage.
+    const suites = Object.values(LANES).flatMap((lane) => lane.jobs.map((job) => job.check));
+    expect(
+      suites.filter((name) => DERIVED_JOB.test(name)),
+      '`DERIVED_JOB` matches a SUITE job. It must only match reporters.',
     ).toEqual([]);
   });
 });

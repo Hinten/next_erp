@@ -18,7 +18,7 @@ describe('foldFamilyStatus', () => {
         { status: 'closed', subStatus: null },
         { status: 'active', subStatus: null },
       ]),
-    ).toEqual({ status: 'active', subStatus: null });
+    ).toEqual({ status: 'active', subStatus: null, moderacoes: [] });
   });
 
   it('closes the family only when EVERY observed member is closed', () => {
@@ -27,7 +27,7 @@ describe('foldFamilyStatus', () => {
         { status: 'closed', subStatus: null },
         { status: 'closed', subStatus: ['deleted'] },
       ]),
-    ).toEqual({ status: 'closed', subStatus: null });
+    ).toEqual({ status: 'closed', subStatus: null, moderacoes: [] });
   });
 
   it('refuses to conclude when the only observed members are closed and one was never observed', () => {
@@ -48,7 +48,7 @@ describe('foldFamilyStatus', () => {
         { status: null, subStatus: null },
         { status: 'paused', subStatus: null },
       ]),
-    ).toEqual({ status: 'paused', subStatus: null });
+    ).toEqual({ status: 'paused', subStatus: null, moderacoes: [] });
   });
 
   it('nothing observed at all → no conclusion', () => {
@@ -82,7 +82,7 @@ describe('foldFamilyStatus', () => {
         { status: 'closed', subStatus: ['deleted'] },
         { status: 'paused', subStatus: ['out_of_stock'] },
       ]),
-    ).toEqual({ status: 'paused', subStatus: ['out_of_stock'] });
+    ).toEqual({ status: 'paused', subStatus: ['out_of_stock'], moderacoes: [] });
   });
 });
 
@@ -98,20 +98,92 @@ describe('foldFamilyStatus — the tie-break among equal-ranked members', () => 
    * and they must agree on the SENDABLE reading.
    */
   it('prefers the sendable reading regardless of member order', () => {
-    expect(foldFamilyStatus([plainPaused, oosPaused])).toEqual(oosPaused);
-    expect(foldFamilyStatus([oosPaused, plainPaused])).toEqual(oosPaused);
+    expect(foldFamilyStatus([plainPaused, oosPaused])).toEqual({ ...oosPaused, moderacoes: [] });
+    expect(foldFamilyStatus([oosPaused, plainPaused])).toEqual({ ...oosPaused, moderacoes: [] });
   });
 
   it('does not let the tie-break promote a LOWER-ranked member', () => {
     // `active` outranks any `paused`, sendable or not — the ladder still governs.
     const active = { status: 'active', subStatus: null };
-    expect(foldFamilyStatus([oosPaused, active])).toEqual(active);
-    expect(foldFamilyStatus([active, oosPaused])).toEqual(active);
+    expect(foldFamilyStatus([oosPaused, active])).toEqual({ ...active, moderacoes: [] });
+    expect(foldFamilyStatus([active, oosPaused])).toEqual({ ...active, moderacoes: [] });
   });
 
   it('is stable when neither tied member is sendable', () => {
     const a = { status: 'under_review', subStatus: ['forbidden'] };
     const b = { status: 'under_review', subStatus: null };
-    expect(foldFamilyStatus([a, b])).toEqual(a);
+    expect(foldFamilyStatus([a, b])).toEqual({ ...a, moderacoes: [] });
+  });
+});
+
+/**
+ * #1087. A family's `moderacoes` has to describe the SAME listing its `status`
+ * does, or the parent link shows a reason for a sibling that is not the one
+ * being reported — the "one member speaks for the family" mistake (#1142) in a
+ * different disguise.
+ */
+describe('foldFamilyStatus — ML moderations follow the winner', () => {
+  const moderacao = (motivo: string) => ({
+    nome: 'POOR_QUALITY_THUMBNAIL',
+    dataCriacao: null,
+    motivo,
+    remedio: null,
+    secoes: [],
+    evidencias: [],
+  });
+
+  it("takes the WINNER's moderations, never a union across members", () => {
+    // The closed member is moderated; the live one is not. Unioning would show a
+    // policy strike against a listing that is selling normally.
+    const folded = foldFamilyStatus([
+      { status: 'closed', subStatus: null, moderacoes: [moderacao('removido')] },
+      { status: 'active', subStatus: null, moderacoes: [] },
+    ]);
+    expect(folded).toEqual({ status: 'active', subStatus: null, moderacoes: [] });
+  });
+
+  it('carries the moderation when the moderated member IS the winner', () => {
+    const m = moderacao('foto de capa com marca d\u2019água');
+    expect(
+      foldFamilyStatus([
+        { status: 'closed', subStatus: null, moderacoes: [] },
+        { status: 'active', subStatus: ['poor_quality_thumbnail'], moderacoes: [m] },
+      ]),
+    ).toEqual({ status: 'active', subStatus: ['poor_quality_thumbnail'], moderacoes: [m] });
+  });
+
+  it('a member with no moderations folds to [] — which is what CLEARS a lifted one', () => {
+    // The parent write is unconditional, so `[]` here is the value that erases a
+    // moderation ML has withdrawn. Returning null/undefined would leave it standing.
+    expect(foldFamilyStatus([{ status: 'active', subStatus: null }])?.moderacoes).toEqual([]);
+  });
+
+  /**
+   * The LAST tie-break rung. Two `active` members tie on rank and on
+   * sendability, so before #1087 the winner was whichever child produto sorted
+   * first by `__name__` — and with it the family's sub_status. Preferring the
+   * member that can explain itself turns that coin-flip into information, and it
+   * cannot change stock behaviour because both readings are equally sendable.
+   */
+  it('breaks an otherwise-arbitrary tie toward the member that can explain itself', () => {
+    const m = moderacao('infringe as políticas');
+    const limpo = { status: 'active', subStatus: null, moderacoes: [] };
+    const moderado = { status: 'active', subStatus: ['poor_quality_thumbnail'], moderacoes: [m] };
+    expect(foldFamilyStatus([limpo, moderado])).toEqual(moderado);
+    expect(foldFamilyStatus([moderado, limpo])).toEqual(moderado);
+  });
+
+  it('explainability NEVER outranks sendability — the rung order is load-bearing', () => {
+    // A moderated `paused` member without `out_of_stock` cannot take stock; the
+    // sendable sibling must still win, or the family stops receiving the `qty > 0`
+    // push ML reactivates on. Being able to explain itself does not buy a promotion.
+    const moderadoNaoEnviavel = {
+      status: 'paused',
+      subStatus: ['moderation_penalty'],
+      moderacoes: [moderacao('alteração incomum de preço')],
+    };
+    const enviavelSemMotivo = { status: 'paused', subStatus: ['out_of_stock'], moderacoes: [] };
+    expect(foldFamilyStatus([moderadoNaoEnviavel, enviavelSemMotivo])).toEqual(enviavelSemMotivo);
+    expect(foldFamilyStatus([enviavelSemMotivo, moderadoNaoEnviavel])).toEqual(enviavelSemMotivo);
   });
 });

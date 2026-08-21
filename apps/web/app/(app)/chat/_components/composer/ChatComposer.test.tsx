@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { conversaSchema, type Conversa } from '@delfrance/schemas';
 
@@ -89,7 +89,7 @@ function wrap(node: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MantineProvider env="test">{node}</MantineProvider>
+      <MantineTestProvider>{node}</MantineTestProvider>
     </QueryClientProvider>,
   );
 }

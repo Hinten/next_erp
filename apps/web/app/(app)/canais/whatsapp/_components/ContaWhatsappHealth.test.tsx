@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { WhatsappHealth } from '@/lib/whatsapp/client';
 
@@ -23,9 +23,9 @@ const { WhatsappClientNetworkError } = await import('@/lib/whatsapp/client');
 function renderCard(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <MantineProvider>
+    <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
   render(<ContaWhatsappHealth integracaoId="i1" />, { wrapper });
 }

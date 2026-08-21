@@ -82,7 +82,12 @@ import {
 
 import { type ContaIdLookup, readContaIdByWaId, readWhatsappConta } from './contaCache';
 import { conversaDocId, mensagemDocId, senderId } from './ids';
-import { discoverUserByPhoneNumber, fixConversaAnonima, usuarioOuterRef } from './discoverUser';
+import {
+  clienteOuterRef,
+  discoverUserByPhoneNumber,
+  fixConversaAnonima,
+  usuarioOuterRef,
+} from './discoverUser';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
 import { processStatuses } from './processStatus';
 
@@ -264,6 +269,7 @@ async function processInboundMessage(
     phoneNumberId: value.metadata.phone_number_id,
     userName: user.usuario.nome,
     userId: user.id,
+    clienteId: user.clienteId,
     timestampMs,
     prazoMs,
     wamid: message.id,
@@ -316,6 +322,8 @@ interface UpsertArgs {
   phoneNumberId: string;
   userName: string;
   userId: string;
+  /** `clientes/<id>` behind the sender, or null when unresolvable. */
+  clienteId: string | null;
   timestampMs: number;
   prazoMs: number;
   wamid: string;
@@ -354,6 +362,18 @@ async function upsertConversa(
         sender_id: args.sender,
         nome: args.userName,
         usarioOuterRef: usuarioOuterRef(args.userId),
+        // The same contact as a `clientes` ref — the field the inbox's Cliente
+        // filter matches, and the one every ML importer writes (#768). Both are
+        // stored: `usarioOuterRef` still drives the thread's bubble direction
+        // and the legacy readers.
+        //
+        // ⚠️ CREATE only. The three update branches below each document what
+        // they deliberately do and do not write — one of them writes NOTHING on
+        // purpose, because that freeze is what lets a late message reopen a
+        // finalized ticket. Stamping a field into that branch would change
+        // reopen semantics for an unrelated reason. Conversas created before
+        // this field existed are the backfill's job, not the webhook's.
+        clienteOuterRef: args.clienteId != null ? clienteOuterRef(args.clienteId) : null,
         integracaoOuterRef: `documents/integracao/${args.contaId}`,
         id: args.phoneNumberId,
         prazo_resposta: args.prazoMs,

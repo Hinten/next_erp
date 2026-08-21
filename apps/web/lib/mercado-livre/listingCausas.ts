@@ -110,10 +110,12 @@ export function textoDaCausa(causa: MlCausa): string {
 }
 
 /**
- * Merge two control→messages maps. Used to put Mercado Livre's own rejection and
- * our pre-flight 422 refusal on the same controls: they answer different
- * questions ("ML refused this" vs "we would not even send it") and a listing can
- * legitimately carry both at once.
+ * Merge control→messages maps. Used to put every server-side complaint on the
+ * same controls: Mercado Livre's rejection of a write of ours, ML's POLICY
+ * moderation of the listing itself (`moderacoesPorCampo`, #1087), and our
+ * pre-flight 422 refusal. They answer different questions ("ML refused this" vs
+ * "ML moderated the listing" vs "we would not even send it") and a listing can
+ * legitimately carry all three at once.
  */
 export function mergeServerErrors(
   ...mapas: ReadonlyArray<Record<string, string[]>>

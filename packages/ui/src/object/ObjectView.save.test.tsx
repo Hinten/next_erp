@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import { Notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import { useWatch } from 'react-hook-form';
@@ -71,10 +71,10 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 
 function Wrap({ children }: { children: React.ReactNode }) {
   return (
-    <MantineProvider>
+    <MantineTestProvider>
       <Notifications />
       {children}
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 

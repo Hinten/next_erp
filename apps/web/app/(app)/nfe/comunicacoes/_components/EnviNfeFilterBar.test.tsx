@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { PERM } from '@delfrance/auth';
 
 const { permState } = vi.hoisted(() => ({
@@ -17,7 +17,7 @@ vi.mock('@/lib/auth', () => ({
 import { EnviNfeFilterBar } from './EnviNfeFilterBar';
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 function grantAll() {

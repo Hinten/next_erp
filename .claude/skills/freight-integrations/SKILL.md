@@ -57,14 +57,29 @@ without a caps row is a **compile error**.
 | --- | --- | --- | --- | --- |
 | **emit** | the app buys + generates it (OAuth → quote → cart → checkout → generate → print) | a freight **webhook** (`webhooks/melhor-envio`) | editable | `melhorEnvios` |
 | **fetch** | the **marketplace** generated it; the app fetches + prints | the marketplace **order-sync** (its own webhook), NOT a freight webhook | **read-only** (`marketplaceOwned`); `lojaIntegrada` remaps via `int_frete.mapa` to a target carrier | `mercadoLivre` / `shopee` / `amz` / `magalu` / `lojaIntegrada` — Phase 5/6, stubs today |
-| **generic / none** | no carrier API — a generic PDF (`generic`) or nothing (`none`) | none (manual) | editable | `motoboy` / `outros`; `retiradaNaLoja` / `fob` |
+| **generic / none** | no carrier API — the app renders the label itself from the pedido (`generic`, `lib/etiqueta-generica/`) or there is none (`none`) | none (manual) | editable | `motoboy` / `outros`; `retiradaNaLoja` / `fob` |
 
-⚠️ **`labelMode` is descriptive; the `can*` flags drive behavior.** Every `can*`
-is false for every non-ME tipo today, so the row action resolves to `unsupported`
-— byte-identical to the old `tipo !== 'melhorEnvios'` reject. Don't flip a
-marketplace `canPrint` true until its fetch flow + client route exist, or a
-marketplace pedido carrying a `printLabelId` would route "Imprimir" to the ME
-backend.
+⚠️ **The `can*` flags drive behavior, and `labelMode` now drives one branch of
+it too** (#376). `etiquetaRowState` reads:
+
+```ts
+if (caps.canPrint && (caps.labelMode === 'generic' || printLabelId != null))
+  return { action: 'imprimir', … };
+```
+
+so a **generic** tipo (`motoboy` / `outros`) offers "Imprimir etiqueta" as soon
+as frete is configured — there is no buy step, so no `printLabelId` to gate on —
+while `melhorEnvios` keeps its bought-label gate. `labelMode` is still
+descriptive for the *marketplace* categories; it is `'generic'` that is
+load-bearing.
+
+Printable today: `melhorEnvios` (bought label) plus `motoboy` / `outros` (an
+on-demand PDF rendered client-side from the pedido — `lib/etiqueta-generica/`).
+`retiradaNaLoja` / `fob` are `labelMode: 'none'` and
+still resolve to `unsupported`, as does every marketplace except `mercadoLivre`'s
+`canFetchLabel`. Don't flip a marketplace `canPrint` true until its fetch flow +
+client route exist, or a marketplace pedido carrying a `printLabelId` would route
+"Imprimir" to the ME backend.
 
 ### The provider-neutral surface (what every category writes through)
 
@@ -127,7 +142,21 @@ same label instead of double-spending.
   `"${cepInicial} - ${cepFinal} - ${custo} - ${valor} - ${prazo}"`.
 - **`tokenMelEnv` is single-token** — a refresh deletes the old token doc and
   writes the new one in one tx (Flutter parity). 30-day access / 45-day refresh,
-  60s skew; `getOrRefreshAccessToken` handles it transparently.
+  60s skew; `getOrRefreshAccessToken` handles it transparently. **Two refreshes
+  can race** (multi-instance App Hosting routes, and `getAccessToken` is wired
+  *per ME API call*, so one `comprar` re-enters it several times), so #966 added
+  the same loser fallback ML/MP got in #820: a rejected grant re-reads the store
+  **twice**, the second time after `LOSER_REREAD_DELAY_MS` (250 ms), because the
+  loser learns it lost *before* the winner's `save()` commits. Every
+  `MelhorEnvioHttpError` reaches that fallback — a 429 is likeliest exactly when
+  two refreshes collide — and only 400/401/403 still convert to
+  `MelhorEnvioReauthRequiredError`; anything else keeps its original error.
+  ⚠️ **`save()` returns the token that is now STORED, not the one you passed** —
+  it carries an ADR 0011 tier-2 update-if-newer guard on `expirationDate`, so a
+  loser gets the winner's pair back. Use the return value. The
+  authorization-code flow passes `{ force: true }` to bypass it. ⚠️ Do **not**
+  widen the 60 s skew to "fix" a race: the window is the ME round-trip plus one
+  Firestore write, not the expiry threshold.
 - **`int_frete`**: `dataCadastro` is a **required ms-epoch**; `prazoExtra`
   non-nullable default 0; ME `client_id`/`client_secret` are **nullable on the
   doc for read-compat** but the live app reads the app-wide creds from **env**
@@ -192,9 +221,14 @@ reads; `buildCartItem` tolerates a blank/null key.
    `FREIGHT_TIPO_CAPS` directly only with a parsed `tipo`, since UI `tipo` comes
    unparsed from Firestore and an unknown value must degrade to "unsupported",
    not crash). Set `canQuote` / `canBuy` / `canPrint` and the `/pedidos` row
-   action lights up (quote-first / comprar / imprimir). Add a branch in
-   `EtiquetaRowAction.tsx` only for a genuinely NEW action kind (e.g. a
-   fetch-label download).
+   action lights up (quote-first / comprar / imprimir). ⚠️ For a **carrier-less**
+   provider that is not enough — also set `labelMode: 'generic'`, or the
+   `'imprimir'` branch keeps waiting for a `printLabelId` that never arrives.
+   Add a branch in `EtiquetaRowAction.tsx` for a genuinely NEW action kind (e.g.
+   a fetch-label download) — **or** when an existing kind needs a different
+   dispatch, as `'imprimir'` does: it renders one branch for a bought Melhor
+   Envio label and another for the generic on-demand one, keyed on
+   `freightCapsFor(tipo).labelMode === 'generic'`.
 6. **Client route (emit / routed providers only).** If the provider needs server
    compute (OAuth / secret / API), give it `channel: '<slug>'` in caps, add
    `/api/freight/<slug>/*` handlers (its own app like `apps/melhor-envio`, or a
@@ -275,4 +309,7 @@ To enable the live lane: set repo var `FREIGHT_CI_LIVE_ENABLED=true` + secret
 **Key files**: `freight-br/src/melhor-envio/{oauth,api,calculate,cart,agency,comprarEtiqueta,types}.ts`;
 `apps/melhor-envio/lib/freight/{melhorEnvio,tokenStore,state,respond}.ts`;
 `apps/web/app/(app)/pedidos/_components/{EtiquetaRowAction,EtiquetaComprarModal,etiquetaActions}.tsx`
-+ `tabs/frete/{FreteTab,MelhorEnvioFields,EtiquetaMelhorEnvioPanel,melhorEnvioCart}.tsx`.
++ `tabs/frete/{FreteTab,MelhorEnvioFields,EtiquetaMelhorEnvioPanel,melhorEnvioCart}.tsx`;
+`apps/web/lib/checkout/etiqueta/` (the provider registry — see its README) and
+`apps/web/lib/etiqueta-generica/` (the carrier-less label: `layout.ts` is the
+design, `pdf.ts` renders it).

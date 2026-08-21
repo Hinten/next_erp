@@ -18,14 +18,31 @@ describe('etiquetaRowState', () => {
   });
 
   it('marks carriers without a label flow as unsupported', () => {
+    // retiradaNaLoja/fob (`labelMode: 'none'`) have nothing to print.
     expect(
-      etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.motoboy, estado: ESTADO_FRETE.iniciado })
-        .action,
+      etiquetaRowState({
+        ...base,
+        tipo: INTEGRACAO_FRETE.retiradaNaLoja,
+        estado: ESTADO_FRETE.iniciado,
+      }).action,
     ).toBe('unsupported');
     expect(
       etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.fob, estado: ESTADO_FRETE.iniciado })
         .action,
     ).toBe('unsupported');
+  });
+
+  it('offers the generic PDF for motoboy/outros with no printLabelId gate', () => {
+    // No buy step for a generic-label tipo — 'imprimir' is available the
+    // moment frete is configured, unlike Melhor Envio's bought-label gate.
+    for (const tipo of [INTEGRACAO_FRETE.motoboy, INTEGRACAO_FRETE.outros]) {
+      expect(
+        etiquetaRowState({ ...base, tipo, printLabelId: null, estado: ESTADO_FRETE.iniciado }),
+      ).toEqual({ action: 'imprimir', needsPostedConfirm: false });
+      expect(
+        etiquetaRowState({ ...base, tipo, printLabelId: null, estado: ESTADO_FRETE.postado }),
+      ).toEqual({ action: 'imprimir', needsPostedConfirm: true });
+    }
   });
 
   it('offers fetch-label for Mercado Livre with or without an externalId', () => {
