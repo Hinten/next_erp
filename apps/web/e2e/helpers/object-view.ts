@@ -20,17 +20,59 @@ export async function fillField(page: Page, label: string, value: string): Promi
 }
 
 /**
+ * Read the number a BRL-masked field is actually holding.
+ *
+ * Mirrors `parseBrl` in `apps/web/app/(app)/produtos/_components/CurrencyInput.tsx`
+ * — deliberately duplicated rather than imported, so an e2e helper does not
+ * reach into app internals to check the app. Handles both display states: the
+ * focused one (`R$ 40`, `fixedDecimalScale` off) and the idle one (`R$ 40,00`).
+ */
+function parseBrlText(raw: string): number | null {
+  const cleaned = raw
+    .replace(/[^\d.,-]/g, '') // drop "R$", spaces, NBSP
+    .replace(/\.(?=.*,)/g, '') // dots before a comma are thousands → drop
+    .replace(',', '.'); // decimal comma → dot
+  if (cleaned === '' || cleaned === '-') return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Fill a BRL-masked money input (`CurrencyInput`) found by accessible name.
  * Playwright's `.fill()` mis-scales a fixed-decimal masked input — it sets the
  * value wholesale and `react-number-format` reads "30" as 3000 — so clear and
  * type the digits like a real user, which the mask handles correctly.
+ *
+ * ⚠️ The clear RACES the form's async hydration, which is why it is retried as
+ * one unit with the typing and then verified. `pressSequentially` appends: if
+ * the stored value lands between the select-all and the keystrokes, a field
+ * holding 35 typed with '40' ends up reading **3540**. That is the worst shape
+ * a test failure can take — a plausible wrong number rather than a visible
+ * error — and on these specs, which share one produto across tests, it poisons
+ * the next test as well. It is exactly how the emulator lane went red on
+ * PR #1203: one test got 3540 instead of 40, and the next timed out waiting for
+ * a value it could no longer produce.
+ *
+ * Verification is on the number the field HOLDS, never on the keystrokes sent —
+ * the append case sends exactly the right keystrokes.
  */
 export async function typeMoney(page: Page, name: string, value: string): Promise<void> {
   const input = page.getByRole('textbox', { name });
-  await input.click();
-  await input.press('ControlOrMeta+a');
-  await input.press('Delete');
-  await input.pressSequentially(value);
+  const wanted = parseBrlText(value);
+  await expect(input).toBeEnabled();
+
+  await expect(async () => {
+    await input.click();
+    await input.press('ControlOrMeta+a');
+    await input.press('Delete');
+    // Prove the field is empty before typing rather than assuming the clear
+    // landed; a re-hydration mid-clear simply fails here and the block retries.
+    // The prefix may or may not survive an empty value, so accept either.
+    expect(parseBrlText(await input.inputValue())).toBeNull();
+    await input.pressSequentially(value);
+    expect(parseBrlText(await input.inputValue())).toBe(wanted);
+  }).toPass({ timeout: 10_000 });
+
   await input.blur();
 }
 
