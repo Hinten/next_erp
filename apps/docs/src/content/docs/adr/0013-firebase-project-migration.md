@@ -227,8 +227,17 @@ same-region traffic between Google Cloud services is free. The `us-central1` vs
 `us-east4` delta is a second-order ~15% on a subset of lines. Do not let the tie-break
 delay the consolidation.
 
-**Current leaning: `us-east4`**, accepting the ~15% for the latency. Not final: record
+**Direction as of 2026-08-21: `us-central1`, to be tested.** The cheaper region and
+the safer one; the ~30 ms is the price paid, and it is paid on a client-first app whose
+steady state is served from Firestore's local cache. Still not the final word — record
 the outcome in #1115 before running Phase 0 step 2.
+
+⚠️ **This is a direction, not a deployed fact**, and the codebase should not record it
+as one. The region belongs in the environment, with the code **throwing** when it is
+unset — so revisiting the choice costs an env change rather than a sweep through the 23
+source files that currently carry a hardcoded fallback. Making that true is the
+follow-up work; until it lands, a literal in `build.mjs` is what actually decides the
+region at deploy time.
 
 ### Phase 1 — the freeze
 
