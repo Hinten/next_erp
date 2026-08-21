@@ -151,12 +151,41 @@ describe('createFirestoreTokenStore().save — ADR 0011 tier 2, update-if-newer'
     expect(tx.sets.map((s) => s.id)).toEqual(['current']);
   });
 
+  it('lets the write through when the stored CREDENTIAL is unusable', async () => {
+    // ⚠️ `parseRead`'s tolerance covers the whole triple, not just the
+    // timestamp. A `current` with a perfectly good `expirationDate` but a
+    // missing or renamed `access_token` (rule 8's legacy field tolerance) must
+    // not block the healing write — and must never be RETURNED, because the
+    // drop branch's token goes straight into an `Authorization` header.
+    for (const broken of [
+      { access_token: undefined, refresh_token: 'y' },
+      { access_token: 'x', refresh_token: undefined },
+      { access_token: 42, refresh_token: 'y' },
+    ]) {
+      const { db, tx } = fakeDb({
+        // ⚠️ Must genuinely OUTLIVE the incoming token (whose default is 30
+        // days), or the write lands because it is newer and the test never
+        // exercises the credential half of the predicate at all.
+        current: { ...broken, expirationDate: NOW + 10 ** 12 } as never,
+      });
+      const store = createFirestoreTokenStore(db, 'int-1');
+
+      const out = await store.save(tok({ access_token: 'healed' }));
+
+      expect(
+        tx.sets.map((x) => x.id),
+        JSON.stringify(broken),
+      ).toEqual(['current']);
+      expect(out.access_token, JSON.stringify(broken)).toBe('healed');
+    }
+  });
+
   it('lets the write through when the stored expirationDate is not a finite number', async () => {
     // ⚠️ `parseRead` is SOFT — it logs and returns the RAW document on a schema
     // mismatch, so a legacy or hand-edited `current` can hand the guard a
     // string, a null, or nothing at all. None of those may freeze the account's
     // token forever; the guard steps aside and the write heals the document.
-    for (const bogus of [undefined, null, 'nao-e-numero', Number.NaN, Infinity]) {
+    for (const bogus of [undefined, null, 'nao-e-numero', Number.NaN, Infinity, '9999999999999']) {
       const { db, tx } = fakeDb({
         current: { access_token: 'x', refresh_token: 'y', expirationDate: bogus } as never,
       });
@@ -191,6 +220,60 @@ describe('createFirestoreTokenStore().save — ADR 0011 tier 2, update-if-newer'
       expect(tx.deletes.sort(), label).toEqual(['legacy-a', 'legacy-b']);
       expect(tx.deletes, label).not.toContain('current');
     }
+  });
+
+  /**
+   * ADR 0011 "drop versus surface": server-side handlers drop and LOG. A guard
+   * that starts misfiring — a finite-but-wrong stored `expirationDate`, or a
+   * skewed instance clock — is otherwise invisible, and the operator only sees
+   * "labels stopped working" with nothing to grep for.
+   */
+  describe('the dropped write leaves a record', () => {
+    it('warns when the stored token wins, naming both expiries and no token material', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { db } = fakeDb({
+        current: tok({ access_token: 'winner', expirationDate: NOW + 10_000 }),
+      });
+      const store = createFirestoreTokenStore(db, 'int-1');
+
+      await store.save(tok({ access_token: 'loser', expirationDate: NOW + 5_000 }));
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message, payload] = warn.mock.calls[0]!;
+      expect(message).toContain('[melhor-envio/token-store]');
+      expect(payload).toEqual({
+        intFreteId: 'int-1',
+        storedExpiry: NOW + 10_000,
+        incomingExpiry: NOW + 5_000,
+      });
+      // ⚠️ Cloud Logging is broadly readable — the payload carries ids and
+      // timestamps only, never a credential.
+      expect(JSON.stringify(payload)).not.toContain('winner');
+      expect(JSON.stringify(payload)).not.toContain('loser');
+      warn.mockRestore();
+    });
+
+    it('stays quiet when the write actually lands', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { db } = fakeDb({ current: tok({ expirationDate: NOW }) });
+      const store = createFirestoreTokenStore(db, 'int-1');
+
+      await store.save(tok({ expirationDate: NOW + 1 }));
+
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('stays quiet on the force path', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { db } = fakeDb({ current: tok({ expirationDate: NOW + 10 ** 12 }) });
+      const store = createFirestoreTokenStore(db, 'int-1');
+
+      await store.save(tok(), { force: true });
+
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
   });
 
   it('force writes unconditionally — the OAuth callback path', async () => {

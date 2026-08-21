@@ -94,8 +94,21 @@ export function createFirestoreTokenStore(db: Firestore, intFreteId: string): To
           // a legacy or hand-edited doc must not be able to freeze this account's
           // token forever, and a comparison against `undefined`/`NaN` silently
           // answers `false` for reasons that have nothing to do with freshness.
+          //
+          // ⚠️ The predicate covers the WHOLE triple, not just the timestamp.
+          // `parseRead`'s tolerance is what rule 8 mandates for the legacy
+          // corpus (renamed/absent fields), and the drop branch does not merely
+          // compare the stored doc — it RETURNS it. A `current` with a finite
+          // `expirationDate` but a missing `access_token` would otherwise block
+          // the healing write AND hand back `undefined` typed as `string`,
+          // straight into an `Authorization` header. A document that cannot be
+          // returned must not be allowed to block.
           const storedExpiry = parsed.expirationDate;
-          const comparable = typeof storedExpiry === 'number' && Number.isFinite(storedExpiry);
+          const comparable =
+            typeof storedExpiry === 'number' &&
+            Number.isFinite(storedExpiry) &&
+            typeof parsed.access_token === 'string' &&
+            typeof parsed.refresh_token === 'string';
           // `>=`, not `>`: a tie is two equally-fresh credentials, and keeping
           // the stored one means a replayed save writes nothing (idempotent).
           if (comparable && storedExpiry >= token.expirationDate) {
@@ -117,6 +130,28 @@ export function createFirestoreTokenStore(db: Firestore, intFreteId: string): To
           if (d.id !== TOKEN_DOC_ID) tx.delete(d.ref);
         }
       });
+      if (committed !== token) {
+        // ADR 0011 "drop versus surface": a dropped write must leave a record,
+        // or a guard that starts misfiring is invisible — the operator just sees
+        // "labels stopped working" with nothing to grep for. The two ways this
+        // one can misfire are a `current` whose `expirationDate` is finite but
+        // WRONG (far-future), which pins the account to a dead credential, and
+        // an instance clock skewed enough to invert the ordering.
+        //
+        // Outside the callback on purpose: an OCC retry re-runs the callback and
+        // would multiply the line.
+        //
+        // ⚠️ Timestamps and the id only — never token material. Cloud Logging is
+        // broadly readable (same rule as the OAuth callback's error log).
+        console.warn(
+          '[melhor-envio/token-store] refresh perdeu a corrida de escrita; token armazenado mantido',
+          {
+            intFreteId,
+            storedExpiry: committed.expirationDate,
+            incomingExpiry: token.expirationDate,
+          },
+        );
+      }
       return committed;
     },
   };
