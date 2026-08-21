@@ -13,6 +13,7 @@ import {
 import { PERM } from '@delfrance/auth';
 import { usePermission } from '@/lib/auth';
 import { useConfirmDialog } from './ConfirmDialog';
+import { ReembolsoParcialModal } from './ReembolsoParcialModal';
 import {
   formatarPrazo,
   legendaTipoReclamacao,
@@ -98,7 +99,10 @@ const ACOES_SIMPLES = [
 type AcaoSimples = (typeof ACOES_SIMPLES)[number];
 
 /** Verbs this panel renders a button for; the rest still show as badges. */
-const VERBOS_COM_BOTAO = new Set(ACOES_SIMPLES.flatMap((a) => a.verbos));
+const VERBOS_COM_BOTAO = new Set([
+  ...ACOES_SIMPLES.flatMap((a) => a.verbos),
+  'allow_partial_refund',
+]);
 
 export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelProps) {
   const client = useMercadoLivreClient();
@@ -108,6 +112,9 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
   const [aberto, setAberto] = useState(false);
   const [executando, setExecutando] = useState<AcaoSimples['acao'] | null>(null);
   const [acaoErro, setAcaoErro] = useState<string | null>(null);
+  const [parcialAberto, setParcialAberto] = useState(false);
+  const [enviandoParcial, setEnviandoParcial] = useState(false);
+  const [parcialErro, setParcialErro] = useState<string | null>(null);
 
   const estado = useQuery({
     queryKey: ['mlReclamacao', integracaoId, claimId],
@@ -157,6 +164,46 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
       }
     } finally {
       setExecutando(null);
+    }
+  }
+
+  /**
+   * Commit the chosen partial refund.
+   *
+   * ⚠️ Sends the AMOUNT as the authority plus the percentage the operator saw.
+   * The backend refuses the request outright if either is missing, so ML's 50%
+   * default has no path to fire even if this component were bypassed.
+   */
+  async function confirmarParcial(escolha: {
+    valorReembolsoMinor: number;
+    percentualExibido: number;
+  }): Promise<void> {
+    if (client == null) return;
+    setParcialErro(null);
+    setEnviandoParcial(true);
+    try {
+      await client.reclamacaoAcao({
+        integracaoId,
+        claimId,
+        acao: 'reembolso_parcial',
+        valorReembolsoMinor: escolha.valorReembolsoMinor,
+        percentualExibido: escolha.percentualExibido,
+      });
+      setParcialAberto(false);
+      await queryClient.invalidateQueries({ queryKey: ['mlReclamacao', integracaoId, claimId] });
+    } catch (err) {
+      // ⚠️ The modal STAYS OPEN on a refusal. A 409 here names the percentages ML
+      // does offer, and closing would throw that away along with the operator's
+      // place in the list.
+      if (err instanceof MercadoLivreClientHttpError) {
+        setParcialErro(err.message);
+      } else if (err instanceof MercadoLivreClientNetworkError) {
+        setParcialErro('Não foi possível falar com o Mercado Livre. Tente novamente.');
+      } else {
+        throw err;
+      }
+    } finally {
+      setEnviandoParcial(false);
     }
   }
 
@@ -317,6 +364,25 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
                       {a.rotulo}
                     </Button>
                   ))}
+                  {/* ⚠️ Partial refund is the ONE verb behind a picker rather
+                      than a plain confirm: ML accepts only percentages from its
+                      own offer list and reads a MISSING one as 50%. The button
+                      appears only when ML offers the verb AND actually returned
+                      offers — a picker with nothing to pick is a dead end. */}
+                  {estado.data.acoesDisponiveis.includes('allow_partial_refund') && (
+                    <Button
+                      size="compact-xs"
+                      variant="light"
+                      color="red"
+                      disabled={executando !== null}
+                      onClick={() => {
+                        setAcaoErro(null);
+                        setParcialAberto(true);
+                      }}
+                    >
+                      Reembolso parcial…
+                    </Button>
+                  )}
                   {/* Verbs with no button yet still show, so the operator can
                       see ML offers something this screen cannot do. */}
                   {estado.data.acoesDisponiveis
@@ -342,6 +408,17 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
         )}
       </Stack>
       {confirmEl}
+      <ReembolsoParcialModal
+        opened={parcialAberto}
+        onClose={() => setParcialAberto(false)}
+        ofertas={estado.data?.ofertasParciais?.available_offers ?? []}
+        recomendacoes={estado.data?.ofertasParciais?.recommendations ?? []}
+        restricoes={estado.data?.ofertasParciais?.restrictions ?? []}
+        carregando={estado.isFetching}
+        enviando={enviandoParcial}
+        erro={parcialErro}
+        onConfirm={(e) => void confirmarParcial(e)}
+      />
     </Card>
   );
 }
