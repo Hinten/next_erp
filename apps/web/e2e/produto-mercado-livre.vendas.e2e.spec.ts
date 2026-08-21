@@ -64,6 +64,19 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   });
 
   /**
+   * Start a new anúncio on an account, through the "Novo anúncio" dialog.
+   *
+   * ⚠️ Its controls are located THROUGH `getByRole('dialog')`. The produto editor
+   * has its own "Cancelar" in the form footer and its own "Excluir" in
+   * ObjectView's delete-confirm, so an unscoped locator resolves to two elements
+   * and Playwright's strict mode refuses the click.
+   */
+  async function criarAnuncio(page: Page, contaId: string): Promise<void> {
+    await page.getByTestId(`ml-novo-anuncio-${contaId}`).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Criar anúncio' }).click();
+  }
+
+  /**
    * Open the Mercado Livre tab, then ONE account's tab inside it, and return
    * that account's card.
    *
@@ -73,11 +86,6 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
    * badge ("Não publicado", or the listing count), so an exact match would never
    * hit.
    */
-  async function criarAnuncio(page: Page, contaId: string): Promise<void> {
-    await page.getByTestId(`ml-novo-anuncio-${contaId}`).click();
-    await page.getByRole('button', { name: 'Criar anúncio' }).click();
-  }
-
   async function abrirConta(page: Page, contaId: string): Promise<Locator> {
     await page.getByRole('tab', { name: 'Mercado Livre' }).click();
     await page.getByRole('tab', { name: contaId }).click({ timeout: 30_000 });
@@ -124,8 +132,12 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // exists its own form owns that value, and a second control for it beside
     // the form would be two inputs for one thing.
     await page.getByTestId(`ml-novo-anuncio-${contaUnlinked}`).click();
-    await expect(page.getByLabel('Tipo de anúncio')).toBeVisible();
-    await page.getByRole('button', { name: 'Cancelar' }).click();
+    const dialogo = page.getByRole('dialog');
+    // ⚠️ `getByRole('combobox')`, not `getByLabel`: a Mantine `Select` renders
+    // its listbox `aria-labelledby` the SAME label as its input, so `getByLabel`
+    // resolves to two elements once the dropdown exists.
+    await expect(dialogo.getByRole('combobox', { name: 'Tipo de anúncio' })).toBeVisible();
+    await dialogo.getByRole('button', { name: 'Cancelar' }).click();
   });
 
   test('preparing a draft opens the editor and keeps publish gated on a category', async ({
@@ -312,7 +324,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(anuncios).toHaveCount(1, { timeout: 15_000 });
 
     await card.getByRole('button', { name: 'Excluir anúncio' }).click();
-    await page.getByRole('button', { name: 'Excluir', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Excluir', exact: true }).click();
 
     await expect(anuncios).toHaveCount(0, { timeout: 15_000 });
     await expect(card.getByText('Nenhum anúncio desta conta para este produto.')).toBeVisible();
