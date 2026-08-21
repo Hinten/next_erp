@@ -1,8 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
 
 /**
  * Repo invariant: in a **deploy-artifact manifest**, the Firebase SDK specs are
@@ -35,7 +34,6 @@ import { describe, expect, it } from 'vitest';
  * oversight — the two SDKs below are the ones whose transitive tree reaches every
  * trigger. Extending the guard is a one-line change to `PINNED`.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * The two packages whose version must be deliberate. Both are esbuild `external`
@@ -88,15 +86,7 @@ const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
  * five-manifest anchor test below and a deliberately renamed codebase.
  */
 function findArtifactManifests() {
-  const ls = (...args) =>
-    execFileSync('git', [...args, '--', ':(glob)apps/**/functions/package.json'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    })
-      .split('\n')
-      .filter(Boolean);
-
-  return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
+  return gitLsFiles(':(glob)apps/**/functions/package.json');
 }
 
 /**

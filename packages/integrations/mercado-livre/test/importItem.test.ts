@@ -4,6 +4,7 @@ import { itemSchema } from '../src/types';
 import {
   attributesFromItem,
   isKitFromAttributes,
+  itemStockLivesOnChildren,
   mapMlItemToImport,
   skuFromAttributes,
   skuGuessFromVariations,
@@ -179,5 +180,36 @@ describe('skuGuessFromVariations (#438 dedup helper)', () => {
       ],
     });
     expect(skuGuessFromVariations(item)).toBeNull();
+  });
+});
+
+describe('itemStockLivesOnChildren (#706)', () => {
+  it('false for a plain listing — the item IS the stock unit', () => {
+    expect(itemStockLivesOnChildren(itemSchema.parse({ id: 'MLB1' }))).toBe(false);
+  });
+
+  it('true for a legacy variations[] listing — each variation carries its own quantity', () => {
+    const item = itemSchema.parse({ id: 'MLB1', variations: [{ id: 1 }] });
+    expect(itemStockLivesOnChildren(item)).toBe(true);
+  });
+
+  it('true for a User-Products item — every member becomes a child produto', () => {
+    const item = itemSchema.parse({ id: 'MLB1', family_name: 'Camiseta Lisa' });
+    expect(itemStockLivesOnChildren(item)).toBe(true);
+  });
+
+  it('an EMPTY variations array is not children (matches import.ts hasVariations)', () => {
+    expect(itemStockLivesOnChildren(itemSchema.parse({ id: 'MLB1', variations: [] }))).toBe(false);
+  });
+});
+
+describe('mapMlItemToImport — userProductId (#706)', () => {
+  it('carries the item user_product_id through', () => {
+    const item = itemSchema.parse({ id: 'MLB1', user_product_id: 'MLBU777' });
+    expect(mapMlItemToImport(item).userProductId).toBe('MLBU777');
+  });
+
+  it('is null when ML omits it', () => {
+    expect(mapMlItemToImport(itemSchema.parse({ id: 'MLB1' })).userProductId).toBeNull();
   });
 });

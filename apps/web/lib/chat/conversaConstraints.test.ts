@@ -64,12 +64,12 @@ describe('conversaConstraintSpecs — composable filters', () => {
     });
   });
 
-  it('adds cor_etiqueta and usarioOuterRef filters, and honours a custom limit', () => {
+  it('adds cor_etiqueta and clienteOuterRef filters, and honours a custom limit', () => {
     const specs = conversaConstraintSpecs({
       tab: 'todas',
       ordem: 'ultima',
       etiqueta: 0xfff44336,
-      usarioOuterRef: 'documents/usuarios/u1',
+      clienteOuterRef: 'documents/clientes/c1',
       limit: 50,
     });
     expect(specs).toContainEqual({
@@ -81,8 +81,8 @@ describe('conversaConstraintSpecs — composable filters', () => {
     expect(specs).toContainEqual({
       kind: 'where',
       op: '==',
-      field: 'usarioOuterRef',
-      value: 'documents/usuarios/u1',
+      field: 'clienteOuterRef',
+      value: 'documents/clientes/c1',
     });
     expect(specs.at(-1)).toEqual({ kind: 'limit', value: 50 });
   });
@@ -93,7 +93,7 @@ describe('conversaConstraintSpecs — composable filters', () => {
       ordem: 'ultima',
       integracaoId: null,
       etiqueta: null,
-      usarioOuterRef: null,
+      clienteOuterRef: null,
     });
     // Only orderBy + limit — no where clauses.
     expect(specs.filter((s) => s.kind === 'where')).toHaveLength(0);

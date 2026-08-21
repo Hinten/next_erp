@@ -15,8 +15,10 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * (`.old/lib/despacho/pages/checkout.dart`: `"Quantidade excedida"` 1522/1563/1573,
  * `"Produto não esperado"` 1616, `"Todos os items já foram lançados"` 1473). The
  * new-app pure engine (`../pureLogic/checkoutEngine.ts`, PR 2) reproduces them
- * byte-for-byte so a Flutter reader of a shared-backend checkout doc sees
- * identical `error` strings. NOTE the legacy spelling: English-plural "items"
+ * byte-for-byte — not for a Flutter reader (there is no shared backend and no
+ * second live app, rule 8), but because the MIGRATED CORPUS stores these exact
+ * strings and our own readers must round-trip a legacy row unchanged.
+ * NOTE the legacy spelling: English-plural "items"
  * (not "itens") and the accented "já".
  */
 export const ITEM_CHECKOUT_ERRORS = {
@@ -39,8 +41,10 @@ export type ItemCheckoutError = (typeof ITEM_CHECKOUT_ERRORS)[keyof typeof ITEM_
  *
  * Datetime unit: MILLISECONDS since epoch — legacy `maybeDateTimeToJson`
  * (`.old/packages/global/lib/src/models/utils.dart:95`) serializes
- * `millisecondsSinceEpoch`. This port keeps ms for byte-for-byte parity
- * with the live Flutter app on the shared backend (the repo default elsewhere is
+ * `millisecondsSinceEpoch`. This port keeps ms for byte-for-byte parity with the
+ * MIGRATED CORPUS — every checkout doc that arrives is stored in ms — and not,
+ * as this note used to claim, with a live Flutter app on a shared backend, which
+ * rule 8 rules out. (The repo default elsewhere is
  * µs; the tolerant `millisSinceEpoch` read still parses either).
  */
 export const itemCheckoutPedidoSchema = z
@@ -76,8 +80,13 @@ export type ItemCheckoutPedido = z.infer<typeof itemCheckoutPedidoSchema>;
  *   timestamp                           | int ms        | ALWAYS present (explicit null)
  *
  * ¹ The legacy Flutter writer OMITS `title`/`obs`/`ehDoFreteInicial` when null
- *   (`@JsonKey(includeIfNull:false)`); the new-app writer sets them explicitly
- *   (the Flutter reader is tolerant — `as String?` / `as bool?`). The base-model
+ *   (`@JsonKey(includeIfNull:false)`); the new-app writer sets them explicitly.
+ *   The tolerance that matters runs the OTHER way now: no Flutter reader is left
+ *   to be lenient about what we write (rule 8), but a migrated checkout doc whose
+ *   values WERE null reaches us missing those keys entirely — so all three stay
+ *   nullable-with-default and this schema must parse their absence. (Not every
+ *   doc: one written with a real `title` carries the key, exactly as the
+ *   omit-when-null rule above implies.) The base-model
  *   keys `docId`/`createTime`/`updateTime`/`readTime` (also omit-when-null) are
  *   NOT part of this body schema; `.passthrough()` keeps them on read.
  *

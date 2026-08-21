@@ -100,6 +100,7 @@ import {
   MercadoLivreHttpError,
   createMercadoLivreApi,
   estadoFromMlStatus,
+  itemStockLivesOnChildren,
 } from '@delfrance/integrations-mercado-livre';
 import {
   produtoCollection,
@@ -263,6 +264,10 @@ export async function syncItemStatus(
       },
       { status: item.status ?? null, subStatus: item.sub_status ?? null },
       await fetchModeracoes(api, itemId, item),
+      // #706: this member's own stock identity, straight off the fetched item.
+      // The family's parent link deliberately gets none — a User Product
+      // describes a product at VARIATION level, so the members carry them.
+      item.user_product_id ?? null,
     );
   }
 
@@ -310,6 +315,13 @@ export async function syncItemStatus(
     itemId,
     item.status ?? null,
     item.sub_status ?? null,
+    // #706 multiorigem: the UP that backs this listing's stock — but ONLY when
+    // the listing IS the stock unit. `itemStockLivesOnChildren` is the same gate
+    // `importCore` applies (`args.hasVariations`), shared so the two cannot
+    // drift: a legacy `variations[]` item and a User-Products family both keep
+    // their quantities on CHILD produtos, and an item-level UP id on the parent
+    // link would let one number be written for the whole family (#1142).
+    itemStockLivesOnChildren(item) ? null : (item.user_product_id ?? null),
     await fetchModeracoes(api, itemId, item),
   );
 }
@@ -341,6 +353,7 @@ async function applyResolvedStatus(
   denormItemId: string,
   status: string | null,
   subStatus: string[] | null,
+  userProductId: string | null,
   moderacoes: MlModeracao[],
 ): Promise<ItemsSyncOutcome> {
   const estado = estadoFromMlStatus(status);
@@ -364,6 +377,13 @@ async function applyResolvedStatus(
   // this convergent — the flag can only be true while there is a write left to do.
   const errorsToClear = currentErrors.length > 0 && podeEnviarEstoque(status, subStatus).enviar;
   const estadoChanged = estado !== currentEstado;
+  // #706: counted as a change on its own, for the same reason `errorsToClear` is
+  // — a listing already at the right status would short-circuit on `unchanged`
+  // below and never gain the field. This sync is the catalogue-wide self-heal.
+  const userProductIdChanged =
+    userProductId != null &&
+    userProductId !==
+      (typeof link.data.userProductId === 'string' ? link.data.userProductId : null);
   // ⚠️ `moderacoes` counts as a change in its own right, for the SAME reason
   // `errorsToClear` does and with a sharper edge (#1087): a listing already at
   // the right estado/status/sub_status would short-circuit on `unchanged` below
@@ -378,6 +398,7 @@ async function applyResolvedStatus(
     estadoChanged ||
     status !== currentStatus ||
     !stringArraysEqual(subStatus, currentSubStatus) ||
+    userProductIdChanged ||
     errorsToClear ||
     moderacoesChanged;
 
@@ -395,12 +416,20 @@ async function applyResolvedStatus(
       // carries no `id`: there would be no key to union or remove by, and inventing
       // one is how the arrays grow entries nothing can ever match.
       skipDenorm: !estadoChanged || denormItemId === '',
-      // ⚠️ ORDER: `moderacoes` comes AFTER the spread, so it wins over the `[]`
-      // inside `clearFalha()`. Both are "the listing is healthy" statements, but
-      // only this one was read from ML — and they genuinely disagree in the case
-      // that motivated a separate field, `active` + `poor_quality_thumbnail`,
-      // where the listing is sendable (so the latch clears) AND moderated.
-      extra: { ...(errorsToClear ? clearFalha() : {}), moderacoes },
+      // `userProductId` is fill-only: never write null over a stored id because
+      // this particular response omitted it. The field is an identity, not an
+      // observation — and it collides with neither of the other two keys.
+      //
+      // ⚠️ ORDER: `moderacoes` comes LAST, so it wins over the `[]` inside
+      // `clearFalha()`. Both are "the listing is healthy" statements, but only
+      // this one was read from ML — and they genuinely disagree in the case that
+      // motivated a separate field, `active` + `poor_quality_thumbnail`, where
+      // the listing is sendable (so the latch clears) AND moderated.
+      extra: {
+        ...(errorsToClear ? clearFalha() : {}),
+        ...(userProductIdChanged ? { userProductId } : {}),
+        moderacoes,
+      },
     },
   );
 
@@ -461,6 +490,18 @@ export async function applyMemberStatusAndFold(
    * assembled entirely from disk.
    */
   moderacoes: MlModeracao[] | null,
+  /**
+   * The notified member's own `user_product_id` (#706) — the stock identity on a
+   * multiorigin conta — or `null` for a caller that has no fresh reading of it.
+   *
+   * Same `null` ≠ "empty" discipline as `moderacoes` above, and for the same
+   * reason: this is an IDENTITY, so it is written fill-only and a caller that
+   * did not learn it must not be able to erase a stored one. The stock sender is
+   * that caller on its verification path, and it is also the component that
+   * stamps this field itself on a SUCCESSFUL send — so it has nothing to add
+   * here.
+   */
+  userProductId: string | null = null,
 ): Promise<ItemsSyncOutcome> {
   const status = observed.status;
   const subStatus = observed.subStatus;
@@ -534,9 +575,18 @@ export async function applyMemberStatusAndFold(
     if (!notified) foldable.push({ status, subStatus, moderacoes: moderacoes ?? [] });
 
     const notifiedRaw = (notified?.data() ?? {}) as Record<string, unknown>;
+    // #706: counted as a CHANGE in its own right, which is what makes the `items`
+    // sync the catalogue-wide self-heal — a listing whose status never moves
+    // would otherwise never gain the field, and that sync is the only component
+    // that sees a member's fresh ML item on its own schedule.
+    const userProductIdChanged =
+      userProductId != null &&
+      userProductId !==
+        (typeof notifiedRaw.userProductId === 'string' ? notifiedRaw.userProductId : null);
     const memberChanged =
       notified != null &&
       (status !== (typeof notifiedRaw.status === 'string' ? notifiedRaw.status : null) ||
+        userProductIdChanged ||
         !stringArraysEqual(
           subStatus,
           Array.isArray(notifiedRaw.sub_status) ? (notifiedRaw.sub_status as string[]) : null,
@@ -582,7 +632,15 @@ export async function applyMemberStatusAndFold(
     if (memberChanged && notified) {
       tx.set(
         notified.ref,
-        { status, sub_status: subStatus, ...(moderacoes != null ? { moderacoes } : {}) },
+        {
+          status,
+          sub_status: subStatus,
+          ...(moderacoes != null ? { moderacoes } : {}),
+          // Also fill-only, and for a different reason than `moderacoes`:
+          // `userProductId` is an IDENTITY, not an observation, so a response
+          // that simply omitted it must never null a stored one (#706).
+          ...(userProductId != null ? { userProductId } : {}),
+        },
         { merge: true },
       );
     }

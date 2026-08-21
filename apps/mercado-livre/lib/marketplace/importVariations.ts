@@ -90,6 +90,13 @@ export interface ImportVariationChildrenUpOptions {
    */
   status: string | null;
   subStatus: string[] | null;
+  /**
+   * The member item's own `user_product_id` (#706) — the stock identity on a
+   * multiorigin conta. Carried here rather than re-derived because the caller
+   * already mapped the member's ML item; see the field's docblock on
+   * `variacaoMercadoLivreLinkSchema`.
+   */
+  userProductId: string | null;
 }
 
 export async function importVariationChildren(
@@ -154,7 +161,12 @@ export async function importVariationChildren(
       existingEstoqueQty: existingStock?.quantidade ?? null,
       existingEstoqueReservada: existingStock?.reservada ?? null,
       up: up
-        ? { itemId: mappedVariation.variationId, status: up.status, subStatus: up.subStatus }
+        ? {
+            itemId: mappedVariation.variationId,
+            status: up.status,
+            subStatus: up.subStatus,
+            userProductId: up.userProductId,
+          }
         : null,
       now,
     };
