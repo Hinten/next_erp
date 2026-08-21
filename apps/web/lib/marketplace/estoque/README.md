@@ -51,7 +51,7 @@ progress dialog, the produtos page or the produto ML tab.
 1. **A backend route** `POST /api/marketplace/<canal>/enviar-estoque` in
    `apps/<canal>`, returning the same envelope
    `{ listings[], produtosSemEnvio[], pausadoAte }` that
-   `apps/mercado-livre/lib/marketplace/estoqueManual.ts` documents. Nothing in
+   `apps/mercado-livre/lib/marketplace/estoque/estoqueManual.ts` documents. Nothing in
    that envelope is Mercado-Livre-specific by design (`anuncioId`, not
    `itemId`).
 2. **`providers/<canal>.ts`** exporting a `StockPushProvider`:

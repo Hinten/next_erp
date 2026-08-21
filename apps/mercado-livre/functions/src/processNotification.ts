@@ -5,7 +5,7 @@ import {
   MERCADO_LIVRE_NOTIFICATION_QUEUE,
   TASK_MAX_ATTEMPTS,
   handleNotificationTask,
-} from '../../lib/marketplace/notificacao';
+} from '../../lib/marketplace/notificacoes/notificacao';
 import { getDb } from './lib/admin';
 import { readCacheSummary } from '@delfrance/data/admin/cache';
 import { TASKS_SCHEDULER_REGION } from './options';

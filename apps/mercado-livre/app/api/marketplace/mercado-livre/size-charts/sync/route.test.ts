@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreReauthRequiredError } from '@delfrance/integrations-mercado-livre';
 
-import { TabelaDeMedidasNotFoundError } from '@/lib/marketplace/sizeChartSync';
+import { TabelaDeMedidasNotFoundError } from '@/lib/marketplace/size-charts/sizeChartSync';
 
 // verifyCaller / context loader / sync are mocked; the route's own logic
 // (body validation, wiring, error mapping) runs real.
@@ -21,13 +21,13 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/sizeChartSync', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/sizeChartSync')>();
+vi.mock('@/lib/marketplace/size-charts/sizeChartSync', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/size-charts/sizeChartSync')>();
   return { ...actual, syncSizeCharts: h.syncSizeCharts };
 });
 

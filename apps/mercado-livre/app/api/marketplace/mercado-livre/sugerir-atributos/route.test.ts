@@ -39,8 +39,8 @@ vi.mock('@delfrance/ai/admin', async (importActual) => {
 });
 
 // Guard: reaching any of these means the gate under test did NOT decline.
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 vi.mock('@/lib/ai/suggestAttributes', async (importActual) => {

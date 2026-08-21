@@ -13,7 +13,7 @@
  * is enqueued or written, which removes the anonymous amplification (an enqueue,
  * a Firestore create on the failure path, up to 5 sweep re-drives and one
  * rate-limited ML API call per POST). It fails OPEN when unconfigured or when
- * the field is absent — see lib/marketplace/webhookOrigin.ts for why, and for
+ * the field is absent — see lib/marketplace/notificacoes/webhookOrigin.ts for why, and for
  * why ML's published source-IP list was declined. A header-inventory probe used
  * to run first, to settle from live traffic whether ML ever sends a signature
  * header; the first live run answered NO and the probe was removed, so the
@@ -56,9 +56,9 @@ import {
   parseNotificationBody,
   persistNotificationFailure,
   shouldEnqueueTopic,
-} from '@/lib/marketplace/notificacao';
-import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/mlTasks';
-import { checkApplicationId } from '@/lib/marketplace/webhookOrigin';
+} from '@/lib/marketplace/notificacoes/notificacao';
+import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/notificacoes/mlTasks';
+import { checkApplicationId } from '@/lib/marketplace/notificacoes/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

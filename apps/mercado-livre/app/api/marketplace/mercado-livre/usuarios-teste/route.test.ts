@@ -28,12 +28,12 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/testUserStore', () => ({
+vi.mock('@/lib/marketplace/conta/testUserStore', () => ({
   createTestUserStore: () => ({ get: h.storeGet, put: h.storePut, list: h.storeList }),
 }));
 

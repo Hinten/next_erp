@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Isolate the trigger WIRING from the sync core + the admin singleton (the core has
-// its own coverage in `lib/marketplace/intFreteSync.test.ts`). Mirrors apps/whatsapp's
+// its own coverage in `lib/marketplace/frete/intFreteSync.test.ts`). Mirrors apps/whatsapp's
 // `sendOutbound.test.ts` — the real `onDocumentWritten` is used, and the returned
 // CloudFunction is driven through its `.run(event)` handle.
 const core = vi.hoisted(() => ({
@@ -9,17 +9,17 @@ const core = vi.hoisted(() => ({
   desativarIntFreteDaConta: vi.fn(async () => ({ action: 'desativado' })),
   sincronizarIntFreteDaConta: vi.fn(async () => ({ action: 'criado', intFreteId: 'if-1' })),
 }));
-vi.mock('../../lib/marketplace/intFreteSync', async () => {
+vi.mock('../../lib/marketplace/frete/intFreteSync', async () => {
   // `ehContaMercadoLivre` / `mudouCampoSincronizado` are the trigger's free gates —
   // keep them REAL so the zero-read assertions below test the actual predicate.
-  const real = await vi.importActual<typeof import('../../lib/marketplace/intFreteSync')>(
-    '../../lib/marketplace/intFreteSync',
+  const real = await vi.importActual<typeof import('../../lib/marketplace/frete/intFreteSync')>(
+    '../../lib/marketplace/frete/intFreteSync',
   );
   return { ...real, ...core };
 });
 
 // Same split for the #808 arm: the re-drive itself is stubbed (its own coverage
-// is in `lib/marketplace/notificacao.test.ts`), but `userIdResolvivel` — the
+// is in `lib/marketplace/notificacoes/notificacao.test.ts`), but `userIdResolvivel` — the
 // trigger's free, payload-only gate — stays REAL, so the zero-read assertions
 // below exercise the actual predicate rather than a restatement of it.
 const notif = vi.hoisted(() => ({
@@ -29,10 +29,10 @@ const notif = vi.hoisted(() => ({
     truncado: false,
   })),
 }));
-vi.mock('../../lib/marketplace/notificacao', async () => {
-  const real = await vi.importActual<typeof import('../../lib/marketplace/notificacao')>(
-    '../../lib/marketplace/notificacao',
-  );
+vi.mock('../../lib/marketplace/notificacoes/notificacao', async () => {
+  const real = await vi.importActual<
+    typeof import('../../lib/marketplace/notificacoes/notificacao')
+  >('../../lib/marketplace/notificacoes/notificacao');
   return { ...real, ...notif };
 });
 

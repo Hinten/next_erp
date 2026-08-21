@@ -14,8 +14,8 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/massImport', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/massImport')>();
+vi.mock('@/lib/marketplace/mass-import/massImport', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/mass-import/massImport')>();
   return { ...actual, cancelMassImportJob: h.cancelMassImportJob };
 });
 
