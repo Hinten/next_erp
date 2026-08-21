@@ -92,7 +92,7 @@ import {
  * ONE doc across messages — and across conversas. A per-message delete would
  * take a live attachment out from under another thread. Reclaiming them needs
  * refcounting (a `chat` collection-group query), which is a sweep feature, not a
- * cascade one.
+ * cascade one — tracked in #1207.
  *
  * What this cascade DOES change is discoverability: the leak already existed,
  * but the `mensagem` docs at least still pointed at the blobs. After this, the

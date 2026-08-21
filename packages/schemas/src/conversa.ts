@@ -228,7 +228,7 @@ export const conversaMeta: CollectionMetadata = {
    * §9 step-4 trap, pre-dating this cascade), NOT something to fix by deleting
    * the arquivos here: one arquivo doc is shared across messages and conversas
    * by deterministic media id, so a per-message delete would break a live
-   * attachment elsewhere. Reclaiming them needs refcounting in the sweep.
+   * attachment elsewhere. Reclaiming them needs refcounting in the sweep — #1207.
    *
    * ⚠️ Like every trigger in that codebase, it does nothing until
    * `functions:storage` is deployed — a manual step.
