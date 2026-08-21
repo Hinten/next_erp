@@ -54,7 +54,7 @@ import { VariationManager, type VariationRow } from '../../_components/Variation
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_PERSISTENT_SECTIONS,
-  PRODUTO_SECTIONS,
+  PRODUTO_SECTIONS_BASE,
   PRODUTO_TRANSIENT_FIELDS,
   SECTION_MERCADO_LIVRE,
   produtoFieldOverrides,
@@ -76,8 +76,15 @@ const produtoEditarSchema = produtoObjectViewSchema.extend({
   modificacoes: z.null().default(null),
 });
 
-/** Tab order for the edit page — the shared sections plus Modificações. */
-const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Modificações'];
+/**
+ * Tab order for the edit page — the shared sections, then the edit-only
+ * Modificações tab, then Mercado Livre.
+ *
+ * ⚠️ Modificações slots in BEFORE Mercado Livre on purpose: Mercado Livre is the
+ * last tab on the create screen too, and appending here would shift it one
+ * position left the moment the produto is saved.
+ */
+const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS_BASE, 'Modificações', SECTION_MERCADO_LIVRE];
 
 /** The shared transient keys plus the Modificações tab anchor. */
 const PRODUTO_TRANSIENT_FIELDS_EDITAR = [...PRODUTO_TRANSIENT_FIELDS, 'modificacoes'];

@@ -25,8 +25,19 @@ import { dimensaoRenderInput, pesoRenderInput } from './PesoField';
  */
 export const SECTION_MERCADO_LIVRE = 'Mercado Livre';
 
-/** Tab order for the Produto ObjectView — Variações before the media tabs. */
-export const PRODUTO_SECTIONS: string[] = [
+/**
+ * Tab order shared by every Produto screen, WITHOUT the Mercado Livre tab —
+ * Variações before the media tabs.
+ *
+ * ⚠️ Mercado Livre is deliberately not in here: it must stay the LAST tab on
+ * every produto screen, so each page appends `SECTION_MERCADO_LIVRE` itself
+ * after whatever screen-specific tabs it adds. A page-specific tab
+ * (`Modificações` on the edit screen) therefore slots in BETWEEN this list and
+ * Mercado Livre — never after it. Appending to `PRODUTO_SECTIONS` instead is
+ * what made the tab jump one position to the left the moment a produto was
+ * saved.
+ */
+export const PRODUTO_SECTIONS_BASE: string[] = [
   'Dados gerais',
   'Descrição',
   'Dimensões e peso',
@@ -39,8 +50,10 @@ export const PRODUTO_SECTIONS: string[] = [
   'Fotos',
   'Vídeos',
   'Anexos',
-  SECTION_MERCADO_LIVRE,
 ];
+
+/** Tab order for the create screen: the shared tabs, Mercado Livre last. */
+export const PRODUTO_SECTIONS: string[] = [...PRODUTO_SECTIONS_BASE, SECTION_MERCADO_LIVRE];
 
 /**
  * What both produto pages hand to `<ObjectView schema={…}>`: the produto page
