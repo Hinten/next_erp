@@ -135,13 +135,22 @@ is **Firebase App Hosting, which exists in six regions worldwide** — `us-centr
 `us-east4`, `us-east5`, `asia-east1`, `asia-southeast1`, `europe-west4` — and seven
 backends need it.
 
-| Region | Verdict |
-|---|---|
-| `us-central1` (Iowa) | ✅ every service |
-| `us-east4` (N. Virginia) | ✅ every service |
-| `us-east5` (Columbus) | ❌ neither Cloud Tasks nor Cloud Scheduler |
-| `us-east1` (S. Carolina) | ❌ no App Hosting — **and it would otherwise win**, see below |
-| `southamerica-east1` (São Paulo) | ❌ no App Hosting — despite being the latency-optimal choice for a Brazilian operation |
+The full service matrix across the realistic candidates. Every row here is an
+**availability** fact checked against Google's location tables — these are what decide
+the shortlist, and they are not estimates:
+
+| | `us-central1` Iowa | `us-east1` S. Carolina | `us-east4` N. Virginia | `us-east5` Columbus | `southamerica-east1` São Paulo |
+|---|---|---|---|---|---|
+| **App Hosting** — 7 backends | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **Cloud Tasks** — 10 queues | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Cloud Scheduler** — 12 jobs | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Firestore Enterprise + Pipelines** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Cloud Functions gen2** | ✅ Tier 1 | ✅ Tier 1 | ✅ Tier 1 | ⚠️ not listed Tier 1; deploys in practice | ✅ |
+| **Eventarc · Cloud Storage · Secret Manager** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Viable for this project** | ✅ **yes** | ❌ | ✅ **yes** | ❌ | ❌ |
+
+Two of the five survive, and both failures are single-service gaps rather than anything
+about the regions themselves.
 
 `us-east5` is not a hypothetical: it is what failed **11 of 15** Mercado Livre
 functions on 2026-08-19 — the 5 `onTaskDispatched` plus the 6 `onSchedule`, while the
