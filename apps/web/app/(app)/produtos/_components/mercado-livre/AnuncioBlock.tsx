@@ -69,6 +69,13 @@ export interface AnuncioBlockProps {
    */
   publishing: boolean | null;
   onPublish: (withPrices: boolean) => void;
+  /**
+   * Ask to remove this listing. Undefined hides the control — the operator lacks
+   * `PERM.produto.delete`, which is the bit Firestore rules require for a link
+   * doc (the subcollection inherits the produto's permissions).
+   */
+  onExcluir?: () => void;
+  excluindo: boolean;
 }
 
 export function AnuncioBlock({
@@ -101,6 +108,8 @@ export function AnuncioBlock({
   publishReason,
   publishing,
   onPublish,
+  onExcluir,
+  excluindo,
 }: AnuncioBlockProps) {
   // A listing ML has never accepted. `''` counts as never published, matching
   // the backend's own `link.id !== ''` test: the schema permits it and the
@@ -223,6 +232,23 @@ export function AnuncioBlock({
             </Button>
           </span>
         </Tooltip>
+        {/* Only for a listing Mercado Livre has never seen. Removing a PUBLISHED
+            one would orphan a live anúncio: `itemsStatusSync` would stop
+            resolving it, both sweeps would stop reaching it, and its child
+            `variacaoMercadoLivre` docs would dangle. Delisting remotely first is
+            #476, and out of scope here. */}
+        {isFirstPublish && onExcluir && (
+          <Button
+            type="button"
+            variant="subtle"
+            color="red"
+            onClick={onExcluir}
+            loading={excluindo}
+            disabled={Boolean(disabled) || loading}
+          >
+            Excluir anúncio
+          </Button>
+        )}
         {publishReason != null && (
           // Repeated below the buttons, not only in the tooltip: the vendas e2e
           // asserts the categoria one as visible page text, and a tooltip is not

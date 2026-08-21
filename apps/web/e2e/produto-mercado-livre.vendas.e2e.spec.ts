@@ -39,6 +39,9 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   // prepare"/"only where the account holds a listing" assertions no longer hold
   // for on a `describe.serial` retry.
   const contaMulti = `${prefix}-004`;
+  // A fifth, for the same reason: the delete test creates and destroys a draft,
+  // which no other test's tolerance logic should have to reason about.
+  const contaExcluir = `${prefix}-005`;
   // Deterministic (mirrors seedProdutoMlPublicado) so afterAll can always
   // sweep the link SUBCOLLECTION even when beforeAll dies mid-way — the
   // nome-prefix sweep only reaches the parent doc, and Firestore never
@@ -49,7 +52,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     await Promise.all([
-      seedMercadoLivreFixtures(prefix, 4).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
+      seedMercadoLivreFixtures(prefix, 5).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
       warmRoutes(browser, ['/produtos/novo', '/produtos/__aquecimento__/editar']),
     ]);
   });
@@ -296,6 +299,23 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // Both are drafts, and each carries its own form rather than the two
     // collapsing onto one record.
     await expect(card.getByText('Rascunho — ainda não publicado')).toHaveCount(2);
+  });
+
+  test('removes a draft that was never published', async ({ page }) => {
+    // The affordance "Novo anúncio" makes necessary: it is the first way to
+    // create a link doc that is pure clutter, so there has to be a way back.
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const card = await abrirConta(page, contaExcluir);
+
+    const anuncios = card.locator('[data-testid^="ml-anuncio-"]');
+    if ((await anuncios.count()) === 0) await criarAnuncio(page, contaExcluir);
+    await expect(anuncios).toHaveCount(1, { timeout: 15_000 });
+
+    await card.getByRole('button', { name: 'Excluir anúncio' }).click();
+    await page.getByRole('button', { name: 'Excluir', exact: true }).click();
+
+    await expect(anuncios).toHaveCount(0, { timeout: 15_000 });
+    await expect(card.getByText('Nenhum anúncio desta conta para este produto.')).toBeVisible();
   });
 
   test('shows the tab with a "save first" message on the create screen', async ({ page }) => {

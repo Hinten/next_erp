@@ -4,6 +4,9 @@ import type { Firestore } from 'firebase/firestore';
 
 const h = vi.hoisted(() => ({
   exists: false,
+  /** What the transactional read finds, for the remove path. */
+  stored: null as Record<string, unknown> | null,
+  deletes: [] as unknown[],
   sets: [] as unknown[],
   /** Every `addDoc` — the `'adicional'` path, which runs no transaction. */
   adds: [] as unknown[],
@@ -17,9 +20,12 @@ vi.mock('firebase/firestore', async (importOriginal) => {
     runTransaction: async <T>(_db: unknown, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.transactions += 1;
       return fn({
-        get: async () => ({ exists: () => h.exists }),
+        get: async () => ({ exists: () => h.exists, data: () => h.stored ?? undefined }),
         set: (_ref: unknown, data: unknown) => {
           h.sets.push(data);
+        },
+        delete: (ref: unknown) => {
+          h.deletes.push(ref);
         },
       });
     },
@@ -37,7 +43,8 @@ vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
   },
 }));
 
-const { buildListingDraft, createListingDraft, draftDocId } = await import('./listingDraft');
+const { buildListingDraft, createListingDraft, draftDocId, removeListingDraft } =
+  await import('./listingDraft');
 
 const ARGS = {
   integracaoId: 'conta-1',
@@ -49,6 +56,8 @@ const ARGS = {
 
 beforeEach(() => {
   h.exists = false;
+  h.stored = null;
+  h.deletes = [];
   h.sets = [];
   h.adds = [];
   h.transactions = 0;
@@ -152,5 +161,59 @@ describe('createListingDraft', () => {
     await createListingDraft({} as Firestore, 'prod-1', ARGS);
     expect(h.transactions).toBe(1);
     expect(h.adds).toHaveLength(0);
+  });
+});
+
+describe('removeListingDraft', () => {
+  it('deletes a listing that never reached Mercado Livre', async () => {
+    h.exists = true;
+    h.stored = { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho };
+
+    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
+    expect(h.deletes).toHaveLength(1);
+  });
+
+  it('refuses a listing that has been published', async () => {
+    // The race the transaction exists for: a publish (or the `items` webhook)
+    // stamps `id` on this doc between the confirm opening and the confirm being
+    // clicked. Deleting then orphans a LIVE anúncio — the status sync stops
+    // resolving it, both sweeps stop reaching it, and its child
+    // `variacaoMercadoLivre` docs dangle.
+    h.exists = true;
+    h.stored = { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.publicado };
+
+    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('published');
+    expect(h.deletes).toHaveLength(0);
+  });
+
+  it('decides on the TRANSACTIONAL read, not on what the caller was holding', async () => {
+    // The caller passes only an id, so there is no stale snapshot to be tempted
+    // by — and that is the point. Re-checking a predicate against a binding read
+    // outside the transaction is not a guard (root CLAUDE.md rule 7).
+    h.exists = true;
+    h.stored = { id: 'MLB777' };
+
+    await removeListingDraft({} as Firestore, 'prod-1', 'L-1');
+
+    expect(h.transactions).toBe(1);
+    expect(h.deletes).toHaveLength(0);
+  });
+
+  it('treats an empty id as never published, like the backend does', async () => {
+    // `bulkEstoquePlan` takes `link.id !== ''` as its test; the schema permits
+    // `''` and the migrated corpus contains it, so a `!= null` check here would
+    // leave those drafts undeletable.
+    h.exists = true;
+    h.stored = { id: '' };
+
+    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('removed');
+    expect(h.deletes).toHaveLength(1);
+  });
+
+  it('reports a listing that is already gone rather than failing', async () => {
+    h.exists = false;
+
+    expect(await removeListingDraft({} as Firestore, 'prod-1', 'L-1')).toBe('missing');
+    expect(h.deletes).toHaveLength(0);
   });
 });

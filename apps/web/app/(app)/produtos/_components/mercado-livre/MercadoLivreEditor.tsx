@@ -5,21 +5,7 @@ import Link from 'next/link';
 import { useFormContext, useFormState } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
-import {
-  Alert,
-  Anchor,
-  Badge,
-  Button,
-  Card,
-  Divider,
-  Group,
-  List,
-  Loader,
-  Select,
-  Stack,
-  Text,
-  Tooltip,
-} from '@mantine/core';
+import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
 import {
@@ -45,7 +31,7 @@ import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
 import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
 import { moderacoesPorCampo } from '@/lib/mercado-livre/listingModeracoes';
 import { mapPublishIssues } from '@/lib/mercado-livre/publishIssues';
-import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
+import { createListingDraft, removeListingDraft } from '@/lib/mercado-livre/listingDraft';
 import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
 import {
   estadoLabel,
@@ -125,6 +111,12 @@ export function MercadoLivreEditor({
   // loads, so without it the publish tooltip tells a fully-privileged operator
   // they lack permission on every page load (`publishDisabled.ts`).
   const { allowed: canPublish, loading: permLoading } = usePermission(PERM.integracao.write);
+  // ⚠️ A DIFFERENT bit from the one above. Firestore gates a `produtoMercadoLivre`
+  // doc by the parent produto's permissions (`subcollections.ts` copies
+  // `produtoMeta.permissions` wholesale), so deleting a link doc needs
+  // `d_produto` delete — not `integracao.write`, which governs the ML API calls.
+  // Offering the control on the wrong bit would put the failure in the rules.
+  const { allowed: canDelete } = usePermission(PERM.produto.delete);
 
   const contasQuery = useMemo(
     () =>
@@ -203,6 +195,10 @@ export function MercadoLivreEditor({
   const [criando, setCriando] = useState<string | null>(null);
   /** The conta whose "Novo anúncio" dialog is open, if any. */
   const [novoAnuncioConta, setNovoAnuncioConta] = useState<string | null>(null);
+  /** The link doc the operator is being asked to confirm removing, if any. */
+  const [excluirAlvo, setExcluirAlvo] = useState<string | null>(null);
+  /** The link doc whose delete is in flight, if any. */
+  const [excluindo, setExcluindo] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
   /** The link doc id whose public ML URL is being resolved, if any. */
@@ -435,6 +431,41 @@ export function MercadoLivreEditor({
       throw err;
     } finally {
       setCriando(null);
+    }
+  }
+
+  /**
+   * Remove a draft listing the operator confirmed.
+   *
+   * The guard lives in the transaction, not here: a publish landing between the
+   * confirm opening and this call would make the listing live, and deleting it
+   * then orphans a real Mercado Livre anúncio. `'published'` is that race,
+   * caught — it is reported, not retried.
+   */
+  async function handleExcluirAnuncio(linkDocId: string) {
+    setExcluindo(linkDocId);
+    try {
+      const outcome = await removeListingDraft(db, produtoId, linkDocId);
+      setExcluirAlvo(null);
+      if (outcome === 'published') {
+        notifications.show({
+          color: 'yellow',
+          message: 'O anúncio foi publicado enquanto você confirmava — não foi excluído.',
+        });
+        return;
+      }
+      notifications.show({
+        color: outcome === 'removed' ? 'green' : 'yellow',
+        message: outcome === 'removed' ? 'Anúncio excluído.' : 'Este anúncio já não existe.',
+      });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      throw err;
+    } finally {
+      setExcluindo(null);
     }
   }
 
@@ -798,6 +829,8 @@ export function MercadoLivreEditor({
                     void handlePublish(cId, linkDocId, withPrices)
                   }
                   onNovoAnuncio={setNovoAnuncioConta}
+                  onExcluirAnuncio={canDelete ? setExcluirAlvo : undefined}
+                  excluindo={excluindo}
                   onSalvarAnuncios={(cId, linkIds) => void handleSalvarAnuncios(cId, linkIds)}
                   onEnviarEstoque={(alvo, temLatch) => void handleEnviarEstoque(alvo, temLatch)}
                   onReverificar={handleReverificar}
@@ -825,6 +858,42 @@ export function MercadoLivreEditor({
               criando={criando === novoAnuncioConta}
             />
           )}
+          {/* Immediate on confirm, not staged behind the produto's save. This tab
+              is self-contained — its documents are created and written directly,
+              never through the produto form — so a delete that waited for
+              "Salvar alterações" would disagree with the create beside it.
+              `MacrosTab` is the in-repo precedent. */}
+          <Modal
+            opened={excluirAlvo != null}
+            onClose={() => setExcluirAlvo(null)}
+            title="Excluir anúncio"
+            centered
+          >
+            <Stack gap="md">
+              <Text size="sm">
+                Este anúncio nunca foi publicado no Mercado Livre. Excluí-lo remove apenas o
+                rascunho deste produto.
+              </Text>
+              <Group justify="flex-end" gap="sm">
+                <Button
+                  type="button"
+                  variant="default"
+                  onClick={() => setExcluirAlvo(null)}
+                  disabled={excluindo != null}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  color="red"
+                  onClick={() => excluirAlvo && void handleExcluirAnuncio(excluirAlvo)}
+                  loading={excluindo != null}
+                >
+                  Excluir
+                </Button>
+              </Group>
+            </Stack>
+          </Modal>
         </Stack>
       )}
     </OuterFormDirty>

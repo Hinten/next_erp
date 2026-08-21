@@ -91,6 +91,10 @@ export interface ContaPanelProps {
   criando: string | null;
   onPublish: (integracaoId: string, linkDocId: string, withPrices?: boolean) => void;
   onNovoAnuncio: (integracaoId: string) => void;
+  /** Undefined when the operator lacks `PERM.produto.delete`. */
+  onExcluirAnuncio?: (linkDocId: string) => void;
+  /** The link doc whose delete is in flight, across every account. */
+  excluindo: string | null;
   onSalvarAnuncios: (contaId: string, linkIds: readonly string[]) => void;
   onEnviarEstoque: (conta: StockPushIntegracao, temLatch: boolean) => void;
   onReverificar: (integracaoId: string, linkDocId: string) => void;
@@ -127,6 +131,8 @@ export function ContaPanel({
   criando,
   onPublish,
   onNovoAnuncio,
+  onExcluirAnuncio,
+  excluindo,
   onSalvarAnuncios,
   onEnviarEstoque,
   onReverificar,
@@ -284,6 +290,8 @@ export function ContaPanel({
               publishReason={publishReason}
               publishing={publishing?.linkDocId === l.id ? publishing.withPrices : null}
               onPublish={(withPrices) => onPublish(conta.id, l.id, withPrices)}
+              onExcluir={onExcluirAnuncio ? () => onExcluirAnuncio(l.id) : undefined}
+              excluindo={excluindo === l.id}
             />
           );
         })}

@@ -39,6 +39,9 @@ const h = vi.hoisted(() => ({
    */
   client: {} as Record<string, unknown>,
   createListingDraft: vi.fn(async () => ({ docId: 'novo', outcome: 'created' as const })),
+  removeListingDraft: vi.fn(async () => 'removed' as const),
+  /** What `usePermission` answers, per permission bit the editor asks for. */
+  permitido: true,
 }));
 
 vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
@@ -72,7 +75,7 @@ vi.mock('@delfrance/data/hooks', () => ({
   }),
 }));
 
-vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: true }) }));
+vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: h.permitido }) }));
 vi.mock('@/lib/mercado-livre/client', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
   return { ...actual, useMercadoLivreClient: () => h.client };
@@ -90,6 +93,7 @@ vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
 }));
 vi.mock('@/lib/mercado-livre/listingDraft', () => ({
   createListingDraft: h.createListingDraft,
+  removeListingDraft: h.removeListingDraft,
 }));
 
 /**
@@ -158,6 +162,8 @@ beforeEach(() => {
   h.notify.mockClear();
   h.client = {};
   h.createListingDraft.mockClear();
+  h.removeListingDraft.mockClear();
+  h.permitido = true;
 });
 
 /** Open one account's tab — the panels are lazy, so nothing renders until then. */
@@ -981,5 +987,82 @@ describe('one account at a time', () => {
     // enumerated so a hidden account's listings are actually in it.
     expect(h.saves.get('L-UM')).toHaveBeenCalledWith('flush');
     expect(h.saves.get('L-DOIS')).toHaveBeenCalledWith('flush');
+  });
+});
+
+describe('Excluir anúncio', () => {
+  function botaoExcluir(linkDocId: string) {
+    return [...screen.getByTestId(`ml-anuncio-${linkDocId}`).querySelectorAll('button')].find(
+      (b) => b.textContent === 'Excluir anúncio',
+    );
+  }
+
+  it('is offered on a listing that never reached Mercado Livre', async () => {
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    expect(botaoExcluir('L-DRAFT')).toBeDefined();
+  });
+
+  it('is absent on a PUBLISHED listing', async () => {
+    // Removing one would orphan a live anúncio: the status sync would stop
+    // resolving it, both sweeps would stop reaching it, and its child
+    // variação link docs would dangle. Delisting remotely first is #476.
+    h.links = [link('L-PUB', { id: 'MLB777' })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-PUB')).toBeDefined());
+
+    expect(botaoExcluir('L-PUB')).toBeUndefined();
+  });
+
+  it("is absent without the produto's delete permission", async () => {
+    // ⚠️ A different bit from the one gating publish: Firestore gates a
+    // `produtoMercadoLivre` doc by the PARENT produto's permissions, so the
+    // control has to follow the rule that would actually reject the write.
+    h.permitido = false;
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    expect(botaoExcluir('L-DRAFT')).toBeUndefined();
+  });
+
+  it('asks before removing, then removes the listing it was opened for', async () => {
+    h.links = [
+      link('L-A', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho }),
+      link('L-B', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-B')).toBeDefined());
+
+    fireEvent.click(botaoExcluir('L-B')!);
+    expect(h.removeListingDraft).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    });
+    expect(h.removeListingDraft).toHaveBeenCalledWith(expect.anything(), 'prod-1', 'L-B');
+  });
+
+  it('says so when the listing was published while the confirm was open', async () => {
+    // The race the transaction catches. It is reported, not retried: the doc is
+    // a live anúncio now and deleting it is no longer the right action.
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    h.removeListingDraft.mockResolvedValueOnce('published' as never);
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    fireEvent.click(botaoExcluir('L-DRAFT')!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    });
+
+    expect(h.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'yellow',
+        message: expect.stringContaining('publicado enquanto você confirmava'),
+      }),
+    );
   });
 });

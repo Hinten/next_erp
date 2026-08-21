@@ -158,3 +158,56 @@ export async function createListingDraft(
   });
   return { docId, outcome };
 }
+
+/** What {@link removeListingDraft} found when it looked. */
+export type RemoveDraftOutcome = 'removed' | 'missing' | 'published';
+
+/**
+ * Delete a draft listing — one that has never reached Mercado Livre.
+ *
+ * ## Why this exists at all
+ *
+ * Nothing could delete a link doc before, and nothing needed to: the doc set was
+ * bounded at one per account and every one of them meant something. "Novo
+ * anúncio" is the first way to make a link doc that is pure clutter — the
+ * duplicated-intent case `createListingDraft` accepts rather than prevents — so
+ * the way to remove one ships with it.
+ *
+ * ## Why a transaction, for a delete
+ *
+ * The predicate is "never published", and it can stop being true between the
+ * operator opening the confirm and confirming it: a publish from another tab, or
+ * the `items` webhook, stamps `id` on this same doc. Deleting then would orphan a
+ * LIVE Mercado Livre listing — `itemsStatusSync`'s `resolveLink` would find
+ * nothing, both sweeps would stop reaching it, and its child
+ * `variacaoMercadoLivre` docs would dangle with no parent.
+ *
+ * So the check is re-derived from the `tx.get` snapshot rather than from the
+ * `link` the button was rendered with (root `CLAUDE.md` rule 7 — a predicate
+ * re-checked against a binding read OUTSIDE the transaction is not a guard).
+ * `'published'` is the caller's cue to say so rather than to retry.
+ *
+ * ⚠️ `id === ''` counts as never published, matching the backend's own test
+ * (`bulkEstoquePlan` takes `link.id !== ''`): the schema permits `''` and the
+ * migrated corpus contains it.
+ *
+ * The `integracoesComProduto` denorm needs nothing here — the
+ * `onProdutoMercadoLivreLinkChanged` trigger re-derives account membership from
+ * the whole subcollection, so removing one draft cannot drop an account that
+ * still holds a live listing.
+ */
+export async function removeListingDraft(
+  db: Firestore,
+  produtoId: string,
+  linkDocId: string,
+): Promise<RemoveDraftOutcome> {
+  const ref = produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId);
+  return runTransaction<RemoveDraftOutcome>(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return 'missing';
+    const atual = snap.data() as Pick<ProdutoMercadoLivreLink, 'id'> | undefined;
+    if ((atual?.id ?? '') !== '') return 'published';
+    tx.delete(ref);
+    return 'removed';
+  });
+}
