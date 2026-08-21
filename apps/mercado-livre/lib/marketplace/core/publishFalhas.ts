@@ -439,7 +439,9 @@ export function falhaPatch(
  * The rule instead: **only a writer that just asked ML about moderation may
  * write `moderacoes`** — `itemsStatusSync`, `reverificarAnuncio` and, since the
  * import gained its own gated read, the IMPORTER; each sets it in the same patch
- * as the status it explains, value or `[]`. ⚠️ The importer is why this docblock
+ * as the status it explains — value or `[]`, or, on the importer's two skip paths,
+ * not at all (`null` = "never asked", which leaves the stored reason standing
+ * rather than overwriting it with a healthy-looking `[]`). ⚠️ The importer is why this docblock
  * no longer cites it as a second example of a caller that clears without asking:
  * it calls `clearFalha()` AND reads `/moderations`, and its own `moderacoes` key
  * is spread on top of this patch. What it does not do is DERIVE the field from

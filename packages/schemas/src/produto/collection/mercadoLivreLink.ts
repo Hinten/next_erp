@@ -473,9 +473,10 @@ export const variacaoMercadoLivreLinkSchema = z
      * Storing it per member is what keeps that fold free: `foldFamilyStatus` reads
      * the siblings' stored values and never has to `GET` a moderation per member.
      *
-     * ⚠️ Same rule as the parent's copy, including the `null` = "never asked"
-     * third value: written in the SAME patch as this member's
-     * `status`/`sub_status`, value or `[]`, never on its own.
+     * ⚠️ Same rule as the parent's copy, third value included: written in the
+     * SAME patch as this member's `status`/`sub_status`, never on its own — `[]`
+     * when ML was asked and reported none, and `null` ("never asked") omitting
+     * the key so whatever was stored stands.
      *
      * ⚠️ A LEGACY `variations[]` member never gets one, exactly as it never gets
      * a `status`. It is not a listing of its own — it has no ML item id, no
