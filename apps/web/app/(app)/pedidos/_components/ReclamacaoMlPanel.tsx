@@ -3,9 +3,16 @@
 import { useState } from 'react';
 import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { IconAlertTriangle, IconRefresh } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import {
+  MercadoLivreClientHttpError,
+  MercadoLivreClientNetworkError,
+  useMercadoLivreClient,
+} from '@/lib/mercado-livre/client';
+import { PERM } from '@delfrance/auth';
+import { usePermission } from '@/lib/auth';
+import { useConfirmDialog } from './ConfirmDialog';
 import {
   formatarPrazo,
   legendaTipoReclamacao,
@@ -43,9 +50,64 @@ export interface ReclamacaoMlPanelProps {
   integracaoId: string;
 }
 
+/**
+ * The verbs that need no amount, so one confirmation is the whole flow.
+ *
+ * ⚠️ The confirm copy states the CONSEQUENCE, not the verb. "Confirmar
+ * reembolso?" tells an operator nothing they did not already know; "the full
+ * amount goes back to the buyer and the claim closes, and this cannot be undone
+ * from the ERP" is the sentence that makes them stop and read.
+ *
+ * ⚠️ `verbos` is a LIST because ML publishes two verbs for one outcome —
+ * `allow_return` and `allow_return_label`, depending on whether it mints a
+ * return label. The operator is taking the same decision either way.
+ */
+const ACOES_SIMPLES = [
+  {
+    acao: 'reembolso' as const,
+    verbos: ['refund'],
+    rotulo: 'Reembolsar integralmente',
+    confirmar: 'Confirmar reembolso integral',
+    cor: 'red',
+    titulo: 'Reembolsar o valor integral?',
+    mensagem:
+      'O valor integral volta para o comprador e a reclamação é encerrada no Mercado Livre. Não é possível desfazer pelo ERP.',
+  },
+  {
+    acao: 'aceitar_devolucao' as const,
+    verbos: ['allow_return', 'allow_return_label'],
+    rotulo: 'Aceitar devolução',
+    confirmar: 'Confirmar devolução',
+    cor: 'orange',
+    titulo: 'Aceitar a devolução do produto?',
+    mensagem:
+      'O Mercado Livre gera a etiqueta de devolução e reembolsa o comprador quando o envio for postado ou entregue. Não é possível desfazer pelo ERP.',
+  },
+  {
+    acao: 'abrir_mediacao' as const,
+    verbos: ['open_dispute'],
+    rotulo: 'Abrir mediação',
+    confirmar: 'Confirmar abertura de mediação',
+    cor: 'grape',
+    titulo: 'Abrir mediação do Mercado Livre?',
+    mensagem:
+      'Um mediador do Mercado Livre passa a decidir o caso, e as mensagens diretas ao comprador deixam de ser aceitas — a conversa passa a ser com o mediador. Não é possível desfazer pelo ERP.',
+  },
+];
+
+type AcaoSimples = (typeof ACOES_SIMPLES)[number];
+
+/** Verbs this panel renders a button for; the rest still show as badges. */
+const VERBOS_COM_BOTAO = new Set(ACOES_SIMPLES.flatMap((a) => a.verbos));
+
 export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelProps) {
   const client = useMercadoLivreClient();
+  const queryClient = useQueryClient();
+  const { confirm, element: confirmEl } = useConfirmDialog();
+  const { allowed: podeExecutar } = usePermission(PERM.incidenteResolucao.write);
   const [aberto, setAberto] = useState(false);
+  const [executando, setExecutando] = useState<AcaoSimples['acao'] | null>(null);
+  const [acaoErro, setAcaoErro] = useState<string | null>(null);
 
   const estado = useQuery({
     queryKey: ['mlReclamacao', integracaoId, claimId],
@@ -54,6 +116,49 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
     gcTime: 0,
     queryFn: () => client!.reclamacaoEstado({ integracaoId, claimId }),
   });
+
+  /**
+   * Run one no-amount verb.
+   *
+   * ⚠️ **Writes NOTHING locally on success** — it invalidates and refetches
+   * instead. The `claims` importer is the single writer of incidente state, so
+   * the confirmation the operator sees is ML's own word: the button they just
+   * used disappears because its verb left `available_actions`. Guessing the new
+   * state here would race the importer and could disagree with it.
+   */
+  async function executar(a: AcaoSimples): Promise<void> {
+    if (client == null) return;
+    const ok = await confirm({
+      title: a.titulo,
+      message: a.mensagem,
+      // ⚠️ Deliberately DIFFERENT from the panel button. The operator must be
+      // clicking the modal, not repeating a muscle-memory click on the same
+      // label they just pressed.
+      confirmLabel: a.confirmar,
+      cancelLabel: 'Cancelar',
+    });
+
+    if (!ok) return;
+
+    setAcaoErro(null);
+    setExecutando(a.acao);
+    try {
+      await client.reclamacaoAcao({ integracaoId, claimId, acao: a.acao });
+      await queryClient.invalidateQueries({ queryKey: ['mlReclamacao', integracaoId, claimId] });
+    } catch (err) {
+      // ⚠️ Narrow, then show the message verbatim. The backend's 409 body is the
+      // only thing that tells the operator what to do next.
+      if (err instanceof MercadoLivreClientHttpError) {
+        setAcaoErro(err.message);
+      } else if (err instanceof MercadoLivreClientNetworkError) {
+        setAcaoErro('Não foi possível falar com o Mercado Livre. Tente novamente.');
+      } else {
+        throw err;
+      }
+    } finally {
+      setExecutando(null);
+    }
+  }
 
   if (!aberto) {
     return (
@@ -178,7 +283,7 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
             {/* ---- What ML still allows. ⚠️ Rendered from the LIVE list, and a
                 verb ML did not offer is ABSENT rather than disabled: a greyed-out
                 "Reembolsar" invites a support ticket asking why. */}
-            <Stack gap={2}>
+            <Stack gap={4}>
               <Text size="xs" fw={500}>
                 Ações disponíveis no Mercado Livre
               </Text>
@@ -187,19 +292,56 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
                   {estado.data.motivoSemResposta ??
                     'O Mercado Livre não oferece nenhuma ação nesta reclamação.'}
                 </Text>
+              ) : !podeExecutar ? (
+                // The gate is `verifyCaller` on the backend; this is only so the
+                // operator learns WHY there are no buttons rather than assuming
+                // the claim is closed.
+                <Text size="xs" c="dimmed">
+                  Você não tem permissão para resolver reclamações. Ações disponíveis:{' '}
+                  {estado.data.acoesDisponiveis.map(rotuloAcao).join(', ')}.
+                </Text>
               ) : (
                 <Group gap="xs">
-                  {estado.data.acoesDisponiveis.map((a) => (
-                    <Badge key={a} size="sm" variant="outline">
-                      {rotuloAcao(a)}
-                    </Badge>
+                  {ACOES_SIMPLES.filter((a) =>
+                    a.verbos.some((v) => estado.data.acoesDisponiveis.includes(v)),
+                  ).map((a) => (
+                    <Button
+                      key={a.acao}
+                      size="compact-xs"
+                      variant="light"
+                      color={a.cor}
+                      loading={executando === a.acao}
+                      disabled={executando !== null || estado.isFetching}
+                      onClick={() => void executar(a)}
+                    >
+                      {a.rotulo}
+                    </Button>
                   ))}
+                  {/* Verbs with no button yet still show, so the operator can
+                      see ML offers something this screen cannot do. */}
+                  {estado.data.acoesDisponiveis
+                    .filter((v) => !VERBOS_COM_BOTAO.has(v))
+                    .map((v) => (
+                      <Badge key={v} size="sm" variant="outline">
+                        {rotuloAcao(v)}
+                      </Badge>
+                    ))}
                 </Group>
+              )}
+              {acaoErro !== null && (
+                <Alert color="red" variant="light" icon={<IconAlertTriangle size={16} />}>
+                  {/* ⚠️ Verbatim, again. A 409 from this route names the real
+                      reason — "ML no longer offers that", "not eligible", "no
+                      access" — and each one tells the operator something
+                      different to do next. */}
+                  {acaoErro}
+                </Alert>
               )}
             </Stack>
           </>
         )}
       </Stack>
+      {confirmEl}
     </Card>
   );
 }
