@@ -24,6 +24,16 @@ const THUMB_PX = 40;
  * The `orderBy nome` rides the `listaDePrecos(nome ASC)` index declared for
  * `listaDePrecosMeta.defaultQuery` (#159) — without it this would full-scan on
  * Enterprise. Returns `null` while loading or when no lista exists.
+ *
+ * It reads the whole (small) collection rather than
+ * `where('padrao','==',true).limit(1)` on purpose. The narrower query scans less
+ * per call, but it needs its own `listaDePrecos(padrao)` index — a fifth entry
+ * in the coordinated index deploy — and a second round trip whenever no lista
+ * is flagged padrão, which is exactly the fallback legacy relied on
+ * (`produtoTableView.dart:1759`). `listaDePrecos` is a cadastro with a handful
+ * of rows, and this runs once per table with a 5-minute `staleTime`, so the
+ * scan it saves does not pay for the deploy step. Revisit if the collection
+ * ever grows past a page.
  */
 export function useListaPrecoPadraoId(db: Firestore): string | null {
   const { data } = useQuery({
@@ -51,8 +61,11 @@ export function useListaPrecoPadraoId(db: Firestore): string | null {
  * resolved → the 200px derivative.
  */
 export function ProdutoFotoCell({ db, produto }: { db: Firestore; produto: Produto }) {
-  const url = useProdutoFotoUrl(db, produto);
-  const hasFoto = coverArquivoId(produto) !== null;
+  const { url, resolved } = useProdutoFotoUrl(db, produto);
+  // `resolved && url === null` is a produto whose ref went nowhere (deleted
+  // arquivo, or one with no `url`); render the placeholder, never a skeleton
+  // that would spin for the life of the page.
+  const hasFoto = coverArquivoId(produto) !== null && !(resolved && url === null);
 
   if (!hasFoto) {
     return (
@@ -68,7 +81,7 @@ export function ProdutoFotoCell({ db, produto }: { db: Firestore; produto: Produ
       </Center>
     );
   }
-  if (url === null) return <Skeleton w={THUMB_PX} h={THUMB_PX} radius="sm" />;
+  if (!resolved || url === null) return <Skeleton w={THUMB_PX} h={THUMB_PX} radius="sm" />;
   return (
     <Image
       src={url}

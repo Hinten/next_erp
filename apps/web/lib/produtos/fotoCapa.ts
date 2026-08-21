@@ -42,14 +42,21 @@ export function coverArquivoId(produto: Pick<Produto, 'fotos'> | null | undefine
 }
 
 /**
- * The public URL of a produto's cover photo, or `null` while loading / when the
- * produto has none. Keyed by arquivo id so two rows sharing a photo share one
- * fetch; `enabled` gates the query so produtos without a foto never read.
+ * The public URL of a produto's cover photo. Keyed by arquivo id so two rows
+ * sharing a photo share one fetch; `enabled` gates the query so produtos
+ * without a foto never read.
+ *
+ * Returns `{ url, resolved }` rather than a bare `string | null` because a
+ * caller has to tell PENDING from RESOLVED-TO-NOTHING. `url` is null in four
+ * different situations — still fetching, the produto has no foto at all, the
+ * arquivo doc is gone, and the arquivo carries no `url` — and a list cell that
+ * reads null as "loading" skeletons forever on the last three. `resolved` is
+ * true once there is nothing left to wait for.
  */
 export function useProdutoFotoUrl(
   db: Firestore,
   produto: Pick<Produto, 'fotos'> | null | undefined,
-): string | null {
+): { url: string | null; resolved: boolean } {
   const arquivoId = useMemo(() => coverArquivoId(produto), [produto]);
   const query = useQuery({
     queryKey: ['produto-foto-capa', arquivoId],
@@ -61,5 +68,8 @@ export function useProdutoFotoUrl(
       return snap.exists() ? (snap.data().url ?? null) : null;
     },
   });
-  return query.data ?? null;
+  // No ref to resolve → already settled. Otherwise wait for success OR error:
+  // a failed read is a resolved absence, not a permanent pending state.
+  const resolved = arquivoId === null || query.isSuccess || query.isError;
+  return { url: query.data ?? null, resolved };
 }

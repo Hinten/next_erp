@@ -23,7 +23,7 @@ export interface ProdutoFotoProps {
  * re-resolve every other row's photo.
  */
 export const ProdutoFoto = memo(function ProdutoFoto({ db, produto, size = 48 }: ProdutoFotoProps) {
-  const url = useProdutoFotoUrl(db, produto);
+  const { url } = useProdutoFotoUrl(db, produto);
   return (
     <Image
       w={size}

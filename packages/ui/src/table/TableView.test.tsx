@@ -836,14 +836,50 @@ describe('TableView', () => {
           forcedOrderBy={{ field: 'nome', direction: 'asc' }}
         />,
       );
-      buildPipelineSpy.mockClear();
-      fireEvent.click(screen.getByText('Tipo'));
-      // The click DID re-query (otherwise the two assertions below are vacuous)...
+      // The forced sort is what reaches Firestore (not `recencyMeta`'s)...
       expect(buildPipelineSpy).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
       );
-      // ...and it never issued the sort the user asked for.
+      fireEvent.click(screen.getByText('Tipo'));
+      // ...and clicking a header never issues the sort the user asked for.
+      // (`toggleSort` drops the click outright — see the next case for why.)
+      expect(buildPipelineSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'tipo', direction: 'asc' }] }),
+      );
+    });
+
+    it('makes header clicks inert instead of queueing a delayed re-sort', () => {
+      // Recording the click would change nothing NOW and then silently re-sort
+      // the list the moment the forced sort clears — a jump with no visible
+      // cause. Assert the click is dropped, not just outranked: clearing the
+      // forced sort must return to the DECLARED default, not to 'tipo'.
+      const { rerender } = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Tipo'));
+      buildPipelineSpy.mockClear();
+      rerender(
+        <MantineTestProvider>
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={recencyMeta}
+          />
+        </MantineTestProvider>,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
+      );
       expect(buildPipelineSpy).not.toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ orderBy: [{ field: 'tipo', direction: 'asc' }] }),

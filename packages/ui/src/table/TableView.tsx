@@ -562,7 +562,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // raw `sort` state — otherwise the first click on a column shown ascending
   // by the meta default would re-set ascending (a visual no-op) instead of
   // going to descending. A different column starts ascending.
+  // While a forced sort is active the headers are not interactive — see
+  // `toggleSort`. Say so rather than leaving a pointer cursor on a dead control.
+  const FORCED_SORT_TITLE = 'Ordenação fixada pela busca ativa';
+  const sortable = !forcedSort;
+
   function toggleSort(fieldKey: string) {
+    // A forced sort outranks the user's, so recording their click would do
+    // nothing NOW and then silently re-sort the list the moment the forced sort
+    // clears — a delayed jump with no visible cause, which reads worse than the
+    // click being inert. Ignore it while forced; the header renders as
+    // non-interactive so it should not be reachable anyway.
+    if (forcedSort) return;
     const current = displaySort?.field === fieldKey ? displaySort.direction : undefined;
     setSort({ field: fieldKey, direction: current === 'asc' ? 'desc' : 'asc' });
   }
@@ -973,9 +984,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                             <Group
                               gap={2}
                               wrap="nowrap"
-                              style={sf ? { cursor: 'pointer', userSelect: 'none' } : undefined}
+                              style={
+                                sf
+                                  ? { cursor: sortable ? 'pointer' : 'default', userSelect: 'none' }
+                                  : undefined
+                              }
                               onClick={sf ? () => toggleSort(sf) : undefined}
-                              title={sf ? 'Ordenar por esta coluna' : vc.tooltip}
+                              title={
+                                sf
+                                  ? sortable
+                                    ? 'Ordenar por esta coluna'
+                                    : FORCED_SORT_TITLE
+                                  : vc.tooltip
+                              }
                             >
                               <span title={vc.tooltip}>{vc.label}</span>
                               {sf && (
@@ -1022,9 +1043,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                           <Group
                             gap={2}
                             wrap="nowrap"
-                            style={{ cursor: 'pointer', userSelect: 'none' }}
+                            style={{
+                              cursor: sortable ? 'pointer' : 'default',
+                              userSelect: 'none',
+                            }}
                             onClick={() => toggleSort(d.key)}
-                            title="Ordenar por esta coluna"
+                            title={sortable ? 'Ordenar por esta coluna' : FORCED_SORT_TITLE}
                           >
                             <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
                             <SortIndicator
