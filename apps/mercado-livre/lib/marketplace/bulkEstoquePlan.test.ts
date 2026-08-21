@@ -338,6 +338,7 @@ const linkSub = () => ({
         'status',
         'sub_status',
         'isUserProductModel',
+        'userProductId',
         alias('linkDocId', docId(f('__name__'))),
       ],
     },
@@ -370,8 +371,15 @@ const childrenSub = () => ({
               // `status`/`sub_status` ride along for the UP branch's per-MEMBER gate:
               // under User Products a member is its own ML item, and the parent's
               // folded status ranks `closed` LAST, so the family can read `active`
-              // while one member is gone.
-              args: ['itemId', 'id', 'produtoMercadoLivreOuterRef', 'status', 'sub_status'],
+              // while one member is gone. `userProductId` is the #706 send unit.
+              args: [
+                'itemId',
+                'id',
+                'produtoMercadoLivreOuterRef',
+                'status',
+                'sub_status',
+                'userProductId',
+              ],
             },
           ],
         }),

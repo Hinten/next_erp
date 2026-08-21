@@ -373,6 +373,7 @@ export interface RawStockLinkRow {
   status?: unknown;
   sub_status?: unknown;
   isUserProductModel?: unknown;
+  userProductId?: unknown;
   linkDocId?: unknown;
   [key: string]: unknown;
 }
@@ -381,6 +382,7 @@ export interface RawStockLinkRow {
 export interface RawVarLinkRow {
   itemId?: unknown;
   id?: unknown;
+  userProductId?: unknown;
   produtoMercadoLivreOuterRef?: unknown;
   /**
    * The MEMBER's own raw ML status pair (#1142). Projected because the UP branch
@@ -577,6 +579,10 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
         'status',
         'sub_status',
         'isUserProductModel',
+        // #706 multiorigem: the UP that backs this listing's stock. A PROJECTED
+        // field on documents this subquery already reads — no new join, no
+        // predicate, so no index (the ledger above lists only predicates).
+        'userProductId',
         pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
       )
       .toArrayExpression();
@@ -601,7 +607,18 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
         compEstoques('childKitKeys').as('componentEstoques'),
         pipelines
           .subcollection('variacaoMercadoLivre')
-          .select('itemId', 'id', 'produtoMercadoLivreOuterRef', 'status', 'sub_status')
+          // `status`/`sub_status` ride along for the UP branch's per-MEMBER gate;
+          // `userProductId` (#706) for the multiorigem send unit. Both are the
+          // same deal as on the parent join — projected, never filtered, so
+          // neither adds a query or an index.
+          .select(
+            'itemId',
+            'id',
+            'produtoMercadoLivreOuterRef',
+            'status',
+            'sub_status',
+            'userProductId',
+          )
           .toArrayExpression()
           .as('varLinks'),
       )

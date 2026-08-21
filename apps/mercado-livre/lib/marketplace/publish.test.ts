@@ -258,6 +258,62 @@ afterEach(() => {
   __resetAllReadCaches();
 });
 
+describe('publishProduto — userProductId on the parent link (#706)', () => {
+  it('a SIMPLE listing is the stock unit, so it IS stamped', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    const { api } = makeApi({
+      createItem: vi.fn(async () => ({ ...ITEM_RESPONSE, user_product_id: 'MLBU-SIMPLE' })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const link = [...db.docs(LINKS_PATH).values()][0]!;
+    expect(link.userProductId).toBe('MLBU-SIMPLE');
+  });
+
+  it('⚠️ a LEGACY variations[] listing is NOT stamped — its stock units are the variations', async () => {
+    // ML issues a `user_product_id` for every item, 1:1 with the item id, long
+    // before a seller is a `user_product_seller`. Stamping it on a listing whose
+    // quantities live on its variations would let the send write ONE number for
+    // the whole family. Reachable in exactly the #706 scenario: a conta that
+    // becomes `warehouse_management` keeps republishing its pre-existing legacy
+    // listings through this branch.
+    const db = new FakeDb();
+    seedBase(db);
+    const { api } = makeApi({
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        user_product_id: 'MLBU-ITEM',
+        variations: [{ id: 555, seller_custom_field: 'child-1' }],
+      })),
+    });
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      ordem: 0,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+    });
+    db.seed('produtos/child-1/estoques', 'est-c', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 4,
+      quantidadeReservada: 0,
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const link = [...db.docs(LINKS_PATH).values()][0]!;
+    expect(link.userProductId).toBeNull();
+  });
+});
+
 describe('publishProduto — legacy wire shape', () => {
   it('first publish writes canonical documents/-prefixed refs everywhere', async () => {
     const db = new FakeDb();

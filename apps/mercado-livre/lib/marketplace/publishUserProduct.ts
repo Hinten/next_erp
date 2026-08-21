@@ -154,6 +154,7 @@ export async function publishUserProductMembers(
       // decline to conclude until every member had fired an `items` notification.
       status: item.status ?? null,
       subStatus: item.sub_status ?? null,
+      userProductId: item.user_product_id ?? null,
     });
   }
 
@@ -285,6 +286,7 @@ async function writeMemberLink(
     sku: string | null;
     status: string | null;
     subStatus: string[] | null;
+    userProductId: string | null;
   },
 ): Promise<void> {
   const { integracaoId, produtoId, parentLinkDocId, childId, itemId, state, sku } = args;
@@ -306,6 +308,12 @@ async function writeMemberLink(
     // is a FAMILY summary and a member has no business carrying one.
     status: args.status,
     sub_status: args.subStatus,
+    // #706 multiorigem: this member's own `user_product_id`, straight off the
+    // create/update response. It is the STOCK identity on a
+    // `warehouse_management` conta, where `PUT /items` moves nothing. Recorded
+    // per member for the same reason `status` is: a User Product describes a
+    // product at VARIATION level, so the family's parent link has none.
+    userProductId: args.userProductId,
   };
 
   if (state?.varLinkDocId != null) {
