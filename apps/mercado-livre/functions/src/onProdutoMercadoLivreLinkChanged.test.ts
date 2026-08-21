@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Isolate the trigger WIRING from the IO core + the admin singleton (the core has
-// its own coverage in `lib/marketplace/integracoesComProduto.test.ts`). Mirrors the
+// its own coverage in `lib/marketplace/anuncios/integracoesComProduto.test.ts`). Mirrors the
 // sibling `onIntegracaoMercadoLivreChanged.test.ts` — the real `onDocumentWritten`
 // is used, and the returned CloudFunction is driven through its `.run(event)` handle.
 const core = vi.hoisted(() => ({

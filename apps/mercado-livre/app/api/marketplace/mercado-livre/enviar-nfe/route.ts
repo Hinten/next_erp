@@ -5,8 +5,8 @@
  * (Step 12, #739). Body: `{ pedidoId, nfeId }` — the `pedidos/{pedidoId}/nfev4/{nfeId}`
  * document. The route only re-checks eligibility and enqueues — it writes
  * NOTHING to Firestore (zero-write model); the actual ML call runs in the
- * `processMercadoLivreNfeUpload` task (see `lib/marketplace/nfeUpload.ts` +
- * `lib/marketplace/mlNfeUploadTasks.ts`).
+ * `processMercadoLivreNfeUpload` task (see `lib/marketplace/nfe/nfeUpload.ts` +
+ * `lib/marketplace/nfe/mlNfeUploadTasks.ts`).
  *
  * Requires `PERM.pedido.write`, NOT the `PERM.integracao.write` the sibling ML
  * admin routes use: the Step-13 callers are expedição staff acting on a pedido

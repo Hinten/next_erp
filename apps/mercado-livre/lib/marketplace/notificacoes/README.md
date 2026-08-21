@@ -7,7 +7,15 @@ itself is shared — see `@delfrance/data/admin/notifications` and the
 
 ⚠️ **This theme depends on nearly every other one.** `notificacao.ts` is the
 topic dispatcher, so it imports `pedidos/`, `claims/`, `chat/`, `importacao/`
-and `anuncios/`. The fan-out is one-directional and intended.
+and `anuncios/`. That fan-out is one-directional and intended.
+
+⚠️ **The traffic is not one-way, though — two modules here are imported back
+IN**, and neither has anything to do with dispatch: `mlTasks.ts` (from
+`estoque/` ×4, `preco/`, `nfe/`) and `notificacaoFrescor.ts` (from `chat/`).
+With the dispatcher's own edge into `chat/`, that makes `chat/ ⇄ notificacoes/`
+a genuine cycle. The `mlTasks.ts` edge is the load-bearing one: it is why a
+shared `tasks/` folder cannot exist, and what would have to move first if this
+theme were ever split.
 
 - `notificacao.ts` — the ingestion core: `parseNotificationBody`, the
   dispatch-by-topic `processNotificationPayload`, and the

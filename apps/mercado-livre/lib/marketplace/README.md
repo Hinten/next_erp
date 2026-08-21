@@ -35,8 +35,20 @@ cross-theme edges this layout exists to expose. Same convention as
 
 ## Cross-theme edges worth knowing
 
-- **`notificacoes/` depends on nearly everything.** It is the dispatcher; the
-  fan-out is one-directional and intended.
+- **`notificacoes/notificacao.ts` depends on nearly everything.** It is the
+  topic dispatcher, so it reaches into `pedidos/`, `claims/`, `chat/`,
+  `importacao/` and `anuncios/`. _That_ fan-out is one-directional and intended.
+- ⚠️ **But `notificacoes/` as a folder is also an inbound sink**, via two
+  modules that have nothing to do with dispatch:
+  - `mlTasks.ts` — imported by `estoque/` (×4), `preco/` and `nfe/`. This is
+    precisely why a `tasks/` folder cannot exist, and it is the edge that would
+    have to move first if `notificacoes/` were ever split.
+  - `notificacaoFrescor.ts` — imported by `chat/orderMessageImport.ts` and
+    `chat/questionImport.ts`.
+
+  Combined with the dispatcher's own `notificacao.ts → chat/` edge, that makes
+  **`chat/ ⇄ notificacoes/`** a real cycle, not a one-way fan-out.
+
 - **`chat/ ⇄ claims/` is genuinely bidirectional** — `chat/` imports `claimIds`
   and `claimActionability`, `claims/` imports `mensagemProvisoria`. A property
   of today's code, not of this layout.

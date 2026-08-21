@@ -15,7 +15,7 @@ import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * The two ML stock-sync sweep schedules (Step 10 PR C) — thin `onSchedule`
- * wrappers over `runStockSweep` (lib/marketplace/estoqueSweep.ts), mirroring
+ * wrappers over `runStockSweep` (lib/marketplace/estoque/estoqueSweep.ts), mirroring
  * the `importMercadoLivreOrders` wrapper in index.ts:
  *
  *  - `sweepMercadoLivreStock` — every 15 minutes, `'incremental'` mode: per

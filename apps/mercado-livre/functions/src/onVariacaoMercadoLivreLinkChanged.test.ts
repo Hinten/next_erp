@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Same split as the sibling wiring tests: the IO core is stubbed (covered by
-// `lib/marketplace/integracoesComProduto.test.ts`), the pure gates stay REAL, and
+// `lib/marketplace/anuncios/integracoesComProduto.test.ts`), the pure gates stay REAL, and
 // the CloudFunction is driven through `.run(event)`.
 //
 // `lerLinkPai` is the ONE IO seam left real-adjacent: it is stubbed to a canned

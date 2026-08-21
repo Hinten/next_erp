@@ -11,7 +11,7 @@
  * round trip.
  *
  * `read`, not `write`: it answers with a public URL and persists nothing (see the
- * ⚠️ in `lib/marketplace/anuncioUrl.ts` for why it is not cached).
+ * ⚠️ in `lib/marketplace/anuncios/anuncioUrl.ts` for why it is not cached).
  *
  * Responses: 200 `{ url }`; 404 when the link doc is missing, belongs to another
  * conta, or the listing no longer exists on ML; 409 when it was never published;

@@ -3,8 +3,8 @@
  * bulk price sync ("Atualizar preços") for a Mercado Livre account: pushes
  * each linked produto's price (the conta's tabela normal) to its ML listings,
  * checkpointed in an admin-only `enviosPrecoMercadoLivre` job doc processed
- * asynchronously by a Cloud Tasks queue (see `lib/marketplace/precoSync.ts` +
- * `lib/marketplace/mlPriceSyncTasks.ts`). Body: `{ integracaoId,
+ * asynchronously by a Cloud Tasks queue (see `lib/marketplace/preco/precoSync.ts` +
+ * `lib/marketplace/preco/mlPriceSyncTasks.ts`). Body: `{ integracaoId,
  * baixarPreco? }` — `baixarPreco` defaults to false, i.e. price DECREASES are
  * skipped unless the user opts in. Requires `PERM.integracao.write`.
  *

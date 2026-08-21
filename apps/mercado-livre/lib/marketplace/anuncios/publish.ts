@@ -606,7 +606,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // sweeps select zero produtos and log `SEM_LINK` skips rather than erroring.
   // Its sole writers are now `onProdutoMercadoLivreLinkChanged` and
   // `onVariacaoMercadoLivreLinkChanged`, which derive it from the link
-  // subcollections — see `lib/marketplace/integracoesComProduto.ts`.
+  // subcollections — see the sibling `integracoesComProduto.ts`.
   //
   // That leaves TWO locks on the arrays below, not the three #431 opened with:
   //  1. ARCHITECTURE — the stock sweep needs an index-SEEKABLE per-conta term

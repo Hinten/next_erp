@@ -93,7 +93,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
     // The behaviour (record ML's real state, clear `errors`, stamp `closed` on
-    // a 404) lives in lib/marketplace/reverificarAnuncio.ts — shared verbatim
+    // a 404) lives in lib/marketplace/anuncios/reverificarAnuncio.ts — shared verbatim
     // with the manual stock push's re-arm pass (#819).
     return NextResponse.json(await reverificarAnuncio(db, integracaoId, target, api, nowMs));
   } catch (err) {

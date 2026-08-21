@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Isolate the trigger WIRING from the sync core + the admin singleton (the core has
-// its own coverage in `lib/marketplace/intFreteSync.test.ts`). Mirrors apps/whatsapp's
+// its own coverage in `lib/marketplace/frete/intFreteSync.test.ts`). Mirrors apps/whatsapp's
 // `sendOutbound.test.ts` — the real `onDocumentWritten` is used, and the returned
 // CloudFunction is driven through its `.run(event)` handle.
 const core = vi.hoisted(() => ({
@@ -19,7 +19,7 @@ vi.mock('../../lib/marketplace/frete/intFreteSync', async () => {
 });
 
 // Same split for the #808 arm: the re-drive itself is stubbed (its own coverage
-// is in `lib/marketplace/notificacao.test.ts`), but `userIdResolvivel` — the
+// is in `lib/marketplace/notificacoes/notificacao.test.ts`), but `userIdResolvivel` — the
 // trigger's free, payload-only gate — stays REAL, so the zero-read assertions
 // below exercise the actual predicate rather than a restatement of it.
 const notif = vi.hoisted(() => ({
