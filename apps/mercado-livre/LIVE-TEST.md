@@ -356,6 +356,49 @@ which is also the most interesting case here because the listing stays `active`.
 | A removed listing (`under_review` + `forbidden`) | `remedio` is **null** — ML sends REASON only, and no fix exists                                                            |        |
 | A UP **family** member is moderated              | the reason lands on the MEMBER's `variacaoMercadoLivre` doc; the parent carries it only if that member won the status fold |        |
 
+### 7.3 — Settle #957 (the shipment `x-format-new` body)
+
+The **code already shipped**: `x-format-new: true` now rides on `getShipment` and
+`getShipmentPayments` (deliberately NOT on `getShipmentSla`, whose documented example
+omits it), `mlShipmentSchema` types `lead_time` / `logistic` / `destination`, and
+`custoCalculado`/`custoFinal` merge with `?? existing ?? null` instead of overwriting
+with a fabricated `0`.
+
+⚠️ **It merged without the one check the issue itself asked for.** Its own text:
+
+> The new-format shape here is taken from ML's documentation, not from a live call. One
+> `curl -H 'x-format-new: true' …/shipments/$ID` against a real shipment is worth more
+> than the whole analysis above.
+
+That call is what closes the issue. Every field below was mapped from documentation and
+has never been seen on the wire.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -H "x-format-new: true" "https://api.mercadolibre.com/shipments/$SHIPMENT_ID"
+```
+
+Compare against the same call **without** the header — the diff is the migration.
+
+| Assert                                                                                                   | Why it matters                                                                                                                                                 | Result |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| `lead_time` exists, with `list_cost` + `estimated_delivery_time`/`_limit`                                | replaces the legacy top-level `shipping_option`; feeds `custoFinal` and the delivery window                                                                    |        |
+| `logistic.type` exists (legacy `logistic_type` gone)                                                     | ⚠️ the LOUD one — `orderPrazoDespacho` throws `MlLogisticTypeInvalidoError` on a miss, poisoning the import into a retry loop                                  |        |
+| `destination.shipping_address`, children renamed (`street_name`, `street_number`, `zip_code`, `comment`) | a miss means `sem-cep`, no `enderecoFiscalOuterRef`, and the pedido can NEVER reach `pago`                                                                     |        |
+| `base_cost` is **absent**                                                                                | confirms `shipmentBaseCost` must yield `null`, not `0`. `76f97589` already refuses to substitute `lead_time.cost` for it — check that decision against reality |        |
+| `order_id` / `external_reference` **absent**                                                             | discontinued 12/10/2025; the resolver must fall through to `GET /shipments/{id}/orders`                                                                        |        |
+| `last_updated` still present                                                                             | ⚠️ silent if lost: `mergeFreteInicialSeMaisNovo` returns null under BOTH freshness policies, so the frete block freezes forever with no error and no log       |        |
+| `id`, `status`, `substatus`, `tracking_number`, `tags`, `declared_value`, `dimensions` unchanged         | the documented no-change set                                                                                                                                   |        |
+
+**Then capture the body as a fixture.** Of the 14 shipment fixtures in the repo, 11 are
+`as unknown as` casts that stay green through the switch, and **no fixture anywhere uses
+`destination`, `logistic` or `lead_time`** — so today there is zero real-format coverage.
+One captured body fixes that permanently.
+
+⚠️ **The label is stale.** #957 carries `needs-migration-window` while its own text says
+"**No migration window.** No schema change, no backfill, no index, no rules regeneration."
+Now that the code has merged, drop the label when closing — or it sits in the cutover
+queue forever as work that is already done.
+
 ---
 
 ## 9. Phase 8 — capture fixtures, clean up, decide on CI
@@ -363,13 +406,13 @@ which is also the most interesting case here because the listing stays `active`.
 **The most durable output of this run is real ML response bodies.** Every offline test in
 this repo currently runs on hand-written fixtures.
 
-| Capture                                                                         | Where it helps                                                                              | Result |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------ |
-| Item — simple and with variations                                               | the round-trip test                                                                         |        |
-| Order (+ the `pedidos/{id}/orderML/{orderId}` mirror the import already stores) | the money map                                                                               |        |
-| Payment                                                                         | `orderPaymentMapping`                                                                       |        |
-| **Shipment with `x-format-new: true`**                                          | **#957** — its own text says this single call is worth more than the whole written analysis |        |
-| Claim                                                                           | `claimImport`                                                                               |        |
+| Capture                                                                         | Where it helps                                               | Result |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------ |
+| Item — simple and with variations                                               | the round-trip test                                          |        |
+| Order (+ the `pedidos/{id}/orderML/{orderId}` mirror the import already stores) | the money map                                                |        |
+| Payment                                                                         | `orderPaymentMapping`                                        |        |
+| **Shipment with `x-format-new: true`**                                          | **#957** — the assertions are in §7.3; capture the body here |        |
+| Claim                                                                           | `claimImport`                                                |        |
 
 ### Cleanup
 
@@ -411,7 +454,7 @@ inside this run** — the run's job is evidence.
 | #1087                           | closed by completing the run                                                                                                                            |        |
 | #831 — partial `variations` PUT | closable — §5.5                                                                                                                                         |        |
 | #758 — PDF label branch         | closable — §7.2                                                                                                                                         |        |
-| #957 — shipments `x-format-new` | evidence captured — §9                                                                                                                                  |        |
+| #957 — shipments `x-format-new` | **closable** — §7.3 (the code already merged; only the live call is left)                                                                               |        |
 | #706 — multiorigin contas       | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got |        |
 | #898, #1083, #1072, #707        | observed only — record evidence                                                                                                                         |        |
 
