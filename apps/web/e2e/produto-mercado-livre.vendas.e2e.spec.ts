@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   cleanupByNamePrefix,
   cleanupMercadoLivreFixtures,
@@ -18,6 +18,13 @@ import { warmRoutes } from './helpers/warmup';
  *
  * The tab lists every tipo-1 integração on staging (shared project), so all
  * row assertions are scoped by the run-scoped `data-testid="ml-conta-<id>"`.
+ *
+ * Navigation is TWO levels: the Mercado Livre tab, then one account's tab inside
+ * it. An account's panel is lazy — it does not exist until its own tab has been
+ * clicked — so every assertion goes through `abrirConta`, and a `toHaveCount(0)`
+ * is always paired with something positive proving the panel actually rendered.
+ * Without the pairing, "the button is absent" and "the panel was never built"
+ * are the same green.
  */
 test.describe.serial('Produto Mercado Livre tab e2e — status + publish action', () => {
   const prefix = e2ePrefix('mlpub');
@@ -48,12 +55,28 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await cleanupMercadoLivreFixtures(prefix);
   });
 
+  /**
+   * Open the Mercado Livre tab, then ONE account's tab inside it, and return
+   * that account's card.
+   *
+   * The account tab's accessible name is the integração's `nome`, which
+   * `seedIntegracaoFixtures` sets equal to its doc id — so the run-scoped id is
+   * also the label. Matched by substring on purpose: the tab also carries a
+   * badge ("Não publicado", or the listing count), so an exact match would never
+   * hit.
+   */
+  async function abrirConta(page: Page, contaId: string): Promise<Locator> {
+    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    await page.getByRole('tab', { name: contaId }).click({ timeout: 30_000 });
+    const card = page.getByTestId(`ml-conta-${contaId}`);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    return card;
+  }
+
   test('surfaces the published link-doc status for the bound account', async ({ page }) => {
     await page.goto(`/produtos/${produtoId}/editar`);
-    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    const card = await abrirConta(page, contaLinked);
 
-    const card = page.getByTestId(`ml-conta-${contaLinked}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
     await expect(card.getByText(contaLinked)).toBeVisible();
     await expect(card.getByText('Publicado', { exact: true })).toBeVisible();
     await expect(card.getByText(`Anúncio ${mlItemId}`)).toBeVisible();
@@ -73,10 +96,8 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
 
   test('offers to prepare a draft listing for an unbound account', async ({ page }) => {
     await page.goto(`/produtos/${produtoId}/editar`);
-    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
+    const card = await abrirConta(page, contaUnlinked);
 
-    const card = page.getByTestId(`ml-conta-${contaUnlinked}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
     await expect(card.getByText('Não publicado')).toBeVisible();
     await expect(card.getByLabel('Tipo de anúncio')).toBeVisible();
     await expect(card.getByRole('button', { name: 'Preparar anúncio' })).toBeEnabled();
@@ -91,10 +112,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     page,
   }) => {
     await page.goto(`/produtos/${produtoId}/editar`);
-    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
-
-    const card = page.getByTestId(`ml-conta-${contaDraft}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
+    const card = await abrirConta(page, contaDraft);
 
     // Tolerate a draft left by an earlier attempt of this same test: the draft
     // doc id is the integração id, so preparing twice is a no-op, and on a
@@ -119,13 +137,11 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // 409/500 toast instead of the network-error mapping under test.)
     await page.route('**/api/marketplace/mercado-livre/publicar', (route) => route.abort());
     await page.goto(`/produtos/${produtoId}/editar`);
-    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
 
     // The PUBLISHED account, because it is the one whose publish button is
     // reachable: an unbound account now prepares a draft first, which is a
     // Firestore write and never touches the backend under test here.
-    const card = page.getByTestId(`ml-conta-${contaLinked}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
+    const card = await abrirConta(page, contaLinked);
     // Exact: the sibling "Republicar e atualizar preços" would match a
     // substring locator too (see the note in the status test above).
     await card.getByRole('button', { name: 'Republicar', exact: true }).click();
@@ -142,13 +158,17 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // for the sweep. It is per CONTA (the sender loops every anúncio the conta
     // holds), so it appears exactly where there is something to send to.
     await page.goto(`/produtos/${produtoId}/editar`);
-    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
 
-    const linked = page.getByTestId(`ml-conta-${contaLinked}`);
-    await expect(linked).toBeVisible({ timeout: 30_000 });
+    // One account at a time now — they are tabs, not stacked cards — and each
+    // negative assertion follows its own tab click, so "the button is absent"
+    // can never be "the panel was never built".
+    const linked = await abrirConta(page, contaLinked);
     await expect(linked.getByRole('button', { name: 'Enviar estoque' })).toBeEnabled();
 
-    const unlinked = page.getByTestId(`ml-conta-${contaUnlinked}`);
+    // Positive first: the account really has nothing published, which is WHY the
+    // button is absent.
+    const unlinked = await abrirConta(page, contaUnlinked);
+    await expect(unlinked.getByText('Não publicado')).toBeVisible();
     await expect(unlinked.getByRole('button', { name: 'Enviar estoque' })).toHaveCount(0);
 
     // ⚠️ A DRAFT is the case the old gate got wrong, and it needs the draft to
@@ -157,8 +177,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // So prepare one (tolerating a draft left by another test — the draft doc id
     // is the integração id, so preparing twice is a no-op) and prove the listing
     // is there before asserting the button is not.
-    const draft = page.getByTestId(`ml-conta-${contaDraft}`);
-    await expect(draft).toBeVisible({ timeout: 30_000 });
+    const draft = await abrirConta(page, contaDraft);
     const preparar = draft.getByRole('button', { name: 'Preparar anúncio' });
     if ((await preparar.count()) > 0) await preparar.click();
     await expect(draft.getByText('Rascunho — ainda não publicado')).toBeVisible({
@@ -176,10 +195,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // mercado-livre backend does not run in this suite.
     await page.route('**/api/marketplace/mercado-livre/enviar-estoque', (route) => route.abort());
     await page.goto(`/produtos/${produtoId}/editar`);
-    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
-
-    const card = page.getByTestId(`ml-conta-${contaLinked}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
+    const card = await abrirConta(page, contaLinked);
     await card.getByRole('button', { name: 'Enviar estoque' }).click();
 
     // A CONTA-level failure (the request never reached the backend) names no
@@ -192,10 +208,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
 
   test('keeps the tab open with its state when another tab is visited', async ({ page }) => {
     await page.goto(`/produtos/${produtoId}/editar`);
-    await page.getByRole('tab', { name: 'Mercado Livre' }).click();
-
-    const card = page.getByTestId(`ml-conta-${contaLinked}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
+    const card = await abrirConta(page, contaLinked);
 
     // A piece of state that lives INSIDE the listing form and is persisted
     // nowhere: the descrição disclosure. The seed stores `descricao: null`, so
@@ -211,7 +224,35 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await page.getByRole('tab', { name: 'Mercado Livre' }).click();
 
     // Still open: the panel was never suspended, so neither the Firestore
-    // listeners nor the listing form were torn down and rebuilt.
+    // listeners nor the listing form were torn down and rebuilt. The account
+    // tab selection survived too — it is state inside that same panel.
+    await expect(descricao).toHaveAttribute('data-open', 'true');
+    await expect(page.getByRole('tab', { name: contaLinked })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  test("keeps an account's listing state when another account is visited", async ({ page }) => {
+    // The same guarantee one level down, and the reason the account panels are
+    // not `<Activity>`-suspended: an off-screen account keeps its listing forms
+    // mounted, so their unsaved edits and their registration in the produto's
+    // save still exist when the operator comes back.
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const card = await abrirConta(page, contaLinked);
+
+    const descricao = card.getByTestId('ml-descricao-wrapper');
+    await expect(descricao).toHaveAttribute('data-open', 'false');
+    await card.getByRole('button', { name: 'Descrição do anúncio' }).click();
+    await expect(descricao).toHaveAttribute('data-open', 'true');
+
+    // Positive assertion on the account we switch to: without it a click that
+    // silently did nothing would leave the check below passing for the wrong
+    // reason.
+    const outra = await abrirConta(page, contaUnlinked);
+    await expect(outra.getByText('Não publicado')).toBeVisible();
+
+    await page.getByRole('tab', { name: contaLinked }).click();
     await expect(descricao).toHaveAttribute('data-open', 'true');
   });
 

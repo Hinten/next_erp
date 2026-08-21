@@ -61,6 +61,7 @@ import {
 } from '@/lib/mercado-livre/listingSaveOutcome';
 import type { ListingSaveFn } from './ListingForm';
 import { ContaPanel } from './ContaPanel';
+import { ContaTabs } from './ContaTabs';
 
 /**
  * The produto editor's **Mercado Livre** tab: one card per registered ML account
@@ -76,11 +77,24 @@ import { ContaPanel } from './ContaPanel';
  * senders all write the same link doc.
  */
 
-/**
- * Bound for BOTH queries (accounts and link docs) — they must match, or an
- * account past the link-doc cap would falsely render as "Não publicado".
- */
+/** How many Mercado Livre accounts the tab strip will show. */
 const MAX_CONTAS = 50;
+
+/**
+ * How many link docs the tab reads for one produto.
+ *
+ * ⚠️ Deliberately NOT `MAX_CONTAS`. The two used to be one constant, on the
+ * reasoning that "they must match, or an account past the link-doc cap would
+ * falsely render as 'Não publicado'" — which held only while a produto carried
+ * at most one anúncio per account. It no longer does, so a shared bound of 50
+ * would start dropping links well before the 50th account, and the failure is
+ * silent in exactly the way that comment warned about: a listing that exists
+ * renders as absent, and "Novo anúncio" offers to make another one.
+ *
+ * Four per account is generous for a real catalogue, and the alert below says so
+ * out loud when the cap is actually reached rather than truncating quietly.
+ */
+const MAX_LINKS = MAX_CONTAS * 4;
 
 export interface MercadoLivreEditorProps {
   produtoId: string;
@@ -123,7 +137,7 @@ export function MercadoLivreEditor({
   const contas = contasSnap.data ?? [];
 
   const linksQuery = useMemo(
-    () => buildQuery(produtoMercadoLivreLinkCollection.ref(db, { produtoId }), [limit(MAX_CONTAS)]),
+    () => buildQuery(produtoMercadoLivreLinkCollection.ref(db, { produtoId }), [limit(MAX_LINKS)]),
     [db, produtoId],
   );
   const linksSnap = useSnapshot(linksQuery);
@@ -604,6 +618,78 @@ export function MercadoLivreEditor({
    * claims all resolve AFTER the buttons are on screen, which is the window a
    * publish could previously be fired in.
    */
+  /**
+   * The accounts, in the order their tabs appear.
+   *
+   * Sorted by name here rather than with an `orderBy` on the query: the rows are
+   * already in memory and bounded at `MAX_CONTAS`, so a client-side sort costs
+   * nothing and leaves the live query untouched. Without it the strip inherits
+   * Firestore's doc-id order — invisible when the cards were stacked, arbitrary
+   * as a row of tabs.
+   */
+  const contasOrdenadas = useMemo(
+    () => [...contas].sort((a, b) => a.data.nome.localeCompare(b.data.nome, 'pt-BR')),
+    [contas],
+  );
+  const contasPorId = useMemo(
+    () => new Map(contasOrdenadas.map((c) => [c.id, c])),
+    [contasOrdenadas],
+  );
+
+  /**
+   * Each account's link docs, grouped once instead of re-filtered per render of
+   * every panel. Accounts with no anúncio are absent, not empty — the panel
+   * falls back to `[]`.
+   */
+  const linksPorConta = useMemo(() => {
+    const porConta = new Map<string, { id: string; data: ProdutoMercadoLivreLink }[]>();
+    for (const conta of contasOrdenadas) {
+      // The stock sweep loops EVERY listing this conta holds on the produto
+      // (bulkEstoquePlan's link join deliberately has no `limit(1)`), so
+      // rendering only the first one hid a latched sibling completely (#781).
+      const doConta = links.filter((l) => refMatchesIntegracao(l.data.contaOuterRef, conta.id));
+      if (doConta.length > 0) porConta.set(conta.id, doConta);
+    }
+    return porConta;
+  }, [contasOrdenadas, links]);
+
+  const tabItems = useMemo(
+    () =>
+      contasOrdenadas.map((conta) => {
+        const doConta = linksPorConta.get(conta.id) ?? [];
+        return {
+          id: conta.id,
+          label: conta.data.nome,
+          badge:
+            doConta.length === 0 ? (
+              <Badge color="gray" variant="light" size="sm">
+                Não publicado
+              </Badge>
+            ) : doConta.length > 1 ? (
+              <Badge color="gray" variant="light" size="sm">
+                {doConta.length}
+              </Badge>
+            ) : undefined,
+          // With one account on screen at a time, an unsaved edit can sit behind
+          // a tab the operator is not looking at — and the produto's own save
+          // would report a failure pointing at a tab they are already on. The
+          // mark is what makes that edit findable.
+          dirty: doConta.some((l) => dirtyIds.has(l.id)),
+        };
+      }),
+    [contasOrdenadas, linksPorConta, dirtyIds],
+  );
+
+  /**
+   * Which account opens first: the first one that already has an anúncio on this
+   * produto, else the first account. Opening the tab onto a live listing beats
+   * opening it onto whichever account happens to sort first and has nothing.
+   */
+  const contaInicial = useMemo(
+    () => contasOrdenadas.find((c) => linksPorConta.has(c.id))?.id ?? null,
+    [contasOrdenadas, linksPorConta],
+  );
+
   const carregandoGeral = produtoSnap.loading || extraDataSnap.loading || permLoading;
 
   if (contasSnap.loading || linksSnap.loading) {
@@ -643,59 +729,62 @@ export function MercadoLivreEditor({
             A publicação envia os dados <strong>salvos</strong> do produto — salve as alterações
             antes de publicar.
           </Text>
-          {contas.map((conta) => (
-            <ContaPanel
-              key={conta.id}
-              produtoId={produtoId}
-              db={db}
-              conta={{
-                id: conta.id,
-                nome: conta.data.nome,
-                tipo: conta.data.tipo,
-                ativo: conta.data.ativo !== false,
-              }}
-              // The stock sweep loops EVERY listing this conta holds on the
-              // produto (bulkEstoquePlan's link join deliberately has no
-              // `limit(1)`), so rendering only the first one hid a latched
-              // sibling completely (#781).
-              contaLinks={links.filter((l) => refMatchesIntegracao(l.data.contaOuterRef, conta.id))}
-              produtoNome={produtoNome}
-              produtoEhUsado={produtoEhUsado}
-              produtoCondicao={produtoCondicao}
-              produtoFotoCount={produtoFotoCount}
-              produtoDirty={produtoDirty}
-              carregandoGeral={carregandoGeral}
-              canPublish={canPublish}
-              hasClient={client != null}
-              disabled={disabled}
-              dirtyIds={dirtyIds}
-              loadingIds={loadingIds}
-              issues={blockedIssues[conta.id] ?? []}
-              stockResultByLink={stockResultByLink}
-              urlPorLink={urlPorLink}
-              rechecking={rechecking}
-              abrindoAnuncio={abrindoAnuncio}
-              publishing={publishing}
-              savingConta={savingConta}
-              sendingStock={sendingStock}
-              preparing={preparing}
-              listingTypeId={listingTypeByConta[conta.id] ?? DEFAULT_LISTING_TYPE}
-              onListingTypeChange={(v) =>
-                setListingTypeByConta((prev) => ({ ...prev, [conta.id]: v }))
-              }
-              onPublish={handlePublish}
-              onPreparar={handlePreparar}
-              onSalvarAnuncios={(contaId, linkIds) => void handleSalvarAnuncios(contaId, linkIds)}
-              onEnviarEstoque={(alvo, temLatch) => void handleEnviarEstoque(alvo, temLatch)}
-              onReverificar={handleReverificar}
-              onAbrirAnuncio={(integracaoId, linkDocId) =>
-                void handleAbrirAnuncio(integracaoId, linkDocId)
-              }
-              onDirtyChange={handleDirtyChange}
-              onLoadingChange={handleLoadingChange}
-              registerFlush={registerFlush}
-            />
-          ))}
+          <ContaTabs
+            items={tabItems}
+            defaultId={contaInicial}
+            renderPanel={(contaId) => {
+              const conta = contasPorId.get(contaId);
+              if (!conta) return null;
+              return (
+                <ContaPanel
+                  produtoId={produtoId}
+                  db={db}
+                  conta={{
+                    id: conta.id,
+                    nome: conta.data.nome,
+                    tipo: conta.data.tipo,
+                    ativo: conta.data.ativo !== false,
+                  }}
+                  contaLinks={linksPorConta.get(contaId) ?? []}
+                  produtoNome={produtoNome}
+                  produtoEhUsado={produtoEhUsado}
+                  produtoCondicao={produtoCondicao}
+                  produtoFotoCount={produtoFotoCount}
+                  produtoDirty={produtoDirty}
+                  carregandoGeral={carregandoGeral}
+                  canPublish={canPublish}
+                  hasClient={client != null}
+                  disabled={disabled}
+                  dirtyIds={dirtyIds}
+                  loadingIds={loadingIds}
+                  issues={blockedIssues[contaId] ?? []}
+                  stockResultByLink={stockResultByLink}
+                  urlPorLink={urlPorLink}
+                  rechecking={rechecking}
+                  abrindoAnuncio={abrindoAnuncio}
+                  publishing={publishing}
+                  savingConta={savingConta}
+                  sendingStock={sendingStock}
+                  preparing={preparing}
+                  listingTypeId={listingTypeByConta[contaId] ?? DEFAULT_LISTING_TYPE}
+                  onListingTypeChange={(v) =>
+                    setListingTypeByConta((prev) => ({ ...prev, [contaId]: v }))
+                  }
+                  onPublish={handlePublish}
+                  onPreparar={handlePreparar}
+                  onSalvarAnuncios={(cId, linkIds) => void handleSalvarAnuncios(cId, linkIds)}
+                  onEnviarEstoque={(alvo, temLatch) => void handleEnviarEstoque(alvo, temLatch)}
+                  onReverificar={handleReverificar}
+                  onAbrirAnuncio={(integracaoId, linkDocId) =>
+                    void handleAbrirAnuncio(integracaoId, linkDocId)
+                  }
+                  onDirtyChange={handleDirtyChange}
+                  onLoadingChange={handleLoadingChange}
+                  registerFlush={registerFlush}
+                />
+              );
+            }}
+          />
         </Stack>
       )}
     </OuterFormDirty>
