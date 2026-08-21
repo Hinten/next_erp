@@ -4,9 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { REPO_ROOT, gitGrep, gitLsFiles } from './lib/repo-scan.js';
 
 /**
- * Repo invariant: a Next app that imports `@google-cloud/firestore` — the root entry
- * or ANY subpath — lists it in `serverExternalPackages` in its `next.config.ts`, and
- * declares it in its `package.json` `dependencies`.
+ * Repo invariant: a Next app whose BUNDLE can reach `@google-cloud/firestore` — the root
+ * entry or ANY subpath, imported by the app itself or by any workspace package it pulls
+ * in — lists it in `serverExternalPackages` in its `next.config.ts`, and declares it in
+ * its `package.json` `dependencies`.
  *
  * ## Why this needs a guard at all
  *
@@ -100,34 +101,66 @@ const KNOWN_IMPORTERS = {
   '@google-cloud/firestore': ['apps/mercado-livre'],
 };
 
-// Scope of the import scan, as git pathspecs. Two exclusions, each for a build that is
-// NOT `next build`:
+/**
+ * A dependency edge that must survive, so the workspace-closure walk cannot silently
+ * degenerate to "the app's own source" and re-open the gap it exists to close.
+ *
+ * `@delfrance/data` is the load-bearing one: it is the shared Firestore layer, six of
+ * the eight Next apps bundle it, and it is where an admin-SDK pipelines import would
+ * most plausibly land. `@delfrance/core` is reached only THROUGH it, so it also proves
+ * the walk is transitive rather than one level deep.
+ */
+const KNOWN_CLOSURE = {
+  'apps/mercado-livre': ['packages/data', 'packages/schemas', 'packages/core'],
+};
+
+// Scope of the import scan, as git pathspecs.
+//
+// ⚠️ `packages/` is in scope as well as `apps/`, and that is the whole reason the
+// dependency walk below exists. A Next app bundles its workspace dependencies — that is
+// what `transpilePackages` asks for, and it is the default for anything not externalized
+// — so an `@google-cloud/firestore` import landing in `packages/data/src/admin/**` puts
+// the SDK in the bundle of EVERY backend importing it, while `firebase-admin` stays
+// external: the identical double-instance failure, arriving through a file no app owns.
+// Six of the eight Next apps bundle `@delfrance/data` today and five of them have no
+// `serverExternalPackages` key at all, so an `apps/`-only scan would report a clean
+// green for all of them. Root `CLAUDE.md` already advertises the Pipelines API as "used
+// in `packages/data`" — the client SDK there today (`firebase/firestore/pipelines`, a
+// different package, correctly not matched), but the admin one is one import away.
+//
+// Three exclusions, each for something `next build` does not bundle:
 //
 //   - the nested Cloud Functions codebases under an app (one directory level down,
 //     named `functions`) are esbuild sub-builds that already mark the SDK external;
-//   - `.test.ts` files are vitest's, never bundled — this is what keeps
-//     `bulkEstoquePlan.test.ts`'s `vi.mock('@google-cloud/firestore/pipelines', …)`
-//     from being read as an import.
+//   - test files are vitest's — this is what keeps `bulkEstoquePlan.test.ts`'s
+//     `vi.mock('@google-cloud/firestore/pipelines', …)` from being read as an import,
+//     and this file's own `HAZARD_PACKAGES` literal from matching itself;
+//   - `packages/config-eslint/rules/` needs no separate exclusion: every file in it is
+//     a test file already covered above.
 //
-// Everything else under an app IS in scope, including `scripts/`. Those are standalone
-// tsx/node CLIs that `next build` never traces, so keeping them in over-includes — but
-// the remedy for a false positive is one inert line of config, and the remedy for a
-// false negative is a 500 in production. Over-inclusion is the safe direction.
+// Everything else is in scope, including `scripts/`. Those are standalone tsx/node CLIs
+// that `next build` never traces, so keeping them in over-includes — but the remedy for
+// a false positive is one inert line of config, and the remedy for a false negative is a
+// 500 in production. Over-inclusion is the safe direction.
 //
 // `apps/functions` (the storage Cloud Functions codebase) is NOT excluded here and does
-// not need to be: it has no `next.config.ts`, so the bucketing below drops it.
+// not need to be: it has no `next.config.ts`, so it is not a Next app, and nothing
+// depends on it — so no app's closure reaches it.
 //
 // ⚠️ The `:(glob)` prefix is load-bearing. Git has two pathspec dialects: the default
 // matches without `WM_PATHNAME`, so a bare `*` crosses `/`; `:(glob)` sets it, so `*`
-// stops at `/` and only `**` crosses. Both exclusions are written in the glob dialect
-// and must stay that way — see the longer note in `runtime-deps-pinned.test.js`. (The
-// globs are assembled from fragments below for a dull reason: writing the literal
-// star-slash sequence inline would close a block comment, which is why this note is a
-// line comment.)
+// stops at `/` and only `**` crosses. Every entry is written in the glob dialect and
+// must stay that way — see the longer note in `runtime-deps-pinned.test.js`. (The globs
+// are assembled from fragments for a dull reason: writing the literal star-slash
+// sequence inline would close a block comment, which is why this note is a line
+// comment.)
 const SCAN_PATHSPECS = [
   ':(glob)apps/**',
+  ':(glob)packages/**',
   `:(exclude,glob)apps/*/functions/${'**'}`,
-  `:(exclude,glob)apps/${'**'}/*.test.ts`,
+  `:(exclude,glob)${'**'}/*.test.ts`,
+  `:(exclude,glob)${'**'}/*.test.tsx`,
+  `:(exclude,glob)${'**'}/*.test.js`,
 ];
 
 /** Escape a package name for use inside a POSIX extended regular expression. */
@@ -146,39 +179,98 @@ function importPattern(pkg) {
   return `(from|import|require)[[:space:]]*\\(?[[:space:]]*['"]${escapeEre(pkg)}(/[^'"]*)?['"]`;
 }
 
-/** `apps/<name>/…` → `apps/<name>`, or null for anything shallower. */
-function appOf(relPath) {
-  const parts = relPath.split('/');
-  return parts.length > 2 && parts[0] === 'apps' ? `${parts[0]}/${parts[1]}` : null;
-}
-
 function findNextApps() {
   return gitLsFiles(':(glob)apps/*/next.config.ts').map((p) =>
     p.replace(/\/next\.config\.ts$/, ''),
   );
 }
 
+/** `{ '@delfrance/data' → 'packages/data' }` for every workspace member. */
+function workspaceMembers() {
+  const out = new Map();
+  for (const relPath of gitLsFiles([
+    ':(glob)apps/*/package.json',
+    `:(glob)packages/${'**'}/package.json`,
+  ])) {
+    const { name } = JSON.parse(readFileSync(resolve(REPO_ROOT, relPath), 'utf8'));
+    if (typeof name === 'string') out.set(name, relPath.replace(/\/package\.json$/, ''));
+  }
+  return out;
+}
+
 /**
- * `{ 'apps/x': ['apps/x/lib/a.ts', …] }` — every Next app whose bundled source imports
- * `pkg`, with the files that do. One `git grep` per package, memoized by `repo-scan`, so
- * the offender messages can name the package they are actually about.
+ * The workspace member directory a file belongs to — the LONGEST member dir that is a
+ * path prefix of it — or null when it belongs to none.
+ *
+ * Longest, not first: `packages/integrations/mercado-livre` and a hypothetical
+ * `packages/integrations` would both prefix-match a file in the former, and only the
+ * deeper one is the package that actually declares the dependency.
+ */
+function memberDirOf(relPath, memberDirs) {
+  const parts = relPath.split('/');
+  for (let i = parts.length - 1; i > 0; i -= 1) {
+    const candidate = parts.slice(0, i).join('/');
+    if (memberDirs.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Every workspace member a Next app's bundle can reach — the transitive closure of its
+ * `dependencies`, which is the block whose contents `next build` traces and bundles.
+ *
+ * ⚠️ `dependencies` only, deliberately. A `devDependency` is not part of the shipped
+ * graph, so including it would flag an app for a hazard its bundle never contains — and
+ * every workspace member devDepends on `@delfrance/config-eslint`, i.e. on THIS file's
+ * package, which would make the closure meaningless.
+ */
+function bundledMembers(appDir, members) {
+  const seen = new Set();
+  const queue = [appDir];
+  while (queue.length > 0) {
+    const dir = queue.pop();
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, dir, 'package.json'), 'utf8'));
+    for (const name of Object.keys(pkg.dependencies ?? {})) {
+      const depDir = members.get(name);
+      if (depDir === undefined || seen.has(depDir)) continue;
+      seen.add(depDir);
+      queue.push(depDir);
+    }
+  }
+  return seen;
+}
+
+/**
+ * `{ 'apps/x': ['apps/x/lib/a.ts', 'packages/data/src/b.ts', …] }` — every Next app
+ * whose BUNDLE can reach `pkg`, with the importing files, whether they sit in the app
+ * itself or in a workspace package the app pulls in. One `git grep` per hazard package,
+ * memoized by `repo-scan`, so offender messages can name the package they are about.
  */
 function findImporters(pkg) {
-  const nextApps = new Set(findNextApps());
-  const hits = gitGrep({
+  const members = workspaceMembers();
+  const memberDirs = new Set(members.values());
+
+  // Importing files, grouped by the workspace member that owns them.
+  const filesByMember = new Map();
+  for (const file of gitGrep({
     patterns: importPattern(pkg),
     pathspecs: SCAN_PATHSPECS,
     mode: 'extended',
-  });
+  })) {
+    const dir = memberDirOf(file, memberDirs);
+    if (dir === null) continue;
+    if (!filesByMember.has(dir)) filesByMember.set(dir, []);
+    filesByMember.get(dir).push(file);
+  }
 
   const byApp = new Map();
-  for (const file of hits) {
-    const app = appOf(file);
-    // A hit outside a Next app is correct and expected — apps/functions imports the
-    // pipelines subpath and externalizes it in its own esbuild config.
-    if (app === null || !nextApps.has(app)) continue;
-    if (!byApp.has(app)) byApp.set(app, []);
-    byApp.get(app).push(file);
+  for (const app of findNextApps()) {
+    // The app's own source, plus everything it bundles. A hit owned by a member no Next
+    // app reaches is correct and expected — `apps/functions` imports the pipelines
+    // subpath and externalizes it in its own esbuild config.
+    const reachable = [app, ...bundledMembers(app, members)];
+    const files = reachable.flatMap((dir) => filesByMember.get(dir) ?? []);
+    if (files.length > 0) byApp.set(app, files);
   }
   return byApp;
 }
@@ -224,6 +316,32 @@ describe('Next apps keep the Firestore SDK external', () => {
         'KNOWN_NEXT_APPS) or `:(glob)apps/*/next.config.ts` no longer matches them — in',
         'which case this whole guard silently stopped checking anything:',
         ...missing.map((p) => `  - ${p}/next.config.ts`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('the workspace dependency walk still resolves, and transitively', () => {
+    // Guards the half of the scan that no app owns. If `bundledMembers` ever returned an
+    // empty set — a renamed manifest field, a `workspace:*` spec that stopped resolving,
+    // a members map keyed on the wrong string — the guard would quietly narrow back to
+    // "the app's own source" and a hazard import landing in `packages/data` would be
+    // invisible again, which is the exact gap this walk exists to close.
+    const members = workspaceMembers();
+    const missing = [];
+    for (const [app, expected] of Object.entries(KNOWN_CLOSURE)) {
+      const closure = bundledMembers(app, members);
+      for (const dep of expected) {
+        if (!closure.has(dep)) missing.push(`${app} → no longer bundles ${dep}`);
+      }
+    }
+    expect(
+      missing,
+      [
+        'The workspace closure no longer contains these edges. If the dependency really',
+        'was dropped, update KNOWN_CLOSURE in the same commit. Otherwise the walk broke,',
+        'and the scan has silently narrowed to each app`s own source — a hazard import in',
+        'a shared package would no longer be seen by any of the assertions below:',
+        ...missing.map((p) => `  - ${p}`),
       ].join('\n'),
     ).toEqual([]);
   });
