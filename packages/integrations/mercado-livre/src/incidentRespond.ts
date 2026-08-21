@@ -26,7 +26,7 @@ import type { ChannelContext, IncidentAction, IncidentActionResult } from '@delf
 import { roundReais } from '@delfrance/core/money';
 
 import type { MercadoLivreApi } from './api';
-import type { MlClaim } from './types';
+import type { MlClaim, MlPartialRefundOffers } from './types';
 import { MercadoLivreValidationError } from './errors';
 
 /** ML's seller-side action verbs, as published in the claims reference. */
@@ -51,6 +51,29 @@ const DESTINO_DA_ACAO: Readonly<Record<string, string>> = {
  * `MercadoLivreHttpError`: nothing was sent, and the operator can see what they
  * could do instead.
  */
+/**
+ * Raised when the amount the operator authorised is not one Mercado Livre
+ * offers for this claim.
+ *
+ * ⚠️ Its own class rather than `MercadoLivreValidationError`, and the reason is
+ * how the two are MAPPED. `respond.ts` turns a validation error into
+ * **502 ML_BAD_RESPONSE — "ML returned an unexpected shape (a field changed),
+ * upstream problem"**, which is the wrong sentence for the most
+ * operator-actionable condition in the whole feature: the message already says
+ * exactly which percentages ARE available, and the operator can act on it right
+ * now. Carrying `ofertas` lets the caller re-render the picker in place instead
+ * of sending them back to the start.
+ */
+export class ClaimPartialRefundOfferError extends Error {
+  constructor(
+    message: string,
+    readonly ofertas: MlPartialRefundOffers,
+  ) {
+    super(message);
+    this.name = 'ClaimPartialRefundOfferError';
+  }
+}
+
 export class ClaimActionUnavailableError extends Error {
   constructor(
     readonly acao: string,
@@ -190,7 +213,7 @@ async function percentualParaValor(
       .filter((o) => o.amount != null && o.percentage != null)
       .map((o) => `${String(o.percentage)}% = ${String(o.amount)}`)
       .join(', ');
-    throw new MercadoLivreValidationError(
+    throw new ClaimPartialRefundOfferError(
       `O Mercado Livre não oferece um reembolso parcial de ${String(alvoReais)}. ` +
         `Disponíveis: ${oferecidos !== '' ? oferecidos : 'nenhum'}`,
       ofertas,

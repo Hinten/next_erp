@@ -1683,15 +1683,45 @@ export const mlPartialRefundOfferSchema = z
 export type MlPartialRefundOffer = z.infer<typeof mlPartialRefundOfferSchema>;
 
 /**
- * The `available-offers` envelope. `recommendations`/`restrictions` ride
- * `.passthrough()` untyped — they are advice for a human, and nothing here
- * decides on them.
+ * One `recommendations`/`restrictions` entry on the `available-offers` envelope.
+ *
+ * ⚠️ `type` is a plain nullable string, never an enum. ML publishes `"maximum"`
+ * and `"minimum"` today and adds vocabulary without notice; a Zod enum here
+ * would turn a new value into a parse failure on the whole offers read, which
+ * would take the partial-refund picker down rather than degrade it.
+ */
+export const mlPartialRefundAdviceSchema = z
+  .object({
+    percentage: z.number().nullable().default(null),
+    reason: z.string().nullable().default(null),
+    type: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlPartialRefundAdvice = z.infer<typeof mlPartialRefundAdviceSchema>;
+
+/**
+ * The `available-offers` envelope.
+ *
+ * ⚠️ `recommendations`/`restrictions` used to ride `.passthrough()` untyped, on
+ * the grounds that they are "advice for a human, and nothing here decides on
+ * them". That was true while nothing rendered them. The resolution UI does: a
+ * `type: "minimum"` restriction is the difference between ML answering
+ * `400 invalid/below minimum` AFTER the operator commits, and the offer being
+ * unclickable in the first place. Typed so the picker can read them.
  */
 export const mlPartialRefundOffersSchema = z
   .object({
     currency_id: z.string().nullable().default(null),
     available_offers: z
       .array(mlPartialRefundOfferSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    recommendations: z
+      .array(mlPartialRefundAdviceSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    restrictions: z
+      .array(mlPartialRefundAdviceSchema)
       .nullish()
       .transform((v) => v ?? []),
   })

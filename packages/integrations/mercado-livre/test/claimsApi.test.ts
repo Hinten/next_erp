@@ -443,3 +443,144 @@ describe('createMercadoLivreApi — claim attachment download (Step 14)', () => 
     });
   });
 });
+
+describe('createMercadoLivreApi — claim RESOLUTION (#768, previously untested)', () => {
+  /**
+   * ⚠️ These five endpoints shipped with no API-level coverage at all. They are
+   * the ones that move money, so a silent URL or body-key drift here is the most
+   * expensive kind this client can have.
+   */
+  const RESOLUCOES = [
+    {
+      player_role: 'complainant',
+      user_id: 1,
+      expected_resolution: 'return_product',
+      status: 'rejected',
+    },
+    { player_role: 'respondent', user_id: 2, expected_resolution: 'refund', status: 'accepted' },
+  ];
+
+  function apiWith(body: unknown, status = 200) {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(body, status),
+    );
+    return { api: createMercadoLivreApi(cfg(fetchMock)), fetchMock };
+  }
+
+  it('refundClaim POSTs to expected-resolutions/refund and parses the array', async () => {
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    const out = await api.refundClaim(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain(
+      '/post-purchase/v1/claims/5204934310/expected-resolutions/refund',
+    );
+    expect(init!.method).toBe('POST');
+    expect(out).toHaveLength(2);
+    expect(out[1]!.expected_resolution).toBe('refund');
+  });
+
+  it('allowClaimReturn POSTs to expected-resolutions/allow-return', async () => {
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    await api.allowClaimReturn(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain(
+      '/post-purchase/v1/claims/5204934310/expected-resolutions/allow-return',
+    );
+    expect(init!.method).toBe('POST');
+  });
+
+  it('openClaimDispute POSTs to actions/open-dispute and parses the refreshed CLAIM', async () => {
+    // ⚠️ The one resolution verb whose response is a claim, not a resolution
+    // array — it is how the caller learns the new stage.
+    const { api, fetchMock } = apiWith({ ...LEGACY_CLAIM, stage: 'dispute', status: 'opened' });
+    const out = await api.openClaimDispute(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/post-purchase/v1/claims/5204934310/actions/open-dispute');
+    expect(init!.method).toBe('POST');
+    expect(out.stage).toBe('dispute');
+  });
+
+  it('getClaimExpectedResolutions GETs the read-side list', async () => {
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    const out = await api.getClaimExpectedResolutions(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/post-purchase/v1/claims/5204934310/expected-resolutions');
+    expect(init!.method).toBe('GET');
+    expect(out[0]!.status).toBe('rejected');
+  });
+
+  it('partialRefundClaim sends the percentage under the key `percentage`', async () => {
+    // ⚠️⚠️ THE assertion in this file. ML DEFAULTS A MISSING PERCENTAGE TO 50%.
+    // So a typo in this body key is not an error the caller ever sees — it is a
+    // silent half refund on every partial, forever. Asserting the key BY NAME is
+    // the only thing that catches it; a `toBeDefined()` or an untyped
+    // deep-equality on a `.passthrough()` response would not.
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    await api.partialRefundClaim(5204934310, 40);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain(
+      '/post-purchase/v1/claims/5204934310/expected-resolutions/partial-refund',
+    );
+    expect(init!.method).toBe('POST');
+
+    const enviado = JSON.parse(String(init!.body)) as Record<string, unknown>;
+    expect(Object.keys(enviado)).toEqual(['percentage']);
+    expect(enviado.percentage).toBe(40);
+  });
+
+  it('getClaimPartialRefundOffers parses offers AND the typed recommendations/restrictions', async () => {
+    // ⚠️ `recommendations`/`restrictions` rode `.passthrough()` untyped until the
+    // resolution UI needed them. Reading them through the TYPED accessors is the
+    // point: a whole-object `toEqual` would pass on passthrough alone and prove
+    // nothing about the schema.
+    const { api, fetchMock } = apiWith({
+      currency_id: 'BRL',
+      available_offers: [
+        { amount: 268.2, percentage: 90 },
+        { amount: 149, percentage: 50 },
+      ],
+      recommendations: [
+        { percentage: 40, reason: 'PARTIAL_REFUND_BETTER_THAN_RETURN', type: 'maximum' },
+      ],
+      restrictions: [{ percentage: 30, reason: 'PAREX_REJECTED', type: 'minimum' }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+
+    expect(String(fetchMock.mock.calls[0]![0])).toContain(
+      '/post-purchase/v1/claims/5204934310/partial-refund/available-offers',
+    );
+    expect(out.currency_id).toBe('BRL');
+    expect(out.available_offers.map((o) => o.percentage)).toEqual([90, 50]);
+    expect(out.recommendations[0]!.type).toBe('maximum');
+    expect(out.recommendations[0]!.percentage).toBe(40);
+    expect(out.restrictions[0]!.type).toBe('minimum');
+    expect(out.restrictions[0]!.reason).toBe('PAREX_REJECTED');
+  });
+
+  it('getClaimPartialRefundOffers defaults recommendations/restrictions to [] when absent', async () => {
+    // ML's older shape omits both. They must not arrive `undefined` — the picker
+    // maps over them, and an unguarded map is a crash on the money screen.
+    const { api } = apiWith({
+      currency_id: 'BRL',
+      available_offers: [{ amount: 10, percentage: 10 }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+
+    expect(out.recommendations).toEqual([]);
+    expect(out.restrictions).toEqual([]);
+  });
+
+  it('getClaimPartialRefundOffers maps ML 422 (claim not eligible) to an HTTP error', async () => {
+    // Documented for this route: 422 = not eligible (CBT, no return label). It
+    // must stay distinguishable from a transport failure so the UI can say why.
+    const { api } = apiWith({ message: 'not eligible' }, 422);
+    await expect(api.getClaimPartialRefundOffers(5204934310)).rejects.toBeInstanceOf(
+      MercadoLivreHttpError,
+    );
+  });
+});
