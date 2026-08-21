@@ -749,6 +749,32 @@ describe('applySuggestions', () => {
     expect(next[0]).toEqual({ id: 'LENGTH', value_id: null, value_name: '55', unit_id: 'mm' });
   });
 
+  it("splits a suggestion that matched one of ML's enumerated values", () => {
+    // ⚠️ `applyAiAttributes`' MATCHED branch emits ML's own name whole with its
+    // id: `{value_id: '3681798', value_name: '355 mL', unit_id: null}`. Left
+    // alone that puts `'355 mL'` in the digits-only box and leaves the row
+    // unitless while the picker shows `mL` — the row disagreeing with the screen
+    // is what makes the next blur report an edit nobody made.
+    const volume = attr({
+      id: 'VOLUME',
+      valueType: 'number_unit',
+      defaultUnit: 'mL',
+      allowedUnits: [
+        { id: 'mL', name: 'mL' },
+        { id: 'L', name: 'L' },
+      ],
+      values: [{ id: '3681798', name: '355 mL' }],
+    });
+    const next = applySuggestions(
+      [volume],
+      [{ id: 'VOLUME', value_id: null, value_name: null, unit_id: null }],
+      [{ id: 'VOLUME', value_id: '3681798', value_name: '355 mL', unit_id: null }],
+    );
+    // The id names the PAIR, so it cannot outlive the split — same rule
+    // `seedRow` and the unit picker both apply.
+    expect(next[0]).toEqual({ id: 'VOLUME', value_id: null, value_name: '355', unit_id: 'mL' });
+  });
+
   it('falls back to the row unit when the suggestion carries none', () => {
     const length = lengthAttr();
     const next = applySuggestions(

@@ -608,10 +608,22 @@ export function applySuggestions(
     // appends `unit_id` to the value name. Splitting also RECOVERS the unit the
     // model stated, which is better information than the category default the
     // suggestion would otherwise carry.
-    if (attr.valueType === 'number_unit' && next.value_id == null && next.value_name != null) {
+    //
+    // ⚠️ Suggestions carrying a `value_id` are split too. `applyAiAttributes`'
+    // MATCHED branch emits ML's own value name WHOLE alongside its id —
+    // `{value_id: '3681798', value_name: '355 mL', unit_id: null}` — so gating
+    // this on a null id left the commonest enumerated case unsplit: `'355 mL'`
+    // in the digits-only box, and a unitless row while the picker shows `mL`,
+    // which is exactly the row-disagrees-with-screen state that makes the next
+    // blur report an edit nobody made. Only the N/A sentinel is exempt; its
+    // `'N/A'` is a marker, not a measurement.
+    if (attr.valueType === 'number_unit' && !isNaRow(next) && next.value_name != null) {
       const split = splitNumberUnit(attr, next.value_name);
       return {
         ...next,
+        // The id names the PAIR, so it cannot outlive the split — the same rule
+        // `seedRow` and the unit picker both apply.
+        value_id: split.unit != null ? null : next.value_id,
         value_name: split.value,
         unit_id: split.unit ?? next.unit_id ?? effectiveUnit(attr, row),
       };
