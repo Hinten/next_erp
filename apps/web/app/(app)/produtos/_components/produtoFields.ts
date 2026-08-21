@@ -52,8 +52,34 @@ export const PRODUTO_SECTIONS_BASE: string[] = [
   'Anexos',
 ];
 
+/**
+ * The edit-only Modificações tab, named once for the same reason as
+ * `SECTION_MERCADO_LIVRE`: the section list and the `modificacoes` field
+ * override must name the identical string, and a typo in either silently
+ * strands the tab (an empty panel, or a field grouped under a tab nobody
+ * renders).
+ */
+export const SECTION_MODIFICACOES = 'Modificações';
+
 /** Tab order for the create screen: the shared tabs, Mercado Livre last. */
 export const PRODUTO_SECTIONS: string[] = [...PRODUTO_SECTIONS_BASE, SECTION_MERCADO_LIVRE];
+
+/**
+ * Tab order for the edit screen: the shared tabs, then the edit-only
+ * Modificações tab, then Mercado Livre.
+ *
+ * ⚠️ Modificações slots in BEFORE Mercado Livre on purpose — Mercado Livre is
+ * the last tab on the create screen too, and appending here would shift it one
+ * position left the moment the produto is saved, which is exactly the bug this
+ * pairing exists to prevent. Lives here beside `PRODUTO_SECTIONS` so the two
+ * arms of the invariant sit in one file and `produtoFields.test.ts` can assert
+ * both.
+ */
+export const PRODUTO_SECTIONS_EDITAR: string[] = [
+  ...PRODUTO_SECTIONS_BASE,
+  SECTION_MODIFICACOES,
+  SECTION_MERCADO_LIVRE,
+];
 
 /**
  * What both produto pages hand to `<ObjectView schema={…}>`: the produto page
