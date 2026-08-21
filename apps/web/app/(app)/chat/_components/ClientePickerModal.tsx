@@ -17,18 +17,19 @@ interface ClienteHit {
   id: string;
   nome: string;
   telefone: string | null;
-  /** Resolved to `usarioOuterRef` form; null when the cliente has no linked user. */
-  usarioRef: string | null;
 }
 
 /**
- * Canonicalize a `cliente.userCliente` (which may be stored bare or with the
- * `documents/` prefix) to the `usarioOuterRef` doc-path the conversa carries
- * (`documents/<col>/<id>`, see `packages/schemas/src/shared/outerRef.ts`), so a
- * `whereEqual('usarioOuterRef', …)` matches.
+ * `documents/clientes/<id>` — the value `conversa.clienteOuterRef` carries, and
+ * therefore the value the inbox filter matches on.
+ *
+ * This replaces the old `userCliente` → `usarioOuterRef` hop. That hop is why a
+ * cliente with no linked `usuarios` doc used to be unselectable — which is now
+ * the NORMAL case, since a marketplace buyer never logs in and #768 stopped
+ * minting a usuario per contact.
  */
-function normalizeUsarioRef(userCliente: string): string {
-  return `documents/${userCliente.replace(/^documents\//, '')}`;
+function clienteOuterRefFor(clienteId: string): string {
+  return `documents/clientes/${clienteId}`;
 }
 
 async function searchClientes(term: string): Promise<ClienteHit[]> {
@@ -58,7 +59,6 @@ async function searchClientes(term: string): Promise<ClienteHit[]> {
       id: d.id,
       nome: c.nome ?? '(sem nome)',
       telefone: c.telefone,
-      usarioRef: c.userCliente ? normalizeUsarioRef(c.userCliente) : null,
     };
   });
 }
@@ -66,9 +66,14 @@ async function searchClientes(term: string): Promise<ClienteHit[]> {
 /**
  * Cliente search modal for the inbox "Cliente" filter: a small prefix search on
  * `nome` (or exact `telefone` when the term is all digits), using the existing
- * query builders (no vector search). Picking a cliente resolves its linked
- * `usuarios` doc → the `usarioOuterRef` the conversa filter matches. Clientes
- * with no linked user can't narrow the list, so they are shown disabled.
+ * query builders (no vector search).
+ *
+ * Picking a cliente emits `documents/clientes/<id>` — the value
+ * `conversa.clienteOuterRef` carries — and EVERY hit is selectable. The old
+ * version resolved the cliente's linked `usuarios` doc and disabled any cliente
+ * without one; after #768 that describes every marketplace buyer, who never logs
+ * in and no longer gets a synthetic usuario. Disabling them hid exactly the
+ * customers this filter is most useful for.
  */
 export function ClientePickerModal({
   opened,
@@ -77,7 +82,7 @@ export function ClientePickerModal({
 }: {
   opened: boolean;
   onClose: () => void;
-  onSelect: (usarioRef: string, nome: string) => void;
+  onSelect: (clienteRef: string, nome: string) => void;
 }) {
   const [term, setTerm] = useState('');
   const enabled = opened && term.trim().length >= 2;
@@ -119,17 +124,14 @@ export function ClientePickerModal({
           {data?.map((hit) => (
             <UnstyledButton
               key={hit.id}
-              disabled={!hit.usarioRef}
               onClick={() => {
-                if (!hit.usarioRef) return;
-                onSelect(hit.usarioRef, hit.nome);
+                onSelect(clienteOuterRefFor(hit.id), hit.nome);
                 onClose();
               }}
               p="xs"
               style={(theme) => ({
                 borderRadius: theme.radius.sm,
-                opacity: hit.usarioRef ? 1 : 0.5,
-                cursor: hit.usarioRef ? 'pointer' : 'not-allowed',
+                cursor: 'pointer',
               })}
             >
               <Text size="sm" fw={500} lineClamp={1}>
@@ -137,7 +139,6 @@ export function ClientePickerModal({
               </Text>
               <Text size="xs" c="dimmed">
                 {hit.telefone ? formatTelefone(hit.telefone) : 'sem telefone'}
-                {!hit.usarioRef && ' · sem usuário vinculado'}
               </Text>
             </UnstyledButton>
           ))}

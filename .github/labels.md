@@ -80,6 +80,18 @@ for one state:
 | `needs-design`   | Needs a UX/design call before it can be specced.                  |
 | `no-breakdown`   | Too large or too vague to decompose; needs Lucas.                 |
 
+## Decomposition
+
+| Label         | Colour   | Means                                                                                            |
+| ------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `broken-down` | `b60205` | A **tracker** — already decomposed into linked children, or authored aggregate. The splitter skips it. |
+
+Distinct from `no-breakdown` above, and the two are not opposites. `no-breakdown`
+means *cannot usefully be split — needs Lucas*; `broken-down` means *already
+split, or intentionally aggregate — do not split it again*. Apply `broken-down`
+to any issue whose body IS the decomposition (an epic, a runbook, a checklist
+tracker), or the splitter will decompose it back into the children it replaced.
+
 ## Timing gate
 
 | Label                    | Colour   | Use it for                                                                 |
@@ -97,6 +109,13 @@ Query the backlog for the cutover checklist with:
 ```bash
 gh issue list --state open --label "needs-migration-window"
 ```
+
+⚠️ Since the cutover is executed in **one pass**, the window's *operations* live
+in a single ordered tracker — **#1208**, in ADR 0013 phase order — rather than as
+loose issues. What remains open on this label is deliberately **not** window
+work: code that must merge beforehand and decisions that gate the day. So a new
+issue here needs a second look — if it is something to *run*, it belongs in
+#1208 as a phase step; the label alone is no longer the checklist.
 
 So a handful of issues (today `#379`, `#557`) carry **no** `task:` label at all.
 That is by design — find them via the three labels above, not a `task:` filter.

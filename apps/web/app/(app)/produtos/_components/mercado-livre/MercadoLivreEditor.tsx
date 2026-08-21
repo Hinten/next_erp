@@ -43,6 +43,7 @@ import {
 import { flushListings } from '@/lib/mercado-livre/flushListings';
 import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
 import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
+import { moderacoesPorCampo } from '@/lib/mercado-livre/listingModeracoes';
 import { mapPublishIssues } from '@/lib/mercado-livre/publishIssues';
 import { createListingDraft } from '@/lib/mercado-livre/listingDraft';
 import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
@@ -68,10 +69,12 @@ import { ListingStatusStrip } from './ListingStatusStrip';
  * its live status, its editable fields, and the Publicar/Republicar action that
  * drives `POST /publicar` on the apps/mercado-livre backend.
  *
- * The link docs are read live (the same documents the Flutter app reads) and
- * edited through their own transaction, so listing edits are decoupled from the
- * produto form's save — but they still ride along with it, through the flush ref
- * the page wires into `ObjectView`'s `onAfterSave`.
+ * The link docs are read live and edited through their own transaction, so
+ * listing edits are decoupled from the produto form's save — but they still ride
+ * along with it, through the flush ref the page wires into `ObjectView`'s
+ * `onAfterSave`. Live because the backend mutates these docs while the tab is
+ * open: the `/publicar` route, the `items` status sync, and the price and stock
+ * senders all write the same link doc.
  */
 
 /**
@@ -723,14 +726,23 @@ export function MercadoLivreEditor({
                   </Group>
 
                   {contaLinks.map((l, index) => {
-                    // Two sources, one control vocabulary: Mercado Livre's own
-                    // rejection — read live off THIS link doc, so it is already
-                    // per-listing and survives a reload — and our pre-flight
-                    // refusal, which is per conta (a produto carries one listing
-                    // per account in practice, and those issues are about the
-                    // produto or the account either way).
+                    // THREE sources, one control vocabulary: Mercado Livre's own
+                    // rejection of a write of ours — read live off THIS link doc,
+                    // so it is already per-listing and survives a reload — ML's
+                    // POLICY moderation on the listing itself (#1087), from the
+                    // same doc, and our pre-flight refusal, which is per conta (a
+                    // produto carries one listing per account in practice, and
+                    // those issues are about the produto or the account either
+                    // way).
+                    //
+                    // ⚠️ The moderation map is purely ADDITIVE: every moderação
+                    // is also listed in the strip, whether or not its section
+                    // resolved to a control here — `pictures` and `item` resolve
+                    // to none at all. See the ⚠️ in `listingCausas.ts` for what
+                    // it cost the last time a banner depended on this mapping.
                     const serverErrors = mergeServerErrors(
                       splitCausas(l.data).porCampo,
+                      moderacoesPorCampo(l.data),
                       blockedPorCampo,
                     );
                     return (

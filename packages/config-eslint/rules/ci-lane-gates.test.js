@@ -1,10 +1,9 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red-alert.mjs';
+import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
 
 /**
  * Every PR-triggered lane must ALWAYS publish a check, and that check must tell
@@ -62,7 +61,6 @@ import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red
  * and its indentation is not machine-guaranteed. Hence `jobBlocks` derives the
  * indent width, and assertion 0 is a synthetic positive control.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * The pinned contract, one entry per gated lane.
@@ -256,11 +254,7 @@ const UNGATED = {
 
 /** Same discovery shape as `env-example-location.test.js` — see its long note. */
 function findByPathspec(pathspec) {
-  const ls = (...args) =>
-    execFileSync('git', [...args, '--', pathspec], { cwd: REPO_ROOT, encoding: 'utf8' })
-      .split('\n')
-      .filter(Boolean);
-  return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
+  return gitLsFiles(pathspec);
 }
 
 /**

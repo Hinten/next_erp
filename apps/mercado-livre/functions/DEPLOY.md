@@ -526,6 +526,20 @@ The stock sync has no Secret Manager needs of its own — every knob is a
 the master flag `MERCADO_LIVRE_STOCK_SYNC_ENABLED` (`'1'` and nothing else turns
 it on). Three separate places matter, and they are NOT interchangeable:
 
+> **#706 — `MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED`.** A second runtime flag,
+> also `'1'`-only, also shipping OFF, and deliberately NOT folded into the master
+> one. It enables the `seller_warehouse` send path for contas ML tags
+> `warehouse_management`, whose stock `PUT /items` silently ignores. The master
+> flag governs the unattended blast radius of the sweeps and flips in the cutover
+> window; this one governs a brand-new write protocol against accounts that have
+> never received stock from this ERP, and ML has no sandbox for them (only test
+> users activated on request). Turn it on AFTER a live run against a real
+> multiorigin account. A conta carrying `multiwarehouse` as well is refused
+> regardless — several depósitos need a mapping this ERP does not model yet
+> (issue #1177) — and the two refusals are worded differently so the logs say
+> which one you hit. It goes in the same runtime env as the master flag (place 1
+> below).
+
 1. **The deployed functions' runtime env** — everything the sweeps and the send
    handler read while running: the master flag, `..._INCREMENTAL_WINDOW_MIN`,
    `..._WINDOW_OVERLAP_SEC`, `..._CURSOR_MAX_LOOKBACK_H`, `..._DAILY_WINDOW_H`,

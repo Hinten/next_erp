@@ -1,8 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { REPO_ROOT, gitGrep } from './lib/repo-scan.js';
 
 /**
  * Every `onTaskDispatched` in the repo must declare its `invoker` (#1133), and
@@ -29,7 +28,6 @@ import { describe, expect, it } from 'vitest';
  * document, the failures-only collection stays empty, and the only evidence is
  * a 403 WARNING in the function's own log (#1131).
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /** Path → what the function is, so a new one has to be read, not just listed. */
 const INVENTORY = {
@@ -83,26 +81,15 @@ function read(file) {
   return readFileSync(resolve(REPO_ROOT, file), 'utf8');
 }
 
+/**
+ * ⚠️ Called from EIGHT assertions below (four of them via `codebaseRoots()`).
+ * That is only affordable because `lib/repo-scan.js` memoizes the spawn: this
+ * used to be nine `git grep --untracked` per run of this file, which on Windows
+ * under the parallel suite is several seconds of pure process cost and is what
+ * made the guard flake on the 5s default timeout. See that module's header.
+ */
 function taskFunctionFiles() {
-  try {
-    // ⚠️ `--untracked` (like `runtime-deps-pinned.test.js`'s
-    // `ls-files --others --exclude-standard`): plain `git grep` searches TRACKED
-    // files only, so a task function that has not been `git add`ed yet is
-    // invisible and the pre-commit run gives no feedback on the very change
-    // introducing it. Ignored paths stay excluded.
-    return execFileSync(
-      'git',
-      ['grep', '-l', '--untracked', 'onTaskDispatched(', '--', ...PATHSPECS],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
-    )
-      .split('\n')
-      .filter(Boolean)
-      .sort();
-  } catch (err) {
-    // execFileSync throws on a non-zero exit; git grep exits 1 with no matches.
-    if (err instanceof Error && 'status' in err && err.status === 1) return [];
-    throw err;
-  }
+  return gitGrep({ patterns: 'onTaskDispatched(', pathspecs: PATHSPECS });
 }
 
 /**

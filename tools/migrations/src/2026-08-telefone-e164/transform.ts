@@ -5,9 +5,9 @@
  *
  * Target wire format: digits-only E.164 without the leading `+`
  * (`5511999998888`), the format `@delfrance/core/phone` documents and every
- * lookup in the repo expects. The live Flutter app writes raw 10/11-digit BR
- * numbers, so the collection is mixed today and `telefoneQueryShapes` exists to
- * search both.
+ * lookup in the repo expects. The legacy app wrote raw 10/11-digit BR numbers,
+ * so the corpus this pass walks is mixed — that mix is the whole reason the
+ * pass exists, and `telefoneQueryShapes` searches both shapes until it has run.
  */
 
 import { isValidTelefone, normalizeTelefone } from '@delfrance/core/phone';

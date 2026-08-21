@@ -43,7 +43,8 @@ export function isValidTelefone(value: string): boolean {
  * Every wire shape a phone may be stored under, for
  * `where('telefone', 'in', …)` dedup queries: the input as typed (digits),
  * its normalized form, and — when the input is already normalized BR —
- * the raw 10/11-digit shape the Flutter app writes.
+ * the raw 10/11-digit shape the migrated corpus stores (the header note:
+ * legacy rows arrive that way, so both encodings must be queried).
  */
 export function telefoneQueryShapes(input: string): string[] {
   const digits = input.replace(/\D/g, '');

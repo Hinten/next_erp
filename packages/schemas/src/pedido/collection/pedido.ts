@@ -319,13 +319,28 @@ export const pedidoMeta: CollectionMetadata = {
     orderBy: [{ field: 'numero', direction: 'desc' }],
     limit: 50,
   },
-  // `estoqueAplicado` is written ONLY by the sincronizarEstoquePedido Cloud
-  // Function: a client forging (or clearing) the snapshot could make the
-  // admin-privileged sync mint or leak stock. The legacy markers
-  // (`dataIndisponivelEstoque`/`dataRemocaoEstoque`) stay client-writable on
-  // purpose — the Flutter app writes them back on every full-doc save, and
-  // forging them only makes the sync SKIP a pedido, never move stock.
-  serverOwnedFields: ['estoqueAplicado'],
+  // All three estoque-sync fields are written ONLY by the
+  // `sincronizarEstoquePedido` Cloud Function, and this list must stay in step
+  // with `CAMPOS_ESTOQUE_SYNC` (`packages/data/src/pedido/estoquePlan.ts`),
+  // which is the source of truth for "the sync owns it end to end — it is their
+  // only writer, and no interactive editor in `apps/web` can author any of
+  // them".
+  //
+  // Forging `estoqueAplicado` could make the admin-privileged sync mint or leak
+  // stock. Forging either legacy marker is milder — `ehMarcadorLegado` makes the
+  // sync SKIP the pedido, so the exposure is a denial of sync, not a stock
+  // move — but "milder" was never the reason they were left open.
+  //
+  // ⚠️ That reason was: "the Flutter app writes them back on every full-doc
+  // save". It is VOID — there is no dual run (root `CLAUDE.md` rule 8), so no
+  // Flutter write ever lands on a document this app writes, and the two files
+  // above contradicted each other for as long as it stood. Nothing subject to
+  // these rules writes the markers: `PedidoForm` seeds both null (which the
+  // create guard allows), `buildPedidoPatch` emits only dirty form keys and no
+  // control authors them, `EstoqueSyncTab` only displays them, and `duplicar`
+  // strips them. The update guard keys on `diff().affectedKeys()`, so an update
+  // that leaves them untouched is unaffected.
+  serverOwnedFields: ['estoqueAplicado', 'dataIndisponivelEstoque', 'dataRemocaoEstoque'],
 };
 
 export const pedido = { schema: pedidoSchema, meta: pedidoMeta };

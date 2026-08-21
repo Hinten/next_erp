@@ -207,6 +207,32 @@ export const conversaMeta: CollectionMetadata = {
     write: PERM_CONVERSA_WRITE,
     delete: PERM_CONVERSA_DELETE,
   },
+  /**
+   * ENFORCED, by `onConversaDeleted` — the CARO GENÉRICO factory in
+   * `apps/functions/src/cascades/caroGenericoTriggers.ts` (#980). Firestore
+   * cascades nothing on its own, so before that trigger a deleted conversa left
+   * its entire `mensagem` history orphaned, permanently and invisibly.
+   *
+   * ⚠️ The trigger does not read this array. It walks whatever
+   * `listCollections()` reports, so it also reclaims subcollections the legacy
+   * corpus put under a conversa that this repo never modeled. This declaration
+   * records intent; it is not the sweep's input.
+   *
+   * ⚠️ FIRESTORE ONLY. The `mensagem` documents carry six outer refs into the
+   * top-level `arquivos` collection (`anexoStorage`, `audio.audio`,
+   * `image.image`, `video.video`, `sticker.sticker`,
+   * `genericDocument.genericDocument`). Those live outside the conversa, so the
+   * cascade does not touch them, and no sweep reclaims them either — WhatsApp
+   * media sits under `whatsapp/<contaId>/<mediaId>`, which `parseOwnedMediaDir`
+   * does not recognise. A deliberate, recorded remainder (the `arquivos` skill's
+   * §9 step-4 trap, pre-dating this cascade), NOT something to fix by deleting
+   * the arquivos here: one arquivo doc is shared across messages and conversas
+   * by deterministic media id, so a per-message delete would break a live
+   * attachment elsewhere. Reclaiming them needs refcounting in the sweep — #1207.
+   *
+   * ⚠️ Like every trigger in that codebase, it does nothing until
+   * `functions:storage` is deployed — a manual step.
+   */
   cascade: [{ path: 'chat/{conversaId}/mensagem', onDelete: 'cascade' }],
 };
 

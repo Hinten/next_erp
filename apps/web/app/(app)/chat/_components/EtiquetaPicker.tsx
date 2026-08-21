@@ -13,13 +13,21 @@ export function EtiquetaPicker({
   value,
   onChange,
   size = 22,
+  disabled = false,
 }: {
   value: number | null;
   onChange: (cor: number | null) => void;
   size?: number;
+  /** Dimmed and inert — used while a cliente filter owns the query. */
+  disabled?: boolean;
 }) {
   return (
-    <Group gap={6} wrap="nowrap">
+    <Group
+      gap={6}
+      wrap="nowrap"
+      style={disabled ? { opacity: 0.4, pointerEvents: 'none' } : undefined}
+      aria-disabled={disabled || undefined}
+    >
       <Tooltip label="Sem etiqueta" withArrow>
         <UnstyledButton
           aria-label="Sem etiqueta"

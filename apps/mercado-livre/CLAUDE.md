@@ -200,6 +200,22 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   percentage to 50%**. So an amount with no exact offer is refused with the list
   of real ones rather than rounded to the nearest: a refund is not a value worth
   approximating.
+- `lib/marketplace/orderMessageAttachments.ts` — **#1162**: post-sale message
+  attachments downloaded into Storage as `Arquivo`s, the `mlped` sibling of
+  `claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
+  operator had to leave the ERP to see it; that `[n anexos]` note stays as the
+  FALLBACK, because silently dropping one is worse than not having it.
+  ⚠️ **Not symmetric with the claims endpoint**, in three ways that each cost a
+  round trip: `site_id` is a REQUIRED query param (omitting it is a documented
+  400); the limits differ (25 MB and TXT allowed, vs the claim endpoint’s 5 MB
+  and no TXT — hence a separate `ML_POST_SALE_ANEXO`); and ML documents **no 404**
+  for this route, only 400 and 500, so a permanently missing file arrives as a
+  **500** and MUST classify as deterministic or the task retries forever.
+  ⚠️ The attachment mensagem takes its PARENT message’s direction — stamping every
+  one `enviado` renders the buyer’s photos as our own outgoing messages, the exact
+  bug the claims path had to fix. `bucket: null` degrades to skip-all with ONE warn
+  per message: losing the customer’s message because Storage was unavailable would
+  be far worse than losing the photo.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see

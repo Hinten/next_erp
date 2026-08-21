@@ -155,7 +155,8 @@ describe('discoverUserByPhoneNumber — (a) externalId hit', () => {
 
 describe('discoverUserByPhoneNumber — (b/d) cliente phone match', () => {
   it('matches a cliente stored under the normalized shape and returns its linked user', async () => {
-    // Stored under the raw 11-digit BR shape the Flutter app writes.
+    // Stored under the raw 10/11-digit BR shape the migrated corpus carries —
+    // which is exactly why (b) queries BOTH `telefoneQueryShapes` forms.
     h.cliente._docs.push({
       id: 'c1',
       data: { nome: 'Cliente Um', telefone: '11999998888', userCliente: 'documents/usuarios/uX' },

@@ -194,10 +194,16 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
-  describe('server-owned pedido.estoqueAplicado (meta.serverOwnedFields)', () => {
-    // A client with pedido-write forging (or clearing) the applied-stock
-    // snapshot could make the admin-privileged estoque sync mint or leak stock;
-    // only the Admin SDK (rules-bypassing) may write real values.
+  describe('server-owned pedido estoque fields (meta.serverOwnedFields)', () => {
+    // All three fields in `CAMPOS_ESTOQUE_SYNC` are written ONLY by the
+    // `sincronizarEstoquePedido` Cloud Function; only the Admin SDK
+    // (rules-bypassing) may write real values.
+    //
+    // Forging `estoqueAplicado` could make the admin-privileged sync mint or
+    // leak stock. Forging either legacy marker is milder — it makes the sync
+    // SKIP the pedido — but both were left open for a reason that is now VOID
+    // ("the Flutter app writes them back on every full-doc save"; there is no
+    // dual run, root `CLAUDE.md` rule 8), so all three are locked.
     const writer = () => db({ d_pedido: 2 });
     const snapshotForjado = {
       depositoId: 'dep1',
@@ -258,6 +264,62 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
       const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
       await assertFails(updateDoc(doc(su, 'pedidos/so-su'), { estoqueAplicado: snapshotForjado }));
     });
+
+    // ── the two legacy markers, locked as of #1168 ──────────────────────────
+    //
+    // These ran unprotected until the dual-run premise was retired. The
+    // exposure was a denial of sync rather than a stock move — `ehMarcadorLegado`
+    // makes `sincronizarEstoquePedido` SKIP a pedido carrying one — which is
+    // why this is hardening and not an incident. Covered here so a future edit
+    // that drops them from `serverOwnedFields` fails instead of going unnoticed.
+
+    for (const campo of ['dataIndisponivelEstoque', 'dataRemocaoEstoque'] as const) {
+      it(`allows a create carrying ${campo} only as null`, async () => {
+        // PedidoForm seeds both null on create — that path must keep working.
+        await assertSucceeds(
+          setDoc(doc(writer(), `pedidos/marc-null-${campo}`), {
+            estado: 'iniciado',
+            ehSaida: true,
+            [campo]: null,
+          }),
+        );
+      });
+
+      it(`denies a create forging ${campo}`, async () => {
+        await assertFails(
+          setDoc(doc(writer(), `pedidos/marc-forge-${campo}`), {
+            estado: 'iniciado',
+            ehSaida: true,
+            [campo]: 1_700_000_000_000_000,
+          }),
+        );
+      });
+
+      it(`denies any update touching ${campo} — set, clear, or delete`, async () => {
+        await seed(`pedidos/marc-upd-${campo}`, {
+          estado: 'pago',
+          ehSaida: true,
+          [campo]: 1_700_000_000_000_000,
+        });
+        const ref = () => doc(writer(), `pedidos/marc-upd-${campo}`);
+        await assertFails(updateDoc(ref(), { [campo]: 1_800_000_000_000_000 }));
+        await assertFails(updateDoc(ref(), { [campo]: null }));
+        await assertFails(updateDoc(ref(), { [campo]: deleteField() }));
+      });
+
+      it(`allows an update that leaves ${campo} untouched`, async () => {
+        // The guard keys on `diff().affectedKeys()`, so an ordinary edit to an
+        // unrelated field still goes through on a pedido that carries a marker.
+        await seed(`pedidos/marc-other-${campo}`, {
+          estado: 'pago',
+          ehSaida: true,
+          [campo]: 1_700_000_000_000_000,
+        });
+        await assertSucceeds(
+          updateDoc(doc(writer(), `pedidos/marc-other-${campo}`), { foiImpresso: true }),
+        );
+      });
+    }
   });
 
   describe('server-owned metodo_pgto.user_id (meta.serverOwnedFields) — #1034', () => {

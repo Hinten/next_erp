@@ -840,6 +840,9 @@ const runOrderMessageImport: OrderMessageImportRunner = async (
     {
       db,
       api,
+      // Same source as the claims runner: null degrades to skip-attachments with
+      // one warn, and the text mensagem still lands with its anexo note.
+      bucket: tryGetAdminBucket(),
       integracaoId,
       conta: {
         userId: asNumberOrNull(ctx.conta.user_id),

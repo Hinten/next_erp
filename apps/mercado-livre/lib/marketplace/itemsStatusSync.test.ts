@@ -1275,6 +1275,116 @@ describe('syncItemStatus — a family member never speaks for the family un-fold
   });
 });
 
+describe('syncItemStatus — userProductId self-heal (multiorigem, #706)', () => {
+  it('stamps userProductId on a SIMPLE listing, whose item IS the stock unit', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'], user_product_id: 'MLBU-1' }),
+    );
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ userProductId: 'MLBU-1' });
+  });
+
+  it('a NEW userProductId is a change on its own — an otherwise-unchanged listing still heals', async () => {
+    // This is what makes the sync the catalogue-wide backfill: a listing whose
+    // status never moves would short-circuit on `unchanged` and never gain the
+    // field, and nothing else re-reads every listing on its own schedule.
+    const db = new FakeDb();
+    seedLink(db, { estado: 'p', status: 'active', sub_status: null });
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: null, user_product_id: 'MLBU-1' }),
+    );
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ userProductId: 'MLBU-1' });
+  });
+
+  it('is fill-only: a response that omits user_product_id never nulls a stored id', async () => {
+    const db = new FakeDb();
+    seedLink(db, { userProductId: 'MLBU-KEEP' });
+    await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'paused' }));
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ userProductId: 'MLBU-KEEP' });
+  });
+
+  it('re-syncing an already-stamped listing reports `unchanged` (no write amplification)', async () => {
+    const db = new FakeDb();
+    seedLink(db, { status: 'active', sub_status: null, userProductId: 'MLBU-1' });
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', sub_status: null, user_product_id: 'MLBU-1' }),
+    );
+    expect(out).toBe('unchanged');
+  });
+
+  it('⚠️ NEVER stamps a legacy variations[] listing — its stock units are the variations', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({
+        status: 'paused',
+        user_product_id: 'MLBU-ITEM',
+        variations: [{ id: 1, available_quantity: 3 }],
+      }),
+    );
+    expect(db.docData(LINK_PATH, 'link1')).not.toHaveProperty('userProductId');
+  });
+
+  it("⚠️ a MEMBER's userProductId lands on the MEMBER's own link, never on the family's (#1142)", async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB', status: 'paused' },
+    ]);
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', family_name: 'Camiseta Lisa', user_product_id: 'MLBU-A' }),
+    );
+
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      userProductId: 'MLBU-A',
+    });
+    expect(db.docData(LINK_PATH, 'link1')).not.toHaveProperty('userProductId');
+    // And it must not leak onto the SIBLING either.
+    expect(db.docData(memberVarPath('childB'), 'v-childB')).not.toHaveProperty('userProductId');
+  });
+
+  it('a member userProductId alone makes the member changed, even with an identical status', async () => {
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      { itemId: MEMBER_B, child: 'childB' },
+    ]);
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', family_name: 'Camiseta Lisa', user_product_id: 'MLBU-A' }),
+    );
+
+    // The family summary did not move (both members already active), but the
+    // member's identity was recorded.
+    expect(out).toBe('synced-member');
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      userProductId: 'MLBU-A',
+    });
+  });
+});
+
 /**
  * #1087. The complaint: ML pauses a listing for a policy reason, the ERP records
  * `status: 'paused'` and nothing else, and the operator sees a dead anúncio with

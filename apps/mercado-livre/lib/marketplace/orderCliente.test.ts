@@ -794,8 +794,8 @@ describe('ensureEndereco', () => {
     const fake = new FakeDb();
     const id = makeEnderecoId(fields);
     // An operator edited `complemento` in apps/web after the import (editing a
-    // field does not move the doc id), and the Flutter writer left behind a key
-    // this port never writes.
+    // field does not move the doc id), and the migrated corpus arrived carrying
+    // a legacy key this port never writes. Both must survive the round trip.
     const existing = {
       ...fields,
       complemento: 'Deixar com o porteiro',

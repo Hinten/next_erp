@@ -11,6 +11,16 @@
  * unindexed queries as scans, so the extra ordering — and its composite-index
  * cost — buys nothing here). The three hot default combos are backed by the
  * `chat` composite indexes in `firestore.indexes.json`.
+ *
+ * ⚠️ INVARIANT: the cliente filter only ever coexists with the `todas` tab, and
+ * `useConversaFilters` enforces it in both directions. The filter STACKS on the
+ * tab's base clauses, so `atendimento` + cliente would be a four-clause
+ * composite and `pendentes` + cliente a three-clause one — each needing its own
+ * index, and each silently full-scanning without one (Firestore Enterprise does
+ * not throw on an unindexed query, it bills the scan). Pinning it to `todas`
+ * makes ONE index — `chat(clienteOuterRef, ultima_modificacao DESC)` — cover
+ * every reachable combination, and matches what the filter means: everything
+ * from this customer.
  */
 
 /** The three inbox tabs (legacy `MenuLateral` TabBar, sans the comentários tab). */
@@ -70,10 +80,16 @@ export interface ConversaFilterInput {
   /** Etiqueta ARGB int (`cor_etiqueta`); `null`/absent = no etiqueta filter. */
   etiqueta?: number | null;
   /**
-   * Resolved `usarioOuterRef` (`documents/usuarios/<uid>`) of the cliente
-   * filter — the value `conversa.usarioOuterRef` is matched against.
+   * `documents/clientes/<id>` of the cliente filter — matched against
+   * `conversa.clienteOuterRef`.
+   *
+   * ⚠️ This is the ONLY identity field the filter looks at, and that is
+   * deliberate. A Firestore `==` cannot OR two fields, so matching both this and
+   * the legacy `usarioOuterRef` would need two queries and two cursors. Instead
+   * every writer converges on `clienteOuterRef` (ML importers since #768,
+   * WhatsApp since #1159) and the legacy corpus is backfilled once (#1173).
    */
-  usarioOuterRef?: string | null;
+  clienteOuterRef?: string | null;
 }
 
 export interface ConversaQueryInput extends ConversaFilterInput {
@@ -144,8 +160,8 @@ export function conversaConstraintSpecs(input: ConversaQueryInput): ConstraintSp
   if (input.etiqueta != null) {
     specs.push({ kind: 'where', op: '==', field: 'cor_etiqueta', value: input.etiqueta });
   }
-  if (input.usarioOuterRef) {
-    specs.push({ kind: 'where', op: '==', field: 'usarioOuterRef', value: input.usarioOuterRef });
+  if (input.clienteOuterRef) {
+    specs.push({ kind: 'where', op: '==', field: 'clienteOuterRef', value: input.clienteOuterRef });
   }
 
   // ── Ordering + limit ──────────────────────────────────────────────────────

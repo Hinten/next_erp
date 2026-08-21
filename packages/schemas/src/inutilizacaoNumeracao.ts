@@ -29,8 +29,8 @@ const XJUST_MAX = 255;
  * them from `xml_retorno` on demand; we store them flat).
  *
  * Field-name note: keep our wire names `nNFIni` / `nNFFin` (not the old
- * `inicio` / `fim`) — this is a fresh TS-only collection, no Flutter reader to
- * satisfy during the migration window.
+ * `inicio` / `fim`) — nothing is migrated into this collection, so there is no
+ * legacy corpus behind it and no wire-compat constraint to satisfy.
  */
 export const inutNumeracaoSchema = z.object({
   /** NF-e série the range belongs to. */
