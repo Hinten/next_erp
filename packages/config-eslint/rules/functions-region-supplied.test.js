@@ -36,24 +36,42 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
- * Commands that produce a bundle whose region is inlined at build time. Each is the
- * literal text a workflow `run:` step contains.
+ * Commands whose job needs a region, and the variable each one needs.
  *
- * ⚠️ `prepare-deploy` covers the predeploy hooks, which call `build.mjs` in turn —
- * the region is required just as much there, one level down.
+ * ⚠️ **MEASURED, not enumerated.** Every entry here corresponds to a run that
+ * actually went red — the same standard `REGIONS_WITHOUT_TASKS` sets in
+ * `preflight.mjs`. A speculative list would rot; this one grows only when something
+ * breaks, which is also the only way to know a command really resolves a region.
+ *
+ *  - `functions build` / `prepare-deploy` inline FUNCTIONS_REGION into the bundle
+ *    (prepare-deploy calls build.mjs one level down).
+ *  - `test:firestore` drives the real ML webhook route, which enqueues through
+ *    `mlTasksRegion()`.
+ *  - `test:tasks` drives the enqueue AND the task function, which must agree.
+ *  - `playwright test` builds apps/web, whose callables read
+ *    NEXT_PUBLIC_FUNCTIONS_REGION — inlined at build time, so it is the BUILD that
+ *    needs it, not the test run.
  */
-const BUILD_COMMANDS = ['functions build', 'prepare-deploy'];
+const REGION_COMMANDS = [
+  { command: 'functions build', variable: 'FUNCTIONS_REGION' },
+  { command: 'prepare-deploy', variable: 'FUNCTIONS_REGION' },
+  { command: 'test:firestore', variable: 'MERCADO_LIVRE_TASKS_REGION' },
+  { command: 'test:tasks', variable: 'MERCADO_LIVRE_TASKS_REGION' },
+  { command: 'playwright test', variable: 'NEXT_PUBLIC_FUNCTIONS_REGION' },
+];
 
 /**
- * Workflows known to build a bundle. An anchor list, so the pathspec below cannot
- * quietly stop matching and leave this suite passing over an empty set — the failure
- * mode every glob-driven guard in this directory has to defend against.
+ * Workflows known to run at least one of those commands. An anchor list, so the
+ * pathspec below cannot quietly stop matching and leave this suite passing over an
+ * empty set — the failure mode every glob-driven guard in this directory has to
+ * defend against.
  */
 const KNOWN_BUILDERS = [
   '.github/workflows/ci-mercado-livre.yml',
   '.github/workflows/ci-storage.yml',
   '.github/workflows/copilot-setup-steps.yml',
   '.github/workflows/e2e-emulator.yml',
+  '.github/workflows/e2e-reusable.yml',
 ];
 
 /** Tracked + untracked, so a new workflow counts before it is committed. */
@@ -76,7 +94,38 @@ function findWorkflows() {
  */
 const read = (file) => readFileSync(resolve(REPO_ROOT, file), 'utf8').split('\r\n').join('\n');
 
-const buildsABundle = (source) => BUILD_COMMANDS.some((cmd) => source.includes(cmd));
+/**
+ * Split a workflow into jobs: everything from one 2-space-indented `<id>:` line up
+ * to the next one. A hand-rolled slice, not a YAML parse, for the reason
+ * `ci-lane-gates.test.js` documents — `on:` is a YAML 1.1 boolean, so a naive parse
+ * keys that block as `true` and a test reading it passes vacuously over every file.
+ *
+ * ⚠️ JOB level is the whole point. The first version of this guard asked whether the
+ * FILE mentioned the variable anywhere, and that is exactly how two failures got
+ * through: `ci-mercado-livre.yml` sets a region in its tasks job while the firestore
+ * job — a sibling in the same file — set none, and the file-level scan saw a match.
+ */
+function jobs(source) {
+  const lines = source.split('\n');
+  const starts = [];
+  lines.forEach((line, i) => {
+    if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)) starts.push(i);
+  });
+
+  return starts.map((start, n) => ({
+    id: lines[start].trim().replace(/:$/, ''),
+    body: lines.slice(start, starts[n + 1] ?? lines.length).join('\n'),
+  }));
+}
+
+/**
+ * A reusable workflow's caller supplies no env, so `uses:` inherits the callee's.
+ * Treat a job that only delegates as covered — the callee is checked on its own.
+ */
+const delegates = (body) => /^\s*uses:\s*\.\/\.github\/workflows\//m.test(body);
+
+const runsRegionCommand = (source) =>
+  REGION_COMMANDS.some(({ command }) => source.includes(command));
 
 describe('a workflow that builds a functions bundle supplies its region', () => {
   it('finds every known builder', () => {
@@ -94,40 +143,55 @@ describe('a workflow that builds a functions bundle supplies its region', () => 
     ).toEqual([]);
   });
 
-  it('still recognises those builders by their build command', () => {
-    // Guards the scan itself: if BUILD_COMMANDS drifts from how the workflows
-    // actually invoke the build, the assertion below passes over an empty set.
-    const unrecognised = KNOWN_BUILDERS.filter((p) => !buildsABundle(read(p)));
+  it('still recognises those builders by their commands', () => {
+    // Guards the scan itself: if REGION_COMMANDS drifts from how the workflows
+    // actually invoke things, the assertion below passes over an empty set.
+    const unrecognised = KNOWN_BUILDERS.filter((p) => !runsRegionCommand(read(p)));
 
     expect(
       unrecognised,
       [
-        'These are known to build a functions bundle, but none of BUILD_COMMANDS',
-        `(${BUILD_COMMANDS.join(', ')}) appears in them. The scan below would skip`,
-        'them and pass without checking anything:',
+        'These are known to run a region-consuming command, but none of',
+        `REGION_COMMANDS (${REGION_COMMANDS.map((c) => c.command).join(', ')})`,
+        'appears in them. The assertion below would skip them and pass without',
+        'checking anything:',
         ...unrecognised.map((p) => `  - ${p}`),
       ].join('\n'),
     ).toEqual([]);
   });
 
-  it('every builder sets FUNCTIONS_REGION', () => {
-    const offenders = findWorkflows()
-      .filter((p) => buildsABundle(read(p)))
-      .filter((p) => !/^\s*FUNCTIONS_REGION\s*:/m.test(read(p)));
+  it('every JOB that needs a region sets it', () => {
+    const offenders = [];
+
+    for (const file of findWorkflows()) {
+      for (const job of jobs(read(file))) {
+        if (delegates(job.body)) continue;
+        for (const { command, variable } of REGION_COMMANDS) {
+          if (!job.body.includes(command)) continue;
+          if (new RegExp(`^\\s*${variable}\\s*:`, 'm').test(job.body)) continue;
+          offenders.push(`${file} › ${job.id} runs \`${command}\` without ${variable}`);
+        }
+      }
+    }
 
     expect(
       offenders,
       [
-        'These workflows build a Cloud Functions bundle but never set',
-        'FUNCTIONS_REGION. There is no default any more — `requireBuildRegion`',
-        'REFUSES the build — so the lane fails with what reads like an unrelated',
-        'build error. Add it to the job’s `env:` block:',
+        'These JOBS run a command that resolves a Google Cloud region, but never',
+        'set the variable it reads. There is no default any more — the build or the',
+        'enqueue REFUSES — so the lane fails with what reads like an unrelated',
+        'error. Add it to that job’s own `env:` block; a sibling job in the same',
+        'file having it does not help.',
         '',
         '  env:',
         '    FUNCTIONS_REGION: us-central1',
         '',
-        'Offending workflows:',
-        ...offenders.map((p) => `  - ${p}`),
+        '⚠️ A lane that hits REAL staging (e2e-reusable.yml) takes the region those',
+        'functions are actually DEPLOYED to, which is not necessarily the region the',
+        'rest of the repo targets — see ADR 0013.',
+        '',
+        'Offenders:',
+        ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),
     ).toEqual([]);
   });
