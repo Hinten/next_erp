@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { CODEBASES } from './preflight.mjs';
@@ -87,9 +87,10 @@ describe('build.mjs inlines the region into the bundle, not just options.ts', ()
       const outDir = mkdtempSync(join(tmpdir(), 'region-inlining-'));
       const outfile = join(outDir, 'index.js');
       try {
-        const { bundle } = await import(
-          `file://${resolve(REPO_ROOT, spec.buildScript).replace(/\\/g, '/')}`
-        );
+        // `pathToFileURL`, not a hand-built `file://` string: correct on Windows,
+        // and it stops vite's dynamic-import-vars plugin warning "Invalid URL"
+        // on every run.
+        const { bundle } = await import(pathToFileURL(resolve(REPO_ROOT, spec.buildScript)).href);
         await bundle(outfile);
         const built = readFileSync(outfile, 'utf8');
 
@@ -155,5 +156,10 @@ describe('build.mjs inlines the region into the bundle, not just options.ts', ()
         'enqueuers left those codebases or the call was renamed — either way this ' +
         'guard is no longer checking anything.',
     ).toBeGreaterThan(0);
-  });
+
+    // ⚠️ Five esbuild bundles do not fit vitest's 5s default. This timed out at
+    // 5105ms on a CI runner while taking ~1s locally — exactly the margin that
+    // reads as a flake and is not one. Generous on purpose: the number is here to
+    // catch a hang, not to police build speed.
+  }, 120_000);
 });
