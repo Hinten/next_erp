@@ -178,7 +178,7 @@ function readFreteEstado(doc: DocumentData | undefined): unknown {
  * fields churn constantly without the shipment having moved. A block-level
  * `!==` (or a `JSON.stringify` diff) would append a bogus row on every one of
  * those writes:
- *  - `apps/mercado-livre/lib/marketplace/orderShipmentImport.ts` writes
+ *  - `apps/mercado-livre/lib/marketplace/pedidos/orderShipmentImport.ts` writes
  *    `freteInicial: targetFrete`, the output of `mergeFreteInicial`, whose
  *    entire design is an estado-PRESERVING merge (`mergeEstadoFretePreservando`)
  *    over refreshed tracking code, costs and timestamps. Every shipment poll

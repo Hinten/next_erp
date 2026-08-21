@@ -206,7 +206,7 @@ describe('getOrRefreshAccessToken', () => {
    *
    * The race is driven by a SEQUENCED store plus an injected `sleep` spy — no
    * fake timers, no deferred promises. Same technique as
-   * `apps/mercado-livre/lib/marketplace/tokenStore.test.ts` (#820).
+   * `apps/mercado-livre/lib/marketplace/core/tokenStore.test.ts` (#820).
    */
   describe('loser fallback backoff', () => {
     it("re-reads again after the backoff when the winner's write lands late", async () => {

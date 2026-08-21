@@ -1,7 +1,7 @@
 /**
  * `GET /api/marketplace/mercado-livre/importar-todos/status?integracaoId=…&jobId=…`
  * — poll the progress of a mass-import job started by
- * `POST /importar-todos` (see `lib/marketplace/massImport.ts`). Requires
+ * `POST /importar-todos` (see `lib/marketplace/mass-import/massImport.ts`). Requires
  * `PERM.integracao.read`.
  *
  * A `jobId` that doesn't exist, or that exists but belongs to a different

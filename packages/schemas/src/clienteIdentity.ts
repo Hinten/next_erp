@@ -8,7 +8,7 @@
  *  - `apps/web/lib/clientes/dedup.ts` — the screen a human uses. Exact
  *    `cpf_cnpj`/`idEstrangeiro` BLOCKS creation; a matching telefone or e-mail
  *    is a warning that never blocks.
- *  - `apps/mercado-livre/lib/marketplace/orderCliente.ts` — the unattended
+ *  - `apps/mercado-livre/lib/marketplace/pedidos/orderCliente.ts` — the unattended
  *    importer. It treated a telefone/e-mail hit as identity, merged into it,
  *    and overwrote the row's `cpf_cnpj`. A new buyer landing on a stranger's
  *    recycled mobile number rewrote that stranger's fiscal identity, and the

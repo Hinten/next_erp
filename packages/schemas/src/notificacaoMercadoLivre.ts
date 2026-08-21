@@ -72,7 +72,7 @@ export const notificacaoMercadoLivreSchema = z
      * id: on the rare body carrying neither key, on a `missed_feeds` entry
      * without `_id`, and on every notification the order-backfill sweep
      * synthesises. In those cases the doc id is DERIVED from `topic` + `resource`
-     * (`docIdOf` in `apps/mercado-livre/lib/marketplace/notificacao.ts`, #807) so
+     * (`docIdOf` in `apps/mercado-livre/lib/marketplace/notificacoes/notificacao.ts`, #807) so
      * repeated failures still converge on one document — this field stays null
      * rather than carrying the derived value, because it is not an ML id.
      */

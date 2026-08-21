@@ -1,21 +1,21 @@
 import { type ScheduleOptions, onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
 
-import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/bulkEstoquePlan';
+import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoque/bulkEstoquePlan';
 import {
   type StockSweepMode,
   isSlotDaReconciliacao,
   isSlotDoDaily,
   runStockSweep,
-} from '../../lib/marketplace/estoqueSweep';
-import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
+} from '../../lib/marketplace/estoque/estoqueSweep';
+import { createMlStockTaskScheduler } from '../../lib/marketplace/estoque/mlStockTasks';
 import { getDb } from './lib/admin';
 import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * The two ML stock-sync sweep schedules (Step 10 PR C) — thin `onSchedule`
- * wrappers over `runStockSweep` (lib/marketplace/estoqueSweep.ts), mirroring
+ * wrappers over `runStockSweep` (lib/marketplace/estoque/estoqueSweep.ts), mirroring
  * the `importMercadoLivreOrders` wrapper in index.ts:
  *
  *  - `sweepMercadoLivreStock` — every 15 minutes, `'incremental'` mode: per

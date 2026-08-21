@@ -8,8 +8,8 @@ import {
   type MassImportTaskPayload,
   massImportTaskSchema,
   processMassImportJob,
-} from '../../lib/marketplace/massImport';
-import { createMlMassImportScheduler } from '../../lib/marketplace/mlMassImportTasks';
+} from '../../lib/marketplace/mass-import/massImport';
+import { createMlMassImportScheduler } from '../../lib/marketplace/mass-import/mlMassImportTasks';
 import { getDb } from './lib/admin';
 import { TASKS_SCHEDULER_REGION } from './options';
 import { tasksInvokerOptions } from './tasksInvoker';

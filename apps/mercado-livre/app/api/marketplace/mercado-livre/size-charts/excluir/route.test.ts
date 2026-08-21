@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreReauthRequiredError } from '@delfrance/integrations-mercado-livre';
 
-import { SizeChartNotFoundError } from '@/lib/marketplace/sizeChartDelete';
-import { TabelaDeMedidasNotFoundError } from '@/lib/marketplace/sizeChartSync';
+import { SizeChartNotFoundError } from '@/lib/marketplace/size-charts/sizeChartDelete';
+import { TabelaDeMedidasNotFoundError } from '@/lib/marketplace/size-charts/sizeChartSync';
 
 // verifyCaller / context loader / the delete op are mocked; the route's own
 // logic (body validation, wiring, error mapping) runs real.
@@ -22,13 +22,14 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/sizeChartDelete', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/sizeChartDelete')>();
+vi.mock('@/lib/marketplace/size-charts/sizeChartDelete', async (importActual) => {
+  const actual =
+    await importActual<typeof import('@/lib/marketplace/size-charts/sizeChartDelete')>();
   return { ...actual, requestSizeChartDeletion: h.requestSizeChartDeletion };
 });
 

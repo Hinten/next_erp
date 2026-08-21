@@ -12,7 +12,7 @@ const ruleTester = new RuleTester({
 });
 
 // A non-allow-listed, non-test path so the rule is active by default.
-const SRC = '/repo/apps/mercado-livre/lib/marketplace/orderImport.ts';
+const SRC = '/repo/apps/mercado-livre/lib/marketplace/pedidos/orderImport.ts';
 
 ruleTester.run('no-lossy-date-parse', rule, {
   valid: [
@@ -103,7 +103,7 @@ ruleTester.run('no-lossy-date-parse', rule, {
     {
       name: 'unit tests may author ISO literals',
       code: "const US = Date.parse('2026-01-01T00:00:00Z') * 1000;",
-      filename: '/repo/apps/mercado-livre/lib/marketplace/orderImport.test.ts',
+      filename: '/repo/apps/mercado-livre/lib/marketplace/pedidos/orderImport.test.ts',
     },
     {
       name: 'e2e helpers may author ISO literals',

@@ -61,7 +61,7 @@ that contains it. Both variants of that idea die on the same number.
 
 ### What the sweep did before this ADR
 
-The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts`)
+The Mercado Livre stock sweep (`apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts`)
 compensated for the missing signal in two places, and paid for it twice:
 
 1. **A correlated component aggregate in the window filter** (`maxComp`): for each
@@ -410,7 +410,7 @@ refresh; without this ADR that reads as a defect.
   the migration window (ADR 0013). Until it runs, rows without `movimento` make
   the aggregate fail open — correct, but noisier.
 - The Mercado Livre listing import writes estoque with a plain `merge` and **no
-  history row** (`apps/mercado-livre/lib/marketplace/import.ts`). That leaves a
+  history row** (`apps/mercado-livre/lib/marketplace/importacao/import.ts`). That leaves a
   hole in the sums and is tracked separately.
 - `historicoEstoque` is deliberately **not** `serverOwned`, so the ledger is
   client-writable and only as trustworthy as that. ⚠️ The stated reason — "the
