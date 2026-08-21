@@ -225,12 +225,56 @@ export function buildOrderMensagem(
 }
 
 /**
+ * One post-sale attachment as its own mensagem, pointing at the stored
+ * `Arquivo`.
+ *
+ * ⚠️ It takes the PARENT message's direction. An attachment belongs to whoever
+ * sent the message carrying it, so a buyer photo must render on the customer
+ * side — stamping every one `enviado` would show the buyer's photos as ours,
+ * which is the exact bug the claims path had to fix (`claimMapping.ts:449`).
+ */
+export function buildOrderAttachmentMensagem(args: {
+  filename: string;
+  parentMessage: MlPostSaleMessage;
+  parentMessageDocId: string;
+  arquivoOuterRef: string;
+  clienteOuterRef: string | null;
+  sellerUserId: number | null;
+  nowMs: number;
+}): Partial<Mensagem> {
+  const doVendedor = isFromSeller(args.parentMessage, args.sellerUserId);
+  const criadoMs =
+    coerceToMillis(args.parentMessage.message_date?.created) ??
+    coerceToMillis(args.parentMessage.message_date?.received) ??
+    args.nowMs;
+
+  return {
+    mid: args.parentMessage.id,
+    conteudo: args.filename,
+    tipo: TIPO_MENSAGEM.arquivo,
+    estadoEnvio: doVendedor ? ESTADO_ENVIO.enviado : ESTADO_ENVIO.recebido,
+    canal: 0,
+    anexoStorage: args.arquivoOuterRef,
+    // Groups the attachment under the message that carried it, the way the
+    // claims path does — the thread renders them together.
+    midGroup: args.parentMessageDocId,
+    clienteMensagemOuterRef: doVendedor ? null : args.clienteOuterRef,
+    timestamp: criadoMs,
+    data_cadastro: criadoMs,
+  };
+}
+
+/**
  * The message body, with a visible note when ML reports attachments.
  *
- * Attachment DOWNLOAD is not implemented here (tracked separately) — and the
- * whole reason this note exists is that silently dropping them is worse than not
- * having them: the operator would read a message that says "segue a foto" with
- * no foto and no indication one was ever sent.
+ * The attachments themselves are now downloaded into Storage and written as
+ * their own mensagens (`orderMessageAttachments.ts`, #1162), so this note is
+ * the FALLBACK rather than the whole story — it still carries the count and
+ * the names, which is what the operator needs when a download was skipped.
+ *
+ * Kept unconditionally, and that is deliberate: silently dropping an
+ * attachment is worse than not having it, because the operator reads a message
+ * saying "segue a foto" with no foto and no sign one was ever sent.
  */
 function conteudoComAnexos(message: MlPostSaleMessage): string {
   const texto = message.text ?? '';
