@@ -21,15 +21,6 @@ export default function OperacoesPage() {
       collection={operacaoCollection}
       db={getFirebaseFirestore()}
       meta={operacaoMeta}
-      defaultColumns={[
-        'nome',
-        'tipo',
-        'movimentaEstoque',
-        'padrao',
-        'cfop',
-        'cfopInterestadual',
-        'timestamp',
-      ]}
       fields={{
         tipo: {
           label: 'Tipo',

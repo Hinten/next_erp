@@ -181,17 +181,6 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
         db={getFirebaseFirestore()}
         meta={pedidoMeta}
         queryParams={{ ehSaida: cfg.ehSaida }}
-        defaultColumns={[
-          'numero',
-          'estado',
-          'nf',
-          'cliente',
-          'expedicao',
-          'vlr',
-          'frete',
-          'criacao',
-          'imp',
-        ]}
         virtualColumns={virtualColumns}
         fields={{
           estado: {

@@ -36,8 +36,6 @@ export default function ListasDePrecosPage() {
       collection={listaDePrecosCollection}
       db={db}
       meta={listaDePrecosMeta}
-      defaultColumns={['nome', 'padrao', 'ativo']}
-      orderBy={{ field: 'nome', direction: 'asc' }}
       rowHref={(id) => `/listas-de-precos/${id}`}
       renderNewButton={
         canWrite

@@ -73,6 +73,24 @@ export const listaDePrecosMeta: CollectionMetadata = {
     write: PERM_PRODUTO_WRITE,
     delete: PERM_PRODUTO_DELETE,
   },
+  // Declared in #159. Before that this meta carried no `defaultQuery` at all,
+  // /listas-de-precos passed `orderBy` inline, and `firestore.indexes.json` had
+  // NO listaDePrecos entry — a silent full scan on Enterprise that the
+  // `delfrance/default-query-needs-index` rule cannot see, because it only ever
+  // fires on a `defaultQuery` property literal.
+  //
+  // `nome asc` matches legacy (`.old/lib/produtos/pages/listaDePrecosTableView.dart:75`)
+  // and the index it requires also serves `ListaDePrecosPicker` and the
+  // /produtos Preço column's default-list lookup. No `ativo == true` filter:
+  // legacy's management list deliberately showed inactive rows (deactivating is
+  // done from that same screen); `ativo` is a PICKER-only filter.
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+    // Richer than legacy, which showed only Nome + Data de Criação: the Padrão
+    // and Ativo badges are what an operator actually scans this list for.
+    columns: ['nome', 'padrao', 'ativo'],
+  },
 };
 
 export const listaDePrecos = {

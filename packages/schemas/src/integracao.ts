@@ -408,6 +408,10 @@ export const integracaoMeta: CollectionMetadata = {
     where: [{ field: 'tipo', param: true }],
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    // Shared by /canais/balcao and /canais/mercado-livre. /canais/whatsapp binds
+    // the same meta but shows `['nome','numero','ativo']`, so it keeps the
+    // page-level `defaultColumns` override — one meta, three screens.
+    columns: ['nome', 'ativo', 'padrao', 'dataCadastro'],
   },
 };
 

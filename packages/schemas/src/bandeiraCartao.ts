@@ -92,6 +92,7 @@ export const bandeiraCartaoMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    columns: ['nome', 'bandeira', 'ehCredito', 'maxParcelas'],
   },
 };
 

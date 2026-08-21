@@ -28,7 +28,6 @@ export default function FiliaisPage() {
       collection={filialCollection}
       db={getFirebaseFirestore()}
       meta={filialMeta}
-      defaultColumns={['razaoSocial', 'fantasia', 'cnpj', 'timestamp']}
       rowHref={(id) => `/configuracoes/filiais/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/configuracoes/filiais/novo">

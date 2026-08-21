@@ -40,6 +40,7 @@ export const categoriaMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    columns: ['nome', 'nomeCompleto', 'permiteCadastro'],
   },
 };
 
