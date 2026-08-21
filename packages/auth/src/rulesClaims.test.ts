@@ -77,3 +77,60 @@ describe('rulesCheckForBit', () => {
     expect(() => rulesCheckForBit(0n)).toThrow(/not in PERM/);
   });
 });
+
+describe('ACTION_K covers the whole PERM action vocabulary', () => {
+  /**
+   * ⚠️ The trap this guard exists for. `rulesClaimsFromBits` projects an action
+   * through `ACTION_K[action]`; an action name outside `{read, write, delete}`
+   * yields `undefined`, and `value |= undefined` contributes NOTHING. So a
+   * domain declaring, say, `reembolsar` would silently produce no rules claim —
+   * a permission that appears granted in the cargo editor and denies in rules.
+   *
+   * ⚠️ The existing "maps the superuser mask" case CANNOT catch it: it computes
+   * its expectation with the same `ACTION_K[action]` lookup, so both sides go
+   * `undefined` together and the row passes. A test that mirrors the
+   * implementation cannot detect a gap in the thing it mirrors.
+   *
+   * This one is independent of ACTION_K's VALUES — it compares key sets.
+   */
+  it('every action name declared in PERM is projectable', () => {
+    const declaradas = new Set(Object.values(PERM).flatMap((acoes) => Object.keys(acoes)));
+    const projetaveis = new Set(Object.keys(ACTION_K));
+    const semProjecao = [...declaradas].filter((a) => !projetaveis.has(a)).sort();
+
+    expect(
+      semProjecao,
+      'add these to ACTION_K (and give them a k value) or rename them to read/write/delete',
+    ).toEqual([]);
+  });
+
+  it('is anchored — the check would notice a name outside the vocabulary', () => {
+    // Positive control for the assertion above: prove the comparison rejects
+    // something, so an empty `declaradas` could never make it vacuous.
+    const projetaveis = new Set(Object.keys(ACTION_K));
+    expect(projetaveis.has('reembolsar')).toBe(false);
+    expect(projetaveis.has('read')).toBe(true);
+  });
+});
+
+describe('incidenteResolucao — the marketplace resolution bits', () => {
+  it('projects into rules claims like any other domain', () => {
+    // It gates no Firestore path today (the channel backend checks it in
+    // `verifyCaller`), but it must still project — `rulesCheckForBit` throws on
+    // a bit outside PERM, so an unprojectable domain would break generate-time
+    // if a meta ever referenced it.
+    const bits = PERM.incidenteResolucao.read | PERM.incidenteResolucao.write;
+    expect(rulesClaimsFromBits(bits)).toEqual({ d_incidenteResolucao: 3 });
+  });
+
+  it('does not overlap any other domain bit', () => {
+    // Byte 13, bits 107-108. A collision would silently grant two domains at
+    // once — the failure mode the "single power of two" test cannot see.
+    const outros = Object.entries(PERM)
+      .filter(([dominio]) => dominio !== 'incidenteResolucao')
+      .flatMap(([, acoes]) => Object.values(acoes));
+    for (const bit of Object.values(PERM.incidenteResolucao)) {
+      expect(outros).not.toContain(bit);
+    }
+  });
+});

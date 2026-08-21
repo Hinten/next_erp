@@ -158,6 +158,31 @@ export const PERM = {
     write: 1n << 105n,
     delete: 1n << 106n,
   },
+  // IncidenteResolucao — resolving a marketplace incidente ON THE PROVIDER:
+  // refund, partial refund, allow-return, open-dispute. Byte 13's remaining
+  // triple (107-109 sit entirely inside it, no straddle).
+  //
+  // ⚠️ **A dedicated domain, deliberately, and it gates NO Firestore path.**
+  // These actions move money and are irreversible on the provider's side, while
+  // the incidente itself is ordinary pedido business history — so gating them on
+  // `pedido.write` would hand a refund button to everyone who can fix a shipping
+  // address. There is no `*Meta` referencing these bits and there must not be:
+  // they are checked server-side by the channel backend's `verifyCaller`, which
+  // reads the `permissions` claim directly, so no ruleset changes when they are
+  // added or granted.
+  //
+  // ⚠️ `read` is not free either — it reaches ML's API on the seller's account
+  // and returns buyer-visible claim detail. No `delete`: there is nothing to
+  // delete (the provider owns claim state), and `configuracoes` is the existing
+  // precedent for a two-action domain.
+  //
+  // ⚠️ Nobody holds these until a cargo grants them AND claims are re-minted
+  // (#173). That fail-closed default is intended — a new money-moving verb must
+  // not arrive switched on.
+  incidenteResolucao: {
+    read: 1n << 107n,
+    write: 1n << 108n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {
