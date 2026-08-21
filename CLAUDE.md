@@ -187,11 +187,16 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    running and why it cannot happen now, **ask whether to open the tracking
    issue, and open it only once you have a yes** — the migration queue is
    curated, not a place agents append to unasked. When approved, label it
-   `needs-migration-window` plus a `task:` label (usually `ops-deploy`) and match
-   the shape of the ones already on that label — it carries 30-plus issues, of
-   which **#899**–**#908** are the deploy-shaped template and **#869** the
-   backfill-shaped one: why the timing is load-bearing, the exact commands, how
-   you verify it worked. ⚠️ A Firestore **import fires no Cloud Functions
+   `needs-migration-window` plus a `task:` label (usually `ops-deploy`), and link
+   it from **#1208** — the tracker that folds every window *operation* into one
+   ordered runbook in ADR 0013 phase order. Match the shape its steps use: why
+   the timing is load-bearing, the exact commands, how you verify it worked. The
+   worked examples stay readable, now closed as duplicates of that tracker —
+   **#899**–**#908** deploy-shaped, **#869** backfill-shaped. ⚠️ What is still
+   *open* on the label is deliberately **not** window work: code that must merge
+   first (#96, #173, #829) and decisions that gate the day (#1115, #163). So the
+   label is no longer the checklist — if yours is something to *run*, it is a
+   phase step in #1208. ⚠️ A Firestore **import fires no Cloud Functions
    triggers** — nothing is recomputed on arrival, so any state a trigger would
    derive must already be in the export.
 
@@ -305,9 +310,9 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   Don't do it and don't leave a TODO — surface it, **ask whether to open the
   tracking issue**, and open it only on a yes. Then label it
   **`needs-migration-window`** (plus a `task:` label, usually `ops-deploy`), link
-  it from the PR, and say in the issue *why earlier is wrong*. Shape: whatever
-  is already on the label — #899–#908 for a deploy, #869 for a backfill.
-  Rule 8 / ADR 0013.
+  it from the PR **and from #1208** — the one ordered cutover runbook — and say
+  in the issue *why earlier is wrong*. Shape: the closed-but-readable #899–#908
+  for a deploy, #869 for a backfill. Rule 8 / ADR 0013.
 - **Changing the shape of data that already exists? Write a one-time migration
   script — do not migrate gradually.** A one-time `tools/migrations` script beats
   every incremental alternative here: dual-shape reads, a compat/fallback branch,
