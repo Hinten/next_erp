@@ -329,11 +329,14 @@ export const pedidoMeta: CollectionMetadata = {
     // regardless of date. (The often-repeated "'99' sorts above '100'" story is
     // NOT the defect: both apps zero-pad to a fixed width.)
     orderBy: [{ field: 'timestamp', direction: 'desc' }],
-    // 100, not the repo-wide 50: pedidos is the heaviest-traffic screen and the
-    // only one legacy deliberately overrode (`itensPerPage: 100`,
-    // `cacheExtent: 700`, `pedidoTableView.dart:2187`). `limit` is the FIRST
-    // page only — "Carregar mais" grows it by the same amount per click.
-    limit: 100,
+    // EXPERIMENT (#159): legacy used 100 here — the only page size it
+    // deliberately overrode (`itensPerPage: 100`, `cacheExtent: 700`,
+    // `pedidoTableView.dart:2187`). Temporarily back at 50 to measure whether
+    // the page size is what destabilised the vendas e2e lane: the NF column
+    // (`NFCell`) opens a REALTIME onSnapshot listener PER ROW on the `nfev4`
+    // subcollection, so 100 doubles the concurrent listener count on first
+    // paint of the heaviest screen. Restore to 100 if the lane is unaffected.
+    limit: 50,
     // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
     // Every virtual column declares `dependsOn`, so the Pipelines projection
     // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.
