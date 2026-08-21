@@ -348,9 +348,19 @@ export function seedRow(
   // unit — and every other value type has none to carry.
   if (attr.valueType !== 'number_unit' || isNaRow(row)) return row;
 
-  // A stored `unit_id` is already this app's canonical shape; only reach for the
-  // value when there is none to be found on the row itself.
-  const split = row.unit_id == null ? splitNumberUnit(attr, row.value_name) : null;
+  // ⚠️ Attempted on EVERY number_unit row, never only on one whose `unit_id` is
+  // null. That guard assumed "a stored unit ⇒ the value is already bare", and
+  // the rows this very app wrote before the split existed break it: an imported
+  // `'55 cm'` survived one save of any OTHER attribute, because
+  // `resolveTypedValue` found no enumerated value named `'55 cm'` — LENGTH-style
+  // measurements ship none — kept the name WHOLE and stamped `defaultUnit`
+  // beside it. `{value_name: '55 cm', unit_id: 'cm'}` then folds through the
+  // wire transform as `'55 cm cm'`. Skipping those is what left them that way.
+  //
+  // Safe to attempt unconditionally: `splitNumberUnit` fires only when the text
+  // ends in a unit the category knows AND the head is a bare number, so a row
+  // that is genuinely already bare finds no suffix and falls through untouched.
+  const split = splitNumberUnit(attr, row.value_name);
   return {
     ...row,
     // ⚠️ A split DROPS `value_id`. On a `number_unit` that id names the PAIR —
@@ -359,15 +369,21 @@ export function seedRow(
     // again on the first blur and report a phantom edit for it. The split row is
     // now in the same shape `draftTypedValue` produces for a typed measurement,
     // where the id is always null and ML resolves the value from its name.
-    value_id: split?.unit != null ? null : row.value_id,
-    value_name: split?.unit != null ? split.value : row.value_name,
+    value_id: split.unit != null ? null : row.value_id,
+    value_name: split.unit != null ? split.value : row.value_name,
     // ⚠️ ALWAYS a unit, even on an EMPTY row and even when nothing could be
     // split out. The field renders `effectiveUnit` whatever the row holds, so a
     // row that disagrees with what is on screen makes the very next blur resolve
     // to something different and report a change — raising unsaved changes on a
     // listing nobody edited, from a single tab keypress. Rows the operator never
     // fills are still dropped at save time by `isFilled`.
-    unit_id: row.unit_id ?? split?.unit ?? effectiveUnit(attr, undefined),
+    //
+    // ⚠️ The split unit OUTRANKS a stored one. `digitsOnly` makes a unit
+    // untypeable, so one sitting inside `value_name` can only have come from
+    // Mercado Livre or the legacy corpus — it is what the seller actually saw,
+    // while a `unit_id` contradicting it is the spurious `defaultUnit` stamp
+    // described above.
+    unit_id: split.unit ?? row.unit_id ?? effectiveUnit(attr, undefined),
   };
 }
 

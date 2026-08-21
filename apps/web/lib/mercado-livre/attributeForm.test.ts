@@ -348,6 +348,33 @@ describe('seedRow', () => {
     ).toBe('v1');
   });
 
+  it('heals a row the OLD code double-unitised', () => {
+    // ⚠️ The shape `main` itself persists. An imported `'55 cm'` (unit_id null)
+    // survives one save of any other attribute: `resolveTypedValue` finds no
+    // enumerated value named `'55 cm'` — LENGTH-style measurements ship none —
+    // so it keeps the name WHOLE and stamps `defaultUnit` beside it. The wire
+    // transform then appends the unit again: `'55 cm cm'`.
+    expect(seedRow(lengthAttr(), { id: 'LENGTH', value_name: '55 cm', unit_id: 'cm' })).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'cm',
+    });
+  });
+
+  it('prefers the unit INSIDE the value when the stored one disagrees', () => {
+    // `digitsOnly` makes a unit untypeable, so one sitting inside `value_name`
+    // can only have come from ML or the legacy corpus — it is what the seller
+    // actually saw. A contradicting `unit_id` is the spurious `defaultUnit`
+    // stamp described above.
+    expect(seedRow(lengthAttr(), { id: 'LENGTH', value_name: '55 cm', unit_id: 'mm' })).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'cm',
+    });
+  });
+
   it('does not split a plain string attribute', () => {
     // `'Nike Air'` on a BRAND must survive intact even if `m` were a unit.
     expect(seedRow(attr({ id: 'BRAND' }), { id: 'BRAND', value_name: 'Nike Air' })).toEqual({
@@ -653,6 +680,15 @@ describe('attributesForSave — units', () => {
       [{ id: 'LENGTH', value_name: '55', unit_id: 'mm' }],
     );
     expect(out[0]!.unit_id).toBe('mm');
+  });
+
+  it('never lets a double-unitised row reach the wire twice', () => {
+    const length = lengthAttr();
+    const stored = [{ id: 'LENGTH', value_name: '55 cm', unit_id: 'cm' }];
+    const out = attributesForSave([length], seedRows([length], stored), stored);
+    // `attributeToMercadoLivre` joins name + unit, so a whole `'55 cm'` here
+    // would ship as `'55 cm cm'`.
+    expect(out).toEqual([{ id: 'LENGTH', value_name: '55', unit_id: 'cm' }]);
   });
 
   it('round-trips an imported value through seedRow without changing it', () => {
