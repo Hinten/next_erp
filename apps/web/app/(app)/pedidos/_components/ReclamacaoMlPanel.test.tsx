@@ -143,8 +143,8 @@ describe('ReclamacaoMlPanel', () => {
 });
 
 describe('ReclamacaoMlPanel — the action buttons', () => {
-  async function abrirCom(acoes: string[]) {
-    h.reclamacaoEstado.mockResolvedValue({ ...ESTADO, acoesDisponiveis: acoes });
+  async function abrirCom(acoes: string[], ofertasParciais: unknown = null) {
+    h.reclamacaoEstado.mockResolvedValue({ ...ESTADO, acoesDisponiveis: acoes, ofertasParciais });
     abrir();
     await waitFor(() => expect(h.reclamacaoEstado).toHaveBeenCalled());
   }
@@ -249,6 +249,30 @@ describe('ReclamacaoMlPanel — the action buttons', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Confirmar reembolso integral' }));
 
     await waitFor(() => expect(screen.getByText(/Falha de rede ao renovar o token/)).toBeTruthy());
+  });
+
+  it('renders a failed token refresh from the PARTIAL-REFUND commit too', async () => {
+    // ⚠️ The reviewer flagged `executar`; `confirmarParcial` had the identical
+    // hole, and this is the commit that moves a chosen SUM. Silence here leaves
+    // the operator staring at a picker they already acknowledged, with no idea
+    // whether the money moved.
+    const { FirebaseError } = await import('firebase/app');
+    h.reclamacaoAcao.mockRejectedValue(
+      new FirebaseError('auth/user-token-expired', 'Sessão expirada.'),
+    );
+    await abrirCom(['allow_partial_refund'], {
+      currency_id: 'BRL',
+      available_offers: [{ amount: 149, percentage: 50 }],
+      recommendations: [],
+      restrictions: [],
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reembolso parcial…' }));
+    fireEvent.click(await screen.findByRole('radio', { name: /R\$\s?149,00/ }));
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar reembolso parcial' }));
+
+    await waitFor(() => expect(screen.getByText(/Sessão expirada/)).toBeTruthy());
   });
 
   it('shows no buttons without the permission, and says why', async () => {

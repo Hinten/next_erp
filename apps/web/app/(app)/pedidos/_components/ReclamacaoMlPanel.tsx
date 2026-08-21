@@ -212,6 +212,14 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
         setParcialErro(err.message);
       } else if (err instanceof MercadoLivreClientNetworkError) {
         setParcialErro('Não foi possível falar com o Mercado Livre. Tente novamente.');
+      } else if (err instanceof FirebaseError) {
+        // ⚠️ Same hole as `executar`, and worse here: this commit moves a chosen
+        // SUM. `getIdToken()` is awaited outside the client's try
+        // (`client.ts:1132`), so a failed token refresh is neither ML error class
+        // and would rethrow out of a `void`-ed handler into nothing. The modal
+        // would close its spinner with no message over a picker the operator
+        // already acknowledged.
+        setParcialErro(err.message);
       } else {
         throw err;
       }
