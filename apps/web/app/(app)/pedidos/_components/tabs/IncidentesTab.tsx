@@ -20,6 +20,7 @@ import {
 import { DateTimePicker } from '@mantine/dates';
 import { FirebaseError } from 'firebase/app';
 import {
+  ORIGEM_INCIDENTE,
   ORIGEM_INCIDENTE_LABELS,
   TIPO_INCIDENTE_LABELS,
   TIPO_RESOLUCAO_LABELS,
@@ -42,6 +43,7 @@ import {
   validateIncidenteForm,
   type IncidenteFormState,
 } from './incidenteForm';
+import { ReclamacaoMlPanel } from '../ReclamacaoMlPanel';
 
 const tipoOptions = (Object.entries(TIPO_INCIDENTE_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
@@ -66,9 +68,36 @@ export interface IncidentesTabProps {
   disabled?: boolean;
   /** Absent in create mode — there is no subcollection yet. */
   pedidoId?: string;
+  /**
+   * The ML account this pedido came through, when it came through one.
+   *
+   * ⚠️ Required to reach the claim on ML. Absent for a pedido with no ML
+   * integração, which is why the panel is conditional rather than always shown.
+   */
+  integracaoId?: string | null;
 }
 
-export function IncidentesTab({ disabled, pedidoId }: IncidentesTabProps) {
+/**
+ * Whether this incidente is a Mercado Livre claim we can query.
+ *
+ * ⚠️ BOTH halves matter. `origem` alone would match an incidente a human typed
+ * and tagged Mercado Livre; `externalId` alone would match any origem that
+ * happens to store a number. A claim id is numeric — `claimIdNumerico` in the
+ * backend rejects anything else — so a non-numeric `externalId` is legacy data,
+ * not a claim.
+ */
+function claimIdDoIncidente(inc: {
+  origem?: number | null;
+  externalId?: string | null;
+}): number | null {
+  if (inc.origem !== ORIGEM_INCIDENTE.pedidoMercadoLivre) return null;
+  const raw = (inc.externalId ?? '').trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+export function IncidentesTab({ disabled, pedidoId, integracaoId }: IncidentesTabProps) {
   if (!pedidoId) {
     return (
       <Text c="dimmed" size="sm">
@@ -76,10 +105,18 @@ export function IncidentesTab({ disabled, pedidoId }: IncidentesTabProps) {
       </Text>
     );
   }
-  return <IncidentesManager pedidoId={pedidoId} disabled={disabled} />;
+  return <IncidentesManager pedidoId={pedidoId} disabled={disabled} integracaoId={integracaoId} />;
 }
 
-function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?: boolean }) {
+function IncidentesManager({
+  pedidoId,
+  disabled,
+  integracaoId,
+}: {
+  pedidoId: string;
+  disabled?: boolean;
+  integracaoId?: string | null;
+}) {
   const q = useMemo(() => {
     const base = incidenteCollection.ref(getFirebaseFirestore(), { pedidoId });
     return buildQuery(base, [orderByField('timestamp', 'desc')]);
@@ -338,6 +375,14 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
                     {inc.comentarios}
                   </Text>
                 )}
+                {/* ⚠️ The ML claim id was stored but never rendered, so an
+                    imported incidente was indistinguishable from a hand-typed
+                    one. It is also the key the panel below queries on. */}
+                {inc.externalId && (
+                  <Text size="xs" c="dimmed">
+                    ML #{inc.externalId}
+                  </Text>
+                )}
               </Stack>
               <Group gap="xs">
                 <Button
@@ -359,6 +404,12 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
                 </Button>
               </Group>
             </Group>
+            {(() => {
+              const claimId = claimIdDoIncidente(inc);
+              return claimId != null && integracaoId ? (
+                <ReclamacaoMlPanel claimId={claimId} integracaoId={integracaoId} />
+              ) : null;
+            })()}
           </Card>
         ))}
 
