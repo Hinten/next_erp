@@ -4,7 +4,7 @@ import { memo } from 'react';
 import { Image } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import type { EngineProduto } from '@delfrance/schemas';
-import { useProdutoFotoUrl } from './fotoUrl';
+import { useProdutoFotoUrl } from '@/lib/produtos/fotoCapa';
 
 // Inline SVG placeholder (data-URI) — no network request for a missing photo.
 const PLACEHOLDER_SRC =
@@ -23,7 +23,7 @@ export interface ProdutoFotoProps {
  * re-resolve every other row's photo.
  */
 export const ProdutoFoto = memo(function ProdutoFoto({ db, produto, size = 48 }: ProdutoFotoProps) {
-  const url = useProdutoFotoUrl(db, produto);
+  const { url } = useProdutoFotoUrl(db, produto);
   return (
     <Image
       w={size}

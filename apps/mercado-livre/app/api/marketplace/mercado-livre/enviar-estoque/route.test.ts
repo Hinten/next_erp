@@ -19,13 +19,13 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/estoqueManual', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/estoqueManual')>();
+vi.mock('@/lib/marketplace/estoque/estoqueManual', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/estoque/estoqueManual')>();
   return { ...actual, enviarEstoqueManual: h.enviarEstoqueManual };
 });
 
@@ -47,7 +47,7 @@ vi.mock('@delfrance/data/admin/collections', async (importActual) => {
 
 const { POST } = await import('./route');
 const { ManualPushGuardError, MANUAL_PUSH_MAX_PRODUTOS } =
-  await import('@/lib/marketplace/estoqueManual');
+  await import('@/lib/marketplace/estoque/estoqueManual');
 
 const CONTA = 'int-1';
 

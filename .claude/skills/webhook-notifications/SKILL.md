@@ -371,7 +371,7 @@ manifest, no shared secret; the app manager offers only the OAuth
 `Client_Id`/`Secret_Key` pair. The `ts=…,v1=…` scheme every web search surfaces
 is **Mercado Pago**, a different product — don't port it. The trust anchor is
 refetch-before-mutate; the only inbound check is
-`apps/mercado-livre/lib/marketplace/webhookOrigin.ts`, an `application_id`
+`apps/mercado-livre/lib/marketplace/notificacoes/webhookOrigin.ts`, an `application_id`
 comparison (foreign ⇒ 403 pre-enqueue) that fails OPEN when unconfigured or when
 the field is absent, because ML disables a topic after ~1h of non-200. ML's
 published notification source IPs were considered and **declined** — an

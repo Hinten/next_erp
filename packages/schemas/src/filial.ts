@@ -63,6 +63,7 @@ export const filialMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'razaoSocial', direction: 'asc' }],
     limit: 50,
+    columns: ['razaoSocial', 'fantasia', 'cnpj', 'timestamp'],
   },
   // FilialPicker (CollectionSelect) orders its option list by RECENCY_SORT
   // (`ultimaModificacao desc, timestamp desc`) — see the composite index in

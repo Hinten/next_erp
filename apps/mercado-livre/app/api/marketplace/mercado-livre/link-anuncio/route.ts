@@ -11,7 +11,7 @@
  * round trip.
  *
  * `read`, not `write`: it answers with a public URL and persists nothing (see the
- * ⚠️ in `lib/marketplace/anuncioUrl.ts` for why it is not cached).
+ * ⚠️ in `lib/marketplace/anuncios/anuncioUrl.ts` for why it is not cached).
  *
  * Responses: 200 `{ url }`; 404 when the link doc is missing, belongs to another
  * conta, or the listing no longer exists on ML; 409 when it was never published;
@@ -23,10 +23,10 @@ import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collect
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { resolveAnuncioUrl } from '@/lib/marketplace/anuncioUrl';
-import { refMatchesIntegracao } from '@/lib/marketplace/linkRefs';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import { resolveAnuncioUrl } from '@/lib/marketplace/anuncios/anuncioUrl';
+import { refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

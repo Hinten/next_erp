@@ -44,14 +44,14 @@ These are hard exclusions, not guidelines. Each has a live instance in this repo
 2. **Read-modify-write.** Any value the caller conditionally writes back: the
    decision is made on stale data and the write clobbers whatever landed in
    between. The cautionary shape is
-   `apps/mercado-livre/lib/marketplace/import.ts`, which *creates* the produto when
+   `apps/mercado-livre/lib/marketplace/importacao/import.ts`, which *creates* the produto when
    its SKU lookup misses — a cached miss manufactures a duplicate produto. Same
    story at `itemsStatusSync.ts`, which reads a produto and then writes to that
    same document. `import.ts` also shows the mitigation: its produto read feeds a
    `lastUpdateTime` precondition on the follow-up write (ADR 0011 tier 1), and a
    cached read would carry a stale `updateTime` that fails that guard forever.
 
-3. **OAuth credentials / tokens.** `apps/mercado-livre/lib/marketplace/tokenStore.ts`
+3. **OAuth credentials / tokens.** `apps/mercado-livre/lib/marketplace/core/tokenStore.ts`
    picks the newest valid token by query, and all three of its reads are load-bearing
    *because* they are fresh: the re-check honours a refresh that landed mid-flight,
    and the loser fallback exists to observe a write another process — a
@@ -152,7 +152,7 @@ retried. Same reasoning anywhere a miss triggers a create (§1.2).
 
 1. **Invalidate on your own writes.** If this process writes a document it also
    caches, evict it. `exchangeAndPersist`
-   (`apps/mercado-livre/lib/marketplace/mercadoLivre.ts`, and the identical shape in
+   (`apps/mercado-livre/lib/marketplace/core/mercadoLivre.ts`, and the identical shape in
    `mercado-pago/lib/payments/mercadoPago.ts`) merges `user_id` onto the very
    `integracao` document its own loader read — and `user_id` is exactly what
    `resolveIntegracaoByUserId` queries on.

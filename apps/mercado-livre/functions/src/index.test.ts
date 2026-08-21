@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 // (see the issue). `onSchedule` doesn't run the handler at import time — it
 // only records the declared options onto `func.__endpoint` — so this is a
 // pure config assertion, not a live Firestore/ML-API test (that behaviour is
-// already covered by `lib/marketplace/notificacao.test.ts`'s
+// already covered by `lib/marketplace/notificacoes/notificacao.test.ts`'s
 // `reprocessNotifications` suite). We assert over `JSON.stringify(__endpoint)`
 // rather than its internal shape (mirrors `apps/whatsapp/functions/src/sendOutbound.test.ts`)
 // since `secretEnvironmentVariables`/`{ key }` is firebase-functions-internal

@@ -32,7 +32,6 @@ export default function CanalBalcaoPage() {
       db={db}
       meta={integracaoMeta}
       queryParams={{ tipo: INTEGRACAO_TIPO.balcao }}
-      defaultColumns={['nome', 'ativo', 'padrao', 'dataCadastro']}
       rowHref={(id) => `/canais/balcao/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/canais/balcao/novo">

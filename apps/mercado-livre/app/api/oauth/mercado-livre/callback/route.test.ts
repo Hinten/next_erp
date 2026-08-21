@@ -11,7 +11,7 @@ import {
 import {
   MercadoLivreConfigError,
   MercadoLivreContaNotConfiguredError,
-} from '@/lib/marketplace/mercadoLivre';
+} from '@/lib/marketplace/core/mercadoLivre';
 import { OauthStateError, signState } from '@delfrance/data/admin/oauth-state';
 
 // The callback takes NO Bearer token — it's a browser redirect from Mercado
@@ -29,13 +29,13 @@ vi.mock('@/lib/firebase/admin', () => ({
   getAdminFirestore: () => ({}),
 }));
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/oauthState', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/oauthState')>();
+vi.mock('@/lib/marketplace/conta/oauthState', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/conta/oauthState')>();
   return {
     ...actual,
     mercadoLivreOauthState: { ...actual.mercadoLivreOauthState, consume: h.consumeOauthState },

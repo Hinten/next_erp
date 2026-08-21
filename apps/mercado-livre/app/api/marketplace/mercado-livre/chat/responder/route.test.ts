@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { PERM } from '@delfrance/auth';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 
-import { ChatOutboundRefusedError } from '@/lib/marketplace/chatOutbound';
+import { ChatOutboundRefusedError } from '@/lib/marketplace/chat/chatOutbound';
 
 // The spine (`chatOutbound.ts`) is mocked — its behaviour is covered by
 // `chatOutbound.test.ts`. What runs REAL here is the route's own job: the
@@ -26,13 +26,13 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
 // Spread the ACTUAL module: `respond.ts` imports three error CLASSES from here,
 // and a factory that returns only the loader makes every `instanceof` in the
 // error mapper throw "No … export is defined on the mock".
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/chatOutbound', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/chatOutbound')>();
+vi.mock('@/lib/marketplace/chat/chatOutbound', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/chat/chatOutbound')>();
   return { ...actual, responderConversaMercadoLivre: h.responder };
 });
 

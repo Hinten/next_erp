@@ -3,7 +3,7 @@
  *
  * `itemsStatusSync` writes `produtoMercadoLivre.moderacoes` — ML's
  * `/moderations/last_moderation` answer, parsed
- * (`apps/mercado-livre/lib/marketplace/moderacoes.ts`) — and the editor subscribes
+ * (`apps/mercado-livre/lib/marketplace/anuncios/moderacoes.ts`) — and the editor subscribes
  * to the link doc live, so a moderação repaints the moment the `items`
  * notification lands and survives a reload. Before this, ML paused a listing for
  * a policy reason and the ERP showed a bare "pausado".

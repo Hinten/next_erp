@@ -32,11 +32,11 @@ import {
   MercadoLivreContaNotConfiguredError,
   loadMercadoLivreContext,
   mercadoLivreRedirectUri,
-} from '@/lib/marketplace/mercadoLivre';
+} from '@/lib/marketplace/core/mercadoLivre';
 import { OauthStateError, verifyState } from '@delfrance/data/admin/oauth-state';
 
-import { mercadoLivreOauthState } from '@/lib/marketplace/oauthState';
-import { isMercadoLivreError } from '@/lib/marketplace/respond';
+import { mercadoLivreOauthState } from '@/lib/marketplace/conta/oauthState';
+import { isMercadoLivreError } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

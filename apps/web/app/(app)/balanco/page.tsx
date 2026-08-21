@@ -29,7 +29,6 @@ export default function BalancoPage() {
       collection={balancoCollection}
       db={getFirebaseFirestore()}
       meta={balancoMeta}
-      defaultColumns={['nome', 'estado', 'timestamp', 'dataFinalizado']}
       rowHref={(id) => `/balanco/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/balanco/novo">

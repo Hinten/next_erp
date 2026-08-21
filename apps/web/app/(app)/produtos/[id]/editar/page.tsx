@@ -54,9 +54,10 @@ import { VariationManager, type VariationRow } from '../../_components/Variation
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_PERSISTENT_SECTIONS,
-  PRODUTO_SECTIONS,
+  PRODUTO_SECTIONS_EDITAR,
   PRODUTO_TRANSIENT_FIELDS,
   SECTION_MERCADO_LIVRE,
+  SECTION_MODIFICACOES,
   produtoFieldOverrides,
   produtoObjectViewSchema,
 } from '../../_components/produtoFields';
@@ -75,9 +76,6 @@ const REFERENCED_BY_DISPLAY = 5;
 const produtoEditarSchema = produtoObjectViewSchema.extend({
   modificacoes: z.null().default(null),
 });
-
-/** Tab order for the edit page — the shared sections plus Modificações. */
-const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Modificações'];
 
 /** The shared transient keys plus the Modificações tab anchor. */
 const PRODUTO_TRANSIENT_FIELDS_EDITAR = [...PRODUTO_TRANSIENT_FIELDS, 'modificacoes'];
@@ -439,8 +437,8 @@ export default function EditarProdutoPage() {
         ),
       },
       modificacoes: {
-        label: 'Modificações',
-        section: 'Modificações',
+        label: SECTION_MODIFICACOES,
+        section: SECTION_MODIFICACOES,
         // Self-contained tab (like Estoque/Mercado Livre): a read-only feed of
         // the produto's unified `historicoDeModificacoes` entries with
         // per-field revert, decoupled from this form's save.

@@ -21,7 +21,6 @@ export default function CategoriasPage() {
       collection={categoriaCollection}
       db={getFirebaseFirestore()}
       meta={categoriaMeta}
-      defaultColumns={['nome', 'nomeCompleto', 'permiteCadastro']}
       rowHref={(id) => `/categorias/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/categorias/novo">

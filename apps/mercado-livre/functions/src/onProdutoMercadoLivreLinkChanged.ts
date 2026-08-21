@@ -8,14 +8,14 @@ import {
   planLinkChange,
   removerContaSeOrfa,
   sobrevivemLinksDoProduto,
-} from '../../lib/marketplace/integracoesComProduto';
+} from '../../lib/marketplace/anuncios/integracoesComProduto';
 import { getDb } from './lib/admin';
 
 /**
  * Owns `produtos.integracoesComProduto` for PARENT produtos, deriving it from
  * the listing links themselves instead of the six hand-written stamp sites
  * (#920). All the logic is the pure, unit-tested core in
- * `lib/marketplace/integracoesComProduto.ts`; this file is the thin wrapper
+ * `lib/marketplace/anuncios/integracoesComProduto.ts`; this file is the thin wrapper
  * (same split as `onIntegracaoMercadoLivreChanged` / `intFreteSync.ts`).
  *
  * Why it exists: that array is the anchor pre-filter both ML sweeps open with,
