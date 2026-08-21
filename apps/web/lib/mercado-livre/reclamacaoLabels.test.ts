@@ -5,7 +5,9 @@ import {
   rotuloAcao,
   rotuloPapel,
   rotuloResolucaoEsperada,
+  rotuloEtapaReclamacao,
   rotuloStatusExpectativa,
+  rotuloStatusReclamacao,
 } from './reclamacaoLabels';
 
 describe('reclamacaoLabels — unknown ML vocabulary stays legible', () => {
@@ -79,5 +81,26 @@ describe('formatarPrazo', () => {
     expect(formatarPrazo('nao-e-uma-data')).toBeNull();
     expect(formatarPrazo(null)).toBeNull();
     expect(formatarPrazo('')).toBeNull();
+  });
+});
+
+describe('rotuloStatusReclamacao / rotuloEtapaReclamacao', () => {
+  it('translates the claim state and stage an operator reads FIRST', () => {
+    // ⚠️ These were the two most prominent elements on the panel and the only
+    // untranslated ones — raw English badges in a pt-BR screen.
+    expect(rotuloStatusReclamacao('opened')).toBe('aberta');
+    expect(rotuloStatusReclamacao('closed')).toBe('encerrada');
+    expect(rotuloEtapaReclamacao('claim')).toBe('reclamação');
+    expect(rotuloEtapaReclamacao('dispute')).toBe('mediação');
+  });
+
+  it('degrades to the raw value for a stage ML has not shipped yet', () => {
+    expect(rotuloEtapaReclamacao('some_new_stage')).toBe('some_new_stage');
+    expect(rotuloStatusReclamacao('archived')).toBe('archived');
+  });
+
+  it('renders an em dash for absent', () => {
+    expect(rotuloStatusReclamacao(null)).toBe('—');
+    expect(rotuloEtapaReclamacao('')).toBe('—');
   });
 });

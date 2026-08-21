@@ -21,7 +21,9 @@ import {
   rotuloAcao,
   rotuloPapel,
   rotuloResolucaoEsperada,
+  rotuloEtapaReclamacao,
   rotuloStatusExpectativa,
+  rotuloStatusReclamacao,
 } from '@/lib/mercado-livre/reclamacaoLabels';
 
 /**
@@ -109,6 +111,10 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
   const client = useMercadoLivreClient();
   const queryClient = useQueryClient();
   const { confirm, element: confirmEl } = useConfirmDialog();
+  // ⚠️ TWO bits, and they answer different questions. `read` gates whether the
+  // panel exists at all; `write` gates whether it offers buttons. An operator may
+  // legitimately hold the first without the second.
+  const { allowed: podeConsultar } = usePermission(PERM.incidenteResolucao.read);
   const { allowed: podeExecutar } = usePermission(PERM.incidenteResolucao.write);
   const [aberto, setAberto] = useState(false);
   const [executando, setExecutando] = useState<AcaoSimples['acao'] | null>(null);
@@ -179,6 +185,18 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
       setExecutando(null);
     }
   }
+  // ⚠️ Gate BEFORE rendering the surface, the convention `EstoqueSyncTab` and
+  // `CheckoutTab` follow (apps/web `CLAUDE.md` rule 5). Without this the panel was
+  // not "invisible without the grant" as its PR claimed — every operator who can
+  // open the pedido saw "Ver situação e ações", and clicking it burned an ML round
+  // trip to have `verifyCaller` answer 403 into a red alert. The route is still the
+  // enforcement; this only stops offering an action nobody can take.
+  // Derived once: the guard and the formatter must agree (see the ⚠️ below).
+  const prazosFormatados = (estado.data?.prazos ?? [])
+    .map((p) => ({ ...p, texto: formatarPrazo(p.prazo) }))
+    .filter((p) => p.texto != null);
+
+  if (!podeConsultar) return null;
 
   /**
    * Commit the chosen partial refund.
@@ -253,12 +271,12 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
             </Text>
             {estado.data?.status && (
               <Badge size="sm" variant="light">
-                {estado.data.status}
+                {rotuloStatusReclamacao(estado.data.status)}
               </Badge>
             )}
             {estado.data?.stage && (
               <Badge size="sm" variant="light" color="grape">
-                {estado.data.stage}
+                {rotuloEtapaReclamacao(estado.data.stage)}
               </Badge>
             )}
           </Group>
@@ -294,6 +312,12 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
 
         {estado.data && (
           <>
+            {/* ⚠️ Filter on the FORMATTED value, not on `prazo != null`. The two
+                disagree: `formatarPrazo` returns null for a non-null string it
+                cannot parse, and React renders null as nothing — so the guard
+                passed and the row survived with a blank date. A mandatory action
+                showing no clock is worse than `Invalid Date`, which is the very
+                thing `formatarPrazo` was written to avoid. */}
             {legendaTipoReclamacao(estado.data.tipoReclamacao) && (
               <Text size="xs" c="dimmed">
                 {legendaTipoReclamacao(estado.data.tipoReclamacao)}
@@ -328,23 +352,21 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
             </Stack>
 
             {/* ---- The SLA clock, only when ML actually set one. */}
-            {estado.data.prazos.some((p) => p.prazo != null) && (
+            {prazosFormatados.length > 0 && (
               <Stack gap={2}>
                 <Text size="xs" fw={500}>
                   Prazos
                 </Text>
-                {estado.data.prazos
-                  .filter((p) => p.prazo != null)
-                  .map((p) => (
-                    <Text size="xs" key={p.acao}>
-                      {rotuloAcao(p.acao)}: {formatarPrazo(p.prazo)}
-                      {p.obrigatoria && (
-                        <Badge size="xs" color="orange" variant="light" ml={6}>
-                          obrigatória
-                        </Badge>
-                      )}
-                    </Text>
-                  ))}
+                {prazosFormatados.map((p) => (
+                  <Text size="xs" key={p.acao}>
+                    {rotuloAcao(p.acao)}: {p.texto}
+                    {p.obrigatoria && (
+                      <Badge size="xs" color="orange" variant="light" ml={6}>
+                        obrigatória
+                      </Badge>
+                    )}
+                  </Text>
+                ))}
               </Stack>
             )}
 
