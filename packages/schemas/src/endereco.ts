@@ -175,6 +175,8 @@ export const enderecoMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'logradouro', direction: 'asc' }],
     limit: 50,
+    // `recebedor` is a page-owned virtual column (opens the NFe recebedor modal).
+    columns: ['logradouro', 'numero', 'bairro', 'cidade', 'estado', 'cep', 'recebedor'],
   },
 };
 

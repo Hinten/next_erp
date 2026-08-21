@@ -9,13 +9,21 @@ import type { PedidoWriteOp } from './port';
 
 /**
  * Fixed width of the zero-padded numeric part of a pedido `numero`
- * (e.g. `42` → `"000042"`). `numero` is stored as a string and is the default
- * list sort key (`pedidoMeta.defaultQuery` orders by `numero` desc, a lexical
- * sort). Because the operação prefix leads the string, that lexical sort groups
- * the `/pedidos` list by prefix and then orders by sequence *within* each
- * prefix — a fixed width keeps that within-prefix ordering correct. (Grouping
- * by operação is intentional; it is not a global-recency order across
- * operações.)
+ * (e.g. `42` → `"000042"`). `numero` is stored as a string, so any sort over it
+ * is lexical; the fixed width is what keeps `"VEN-000010"` above `"VEN-000002"`
+ * instead of below it.
+ *
+ * ⚠️ `numero` is NO LONGER the `/pedidos` default sort — `pedidoMeta.defaultQuery`
+ * orders by `timestamp desc` as of #159. It was dropped precisely because the
+ * operação prefix leads the string: a lexical `numero desc` groups the list by
+ * operação and only then orders by sequence within each prefix, which is not a
+ * recency order at all. Worse, the Mercado Livre importer writes a bare numeric
+ * id as `numero`, and digits sort below letters — so every marketplace order sat
+ * under every UI-created pedido regardless of date.
+ *
+ * The width still matters: `numero` remains a sortable column (the Número header
+ * sort, backed by `pedidos(ehSaida ASC, numero DESC)`), and within one operação
+ * that column is expected to read in sequence order.
  */
 export const PEDIDO_NUMERO_WIDTH = 6;
 

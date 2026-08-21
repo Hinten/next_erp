@@ -725,5 +725,150 @@ describe('TableView', () => {
       ).toThrow(/param "tipo"/);
       spy.mockRestore();
     });
+
+    it('takes the default column set from meta.defaultQuery.columns', () => {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+              columns: ['tipo'],
+            },
+          }}
+        />,
+      );
+      const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
+      expect(headers).toContain('Tipo');
+      expect(headers).not.toContain('Nome');
+    });
+
+    it('narrows the pipeline projection to meta.defaultQuery.columns', () => {
+      // The column set IS the `select()` projection — Enterprise bills data
+      // scanned, which is why the declaration lives on defaultQuery.
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+              columns: ['nome'],
+            },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: ['nome'] }),
+      );
+    });
+
+    it('lets the defaultColumns prop override meta.defaultQuery.columns', () => {
+      // One meta can back several screens with different column sets — e.g.
+      // integracaoMeta serves /canais/balcao, /mercado-livre and /whatsapp.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          defaultColumns={['tipo']}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+              columns: ['nome'],
+            },
+          }}
+        />,
+      );
+      const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
+      expect(headers).toContain('Tipo');
+      expect(headers).not.toContain('Nome');
+    });
+  });
+
+  describe('forcedOrderBy', () => {
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+    const recencyMeta = {
+      ...metaBase,
+      defaultQuery: { orderBy: [{ field: 'observacoes', direction: 'desc' as const }], limit: 50 },
+    };
+
+    it('overrides meta.defaultQuery.orderBy', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+      );
+    });
+
+    it('outranks a user header sort', () => {
+      // A header sort would break the same inequality/orderBy coupling the
+      // forced sort exists to satisfy, so it must NOT win.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      buildPipelineSpy.mockClear();
+      fireEvent.click(screen.getByText('Tipo'));
+      expect(buildPipelineSpy.mock.calls.length).toBeGreaterThan(0);
+      for (const call of buildPipelineSpy.mock.calls) {
+        expect(call[1]).toMatchObject({ orderBy: [{ field: 'nome', direction: 'asc' }] });
+      }
+    });
+
+    it('falls back to the declared default once cleared', () => {
+      const { rerender } = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      buildPipelineSpy.mockClear();
+      rerender(
+        <MantineProvider env="test">
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={recencyMeta}
+          />
+        </MantineProvider>,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
+      );
+    });
   });
 });

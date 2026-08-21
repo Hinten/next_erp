@@ -123,7 +123,6 @@ export function EnderecosSection({
         db={db}
         pathContext={pathContext}
         meta={enderecoMeta}
-        defaultColumns={['logradouro', 'numero', 'bairro', 'cidade', 'estado', 'cep', 'recebedor']}
         virtualColumns={[
           {
             key: 'recebedor',

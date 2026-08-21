@@ -88,9 +88,17 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 
   /**
    * Default visible columns AND their order. Keys are resolved against
-   * the schema first, then against `virtualColumns`. Omit to show every
-   * non-`unknown` schema field (in schema order) followed by every
-   * virtual column.
+   * the schema first, then against `virtualColumns`.
+   *
+   * Prefer declaring the set on the schema as `meta.defaultQuery.columns` —
+   * the column set drives the Pipelines `select()` projection, so it belongs
+   * with the rest of the query. This prop OVERRIDES that declaration, for the
+   * cases where one meta backs several screens with different columns (e.g.
+   * `integracaoMeta` serves /canais/balcao, /canais/mercado-livre and
+   * /canais/whatsapp) or the screen passes no `meta` at all.
+   *
+   * Omit both to show every non-`unknown` schema field (in schema order)
+   * followed by every virtual column.
    */
   defaultColumns?: string[];
 
@@ -177,6 +185,20 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * it by clicking column headers.
    */
   orderBy?: { field: string; direction?: 'asc' | 'desc' };
+  /**
+   * Page-owned sort that FORCES the issued order while set, overriding both
+   * `meta.defaultQuery.orderBy` and the user's header sort. Unlike `orderBy`
+   * (which only seeds the initial state) this is reactive: clear it and the
+   * previous order applies again.
+   *
+   * Exists for Firestore's inequality/orderBy coupling: when a page adds a
+   * RANGE `extraFilter` on some field, that field must be the first `orderBy`
+   * or the query is invalid (classic path) / stops matching its composite index
+   * (Pipelines path, where Enterprise silently full-scans instead of erroring).
+   * A header sort would break the same rule, which is why this outranks it.
+   * See `apps/web/app/(app)/produtos/page.tsx` — its nome-prefix search.
+   */
+  forcedOrderBy?: { field: string; direction?: 'asc' | 'desc' };
 
   /**
    * Page-owned server-side filters, AND-combined with the `meta.defaultQuery`
@@ -258,6 +280,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   meta,
   queryParams,
   pageSize,
+  forcedOrderBy,
   orderBy,
   extraFilters,
   queryOverride,
@@ -272,16 +295,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // pageSize prop wins, then the declared default, then 50.
   const resolvedPageSize = pageSize ?? defaultQuery?.limit ?? 50;
 
-  // Columns visible by default: caller-supplied keys, or every non-unknown
+  // Columns visible by default: the `defaultColumns` prop wins, then the
+  // schema's declared `meta.defaultQuery.columns`, then every non-unknown
   // schema field (drops embeddings and other opaque blobs automatically)
   // followed by every virtual column.
+  //
+  // This is not only presentation: `selectFields` below derives the Pipelines
+  // projection from the VISIBLE columns, and Enterprise bills data scanned —
+  // which is why the declaration lives next to where/orderBy/limit.
   const defaultVisibleKeys = useMemo<string[]>(
     () =>
-      defaultColumns ?? [
+      defaultColumns ??
+      (defaultQuery?.columns ? [...defaultQuery.columns] : undefined) ?? [
         ...descriptors.filter((d) => d.kind !== 'unknown').map((d) => d.key),
         ...virtualColumns.map((v) => v.key),
       ],
-    [defaultColumns, descriptors, virtualColumns],
+    [defaultColumns, defaultQuery, descriptors, virtualColumns],
   );
 
   // Storage key is per-collection so /clientes and /categorias never
@@ -487,15 +516,23 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Sort actually issued to Firestore: an explicit user/prop sort wins;
   // otherwise the declared default `orderBy` (full array — supports multi-key
   // defaults and matches the declared composite index).
+  const forcedSort: SortState | undefined = forcedOrderBy
+    ? { field: forcedOrderBy.field, direction: forcedOrderBy.direction ?? 'asc' }
+    : undefined;
   const effectiveOrderBy = useMemo<PipelineOrderSpec[] | undefined>(() => {
+    // `forcedOrderBy` outranks the user sort on purpose — see its prop doc.
+    if (forcedSort) return [{ field: forcedSort.field, direction: forcedSort.direction }];
     if (sort) return [{ field: sort.field, direction: sort.direction }];
     if (defaultQuery?.orderBy?.length) {
       return defaultQuery.orderBy.map((o) => ({ field: o.field, direction: o.direction }));
     }
     return undefined;
-  }, [sort?.field, sort?.direction, defaultQuery]);
-  // Column the header arrow points at when the user hasn't sorted yet.
+  }, [forcedSort?.field, forcedSort?.direction, sort?.field, sort?.direction, defaultQuery]);
+  // Column the header arrow points at. Mirrors what was actually issued, so a
+  // forced sort is visible to the user rather than silently disagreeing with
+  // the arrow.
   const displaySort: SortState | undefined =
+    forcedSort ??
     sort ??
     (defaultQuery?.orderBy?.[0]
       ? { field: defaultQuery.orderBy[0].field, direction: defaultQuery.orderBy[0].direction }
@@ -698,6 +735,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     queryParamsSerial,
     sort?.field,
     sort?.direction,
+    forcedSort?.field,
+    forcedSort?.direction,
   ]);
 
   // Drop selected ids that left the current row set (filter change, refresh,

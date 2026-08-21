@@ -262,6 +262,7 @@ export const intFreteMeta: CollectionMetadata = {
     where: [{ field: 'tipo', param: true }],
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    columns: ['nome', 'ativo', 'prazoExtra'],
   },
 };
 

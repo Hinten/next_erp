@@ -316,8 +316,28 @@ export const pedidoMeta: CollectionMetadata = {
     // Direction slice: one collection serves both /pedidos (saídas) and
     // /pedidos/entradas — each list binds `ehSaida` via TableView queryParams.
     where: [{ field: 'ehSaida', param: true }],
-    orderBy: [{ field: 'numero', direction: 'desc' }],
-    limit: 50,
+    // Most-recent-first, matching legacy, which closed EVERY pedido query with
+    // `orderBy__timestamp(false)` (`.old/lib/pedido/pages/pedidoTableView.dart:237`).
+    //
+    // ⚠️ NOT `numero desc`, which this list used until #159. `numero` is a
+    // string whose OPERAÇÃO PREFIX leads it (`VEN-000042` — see
+    // `formatPedidoNumero`), so a lexicographic sort groups the list by
+    // operação and only then orders by sequence *within* each prefix. Worse,
+    // the Mercado Livre importer writes a bare numeric id
+    // (`String(packId ?? order.id)`), and digits sort below letters — so every
+    // marketplace order sat under every UI-created pedido, permanently,
+    // regardless of date. (The often-repeated "'99' sorts above '100'" story is
+    // NOT the defect: both apps zero-pad to a fixed width.)
+    orderBy: [{ field: 'timestamp', direction: 'desc' }],
+    // 100, not the repo-wide 50: pedidos is the heaviest-traffic screen and the
+    // only one legacy deliberately overrode (`itensPerPage: 100`,
+    // `cacheExtent: 700`, `pedidoTableView.dart:2187`). `limit` is the FIRST
+    // page only — "Carregar mais" grows it by the same amount per click.
+    limit: 100,
+    // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
+    // Every virtual column declares `dependsOn`, so the Pipelines projection
+    // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.
+    columns: ['numero', 'estado', 'nf', 'cliente', 'expedicao', 'vlr', 'frete', 'criacao', 'imp'],
   },
   // `estoqueAplicado` is written ONLY by the sincronizarEstoquePedido Cloud
   // Function: a client forging (or clearing) the snapshot could make the

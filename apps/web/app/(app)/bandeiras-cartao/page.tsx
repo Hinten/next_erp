@@ -21,7 +21,6 @@ export default function BandeirasCartaoPage() {
       collection={bandeiraCartaoCollection}
       db={getFirebaseFirestore()}
       meta={bandeiraCartaoMeta}
-      defaultColumns={['nome', 'bandeira', 'ehCredito', 'maxParcelas']}
       rowHref={(id) => `/bandeiras-cartao/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/bandeiras-cartao/novo">

@@ -1355,6 +1355,11 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     ultimaModificacao: Date.now(),
   });
   batch.set(db().collection('produtos').doc(produtoId), {
+    // Firestore `orderBy` SKIPS docs missing the field, and /produtos now
+    // defaults to `ultimaModificacao desc` (#159) — an unstamped fixture is
+    // invisible in the list. Admin `.set()` bypasses Zod, so the schema
+    // default cannot fill this in for us.
+    ultimaModificacao: Date.now(),
     nome: produtoNome,
     sku: produtoSku,
     codPai: null,
@@ -1487,6 +1492,7 @@ export async function seedPedidoEstoqueFixtures(prefix: string): Promise<{
     dataCadastro: now,
   });
   batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: Date.now(),
     nome: produtoId,
     sku: `${prefix.toUpperCase().replace(/-/g, '_')}_EST_001`,
     codPai: null,
@@ -1721,6 +1727,7 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     dataCadastro: now,
   });
   batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: Date.now(),
     nome: produtoId,
     sku,
     codPai: null,
@@ -2441,6 +2448,7 @@ export async function seedProdutoComVariacoes(
     .collection('produtos')
     .doc(produtoId)
     .set({
+      ultimaModificacao: Date.now(),
       nome: `${prefix}-pai`,
       sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI`,
       paiId: null,
@@ -2483,6 +2491,7 @@ export async function seedProdutoComFilho(prefix: string): Promise<{
   const childSku = `${prefix.toUpperCase().replace(/-/g, '_')}_PAI_P`;
   const now = new Date().toISOString();
   const base = {
+    ultimaModificacao: Date.now(),
     publicado: true,
     ehKit: false,
     ehKitVirtual: false,
@@ -2526,6 +2535,7 @@ export async function seedComponenteKit(
   const nome = `${prefix}-${suffix}`;
   const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_${suffix.toUpperCase()}`;
   await db().collection('produtos').doc(id).set({
+    ultimaModificacao: Date.now(),
     nome,
     sku,
     custo,
@@ -2558,6 +2568,7 @@ export async function seedKitReferencing(
     .collection('produtos')
     .doc(kitId)
     .set({
+      ultimaModificacao: Date.now(),
       nome: kitNome,
       sku: `${prefix.toUpperCase().replace(/-/g, '_')}_KIT`,
       paiId: null,
@@ -2628,6 +2639,7 @@ export async function seedKitEstoqueFixtures(prefix: string): Promise<{
     .collection('produtos')
     .doc(kitId)
     .set({
+      ultimaModificacao: Date.now(),
       nome: `${prefix}-kit`,
       sku: `${prefix.toUpperCase().replace(/-/g, '_')}_KIT`,
       paiId: null,
@@ -2686,6 +2698,7 @@ export async function seedKitParaGerar(prefix: string): Promise<{
   const fake = (v: string) => `documents/grupoDeVariacoes/${grupoTam}/variacoes/${v}`;
   const sku = (s: string) => `${prefix.toUpperCase().replace(/-/g, '_')}_${s}`;
   const base = {
+    ultimaModificacao: Date.now(),
     publicado: true,
     ehKitVirtual: false,
     ofereceFreteGratis: false,
@@ -2798,6 +2811,7 @@ export async function seedProdutoMlPublicado(
   const now = Date.now();
   const batch = db().batch();
   batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: Date.now(),
     nome,
     sku: `${prefix.toUpperCase().replace(/-/g, '_')}_ML`,
     publicado: true,
@@ -3247,6 +3261,7 @@ export async function docExistsByField(
 /** A produtos doc shaped like the other pedido fixtures (converter-parseable). */
 function checkoutProdutoDoc(nome: string, sku: string, ehKit = false) {
   return {
+    ultimaModificacao: Date.now(),
     nome,
     sku,
     codPai: null,
@@ -3735,6 +3750,7 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
   });
 
   const produtoBody = (nome: string, sku: string, extra: Record<string, unknown> = {}) => ({
+    ultimaModificacao: Date.now(),
     nome,
     sku,
     codPai: null,

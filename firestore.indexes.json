@@ -1509,6 +1509,50 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "listaDePrecos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "listaDePrecos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
