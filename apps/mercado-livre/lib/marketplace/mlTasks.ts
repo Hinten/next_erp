@@ -66,7 +66,9 @@ import { MERCADO_LIVRE_NOTIFICATION_QUEUE, type MlNotificationPayload } from './
  * wrong, and a throw when it is unset.
  */
 export function mlTasksRegion(): string {
-  return requireRegion(['MERCADO_LIVRE_TASKS_REGION'], process.env);
+  return requireRegion({
+    MERCADO_LIVRE_TASKS_REGION: process.env.MERCADO_LIVRE_TASKS_REGION,
+  });
 }
 
 /**

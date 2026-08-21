@@ -49,7 +49,10 @@ export const RECONCILE_FUNCTION = 'reconciliarNfe';
  * no FUNCTIONS_REGION of its own, so guessing here would enqueue into a queue
  * that does not exist and drop the reconcile silently.
  */
-const reconcileRegion = (): string => requireRegion(['NFE_TASKS_REGION'], process.env);
+const reconcileRegion = (): string =>
+  requireRegion({
+    NFE_TASKS_REGION: process.env.NFE_TASKS_REGION,
+  });
 
 /**
  * JSON body the queue delivers to the reconcile function. Shared between the

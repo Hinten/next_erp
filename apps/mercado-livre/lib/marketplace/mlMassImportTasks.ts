@@ -32,7 +32,10 @@ import { MERCADO_LIVRE_MASS_IMPORT_QUEUE, type MassImportTaskPayload } from './m
 
 /** Region the mass-import function/queue live in (shared knob with mlTasks.ts). */
 function mlTasksRegion(): string {
-  return requireRegion(['MERCADO_LIVRE_TASKS_REGION', 'FUNCTIONS_REGION'], process.env);
+  return requireRegion({
+    MERCADO_LIVRE_TASKS_REGION: process.env.MERCADO_LIVRE_TASKS_REGION,
+    FUNCTIONS_REGION: process.env.FUNCTIONS_REGION,
+  });
 }
 
 /**
