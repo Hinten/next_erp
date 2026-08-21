@@ -102,6 +102,8 @@ import {
 import {
   type FetchMovimentosDaJanela,
   type FetchStockFamilies,
+  type ModoEstoque,
+  type ModoEstoqueRecusa,
   type MovimentosDaJanela,
   STOCK_SYNC_FLAG_ENV,
   buildSendTasks,
@@ -115,6 +117,7 @@ import {
   maxTasksPerSweep,
   quantidadesAnteriores,
   quantidadesDaFamilia,
+  resolverModoEstoque,
   windowOverlapSec,
 } from './bulkEstoquePlan';
 import type { MlStockTaskScheduler } from './mlStockTasks';
@@ -240,12 +243,26 @@ export interface StockSweepResult {
 const SEM_DEPOSITO_ERROR = 'integração sem depósito — configure o depósito da conta';
 
 /**
- * Recorded (and stamped) for a multiorigin conta — LOUD by design: ML silently
- * ignores `PUT /items` stock there, so a quiet skip would look like success.
+ * Recorded (and stamped) for a multiorigin conta this build cannot serve — LOUD
+ * by design: ML silently ignores `PUT /items` stock there, so a quiet skip would
+ * look like success.
+ *
+ * Two REASONS, and the operator has to be able to tell them apart, because only
+ * one of them is fixable from here (#706):
+ *  - `multi-deposito`: the conta also carries `multiwarehouse`, so it manages
+ *    several depósitos and needs an ERP-depósito → ML-store mapping this ERP
+ *    does not model yet (#1177). Not a flag away.
+ *  - `multiorigem-desabilitado`: the conta IS supportable and the
+ *    `MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED` flag is off. One env var away.
  */
-const MULTIORIGIN_ERROR =
-  'conta multiorigem (warehouse_management) — o ML ignora estoque via PUT /items; ' +
-  'suporte a seller_warehouse é rastreado separadamente';
+const MULTIORIGIN_ERRORS: Record<ModoEstoqueRecusa, string> = {
+  'multi-deposito':
+    'conta multiorigem com múltiplos depósitos (multiwarehouse) — o mapeamento ' +
+    'depósito → loja do ML ainda não é suportado (issue #1177)',
+  'multiorigem-desabilitado':
+    'conta multiorigem (warehouse_management) — envio via seller_warehouse ' +
+    'desabilitado; habilite MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED',
+};
 
 /* --------------------------------- window ---------------------------------- */
 
@@ -513,6 +530,12 @@ async function sweepConta(
   stateRaw: Record<string, unknown>,
   nowMs: number,
   nowUs: number,
+  /**
+   * #706 — how this conta's stock reaches ML, decided from its own ML tags.
+   * ⚠️ NOT `modo`: that name is taken inside this function by the sweep WINDOW
+   * mode (`incremental` / `daily` / `force-all`), which is a different axis.
+   */
+  modoEstoque: ModoEstoque,
 ): Promise<Omit<StockSweepContaResult, 'error'>> {
   // (a) RESUME or derive. A stored `continuacao` freezes the truncated sweep's
   // window + keyset position, and this tick does ONLY that continuation — its
@@ -611,6 +634,7 @@ async function sweepConta(
         integracaoId,
         sweepId,
         sweepComputedAtMs: nowMs,
+        modo: modoEstoque,
       });
       skipped += skips.length;
       for (const task of tasks) {
@@ -828,12 +852,18 @@ export async function runStockSweep(
       const channelCtx = await ctx.resolveChannelContext(nowMs);
       const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
       const user = await getMe(api);
-      if ((user.tags ?? []).includes('warehouse_management')) {
+      // #706: the same one probe now ROUTES instead of only refusing. A
+      // `warehouse_management` conta without `multiwarehouse` manages exactly one
+      // depósito, which is what this ERP models (one `depositoOuterRef` per
+      // conta), so its stock can go out through the User-Products endpoint. The
+      // other two cases keep the refusal, each naming its own remedy.
+      const { modo, recusa } = resolverModoEstoque(user.tags);
+      if (recusa != null) {
         console.error(
-          '[mercado-livre] stock-sweep: conta multiorigem detectada — envio de estoque RECUSADO',
-          { integracaoId, mode, userId: user.id },
+          '[mercado-livre] stock-sweep: conta multiorigem — envio de estoque RECUSADO',
+          { integracaoId, mode, userId: user.id, recusa },
         );
-        contas.push(await recordContaError(db, integracaoId, nowUs, MULTIORIGIN_ERROR));
+        contas.push(await recordContaError(db, integracaoId, nowUs, MULTIORIGIN_ERRORS[recusa]));
         continue;
       }
 
@@ -848,6 +878,7 @@ export async function runStockSweep(
         stateRaw,
         nowMs,
         nowUs,
+        modo,
       );
       contas.push({ ...result, error: null });
     } catch (err) {

@@ -396,9 +396,17 @@ export async function importProduto(
   // this repo, deleted at the decommission. Canonical note on `produtoSchema`;
   // do not repair, do not add a reader).
   //
-  // Runs after the produto exists
-  // (create sets it first). arrayUnion so a concurrent Flutter write to the
-  // same shared arrays isn't dropped. User-Products stamps
+  // Runs after the produto exists (create sets it first). arrayUnion is tier 0
+  // — commutative and idempotent — which is what these two arrays need, and NOT
+  // because a second app writes them: the Flutter app is not a live writer here
+  // (rule 8). The real concurrency is ours. Three in-repo writers touch these
+  // same fields on this same produto doc — `itemsStatusSync.ts:469-475`
+  // arrayUnions them, the UP takeover in `importMigration.ts:534-550` rewrites
+  // them, and a Cloud Tasks retry or the reprocess sweep re-drives THIS import.
+  // Secondary: a migrated produto arrives carrying legacy entries for other
+  // contas, which arrayUnion likewise leaves alone. The same tier-0 argument is
+  // made honestly in `importPhotos.ts:154` and `integracoesComProduto.ts:31`.
+  // User-Products stamps
   // `relevantData.isUserProductModel` on the PARENT's own entry too (parity —
   // `ProdMarketplace.relevantData`, `models.dart:2333`); omitted for simple/
   // variations[] so their denorm shape stays byte-identical.
@@ -445,7 +453,15 @@ export async function importProduto(
           parentInfo,
           [up!.member],
           taxonomia,
-          { parentLinkDocId: linkDocId, status: mapped.status, subStatus: mapped.subStatus },
+          {
+            parentLinkDocId: linkDocId,
+            status: mapped.status,
+            subStatus: mapped.subStatus,
+            // The UP import fetches ONE member item per call, so `mapped` IS
+            // this member — its `user_product_id` belongs on the member's own
+            // link, never on the family's parent link (#706, #1142).
+            userProductId: mapped.userProductId,
+          },
         )
       : await importVariationChildren(
           { db, integracaoId, options, depositoOuterRef: deps.depositoOuterRef, now },

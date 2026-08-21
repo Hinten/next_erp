@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { MigrationArgError, isMainModule, parseArgs } from './runner';
+import { BatchWriter, MigrationArgError, isMainModule, parseArgs } from './runner';
 
 describe('isMainModule', () => {
   const argvOriginal = process.argv[1];
@@ -116,5 +116,76 @@ describe('parseArgs', () => {
 
   it('rejects a trailing flag with no value', () => {
     expect(() => parseArgs(['--project'])).toThrow(MigrationArgError);
+  });
+});
+
+describe('BatchWriter.updateGuarded — rule 7 tier 1', () => {
+  // The patch a migration writes is DERIVED from a snapshot it read, so a blind
+  // `update()` holds its decision only at READ time. This asserts the precondition
+  // actually reaches Firestore and that a miss is reported rather than thrown.
+
+  type Call = { data: unknown; precondition: unknown };
+
+  function fakeRef(onUpdate?: () => never) {
+    const calls: Call[] = [];
+    const ref = {
+      calls,
+      update: async (data: unknown, precondition: unknown) => {
+        calls.push({ data, precondition });
+        if (onUpdate) onUpdate();
+      },
+    };
+    return ref as unknown as Parameters<BatchWriter['updateGuarded']>[0] & { calls: Call[] };
+  }
+
+  const TS = { seconds: 1, nanoseconds: 2 } as unknown as Parameters<
+    BatchWriter['updateGuarded']
+  >[2];
+  const db = {} as never;
+
+  it('sends the lastUpdateTime precondition and counts the write', async () => {
+    const w = new BatchWriter(db, true);
+    const ref = fakeRef();
+
+    await expect(w.updateGuarded(ref, { a: 1 }, TS)).resolves.toBe(true);
+
+    expect(ref.calls).toHaveLength(1);
+    expect(ref.calls[0]!.data).toEqual({ a: 1 });
+    // ⚠️ Asserted by SHAPE — a plain `update(data)` with no second argument is the
+    // exact regression this guard exists to prevent, and it would still resolve.
+    expect(ref.calls[0]!.precondition).toEqual({ lastUpdateTime: TS });
+    expect(w.committed).toBe(1);
+  });
+
+  it('resolves FALSE on FAILED_PRECONDITION instead of throwing', async () => {
+    // A conflict is this document losing a race, not the pass failing — the
+    // caller records it and the other 399 documents still go through.
+    const w = new BatchWriter(db, true);
+    const ref = fakeRef(() => {
+      throw Object.assign(new Error('failed precondition'), { code: 9 });
+    });
+
+    await expect(w.updateGuarded(ref, { a: 1 }, TS)).resolves.toBe(false);
+    expect(w.committed).toBe(0);
+  });
+
+  it('RETHROWS any other error — a real fault must not read as a conflict', async () => {
+    const w = new BatchWriter(db, true);
+    const ref = fakeRef(() => {
+      throw Object.assign(new Error('permission denied'), { code: 7 });
+    });
+
+    await expect(w.updateGuarded(ref, { a: 1 }, TS)).rejects.toThrow(/permission denied/);
+  });
+
+  it('writes NOTHING in dry-run, and still reports success', async () => {
+    // Dry-run must reach the same verdicts as `--apply` without touching
+    // Firestore, or the rehearsal stops predicting the real run.
+    const w = new BatchWriter(db, false);
+    const ref = fakeRef();
+
+    await expect(w.updateGuarded(ref, { a: 1 }, TS)).resolves.toBe(true);
+    expect(ref.calls).toHaveLength(0);
+    expect(w.committed).toBe(0);
   });
 });

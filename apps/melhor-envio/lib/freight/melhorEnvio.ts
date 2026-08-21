@@ -187,7 +187,12 @@ export async function loadMelhorEnvioContext(
     api,
     async exchangeAndPersist(code: string, now: number = Date.now()): Promise<StoredToken> {
       const resp = await exchangeCode(oauthConfig, code);
-      return store.save(storedTokenFromResponse(resp, now));
+      // `force`: this is the authorization-code flow, so a human just
+      // re-consented and their credential wins whatever is stored. The store's
+      // update-if-newer guard (#966) exists to arbitrate two concurrent
+      // REFRESHES; applying it here would let a stale-but-longer-lived stored
+      // token silently defeat a deliberate reconnect.
+      return store.save(storedTokenFromResponse(resp, now), { force: true });
     },
   };
 }

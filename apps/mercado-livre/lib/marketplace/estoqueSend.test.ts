@@ -6,6 +6,7 @@ import {
   MercadoLivreNetworkError,
   MercadoLivreReauthRequiredError,
   type MlItem,
+  type MlUserProductStock,
 } from '@delfrance/integrations-mercado-livre';
 import { estoqueMercadoLivreSyncCollection } from '@delfrance/data/admin/collections';
 
@@ -301,6 +302,8 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
     produtoId: 'PROD',
     itemId: 'MLB111',
     kind: 'item',
+    userProductId: null,
+    varLinkDocId: null,
     variacaoProdutoId: null,
     linkDocId: 'link1',
     quantidade: 10,
@@ -331,6 +334,15 @@ interface HarnessOpts {
   updateItem?: (id: string, body: Record<string, unknown>) => Promise<MlItem>;
   /** Only the terminal 4xx branch calls this — default: a healthy listing. */
   getItem?: (id: string) => Promise<MlItem>;
+  /** #706 multiorigem: the read-before-write. Default: one seller_warehouse, version '7'. */
+  getUserProductStock?: (
+    userProductId: string,
+  ) => Promise<{ stock: MlUserProductStock; version: string | null }>;
+  putUserProductSellerWarehouseStock?: (
+    userProductId: string,
+    version: string,
+    locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
+  ) => Promise<{ stock: MlUserProductStock | null; version: string | null }>;
   resolveChannelContext?: () => Promise<{ accessToken: string }>;
   jitterSec?: (maxS: number) => number;
   /**
@@ -359,9 +371,43 @@ function makeHarness(opts: HarnessOpts = {}) {
         sub_status: [],
       })),
   );
+  const getUserProductStock = vi.fn(
+    opts.getUserProductStock ??
+      (async (userProductId: string) => ({
+        stock: {
+          id: userProductId,
+          locations: [
+            {
+              type: 'seller_warehouse',
+              store_id: 'STORE-1',
+              network_node_id: 'NODE-1',
+              quantity: 3,
+            },
+          ],
+        } as MlUserProductStock,
+        version: '7' as string | null,
+      })),
+  );
+  const putUserProductSellerWarehouseStock = vi.fn(
+    opts.putUserProductSellerWarehouseStock ??
+      (async (
+        userProductId: string,
+        _version: string,
+        locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
+      ) => ({
+        stock: {
+          id: userProductId,
+          locations: locations.map((l) => ({ ...l, type: 'seller_warehouse' })),
+        } as MlUserProductStock,
+        // A successful write earns a NEW version; the handler ignores it today.
+        version: '8' as string | null,
+      })),
+  );
   const apiFactory = vi.fn((_cfg: { getAccessToken: () => Promise<string> }) => ({
     updateItem,
     getItem,
+    getUserProductStock,
+    putUserProductSellerWarehouseStock,
   }));
   const contextLoader: StockContextLoader = vi.fn(async () => ({
     conta: opts.conta ?? { depositoOuterRef: DEP_REF },
@@ -377,7 +423,17 @@ function makeHarness(opts: HarnessOpts = {}) {
     jitterSec,
     retryCount: opts.retryCount ?? 0,
   };
-  return { db, deps, enqueue, updateItem, getItem, apiFactory, jitterSec };
+  return {
+    db,
+    deps,
+    enqueue,
+    updateItem,
+    getItem,
+    getUserProductStock,
+    putUserProductSellerWarehouseStock,
+    apiFactory,
+    jitterSec,
+  };
 }
 
 type Harness = ReturnType<typeof makeHarness>;
@@ -1566,5 +1622,378 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
     expect(link).toMatchObject({ errors: [] });
     // …and the policy reason survived untouched.
     expect(link).toMatchObject({ moderacoes: [moderacao] });
+  });
+});
+
+describe('processStockSendTask — multiorigem / seller_warehouse (#706)', () => {
+  const UP = payload({ kind: 'userProductStock', userProductId: 'MLBU-1', quantidade: 12 });
+
+  function seedLink(db: FakeDb, over: DocData = {}): void {
+    db.seed(LINK_PATH, 'link1', {
+      id: 'MLB111',
+      estado: 'p',
+      status: 'active',
+      errors: ['falha anterior'],
+      ...over,
+    });
+  }
+
+  it('reads the stock for the version, then PUTs the ECHOED identifiers with the new quantity', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+
+    await expect(run(h, UP)).resolves.toEqual({ outcome: 'sent', reason: null });
+
+    expect(h.getUserProductStock).toHaveBeenCalledWith('MLBU-1');
+    // ⚠️ `locations` REPLACES the seller_warehouse set, so the identifiers must
+    // come back verbatim from the read — inventing or omitting them zeroes a
+    // warehouse nobody asked to touch.
+    expect(h.putUserProductSellerWarehouseStock).toHaveBeenCalledWith('MLBU-1', '7', [
+      { store_id: 'STORE-1', network_node_id: 'NODE-1', quantity: 12 },
+    ]);
+    // …and never through the item endpoint, which ML would silently discard.
+    expect(h.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('the writeback clears the diagnosis but writes NO listing status — the PUT does not return one', async () => {
+    const h = makeHarness();
+    seedLink(h.db, { estado: 'E' });
+
+    await run(h, UP);
+
+    const link = h.db.docs(LINK_PATH).get('link1');
+    expect(link).toMatchObject({ errors: [], ultimaModificacao: NOW_MS });
+    // Inventing a status here would feed `podeEnviarEstoque` next tick. The
+    // `items` webhook and the daily sweep own that data.
+    expect(link?.status).toBe('active'); // untouched, as seeded
+    expect(link?.estado).toBe('E'); // untouched — only clearFalha() applies
+  });
+
+  it('resolves an unstamped User Product from the item ONCE and stamps it into the same writeback', async () => {
+    const h = makeHarness({
+      getItem: async () => ({ id: 'MLB111', user_product_id: 'MLBU-RESOLVED' }),
+    });
+    seedLink(h.db);
+
+    await expect(run(h, payload({ kind: 'userProductStock', quantidade: 4 }))).resolves.toEqual({
+      outcome: 'sent',
+      reason: null,
+    });
+
+    expect(h.getItem).toHaveBeenCalledWith('MLB111');
+    expect(h.getUserProductStock).toHaveBeenCalledWith('MLBU-RESOLVED');
+    // The stamp is what makes the resolve a ONE-TIME cost rather than per tick,
+    // and it rides the writeback that was happening anyway — zero extra writes.
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ userProductId: 'MLBU-RESOLVED' });
+  });
+
+  it('an already-stamped task never pays the resolve GET', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+    await run(h, UP);
+    expect(h.getItem).not.toHaveBeenCalled();
+    expect(h.db.docs(LINK_PATH).get('link1')).not.toHaveProperty('userProductId');
+  });
+
+  it('an item ML gives no user_product_id is stopped terminally — no retry can fix it', async () => {
+    const h = makeHarness({ getItem: async () => ({ id: 'MLB111' }) });
+    seedLink(h.db);
+
+    const res = await run(h, payload({ kind: 'userProductStock', quantidade: 4 }));
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-user-product' });
+    expect(h.getUserProductStock).not.toHaveBeenCalled();
+    // `estado 'E'` is what makes the sweep's gate skip it next tick instead of
+    // re-earning this 96 times a day.
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E' });
+  });
+
+  it('⚠️ a Fulfillment listing is SKIPPED, not sent — a seller_warehouse write there succeeds and does nothing', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: { id, locations: [{ type: 'meli_facility', quantity: 9 }] } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'estoque-full-gerenciado-pelo-ml' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    // A skip, not a failure: the listing is healthy, its stock is simply ML's.
+    expect(h.db.docs(LINK_PATH).get('link1')).not.toMatchObject({ estado: 'E' });
+  });
+
+  it('a User Product with NO locations at all is an operator-actionable error', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: { id, locations: [] } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-deposito-no-ml' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    expect((h.db.docs(LINK_PATH).get('link1')?.errors as string[])[0]).toContain(
+      'painel do Mercado Livre',
+    );
+  });
+
+  it('⚠️ more than one seller_warehouse REFUSES rather than guessing which building the stock is in', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [
+            { type: 'seller_warehouse', store_id: 'A', network_node_id: 'NA', quantity: 1 },
+            { type: 'seller_warehouse', store_id: 'B', network_node_id: 'NB', quantity: 2 },
+          ],
+        } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'multi-deposito-nao-suportado' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ a missing x-version RETHROWS for the queue — it must not latch a healthy listing', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [
+            { type: 'seller_warehouse', store_id: 'A', network_node_id: 'NA', quantity: 1 },
+          ],
+        } as MlUserProductStock,
+        version: null,
+      }),
+    });
+    seedLink(h.db, { estado: 'p' });
+
+    // ML's reference calls this header always-present, so its absence is far
+    // likelier a proxy or a hiccup than a property of this listing. Latching on
+    // attempt 0 with no verification is what #781's ladder exists to prevent —
+    // and the sweep would then refuse the very retry the operator is told to make.
+    await expect(run(h, UP)).rejects.toThrow(/x-version/);
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('p');
+  });
+
+  it('…but the LAST attempt stops the listing, so it cannot loop forever', async () => {
+    // The other half of the #781 ladder: retrying has demonstrably failed, so
+    // this stops instead of re-earning three attempts every 15 minutes.
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [
+            { type: 'seller_warehouse', store_id: 'A', network_node_id: 'NA', quantity: 1 },
+          ],
+        } as MlUserProductStock,
+        version: null,
+      }),
+      retryCount: LAST_ATTEMPT,
+    });
+    seedLink(h.db, { estado: 'p' });
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-x-version' });
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('E');
+  });
+
+  it('⚠️ a 404 from the stock read is `sem-deposito-no-ml`, not a generic 4xx', async () => {
+    // A UP whose stock was never initialised answers `stock-locations not found`,
+    // NOT an empty locations array. Left to the generic arm it would burn all
+    // three queue attempts and then be recorded with a message about the ITEM,
+    // when the actionable truth is "configure the depósito in the ML panel".
+    const h = makeHarness({
+      getUserProductStock: async () => {
+        throw new MercadoLivreHttpError('stock-locations not found', 404, null);
+      },
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-deposito-no-ml' });
+    expect((h.db.docs(LINK_PATH).get('link1')?.errors as string[])[0]).toContain(
+      'painel do Mercado Livre',
+    );
+  });
+
+  it('⚠️ a MEMBER task stamps the resolved UP on the MEMBER link, never on the family link', async () => {
+    // `produtoId`/`linkDocId` are always the ANCHOR's. Stamping there would put a
+    // member's MLBU on the family's link (#1142) AND would never be read back by
+    // `buildSendTasks`, which takes a member's id off `varLink.userProductId` —
+    // so the GET would repeat every tick instead of once.
+    const h = makeHarness({
+      getItem: async () => ({ id: 'MLB-CH1', user_product_id: 'MLBU-CHILD' }),
+    });
+    seedLink(h.db);
+    h.db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', { itemId: 'MLB-CH1' });
+
+    await run(
+      h,
+      payload({
+        kind: 'userProductStock',
+        itemId: 'MLB-CH1',
+        quantidade: 4,
+        variacaoProdutoId: 'CH1',
+        varLinkDocId: 'v1',
+      }),
+    );
+
+    expect(h.db.docs('produtos/CH1/variacaoMercadoLivre').get('v1')).toMatchObject({
+      userProductId: 'MLBU-CHILD',
+    });
+    expect(h.db.docs(LINK_PATH).get('link1')).not.toHaveProperty('userProductId');
+  });
+
+  it('a location without store_id / network_node_id is refused, never sent as empty strings', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [{ type: 'seller_warehouse', quantity: 1 }],
+        } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'deposito-sem-identificadores' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+  });
+
+  it('a 409 re-reads the version and retries ONCE — the ordinary outcome of a read-before-write', async () => {
+    let version = '7';
+    const put = vi.fn(async (id: string, v: string) => {
+      if (v !== '9') throw new MercadoLivreHttpError('version mismatch', 409, null);
+      return { stock: { id, locations: [] } as MlUserProductStock, version: '10' as string | null };
+    });
+    const h = makeHarness({
+      getUserProductStock: async (id) => {
+        const v = version;
+        version = '9'; // the second read sees the winner's version
+        return {
+          stock: {
+            id,
+            locations: [
+              { type: 'seller_warehouse', store_id: 'S', network_node_id: 'N', quantity: 1 },
+            ],
+          } as MlUserProductStock,
+          version: v,
+        };
+      },
+      putUserProductSellerWarehouseStock: put,
+    });
+    seedLink(h.db);
+
+    await expect(run(h, UP)).resolves.toEqual({ outcome: 'sent', reason: null });
+
+    expect(h.getUserProductStock).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenNthCalledWith(1, 'MLBU-1', '7', expect.anything());
+    expect(put).toHaveBeenNthCalledWith(2, 'MLBU-1', '9', expect.anything());
+  });
+
+  it('⚠️ the 409 retry RE-DERIVES its body — a warehouse that appeared meanwhile must not be zeroed', async () => {
+    // The body REPLACES the seller_warehouse set. Re-sending the pre-conflict
+    // one-element body would zero the newcomer AND skip the `> 1 depósito`
+    // refusal that exists to prevent exactly that. Root CLAUDE.md rule 7:
+    // re-derive from the read that won.
+    let leituras = 0;
+    const put = vi.fn(async () => {
+      throw new MercadoLivreHttpError('version mismatch', 409, null);
+    });
+    const h = makeHarness({
+      getUserProductStock: async (id) => {
+        leituras += 1;
+        const locations =
+          leituras === 1
+            ? [{ type: 'seller_warehouse', store_id: 'S1', network_node_id: 'N1', quantity: 1 }]
+            : [
+                { type: 'seller_warehouse', store_id: 'S1', network_node_id: 'N1', quantity: 1 },
+                { type: 'seller_warehouse', store_id: 'S2', network_node_id: 'N2', quantity: 4 },
+              ];
+        return { stock: { id, locations } as MlUserProductStock, version: `v${leituras}` };
+      },
+      putUserProductSellerWarehouseStock: put,
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    // The retry saw two warehouses and REFUSED instead of writing one of them.
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'multi-deposito-nao-suportado' });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('⚠️ a SECOND 409 rethrows for the queue and must NOT latch the listing with estado E', async () => {
+    // The generic 4xx ladder would spend all three attempts and then mark a
+    // perfectly healthy listing as failed, which only an `items` webhook or a
+    // human clears. A version conflict is not evidence of anything being wrong.
+    const h = makeHarness({
+      putUserProductSellerWarehouseStock: async () => {
+        throw new MercadoLivreHttpError('version mismatch', 409, null);
+      },
+      retryCount: LAST_ATTEMPT,
+    });
+    seedLink(h.db, { errors: [] });
+
+    await expect(run(h, UP)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 409,
+    });
+
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('p');
+    expect(h.getItem).not.toHaveBeenCalled(); // the #781 verification never ran
+  });
+
+  it('a 429 still pauses the conta on this path too', async () => {
+    const h = makeHarness({
+      putUserProductSellerWarehouseStock: async () => {
+        throw new MercadoLivreHttpError('rate limited', 429, null, 60);
+      },
+    });
+    seedLink(h.db);
+
+    await expect(run(h, UP)).rejects.toMatchObject({ status: 429 });
+    expect(h.db.docs(STATE_PATH).get(CONTA)?.pausedUntilUs).toBe((NOW_MS + 60_000) * 1000);
+  });
+
+  it('a task with no quantity is dropped, never sent as 0', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+    const res = await run(h, payload({ kind: 'userProductStock', quantidade: null }));
+    expect(res).toEqual({ outcome: 'dropped', reason: 'payload-sem-quantidade' });
+    expect(h.getUserProductStock).not.toHaveBeenCalled();
+  });
+
+  it('quantity 0 IS sent — ML re-activates an out_of_stock listing by itself on the next positive value', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+    await run(h, payload({ kind: 'userProductStock', userProductId: 'MLBU-1', quantidade: 0 }));
+    expect(h.putUserProductSellerWarehouseStock).toHaveBeenCalledWith('MLBU-1', '7', [
+      { store_id: 'STORE-1', network_node_id: 'NODE-1', quantity: 0 },
+    ]);
+  });
+
+  it('the master flag still gates this path', async () => {
+    vi.stubEnv(STOCK_SYNC_FLAG_ENV, '');
+    const h = makeHarness();
+    const res = await run(h, UP);
+    expect(res.outcome).toBe('skipped');
+    expect(h.getUserProductStock).not.toHaveBeenCalled();
   });
 });

@@ -37,9 +37,13 @@ import { coerceToMillis } from '@delfrance/core/datetime';
 import { ack404EhSeguro } from './notificacaoFrescor';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { makeConversaIdOrderMessage, makeOrderMensagemId } from './orderMessageIds';
+import { type Bucket } from './arquivoUpload';
+import { ensureOrderMessageAttachmentArquivo } from './orderMessageAttachments';
+import { makeAttachmentMensagemId } from './claimIds';
 import { limparMensagensProvisorias } from './mensagemProvisoria';
 import {
   buildConversaFromPack,
+  buildOrderAttachmentMensagem,
   buildOrderMensagem,
   orderMessageActionability,
   packOrOrderIdFromResources,
@@ -48,6 +52,12 @@ import {
 export interface OrderMessageImportDeps {
   readonly db: Firestore;
   readonly api: MercadoLivreApi;
+  /**
+   * Storage bucket for attachment `Arquivo`s — `null` skips ALL attachments
+   * with one loud warn, matching `claimImport`. The text mensagem still lands
+   * carrying its `[n anexos]` note, so nothing is silently lost.
+   */
+  readonly bucket: Bucket | null;
   readonly integracaoId: string;
   readonly conta: { userId: number | null; cor: number | null };
   /** ONE clock read for the whole import, MILLISECONDS. */
@@ -155,7 +165,7 @@ export async function importOrderMessageMercadoLivre(
   deps: OrderMessageImportDeps,
   messageId: string,
 ): Promise<OrderMessageImportResult> {
-  const { db, api, integracaoId, conta, nowMs } = deps;
+  const { db, api, bucket, integracaoId, conta, nowMs } = deps;
 
   const sellerId = conta.userId;
   if (sellerId == null) return skip('sem-seller');
@@ -294,11 +304,51 @@ export async function importOrderMessageMercadoLivre(
 
   // Every message in the thread, at its ML id — an overwrite-set, so a
   // redelivery updates rather than duplicating.
+  let avisouSemBucket = false;
   for (const m of mensagens) {
+    const messageDocId = makeOrderMensagemId(m.id);
+
+    // Attachments first, then the message — same order as the claims path, so
+    // the thread never shows a message whose attachment has not landed yet.
+    for (const anexo of m.message_attachments) {
+      if (anexo.filename == null || anexo.filename === '') continue;
+      if (bucket == null) {
+        if (!avisouSemBucket) {
+          console.warn(
+            '[mercado-livre] pós-venda: bucket de Storage indisponível — TODOS os anexos ignorados',
+            { packId: alvo.id },
+          );
+          avisouSemBucket = true;
+        }
+        continue;
+      }
+      const ensured = await ensureOrderMessageAttachmentArquivo(
+        { db, api, bucket },
+        { contaId: integracaoId, packId: alvo.id, filename: anexo.filename },
+      );
+      // A skip is already warned about at the source; the text mensagem below
+      // still carries the `[n anexos]` note, so the operator sees one existed.
+      if (!ensured.ok) continue;
+      await mensagemCollection.set(
+        db,
+        { conversaId },
+        makeAttachmentMensagemId(integracaoId, anexo.filename),
+        buildOrderAttachmentMensagem({
+          filename: anexo.filename,
+          parentMessage: m,
+          parentMessageDocId: messageDocId,
+          arquivoOuterRef: ensured.arquivoOuterRef,
+          clienteOuterRef,
+          sellerUserId: sellerId,
+          nowMs,
+        }) as DocumentData,
+      );
+    }
+
     await mensagemCollection.set(
       db,
       { conversaId },
-      makeOrderMensagemId(m.id),
+      messageDocId,
       buildOrderMensagem(m, { clienteOuterRef, sellerUserId: sellerId, nowMs }) as DocumentData,
     );
   }

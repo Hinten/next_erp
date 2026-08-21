@@ -3,10 +3,11 @@ import { z } from 'zod';
 /**
  * Document-reference fields (`*OuterRef` / `*OuterReference`) are stored as
  * doc-path **strings**, never native Firestore `reference` values — the format
- * the legacy Flutter app reads and writes. A string is SDK-agnostic (Admin,
- * Client and Flutter `DocumentReference` are three different classes),
- * JSON-serializable, and keeps a single Firestore type per field so indexes,
- * exports and structural equality stay consistent. Most consumers dereference
+ * the migrated corpus carries, so both wire encodings below must be tolerated
+ * on read. A string is SDK-agnostic (Admin, Client and Flutter
+ * `DocumentReference` are three different classes), JSON-serializable, and
+ * keeps a single Firestore type per field so indexes, exports and structural
+ * equality stay consistent. Most consumers dereference
  * app-side rather than filtering in a `where()`. Equality on the string is
  * valid when needed (e.g. `categoriaPaiOuterRef` for the categorias cascade
  * in #554) — declare a matching index; Enterprise full-scans otherwise. A

@@ -37,6 +37,7 @@ function mapped(over: Partial<MappedMlItem> = {}): MappedMlItem {
     subStatus: null,
     freteGratis: true,
     isUserProductModel: false,
+    userProductId: null,
     videoId: null,
     attributes: [{ id: 'BRAND', value_name: 'Acme' }],
     ...over,
@@ -390,6 +391,39 @@ describe('assembleImportPlan — parent taxonomy links (#520)', () => {
   it('hasVariations=true → no parent estoque write on create either', () => {
     const plan = assembleImportPlan(args({ hasVariations: true }));
     expect(plan.estoque).toBeNull();
+  });
+
+  /* ---- #706 multiorigem: userProductId on the PARENT link ---------------- */
+
+  it('stamps link.userProductId when the listing IS the stock unit (no children)', () => {
+    const plan = assembleImportPlan(
+      args({ hasVariations: false, mapped: mapped({ userProductId: 'MLBU111' }) }),
+    );
+    expect(plan.link.userProductId).toBe('MLBU111');
+  });
+
+  it('⚠️ NEVER stamps link.userProductId when the stock lives on children — one member must not speak for the family (#1142)', () => {
+    // `mapped` is ONE ML item. Under User Products it is one MEMBER of the
+    // family, and under the legacy model the stock units are the variations —
+    // either way an item-level UP id on the parent link would let a single
+    // quantity be written for the whole family.
+    const plan = assembleImportPlan(
+      args({ hasVariations: true, mapped: mapped({ userProductId: 'MLBU-MEMBER-1' }) }),
+    );
+    expect(plan.link.userProductId).toBeNull();
+  });
+
+  it('a re-import of a family link CLEARS a userProductId a previous shape left behind', () => {
+    // The stamp sits AFTER the spread, so this is not merely "not written" —
+    // a stale member id on a family link is actively corrected.
+    const plan = assembleImportPlan(
+      args({
+        hasVariations: true,
+        mapped: mapped({ userProductId: 'MLBU-MEMBER-1' }),
+        existingLinkRaw: { userProductId: 'MLBU-STALE' },
+      }),
+    );
+    expect(plan.link.userProductId).toBeNull();
   });
 
   it('create: sets parentGrupoUids/parentVariacoesUid on the parent doc', () => {
@@ -855,6 +889,16 @@ describe('assembleVariationChildPlan — estoque', () => {
 });
 
 describe('assembleVariationChildPlan — variacaoMercadoLivre link', () => {
+  it('legacy variations[]: userProductId is preserved-or-null, never invented (#706)', () => {
+    // An ML `variations[]` entry carries no `user_product_id` — only a UP member
+    // (which is its own item) does. Same rule as `itemId` beside it.
+    expect(assembleVariationChildPlan(childArgs()).link.userProductId).toBeNull();
+    expect(
+      assembleVariationChildPlan(childArgs({ existingLinkRaw: { userProductId: 'MLBU-KEEP' } }))
+        .link.userProductId,
+    ).toBe('MLBU-KEEP');
+  });
+
   it('stamps the exact legacy wire on a fresh link (numeric id, itemId null, outer-refs)', () => {
     const plan = assembleVariationChildPlan(childArgs());
     expect(plan.link).toMatchObject({
@@ -925,18 +969,33 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: '4455667788' }),
-        up: { itemId: '4455667788', status: null, subStatus: null },
+        up: { itemId: '4455667788', status: null, subStatus: null, userProductId: null },
       }),
     );
     expect(plan.link.itemId).toBe('4455667788');
     expect(plan.link.id).toBeNull();
   });
 
+  it('stamps the member own userProductId on the child link (#706)', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
+        up: {
+          itemId: 'MLB4455667788',
+          status: null,
+          subStatus: null,
+          userProductId: 'MLBU-MEMBER-9',
+        },
+      }),
+    );
+    expect(plan.link.userProductId).toBe('MLBU-MEMBER-9');
+  });
+
   it('preserves an existing numeric link id on re-import (never recomputed from the itemId)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
-        up: { itemId: 'MLB4455667788', status: null, subStatus: null },
+        up: { itemId: 'MLB4455667788', status: null, subStatus: null, userProductId: null },
         existingLinkRaw: { id: 42, itemId: 'MLB4455667788' },
       }),
     );
@@ -948,7 +1007,7 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
-        up: { itemId: 'MLB4455667788', status: null, subStatus: null },
+        up: { itemId: 'MLB4455667788', status: null, subStatus: null, userProductId: null },
       }),
     );
     expect(plan.denorm).toEqual({
@@ -962,7 +1021,7 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788', sku: 'MEMBER-SKU' }),
-        up: { itemId: 'MLB4455667788', status: null, subStatus: null },
+        up: { itemId: 'MLB4455667788', status: null, subStatus: null, userProductId: null },
       }),
     );
     expect(plan.produto?.data.sku).toBe('MEMBER-SKU');

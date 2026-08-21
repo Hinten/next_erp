@@ -169,6 +169,10 @@ describe('loadMelhorEnvioContext', () => {
     expect(saved.expirationDate).toBe(1_000 + 2_592_000 * 1_000);
     expect(h.store.save).toHaveBeenCalledTimes(1);
     expect(h.store.saved?.access_token).toBe('at-1');
+    // ⚠️ `force` — the authorization-code flow bypasses the store's
+    // update-if-newer guard (#966). Without it a stale-but-longer-lived stored
+    // token would silently defeat a deliberate operator reconnect.
+    expect(h.store.save).toHaveBeenCalledWith(expect.anything(), { force: true });
   });
 });
 

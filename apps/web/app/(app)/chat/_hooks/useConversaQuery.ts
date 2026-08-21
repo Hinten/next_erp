@@ -73,13 +73,20 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
       uid: input.uid,
       integracaoId: input.integracaoId,
       etiqueta: input.etiqueta,
-      usarioOuterRef: input.usarioOuterRef,
+      clienteOuterRef: input.clienteOuterRef,
     });
     return {
       baseConstraints: specs.filter((s) => s.kind !== 'limit').map(specToConstraint),
       resetKey: JSON.stringify(specs),
     };
-  }, [input.tab, input.ordem, input.uid, input.integracaoId, input.etiqueta, input.usarioOuterRef]);
+  }, [
+    input.tab,
+    input.ordem,
+    input.uid,
+    input.integracaoId,
+    input.etiqueta,
+    input.clienteOuterRef,
+  ]);
 
   // The Atendimento tab filters `usuarios array-contains <uid>` — while auth is
   // still resolving there is no uid, and a query built with `''` would attach a

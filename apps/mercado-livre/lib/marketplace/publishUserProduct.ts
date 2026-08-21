@@ -154,6 +154,7 @@ export async function publishUserProductMembers(
       // decline to conclude until every member had fired an `items` notification.
       status: item.status ?? null,
       subStatus: item.sub_status ?? null,
+      userProductId: item.user_product_id ?? null,
     });
   }
 
@@ -255,7 +256,10 @@ export async function sweepRemovedMembers(
  * and all N create/update calls — so the snapshot is minutes old by the time it
  * lands, and `parse` fills defaults for whatever it lacks, making the write a
  * genuine clobber rather than a merge. Concurrent writers to these documents are
- * named in-repo: the live Flutter app, `importVariations.ts` and
+ * named, and every one of them is in-repo — the live Flutter app is NOT among
+ * them (rule 8: no dual run, so it never writes a document this app writes).
+ * They are the `items` status webhook, the price/stock senders, a second
+ * operator in the produto editor, `importVariations.ts` and
  * `importMigration.ts` (the UPtin takeover — precisely what flips a listing into
  * this model).
  *
@@ -282,6 +286,7 @@ async function writeMemberLink(
     sku: string | null;
     status: string | null;
     subStatus: string[] | null;
+    userProductId: string | null;
   },
 ): Promise<void> {
   const { integracaoId, produtoId, parentLinkDocId, childId, itemId, state, sku } = args;
@@ -303,6 +308,12 @@ async function writeMemberLink(
     // is a FAMILY summary and a member has no business carrying one.
     status: args.status,
     sub_status: args.subStatus,
+    // #706 multiorigem: this member's own `user_product_id`, straight off the
+    // create/update response. It is the STOCK identity on a
+    // `warehouse_management` conta, where `PUT /items` moves nothing. Recorded
+    // per member for the same reason `status` is: a User Product describes a
+    // product at VARIATION level, so the family's parent link has none.
+    userProductId: args.userProductId,
   };
 
   if (state?.varLinkDocId != null) {

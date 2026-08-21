@@ -1,7 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { gitLsFiles } from './lib/repo-scan.js';
 
 /**
  * Repo convention: ONE root template SET — `.env.example` (non-secret config) plus
@@ -18,7 +16,6 @@ import { describe, expect, it } from 'vitest';
  * belongs in which file is `env-example-split.test.js`; this file is only about
  * WHERE the templates live.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * The only justification for a non-root `.env.example` is a **nested Cloud
@@ -48,15 +45,7 @@ const ALLOWED_NON_ROOT = new Set(['apps/nfe/functions/.env.example']);
  * commit. Reproduce a deletion with `git rm`, not `mv`.
  */
 function findByPathspec(pathspec) {
-  const ls = (...args) =>
-    execFileSync('git', [...args, '--', pathspec], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    })
-      .split('\n')
-      .filter(Boolean);
-
-  return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
+  return gitLsFiles(pathspec);
 }
 
 function findEnvExamples() {
