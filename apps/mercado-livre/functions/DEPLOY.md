@@ -704,9 +704,15 @@ On the first enabled run, read two fields of its log line:
 and the send handler deploy, tick and do nothing while it is off, which is the
 intended steady state until the cutover. Flip it to `1` **only in the same
 window the legacy Flutter stock sender — the `estoque-ml-periodic` Cloud Run
-service, see the cutover table below — is disabled** — the two writing
-`available_quantity` for the same listings at once is the exact double-send
-hazard the callback-URL cutover below describes for notifications.
+service, see the cutover table below — is disabled** — because the two would
+write `available_quantity` for the same listings at once.
+
+⚠️ **This one really is an overlap, unlike the notification cutover below.**
+There, ML delivers to a single registered callback URL, so the two receivers can
+never both be receiving and the risk is a GAP. Nothing constrains the two stock
+senders that way: both hold live credentials for the same seller and both push to
+ML on their own schedule, so leaving the legacy one enabled genuinely
+double-sends. Do not copy the ordering rule from that section to this one.
 
 **Order of operations:**
 
@@ -774,19 +780,59 @@ the legacy sender was cross-channel.
 
 The Step-6 pipeline processes notifications through a **Cloud Tasks queue** and
 persists to the **top-level** `notificacoesMercadoLivre` collection **only on
-failure** (retry-exhaustion / no-account / unknown topic). The still-running
-Flutter app watches that same collection — it likewise only stored a doc on a
-processing error.
+failure** (retry-exhaustion / no-account / unknown topic). The legacy stack keeps
+a collection of the same name with the same failures-only habit — but it is a
+different collection, in a different project's Firestore.
 
-**When you switch a seller's ML notifications callback URL to this backend's
-`/api/webhooks/mercado-livre`, you MUST disable the legacy Flutter notification
-functions in the same window.** Two overlap hazards otherwise: (1) any failure
-doc this backend writes fires the legacy created/updated trigger, which fetches
-the resource and mutates `pedidos`/`produtos` — a double-process; (2) the legacy
-sweep scans the same collection and reprocesses. Same cutover discipline as the
-estoque functions. Until the cutover the callback URL still points at Flutter and
-this backend's queue never runs — so there is no overlap either side of a
-_correctly sequenced_ cutover.
+⚠️ **Correction (2026-08-21).** This section used to open "the still-running
+Flutter app watches that same collection" and name two overlap hazards: that a
+failure doc this backend writes fires the legacy created/updated trigger, and
+that the legacy sweep rescans the same collection. **Both are void — there is no
+dual run (root `CLAUDE.md` rule 8).** `notifications-ml-rt`'s two Eventarc
+triggers are created in the LEGACY project against its `database='(default)'`
+(`.old/docker-repos-local:59-60`), and `manageNotificationsMercadoLivre` queries
+that project's Firestore; a document this backend writes reaches neither, because
+there is no cross-project Firestore trigger and no cross-project query. Same
+collection NAME, different database. (The new project's is literally named
+`default`, not `(default)`, so even a same-project fantasy fails the filter.)
+
+**The step survives, because the shared resource is Mercado Livre, not
+Firestore.** Both stacks hold live credentials for the same seller accounts under
+the same registered ML application, so every legacy service still running keeps
+acting on the seller's real account.
+
+⚠️ **The sharpest instance is the credential itself.** ML's `refresh_token` is
+single-use and rotating, and the migrated `tokenDuravel` carries the LEGACY
+lineage — so after the import both stacks can hold the **same** refresh token for
+one seller, and whichever refreshes first leaves the other at `invalid_grant`.
+Keeping `mercadoLivreToken` deployed (below) is exactly what keeps the legacy
+side able to do that, so read these two sections together.
+
+**So: point the seller's ML notifications callback URL at this backend's
+`/api/webhooks/mercado-livre` FIRST, then disable the legacy Flutter notification
+functions — in that order, inside one window.**
+
+⚠️ **The order is load-bearing, and the real risk is the OPPOSITE of the one this
+section used to name.** ML delivers to ONE callback URL, so the two receivers are
+never both _receiving_; there is no overlap to prevent — there is a **gap** to
+avoid. Disable first and the registered URL still points at the legacy receiver,
+whose entire body is "enqueue a Cloud Task, `return Response.ok('OK')`"
+(`distribuidorDeNotificacoes`, `.old/…/mercado_livre/lib/functions.dart:17-48`)
+— it **acks 200 before anything processes it**. Everything delivered in that
+interval is acked and dropped, and `missed_feeds` cannot recover it: ML files an
+entry only when it could **not** get a 200 (see "Durability" above, and
+`lib/marketplace/missedFeedsSweep.ts`). Taking the receiver down instead is worse,
+not better — ML **disables a topic after ~1h of non-200**, and the application is
+shared with the legacy connect screen, so the topic would go dark for this
+backend too.
+
+Have `MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1` live **before** the switch, not after
+— it ships OFF, and it is the only thing that recovers a delivery this backend
+fails to ack once it _is_ the registered target. After the flip, confirm a live
+delivery in this backend's receiver logs before decommissioning anything.
+
+Same discipline as the estoque functions. The URL flip itself is #1208 Phase 3 /
+**#905**; what happens on the ML side of it is this section.
 
 ### What you actually disable
 
@@ -807,9 +853,37 @@ the handler names are listed only so you can match the two:
 
 `nfe-ml` is the one hard cutover with its own sequenced steps and `gcloud` commands
 — see "⚠️ HARD CUTOVER" above; do not duplicate that work here. `estoque-ml-periodic`
-is the "legacy Flutter stock sender" the stock-flag section refers to. There is also a
-`notifications-ml-recebedor` service in the legacy deploy script, but it is **commented
-out** and not deployed — do not go hunting for it.
+is the "legacy Flutter stock sender" the stock-flag section refers to.
+
+⚠️ **The table lists PROCESSORS, not the receiver — and the deploy script cannot
+tell you which service serves the callback URL.** Disable all five rows and ML's
+registered endpoint still answers 200 into a void, which is the gap the section
+above warns about. What `.old/docker-repos-local` actually shows:
+
+- The live receiver function is `distribuidorDeNotificacoes`
+  (`.old/…/mercado_livre/lib/functions.dart:17-48`) — active in source, and the
+  script has **no `gcloud run deploy` line for it at all**.
+- `FUNCTION_URL_ID=notifications-ml-recebedor` (lines 65 and 68) is the service
+  name `updateGrupoEconomicoMercadoLivre` registers per ML `user_id`, so that
+  name is what the routing layer points at.
+- But that service's own deploy line (52) is commented out, annotated
+  "essa ^ não tem trigger", and its `FUNCTION_TARGET=receberNotificacoes` is
+  **itself commented out** in the source (`functions.dart:50`).
+
+⚠️ **Do not infer "not deployed" from "commented out" in that file** — line 58
+comments out `notifications-ml-rt`'s deploy while lines 59-60 create Eventarc
+triggers naming it as their `--destination-run-service`, so it demonstrably
+exists. **Enumerate the ML Cloud Run services in the console on the day** rather
+than trusting either the script or this table.
+
+⚠️ **Unresolved, and it decides the shape of the operation: where the flip
+actually happens.** `updateGrupoEconomicoMercadoLivre` writes a per-`user_id`
+routing map (`grupoEconomico/…/grupoeconomcioprivatedata.mercadoLivreUserIdIntegracaoMap`,
+`tasks.dart:2702`) keyed to `FUNCTION_URL_ID`. If ML's registered URL fronts that
+map, the flip is a **map edit and can be done per seller**; if the URL is
+registered directly in the DevCenter, it is **one switch for every account on the
+application**. The forwarder is not in `.old`, so this could not be settled from
+the repo. **Settle it before the window.**
 
 ### ⚠️ MUST SURVIVE — do not delete `mercadoLivreToken`
 
