@@ -132,7 +132,7 @@ describe('lerReclamacaoMercadoLivre', () => {
     // with a panel that merely got quietly worse.
     const a = api({
       getClaimExpectedResolutions: vi.fn(async () => {
-        throw new MercadoLivreReauthRequiredError('token morto');
+        throw new MercadoLivreReauthRequiredError('refresh_failed', 'token morto');
       }),
     });
 
