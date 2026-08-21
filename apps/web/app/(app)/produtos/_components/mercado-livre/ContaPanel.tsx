@@ -71,21 +71,26 @@ export interface ContaPanelProps {
   disabled?: boolean;
   dirtyIds: ReadonlySet<string>;
   loadingIds: ReadonlySet<string>;
-  /** Our own 422 pre-flight refusals for this account's last publish. */
-  issues: readonly string[];
+  /**
+   * Our own 422 pre-flight refusals, keyed by the LISTING they came from.
+   *
+   * Per listing rather than per account since publishing became per listing: a
+   * 422 describes one publish, and keying it by conta painted every sibling
+   * listing's fields red for a rejection that was never about them.
+   */
+  issuesByLink: Record<string, string[]>;
   stockResultByLink: Record<string, StockPushRow>;
   urlPorLink: Record<string, string>;
   /** The link doc whose re-check is in flight, across every account. */
   rechecking: string | null;
   abrindoAnuncio: string | null;
-  publishing: { contaId: string; withPrices: boolean } | null;
+  publishing: { contaId: string; linkDocId: string; withPrices: boolean } | null;
   savingConta: string | null;
   sendingStock: string | null;
-  preparing: string | null;
-  listingTypeId: string;
-  onListingTypeChange: (listingTypeId: string) => void;
-  onPublish: (integracaoId: string, needsListingType: boolean, withPrices?: boolean) => void;
-  onPreparar: (integracaoId: string) => void;
+  /** The conta whose draft creation is in flight, across every account. */
+  criando: string | null;
+  onPublish: (integracaoId: string, linkDocId: string, withPrices?: boolean) => void;
+  onNovoAnuncio: (integracaoId: string) => void;
   onSalvarAnuncios: (contaId: string, linkIds: readonly string[]) => void;
   onEnviarEstoque: (conta: StockPushIntegracao, temLatch: boolean) => void;
   onReverificar: (integracaoId: string, linkDocId: string) => void;
@@ -111,7 +116,7 @@ export function ContaPanel({
   disabled,
   dirtyIds,
   loadingIds,
-  issues,
+  issuesByLink,
   stockResultByLink,
   urlPorLink,
   rechecking,
@@ -119,11 +124,9 @@ export function ContaPanel({
   publishing,
   savingConta,
   sendingStock,
-  preparing,
-  listingTypeId,
-  onListingTypeChange,
+  criando,
   onPublish,
-  onPreparar,
+  onNovoAnuncio,
   onSalvarAnuncios,
   onEnviarEstoque,
   onReverificar,
@@ -132,16 +135,6 @@ export function ContaPanel({
   onLoadingChange,
   registerFlush,
 }: ContaPanelProps) {
-  // Publishing still targets the CONTA, not one listing — it reads the same
-  // primary link it always did.
-  const primary: ProdutoMercadoLivreLink | null = contaLinks[0]?.data ?? null;
-  const isFirstPublish = primary?.id == null;
-  // Only when there is no link doc AT ALL. Once one exists — even an
-  // unpublished draft — its `listing_type_id` is a field of the listing form,
-  // and offering a second "Tipo de anúncio" control in the same card would give
-  // the operator two inputs for one value (and hand the e2e locator two elements
-  // to choose between).
-  const needsListingType = contaLinks.length === 0;
   // ⚠️ At least one PUBLISHED listing, not merely a link doc. A draft from
   // "Preparar anúncio" has `id == null`, and the stock push has nothing to send
   // for it — the backend answers `sem-id-externo` / "O anúncio ainda não foi
@@ -156,114 +149,144 @@ export function ContaPanel({
   // corpus contains links stored that way, so a `!= null` check leaves the same
   // dead button one value narrower.
   const hasPublished = contaLinks.some((l) => (l.data.id ?? '') !== '');
-  // Our OWN pre-flight refusals (422), mapped onto controls by the module
-  // written for it. Every issue still renders verbatim in the alert below — a
-  // mapping miss loses nothing, it just highlights nothing (`publishIssues.ts`
-  // docblock).
-  const blockedTargets = mapPublishIssues([...issues]);
-  const blockedPorCampo: Record<string, string[]> = {};
-  for (const target of blockedTargets) {
-    if (target.scope !== 'listing' || target.field == null) continue;
-    (blockedPorCampo[target.field] ??= []).push(target.message);
-  }
   const dirtyLinkIds = contaLinks.filter((l) => dirtyIds.has(l.id)).map((l) => l.id);
   const contaDirty = dirtyLinkIds.length > 0;
   // Filtered THROUGH the rendered links, like `contaDirty` above: a stale id
   // left by a link doc that has since disappeared is then never consulted, so it
   // cannot wedge the gate shut.
   const contaLoading = carregandoGeral || contaLinks.some((l) => loadingIds.has(l.id));
-  const publishBlocked = produtoDirty || contaDirty;
-  // Publish refuses a create with no category ("categoria do Mercado Livre não
-  // definida"). Saying so here beats a round trip that comes back as a 422 the
-  // operator has to read.
-  const missingCategoria = primary != null && (primary.category_id ?? '') === '';
-  // One place decides both whether Publicar is disabled and what the tooltip
-  // says, so the two can never disagree — the previous shape had the conditions
-  // inline and the explanations in three separate `<Text>` blocks that covered
-  // only half of them.
-  const publishReason = publishDisabledReason({
-    loading: contaLoading,
-    disabled: Boolean(disabled),
-    canPublish,
-    hasClient,
-    publishingThisConta: publishing?.contaId === conta.id,
-    publishingOtherConta: publishing != null && publishing.contaId !== conta.id,
-    produtoDirty,
-    contaDirty,
-    missingCategoria,
-  });
 
   return (
     <Card withBorder padding="md" data-testid={`ml-conta-${conta.id}`}>
       <Stack gap="sm">
         <Group justify="space-between">
-          <Text fw={600}>{conta.nome}</Text>
-          {contaLinks.length === 0 && (
-            <Badge color="gray" variant="light">
-              Não publicado
-            </Badge>
-          )}
+          <Group gap="xs">
+            <Text fw={600}>{conta.nome}</Text>
+            {contaLinks.length === 0 && (
+              <Badge color="gray" variant="light">
+                Não publicado
+              </Badge>
+            )}
+          </Group>
+          {/* Always offered, not only for an account with nothing — a produto
+              may carry several anúncios on one account, which is the whole point
+              of this screen. The listing type is chosen inside the modal; see
+              its docblock for why it cannot stay inline. */}
+          <Button
+            type="button"
+            variant={contaLinks.length === 0 ? 'filled' : 'light'}
+            size="xs"
+            data-testid={`ml-novo-anuncio-${conta.id}`}
+            onClick={() => onNovoAnuncio(conta.id)}
+            loading={criando === conta.id}
+            disabled={
+              disabled ||
+              !canPublish ||
+              criando !== null ||
+              // The draft's `title` is seeded from the produto's nome, and the
+              // stored schema requires a non-empty one — so a draft built before
+              // the produto snapshot lands would fail its own write-side parse.
+              produtoNome === '' ||
+              contaLoading
+            }
+          >
+            Novo anúncio
+          </Button>
         </Group>
 
-        {contaLinks.map((l, index) => (
-          <AnuncioBlock
-            key={l.id}
-            produtoId={produtoId}
-            linkDocId={l.id}
-            integracaoId={conta.id}
-            link={l.data}
-            db={db}
-            produtoNome={produtoNome}
-            produtoEhUsado={produtoEhUsado}
-            produtoCondicao={produtoCondicao}
-            produtoFotoCount={produtoFotoCount}
-            canWrite={canPublish}
-            hasClient={hasClient}
-            disabled={disabled}
-            loading={contaLoading}
-            showDivider={index > 0}
-            // THREE sources, one control vocabulary: Mercado Livre's own
-            // rejection of a write of ours — read live off THIS link doc, so it
-            // is already per-listing and survives a reload — ML's POLICY
-            // moderation on the listing itself (#1087), from the same doc, and
-            // our pre-flight refusal, which is per conta (a produto carries one
-            // listing per account in practice, and those issues are about the
-            // produto or the account either way).
-            //
-            // ⚠️ The moderation map is purely ADDITIVE: every moderação is also
-            // listed in the strip, whether or not its section resolved to a
-            // control here — `pictures` and `item` resolve to none at all. See
-            // the ⚠️ in `listingCausas.ts` for what it cost the last time a
-            // banner depended on this mapping.
-            serverErrors={mergeServerErrors(
-              splitCausas(l.data).porCampo,
-              moderacoesPorCampo(l.data),
-              blockedPorCampo,
-            )}
-            stockResult={stockResultByLink[l.id]}
-            urlResolvida={urlPorLink[l.id] ?? null}
-            rechecking={rechecking === l.id}
-            recheckBusy={rechecking !== null}
-            abrindo={abrindoAnuncio === l.id}
-            onReverificar={() => onReverificar(conta.id, l.id)}
-            // Reading a public URL is a read: gated on having a client at all,
-            // never on the publish permission.
-            onAbrirAnuncio={hasClient ? () => onAbrirAnuncio(conta.id, l.id) : undefined}
-            onDirtyChange={onDirtyChange}
-            onLoadingChange={onLoadingChange}
-            registerFlush={registerFlush}
-          />
-        ))}
-
-        {issues.length > 0 && (
-          <Alert color="red" variant="light" title="Publicação bloqueada">
-            <List size="sm">
-              {issues.map((issue) => (
-                <List.Item key={issue}>{issue}</List.Item>
-              ))}
-            </List>
-          </Alert>
+        {contaLinks.length === 0 && (
+          <Text size="sm" c="dimmed">
+            Nenhum anúncio desta conta para este produto.
+          </Text>
         )}
+
+        {contaLinks.map((l, index) => {
+          const issues = issuesByLink[l.id] ?? [];
+          // Our OWN pre-flight refusals (422), mapped onto controls by the
+          // module written for it. Every issue still renders verbatim in the
+          // alert beside the form — a mapping miss loses nothing, it just
+          // highlights nothing (`publishIssues.ts` docblock).
+          const blockedPorCampo: Record<string, string[]> = {};
+          for (const target of mapPublishIssues(issues)) {
+            if (target.scope !== 'listing' || target.field == null) continue;
+            (blockedPorCampo[target.field] ??= []).push(target.message);
+          }
+          const anuncioDirty = dirtyIds.has(l.id);
+          // Publish refuses a create with no category ("categoria do Mercado
+          // Livre não definida"). Saying so here beats a round trip that comes
+          // back as a 422 the operator has to read.
+          const missingCategoria = (l.data.category_id ?? '') === '';
+          // One place decides both whether Publicar is disabled and what the
+          // tooltip says, so the two can never disagree.
+          //
+          // ⚠️ `anuncioDirty`, not `contaDirty`: a publish reads THIS listing's
+          // own doc, so a sibling's unsaved edits are irrelevant to it. The
+          // message already said "Salve as alterações do anúncio" — it was
+          // per-listing wording behind a per-account gate.
+          const publishReason = publishDisabledReason({
+            loading: contaLoading,
+            disabled: Boolean(disabled),
+            canPublish,
+            hasClient,
+            publishingThisConta: publishing?.linkDocId === l.id,
+            publishingOtherConta: publishing != null && publishing.linkDocId !== l.id,
+            produtoDirty,
+            contaDirty: anuncioDirty,
+            missingCategoria,
+          });
+          return (
+            <AnuncioBlock
+              key={l.id}
+              produtoId={produtoId}
+              linkDocId={l.id}
+              integracaoId={conta.id}
+              link={l.data}
+              db={db}
+              produtoNome={produtoNome}
+              produtoEhUsado={produtoEhUsado}
+              produtoCondicao={produtoCondicao}
+              produtoFotoCount={produtoFotoCount}
+              canWrite={canPublish}
+              hasClient={hasClient}
+              disabled={disabled}
+              loading={contaLoading}
+              showDivider={index > 0}
+              // THREE sources, one control vocabulary, and all three are now
+              // per listing: Mercado Livre's own rejection of a write of ours —
+              // read live off THIS link doc, so it survives a reload — ML's POLICY
+              // moderation on the listing itself (#1087), from the same doc, and
+              // our own pre-flight refusal, keyed by the listing it was raised
+              // for.
+              //
+              // ⚠️ The moderation map is purely ADDITIVE: every moderação is also
+              // listed in the strip, whether or not its section resolved to a
+              // control here — `pictures` and `item` resolve to none at all. See
+              // the ⚠️ in `listingCausas.ts` for what it cost the last time a
+              // banner depended on this mapping.
+              serverErrors={mergeServerErrors(
+                splitCausas(l.data).porCampo,
+                moderacoesPorCampo(l.data),
+                blockedPorCampo,
+              )}
+              stockResult={stockResultByLink[l.id]}
+              urlResolvida={urlPorLink[l.id] ?? null}
+              rechecking={rechecking === l.id}
+              recheckBusy={rechecking !== null}
+              abrindo={abrindoAnuncio === l.id}
+              onReverificar={() => onReverificar(conta.id, l.id)}
+              // Reading a public URL is a read: gated on having a client at all,
+              // never on the publish permission.
+              onAbrirAnuncio={hasClient ? () => onAbrirAnuncio(conta.id, l.id) : undefined}
+              onDirtyChange={onDirtyChange}
+              onLoadingChange={onLoadingChange}
+              registerFlush={registerFlush}
+              issues={issues}
+              publishReason={publishReason}
+              publishing={publishing?.linkDocId === l.id ? publishing.withPrices : null}
+              onPublish={(withPrices) => onPublish(conta.id, l.id, withPrices)}
+            />
+          );
+        })}
 
         <Group align="flex-end" gap="sm">
           {contaDirty && (
@@ -318,110 +341,6 @@ export function ContaPanel({
             >
               Enviar estoque
             </Button>
-          )}
-          {needsListingType ? (
-            <>
-              <Select
-                label="Tipo de anúncio"
-                data={[...LISTING_TYPE_OPTIONS]}
-                value={listingTypeId}
-                onChange={(v) => onListingTypeChange(v ?? DEFAULT_LISTING_TYPE)}
-                allowDeselect={false}
-                disabled={disabled || !canPublish || contaLoading}
-                w={160}
-              />
-              {/* Publishing straight from here is impossible, not merely
-                  unlikely: with no link doc there is no `category_id`, and
-                  publish raises that as a 422 BEFORE it writes any doc — so the
-                  failure leaves nothing behind and the next attempt fails
-                  identically. The draft is what breaks that cycle. */}
-              <Button
-                type="button"
-                variant="filled"
-                onClick={() => onPreparar(conta.id)}
-                loading={preparing === conta.id}
-                disabled={
-                  disabled ||
-                  !canPublish ||
-                  preparing !== null ||
-                  produtoNome === '' ||
-                  contaLoading
-                }
-              >
-                Preparar anúncio
-              </Button>
-            </>
-          ) : (
-            // ⚠️ The <span> is load-bearing: Mantine turns pointer events OFF on
-            // a disabled button, so a Tooltip wrapping it directly never fires.
-            // Wrapping an inline-block element instead is the idiom that works —
-            // see `PermGate`.
-            // ⚠️ A wrapper does not change the button's accessible name
-            // (`Publicar no Mercado Livre` / `Republicar`), which the vendas e2e
-            // locates by role+name. An `aria-label` here would silently break it.
-            <Tooltip
-              label={publishReason}
-              disabled={publishReason == null}
-              withArrow
-              position="bottom"
-              multiline
-              w={260}
-            >
-              <span style={{ display: 'inline-block' }}>
-                <Button
-                  type="button"
-                  variant={isFirstPublish ? 'filled' : 'light'}
-                  onClick={() => onPublish(conta.id, false)}
-                  loading={publishing?.contaId === conta.id && !publishing.withPrices}
-                  disabled={publishReason != null}
-                >
-                  {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
-                </Button>
-              </span>
-            </Tooltip>
-          )}
-          {/* The paired action (#798). A publish never carries prices, so without
-              this the operator has no way to say "and the price too" from the
-              produto screen. Shares `publishReason` — it is the same publish with
-              one extra call, so every guard that blocks one blocks the other by
-              definition.
-
-              Absent while the conta has NO link doc at all (there is no
-              category_id, so publish 422s before writing anything and there would
-              be nothing to price). A rascunho — a link doc with `id == null` —
-              DOES get it: pairing a first publish with a price push is
-              legitimate. */}
-          {!needsListingType && (
-            <Tooltip
-              label={publishReason}
-              disabled={publishReason == null}
-              withArrow
-              position="bottom"
-              multiline
-              w={260}
-            >
-              <span style={{ display: 'inline-block' }}>
-                <Button
-                  type="button"
-                  variant="light"
-                  onClick={() => onPublish(conta.id, false, true)}
-                  loading={publishing?.contaId === conta.id && publishing.withPrices}
-                  disabled={publishReason != null}
-                >
-                  {isFirstPublish ? 'Publicar e atualizar preços' : 'Republicar e atualizar preços'}
-                </Button>
-              </span>
-            </Tooltip>
-          )}
-          {publishBlocked && (
-            <Text size="xs" c="dimmed">
-              Salve as alterações pendentes antes de publicar.
-            </Text>
-          )}
-          {missingCategoria && !publishBlocked && (
-            <Text size="xs" c="dimmed">
-              Escolha a categoria do Mercado Livre antes de publicar.
-            </Text>
           )}
           {!canPublish && (
             <Text size="xs" c="dimmed">

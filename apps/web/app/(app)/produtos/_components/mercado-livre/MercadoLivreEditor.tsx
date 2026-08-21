@@ -62,6 +62,7 @@ import {
 import type { ListingSaveFn } from './ListingForm';
 import { ContaPanel } from './ContaPanel';
 import { ContaTabs } from './ContaTabs';
+import { NovoAnuncioModal } from './NovoAnuncioModal';
 
 /**
  * The produto editor's **Mercado Livre** tab: one card per registered ML account
@@ -183,17 +184,25 @@ export function MercadoLivreEditor({
   const produtoCondicao = extraDataSnap.data?.data.condicao ?? null;
 
   /**
-   * The publish in flight, if any. Carries `withPrices` so only the button that
-   * was actually clicked spins — the two publish actions share one handler, and
-   * a bare conta id would light both up and leave the operator unable to tell
-   * which one is running.
+   * The publish in flight, if any.
+   *
+   * Names the LISTING, not just the account: a produto can carry several
+   * anúncios on one account, so a bare conta id would spin every one of their
+   * buttons. `withPrices` narrows it further — the two publish actions share one
+   * handler, and without it both of a listing's buttons would light up and leave
+   * the operator unable to tell which is running.
+   *
+   * `contaId` rides along because the account-level gates still read it.
    */
   const [publishing, setPublishing] = useState<{
     contaId: string;
+    linkDocId: string;
     withPrices: boolean;
   } | null>(null);
   /** The conta whose draft is being created, if any. */
-  const [preparing, setPreparing] = useState<string | null>(null);
+  const [criando, setCriando] = useState<string | null>(null);
+  /** The conta whose "Novo anúncio" dialog is open, if any. */
+  const [novoAnuncioConta, setNovoAnuncioConta] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
   /** The link doc id whose public ML URL is being resolved, if any. */
@@ -216,9 +225,16 @@ export function MercadoLivreEditor({
    * listings on one produto and one toast could only describe one of them.
    */
   const [stockResultByLink, setStockResultByLink] = useState<Record<string, StockPushRow>>({});
-  // 422 ML_PUBLISH_BLOCKED issue lists, kept per account so they render inline
-  // in the offending row instead of a transient toast.
+  /**
+   * 422 ML_PUBLISH_BLOCKED issue lists, keyed by LINK DOC id so they render
+   * inline beside the listing that was refused instead of as a transient toast.
+   *
+   * Per listing rather than per account since publishing became per listing: a
+   * 422 describes one publish, and keying it by conta painted every sibling
+   * listing's fields red for a rejection that was never about them.
+   */
   const [blockedIssues, setBlockedIssues] = useState<Record<string, string[]>>({});
+  /** What "Novo anúncio" will use, per conta, while its dialog is open. */
   const [listingTypeByConta, setListingTypeByConta] = useState<Record<string, string>>({});
 
   // Which listings hold unsaved edits. A Set rather than a boolean because the
@@ -383,15 +399,27 @@ export function MercadoLivreEditor({
     }
   }
 
-  async function handlePreparar(integracaoId: string) {
-    setPreparing(integracaoId);
+  /**
+   * Create a draft listing for an account, from the "Novo anúncio" dialog.
+   *
+   * The `modo` is decided from what the account already holds, not from which
+   * button was pressed — there is only one button now. An account with nothing
+   * gets the deterministic, transaction-guarded first draft; one that already
+   * has an anúncio gets a fresh auto-id, because a second listing is intent and
+   * has nothing to be deduplicated against (`listingDraft.ts`).
+   */
+  async function handleNovoAnuncio(integracaoId: string) {
+    setCriando(integracaoId);
     try {
+      const jaTem = links.some((l) => refMatchesIntegracao(l.data.contaOuterRef, integracaoId));
       const { outcome } = await createListingDraft(db, produtoId, {
         integracaoId,
         produtoNome,
         listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE,
         nowMs: Date.now(),
+        modo: jaTem ? 'adicional' : 'primeiro',
       });
+      setNovoAnuncioConta(null);
       notifications.show({
         color: outcome === 'created' ? 'green' : 'yellow',
         message:
@@ -406,7 +434,7 @@ export function MercadoLivreEditor({
       }
       throw err;
     } finally {
-      setPreparing(null);
+      setCriando(null);
     }
   }
 
@@ -420,22 +448,22 @@ export function MercadoLivreEditor({
    * it into ML's own price automation. `withPrices` is the operator saying they
    * meant the price too.
    */
-  async function handlePublish(
-    integracaoId: string,
-    needsListingType: boolean,
-    withPrices = false,
-  ) {
+  async function handlePublish(integracaoId: string, linkDocId: string, withPrices = false) {
     if (!client) return;
-    setPublishing({ contaId: integracaoId, withPrices });
-    setBlockedIssues((prev) => ({ ...prev, [integracaoId]: [] }));
+    setPublishing({ contaId: integracaoId, linkDocId, withPrices });
+    setBlockedIssues((prev) => ({ ...prev, [linkDocId]: [] }));
     try {
-      const result = await client.publicar({
-        integracaoId,
-        produtoId,
-        ...(needsListingType
-          ? { listingTypeId: listingTypeByConta[integracaoId] ?? DEFAULT_LISTING_TYPE }
-          : {}),
-      });
+      // ⚠️ `linkDocId` is what makes a SECOND anúncio on this account
+      // publishable at all. Without it the backend resolves the account's first
+      // link doc, so publishing the second would silently re-publish the first
+      // (`publish.ts`). The route 404s an id this produto does not have or that
+      // belongs to another account.
+      //
+      // `listingTypeId` is deliberately absent: every listing reaching this
+      // point has a link doc, whose persisted `listing_type_id` the backend
+      // prefers on a re-publish anyway. The parameter that used to sit here was
+      // gated on a branch that only ever passed `false`.
+      const result = await client.publicar({ integracaoId, produtoId, linkDocId });
       notifications.show({
         color: 'green',
         title: 'Publicado no Mercado Livre',
@@ -447,7 +475,7 @@ export function MercadoLivreEditor({
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {
         if (err.code === 'ML_PUBLISH_BLOCKED' && err.issues && err.issues.length > 0) {
-          setBlockedIssues((prev) => ({ ...prev, [integracaoId]: err.issues! }));
+          setBlockedIssues((prev) => ({ ...prev, [linkDocId]: err.issues! }));
         } else if (err.status === 409) {
           notifications.show({
             color: 'red',
@@ -757,7 +785,7 @@ export function MercadoLivreEditor({
                   disabled={disabled}
                   dirtyIds={dirtyIds}
                   loadingIds={loadingIds}
-                  issues={blockedIssues[contaId] ?? []}
+                  issuesByLink={blockedIssues}
                   stockResultByLink={stockResultByLink}
                   urlPorLink={urlPorLink}
                   rechecking={rechecking}
@@ -765,13 +793,11 @@ export function MercadoLivreEditor({
                   publishing={publishing}
                   savingConta={savingConta}
                   sendingStock={sendingStock}
-                  preparing={preparing}
-                  listingTypeId={listingTypeByConta[contaId] ?? DEFAULT_LISTING_TYPE}
-                  onListingTypeChange={(v) =>
-                    setListingTypeByConta((prev) => ({ ...prev, [contaId]: v }))
+                  criando={criando}
+                  onPublish={(cId, linkDocId, withPrices) =>
+                    void handlePublish(cId, linkDocId, withPrices)
                   }
-                  onPublish={handlePublish}
-                  onPreparar={handlePreparar}
+                  onNovoAnuncio={setNovoAnuncioConta}
                   onSalvarAnuncios={(cId, linkIds) => void handleSalvarAnuncios(cId, linkIds)}
                   onEnviarEstoque={(alvo, temLatch) => void handleEnviarEstoque(alvo, temLatch)}
                   onReverificar={handleReverificar}
@@ -785,6 +811,20 @@ export function MercadoLivreEditor({
               );
             }}
           />
+          {novoAnuncioConta != null && (
+            <NovoAnuncioModal
+              opened
+              onClose={() => setNovoAnuncioConta(null)}
+              contaNome={contasPorId.get(novoAnuncioConta)?.data.nome ?? ''}
+              adicional={linksPorConta.has(novoAnuncioConta)}
+              listingTypeId={listingTypeByConta[novoAnuncioConta] ?? DEFAULT_LISTING_TYPE}
+              onListingTypeChange={(v) =>
+                setListingTypeByConta((prev) => ({ ...prev, [novoAnuncioConta]: v }))
+              }
+              onConfirm={() => void handleNovoAnuncio(novoAnuncioConta)}
+              criando={criando === novoAnuncioConta}
+            />
+          )}
         </Stack>
       )}
     </OuterFormDirty>

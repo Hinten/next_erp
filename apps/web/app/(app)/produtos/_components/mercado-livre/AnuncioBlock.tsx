@@ -1,6 +1,6 @@
 'use client';
 
-import { Divider, Stack, Text } from '@mantine/core';
+import { Alert, Button, Divider, Group, List, Stack, Text, Tooltip } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
@@ -57,6 +57,18 @@ export interface AnuncioBlockProps {
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   onLoadingChange: (linkDocId: string, loading: boolean) => void;
   registerFlush: (linkDocId: string, save: ListingSaveFn | null) => void;
+  /** Our own 422 pre-flight refusals for THIS listing's last publish. */
+  issues: readonly string[];
+  /** Why Publicar is disabled, in words — `null` when it is enabled. */
+  publishReason: string | null;
+  /**
+   * A publish is in flight for THIS listing: `true` when it carries prices,
+   * `false` when it does not, `null` when nothing is running here. Three states
+   * because the two publish actions share one handler, and a plain boolean would
+   * spin both buttons and leave the operator unable to tell which one is going.
+   */
+  publishing: boolean | null;
+  onPublish: (withPrices: boolean) => void;
 }
 
 export function AnuncioBlock({
@@ -85,7 +97,15 @@ export function AnuncioBlock({
   onDirtyChange,
   onLoadingChange,
   registerFlush,
+  issues,
+  publishReason,
+  publishing,
+  onPublish,
 }: AnuncioBlockProps) {
+  // A listing ML has never accepted. `''` counts as never published, matching
+  // the backend's own `link.id !== ''` test: the schema permits it and the
+  // migrated corpus contains it.
+  const isFirstPublish = (link.id ?? '') === '';
   return (
     <Stack gap="sm" data-testid={`ml-anuncio-${linkDocId}`}>
       {showDivider && <Divider />}
@@ -135,6 +155,83 @@ export function AnuncioBlock({
         onLoadingChange={onLoadingChange}
         registerFlush={registerFlush}
       />
+      {issues.length > 0 && (
+        <Alert color="red" variant="light" title="Publicação bloqueada">
+          <List size="sm">
+            {issues.map((issue) => (
+              <List.Item key={issue}>{issue}</List.Item>
+            ))}
+          </List>
+        </Alert>
+      )}
+      <Group align="flex-end" gap="sm">
+        {/* ⚠️ The <span> is load-bearing: Mantine turns pointer events OFF on a
+            disabled button, so a Tooltip wrapping it directly never fires.
+            Wrapping an inline-block element instead is the idiom that works —
+            see `PermGate`.
+            ⚠️ A wrapper does not change the button's accessible name (`Publicar
+            no Mercado Livre` / `Republicar`), which the vendas e2e locates by
+            role+name. An `aria-label` here would silently break it. */}
+        <Tooltip
+          label={publishReason}
+          disabled={publishReason == null}
+          withArrow
+          position="bottom"
+          multiline
+          w={260}
+        >
+          <span style={{ display: 'inline-block' }}>
+            <Button
+              type="button"
+              variant={isFirstPublish ? 'filled' : 'light'}
+              onClick={() => onPublish(false)}
+              loading={publishing === false}
+              disabled={publishReason != null}
+            >
+              {isFirstPublish ? 'Publicar no Mercado Livre' : 'Republicar'}
+            </Button>
+          </span>
+        </Tooltip>
+        {/* The paired action (#798). A publish never carries prices, so without
+            this the operator has no way to say "and the price too" from the
+            produto screen. Shares `publishReason` — it is the same publish with
+            one extra call, so every guard that blocks one blocks the other by
+            definition.
+
+            ⚠️ The price half is still account-scoped: `enviarPrecos` takes
+            `{integracaoId, produtoIds}` and the plan resolves one price per
+            (produto, conta), so every listing of this account on this produto
+            lands on the same value. Scoping it per listing would be a
+            difference with no effect. */}
+        <Tooltip
+          label={publishReason}
+          disabled={publishReason == null}
+          withArrow
+          position="bottom"
+          multiline
+          w={260}
+        >
+          <span style={{ display: 'inline-block' }}>
+            <Button
+              type="button"
+              variant="light"
+              onClick={() => onPublish(true)}
+              loading={publishing === true}
+              disabled={publishReason != null}
+            >
+              {isFirstPublish ? 'Publicar e atualizar preços' : 'Republicar e atualizar preços'}
+            </Button>
+          </span>
+        </Tooltip>
+        {publishReason != null && (
+          // Repeated below the buttons, not only in the tooltip: the vendas e2e
+          // asserts the categoria one as visible page text, and a tooltip is not
+          // reachable without a hover.
+          <Text size="xs" c="dimmed">
+            {publishReason}
+          </Text>
+        )}
+      </Group>
     </Stack>
   );
 }

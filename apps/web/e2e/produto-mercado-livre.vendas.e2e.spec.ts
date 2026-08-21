@@ -34,6 +34,11 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   // write to. Sharing `contaUnlinked` would leave a link doc behind that the
   // "offers to prepare" assertions above no longer hold for on a retry.
   const contaDraft = `${prefix}-003`;
+  // A fourth account owned entirely by the multi-listing test. Sharing one of
+  // the three above would leave a SECOND link doc behind that the "offers to
+  // prepare"/"only where the account holds a listing" assertions no longer hold
+  // for on a `describe.serial` retry.
+  const contaMulti = `${prefix}-004`;
   // Deterministic (mirrors seedProdutoMlPublicado) so afterAll can always
   // sweep the link SUBCOLLECTION even when beforeAll dies mid-way — the
   // nome-prefix sweep only reaches the parent doc, and Firestore never
@@ -44,7 +49,7 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     await Promise.all([
-      seedMercadoLivreFixtures(prefix, 3).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
+      seedMercadoLivreFixtures(prefix, 4).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
       warmRoutes(browser, ['/produtos/novo', '/produtos/__aquecimento__/editar']),
     ]);
   });
@@ -65,6 +70,11 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
    * badge ("Não publicado", or the listing count), so an exact match would never
    * hit.
    */
+  async function criarAnuncio(page: Page, contaId: string): Promise<void> {
+    await page.getByTestId(`ml-novo-anuncio-${contaId}`).click();
+    await page.getByRole('button', { name: 'Criar anúncio' }).click();
+  }
+
   async function abrirConta(page: Page, contaId: string): Promise<Locator> {
     await page.getByRole('tab', { name: 'Mercado Livre' }).click();
     await page.getByRole('tab', { name: contaId }).click({ timeout: 30_000 });
@@ -99,13 +109,20 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     const card = await abrirConta(page, contaUnlinked);
 
     await expect(card.getByText('Não publicado')).toBeVisible();
-    await expect(card.getByLabel('Tipo de anúncio')).toBeVisible();
-    await expect(card.getByRole('button', { name: 'Preparar anúncio' })).toBeEnabled();
+    await expect(card.getByText('Nenhum anúncio desta conta para este produto.')).toBeVisible();
     // Publishing straight from here cannot succeed: with no link doc there is
     // no category, and publish rejects that before it writes anything — so the
     // failure would leave nothing behind and the next attempt would fail
-    // identically. Preparing the draft is what breaks that cycle.
+    // identically. Creating the draft is what breaks that cycle, and there is
+    // no publish control until one exists.
     await expect(card.getByRole('button', { name: 'Publicar no Mercado Livre' })).toHaveCount(0);
+
+    // The listing type is chosen in the dialog, not in the panel: once a listing
+    // exists its own form owns that value, and a second control for it beside
+    // the form would be two inputs for one thing.
+    await page.getByTestId(`ml-novo-anuncio-${contaUnlinked}`).click();
+    await expect(page.getByLabel('Tipo de anúncio')).toBeVisible();
+    await page.getByRole('button', { name: 'Cancelar' }).click();
   });
 
   test('preparing a draft opens the editor and keeps publish gated on a category', async ({
@@ -114,11 +131,12 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await page.goto(`/produtos/${produtoId}/editar`);
     const card = await abrirConta(page, contaDraft);
 
-    // Tolerate a draft left by an earlier attempt of this same test: the draft
-    // doc id is the integração id, so preparing twice is a no-op, and on a
-    // retry the button is simply gone.
-    const preparar = card.getByRole('button', { name: 'Preparar anúncio' });
-    if ((await preparar.count()) > 0) await preparar.click();
+    // Tolerate a draft left by an earlier attempt of this same test: the FIRST
+    // draft on an account takes the integração id as its doc id, so creating it
+    // twice is a no-op rather than a second listing.
+    if ((await card.locator('[data-testid^="ml-anuncio-"]').count()) === 0) {
+      await criarAnuncio(page, contaDraft);
+    }
 
     await expect(card.getByText('Rascunho — ainda não publicado')).toBeVisible({
       timeout: 15_000,
@@ -178,8 +196,9 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     // is the integração id, so preparing twice is a no-op) and prove the listing
     // is there before asserting the button is not.
     const draft = await abrirConta(page, contaDraft);
-    const preparar = draft.getByRole('button', { name: 'Preparar anúncio' });
-    if ((await preparar.count()) > 0) await preparar.click();
+    if ((await draft.getByText('Rascunho — ainda não publicado').count()) === 0) {
+      await criarAnuncio(page, contaDraft);
+    }
     await expect(draft.getByText('Rascunho — ainda não publicado')).toBeVisible({
       timeout: 15_000,
     });
@@ -256,6 +275,29 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(descricao).toHaveAttribute('data-open', 'true');
   });
 
+  test('adds a second anúncio to an account that already has one', async ({ page }) => {
+    // What this whole screen exists for. The old "Preparar anúncio" only
+    // appeared while the account had NO listing, and the draft's doc id was the
+    // integração id — so a second one was unreachable and, had it been reached,
+    // unwritable.
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const card = await abrirConta(page, contaMulti);
+
+    const anuncios = card.locator('[data-testid^="ml-anuncio-"]');
+    // Idempotent across `describe.serial` retries: create only as many as are
+    // missing, so a re-run does not stack a third and a fourth.
+    while ((await anuncios.count()) < 2) {
+      const antes = await anuncios.count();
+      await criarAnuncio(page, contaMulti);
+      await expect(anuncios).toHaveCount(antes + 1, { timeout: 15_000 });
+    }
+
+    await expect(anuncios).toHaveCount(2);
+    // Both are drafts, and each carries its own form rather than the two
+    // collapsing onto one record.
+    await expect(card.getByText('Rascunho — ainda não publicado')).toHaveCount(2);
+  });
+
   test('shows the tab with a "save first" message on the create screen', async ({ page }) => {
     await page.goto('/produtos/novo');
     await expect(page.getByRole('heading', { name: 'Novo produto' })).toBeVisible();
@@ -267,6 +309,6 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(page.getByText('Salve o produto para continuar.')).toBeVisible({
       timeout: 15_000,
     });
-    await expect(page.getByRole('button', { name: 'Preparar anúncio' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Novo anúncio' })).toHaveCount(0);
   });
 });
