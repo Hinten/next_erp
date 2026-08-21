@@ -1,7 +1,13 @@
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { DocumentReference, FieldPath, Firestore, WriteBatch } from 'firebase-admin/firestore';
+import type {
+  DocumentReference,
+  FieldPath,
+  Firestore,
+  Timestamp,
+  WriteBatch,
+} from 'firebase-admin/firestore';
 import { migrationDb } from './admin';
 
 /* -------------------------------------------------------------------------- */
@@ -168,9 +174,17 @@ export class ChangeSink {
   }
 }
 
+/** gRPC FAILED_PRECONDITION (code 9) — a `lastUpdateTime` guard that did not hold. */
+function isFailedPrecondition(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 9;
+}
+
 /**
  * Accumulates `update()`s and commits them in batches of `maxOps` (Firestore
  * caps a batch at 500). A no-op in dry-run mode. Call `flush()` at the end.
+ *
+ * {@link BatchWriter.updateGuarded} is the tier-1 alternative for a patch
+ * derived from a document you read.
  */
 export class BatchWriter {
   private batch: WriteBatch | null = null;
@@ -189,6 +203,38 @@ export class BatchWriter {
     this.batch.update(ref, data);
     this.ops += 1;
     if (this.ops >= this.maxOps) await this.flush();
+  }
+
+  /**
+   * A LOST-UPDATE-GUARDED single-document update —
+   * `ref.update(patch, { lastUpdateTime })`, root `CLAUDE.md` rule 7 **tier 1**.
+   * Resolves `false` when the document changed since the snapshot the patch was
+   * derived from, so the caller can report it instead of clobbering.
+   *
+   * ⚠️ Deliberately NOT batched, and that is the whole point. A `WriteBatch`
+   * commits ATOMICALLY, so a single stale document would fail the other 399
+   * with it and the pass could never make progress past one conflict. One RPC
+   * per document is the price of a per-document verdict.
+   *
+   * Use it whenever the patch is DERIVED from a document you read — a blind
+   * `update()` there silently overwrites whatever landed in between, which for
+   * a backfill racing a live writer is exactly the failure mode the migration
+   * exists to avoid.
+   */
+  async updateGuarded(
+    ref: DocumentReference,
+    data: Record<string, unknown>,
+    lastUpdateTime: Timestamp,
+  ): Promise<boolean> {
+    if (!this.apply) return true;
+    try {
+      await ref.update(data, { lastUpdateTime });
+      this.committed += 1;
+      return true;
+    } catch (err) {
+      if (isFailedPrecondition(err)) return false;
+      throw err;
+    }
   }
 
   /**
