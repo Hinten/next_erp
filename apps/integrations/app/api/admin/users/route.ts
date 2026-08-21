@@ -152,8 +152,6 @@ export async function POST(req: Request) {
 
   const usuarioDoc: Usuario = {
     nome: body.nome,
-    // Nickname only applies to sem-auth external-channel contacts (ML buyers).
-    apelido: null,
     email: body.email,
     cargos: [...cargosById.keys()],
     colaborador: body.colaborador,
