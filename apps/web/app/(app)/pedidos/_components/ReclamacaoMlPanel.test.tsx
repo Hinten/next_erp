@@ -7,12 +7,27 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 const h = vi.hoisted(() => ({
   reclamacaoEstado: vi.fn(),
   reclamacaoAcao: vi.fn(),
-  allowed: { value: true },
+  podeConsultar: { value: true },
+  podeExecutar: { value: true },
 }));
 
+/**
+ * ⚠️ Per-BIT, not a single boolean. The panel now reads two: `read` decides
+ * whether it renders at all, `write` whether it offers buttons — and the
+ * interesting case (an operator who may look but not act) is only expressible if
+ * the mock can tell them apart. A single flag made "no permission" mean "panel
+ * gone", which silently changed what the button tests were asserting.
+ */
 vi.mock('@/lib/auth', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/auth')>();
-  return { ...actual, usePermission: () => ({ allowed: h.allowed.value, loading: false }) };
+  const { PERM } = await import('@delfrance/auth');
+  return {
+    ...actual,
+    usePermission: (bit: bigint) => ({
+      allowed: bit === PERM.incidenteResolucao.write ? h.podeExecutar.value : h.podeConsultar.value,
+      loading: false,
+    }),
+  };
 });
 
 vi.mock('@/lib/mercado-livre/client', async (importActual) => {
@@ -59,7 +74,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.reclamacaoEstado.mockResolvedValue(ESTADO);
   h.reclamacaoAcao.mockResolvedValue({ ok: true, status: 'closed', acao: 'reembolso' });
-  h.allowed.value = true;
+
+  h.podeConsultar.value = true;
+  h.podeExecutar.value = true;
 });
 
 function abrir() {
@@ -254,9 +271,61 @@ describe('ReclamacaoMlPanel — the action buttons', () => {
   it('shows no buttons without the permission, and says why', async () => {
     // The real gate is `verifyCaller` on the backend; this exists so the operator
     // does not read an empty row as "the claim is closed".
-    h.allowed.value = false;
+    h.podeExecutar.value = false;
     await abrirCom(['refund']);
     await waitFor(() => expect(screen.getByText(/não tem permissão para resolver/)).toBeTruthy());
     expect(screen.queryByRole('button', { name: 'Reembolsar integralmente' })).toBeNull();
+  });
+});
+
+describe('ReclamacaoMlPanel — review findings on #1228', () => {
+  it('renders NOTHING without incidenteResolucao-read', () => {
+    // ⚠️ The PR claimed the panel was "invisible until a cargo grants read". It
+    // was not — every operator saw the button, and clicking it burned an ML round
+    // trip to have verifyCaller answer 403 into a red alert. The route is still
+    // the enforcement; this stops offering an action nobody can take.
+    h.podeConsultar.value = false;
+    wrap(<ReclamacaoMlPanel claimId={5204934310} integracaoId="int-1" />);
+    // ⚠️ Assert the PANEL's own content, not an empty container — Mantine injects
+    // its stylesheet into the render root, so `textContent` is never ''.
+    expect(screen.queryByText('Ver situação e ações')).toBeNull();
+    expect(screen.queryByText(/Reclamação Mercado Livre/)).toBeNull();
+    // And it must not have reached ML either — the round trip was half the cost.
+    expect(h.reclamacaoEstado).not.toHaveBeenCalled();
+  });
+
+  it('drops a deadline row whose date cannot be parsed', async () => {
+    // ⚠️ `formatarPrazo` returns null for a NON-null unparseable value, and React
+    // renders null as nothing — so guarding on `prazo != null` left the row with
+    // a blank date. A mandatory action showing no clock is worse than the
+    // `Invalid Date` that formatter exists to prevent.
+    h.reclamacaoEstado.mockResolvedValue({
+      ...ESTADO,
+      prazos: [{ acao: 'refund', obrigatoria: true, prazo: 'nao-e-uma-data' }],
+    });
+    abrir();
+    await waitFor(() => expect(screen.getByText(/Ações disponíveis/)).toBeTruthy());
+    expect(screen.queryByText('Prazos')).toBeNull();
+  });
+
+  it('keeps a deadline row whose date IS parseable', async () => {
+    // The positive control — without it the assertion above would pass on a
+    // panel that never rendered deadlines at all.
+    h.reclamacaoEstado.mockResolvedValue({
+      ...ESTADO,
+      prazos: [{ acao: 'refund', obrigatoria: true, prazo: '2026-09-01T15:30:00.000Z' }],
+    });
+    abrir();
+    await waitFor(() => expect(screen.getByText('Prazos')).toBeTruthy());
+    expect(screen.getByText(/obrigatória/)).toBeTruthy();
+  });
+
+  it('translates the status and stage badges', async () => {
+    abrir();
+    await waitFor(() => expect(screen.getByText('aberta')).toBeTruthy());
+    expect(screen.getByText('reclamação')).toBeTruthy();
+    // …and does not leak the raw ML vocabulary into a pt-BR screen.
+    expect(screen.queryByText('opened')).toBeNull();
+    expect(screen.queryByText('claim')).toBeNull();
   });
 });

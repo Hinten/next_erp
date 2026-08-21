@@ -97,8 +97,17 @@ export interface ReclamacaoEstado {
   readonly tipoReclamacao: 'PNR' | 'PDD' | null;
   readonly acoesDisponiveis: readonly string[];
   readonly prazos: readonly PrazoAcao[];
-  readonly podeResponder: boolean;
-  readonly motivoSemResposta: string | null;
+  /**
+   * ⚠️ **Whether a chat MESSAGE can be sent — NOT whether the claim is
+   * actionable.** `claimActionability`'s own header warns that the two are not
+   * symmetric: a seller holding only `refund` or `allow_return` can act but
+   * cannot send a message, and its `motivo` in that case literally reads "veja as
+   * ações no incidente do pedido" — pointing at the screen consuming this
+   * payload. Named for what it means so `if (!podeEnviarMensagem) return null`
+   * cannot hide a refund button. Actionability is `acoesDisponiveis`, always.
+   */
+  readonly podeEnviarMensagem: boolean;
+  readonly motivoSemMensagem: string | null;
   readonly expectativas: readonly ExpectativaReclamacao[] | null;
   readonly expectativasIndisponiveis: boolean;
   readonly ofertasParciais: MlPartialRefundOffers | null;
@@ -122,11 +131,16 @@ function acoesDoRespondent(
   claim: MlClaim,
 ): readonly { action: string; mandatory: boolean; dueDate: string | null }[] {
   const respondent = claim.players.find((p) => p.role === 'respondent');
-  return (respondent?.available_actions ?? []).map((a) => ({
-    action: a.action ?? '',
-    mandatory: a.mandatory ?? false,
-    dueDate: a.due_date ?? null,
-  }));
+  // ⚠️ Trims exactly as `claimActionability` does. This function survives only
+  // for `mandatory`/`due_date`, which that one does not carry — the VERB list
+  // comes from there, never from here.
+  return (respondent?.available_actions ?? [])
+    .map((a) => ({
+      action: (a.action ?? '').trim(),
+      mandatory: a.mandatory ?? false,
+      dueDate: a.due_date ?? null,
+    }))
+    .filter((a) => a.action !== '');
 }
 
 /**
@@ -141,9 +155,14 @@ export async function lerReclamacaoMercadoLivre(
   args: { claimId: number },
 ): Promise<ReclamacaoEstado> {
   const claim = await deps.api.getClaim(args.claimId);
-  const acoes = acoesDoRespondent(claim);
-  const verbos = acoes.map((a) => a.action).filter((a) => a !== '');
   const acionabilidade = claimActionability(claim);
+  // ⚠️ REUSE the list `claimActionability` already built — do not re-derive it.
+  // It trims each verb (`(a.action ?? '').trim()`), and a third un-trimmed copy
+  // meant a padded `' allow_partial_refund '` missed the offers gate below while
+  // `respondIncidentMl`'s own `exigir` (which trims) would still accept it: the
+  // panel would offer a partial refund with no offer list to pick from.
+  const verbos = acionabilidade.acoesDisponiveis;
+  const acoes = acoesDoRespondent(claim);
 
   // ⚠️ A side read that must DEGRADE, not fail: without it the operator loses
   // the whole panel over a nice-to-have. `isMercadoLivreRequestError` is the
@@ -187,8 +206,8 @@ export async function lerReclamacaoMercadoLivre(
     tipoReclamacao: tipoDeReclamacao(claim),
     acoesDisponiveis: verbos,
     prazos: acoes.map((a) => ({ acao: a.action, obrigatoria: a.mandatory, prazo: a.dueDate })),
-    podeResponder: acionabilidade.podeResponder,
-    motivoSemResposta: acionabilidade.motivo,
+    podeEnviarMensagem: acionabilidade.podeResponder,
+    motivoSemMensagem: acionabilidade.motivo,
     expectativas,
     expectativasIndisponiveis,
     ofertasParciais,
@@ -200,7 +219,23 @@ export interface ResolverReclamacaoInput {
   readonly acao: AcaoReclamacao;
   /** Minor units. REQUIRED for `reembolso_parcial`, ignored otherwise. */
   readonly valorReembolsoMinor?: number;
-  /** The percentage the operator actually SAW and clicked. Required for a partial. */
+  /**
+   * The percentage the operator saw on screen. Required for a partial.
+   *
+   * ⚠️ **It is a PRESENCE check, not a cross-check — do not read it as more.**
+   * It is never sent to ML and never compared with anything: the percentage ML
+   * applies is derived inside the package from the AMOUNT
+   * (`percentualParaValor` → exact match against `available-offers`), and that
+   * exact match is what actually closes the 50%-default hole.
+   *
+   * What requiring it does buy: a request that omits the operator's choice is
+   * refusable at this boundary, so "left blank" cannot reach ML even from a
+   * caller that is not our picker. What it does NOT buy: catching a caller that
+   * pairs a valid amount with the wrong percentage — that passes every check
+   * here and ML refunds whatever the amount resolves to. Making it load-bearing
+   * needs `percentualParaValor`'s chosen offer surfaced out of the package;
+   * tracked rather than faked.
+   */
   readonly percentualExibido?: number;
 }
 

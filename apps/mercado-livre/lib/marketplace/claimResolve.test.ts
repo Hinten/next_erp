@@ -1,12 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   MercadoLivreHttpError,
+  ClaimActionUnavailableError,
   MercadoLivreReauthRequiredError,
   type MercadoLivreApi,
   type MlClaim,
 } from '@delfrance/integrations-mercado-livre';
 
-import { lerReclamacaoMercadoLivre, tipoDeReclamacao } from './claimResolve';
+import {
+  lerReclamacaoMercadoLivre,
+  resolverReclamacaoMercadoLivre,
+  tipoDeReclamacao,
+} from './claimResolve';
 
 function claim(over: Partial<MlClaim> = {}, acoes: string[] = []): MlClaim {
   return {
@@ -168,5 +173,119 @@ describe('lerReclamacaoMercadoLivre', () => {
 
     expect(estado.ofertasParciais).toBeNull();
     expect(estado.acoesDisponiveis).toEqual(['allow_partial_refund']);
+  });
+});
+
+describe('resolverReclamacaoMercadoLivre — the verb dispatch table', () => {
+  /**
+   * ⚠️ **This table was completely untested.** `route.test.ts` mocks this
+   * function away, and this file covered only the read path — so nothing in the
+   * repo asserted which ML verb each `AcaoReclamacao` maps to. Swapping
+   * `aceitar_devolucao` to dispatch `escalate_mediation` (accepting a return
+   * silently opens a mediation AGAINST the seller) passed all 2 486 offline
+   * tests. Every entry here is irreversible on ML's side and silent locally.
+   */
+  function apiResolucao(acoes: string[]) {
+    return {
+      getClaim: vi.fn(async () => claim({}, acoes)),
+      refundClaim: vi.fn(async () => []),
+      allowClaimReturn: vi.fn(async () => []),
+      openClaimDispute: vi.fn(async () => claim({ status: 'opened', stage: 'dispute' }, [])),
+      getClaimPartialRefundOffers: vi.fn(async () => ({
+        currency_id: 'BRL',
+        available_offers: [{ amount: 149, percentage: 50 }],
+        recommendations: [],
+        restrictions: [],
+      })),
+      partialRefundClaim: vi.fn(async () => []),
+    } as unknown as MercadoLivreApi;
+  }
+
+  /** Every verb this surface exposes, with the ML call it must make — and only it. */
+  const CASOS = [
+    { acao: 'reembolso' as const, verbo: 'refund', metodo: 'refundClaim' as const, extra: {} },
+    {
+      acao: 'aceitar_devolucao' as const,
+      verbo: 'allow_return',
+      metodo: 'allowClaimReturn' as const,
+      extra: {},
+    },
+    {
+      acao: 'abrir_mediacao' as const,
+      verbo: 'open_dispute',
+      metodo: 'openClaimDispute' as const,
+      extra: {},
+    },
+    {
+      acao: 'reembolso_parcial' as const,
+      verbo: 'allow_partial_refund',
+      metodo: 'partialRefundClaim' as const,
+      extra: { valorReembolsoMinor: 14900, percentualExibido: 50 },
+    },
+  ];
+
+  const TODOS_OS_METODOS = [
+    'refundClaim',
+    'allowClaimReturn',
+    'openClaimDispute',
+    'partialRefundClaim',
+  ] as const;
+
+  it.each(CASOS)('$acao fires $metodo and NOTHING else', async ({ acao, verbo, metodo, extra }) => {
+    // ⚠️ The "and nothing else" half is what makes this non-vacuous: asserting
+    // only that the right method fired would pass on a dispatch that fired two.
+    const a = apiResolucao([verbo]);
+    const r = await resolverReclamacaoMercadoLivre(
+      { api: a },
+      { claimId: 5204934310, acao, ...extra },
+    );
+
+    expect(r.ok).toBe(true);
+    expect(r.acao).toBe(acao);
+    expect(a[metodo]).toHaveBeenCalledTimes(1);
+    for (const outro of TODOS_OS_METODOS) {
+      if (outro !== metodo) expect(a[outro], `${acao} also fired ${outro}`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('passes the claim id as a STRING to respondIncidentMl, which parses it back', async () => {
+    // `respondIncidentMl` takes `externalIncidentId: string`; a number would be
+    // coerced somewhere less visible.
+    const a = apiResolucao(['refund']);
+    await resolverReclamacaoMercadoLivre({ api: a }, { claimId: 5204934310, acao: 'reembolso' });
+    expect(a.refundClaim).toHaveBeenCalledWith(5204934310);
+  });
+
+  it('reembolso sends partial:false — it must never reach the partial endpoint', async () => {
+    // The two refunds differ by ONE boolean on the contract. Getting it wrong
+    // sends a full refund through an endpoint that would apply a percentage.
+    const a = apiResolucao(['refund']);
+    await resolverReclamacaoMercadoLivre({ api: a }, { claimId: 5204934310, acao: 'reembolso' });
+    expect(a.getClaimPartialRefundOffers).not.toHaveBeenCalled();
+    expect(a.partialRefundClaim).not.toHaveBeenCalled();
+  });
+
+  it('reembolso_parcial resolves the amount through the OFFER LIST', async () => {
+    // The exact-amount match is what actually closes ML's 50% default.
+    const a = apiResolucao(['allow_partial_refund']);
+    await resolverReclamacaoMercadoLivre(
+      { api: a },
+      {
+        claimId: 5204934310,
+        acao: 'reembolso_parcial',
+        valorReembolsoMinor: 14900,
+        percentualExibido: 50,
+      },
+    );
+    expect(a.getClaimPartialRefundOffers).toHaveBeenCalledWith(5204934310);
+    expect(a.partialRefundClaim).toHaveBeenCalledWith(5204934310, 50);
+  });
+
+  it('refuses a verb ML does not currently offer, without calling it', async () => {
+    const a = apiResolucao(['allow_return']);
+    await expect(
+      resolverReclamacaoMercadoLivre({ api: a }, { claimId: 5204934310, acao: 'reembolso' }),
+    ).rejects.toBeInstanceOf(ClaimActionUnavailableError);
+    expect(a.refundClaim).not.toHaveBeenCalled();
   });
 });

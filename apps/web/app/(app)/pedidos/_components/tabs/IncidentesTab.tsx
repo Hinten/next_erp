@@ -377,11 +377,26 @@ function IncidentesManager({
                 )}
                 {/* ⚠️ The ML claim id was stored but never rendered, so an
                     imported incidente was indistinguishable from a hand-typed
-                    one. It is also the key the panel below queries on. */}
-                {inc.externalId && (
+                    one. It is also the key the panel below queries on.
+
+                    ⚠️ The "ML #" prefix uses the SAME predicate as the panel —
+                    `claimIdDoIncidente` — not `externalId` alone. Keying on the
+                    id by itself is exactly what that function's own comment
+                    rejects ("would match any origem that happens to store a
+                    number"), and it would label a `site`/`troca`/`devolucao`
+                    incidente as Mercado Livre. A mislabelled id is worse than an
+                    unlabelled one, and the legacy export is read-tolerant
+                    territory (root `CLAUDE.md` rule 8). */}
+                {claimIdDoIncidente(inc) != null ? (
                   <Text size="xs" c="dimmed">
                     ML #{inc.externalId}
                   </Text>
+                ) : (
+                  inc.externalId && (
+                    <Text size="xs" c="dimmed">
+                      Ref. externa: {inc.externalId}
+                    </Text>
+                  )
                 )}
               </Stack>
               <Group gap="xs">
