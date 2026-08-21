@@ -111,10 +111,10 @@ export function identityValue(value: unknown): string | null {
  * with no document on file still matches, which is how the document gets
  * filled in on the next import.
  *
- * Normalizing both sides is load-bearing: the live Flutter app writes
- * punctuated documents, `parseSoftRead` hands them through raw, and comparing
- * a stored `529.982.247-25` against an incoming `52998224725` as strings makes
- * two spellings of ONE person look like two people.
+ * Normalizing both sides is load-bearing: the migrated corpus stores punctuated
+ * documents, `parseSoftRead` hands them through raw, and comparing a stored
+ * `529.982.247-25` against an incoming `52998224725` as strings makes two
+ * spellings of ONE person look like two people.
  */
 export function idCompatible(a: unknown, b: unknown): boolean {
   const left = identityValue(a);
@@ -244,7 +244,8 @@ export function telefoneLookupShapes(raw: unknown): string[] {
  * value is a migration (`tools/migrations`), not a side effect of an unrelated
  * import: it would bump `ultimaModificacao` on a doc that did not otherwise
  * change, churning `clienteMeta.defaultQuery`'s sort and the TableView update
- * monitor, against a collection the Flutter app writes concurrently.
+ * monitor — both index-MANDATORY on Enterprise (root `CLAUDE.md` rule 1) —
+ * against a collection our own importers and operators keep writing.
  */
 export function isSameTelefone(stored: unknown, incoming: unknown): boolean {
   const storedValue = identityValue(stored);

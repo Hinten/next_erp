@@ -13,6 +13,7 @@ import {
 
 import type { MlStockTaskScheduler } from './mlStockTasks';
 import {
+  STOCK_MULTIORIGEM_FLAG_ENV,
   STOCK_SYNC_FLAG_ENV,
   type FamilyMember,
   type FetchMovimentosArgs,
@@ -330,6 +331,8 @@ function expectedDraft(mode: StockSweepMode, integracaoId: string): Record<strin
     integracaoId,
     produtoId: 'PROD-1',
     variacaoProdutoId: null,
+    userProductId: null,
+    varLinkDocId: null,
     kind: 'item',
     itemId: 'MLB1',
     linkDocId: 'link-1',
@@ -352,6 +355,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env[STOCK_SYNC_FLAG_ENV];
+  delete process.env[STOCK_MULTIORIGEM_FLAG_ENV];
   delete process.env.MERCADO_LIVRE_STOCK_MAX_TASKS_PER_SWEEP;
   vi.restoreAllMocks();
 });
@@ -614,6 +618,59 @@ describe('runStockSweep — multiorigin guard', () => {
     expect(getMeMock).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
     expect(result.contas[0]!.error).toContain('multiorigem');
+  });
+
+  /* -------------------- #706: the probe now ROUTES ---------------------- */
+
+  it('warehouse_management alone + the flag → the sweep RUNS and enqueues seller_warehouse tasks', async () => {
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx(async () => ({ id: 9, tags: ['normal', 'warehouse_management'] }));
+    const { fetchFamilies, calls } = makeFetch([{ rows: [activeRow()], nextAfterAnchorId: null }]);
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    // Discovery now happens for this conta — it used to be refused before it.
+    expect(calls).toHaveLength(1);
+    expect(result.contas[0]!.error).toBeNull();
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ kind: 'userProductStock' }));
+    // …and the cursor advances, instead of being held for a conta that never
+    // makes progress.
+    expect(db.docs(SYNC_PATH).get('INT-A')?.cursorUs).toBe(NOW_US);
+  });
+
+  it('⚠️ multiwarehouse still refuses WITH the flag on, and names the tracking issue', async () => {
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx(async () => ({ id: 9, tags: ['warehouse_management', 'multiwarehouse'] }));
+    const { fetchFamilies, calls } = makeFetch([]);
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    expect(calls).toHaveLength(0);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(result.contas[0]!.error).toContain('múltiplos depósitos');
+    expect(result.contas[0]!.error).toContain('#1177');
+    // The cursor is HELD: nothing was swept, so nothing may be marked covered.
+    expect(db.docs(SYNC_PATH).get('INT-A')?.cursorUs).toBeUndefined();
+  });
+
+  it('the flag-off refusal names the flag, so the two causes are distinguishable', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx(async () => ({ id: 9, tags: ['warehouse_management'] }));
+    const { fetchFamilies } = makeFetch([]);
+    const { scheduler } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+
+    expect(result.contas[0]!.error).toContain('MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED');
+    expect(result.contas[0]!.error).not.toContain('#1177');
   });
 
   it('null tags → not multiorigin, sweep proceeds', async () => {

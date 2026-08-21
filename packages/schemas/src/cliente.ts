@@ -55,11 +55,14 @@ export const TIPO_CLIENTE = {
  * implicit contract between those two files is exactly how they drifted apart:
  * the port carried the legacy writer and never carried the legacy reader.
  *
- * These literals are the ones the legacy Flutter NF-e reader compares against
+ * These literals are the spellings the legacy NF-e reader compared against
  * after its own normalization (`.old/packages/pedido_nfe/lib/src/
- * pedido_nfe_base.dart:675-678`), so a cliente we write matches the still-
- * running Flutter app with no normalization on its side. Both fit `ie`'s
- * `max(16)` — `NAO CONTRIBUINTE` is exactly 16 characters.
+ * pedido_nfe_base.dart:675-678`). That reader is NOT why they are pinned any
+ * more — it never sees a doc this app writes (root `CLAUDE.md` rule 8) — but it
+ * is why the migrated corpus arrives spelled this way, unnormalised variants
+ * included, so this stays the canonical form our own readers normalize toward
+ * (see {@link normalizarIe} below). Both fit `ie`'s `max(16)` —
+ * `NAO CONTRIBUINTE` is exactly 16 characters.
  *
  * A sentinel is a CLAIM, and worth making explicitly: `isento` in particular
  * drives `indIEDest='2'`, which SEFAZ only accepts in the narrow circumstances

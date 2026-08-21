@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 // Hoisted spy so we can assert whether the batch build was triggered.
 const { buildSpy } = vi.hoisted(() => ({
@@ -22,9 +22,9 @@ function renderDialog(props: {
   alreadyPrintedCount: number;
 }) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <PrintComumDialog {...props} onClose={() => undefined} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

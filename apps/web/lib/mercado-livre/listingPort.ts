@@ -13,7 +13,9 @@ import type { ListingSavePort } from './saveListing';
  * A transaction, not a `merge()`, because the conflict guard has to compare
  * against a doc read in the same atomic step: six writers touch these documents
  * (this editor, publish, the `items` webhook, the price sync, the stock sender,
- * and the live Flutter app) and the browser SDK has no `lastUpdateTime`
+ * and a second operator's tab; the legacy Flutter app was listed here too and
+ * is NOT a writer of these docs — there is no dual run, root `CLAUDE.md`
+ * rule 8) and the browser SDK has no `lastUpdateTime`
  * precondition to lean on (`apps/web/CLAUDE.md` rule 3).
  *
  * ⚠️ `tx.update` deliberately bypasses the collection converter — the same

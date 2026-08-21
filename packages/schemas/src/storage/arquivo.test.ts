@@ -79,7 +79,11 @@ describe('arquivoSchema', () => {
     expect(arquivoSchema.safeParse({ filetype: 'image', filename: '' }).success).toBe(false);
   });
 
-  it('passes through fields the Flutter app writes that we do not model', () => {
+  // `createTime` is one of the keys the migrated corpus carries and this repo
+  // does not model. The writer that stamped it is gone (there is no dual run —
+  // root `CLAUDE.md` rule 8); the DATA arrives anyway, so `.passthrough()` has
+  // to keep it or a round-trip through the schema would drop it on the next save.
+  it('passes through fields the migrated corpus carries that we do not model', () => {
     const out = arquivoSchema.parse({
       filetype: 'image',
       filename: 'abc.jpeg',

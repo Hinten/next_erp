@@ -200,6 +200,22 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   percentage to 50%**. So an amount with no exact offer is refused with the list
   of real ones rather than rounded to the nearest: a refund is not a value worth
   approximating.
+- `lib/marketplace/orderMessageAttachments.ts` — **#1162**: post-sale message
+  attachments downloaded into Storage as `Arquivo`s, the `mlped` sibling of
+  `claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
+  operator had to leave the ERP to see it; that `[n anexos]` note stays as the
+  FALLBACK, because silently dropping one is worse than not having it.
+  ⚠️ **Not symmetric with the claims endpoint**, in three ways that each cost a
+  round trip: `site_id` is a REQUIRED query param (omitting it is a documented
+  400); the limits differ (25 MB and TXT allowed, vs the claim endpoint’s 5 MB
+  and no TXT — hence a separate `ML_POST_SALE_ANEXO`); and ML documents **no 404**
+  for this route, only 400 and 500, so a permanently missing file arrives as a
+  **500** and MUST classify as deterministic or the task retries forever.
+  ⚠️ The attachment mensagem takes its PARENT message’s direction — stamping every
+  one `enviado` renders the buyer’s photos as our own outgoing messages, the exact
+  bug the claims path had to fix. `bucket: null` degrades to skip-all with ONE warn
+  per message: losing the customer’s message because Storage was unavailable would
+  be far worse than losing the photo.
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -306,6 +322,44 @@ a `user_product_seller` publishes, it silently skipped the entire future catalog
 deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
 a sync. Do not reintroduce a link-only guard here.
 
+⚠️ **A moderation is NOT its own topic — it arrives on `items`.** ML publishes no
+`moderations` notification topic (checked against its topic list); a policy pause
+reaches us as an ordinary `items` delivery, and ML's *Gerenciar moderações* derives
+the `moderation_reference_id` straight from it (`id` + **`-ITM`**). So the reason
+lives in `itemsStatusSync`, not in a new receiver, and `TOPIC_DISPOSITION` is
+unchanged. The sync reads `GET /moderations/last_moderation/{id}-ITM` only when the
+fetched item's status says there is one (`precisaConsultarModeracao` in
+`lib/marketplace/moderacoes.ts`) — `under_review`, or a moderation `sub_status` —
+so a healthy listing still costs exactly one `GET /items/{id}`, and a
+moderation-endpoint outage cannot stall the `items` stream. A **404 is data**
+("not moderated"); everything else rethrows, because persisting `[]` after a
+failed read records "not moderated" and is indistinguishable from healthy.
+
+⚠️ **`moderacoes` is a SEPARATE field from `errors`/`causas`, and the reason is the
+#781 stock re-arm.** `errors` is cleared whenever `podeEnviarEstoque(...).enviar` —
+deliberately, so a `closed`/`under_review` listing keeps its diagnosis. Moderation
+needs the opposite on both sides: it must SURVIVE on a listing ML still calls
+`active` (`poor_quality_thumbnail` — live, but losing exposure) and VANISH the moment
+ML stops reporting one, even mid-review. Sharing `errors` would have wiped the first
+case on the very write that set it. The invariant that replaces the clearing rule is
+stronger: `moderacoes` is written in the **same patch** as the `status` it explains,
+on every status write, value or `[]` — so a reason cannot outlive its state.
+
+⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and only a writer that
+just asked ML may touch it.** `errors`/`causas` record OUR failed write, so a later
+success invalidates them; a moderação is ML's verdict and nothing we do lifts it. Two
+`clearFalha()` callers prove the point — the stock writeback fires on a successful
+`PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
+updates **while moderated**; the importer re-reads the item but never asks
+`/moderations`. Clearing there would erase a live reason and show a clean listing that
+is really still penalised, which hides a real problem rather than merely failing to
+explain one. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
+unconditionally, so clear-only would erase the reason the operator pressed the button
+to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER and the parent takes the
+**fold winner's** (`upFamilyStatus.ts`) — never a union, or the parent would show a
+reason for a sibling it is not reporting. Siblings' values come off disk, so the fold
+costs no extra ML call.
+
 ⚠️ **A User-Products FAMILY's `estado` is a FOLD of its members, never one member's
 status.** A family's parent link carries the FAMILY id, so a member's `items`
 delivery matches no parent by `id` — `resolveLink` has a second stage that comes in
@@ -318,6 +372,63 @@ both sweeps open with, so one member closing could otherwise drop a produto whos
 siblings are still selling out of the stock and price sweeps, silently. The denorm
 is keyed on the parent link's own `id`, matching what publish and import stamped;
 member ids belong to the CHILD produtos.
+
+⚠️ **The `items` webhook is NOT the only surface that learns one member's status,
+and the other one is the stock sender.** `buildSendTasks` emits one
+`kind: 'variationItem'` task per UP member carrying the **family's** `linkDocId`
+next to the **member's** `itemId`, so `estoqueSend`'s terminal 4xx branch (#781)
+verifies a MEMBER and used to write that verdict straight to the parent through
+`applyItemStatusToLink` — one member speaking for the family, which for `closed`
+is the silent sweep drop the paragraph above describes. Both callers now land on
+the same fold: `applyMemberStatusAndFold` (exported from `itemsStatusSync.ts`) is
+the one writer of a member's status, and the member path never reaches
+`applyItemStatusToLink` at all — so the denorm can never be keyed on a member id.
+A member whose link cannot be resolved takes the conservative `estado 'E'` stop
+instead, which is loud and bounded; `estado 'c'` from one member is not an option.
+The residual: a HEALTHY member whose payload ML refused still latches the whole
+family at `'E'`, because `estado` lives only on the parent link. It is visible and
+self-clearing (an `items` webhook or "Reverificar anúncio"), and the log names the
+offending member — but it does stop the siblings until then.
+
+⚠️ **A member's own `status`/`sub_status` gate its send — on BOTH child loops, and
+that is what makes #707's prune do anything.** `membroPodeEnviar` is called from
+the legacy `variations[]` builder AND the User-Products per-member loop, with the
+same two arms as the parent link: a PRESENT status goes through the documented
+whitelist, an ABSENT one sends **optimistically** (#780). Gating only ONE branch is
+the trap — the prune writes its mark on LEGACY links, so a gate that lived only on
+the UP branch made the whole self-heal a no-op: the phantom went straight back into
+`variations[]` and re-earned the identical rejection. The `THE SEAM` spec in
+`estoqueSend.test.ts` joins the two halves so that cannot pass again. Both fields
+ride the `varLinks` subcollection projection in `stockJoinBuilders`; dropping them
+there silently disables both rungs.
+
+⚠️ **A variation link is NOT backfilled by a successful send, unlike the parent.**
+`estoqueSend`'s happy-path writeback is family-scoped, and for a `variationItem`
+task it deliberately writes NO status at all — `resp` describes one member while
+`linkDocId` names the family, so writing it there is the same over-reach in the
+success direction (a member returning `paused` on an accepted PUT would make the
+next sweep skip every sibling as `status-nao-enviavel`). It writes only
+`ultimaModificacao` + `clearFalha()`, both legitimately family-wide. Reaching the
+MEMBER's own link would cost a subcollection read on the hot path — one per member
+task, 96× a day across the catalogue — to record a status that is `active` by
+construction, so it is left to the three surfaces that already write one: the
+`items` webhook, #707's prune, and the terminal-4xx fold. Consequence:
+`membroPodeEnviar`'s optimistic arm converges only through those three, which is
+the safe direction since it sends.
+
+⚠️ **`item.variations.invalid` self-heals; it is LEGACY-MODEL ONLY (#707).** When a
+bulk `PUT /items/{id}` is refused with that cause, the terminal branch diffs the
+family's `variacaoMercadoLivre` links against the live `variations[].id` from the
+verification GET it already made, and marks the phantoms `status: 'closed'` +
+`sub_status: ['deleted']` — it does **not** delete them (the link carries the
+member's `sku` + `attributes`, and legacy only ever rewrote the child's dead-weight
+`marketplace` denorm array, never a `VariacoesML` doc). Two things not to
+"simplify": the diff is guarded on `item.family_name == null`, exactly as
+`.old/…/utils/produtos.dart:454` is — under User Products there is no `variations[]`
+array and members are keyed by `itemId`, so a legacy-shaped diff would mark live
+members closed. And a prune that marked something SKIPS the `estado 'E'` latch, so
+the next sweep re-sends the corrected payload; a prune that marked nothing keeps
+#781's latch, so the 96×/day loop cannot reopen.
 
 ⚠️ The same sync is now the **producer** of `estado 'am'`, not a reader of it. That
 value never had a writer in this repo — it only ever arrived from Flutter — yet

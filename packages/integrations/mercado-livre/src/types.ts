@@ -243,6 +243,38 @@ export const orderItemSchema = z
     unit_price: z.number().nullable().optional(),
     currency_id: z.string().nullable().optional(),
     element_id: z.union([z.number(), z.string()]).nullable().optional(),
+    /**
+     * Multiorigin (`warehouse_management`) accounts only — the PHYSICAL origin
+     * of this line, per the `gestao-packs` reference: `store_id` "identifies the
+     * store or specific physical location where the stock of an item is held",
+     * `network_node_id` "represents the seller node or the specific physical
+     * location the item comes from".
+     *
+     * ⚠️ Modelled, not persisted. This ERP binds ONE depósito per conta
+     * (`integracao.depositoOuterRef`), so under the single-depósito multiorigin
+     * tier #706 supports, the origin is already known and storing it would add
+     * a `pedidos` schema change (and a ruleset regeneration) for no reader.
+     * It becomes load-bearing with `multiwarehouse` — see #1177, where a sale
+     * has to debit the depósito it actually shipped from.
+     */
+    stock: z
+      .array(
+        z
+          .object({
+            store_id: z.union([z.string(), z.number()]).nullable().optional(),
+            network_node_id: z.union([z.string(), z.number()]).nullable().optional(),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .optional()
+      // ⚠️ `.catch(null)` because this field has NO readers yet. Every other
+      // field on this line is load-bearing and rightly fails the parse when ML
+      // sends a shape we cannot use; this one is documentation until #1177, so
+      // an unexpected shape must not fail `orderItemSchema` → `orderSchema` →
+      // the whole ORDER IMPORT for a value nobody consumes. Same idiom the
+      // notification schema below uses, and for the same reason.
+      .catch(null),
   })
   .passthrough();
 
@@ -871,6 +903,79 @@ export const userProductItemsSearchSchema = z
   })
   .passthrough();
 export type MlUserProductItemsSearch = z.infer<typeof userProductItemsSearchSchema>;
+
+/* ------------------ User-Products stock by location (#706) ----------------- */
+
+/**
+ * The three `stock_locations` typologies (ML "Estoque distribuído"). Only two
+ * are writable by a seller, and only ONE of those exists on MLB:
+ *
+ * - `meli_facility` — Fulfillment. **ML manages it**; a seller write is refused,
+ *   and — the dangerous part — a `seller_warehouse` write aimed at a Full
+ *   listing returns SUCCESS and changes nothing. Such a listing must be
+ *   skipped, never "sent".
+ * - `selling_address` — the seller's origin address for non-fulfillment
+ *   logistics. Writable **only on MLA and MLC**; on MLB the endpoint answers
+ *   "the site is blocked for modifications to the selling address".
+ * - `seller_warehouse` — multiple seller-managed origins. The only writable
+ *   type on MLB, and the one this ERP pushes stock through.
+ *
+ * ⚠️ A single UP can carry at most two typologies at once — either
+ * (`selling_address` + `meli_facility`) or (`seller_warehouse` + `meli_facility`).
+ */
+export const stockLocationTypeSchema = z.enum([
+  'meli_facility',
+  'selling_address',
+  'seller_warehouse',
+]);
+export type MlStockLocationType = z.infer<typeof stockLocationTypeSchema>;
+
+/** Named members of {@link stockLocationTypeSchema} (`prefer-schema-enum`). */
+export const STOCK_LOCATION_TYPE = {
+  meliFacility: 'meli_facility',
+  sellingAddress: 'selling_address',
+  sellerWarehouse: 'seller_warehouse',
+} as const satisfies Record<string, MlStockLocationType>;
+
+/**
+ * One entry of `GET /user-products/{id}/stock` → `locations[]`.
+ *
+ * ⚠️ `store_id` / `network_node_id` are present **only** on `seller_warehouse`
+ * rows — the `selling_address` and `meli_facility` shapes carry `type` +
+ * `quantity` and nothing else. `type` itself is tolerant (a new ML typology must
+ * not fail the read of a UP we can still write): unknown values survive as a
+ * plain string and are simply never selected as a write target.
+ */
+export const userProductStockLocationSchema = z
+  .object({
+    type: z.string().nullable().optional(),
+    store_id: z.union([z.string(), z.number()]).nullable().optional(),
+    network_node_id: z.union([z.string(), z.number()]).nullable().optional(),
+    quantity: z.number().nullable().optional(),
+  })
+  .passthrough();
+export type MlUserProductStockLocation = z.infer<typeof userProductStockLocationSchema>;
+
+/**
+ * `GET /user-products/{USER_PRODUCT_ID}/stock` and the response of
+ * `PUT …/stock/type/seller_warehouse`.
+ *
+ * ⚠️ The body is only half the answer — the **`x-version` response header** is
+ * the other half, and it is what the PUT must echo back. `getUserProductStock`
+ * returns both; see `MercadoLivreApi.getUserProductStock`.
+ *
+ * ⚠️ A UP whose stock was never initialised answers `stock-locations not found`
+ * rather than an empty `locations` array — the resource does not exist until a
+ * location does.
+ */
+export const userProductStockSchema = z
+  .object({
+    id: z.string().nullable().optional(),
+    user_id: z.union([z.number(), z.string()]).nullable().optional(),
+    locations: z.array(userProductStockLocationSchema).nullable().default([]),
+  })
+  .passthrough();
+export type MlUserProductStock = z.infer<typeof userProductStockSchema>;
 
 /* --------------------- Mass import seller scan (#621) --------------------- */
 
@@ -1621,6 +1726,30 @@ export const mlClaimAttachmentUploadSchema = z
 export type MlClaimAttachmentUpload = z.infer<typeof mlClaimAttachmentUploadSchema>;
 
 /**
+ * Post-sale MESSAGE attachment limits — deliberately separate from
+ * {@link ML_CLAIM_ANEXO}, which they do not match.
+ *
+ * ML: 25 MB, JPG/PNG/PDF/TXT, at most 25 per message, `original_filename` up to
+ * 200 chars. (Claims: 5 MB, no TXT, filename up to 125.)
+ *
+ * ⚠️ **Documentation-only today — nothing reads it.** The download path
+ * (`orderMessageAttachments.ts`) validates neither size, format nor count: ML is
+ * the one enforcing them, and a file it already accepted on the way IN is one we
+ * can always fetch back. Same status as {@link ML_CLAIM_ANEXO}'s size/format
+ * fields on the download half. What the separation buys is that the numbers are
+ * recorded per endpoint, so whoever adds an OUTBOUND post-sale attachment (the
+ * upload direction, where the limits are enforced BEFORE spending a write
+ * against the shared 500 rpm) reaches for the right ones instead of the claim
+ * values sitting next door.
+ */
+export const ML_POST_SALE_ANEXO = {
+  maxBytes: 25_000_000,
+  formatos: ['jpg', 'jpeg', 'png', 'pdf', 'txt'] as readonly string[],
+  maxPorMensagem: 25,
+  maxNomeOriginal: 200,
+} as const;
+
+/**
  * ML's claim-attachment rules, from the post-purchase reference. Enforced
  * BEFORE the upload: a rejected file wastes a write against the shared 500 rpm
  * budget and returns an error the operator cannot act on.
@@ -1634,4 +1763,94 @@ export const ML_CLAIM_ANEXO = {
   maxNomeArquivo: 125,
   /** ML: "letras, números, pontos, hífens e sublinhados". */
   nomeArquivoPermitido: /^[a-zA-Z0-9_\-.]+$/,
+} as const;
+
+/* --------------------- Moderações / moderations (#1087) -------------------- */
+
+/**
+ * One `evidences[]` entry — WHERE ML found the infraction.
+ *
+ * `section_name` is the useful half (`pictures`, `title`, `category`, `item`);
+ * `text_matched` is the offending value itself (a picture id, a matched phrase,
+ * an internal process name).
+ */
+export const mlModerationEvidenceSchema = z
+  .object({
+    text_matched: z.string().nullable().default(null),
+    section_name: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlModerationEvidence = z.infer<typeof mlModerationEvidenceSchema>;
+
+/**
+ * One `wordings[]` entry — the human-facing text.
+ *
+ * `type` is `REASON` (why) or `REMEDY` (how to fix). ⚠️ A moderation that cannot
+ * be recovered from carries a REASON and **no** REMEDY at all; ML's docs say so
+ * outright for a removed listing. Absence is meaningful, so `type` stays a plain
+ * nullable string rather than an enum that could reject an unseen third value
+ * and take the whole moderation down with it.
+ */
+export const mlModerationWordingSchema = z
+  .object({
+    type: z.string().nullable().default(null),
+    value: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MlModerationWording = z.infer<typeof mlModerationWordingSchema>;
+
+/**
+ * `GET /moderations/last_moderation/{element_id}-ITM` — ONE active moderation.
+ *
+ * ⚠️ Deliberately tolerant, and the tolerance is not defensive padding — every
+ * deviation admitted here appears in ML's OWN published responses:
+ *
+ *  - the evidence key is spelled **`evidences`** on *Gerenciar moderações* and
+ *    **`evidence`** on *Moderações com pausa* and *Moderações de imagens*. Both
+ *    are accepted; the mapper unions them.
+ *  - `wordings` is **optional**. Unlike the two above this is not something ML's
+ *    pages demonstrate — every published sample carries it. It is defensive on
+ *    purpose: those same pages already disagree with each other about
+ *    `evidence`/`evidences`, so they are plainly not an exhaustive spec, and a
+ *    missing `wordings` must degrade to "moderated, no text" rather than take the
+ *    whole read down. `mapModeracoes` keeps such an entry on its `name`.
+ *  - `date_created` arrives in TWO formats — `2021-04-14T10:47:05.270-0400` and
+ *    `2022-10-25 15:57:46.0` — so it stays a raw string here and everywhere
+ *    downstream (`delfrance/no-lossy-date-parse`).
+ *  - `id` is a stringified number in every sample, but is not persisted: the docs
+ *    warn it "deixa de existir" once the moderation resolves and must never be
+ *    used as a persistent reference.
+ *
+ * A strict schema would throw `MercadoLivreValidationError` on any of these and
+ * lose the whole explanation — which is the exact outcome this feature exists to
+ * end.
+ */
+export const mlModerationSchema = z
+  .object({
+    name: z.string().nullable().default(null),
+    id: z.union([z.string(), z.number()]).nullable().default(null),
+    date_created: z.string().nullable().default(null),
+    evidences: z.array(mlModerationEvidenceSchema).nullable().default(null),
+    /** ML's alternate spelling of {@link mlModerationSchema.shape.evidences}. */
+    evidence: z.array(mlModerationEvidenceSchema).nullable().default(null),
+    wordings: z.array(mlModerationWordingSchema).nullable().default(null),
+  })
+  .passthrough();
+export type MlModeration = z.infer<typeof mlModerationSchema>;
+
+/**
+ * The endpoint answers with an ARRAY, even though it is named
+ * `last_moderation` — every documented sample is a one-element list.
+ */
+export const mlModerationsSchema = z.array(mlModerationSchema);
+
+/**
+ * ML `element_type` suffixes for a `moderation_reference_id`
+ * (`{element_id}-{suffix}`). Only `ITM` is used here; the other two are
+ * documented so a future questions/reviews reader does not re-derive them.
+ */
+export const ML_MODERATION_ELEMENT = {
+  item: 'ITM',
+  pergunta: 'QUE',
+  avaliacao: 'REV',
 } as const;

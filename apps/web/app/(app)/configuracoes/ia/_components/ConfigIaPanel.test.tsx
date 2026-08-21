@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { PROVEDOR_IA, type ConfigIa } from '@delfrance/schemas';
@@ -107,9 +107,9 @@ function liveModelos(over: Partial<MercadoLivreIaModelos> = {}): MercadoLivreIaM
 function renderPanel(agenteId = 'ml-atributos') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <MantineProvider env="test">
+    <MantineTestProvider>
       <QueryClientProvider client={qc}>{children}</QueryClientProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
   render(
     <ConfigIaPanel agenteId={agenteId} titulo="Agente de teste" descricao="Descrição de teste." />,

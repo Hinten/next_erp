@@ -47,6 +47,10 @@ export async function GET(req: Request): Promise<NextResponse> {
     planejados: job.planejados,
     enviados: job.enviados,
     pulados: job.pulados,
+    // Exact and uncapped, unlike the `skips` sample — on a drifted catalogue
+    // the 200-row list can be exhausted by the plan phase alone, so this count
+    // is what makes `completed` legible at a glance (#1072).
+    naoEnumerados: job.naoEnumerados,
     falhas: job.falhas,
     pausas: job.pausas,
     skips: job.skips,

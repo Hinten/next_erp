@@ -472,6 +472,7 @@ async function seedProbeData() {
         status: 'active',
         sub_status: [],
         isUserProductModel: false,
+        userProductId: 'MLBU000CHECK',
       },
     ],
     [
@@ -479,6 +480,7 @@ async function seedProbeData() {
       {
         itemId: 'MLB000CHECKV',
         id: 12345,
+        userProductId: 'MLBU000CHECKV',
         produtoMercadoLivreOuterRef: `documents/produtos/${anchorId}/produtoMercadoLivre/${linkId}`,
       },
     ],
@@ -595,6 +597,7 @@ const linkJoin = () =>
       'status',
       'sub_status',
       'isUserProductModel',
+      'userProductId',
       pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
     )
     .toArrayExpression();
@@ -616,7 +619,15 @@ const childrenJoin = () =>
       compEstoques('childKitKeys').as('componentEstoques'),
       pipelines
         .subcollection('variacaoMercadoLivre')
-        .select('itemId', 'id', 'produtoMercadoLivreOuterRef')
+        .select(
+          'itemId',
+          'id',
+          'produtoMercadoLivreOuterRef',
+          'status',
+          'sub_status',
+          'userProductId',
+          pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
+        )
         .toArrayExpression()
         .as('varLinks'),
     )

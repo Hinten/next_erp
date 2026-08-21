@@ -16,12 +16,15 @@
  * while these classic chains execute against the FakeDb seams directly.
  *
  * ---- Index ledger (Enterprise auto-creates NONE — an unindexed predicate
- * silently full-scans, billed by data scanned). Zero NEW entries: every query
- * below rides an index Step 10 already declared in `firestore.indexes.json`:
- *  - anchors: `produtos(paiId ASC, publicado ASC, integracoesComProduto
- *    ASC, __name__ ASC)` — the stock-sync composite (spike (b) / #705:
- *    `array-contains` rides ASC, not CONTAINS); the
- *    `orderBy(FieldPath.documentId())` keyset binds the `__name__` suffix;
+ * silently full-scans, billed by data scanned):
+ *  - anchors: `produtos(paiId ASC, integracoesComProduto ASC, __name__ ASC)`
+ *    — ⚠️ a #1072 ENTRY, not the stock-sync composite. Dropping `publicado`
+ *    from the anchor terms (below) means the deployed
+ *    `produtos(paiId, publicado, integracoesComProduto, __name__)` can no
+ *    longer serve this query: a Firestore prefix must be CONTIGUOUS, so
+ *    removing the middle field breaks it. `array-contains` rides ASC rather
+ *    than CONTAINS (spike (b) / #705); the `orderBy(FieldPath.documentId())`
+ *    keyset binds the `__name__` suffix;
  *  - children: the `paiId` equality rides the existing `produtos(paiId, nome)`
  *    index as a prefix;
  *  - links: the per-produto `contaOuterRef IN` probe rides the COLLECTION-scope
@@ -39,6 +42,25 @@
  * variations only accept one uniform family price — and the draft carries NO
  * variation ids: the send step re-derives them from its fresh `GET items` (a
  * stale stored variation id would 400 the whole PUT).
+ *
+ * ---- Discovery scope (#1072): the anchor terms are `paiId == null` plus
+ * `integracoesComProduto array-contains <conta>` — and deliberately NOT
+ * `publicado == true`. That array IS the produto-side denorm of the MERCADO
+ * LIVRE publication status: `onProdutoMercadoLivreLinkChanged` derives it from
+ * `linkHasLiveListing` (an item id, and `estado !== 'c'`), and `itemsStatusSync`
+ * — driven by the `items` webhook — is what moves `estado`. So the
+ * `array-contains` term already asks the question that matters, in real time:
+ * *does this produto have a live anúncio on this conta?* `publicado` is an ERP
+ * CATALOGUE flag and answers a different one; gating on it dropped every
+ * unpublished produto with a live listing, server-side and with no skip row
+ * (#804's class 1). It is now irrelevant here, and the send-time status gate
+ * below — which re-fetches from ML — is what actually decides.
+ * ⚠️ The STORED status is used to CLASSIFY (the row carries it for
+ * observability; `precoReconciliacao` filters on `linkHasLiveListing`), never
+ * as a query predicate: nothing indexes `estado`/`status`/`sub_status`, migrated links
+ * carry `status: null`, a listing nobody touches never fires `items`, and both
+ * senders overwrite `estado` with `'E'` for OUR payload faults. A stale stored
+ * status can therefore skew an ENUMERATION, never a send.
  *
  * ---- Status gate (decision 6): unlike stock (`podeEnviarEstoque` — active or
  * paused/out_of_stock only), ML accepts price updates on ANY paused listing,
@@ -145,10 +167,12 @@ export interface PrecoFamilyRow {
   /** Schema default TRUE — anything but a stored literal `false` propagates. */
   propagatePriceToChildren: boolean;
   /**
-   * Always TRUE on a `fetchPrecoPage` row (the query filters on it). It is read
-   * for real by {@link fetchPrecoFamiliasByIds}, which carries NO anchor
-   * pre-filters — that is what turns #804's "unpublished produto with a live
-   * listing" from a silent server-side exclusion into a visible skip row.
+   * The ERP catalogue flag — read for real on BOTH discovery paths since
+   * #1072, which dropped `publicado == true` from `fetchPrecoPage`'s anchor
+   * terms. The bulk job no longer consults it at all (an unpublished produto
+   * with a live anúncio is planned like any other; the send-time status gate
+   * decides), while `precoManual` still rungs out at `NAO_PUBLICADO` — a
+   * deliberate asymmetry, documented there.
    */
   publicado: boolean;
   /**
@@ -187,10 +211,12 @@ export type FetchPrecoPage = (db: Firestore, args: FetchPrecoPageArgs) => Promis
 
 /**
  * One keyset page of linked produto families (module doc: classic queries on
- * declared indexes, deliberately no pipeline). Anchors are the published
- * family parents carrying the conta in `integracoesComProduto`, paged by
- * document id (`startAfter` takes the bare id — root-collection precedent:
- * `fetchArquivoPage`). Per anchor, the conta's links, the variation children
+ * declared indexes, deliberately no pipeline). Anchors are the family parents
+ * carrying the conta in `integracoesComProduto` — published or not (#1072) —
+ * paged by document id (`startAfter` takes the bare id — root-collection
+ * precedent: `fetchArquivoPage`; a COLLECTION GROUP would need a
+ * `DocumentReference` instead, which is why `precoReconciliacao`'s walk differs).
+ * Per anchor, the conta's links, the variation children
  * (field-masked to `precos`) and each child's `variacaoMercadoLivre` rows are
  * joined with plain reads — sequential per anchor (a page of 25 on a manual
  * job), `Promise.all` within one anchor. Every field is soft-coerced
@@ -212,19 +238,24 @@ export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
   const afterAnchorId = args.afterAnchorId ?? null;
   const contaRefForms = contaRefFormsDe(args.integracaoId);
 
-  // Rides the DECLARED `produtos(paiId, publicado, integracoesComProduto
-  // ASC, __name__)` composite (Step 10's entry, ASC form per #705 — zero new
-  // indexes); the field mask keeps the page light (produtos docs carry heavy
+  // Rides `produtos(paiId ASC, integracoesComProduto ASC, __name__ ASC)` — the
+  // #1072 entry, NOT Step 10's four-field stock composite, which cannot serve
+  // this shape once `publicado` is gone (a prefix must be contiguous). ASC form
+  // per #705. The field mask keeps the page light (produtos docs carry heavy
   // media arrays).
+  //
+  // ⚠️ No `publicado == true`: see the module docblock's "Discovery scope".
+  // `integracoesComProduto` already carries the live-listing question, in real
+  // time; `publicado` is a catalogue flag, and gating on it was #804's class 1.
   let anchorsQuery = produtoCollection
     .ref(db, {})
     .where('paiId', '==', null)
-    .where('publicado', '==', true)
     .where('integracoesComProduto', 'array-contains', args.integracaoId)
-    // `publicado`/`paiId` are two scalars the query already constrains — they
-    // ride the mask anyway so a page row and a by-ids row are the SAME shape,
-    // rather than a page row silently reading `publicado: false` off a field
-    // the mask omitted.
+    // `paiId` is constrained by the query; `publicado` no longer is, and BOTH
+    // still ride the mask — `readFamilia` coerces them onto the row and
+    // `precoManual` reads `publicado` for its own rung, so a page row and a
+    // by-ids row stay the SAME shape. Dropping it here would make a page row
+    // silently read `publicado: false` off a field the mask omitted.
     .select('precos', 'propagatePriceToChildren', 'publicado', 'paiId')
     .orderBy(FieldPath.documentId())
     .limit(pageLimit);
@@ -258,15 +289,23 @@ export type FetchPrecoFamiliasByIds = (
  * The MANUAL push's target set (#804 S6) — the price twin of
  * `fetchStockFamiliesByIds`.
  *
- * ⚠️ It carries **none** of `fetchPrecoPage`'s three anchor terms — no
- * `paiId == null`, no `publicado == true`, no
- * `integracoesComProduto array-contains`. That is the whole point. Those terms
- * are what make #804's three classes vanish from the bulk job's report: an
- * unpublished produto with a live listing, a produto whose
+ * ⚠️ It carries **none** of `fetchPrecoPage`'s anchor terms — no
+ * `paiId == null`, no `integracoesComProduto array-contains`. That is the whole
+ * point. Those terms are what made #804's three classes vanish from the bulk
+ * job's report: an unpublished produto with a live listing, a produto whose
  * `integracoesComProduto` denorm drifted, and a link sitting on a non-anchor
- * produto are all filtered out SERVER-SIDE, so the job has nothing to skip and
+ * produto were all filtered out SERVER-SIDE, so the job had nothing to skip and
  * nothing to say. Reading the anchors by key instead means every one of them
  * reaches `enviarPrecoManual`, which reports each as an explicit row.
+ *
+ * ⚠️ #1072 closed the first (`publicado` is gone from the anchor terms) and made
+ * the other two REPORTED rather than sendable — `precoReconciliacao` names them.
+ * This function remains the remedy for the DENORM-DRIFT one, which reads fine by
+ * key. It is NOT a remedy for a link on a non-anchor produto: `resolverAnchors`
+ * hops `paiId ?? produtoId`, so selecting that produto reads the PARENT's links,
+ * and `enviarPrecoManual` then rungs the row out at `FAMILIA_NAO_ENCONTRADA`.
+ * That class has no send surface anywhere in the repo, by design — it is a data
+ * repair.
  *
  * A batch key read, so — unlike the stock side's `db.pipeline().documents(...)`
  * — there is no index to miss and it runs in the emulator. A missing document

@@ -142,7 +142,21 @@ same label instead of double-spending.
   `"${cepInicial} - ${cepFinal} - ${custo} - ${valor} - ${prazo}"`.
 - **`tokenMelEnv` is single-token** — a refresh deletes the old token doc and
   writes the new one in one tx (Flutter parity). 30-day access / 45-day refresh,
-  60s skew; `getOrRefreshAccessToken` handles it transparently.
+  60s skew; `getOrRefreshAccessToken` handles it transparently. **Two refreshes
+  can race** (multi-instance App Hosting routes, and `getAccessToken` is wired
+  *per ME API call*, so one `comprar` re-enters it several times), so #966 added
+  the same loser fallback ML/MP got in #820: a rejected grant re-reads the store
+  **twice**, the second time after `LOSER_REREAD_DELAY_MS` (250 ms), because the
+  loser learns it lost *before* the winner's `save()` commits. Every
+  `MelhorEnvioHttpError` reaches that fallback — a 429 is likeliest exactly when
+  two refreshes collide — and only 400/401/403 still convert to
+  `MelhorEnvioReauthRequiredError`; anything else keeps its original error.
+  ⚠️ **`save()` returns the token that is now STORED, not the one you passed** —
+  it carries an ADR 0011 tier-2 update-if-newer guard on `expirationDate`, so a
+  loser gets the winner's pair back. Use the return value. The
+  authorization-code flow passes `{ force: true }` to bypass it. ⚠️ Do **not**
+  widen the 60 s skew to "fix" a race: the window is the ME round-trip plus one
+  Firestore write, not the expiry threshold.
 - **`int_frete`**: `dataCadastro` is a **required ms-epoch**; `prazoExtra`
   non-nullable default 0; ME `client_id`/`client_secret` are **nullable on the
   doc for read-compat** but the live app reads the app-wide creds from **env**

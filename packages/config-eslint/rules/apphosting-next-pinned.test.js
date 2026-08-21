@@ -1,8 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
 
 /**
  * Repo invariant: every app with an `apphosting.yaml` declares `next` as an EXACT
@@ -45,7 +44,6 @@ import { describe, expect, it } from 'vitest';
  * and compares them against a YAML file, which ESLint (one JS/TS file at a time) never
  * sees. Failing the test fails CI exactly like a lint error would.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * The App Hosting backends that exist today. Discovery below is a glob keyed on the
@@ -141,16 +139,9 @@ const CVE_FLOOR = [16, 1, 0];
  * on Windows and red every assertion locally while staying green in CI.
  */
 function findApphostingApps() {
-  const ls = (...args) =>
-    execFileSync('git', [...args, '--', ':(glob)apps/*/apphosting.yaml'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    })
-      .split('\n')
-      .filter(Boolean)
-      .map((p) => p.replace(/\/apphosting\.yaml$/, ''));
-
-  return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
+  return gitLsFiles(':(glob)apps/*/apphosting.yaml').map((p) =>
+    p.replace(/\/apphosting\.yaml$/, ''),
+  );
 }
 
 /**

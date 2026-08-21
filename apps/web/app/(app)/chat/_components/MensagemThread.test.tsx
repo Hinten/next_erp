@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { FirebaseError } from 'firebase/app';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import {
@@ -111,7 +111,7 @@ function wrap(node: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MantineProvider env="test">{node}</MantineProvider>
+      <MantineTestProvider>{node}</MantineTestProvider>
     </QueryClientProvider>,
   );
 }
@@ -220,9 +220,9 @@ describe('MensagemThread', () => {
     const remount = () =>
       rerender(
         <QueryClientProvider client={client}>
-          <MantineProvider env="test">
+          <MantineTestProvider>
             <MensagemThread conversaId="c1" conversa={conversa} />
-          </MantineProvider>
+          </MantineTestProvider>
         </QueryClientProvider>,
       );
 

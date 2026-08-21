@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore, FirestoreError } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import type { HistoricoModificacao } from '@delfrance/schemas';
@@ -102,9 +102,9 @@ function setSnap(state: Partial<SnapshotState<SnapshotRow<HistoricoModificacao>[
 function renderManager(entries: RawEntry[] = [], loading = false) {
   setSnap({ data: entries.map(toRow), loading });
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <ModificacoesManager db={db} produtoId="p1" />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 
@@ -143,9 +143,9 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
       } as FirestoreError,
     });
     render(
-      <MantineProvider>
+      <MantineTestProvider>
         <ModificacoesManager db={db} produtoId="p1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
     expect(await screen.findByText(/permission-denied/)).toBeTruthy();
   });
@@ -235,9 +235,9 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
       });
     });
     rerender(
-      <MantineProvider>
+      <MantineTestProvider>
         <ModificacoesManager db={db} produtoId="p1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
 
     expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(2);
@@ -404,9 +404,9 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
       setSnap({ data: afterSlide.map(toRow) });
     });
     rerender(
-      <MantineProvider>
+      <MantineTestProvider>
         <ModificacoesManager db={db} produtoId="p1" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
 
     // Bridge keeps the evicted live row + the load-more tail.
@@ -470,9 +470,9 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
       });
     });
     rerender(
-      <MantineProvider>
+      <MantineTestProvider>
         <ModificacoesManager db={db} produtoId="p2" />
-      </MantineProvider>,
+      </MantineTestProvider>,
     );
 
     expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(1);

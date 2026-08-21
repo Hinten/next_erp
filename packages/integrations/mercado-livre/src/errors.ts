@@ -103,3 +103,26 @@ export class MercadoLivreLabelUnavailableError extends MercadoLivreError {
     this.name = 'MercadoLivreLabelUnavailableError';
   }
 }
+
+/**
+ * A **409 version conflict** on a User-Products stock write (#706): the
+ * `x-version` we echoed was no longer current, because something else moved the
+ * stock between our read and our write — a sale, the ML panel, another
+ * integrator.
+ *
+ * ⚠️ Deliberately a PREDICATE over `MercadoLivreHttpError`, not a class of its
+ * own. The distinction is not about the error's shape (409 + a body is all ML
+ * gives) but about the caller's response, and there is exactly one correct one:
+ * re-read the stock for a fresh version and retry. A new class would have to be
+ * raised inside the generic `toHttpError` mapper, which has no idea which
+ * endpoint it is answering for — `PUT /items` also answers 409 ("item optimistic
+ * locking error"), where the remedy is to wait, not to re-read a version.
+ *
+ * ⚠️ A caller must branch on this BEFORE any general `status >= 400 && < 500`
+ * arm. A version conflict is the most ordinary thing that can happen to a
+ * read-before-write, and falling into a terminal-4xx ladder would latch a
+ * healthy listing as failed.
+ */
+export function isVersionConflict(err: unknown): err is MercadoLivreHttpError {
+  return err instanceof MercadoLivreHttpError && err.status === 409;
+}

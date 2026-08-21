@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { PrecoAlteracao } from '@/lib/produtos/bulkPreco/types';
 
 // jsdom has no layout, so the real virtualizer measures 0 rows — mock the
@@ -31,9 +31,9 @@ function row(over: Partial<PrecoAlteracao> = {}): PrecoAlteracao {
 
 function renderTable(rows: PrecoAlteracao[]) {
   return render(
-    <MantineProvider>
+    <MantineTestProvider>
       <AlteracoesTable rows={rows} />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

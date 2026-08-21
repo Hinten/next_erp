@@ -137,7 +137,10 @@ import {
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
   PAUSE_REENQUEUE_JITTER_MAX_S,
   type RawVarLinkRow,
+  STOCK_MULTIORIGEM_FLAG_ENV,
   STOCK_SYNC_FLAG_ENV,
+  TAG_MULTIWAREHOUSE,
+  TAG_WAREHOUSE_MANAGEMENT,
   type StockFamilyRow,
   anchorPageLimit,
   buildSendTasks,
@@ -162,6 +165,7 @@ import {
   quantidadeDoMembro,
   quantidadeParaEnvio,
   quantidadesDaFamilia,
+  resolverModoEstoque,
   ratePauseMin,
   quantidadesAnteriores,
   chaveMovimento,
@@ -225,6 +229,7 @@ const TOUCHED_ENV = [
   'MERCADO_LIVRE_STOCK_RATE_PAUSE_MIN',
   'ESTOQUE_PLAN_TEST_INT',
   'ESTOQUE_PLAN_TEST_FLAG',
+  STOCK_MULTIORIGEM_FLAG_ENV,
 ];
 
 const PARENT_LINK_REF = 'documents/produtos/PROD/produtoMercadoLivre/link1';
@@ -338,6 +343,7 @@ const linkSub = () => ({
         'status',
         'sub_status',
         'isUserProductModel',
+        'userProductId',
         alias('linkDocId', docId(f('__name__'))),
       ],
     },
@@ -365,7 +371,23 @@ const childrenSub = () => ({
           kind: 'arraySubquery',
           stages: [
             { stage: 'subcollection', args: ['variacaoMercadoLivre'] },
-            { stage: 'select', args: ['itemId', 'id', 'produtoMercadoLivreOuterRef'] },
+            {
+              stage: 'select',
+              // `status`/`sub_status` ride along for the UP branch's per-MEMBER gate:
+              // under User Products a member is its own ML item, and the parent's
+              // folded status ranks `closed` LAST, so the family can read `active`
+              // while one member is gone. `userProductId` is the #706 send unit,
+              // and `varLinkDocId` is where its lazy stamp lands.
+              args: [
+                'itemId',
+                'id',
+                'produtoMercadoLivreOuterRef',
+                'status',
+                'sub_status',
+                'userProductId',
+                alias('varLinkDocId', docId(f('__name__'))),
+              ],
+            },
           ],
         }),
       ],
@@ -1535,6 +1557,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'item',
           itemId: 'MLB111',
           variacaoProdutoId: null,
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: 7,
           variations: null,
         },
@@ -1573,6 +1597,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         kind: 'item',
         itemId: 'MLB111',
         variacaoProdutoId: null,
+        userProductId: null,
+        varLinkDocId: null,
         quantidade: 0,
         variations: null,
       },
@@ -1810,6 +1836,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'item',
           itemId: 'MLB111',
           variacaoProdutoId: null,
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: null,
           variations: [
             { id: 101, available_quantity: 3 },
@@ -1842,6 +1870,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         kind: 'item',
         itemId: 'MLB111',
         variacaoProdutoId: null,
+        userProductId: null,
+        varLinkDocId: null,
         quantidade: null,
         variations: [{ id: 101, available_quantity: 3 }],
       },
@@ -1920,6 +1950,70 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     });
   });
 
+  it('legacy model: a member marked CLOSED is left OUT of variations[] (#707 seam)', () => {
+    // THE rung #707 exists for. The prune marks a phantom `status: 'closed'` on
+    // its own link; if this branch does not read that, the stale id goes straight
+    // back into the payload, ML answers the identical `item.variations.invalid`,
+    // and the self-heal heals nothing.
+    const row = familyRow({
+      children: [
+        child('CH1', [
+          {
+            id: 111,
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'closed',
+            sub_status: ['deleted'],
+          },
+        ]),
+        child('CH2', [{ id: 222, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH2', 4],
+    ]);
+    const res = buildSendTasks(row, qty, OPTS);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        kind: 'item',
+        itemId: 'MLB111',
+        userProductId: null,
+        varLinkDocId: null,
+        variacaoProdutoId: null,
+        quantidade: null,
+        // 111 is gone — only the live sibling rides the bulk payload.
+        variations: [{ id: 222, available_quantity: 4 }],
+      },
+    ]);
+    expect(res.skips).toEqual([
+      { produtoId: 'CH1', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
+  });
+
+  it('legacy model: a member with NO status still rides the payload (#780)', () => {
+    // Every Flutter-authored variation link is null here, and gating on the
+    // whitelist would be a silent, permanent stock outage for that catalogue.
+    const row = familyRow({
+      children: [child('CH1', [{ id: 111, produtoMercadoLivreOuterRef: PARENT_LINK_REF }])],
+    });
+    const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
+    expect(res.tasks[0]?.variations).toEqual([{ id: 111, available_quantity: 3 }]);
+    expect(res.skips).toEqual([]);
+  });
+
+  it('legacy model: EVERY member closed → no task at all, only skips', () => {
+    const row = familyRow({
+      children: [
+        child('CH1', [{ id: 111, produtoMercadoLivreOuterRef: PARENT_LINK_REF, status: 'closed' }]),
+      ],
+    });
+    const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toHaveLength(1);
+  });
+
   it('UP model: one variationItem task per child, deduped by itemId', () => {
     const row = familyRow({
       links: [{ isUserProductModel: true }],
@@ -1943,6 +2037,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'variationItem',
           itemId: 'MLB-CH1',
           variacaoProdutoId: 'CH1',
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: 3,
           variations: null,
         },
@@ -1951,6 +2047,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'variationItem',
           itemId: 'MLB-CH2',
           variacaoProdutoId: 'CH2',
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: 4,
           variations: null,
         },
@@ -1981,6 +2079,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         kind: 'variationItem',
         itemId: 'MLB-CH1',
         variacaoProdutoId: 'CH1',
+        userProductId: null,
+        varLinkDocId: null,
         quantidade: 3,
         variations: null,
       },
@@ -1995,6 +2095,89 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
+  it('UP model: a member ML reports as CLOSED is skipped, its siblings still send', () => {
+    // Under User Products a member is its own ML item, and `foldFamilyStatus`
+    // ranks `closed` LAST on purpose — so the PARENT can read `active` while one
+    // member is gone. Without a per-member rung that member is sent to on every
+    // tick, earns a 4xx and rides the whole #781 ladder, 96× a day, forever.
+    // This is also what makes #707's `status: 'closed'` mark actionable.
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'closed',
+            sub_status: ['deleted'],
+          },
+        ]),
+        child('CH2', [
+          {
+            itemId: 'MLB-CH2',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'active',
+            sub_status: [],
+          },
+        ]),
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH2', 4],
+    ]);
+    const res = buildSendTasks(row, qty, OPTS);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        kind: 'variationItem',
+        itemId: 'MLB-CH2',
+        userProductId: null,
+        varLinkDocId: null,
+        variacaoProdutoId: 'CH2',
+        quantidade: 4,
+        variations: null,
+      },
+    ]);
+    expect(res.skips).toEqual([
+      { produtoId: 'CH1', reason: 'status-nao-enviavel', itemId: 'MLB-CH1', linkDocId: 'link1' },
+    ]);
+  });
+
+  it('UP model: a member with NO status sends optimistically (#780, the inherited catalogue)', () => {
+    // `status` on a member link arrived with #1142, so EVERY Flutter-authored row
+    // is null here — and a listing that never changes never fires an `items`
+    // notification, so gating on the whitelist would be a silent, permanent stock
+    // outage for the whole migrated catalogue. Same arm the parent link takes.
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
+    });
+    const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
+    expect(res.tasks).toHaveLength(1);
+    expect(res.skips).toEqual([]);
+  });
+
+  it('UP model: paused + out_of_stock still sends (ML reactivates on qty > 0)', () => {
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+            status: 'paused',
+            sub_status: ['out_of_stock'],
+          },
+        ]),
+      ],
+    });
+    expect(buildSendTasks(row, new Map([['CH1', 3]]), OPTS).tasks).toHaveLength(1);
+  });
+
   it('childless UP family degenerates to a single item task with the anchor quantity', () => {
     expect(run(familyRow({ links: [{ isUserProductModel: true }] }))).toEqual({
       tasks: [
@@ -2003,6 +2186,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'item',
           itemId: 'MLB111',
           variacaoProdutoId: null,
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: 7,
           variations: null,
         },
@@ -2041,6 +2226,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'item',
           itemId: 'MLB111',
           variacaoProdutoId: null,
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: null,
           variations: [
             { id: 101, available_quantity: 3 },
@@ -2053,6 +2240,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'item',
           itemId: 'MLB222',
           variacaoProdutoId: null,
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: null,
           variations: [
             { id: 201, available_quantity: 3 },
@@ -2080,6 +2269,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         kind: 'item',
         itemId: 'MLB222',
         variacaoProdutoId: null,
+        userProductId: null,
+        varLinkDocId: null,
         quantidade: 7,
         variations: null,
       },
@@ -2115,11 +2306,305 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           kind: 'variationItem',
           itemId: 'MLB-CH1',
           variacaoProdutoId: 'CH1',
+          userProductId: null,
+          varLinkDocId: null,
           quantidade: 3,
           variations: null,
         },
       ],
       skips: [],
     });
+  });
+});
+
+describe('resolverModoEstoque (#706)', () => {
+  it('no tags at all → items. ML omits the array on some responses, and reading that as "be careful" would refuse every ordinary conta', () => {
+    expect(resolverModoEstoque(null)).toEqual({ modo: 'items', recusa: null });
+    expect(resolverModoEstoque(undefined)).toEqual({ modo: 'items', recusa: null });
+    expect(resolverModoEstoque([])).toEqual({ modo: 'items', recusa: null });
+    expect(resolverModoEstoque(['normal', 'user_product_seller'])).toEqual({
+      modo: 'items',
+      recusa: null,
+    });
+  });
+
+  it('warehouse_management alone + flag ON → userProduct (ONE depósito, unambiguous)', () => {
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    expect(resolverModoEstoque(['normal', TAG_WAREHOUSE_MANAGEMENT])).toEqual({
+      modo: 'userProduct',
+      recusa: null,
+    });
+  });
+
+  it('warehouse_management alone + flag OFF → refused, and the reason says the flag is the remedy', () => {
+    expect(resolverModoEstoque([TAG_WAREHOUSE_MANAGEMENT])).toEqual({
+      modo: null,
+      recusa: 'multiorigem-desabilitado',
+    });
+  });
+
+  it('⚠️ multiwarehouse ALSO refuses WITH the flag on — the two tags are a hierarchy, not a set', () => {
+    // A seller carrying both manages SEVERAL depósitos, and this ERP binds one
+    // `depositoOuterRef` per conta, so there is no unambiguous target. Letting
+    // the flag through here would write the ERP quantity into whichever
+    // warehouse ML listed first. #1177.
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    expect(resolverModoEstoque([TAG_WAREHOUSE_MANAGEMENT, TAG_MULTIWAREHOUSE])).toEqual({
+      modo: null,
+      recusa: 'multi-deposito',
+    });
+  });
+
+  it('multiwarehouse WITHOUT warehouse_management is not multiorigin (ML always sends the pair)', () => {
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    expect(resolverModoEstoque([TAG_MULTIWAREHOUSE])).toEqual({ modo: 'items', recusa: null });
+  });
+
+  it('the flag is read LAZILY, so a redeploy is enough to turn it on', () => {
+    expect(resolverModoEstoque([TAG_WAREHOUSE_MANAGEMENT]).modo).toBeNull();
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = '1';
+    expect(resolverModoEstoque([TAG_WAREHOUSE_MANAGEMENT]).modo).toBe('userProduct');
+    process.env[STOCK_MULTIORIGEM_FLAG_ENV] = 'true'; // only '1' counts
+    expect(resolverModoEstoque([TAG_WAREHOUSE_MANAGEMENT]).modo).toBeNull();
+  });
+});
+
+describe('buildSendTasks — multiorigem (modo userProduct, #706)', () => {
+  const OPTS = {
+    integracaoId: CONTA,
+    sweepId: 'sweep-1',
+    sweepComputedAtMs: T4,
+    modo: 'userProduct' as const,
+  };
+  const BASE = {
+    integracaoId: CONTA,
+    produtoId: 'PROD',
+    linkDocId: 'link1',
+    sweepId: 'sweep-1',
+    sweepComputedAtMs: T4,
+    reenqueues: 0,
+  };
+
+  function run(row: StockFamilyRow, qty: ReadonlyMap<string, number> = new Map([['PROD', 7]])) {
+    return buildSendTasks(row, qty, OPTS);
+  }
+
+  it('childless listing → ONE userProductStock task carrying the stamped UP id', () => {
+    expect(run(familyRow({ links: [{ userProductId: 'MLBU-1' }] }))).toEqual({
+      tasks: [
+        {
+          ...BASE,
+          kind: 'userProductStock',
+          itemId: 'MLB111',
+          userProductId: 'MLBU-1',
+          varLinkDocId: null,
+          variacaoProdutoId: null,
+          quantidade: 7,
+          variations: null,
+        },
+      ],
+      skips: [],
+    });
+  });
+
+  it('an UNSTAMPED link still emits — the handler resolves the UP from itemId once and stamps it', () => {
+    const res = run(familyRow());
+    expect(res.skips).toEqual([]);
+    expect(res.tasks).toHaveLength(1);
+    expect(res.tasks[0]).toMatchObject({
+      kind: 'userProductStock',
+      itemId: 'MLB111',
+      userProductId: null,
+      varLinkDocId: null,
+    });
+  });
+
+  it('⚠️ NEVER emits a bulk `variations` task, even on the OLD model — PUT /items is ignored here', () => {
+    // This is the whole point of the mode: the old-model arm would have built
+    // ONE `PUT /items` with a variations array, which ML accepts and discards.
+    const row = familyRow({
+      links: [{ isUserProductModel: false }],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            userProductId: 'MLBU-A',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+          },
+        ]),
+        child('CH2', [
+          {
+            itemId: 'MLB-CH2',
+            userProductId: 'MLBU-B',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+          },
+        ]),
+      ],
+    });
+    const res = run(
+      row,
+      new Map([
+        ['CH1', 3],
+        ['CH2', 5],
+      ]),
+    );
+
+    expect(res.tasks.every((t) => t.kind === 'userProductStock')).toBe(true);
+    expect(res.tasks.every((t) => t.variations === null)).toBe(true);
+    expect(res.tasks.map((t) => [t.userProductId, t.quantidade])).toEqual([
+      ['MLBU-A', 3],
+      ['MLBU-B', 5],
+    ]);
+  });
+
+  it('one task per member, each carrying its OWN UP and its OWN quantity', () => {
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            userProductId: 'MLBU-A',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+          },
+        ]),
+        child('CH2', [
+          {
+            itemId: 'MLB-CH2',
+            userProductId: 'MLBU-B',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+          },
+        ]),
+      ],
+    });
+    const res = run(
+      row,
+      new Map([
+        ['CH1', 3],
+        ['CH2', 5],
+      ]),
+    );
+
+    expect(res.skips).toEqual([]);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE,
+        kind: 'userProductStock',
+        itemId: 'MLB-CH1',
+        userProductId: 'MLBU-A',
+        varLinkDocId: null,
+        variacaoProdutoId: 'CH1',
+        quantidade: 3,
+        variations: null,
+      },
+      {
+        ...BASE,
+        kind: 'userProductStock',
+        itemId: 'MLB-CH2',
+        userProductId: 'MLBU-B',
+        varLinkDocId: null,
+        variacaoProdutoId: 'CH2',
+        quantidade: 5,
+        variations: null,
+      },
+    ]);
+  });
+
+  it('⚠️ dedups by USER PRODUCT, not by item — one UP can back several items', () => {
+    // Two listings on the same conta whose members resolve to the same UP would
+    // otherwise race each other's `x-version` and trade 409s for the whole tick.
+    const row = familyRow({
+      links: [
+        { isUserProductModel: true, linkDocId: 'link1' },
+        { isUserProductModel: true, linkDocId: 'link2', id: 'MLB222' },
+      ],
+      children: [
+        child('CH1', [
+          {
+            itemId: 'MLB-CH1',
+            userProductId: 'MLBU-A',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+          },
+          // A DIFFERENT item, same User Product — the second listing.
+          {
+            itemId: 'MLB-CH1-B',
+            userProductId: 'MLBU-A',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF2,
+          },
+        ]),
+      ],
+    });
+    const res = run(row, new Map([['CH1', 4]]));
+
+    expect(res.tasks).toHaveLength(1);
+    expect(res.tasks[0]).toMatchObject({ userProductId: 'MLBU-A', linkDocId: 'link1' });
+  });
+
+  it('⚠️ a legacy variations[] member skips `sem-user-product` LOUDLY — and its siblings still send', () => {
+    // An ML variation object carries no `user_product_id` and the variation is
+    // not its own item, so there is nothing to write to AND nothing to resolve
+    // one from. Stock that will not reach ML must never be silent.
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
+    const row = familyRow({
+      links: [{ isUserProductModel: false }],
+      children: [
+        // Legacy: a numeric variation id, no itemId, no UP.
+        child('CH1', [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        child('CH2', [
+          {
+            itemId: 'MLB-CH2',
+            userProductId: 'MLBU-B',
+            produtoMercadoLivreOuterRef: PARENT_LINK_REF,
+          },
+        ]),
+      ],
+    });
+    const res = run(
+      row,
+      new Map([
+        ['CH1', 3],
+        ['CH2', 5],
+      ]),
+    );
+
+    expect(res.skips).toEqual([
+      { produtoId: 'CH1', reason: 'sem-user-product', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
+    expect(res.tasks).toHaveLength(1);
+    expect(res.tasks[0]).toMatchObject({ produtoId: 'PROD', variacaoProdutoId: 'CH2' });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('sem User Product'),
+      expect.objectContaining({ produtoId: 'CH1' }),
+    );
+  });
+
+  it('a member with a UP but no itemId still sends — the id is only needed to RESOLVE one', () => {
+    const row = familyRow({
+      links: [{ isUserProductModel: true }],
+      children: [
+        child('CH1', [{ userProductId: 'MLBU-A', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
+    });
+    const res = run(row, new Map([['CH1', 2]]));
+    expect(res.skips).toEqual([]);
+    // Falls back to the family's own id for logging.
+    expect(res.tasks[0]).toMatchObject({ itemId: 'MLB111', userProductId: 'MLBU-A' });
+  });
+
+  it('every rung ABOVE the mode split still applies (estado E, status gate, kit virtual)', () => {
+    expect(run(familyRow({ links: [{ estado: 'E' }] })).skips[0]?.reason).toBe('anuncio-em-erro');
+    expect(run(familyRow({ links: [{ status: 'closed' }] })).skips[0]?.reason).toBe(
+      'status-nao-enviavel',
+    );
+    expect(run(familyRow(), new Map()).skips[0]?.reason).toBe('kit-virtual');
+  });
+
+  it('modo defaults to items, so nothing changes for a conta that never opts in', () => {
+    const res = buildSendTasks(familyRow(), new Map([['PROD', 7]]), {
+      integracaoId: CONTA,
+      sweepId: 'sweep-1',
+      sweepComputedAtMs: T4,
+    });
+    expect(res.tasks[0]).toMatchObject({ kind: 'item', userProductId: null });
   });
 });

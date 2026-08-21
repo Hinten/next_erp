@@ -6,6 +6,7 @@ import {
   MercadoLivreNetworkError,
   MercadoLivreReauthRequiredError,
   type MlItem,
+  type MlUserProductStock,
 } from '@delfrance/integrations-mercado-livre';
 import { estoqueMercadoLivreSyncCollection } from '@delfrance/data/admin/collections';
 
@@ -27,9 +28,17 @@ import {
 
 /* ------------------------------ fake Firestore ----------------------------- */
 // Doc-level fake: `collection(path).doc(id)` with get / set({ merge }) + an
-// opLog. The handler makes NO collection queries anymore — payloads carry the
-// sweep-computed quantities AND the writeback target — so the only Firestore
-// surface it touches is the pause-state doc get and the two merge writebacks.
+// opLog. The handler makes no collection queries on the HAPPY path — payloads
+// carry the sweep-computed quantities AND the writeback target — so the only
+// Firestore surface a successful send touches is the pause-state doc get and the
+// two merge writebacks.
+//
+// The TERMINAL 4xx branch is the exception, and it needs three more capabilities
+// (mirroring the fake in itemsStatusSync.test.ts): a whole-collection read (the
+// UP member lookup), a collectionGroup query whose docs carry
+// `ref.parent.parent.id` (the family sibling read), and a transaction with REAL
+// optimistic concurrency — a pass-through would report green for exactly the
+// unguarded read-modify-write #707's prune runs inside a transaction to avoid.
 
 type DocData = Record<string, unknown>;
 
@@ -39,18 +48,45 @@ interface FakeSnap {
   data: () => DocData | undefined;
 }
 
-interface FakeDocRef {
+interface FakeRef {
   id: string;
-  get: () => Promise<FakeSnap>;
-  set: (data: DocData, opts?: { merge?: boolean }) => void;
-  update: (data: DocData) => Promise<void>;
+  __path: string;
+}
+
+interface FakeQuery {
+  __isQuery: true;
+  get(): Promise<{ docs: FakeQueryDoc[]; empty: boolean; size: number }>;
+}
+
+interface FakeQueryDoc {
+  id: string;
+  __path: string;
+  exists: boolean;
+  data: () => DocData;
+  ref: { id: string; __path: string; parent: { parent: { id: string } } };
+}
+
+interface FakeTx {
+  get(target: FakeRef | FakeQuery): Promise<unknown>;
+  set(ref: FakeRef, data: DocData, opts?: { merge?: boolean }): void;
+  update(ref: FakeRef, patch: DocData): void;
+}
+
+/** `produtos/<id>/variacaoMercadoLivre` → `<id>`. */
+function parentDocId(colPath: string): string {
+  const segs = colPath.split('/').filter(Boolean);
+  return segs[segs.length - 2] ?? '';
 }
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly opLog: Array<{ op: 'get' | 'set' | 'update'; path: string }> = [];
+  /** Document versions — what makes `runTransaction` below a real OCC loop. */
+  readonly versions = new Map<string, number>();
+  /** Runs inside the read→commit window, so a test can interleave a competing writer. */
+  onBeforeCommit: (() => void | Promise<void>) | null = null;
 
-  private col(path: string): Map<string, DocData> {
+  col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
     if (!c) this.cols.set(path, (c = new Map()));
     return c;
@@ -62,14 +98,52 @@ class FakeDb {
   docs(path: string): Map<string, DocData> {
     return this.col(path);
   }
+  /**
+   * A competing writer, for the `onBeforeCommit` race hook: merges a patch AND
+   * bumps the version, which is what makes the reading transaction lose at
+   * commit. `seed()` deliberately does neither — a seed is initial state, and
+   * bumping there would make every transaction retry once.
+   */
+  raceWrite(path: string, id: string, patch: DocData): void {
+    this.col(path).set(id, { ...(this.col(path).get(id) ?? {}), ...patch });
+    this.bump(path, id);
+  }
+  private bump(path: string, id: string): void {
+    const k = `${path}/${id}`;
+    this.versions.set(k, (this.versions.get(k) ?? 0) + 1);
+  }
 
-  collection(path: string): { doc: (id: string) => FakeDocRef } {
+  private snapOf(entries: Array<[string, DocData, string]>) {
+    return {
+      docs: entries.map(([id, d, colPath]) => ({
+        id,
+        __path: colPath,
+        exists: true,
+        data: () => d,
+        ref: { id, __path: colPath, parent: { parent: { id: parentDocId(colPath) } } },
+      })),
+      empty: entries.length === 0,
+      size: entries.length,
+    };
+  }
+
+  collection(path: string): {
+    doc: (id: string) => FakeDocRef;
+    get: () => Promise<{ docs: FakeQueryDoc[]; empty: boolean; size: number }>;
+  } {
     const self = this;
     return {
+      // The UP member lookup reads the CHILD's whole `variacaoMercadoLivre`
+      // subcollection and filters in code — no `where`, hence no index.
+      get: async () => {
+        self.opLog.push({ op: 'get', path });
+        return self.snapOf([...self.col(path)].map(([id, d]) => [id, d, path]));
+      },
       doc(id: string): FakeDocRef {
         const col = self.col(path);
         return {
           id,
+          __path: path,
           get: async () => {
             self.opLog.push({ op: 'get', path: `${path}/${id}` });
             return { exists: col.has(id), id, data: () => col.get(id) };
@@ -78,6 +152,7 @@ class FakeDb {
             self.opLog.push({ op: 'set', path: `${path}/${id}` });
             if (opts?.merge) col.set(id, { ...(col.get(id) ?? {}), ...data });
             else col.set(id, { ...data });
+            self.bump(path, id);
           },
           // `update()` backs both the parent-denorm arm of `applyItemStatusToLink`
           // and every `mergeIfExists` link writeback. The missing-doc failure
@@ -92,11 +167,115 @@ class FakeDb {
               throw Object.assign(new Error(`NOT_FOUND: ${path}/${id}`), { code: 5 });
             }
             col.set(id, { ...(col.get(id) ?? {}), ...data });
+            self.bump(path, id);
           },
         };
       },
     };
   }
+
+  collectionGroup(groupId: string): FakeQuery {
+    const self = this;
+    const clauses: Array<[string, unknown]> = [];
+    let cap: number | null = null;
+    const q: FakeQuery & {
+      where: (f: string, op: string, v: unknown) => FakeQuery;
+      limit: (n: number) => FakeQuery;
+    } = {
+      __isQuery: true,
+      where(field: string, _op: string, value: unknown) {
+        clauses.push([field, value]);
+        return q;
+      },
+      limit(n: number) {
+        cap = n;
+        return q;
+      },
+      // ⚠️ Re-evaluated per call, never captured. A transaction retry MUST see
+      // what the winning writer committed; a frozen snapshot would make an OCC
+      // guard look broken and, worse, make a missing one look fine.
+      async get() {
+        const entries: Array<[string, DocData, string]> = [];
+        for (const [path, col] of self.cols) {
+          if (path.split('/').pop() !== groupId) continue;
+          for (const [id, d] of col) {
+            if (clauses.every(([f, v]) => d[f] === v)) entries.push([id, d, path]);
+          }
+        }
+        return self.snapOf(cap == null ? entries : entries.slice(0, cap));
+      },
+    };
+    return q;
+  }
+
+  /**
+   * A transaction fake with REAL optimistic concurrency, not a pass-through.
+   * Records the version of every document the callback READS and re-checks them
+   * at commit; a competing write re-runs the callback against the new state,
+   * which is what makes #707's "re-derive the plan from `tx.get`" guard testable
+   * rather than decorative. Copied from the fake in itemsStatusSync.test.ts.
+   */
+  async runTransaction<T>(fn: (tx: FakeTx) => Promise<T>): Promise<T> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const readVersions = new Map<string, number>();
+      const writes: Array<() => void> = [];
+      const self = this;
+      const note = (path: string, id: string) =>
+        readVersions.set(`${path}/${id}`, self.versions.get(`${path}/${id}`) ?? 0);
+      const tx: FakeTx = {
+        get: async (target: FakeRef | FakeQuery) => {
+          if ('__isQuery' in target) {
+            const snap = await target.get();
+            for (const d of snap.docs) note(d.__path, d.id);
+            return snap;
+          }
+          note(target.__path, target.id);
+          const col = self.cols.get(target.__path);
+          return {
+            exists: col?.has(target.id) ?? false,
+            id: target.id,
+            data: () => col?.get(target.id),
+          };
+        },
+        set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => {
+          writes.push(() => {
+            const col = self.col(ref.__path);
+            col.set(ref.id, opts?.merge ? { ...(col.get(ref.id) ?? {}), ...data } : { ...data });
+            self.opLog.push({ op: 'set', path: `${ref.__path}/${ref.id}` });
+            self.bump(ref.__path, ref.id);
+          });
+        },
+        update: (ref: FakeRef, patch: DocData) => {
+          writes.push(() => {
+            const col = self.col(ref.__path);
+            if (!col.has(ref.id)) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
+            col.set(ref.id, { ...(col.get(ref.id) ?? {}), ...patch });
+            self.opLog.push({ op: 'update', path: `${ref.__path}/${ref.id}` });
+            self.bump(ref.__path, ref.id);
+          });
+        },
+      };
+      const out = await fn(tx);
+      // The race window: a competing writer commits after our reads and before
+      // our commit. Fires ONCE so a retry is not itself raced forever.
+      const hook = this.onBeforeCommit;
+      this.onBeforeCommit = null;
+      if (hook) await hook();
+      const stale = [...readVersions].some(([k, v]) => (this.versions.get(k) ?? 0) !== v);
+      if (stale) continue; // OCC conflict → re-run against fresh state
+      for (const w of writes) w();
+      return out;
+    }
+    throw new Error('transaction failed after 5 attempts');
+  }
+}
+
+interface FakeDocRef {
+  id: string;
+  __path: string;
+  get: () => Promise<FakeSnap>;
+  set: (data: DocData, opts?: { merge?: boolean }) => void;
+  update: (data: DocData) => Promise<void>;
 }
 
 function asDb(db: FakeDb): Firestore {
@@ -123,6 +302,8 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
     produtoId: 'PROD',
     itemId: 'MLB111',
     kind: 'item',
+    userProductId: null,
+    varLinkDocId: null,
     variacaoProdutoId: null,
     linkDocId: 'link1',
     quantidade: 10,
@@ -153,6 +334,15 @@ interface HarnessOpts {
   updateItem?: (id: string, body: Record<string, unknown>) => Promise<MlItem>;
   /** Only the terminal 4xx branch calls this — default: a healthy listing. */
   getItem?: (id: string) => Promise<MlItem>;
+  /** #706 multiorigem: the read-before-write. Default: one seller_warehouse, version '7'. */
+  getUserProductStock?: (
+    userProductId: string,
+  ) => Promise<{ stock: MlUserProductStock; version: string | null }>;
+  putUserProductSellerWarehouseStock?: (
+    userProductId: string,
+    version: string,
+    locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
+  ) => Promise<{ stock: MlUserProductStock | null; version: string | null }>;
   resolveChannelContext?: () => Promise<{ accessToken: string }>;
   jitterSec?: (maxS: number) => number;
   /**
@@ -181,9 +371,43 @@ function makeHarness(opts: HarnessOpts = {}) {
         sub_status: [],
       })),
   );
+  const getUserProductStock = vi.fn(
+    opts.getUserProductStock ??
+      (async (userProductId: string) => ({
+        stock: {
+          id: userProductId,
+          locations: [
+            {
+              type: 'seller_warehouse',
+              store_id: 'STORE-1',
+              network_node_id: 'NODE-1',
+              quantity: 3,
+            },
+          ],
+        } as MlUserProductStock,
+        version: '7' as string | null,
+      })),
+  );
+  const putUserProductSellerWarehouseStock = vi.fn(
+    opts.putUserProductSellerWarehouseStock ??
+      (async (
+        userProductId: string,
+        _version: string,
+        locations: ReadonlyArray<{ store_id: string; network_node_id: string; quantity: number }>,
+      ) => ({
+        stock: {
+          id: userProductId,
+          locations: locations.map((l) => ({ ...l, type: 'seller_warehouse' })),
+        } as MlUserProductStock,
+        // A successful write earns a NEW version; the handler ignores it today.
+        version: '8' as string | null,
+      })),
+  );
   const apiFactory = vi.fn((_cfg: { getAccessToken: () => Promise<string> }) => ({
     updateItem,
     getItem,
+    getUserProductStock,
+    putUserProductSellerWarehouseStock,
   }));
   const contextLoader: StockContextLoader = vi.fn(async () => ({
     conta: opts.conta ?? { depositoOuterRef: DEP_REF },
@@ -199,7 +423,17 @@ function makeHarness(opts: HarnessOpts = {}) {
     jitterSec,
     retryCount: opts.retryCount ?? 0,
   };
-  return { db, deps, enqueue, updateItem, getItem, apiFactory, jitterSec };
+  return {
+    db,
+    deps,
+    enqueue,
+    updateItem,
+    getItem,
+    getUserProductStock,
+    putUserProductSellerWarehouseStock,
+    apiFactory,
+    jitterSec,
+  };
 }
 
 type Harness = ReturnType<typeof makeHarness>;
@@ -480,6 +714,68 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
 });
 
 describe('processStockSendTask — writeback', () => {
+  it('a SUCCESSFUL member send writes no status to the family link', () => {
+    // The same one-member-speaks-for-the-family failure as the terminal branch,
+    // in the success direction: `resp` describes ONE member while `linkDocId`
+    // names the FAMILY. Writing `resp.status` there means a member coming back
+    // `paused` on an accepted PUT makes the next sweep skip EVERY sibling as
+    // `status-nao-enviavel`.
+    const h = makeHarness({
+      updateItem: async (): Promise<MlItem> => ({
+        id: 'MLB-MEMBER-1',
+        status: 'paused',
+        sub_status: [],
+      }),
+    });
+    h.db.seed(LINK_PATH, 'link1', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      id: 'FAM-9',
+      estado: 'p',
+      status: 'active',
+      sub_status: [],
+      isUserProductModel: true,
+      errors: ['uma falha antiga'],
+    });
+
+    return run(
+      h,
+      payload({
+        kind: 'variationItem',
+        itemId: 'MLB-MEMBER-1',
+        variacaoProdutoId: 'CHILD-1',
+        quantidade: 7,
+      }),
+    ).then((res) => {
+      expect(res).toEqual({ outcome: 'sent', reason: null });
+      const link = h.db.docs(LINK_PATH).get('link1');
+      // The family keeps whatever the fold last concluded — one member's `paused`
+      // does not become the family's.
+      expect(link).toMatchObject({ estado: 'p', status: 'active' });
+      // ...but the heal and the stamp are legitimately family-wide.
+      expect(link).toMatchObject({ errors: [], causas: [], ultimaModificacao: NOW_MS });
+    });
+  });
+
+  it('a successful SIMPLE send still writes the status through (unchanged)', async () => {
+    const h = makeHarness({
+      updateItem: async (): Promise<MlItem> => ({
+        id: 'MLB111',
+        status: 'paused',
+        sub_status: ['out_of_stock'],
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      estado: 'pa',
+      status: 'paused',
+      sub_status: ['out_of_stock'],
+    });
+  });
+
   it('merges the fresh ML status onto the payload-addressed link doc', async () => {
     const h = makeHarness({
       updateItem: async (): Promise<MlItem> => ({
@@ -756,6 +1052,45 @@ describe('processStockSendTask — terminal 4xx (last attempt verifies with ML)'
     });
   });
 
+  /**
+   * ⚠️ #1087, and the ONE hole in this module's self-healing. Everywhere else a
+   * stale moderation is refreshed by the next `items` delivery, because a
+   * moderation lifting changes the item's status — but a listing ML has DELETED
+   * fires no notification ever again. Left untouched, a moderated listing that
+   * reaches this branch keeps its reason forever, sitting next to
+   * `status: 'closed'`.
+   *
+   * This is one of exactly two writers allowed to blank `moderacoes` without
+   * having read `/moderations` (`reverificarAnuncio`'s 404 branch is the other),
+   * and it qualifies because a 404 from `GET /items` IS an answer about the
+   * listing — `/moderations` would 404 for it too.
+   */
+  it('a listing ML DELETED loses its moderation — nothing can ever refresh it', async () => {
+    const h = terminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: item not found', 404, null);
+    });
+    seedLink(h.db, {
+      estado: 'p',
+      moderacoes: [
+        {
+          nome: 'DENYLIST',
+          dataCriacao: null,
+          motivo: 'Seu anúncio foi cancelado por falsificação.',
+          remedio: null,
+          secoes: ['title'],
+          evidencias: [],
+        },
+      ],
+    });
+
+    await run(h);
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      status: 'closed',
+      moderacoes: [],
+    });
+  });
+
   it('the verification GET itself fails → conservative stop, never a false verdict', async () => {
     const h = terminal(async () => {
       throw new MercadoLivreHttpError('ML 503: unavailable', 503, null);
@@ -781,6 +1116,462 @@ describe('processStockSendTask — terminal 4xx (last attempt verifies with ML)'
   });
 });
 
+/* -------------------- #707 phantom-variation self-heal --------------------- */
+
+/** The canonical outer ref of the payload's parent link — the sibling join key. */
+const PARENT_REF = `documents/${LINK_PATH}/link1`;
+const varPath = (childId: string) => `produtos/${childId}/variacaoMercadoLivre`;
+
+/** ML's refusal when the `variations[]` we sent name an id it no longer has. */
+function variationsInvalidError(): MercadoLivreHttpError {
+  return new MercadoLivreHttpError('ML 400: Validation error', 400, {
+    message: 'Validation error',
+    error: 'validation_error',
+    cause: [
+      {
+        department: 'catalog',
+        cause_id: 100,
+        type: 'error',
+        code: 'item.variations.invalid',
+        references: ['item.variations'],
+        message: 'The variations are invalid',
+      },
+    ],
+  });
+}
+
+/** Seed one legacy-model member link under its own child produto. */
+function seedMembro(db: FakeDb, childId: string, docId: string, raw: DocData = {}): void {
+  db.seed(varPath(childId), docId, {
+    id: 101,
+    itemId: null,
+    produtoMercadoLivreOuterRef: PARENT_REF,
+    produtoVariacaoOuterRef: `documents/produtos/${childId}`,
+    ...raw,
+  });
+}
+
+describe('processStockSendTask — terminal 4xx, item.variations.invalid (#707)', () => {
+  /** A bulk send that ML refuses with `item.variations.invalid`. */
+  function bulkTerminal(getItem: HarnessOpts['getItem']) {
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      updateItem: async (): Promise<MlItem> => {
+        throw variationsInvalidError();
+      },
+      getItem,
+    });
+    seedLink(h.db);
+    return h;
+  }
+
+  const bulkPayload = () =>
+    payload({
+      quantidade: null,
+      variations: [
+        { id: 101, available_quantity: 3 },
+        { id: 999, available_quantity: 4 },
+      ],
+    });
+
+  it('marks the phantom member closed, leaves the live one, and does NOT latch', async () => {
+    // ML still lists 101; 999 is gone. Legacy pruned exactly this difference.
+    const h = bulkTerminal(async () => ({
+      id: 'MLB111',
+      status: 'active',
+      sub_status: [],
+      variations: [{ id: 101 }],
+    }));
+    seedMembro(h.db, 'C1', 'v1', { id: 101 });
+    seedMembro(h.db, 'C2', 'v2', { id: 999 });
+
+    const res = await run(h, bulkPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'variacoes-podadas' });
+    expect(h.db.docs(varPath('C2')).get('v2')).toMatchObject({
+      status: 'closed',
+      sub_status: ['deleted'],
+    });
+    // The LIVE member is untouched — no status field invented for it.
+    expect(h.db.docs(varPath('C1')).get('v1')).not.toHaveProperty('status');
+    // ⚠️ The whole point of the prune: `estado 'E'` is what `buildSendTasks`
+    // skips on, so latching a payload we just repaired would leave the corrected
+    // send unmade until a human clicks "Reverificar anúncio".
+    const link = h.db.docs(LINK_PATH).get('link1');
+    expect(link).toMatchObject({
+      status: 'active',
+      errors: ['error · item.variations.invalid — The variations are invalid [item.variations]'],
+    });
+    expect(link?.estado).not.toBe('E');
+  });
+
+  it('prunes NOTHING when every id we sent is still live → #781 latch stands', async () => {
+    // The cause named variations but the diff finds no phantom, so the payload
+    // was refused for some other reason. Re-sending it unchanged only re-earns
+    // the rejection, which is exactly what the latch exists to stop.
+    const h = bulkTerminal(async () => ({
+      id: 'MLB111',
+      status: 'active',
+      sub_status: [],
+      variations: [{ id: 101 }, { id: 999 }],
+    }));
+    seedMembro(h.db, 'C1', 'v1', { id: 101 });
+    seedMembro(h.db, 'C2', 'v2', { id: 999 });
+
+    const res = await run(h, bulkPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E' });
+    expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
+  });
+
+  it('a User-Products family is NEVER pruned — legacy returns on family_name', async () => {
+    // `.old/…/produtos.dart:454` opens with `if (consulta['family_name'] != null)
+    // return;`. Under UP there is no `variations[]` at all and members are keyed
+    // by `itemId`, so a legacy-shaped diff would mark live members closed.
+    const h = bulkTerminal(async () => ({
+      id: 'MLB111',
+      status: 'active',
+      sub_status: [],
+      family_name: 'Camiseta',
+      variations: [],
+    }));
+    seedMembro(h.db, 'C2', 'v2', { id: 999 });
+
+    const res = await run(h, bulkPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
+  });
+
+  it('a rejection naming a DIFFERENT cause prunes nothing', async () => {
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      updateItem: async (): Promise<MlItem> => {
+        throw new MercadoLivreHttpError('ML 400: Validation error', 400, {
+          error: 'validation_error',
+          cause: [{ code: 'item.variations.not_updatable', message: 'nope' }],
+        });
+      },
+      getItem: async () => ({ id: 'MLB111', status: 'active', sub_status: [] }),
+    });
+    seedLink(h.db);
+    seedMembro(h.db, 'C2', 'v2', { id: 999 });
+
+    const res = await run(h, bulkPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
+  });
+
+  it('a SINGLE-item payload never prunes — only a bulk send carries variations', async () => {
+    const h = bulkTerminal(async () => ({
+      id: 'MLB111',
+      status: 'active',
+      sub_status: [],
+      variations: [],
+    }));
+    seedMembro(h.db, 'C2', 'v2', { id: 999 });
+
+    // `quantidade`, not `variations` — this shape cannot earn the cause.
+    const res = await run(h, payload({ quantidade: 5, variations: null }));
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
+  });
+
+  it('re-derives the plan inside the transaction — a racing writer is not lost', async () => {
+    // Rule 7 / ADR 0011, class B: ML's live id set crosses the network, so the
+    // STORED half must come from `tx.get`. A publish landing in the window
+    // re-points v2 at a variation that IS live; a plan captured before the
+    // transaction would mark it closed and silently stop its stock.
+    const h = bulkTerminal(async () => ({
+      id: 'MLB111',
+      status: 'active',
+      sub_status: [],
+      variations: [{ id: 101 }],
+    }));
+    seedMembro(h.db, 'C1', 'v1', { id: 101 });
+    seedMembro(h.db, 'C2', 'v2', { id: 999 });
+    h.db.onBeforeCommit = () => {
+      h.db.raceWrite(varPath('C2'), 'v2', { id: 101 });
+    };
+
+    const res = await run(h, bulkPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    // The retry re-read v2, found it live, and planned nothing.
+    expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
+  });
+});
+
+it('THE SEAM: what the prune writes is what the next sweep leaves out', () => {
+  // Every other prune spec asserts the mark is WRITTEN. None of them proved the
+  // planner READS it — and it did not: the gate first landed on the UP branch
+  // while the prune only ever marks LEGACY links, so the phantom went straight
+  // back into `variations[]` and the self-heal healed nothing. This spec joins
+  // the two halves, so a gate on the wrong branch can never pass again.
+  const marcado = { id: 999, status: 'closed', sub_status: ['deleted'] };
+  const row: StockFamilyRow = {
+    anchorId: 'PROD',
+    anchor: {
+      produtoId: 'PROD',
+      ehKit: false,
+      ehKitVirtual: false,
+      publicado: true,
+      componentesKit: null,
+      timestampMs: null,
+      estoque: null,
+      componentEstoques: [],
+    },
+    integracoesComProduto: [CONTA],
+    links: [
+      {
+        id: 'MLB111',
+        estado: 'p',
+        status: 'active',
+        sub_status: [],
+        isUserProductModel: false,
+        linkDocId: 'link1',
+      },
+    ],
+    children: [
+      {
+        produtoId: 'C1',
+        ehKit: false,
+        ehKitVirtual: false,
+        publicado: true,
+        componentesKit: null,
+        timestampMs: null,
+        estoque: null,
+        componentEstoques: [],
+        varLinks: [{ id: 101, produtoMercadoLivreOuterRef: PARENT_REF }],
+      },
+      {
+        produtoId: 'C2',
+        ehKit: false,
+        ehKitVirtual: false,
+        publicado: true,
+        componentesKit: null,
+        timestampMs: null,
+        estoque: null,
+        componentEstoques: [],
+        // ⚠️ Exactly the patch `podarVariacoesFantasma` merges — spelled as the
+        // stored doc, so a change to either side breaks this.
+        varLinks: [{ ...marcado, produtoMercadoLivreOuterRef: PARENT_REF }],
+      },
+    ],
+  };
+
+  const built = buildSendTasks(
+    row,
+    new Map([
+      ['C1', 3],
+      ['C2', 4],
+    ]),
+    { integracaoId: CONTA, sweepId: 'sweep-2', sweepComputedAtMs: SWEEP_MS },
+  );
+
+  // The phantom is gone; the live sibling still ships.
+  expect(built.tasks).toHaveLength(1);
+  expect(built.tasks[0]?.variations).toEqual([{ id: 101, available_quantity: 3 }]);
+  expect(built.skips).toEqual([
+    { produtoId: 'C2', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
+  ]);
+});
+
+/* ------------- terminal 4xx on ONE User-Products family member ------------- */
+
+describe('processStockSendTask — terminal 4xx on a UP family member (#1142)', () => {
+  const CHILD = 'CHILD-1';
+  const MEMBER_ITEM = 'MLB-MEMBER-1';
+
+  /** The task the sweep emits per UP member: parent link + the MEMBER's item. */
+  const memberPayload = () =>
+    payload({
+      kind: 'variationItem',
+      itemId: MEMBER_ITEM,
+      variacaoProdutoId: CHILD,
+      quantidade: 7,
+    });
+
+  function memberTerminal(getItem: HarnessOpts['getItem']) {
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      updateItem: async (): Promise<MlItem> => {
+        throw new MercadoLivreHttpError('ML 400: invalid quantity', 400, null);
+      },
+      getItem,
+    });
+    // The parent link carries the FAMILY id, never a member's (publish.ts).
+    seedLink(h.db, { id: 'FAM-9', isUserProductModel: true });
+    return h;
+  }
+
+  /** One UP member link under its own child produto. */
+  function seedUpMember(db: FakeDb, childId: string, docId: string, raw: DocData = {}): void {
+    db.seed(varPath(childId), docId, {
+      id: null,
+      itemId: `MLB-${docId}`,
+      produtoMercadoLivreOuterRef: PARENT_REF,
+      produtoVariacaoOuterRef: `documents/produtos/${childId}`,
+      ...raw,
+    });
+  }
+
+  it('a 404 on ONE member closes THAT member — never the family (silent-outage guard)', async () => {
+    // The regression this whole block exists for: writing the member's verdict
+    // to the parent gives it `estado 'c'`, which fails `linkHasLiveListing` and
+    // drops the conta from `integracoesComProduto` — the anchor pre-filter BOTH
+    // sweeps open with. The produto simply stops being selected, silently.
+    const h = memberTerminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+    });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: 'active' });
+    seedUpMember(h.db, 'CHILD-2', 'm2', { itemId: 'MLB-m2', status: 'active' });
+
+    const res = await run(h, memberPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'membro-inexistente' });
+    expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({ status: 'closed' });
+    const link = h.db.docs(LINK_PATH).get('link1');
+    // The sibling is still `active`, so the fold keeps the family live.
+    expect(link).toMatchObject({ status: 'active', errors: ['ML 400: invalid quantity'] });
+    expect(link?.estado).not.toBe('c');
+  });
+
+  it('the family DOES close once its last member is gone', async () => {
+    // The other half of the fold's contract: `closed` ranks last, but when it is
+    // all that is left it must still win — otherwise a dead family stays selected.
+    const h = memberTerminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+    });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: 'active' });
+    seedUpMember(h.db, 'CHILD-2', 'm2', { itemId: 'MLB-m2', status: 'closed' });
+    // The parent carries a moderation and the members carry none — so the write
+    // below DOES land (estado moves to 'c'), and only the field-level gate keeps
+    // a caller that never read `/moderations` from blanking it on the way past.
+    h.db.docs(LINK_PATH).set('link1', {
+      ...h.db.docs(LINK_PATH).get('link1'),
+      moderacoes: [{ codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' }],
+    });
+
+    await run(h, memberPayload());
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'c', status: 'closed' });
+    expect(h.db.docs(LINK_PATH).get('link1')?.moderacoes).toEqual([
+      { codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' },
+    ]);
+  });
+
+  it('a healthy member latches the FAMILY, but never with a member-keyed denorm', async () => {
+    const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'active', sub_status: [] }));
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: null });
+
+    const res = await run(h, memberPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E' });
+    // The member's own status is backfilled from the verification GET (#780's
+    // "the send is its own backfill", now true for members too).
+    expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({ status: 'active' });
+    // ⚠️ The denorm key is the parent's own `id`. A member id reaching
+    // `updateParentDenorm` would arrayUnion an entry nothing can ever remove.
+    expect(h.db.docs('produtos').get('PROD')).toBeUndefined();
+    expect(h.db.opLog.filter((o) => o.path === 'produtos/PROD')).toEqual([]);
+  });
+
+  it('a member ML reports as NOT sendable records its status without latching', async () => {
+    const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'under_review' }));
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: 'active' });
+    seedUpMember(h.db, 'CHILD-2', 'm2', { itemId: 'MLB-m2', status: 'active' });
+
+    const res = await run(h, memberPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'anuncio-nao-enviavel' });
+    expect(h.db.docs(varPath(CHILD)).get('m1')).toMatchObject({ status: 'under_review' });
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).not.toBe('E');
+  });
+
+  it('an unresolvable member takes the conservative stop, never the family cancel', async () => {
+    // No member link matches (a cascade deleted it mid-flight, or the ref drifted).
+    // `estado 'E'` stops the loop and stays visible; `estado 'c'` would be silent.
+    const h = memberTerminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+    });
+
+    const res = await run(h, memberPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'membro-nao-encontrado' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E' });
+  });
+
+  it('a member 404 does NOT blank the FAMILY moderacoes (#1087 × #1142)', () => {
+    // The merge decision this pins. The non-member 404 arm blanks `moderacoes`
+    // because the LISTING is gone and no further `items` notification can ever
+    // arrive to heal it (#1087). A MEMBER disappearing says nothing of the sort:
+    // the family listing is still there, still notifiable, and possibly still
+    // moderated — blanking on one member's 404 erases a live reason for every
+    // sibling.
+    const h = memberTerminal(async () => {
+      throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+    });
+    h.db.seed(LINK_PATH, 'link1', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      id: 'FAM-9',
+      estado: 'p',
+      status: 'active',
+      sub_status: [],
+      isUserProductModel: true,
+      moderacoes: [{ codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' }],
+    });
+    seedUpMember(h.db, CHILD, 'm1', { itemId: MEMBER_ITEM, status: 'active' });
+    seedUpMember(h.db, 'CHILD-2', 'm2', { itemId: 'MLB-m2', status: 'active' });
+
+    return run(h, memberPayload()).then(() => {
+      expect(h.db.docs(LINK_PATH).get('link1')?.moderacoes).toEqual([
+        { codigo: 'poor_quality_thumbnail', motivo: 'Foto ruim' },
+      ]);
+      // ...and the member link gains no invented moderation either.
+      expect(h.db.docs(varPath(CHILD)).get('m1')).not.toHaveProperty('moderacoes');
+    });
+  });
+
+  it('a NON-member 404 still blanks moderacoes (main #1087, unchanged)', async () => {
+    const h = makeHarness({
+      retryCount: LAST_ATTEMPT,
+      updateItem: async (): Promise<MlItem> => {
+        throw new MercadoLivreHttpError('ML 400: invalid quantity', 400, null);
+      },
+      getItem: async () => {
+        throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+      },
+    });
+    seedLink(h.db, { moderacoes: [{ codigo: 'x', motivo: 'y' }] });
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'anuncio-inexistente' });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      status: 'closed',
+      moderacoes: [],
+    });
+  });
+
+  it('a member link belonging to ANOTHER listing is not mistaken for this one', async () => {
+    const h = memberTerminal(async () => ({ id: MEMBER_ITEM, status: 'active', sub_status: [] }));
+    seedUpMember(h.db, CHILD, 'm1', {
+      itemId: MEMBER_ITEM,
+      produtoMercadoLivreOuterRef: 'documents/produtos/OUTRO/produtoMercadoLivre/link9',
+    });
+
+    const res = await run(h, memberPayload());
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'membro-nao-encontrado' });
+    expect(h.db.docs(varPath(CHILD)).get('m1')).not.toHaveProperty('status');
+  });
+});
+
 describe('processStockSendTask — success clears the previous diagnosis', () => {
   it('a landed send wipes the errors a past failure left on the link', async () => {
     const h = makeHarness();
@@ -793,5 +1584,416 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
       status: 'active',
       errors: [],
     });
+  });
+
+  /**
+   * ⚠️ #1087, and it is the OPPOSITE of the rule above. A successful stock
+   * update proves our payload was fine; it proves nothing about ML's POLICY
+   * verdict on the listing. The case is real, not hypothetical: a
+   * `poor_quality_thumbnail` moderation leaves the listing `active`, and an
+   * active listing accepts stock updates — so a send lands on a moderated
+   * listing routinely.
+   *
+   * Clearing `moderacoes` here would erase a live, still-true reason and show a
+   * clean listing that is really still penalised. Hiding a real problem is worse
+   * than the "no explanation" bug the field was added to fix, so this path — which
+   * never called `/moderations` — must leave it exactly as it found it.
+   */
+  it('does NOT clear a live moderation it never asked ML about', async () => {
+    const moderacao = {
+      nome: 'WATERMARK',
+      dataCriacao: null,
+      motivo: "A foto de capa contém marcas d'água.",
+      remedio: 'Corrija suas fotos de capa.',
+      secoes: ['pictures'],
+      evidencias: [],
+    };
+    const h = makeHarness();
+    seedLink(h.db, {
+      estado: 'p',
+      errors: ['ML 400: invalid quantity'],
+      moderacoes: [moderacao],
+    });
+
+    await run(h);
+
+    const link = h.db.docs(LINK_PATH).get('link1');
+    // The stock diagnosis cleared…
+    expect(link).toMatchObject({ errors: [] });
+    // …and the policy reason survived untouched.
+    expect(link).toMatchObject({ moderacoes: [moderacao] });
+  });
+});
+
+describe('processStockSendTask — multiorigem / seller_warehouse (#706)', () => {
+  const UP = payload({ kind: 'userProductStock', userProductId: 'MLBU-1', quantidade: 12 });
+
+  function seedLink(db: FakeDb, over: DocData = {}): void {
+    db.seed(LINK_PATH, 'link1', {
+      id: 'MLB111',
+      estado: 'p',
+      status: 'active',
+      errors: ['falha anterior'],
+      ...over,
+    });
+  }
+
+  it('reads the stock for the version, then PUTs the ECHOED identifiers with the new quantity', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+
+    await expect(run(h, UP)).resolves.toEqual({ outcome: 'sent', reason: null });
+
+    expect(h.getUserProductStock).toHaveBeenCalledWith('MLBU-1');
+    // ⚠️ `locations` REPLACES the seller_warehouse set, so the identifiers must
+    // come back verbatim from the read — inventing or omitting them zeroes a
+    // warehouse nobody asked to touch.
+    expect(h.putUserProductSellerWarehouseStock).toHaveBeenCalledWith('MLBU-1', '7', [
+      { store_id: 'STORE-1', network_node_id: 'NODE-1', quantity: 12 },
+    ]);
+    // …and never through the item endpoint, which ML would silently discard.
+    expect(h.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('the writeback clears the diagnosis but writes NO listing status — the PUT does not return one', async () => {
+    const h = makeHarness();
+    seedLink(h.db, { estado: 'E' });
+
+    await run(h, UP);
+
+    const link = h.db.docs(LINK_PATH).get('link1');
+    expect(link).toMatchObject({ errors: [], ultimaModificacao: NOW_MS });
+    // Inventing a status here would feed `podeEnviarEstoque` next tick. The
+    // `items` webhook and the daily sweep own that data.
+    expect(link?.status).toBe('active'); // untouched, as seeded
+    expect(link?.estado).toBe('E'); // untouched — only clearFalha() applies
+  });
+
+  it('resolves an unstamped User Product from the item ONCE and stamps it into the same writeback', async () => {
+    const h = makeHarness({
+      getItem: async () => ({ id: 'MLB111', user_product_id: 'MLBU-RESOLVED' }),
+    });
+    seedLink(h.db);
+
+    await expect(run(h, payload({ kind: 'userProductStock', quantidade: 4 }))).resolves.toEqual({
+      outcome: 'sent',
+      reason: null,
+    });
+
+    expect(h.getItem).toHaveBeenCalledWith('MLB111');
+    expect(h.getUserProductStock).toHaveBeenCalledWith('MLBU-RESOLVED');
+    // The stamp is what makes the resolve a ONE-TIME cost rather than per tick,
+    // and it rides the writeback that was happening anyway — zero extra writes.
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ userProductId: 'MLBU-RESOLVED' });
+  });
+
+  it('an already-stamped task never pays the resolve GET', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+    await run(h, UP);
+    expect(h.getItem).not.toHaveBeenCalled();
+    expect(h.db.docs(LINK_PATH).get('link1')).not.toHaveProperty('userProductId');
+  });
+
+  it('an item ML gives no user_product_id is stopped terminally — no retry can fix it', async () => {
+    const h = makeHarness({ getItem: async () => ({ id: 'MLB111' }) });
+    seedLink(h.db);
+
+    const res = await run(h, payload({ kind: 'userProductStock', quantidade: 4 }));
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-user-product' });
+    expect(h.getUserProductStock).not.toHaveBeenCalled();
+    // `estado 'E'` is what makes the sweep's gate skip it next tick instead of
+    // re-earning this 96 times a day.
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ estado: 'E' });
+  });
+
+  it('⚠️ a Fulfillment listing is SKIPPED, not sent — a seller_warehouse write there succeeds and does nothing', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: { id, locations: [{ type: 'meli_facility', quantity: 9 }] } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'estoque-full-gerenciado-pelo-ml' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    // A skip, not a failure: the listing is healthy, its stock is simply ML's.
+    expect(h.db.docs(LINK_PATH).get('link1')).not.toMatchObject({ estado: 'E' });
+  });
+
+  it('a User Product with NO locations at all is an operator-actionable error', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: { id, locations: [] } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-deposito-no-ml' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    expect((h.db.docs(LINK_PATH).get('link1')?.errors as string[])[0]).toContain(
+      'painel do Mercado Livre',
+    );
+  });
+
+  it('⚠️ more than one seller_warehouse REFUSES rather than guessing which building the stock is in', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [
+            { type: 'seller_warehouse', store_id: 'A', network_node_id: 'NA', quantity: 1 },
+            { type: 'seller_warehouse', store_id: 'B', network_node_id: 'NB', quantity: 2 },
+          ],
+        } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'multi-deposito-nao-suportado' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ a missing x-version RETHROWS for the queue — it must not latch a healthy listing', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [
+            { type: 'seller_warehouse', store_id: 'A', network_node_id: 'NA', quantity: 1 },
+          ],
+        } as MlUserProductStock,
+        version: null,
+      }),
+    });
+    seedLink(h.db, { estado: 'p' });
+
+    // ML's reference calls this header always-present, so its absence is far
+    // likelier a proxy or a hiccup than a property of this listing. Latching on
+    // attempt 0 with no verification is what #781's ladder exists to prevent —
+    // and the sweep would then refuse the very retry the operator is told to make.
+    await expect(run(h, UP)).rejects.toThrow(/x-version/);
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('p');
+  });
+
+  it('…but the LAST attempt stops the listing, so it cannot loop forever', async () => {
+    // The other half of the #781 ladder: retrying has demonstrably failed, so
+    // this stops instead of re-earning three attempts every 15 minutes.
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [
+            { type: 'seller_warehouse', store_id: 'A', network_node_id: 'NA', quantity: 1 },
+          ],
+        } as MlUserProductStock,
+        version: null,
+      }),
+      retryCount: LAST_ATTEMPT,
+    });
+    seedLink(h.db, { estado: 'p' });
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-x-version' });
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('E');
+  });
+
+  it('⚠️ a 404 from the stock read is `sem-deposito-no-ml`, not a generic 4xx', async () => {
+    // A UP whose stock was never initialised answers `stock-locations not found`,
+    // NOT an empty locations array. Left to the generic arm it would burn all
+    // three queue attempts and then be recorded with a message about the ITEM,
+    // when the actionable truth is "configure the depósito in the ML panel".
+    const h = makeHarness({
+      getUserProductStock: async () => {
+        throw new MercadoLivreHttpError('stock-locations not found', 404, null);
+      },
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'sem-deposito-no-ml' });
+    expect((h.db.docs(LINK_PATH).get('link1')?.errors as string[])[0]).toContain(
+      'painel do Mercado Livre',
+    );
+  });
+
+  it('⚠️ a MEMBER task stamps the resolved UP on the MEMBER link, never on the family link', async () => {
+    // `produtoId`/`linkDocId` are always the ANCHOR's. Stamping there would put a
+    // member's MLBU on the family's link (#1142) AND would never be read back by
+    // `buildSendTasks`, which takes a member's id off `varLink.userProductId` —
+    // so the GET would repeat every tick instead of once.
+    const h = makeHarness({
+      getItem: async () => ({ id: 'MLB-CH1', user_product_id: 'MLBU-CHILD' }),
+    });
+    seedLink(h.db);
+    h.db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', { itemId: 'MLB-CH1' });
+
+    await run(
+      h,
+      payload({
+        kind: 'userProductStock',
+        itemId: 'MLB-CH1',
+        quantidade: 4,
+        variacaoProdutoId: 'CH1',
+        varLinkDocId: 'v1',
+      }),
+    );
+
+    expect(h.db.docs('produtos/CH1/variacaoMercadoLivre').get('v1')).toMatchObject({
+      userProductId: 'MLBU-CHILD',
+    });
+    expect(h.db.docs(LINK_PATH).get('link1')).not.toHaveProperty('userProductId');
+  });
+
+  it('a location without store_id / network_node_id is refused, never sent as empty strings', async () => {
+    const h = makeHarness({
+      getUserProductStock: async (id) => ({
+        stock: {
+          id,
+          locations: [{ type: 'seller_warehouse', quantity: 1 }],
+        } as MlUserProductStock,
+        version: '3',
+      }),
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'deposito-sem-identificadores' });
+    expect(h.putUserProductSellerWarehouseStock).not.toHaveBeenCalled();
+  });
+
+  it('a 409 re-reads the version and retries ONCE — the ordinary outcome of a read-before-write', async () => {
+    let version = '7';
+    const put = vi.fn(async (id: string, v: string) => {
+      if (v !== '9') throw new MercadoLivreHttpError('version mismatch', 409, null);
+      return { stock: { id, locations: [] } as MlUserProductStock, version: '10' as string | null };
+    });
+    const h = makeHarness({
+      getUserProductStock: async (id) => {
+        const v = version;
+        version = '9'; // the second read sees the winner's version
+        return {
+          stock: {
+            id,
+            locations: [
+              { type: 'seller_warehouse', store_id: 'S', network_node_id: 'N', quantity: 1 },
+            ],
+          } as MlUserProductStock,
+          version: v,
+        };
+      },
+      putUserProductSellerWarehouseStock: put,
+    });
+    seedLink(h.db);
+
+    await expect(run(h, UP)).resolves.toEqual({ outcome: 'sent', reason: null });
+
+    expect(h.getUserProductStock).toHaveBeenCalledTimes(2);
+    expect(put).toHaveBeenNthCalledWith(1, 'MLBU-1', '7', expect.anything());
+    expect(put).toHaveBeenNthCalledWith(2, 'MLBU-1', '9', expect.anything());
+  });
+
+  it('⚠️ the 409 retry RE-DERIVES its body — a warehouse that appeared meanwhile must not be zeroed', async () => {
+    // The body REPLACES the seller_warehouse set. Re-sending the pre-conflict
+    // one-element body would zero the newcomer AND skip the `> 1 depósito`
+    // refusal that exists to prevent exactly that. Root CLAUDE.md rule 7:
+    // re-derive from the read that won.
+    let leituras = 0;
+    const put = vi.fn(async () => {
+      throw new MercadoLivreHttpError('version mismatch', 409, null);
+    });
+    const h = makeHarness({
+      getUserProductStock: async (id) => {
+        leituras += 1;
+        const locations =
+          leituras === 1
+            ? [{ type: 'seller_warehouse', store_id: 'S1', network_node_id: 'N1', quantity: 1 }]
+            : [
+                { type: 'seller_warehouse', store_id: 'S1', network_node_id: 'N1', quantity: 1 },
+                { type: 'seller_warehouse', store_id: 'S2', network_node_id: 'N2', quantity: 4 },
+              ];
+        return { stock: { id, locations } as MlUserProductStock, version: `v${leituras}` };
+      },
+      putUserProductSellerWarehouseStock: put,
+    });
+    seedLink(h.db);
+
+    const res = await run(h, UP);
+
+    // The retry saw two warehouses and REFUSED instead of writing one of them.
+    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'multi-deposito-nao-suportado' });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('⚠️ a SECOND 409 rethrows for the queue and must NOT latch the listing with estado E', async () => {
+    // The generic 4xx ladder would spend all three attempts and then mark a
+    // perfectly healthy listing as failed, which only an `items` webhook or a
+    // human clears. A version conflict is not evidence of anything being wrong.
+    const h = makeHarness({
+      putUserProductSellerWarehouseStock: async () => {
+        throw new MercadoLivreHttpError('version mismatch', 409, null);
+      },
+      retryCount: LAST_ATTEMPT,
+    });
+    seedLink(h.db, { errors: [] });
+
+    await expect(run(h, UP)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 409,
+    });
+
+    expect(h.db.docs(LINK_PATH).get('link1')?.estado).toBe('p');
+    expect(h.getItem).not.toHaveBeenCalled(); // the #781 verification never ran
+  });
+
+  it('a 429 still pauses the conta on this path too', async () => {
+    const h = makeHarness({
+      putUserProductSellerWarehouseStock: async () => {
+        throw new MercadoLivreHttpError('rate limited', 429, null, 60);
+      },
+    });
+    seedLink(h.db);
+
+    await expect(run(h, UP)).rejects.toMatchObject({ status: 429 });
+    expect(h.db.docs(STATE_PATH).get(CONTA)?.pausedUntilUs).toBe((NOW_MS + 60_000) * 1000);
+  });
+
+  it('a task with no quantity is dropped, never sent as 0', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+    const res = await run(h, payload({ kind: 'userProductStock', quantidade: null }));
+    expect(res).toEqual({ outcome: 'dropped', reason: 'payload-sem-quantidade' });
+    expect(h.getUserProductStock).not.toHaveBeenCalled();
+  });
+
+  it('quantity 0 IS sent — ML re-activates an out_of_stock listing by itself on the next positive value', async () => {
+    const h = makeHarness();
+    seedLink(h.db);
+    await run(h, payload({ kind: 'userProductStock', userProductId: 'MLBU-1', quantidade: 0 }));
+    expect(h.putUserProductSellerWarehouseStock).toHaveBeenCalledWith('MLBU-1', '7', [
+      { store_id: 'STORE-1', network_node_id: 'NODE-1', quantity: 0 },
+    ]);
+  });
+
+  it('the master flag still gates this path', async () => {
+    vi.stubEnv(STOCK_SYNC_FLAG_ENV, '');
+    const h = makeHarness();
+    const res = await run(h, UP);
+    expect(res.outcome).toBe('skipped');
+    expect(h.getUserProductStock).not.toHaveBeenCalled();
   });
 });

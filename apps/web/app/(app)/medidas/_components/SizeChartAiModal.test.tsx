@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import type { MercadoLivreMedidasSugestao } from '@/lib/mercado-livre/client';
 import type { ChartColumn } from '@/lib/mercado-livre/chartSpec';
@@ -31,11 +31,10 @@ function resultado(over: Partial<MercadoLivreMedidasSugestao> = {}): MercadoLivr
 
 function show(r: MercadoLivreMedidasSugestao) {
   render(
-    // ⚠️ `env="test"` disables Mantine's transitions. Without it the `Modal`'s
-    // `Transition` leaves a timer running past the test, and the callback fires
-    // after jsdom has torn `window` down — an "every test passed, one error"
-    // failure that names an innocent bystander file.
-    <MantineProvider env="test">
+    // `MantineTestProvider` renders the `Modal` inline instead of through a
+    // portal. The leaked transition timer is neutralised in `vitest.setup.ts`,
+    // not here — see #1150.
+    <MantineTestProvider>
       <SizeChartAiModal
         opened
         onClose={vi.fn()}
@@ -45,7 +44,7 @@ function show(r: MercadoLivreMedidasSugestao) {
         mainAttributeId="SIZE"
         onApply={vi.fn()}
       />
-    </MantineProvider>,
+    </MantineTestProvider>,
   );
 }
 

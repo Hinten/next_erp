@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '../testing/mantine';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 
 import { ActionBar } from './ActionBar';
 import type { ActionConfig } from '../schema/types';
 
 function wrap(node: React.ReactNode) {
-  // `env="test"` disables Mantine transitions / portals so the Menu.Dropdown
-  // renders synchronously after the trigger click — assertions stay sync.
-  return render(<MantineProvider env="test">{node}</MantineProvider>);
+  // `MantineTestProvider` renders the Menu.Dropdown inline instead of through a
+  // portal, so it is queryable after the trigger click.
+  return render(<MantineTestProvider>{node}</MantineTestProvider>);
 }
 
 type Row = { name: string };

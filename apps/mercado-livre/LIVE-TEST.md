@@ -138,12 +138,12 @@ pnpm --filter @delfrance/integrations-mercado-livre test
 
 ## 3. Phase 2 — connection
 
-| #   | Step                                      | Assert                                                                                                                                                 | Result |
-| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| 2.1 | OAuth connect as the **seller** test user | token in `tokenDuravel`; `user_id` on the integração; conta panel green                                                                                |        |
-| 2.2 | Replay the same `state`                   | rejected, `reason=bad_state` (#821/T3)                                                                                                                 |        |
-| 2.3 | `GET /users/me` — check `tags`            | ⚠️ if it carries `warehouse_management`, the conta is **multiorigin**: `/enviar-estoque` will 409 `ML_CONTA_MULTIORIGEM` and Phase 5 is blocked (#706) |        |
-| 2.4 | `nickname`                                | `isContaDeTeste` should recognise it — ML mints `TETE…`, not only `TEST…`                                                                              |        |
+| #   | Step                                      | Assert                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Result |
+| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| 2.1 | OAuth connect as the **seller** test user | token in `tokenDuravel`; `user_id` on the integração; conta panel green                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |        |
+| 2.2 | Replay the same `state`                   | rejected, `reason=bad_state` (#821/T3)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |        |
+| 2.3 | `GET /users/me` — check `tags`            | ⚠️ three outcomes (#706). No `warehouse_management` → the ordinary `PUT /items` path. `warehouse_management` ALONE → the conta is multiorigin with ONE depósito: set `MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED=1` and Phase 5 runs through `PUT /user-products/{id}/stock/type/seller_warehouse`; without the flag `/enviar-estoque` 409s `ML_CONTA_MULTIORIGEM` naming the flag. `warehouse_management` **+** `multiwarehouse` → still refused, naming #1177 — several depósitos need a mapping this ERP does not model. ⚠️ First thing a FRESH multiorigin account hits: a UP whose stock was never initialised answers **404 `stock-locations not found`**, not an empty `locations` array — the send maps that to `sem-deposito-no-ml` (“configure o depósito no painel do ML”). Confirm the 404 body and that creating the depósito in the ML panel clears it. |        |
+| 2.4 | `nickname`                                | `isContaDeTeste` should recognise it — ML mints `TETE…`, not only `TEST…`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |        |
 
 ---
 
@@ -329,6 +329,33 @@ pnpm --filter @delfrance/mercado-livre-app dump:notificacoes --project <project-
 | `missed_feeds` backstop (#812)               | make the backend return non-200 for a few minutes; the 05:00 sweep replays. ⚠️ `MERCADO_LIVRE_TASKS_DISABLED=1` is **not** a usable lever — it still acks 200                                                                                              |        |
 | `questions` / `messages`                     | **deferred to a later run** — they `park` until #532/#533 ship                                                                                                                                                                                             |        |
 
+### 8.1 — Moderation reasons reach the link doc (#1087)
+
+The bug this closes was observed on this project on 2026-08-19: `MLB5095421681`
+was paused with _"Pausamos o anúncio porque ele infringe nossas políticas. Ajuste
+o título e/ou substitua as fotos…"_ and the ERP recorded `status`/`sub_status` and
+nothing else.
+
+⚠️ **There is nothing to click yet** — the strip rendering is a follow-up, so this
+is verified at the data layer: read the `produtoMercadoLivre` link doc in the
+Firestore console (or the child's `variacaoMercadoLivre` doc for a UP family).
+
+Trigger a moderation the cheap way rather than waiting for one: publish a listing
+whose cover photo breaks ML's image rules (a watermark, or below the 250px/500px
+minimum — _Moderações de imagens_). ML moderates it with `poor_quality_thumbnail`,
+which is also the most interesting case here because the listing stays `active`.
+
+| Signal                                           | Assert                                                                                                                     | Result |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------ |
+| A moderated listing fires `items`                | the link doc gains `moderacoes[]` with `motivo` **and** `remedio`                                                          |        |
+| The reference id                                 | the backend log shows the call as `…/last_moderation/<MLB…>-ITM`, never a bare item id                                     |        |
+| An `active` + `poor_quality_thumbnail` listing   | keeps `moderacoes` **while** `errors` clears — the case that made this a separate field                                    |        |
+| A **healthy** listing's delivery                 | **no** `last_moderation` call at all (the cost gate)                                                                       |        |
+| Fix the photo, wait for ML to lift it            | `moderacoes` returns to `[]` on the next delivery — ⚠️ a stale reason is the failure mode that matters                     |        |
+| "Reverificar anúncio" on a moderated listing     | the reason SURVIVES the re-check (it re-fetches; it does not merely clear)                                                 |        |
+| A removed listing (`under_review` + `forbidden`) | `remedio` is **null** — ML sends REASON only, and no fix exists                                                            |        |
+| A UP **family** member is moderated              | the reason lands on the MEMBER's `variacaoMercadoLivre` doc; the parent carries it only if that member won the status fold |        |
+
 ---
 
 ## 9. Phase 8 — capture fixtures, clean up, decide on CI
@@ -379,14 +406,14 @@ inside this run** — the run's job is evidence.
 
 ## 11. Issues this run settles
 
-| Issue                           | Outcome                         | Result |
-| ------------------------------- | ------------------------------- | ------ |
-| #1087                           | closed by completing the run    |        |
-| #831 — partial `variations` PUT | closable — §5.5                 |        |
-| #758 — PDF label branch         | closable — §7.2                 |        |
-| #957 — shipments `x-format-new` | evidence captured — §9          |        |
-| #706 — multiorigin contas       | determined at §2.3              |        |
-| #898, #1083, #1072, #707        | observed only — record evidence |        |
+| Issue                           | Outcome                                                                                                                                                 | Result |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| #1087                           | closed by completing the run                                                                                                                            |        |
+| #831 — partial `variations` PUT | closable — §5.5                                                                                                                                         |        |
+| #758 — PDF label branch         | closable — §7.2                                                                                                                                         |        |
+| #957 — shipments `x-format-new` | evidence captured — §9                                                                                                                                  |        |
+| #706 — multiorigin contas       | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got |        |
+| #898, #1083, #1072, #707        | observed only — record evidence                                                                                                                         |        |
 
 ---
 

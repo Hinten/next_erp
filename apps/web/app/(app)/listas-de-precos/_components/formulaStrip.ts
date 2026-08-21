@@ -12,9 +12,9 @@ import { DELETE_MARK, stripMarkedForDeletion } from '@delfrance/ui';
  * `faixasTaxaFixaPeso` array; a category bucket carries its own
  * `formulasCalculoPreco` array).
  *
- * An emptied list collapses to `null`, the shape the legacy Flutter app writes
- * when a list is unset — keeping new docs closest to legacy ones (and matching
- * the schema's `.nullable()` default).
+ * An emptied list collapses to `null` — the shape the migrated corpus stores
+ * for an unset list, so our own readers see one shape across imported and newly
+ * written docs (and it matches the schema's `.nullable()` default).
  *
  * All functions are PURE.
  */

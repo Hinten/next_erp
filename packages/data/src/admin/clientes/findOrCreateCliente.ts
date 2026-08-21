@@ -40,11 +40,14 @@
  *  - `clienteCollection.add` is a blind create, so two concurrent imports for
  *    the same new buyer both create. The real fix is root `CLAUDE.md` rule 7
  *    tier 0 — a deterministic doc id keyed on the normalized document — but
- *    cliente doc ids are shared with the still-running Flutter app, so that is
- *    a wire-format change and out of scope here.
- *  - The legacy Flutter app runs the ORIGINAL unguarded cascade against the
- *    same collection, with telefone and e-mail populated. This module cannot
- *    fix that writer; rows it has already merged wrongly stay merged.
+ *    cliente doc ids are shared with the migrated corpus, so that is a
+ *    wire-format change and out of scope here.
+ *  - The legacy app ran the ORIGINAL unguarded cascade, with telefone and
+ *    e-mail populated, and the rows it merged wrongly arrive that way in the
+ *    corpus. This module cannot unpick them — a wrong merge is not detectable
+ *    after the fact — so they stay merged. (This once read as a live competing
+ *    writer. Void: there is no dual run, root `CLAUDE.md` rule 8. The damage is
+ *    historical, which makes it a migration question, never a race.)
  */
 
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
@@ -167,8 +170,11 @@ async function pageCandidates(
  * data migration (`tools/migrations`), not a side effect of an unrelated
  * import. Doing it here would bump `ultimaModificacao` on documents that did
  * not otherwise change, churning `clienteMeta.defaultQuery`'s sort and the
- * TableView update monitor, against a collection the Flutter app writes
- * concurrently.
+ * TableView update monitor — both OURS, and both index-MANDATORY under root
+ * `CLAUDE.md` rule 1, so on Enterprise every needless bump is re-sorted, re-read
+ * and BILLED as data scanned. The concurrency on this collection is ours too:
+ * the importers, the channel webhooks and two operators in two tabs — not the
+ * Flutter app, which writes no document this app writes (rule 8).
  *
  * The stored form differs by field on purpose: `cpf_cnpj` HAS a canonical form
  * the schema enforces (`^[0-9A-Z]*$` rejects punctuation), so the normalized

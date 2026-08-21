@@ -42,8 +42,9 @@ export const PEDIDO_ITEM_POSITIONAL_PREFIX = '#';
  * ⚠️ The `#<ordem>` fallback is scoped to the GROUP (`<produtoUid>#<ordem>`),
  * and that scoping is a correctness fix, not tidiness. `#<ordem>` alone is not
  * unique across produtos — the schema default is `ordem: 1`, `devolucaoForm`
- * hardcodes `ordem: 1`, and the legacy Flutter writer is outside our control —
- * and the diff engine assigns its duplicate-occurrence suffix in SORTED
+ * hardcodes `ordem: 1`, and the migrated corpus carries rows the legacy Flutter
+ * app stamped `ordem: 1` (that writer is gone; its rows are not) — and the diff
+ * engine assigns its duplicate-occurrence suffix in SORTED
  * GROUP-KEY order. So with an unscoped key, merely adding an unrelated produto
  * renumbers the occurrences after it and the engine pairs lines belonging to
  * different produtos: an untouched line reports as `added` while a quantity

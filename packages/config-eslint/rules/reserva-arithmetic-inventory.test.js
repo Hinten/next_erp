@@ -1,7 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { gitGrep } from './lib/repo-scan.js';
 
 /**
  * Every file that touches the stock RESERVATION is inventoried here, with how it
@@ -36,7 +34,6 @@ import { describe, expect, it } from 'vitest';
  * schema entirely). That is the one failure direction that makes Mercado Livre
  * sell stock the store does not have. See ADR 0014 §7.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * `Reservada` (the camelCase suffix) or a standalone lowercase `reservada`.
@@ -143,20 +140,7 @@ const INVENTARIO = {
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */
 function ficheirosComReserva() {
-  try {
-    return execFileSync(
-      'git',
-      ['grep', '-l', '--no-color', '-E', '--untracked', PATTERN, '--', ...PATHSPECS],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
-    )
-      .split('\n')
-      .filter(Boolean)
-      .sort();
-  } catch (err) {
-    // execFileSync throws on a non-zero exit; git grep exits 1 with no matches.
-    if (err instanceof Error && 'status' in err && err.status === 1) return [];
-    throw err;
-  }
+  return gitGrep({ patterns: PATTERN, pathspecs: PATHSPECS, mode: 'extended' });
 }
 
 describe('every file touching the stock reservation is inventoried', () => {

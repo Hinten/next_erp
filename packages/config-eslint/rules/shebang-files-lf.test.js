@@ -1,8 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { closeSync, openSync, readSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { REPO_ROOT, gitCheckAttr, gitLsFilesZ } from './lib/repo-scan.js';
 
 /**
  * Every tracked file that opens with `#!` must check out with LF endings.
@@ -32,9 +31,8 @@ import { describe, expect, it } from 'vitest';
  * derives the set from the repo — first two bytes of every tracked file — so the
  * rules cannot fall behind the files.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-const git = (...args) => execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' });
+let shebangCache = null;
 
 /**
  * Tracked paths whose first two bytes are `#!`.
@@ -61,15 +59,13 @@ const git = (...args) => execFileSync('git', args, { cwd: REPO_ROOT, encoding: '
  * unpinned. The only gap is a local `pnpm test` run before `git add`.
  */
 function shebangFiles() {
-  // ⚠️ `-z`, not a newline split. Without it `git ls-files` C-quotes any path
-  // holding a non-ASCII byte — the NF-e reference PDFs come back as the literal
-  // `"...Valida\303\247\303\243o..."`, quotes included — and every such path
-  // then fails to open. Silently skipping those (the shape this had first) would
-  // shrink the very set this guard exists to keep total.
-  const tracked = git('ls-files', '-z').split('\0').filter(Boolean);
+  // Memoized: this opens EVERY tracked file, and both assertions below need the
+  // result. Re-running it per `it()` is what put this file within reach of the
+  // default 5s timeout under the parallel suite — see `lib/repo-scan.js`.
+  if (shebangCache) return shebangCache;
   const out = [];
   const buf = Buffer.alloc(2);
-  for (const file of tracked) {
+  for (const file of gitLsFilesZ()) {
     const fd = openSync(resolve(REPO_ROOT, file), 'r');
     try {
       const n = readSync(fd, buf, 0, 2, 0);
@@ -78,24 +74,13 @@ function shebangFiles() {
       closeSync(fd);
     }
   }
-  return out.sort();
+  shebangCache = out.sort();
+  return shebangCache;
 }
 
 /** `{ path: eolAttr }` for the given paths, in ONE `git check-attr` call. */
 function eolAttrs(paths) {
-  if (paths.length === 0) return {};
-  // `-z` on both sides: NUL-delimited in and out, so a path containing a space
-  // or a quote cannot be mis-split. Output is a flat NUL-separated stream of
-  // (path, attr, value) triples.
-  const raw = execFileSync('git', ['check-attr', 'eol', '--stdin', '-z'], {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    input: paths.join('\0'),
-  });
-  const parts = raw.split('\0');
-  const out = {};
-  for (let i = 0; i + 2 < parts.length; i += 3) out[parts[i]] = parts[i + 2];
-  return out;
+  return gitCheckAttr('eol', paths);
 }
 
 describe('shebang files check out with LF', () => {

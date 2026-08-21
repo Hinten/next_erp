@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MantineProvider } from '@mantine/core';
+import { MantineTestProvider } from '@/lib/testing/mantine';
 import { FormProvider, useForm } from 'react-hook-form';
 import type { FieldRenderProps } from '@delfrance/ui';
 import { pesoRenderInput } from './PesoField';
@@ -21,9 +21,9 @@ const makeProps = (over: Partial<FieldRenderProps> = {}): FieldRenderProps =>
 function Harness({ ehKit }: { ehKit: boolean }) {
   const form = useForm({ defaultValues: { ehKit } });
   return (
-    <MantineProvider>
+    <MantineTestProvider>
       <FormProvider {...form}>{pesoRenderInput?.(makeProps())}</FormProvider>
-    </MantineProvider>
+    </MantineTestProvider>
   );
 }
 
