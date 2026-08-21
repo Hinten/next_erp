@@ -26,13 +26,14 @@
  *   - `MERCADO_PAGO_TASKS_DISABLED=1` → `enqueue()` throws `MpTasksDisabledError`;
  *     the receiver falls back to persisting the notification as `failed` so the
  *     reprocess sweep drains it (sweep-only mode — never a silent drop).
- *   - `MERCADO_PAGO_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) → the
+ *   - `MERCADO_PAGO_TASKS_REGION` (falls back to `FUNCTIONS_REGION`; no default) → the
  *     region the function + its queue are deployed to. The region-qualified name
  *     is mandatory: without it the Admin SDK targets `us-central1` and the task
  *     silently drops. App Hosting / Cloud Run does NOT expose its own region as
- *     an env var, so it must be configured; the default matches the MP backend's
- *     deploy region (`us-east5`).
+ *     an env var, so it must be configured — and an unset value THROWS on the
+ *     first enqueue rather than guessing a region.
  */
+import { requireRegion } from '@delfrance/core/region';
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
@@ -40,9 +41,7 @@ import { MERCADO_PAGO_NOTIFICATION_QUEUE, type MpNotificationPayload } from './n
 
 /** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
 function mpTasksRegion(): string {
-  return (
-    process.env.MERCADO_PAGO_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
+  return requireRegion(['MERCADO_PAGO_TASKS_REGION', 'FUNCTIONS_REGION'], process.env);
 }
 
 /**

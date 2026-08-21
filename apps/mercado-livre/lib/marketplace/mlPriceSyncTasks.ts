@@ -22,9 +22,11 @@
  *     same error). Like the mass import there is no sweep to fall back on —
  *     the caller (route or task handler) must surface this as a failed
  *     job/response, never a silent drop.
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) —
+ *   - `MERCADO_LIVRE_TASKS_REGION` (falls back to `FUNCTIONS_REGION`; no
+ *     default — an unset value THROWS on the first enqueue) —
  *     see `mlTasks.ts` for why the region-qualified path is mandatory.
  */
+import { requireRegion } from '@delfrance/core/region';
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
@@ -33,9 +35,7 @@ import { MERCADO_LIVRE_PRICE_SYNC_QUEUE, type PriceSyncTaskPayload } from './pre
 
 /** Region the price-sync function/queue live in (shared knob with mlTasks.ts). */
 function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
+  return requireRegion(['MERCADO_LIVRE_TASKS_REGION', 'FUNCTIONS_REGION'], process.env);
 }
 
 /**

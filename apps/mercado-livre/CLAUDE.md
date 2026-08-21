@@ -232,8 +232,8 @@ Two suites, deliberately separated by filename:
   `processMercadoLivreNotification` → a real Firestore write. ⚠️ The enqueuer's region and the TASK
   functions' region MUST match — a mismatch is the silent drop `mlTasks.ts` warns about,
   and it is what this test detects. Both are `MERCADO_LIVRE_TASKS_REGION` (inlined into
-  the bundle, **us-east1**), which is deliberately NOT `FUNCTIONS_REGION` (**us-east5**):
-  Cloud Tasks and Cloud Scheduler do not exist in us-east5, so the eleven queue/schedule
+  the bundle), which is deliberately NOT `FUNCTIONS_REGION`: Cloud Tasks and Cloud
+  Scheduler do not exist in every region, so where they are absent the eleven queue/schedule
   functions live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).

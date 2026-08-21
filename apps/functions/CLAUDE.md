@@ -300,7 +300,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-eight exports:
   is **not** replaced by the deploy. It must be deleted explicitly, or it lingers
   and keeps writing the estado/frete trails from its stale code:
   ```bash
-  firebase functions:delete onPedidoEstadoChanged --region us-east1 --project <id> --force
+  firebase functions:delete onPedidoEstadoChanged --region <FUNCTIONS_REGION> --project <id> --force
   ```
   Both rows are keyed on `event.id`, so while both exist the duplicate estado /
   frete writes are content-identical and harmless — the zombie is a cost and
@@ -385,7 +385,8 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-eight exports:
   and `sharp` are `external`; everything else (incl. `@delfrance/data`,
   `@delfrance/schemas`) is inlined.
 - The function **region is inlined at build time** (`build.mjs`, esbuild
-  `define`), defaulting to `us-east1` — the Storage bucket region the gen2
+  `define`), and REQUIRED — there is no default, so an unset value stops the
+  build. It must equal the Storage bucket region, which the gen2
   trigger must match. It is **never** read from `.env.local` (secrets). Override
   for another env via the `FUNCTIONS_REGION` env var only.
 
@@ -423,7 +424,8 @@ deploy config or `prepare-deploy.mjs`.
 
 2. **Never read `.env.local` during deploy** (it holds secrets). The only
    build-time value is the region, a non-secret constant — `build.mjs` defaults
-   it to `us-east1`. Do not reintroduce a `dotenv -e .env.local` predeploy.
+   it REQUIRED, with no default. Do not reintroduce a `dotenv -e .env.local`
+   predeploy, and do not reintroduce a default region.
 
 3. **Cloud `npm install` cannot resolve pnpm `workspace:*`**
    (`EUNSUPPORTEDPROTOCOL: Unsupported URL Type "workspace:"`). The gen2
@@ -475,7 +477,7 @@ deploy config or `prepare-deploy.mjs`.
    allowed`** — if a function with the same name already exists with a different
    trigger type (e.g. a leftover HTTPS stub from an earlier attempt), Firebase
    won't switch it in place. Delete it first, then redeploy:
-   `firebase functions:delete resizeProductImage --region us-east1 --project <id> --force`.
+   `firebase functions:delete resizeProductImage --region <FUNCTIONS_REGION> --project <id> --force`.
    (Deleting deployed cloud functions is a destructive shared-infra action — the
    agent is correctly blocked from doing it; ask the user to run the delete.)
 

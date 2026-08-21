@@ -1,4 +1,5 @@
 import { logger } from 'firebase-functions';
+import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { integracaoMeta } from '@delfrance/schemas';
 
@@ -72,7 +73,7 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
   {
     document: `${integracaoMeta.collectionPath}/{integracaoId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
-    region: process.env.FUNCTIONS_REGION ?? 'us-east5',
+    region: FUNCTIONS_REGION,
     retry: true,
   },
   async (event) => {

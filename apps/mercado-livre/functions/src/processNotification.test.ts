@@ -22,7 +22,9 @@ import { MERCADO_LIVRE_NOTIFICATION_QUEUE, TASK_MAX_ATTEMPTS } from '@/lib/marke
  * the deliberate TOP-LEVEL import.
  */
 const originalFunctionsRegion = process.env.FUNCTIONS_REGION;
-process.env.FUNCTIONS_REGION = 'us-east5';
+process.env.FUNCTIONS_REGION = 'us-central1';
+const originalMlTasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION;
+process.env.MERCADO_LIVRE_TASKS_REGION = 'us-central1';
 const originalTasksInvokerSa = process.env.TASKS_INVOKER_SA;
 process.env.TASKS_INVOKER_SA =
   'apphosting@p.iam.gserviceaccount.com,1-compute@developer.gserviceaccount.com';
@@ -32,6 +34,7 @@ const { processMercadoLivreNotification } = await import('./processNotification'
 
 afterAll(() => {
   process.env.FUNCTIONS_REGION = originalFunctionsRegion;
+  process.env.MERCADO_LIVRE_TASKS_REGION = originalMlTasksRegion;
   if (originalTasksInvokerSa === undefined) delete process.env.TASKS_INVOKER_SA;
   else process.env.TASKS_INVOKER_SA = originalTasksInvokerSa;
 });

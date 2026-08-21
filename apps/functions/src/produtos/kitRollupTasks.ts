@@ -23,6 +23,7 @@
  *     `??` would keep `''` and yield `locations//functions/…`, which drops the
  *     task silently.
  */
+import { requireRegion } from '@delfrance/core/region';
 import { FirebaseAppError } from 'firebase-admin/app';
 import { FirebaseFunctionsError, getFunctions } from 'firebase-admin/functions';
 
@@ -44,7 +45,7 @@ export const KIT_ROLLUP_QUEUE = 'recalcularDimensoesKit';
 export const KIT_ROLLUP_MAX_ATTEMPTS = 5;
 
 function kitRollupTasksRegion(): string {
-  return process.env.KIT_ROLLUP_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east1';
+  return requireRegion(['KIT_ROLLUP_TASKS_REGION', 'FUNCTIONS_REGION'], process.env);
 }
 
 /**

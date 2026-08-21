@@ -70,21 +70,22 @@ runConfig:
 #                                in the console, not below.
 
 env:
-  # ⚠️ The queue region this backend ENQUEUES to. Not a secret, and NOT optional:
-  # unset, four of the five enqueuers fall through to
-  # `MERCADO_LIVRE_TASKS_REGION?.trim() || FUNCTIONS_REGION || 'us-east5'`
-  # (mlMassImportTasks / mlPriceSyncTasks / mlNfeUploadTasks / mlStockTasks) while
-  # their queues live in us-east1 — the value functions/build.mjs inlines. The
-  # Admin SDK then resolves us-central1 and the task is SILENTLY DROPPED: the
-  # route reports success, no failure document is written, and `/enviar-nfe` has
-  # no sweep behind it to notice. Only the webhook path was immune, because
-  # mlTasks.ts hardcodes us-east1.
+  # ⚠️ The queue region this backend ENQUEUES to. Not a secret, and NOT optional.
+  # No enqueuer defaults it any more: `requireRegion` throws on the first enqueue
+  # if neither MERCADO_LIVRE_TASKS_REGION nor FUNCTIONS_REGION is set here.
+  #
+  # A throw is the goal. When these fell back to a literal, an unset value
+  # produced a well-formed path to a queue that does not exist — the Admin SDK
+  # resolved us-central1 and the task was SILENTLY DROPPED: the route reported
+  # success, no failure document was written, and `/enviar-nfe` has no sweep
+  # behind it to notice. A refused enqueue is recoverable; a dropped one is not
+  # even visible.
   #
   # It must equal MERCADO_LIVRE_TASKS_REGION in the shell that deploys the
   # functions codebase; `node tools/deploy-env/preflight.mjs mercado-livre` prints
   # the value being baked in so the two can be compared. See #1108 / #1121.
   - variable: MERCADO_LIVRE_TASKS_REGION
-    value: us-east1
+    value: us-central1
     availability:
       - RUNTIME
 

@@ -20,9 +20,10 @@
  * Config:
  *   - `NFE_TASKS_DISABLED=1` → `noopTaskScheduler` (local dev / deliberate
  *     sweep-only opt-out; the backstop sweep still reconciles).
- *   - `NFE_TASKS_REGION` (default `us-east1`) → the region the `reconciliarNfe`
+ *   - `NFE_TASKS_REGION` (REQUIRED; no default) → the region the `reconciliarNfe`
  *     function + its queue are deployed to (must match the functions' region).
  */
+import { requireRegion } from '@delfrance/core/region';
 import { z } from 'zod';
 import { getFunctions } from 'firebase-admin/functions';
 
@@ -42,8 +43,13 @@ import { safeLog } from './log';
  * longer exists → the task silently drops. The CC-e variant rides the same queue.
  */
 export const RECONCILE_FUNCTION = 'reconciliarNfe';
-/** Region the reconcile function/queue live in (must match the functions' FUNCTIONS_REGION). */
-const reconcileRegion = (): string => process.env.NFE_TASKS_REGION?.trim() || 'us-east1';
+/**
+ * Region the reconcile function/queue live in (must match the functions'
+ * FUNCTIONS_REGION). No default and no fall-through: apps/nfe's own backend has
+ * no FUNCTIONS_REGION of its own, so guessing here would enqueue into a queue
+ * that does not exist and drop the reconcile silently.
+ */
+const reconcileRegion = (): string => requireRegion(['NFE_TASKS_REGION'], process.env);
 
 /**
  * JSON body the queue delivers to the reconcile function. Shared between the

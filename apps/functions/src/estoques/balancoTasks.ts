@@ -20,6 +20,7 @@
  *     `??` would keep `''` and yield `locations//functions/…`, which drops the
  *     task silently — and this queue has no sweep to fall back on.
  */
+import { requireRegion } from '@delfrance/core/region';
 import { getFunctions } from 'firebase-admin/functions';
 import type { BalancoTaskPayload } from '@delfrance/data/balanco';
 
@@ -41,7 +42,7 @@ export const BALANCO_QUEUE = 'processarBalanco';
 export const BALANCO_MAX_ATTEMPTS = 5;
 
 function balancoTasksRegion(): string {
-  return process.env.BALANCO_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east1';
+  return requireRegion(['BALANCO_TASKS_REGION', 'FUNCTIONS_REGION'], process.env);
 }
 
 /**

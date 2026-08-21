@@ -1,4 +1,5 @@
 import { logger } from 'firebase-functions';
+import { FUNCTIONS_REGION } from './options';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { mensagemMeta } from '@delfrance/schemas';
 
@@ -27,7 +28,7 @@ export const sendOutbound = onDocumentCreated(
   {
     document: `${mensagemMeta.collectionPath}/{mensagemId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
-    region: process.env.FUNCTIONS_REGION ?? 'us-east5',
+    region: FUNCTIONS_REGION,
     retry: true,
   },
   async (event) => {
