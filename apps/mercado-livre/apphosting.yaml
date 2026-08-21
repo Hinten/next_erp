@@ -84,8 +84,15 @@ env:
   # It must equal MERCADO_LIVRE_TASKS_REGION in the shell that deploys the
   # functions codebase; `node tools/deploy-env/preflight.mjs mercado-livre` prints
   # the value being baked in so the two can be compared. See #1108 / #1121.
+  #
+  # ⚠️ Still us-east1, NOT the us-central1 the rest of the repo now targets. This
+  # value configures a LIVE backend: it must name the region the ML queues
+  # actually exist in today. It moves when the functions themselves move, in the
+  # migration window (ADR 0013 / #1115) — changing it earlier points the enqueuer
+  # at a region with no queue, which is now a throw rather than a silent drop, but
+  # is still a broken backend.
   - variable: MERCADO_LIVRE_TASKS_REGION
-    value: us-central1
+    value: us-east1
     availability:
       - RUNTIME
 
