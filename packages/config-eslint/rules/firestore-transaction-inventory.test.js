@@ -1,7 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { gitGrep } from './lib/repo-scan.js';
 
 /**
  * Every source file that runs a Firestore transaction is inventoried here, with
@@ -79,7 +77,6 @@ import { describe, expect, it } from 'vitest';
  * and the notification sweep re-drives hours-old payloads through the same
  * handler as a fresh task. See root `CLAUDE.md` Critical rule 7 and ADR 0011.
  */
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
  * The BARE WORD, deliberately — not `runTransaction\(`.
@@ -232,20 +229,7 @@ const INVENTARIO = {
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */
 function ficheirosComTransacao() {
-  try {
-    return execFileSync(
-      'git',
-      ['grep', '-l', '--no-color', '-E', '--untracked', PATTERN, '--', ...PATHSPECS],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
-    )
-      .split('\n')
-      .filter(Boolean)
-      .sort();
-  } catch (err) {
-    // execFileSync throws on a non-zero exit; git grep exits 1 with no matches.
-    if (err instanceof Error && 'status' in err && err.status === 1) return [];
-    throw err;
-  }
+  return gitGrep({ patterns: PATTERN, pathspecs: PATHSPECS, mode: 'extended' });
 }
 
 describe('every Firestore transaction is inventoried with its race class', () => {
