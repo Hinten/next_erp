@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { IconAlertTriangle, IconRefresh } from '@tabler/icons-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FirebaseError } from 'firebase/app';
 
 import {
   MercadoLivreClientHttpError,
@@ -159,6 +160,18 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
         setAcaoErro(err.message);
       } else if (err instanceof MercadoLivreClientNetworkError) {
         setAcaoErro('Não foi possível falar com o Mercado Livre. Tente novamente.');
+      } else if (err instanceof FirebaseError) {
+        // ⚠️ **The one failure that would render NOTHING.** `useMercadoLivreClient`
+        // passes `getAuthToken: () => user.getIdToken()`, and `call()` awaits it
+        // OUTSIDE its own try (`client.ts:1132`) — so a failed token refresh
+        // (`auth/network-request-failed`, `auth/user-token-expired`) is neither ML
+        // error class. Left to `throw err` it becomes an unhandled rejection in a
+        // `void`-ed handler, and `apps/web` installs no `unhandledrejection`
+        // listener: the operator confirms an IRREVERSIBLE refund, the spinner
+        // stops, no alert appears, the button looks untouched — so they click
+        // again. `ChatComposer.tsx:419` carries this same branch for the same
+        // reason. (The read path is safe; TanStack Query captures it.)
+        setAcaoErro(err.message);
       } else {
         throw err;
       }

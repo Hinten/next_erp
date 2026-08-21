@@ -233,6 +233,24 @@ describe('ReclamacaoMlPanel — the action buttons', () => {
     );
   });
 
+  it('renders a FAILED TOKEN REFRESH instead of going silent', async () => {
+    // ⚠️ The one failure that used to render NOTHING, and the worst one to lose:
+    // `getIdToken()` is awaited OUTSIDE the ML client's try (`client.ts:1132`),
+    // so a FirebaseError is neither ML error class. Rethrown from a `void`-ed
+    // handler it became an unhandled rejection — the operator confirms an
+    // irreversible refund, the spinner stops, no alert appears, and they click
+    // again. Asserting the MESSAGE (not just "no crash") is what pins it.
+    const { FirebaseError } = await import('firebase/app');
+    h.reclamacaoAcao.mockRejectedValue(
+      new FirebaseError('auth/network-request-failed', 'Falha de rede ao renovar o token.'),
+    );
+    await abrirCom(['refund']);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reembolsar integralmente' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar reembolso integral' }));
+
+    await waitFor(() => expect(screen.getByText(/Falha de rede ao renovar o token/)).toBeTruthy());
+  });
+
   it('shows no buttons without the permission, and says why', async () => {
     // The real gate is `verifyCaller` on the backend; this exists so the operator
     // does not read an empty row as "the claim is closed".
