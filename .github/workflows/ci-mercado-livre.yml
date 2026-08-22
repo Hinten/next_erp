@@ -432,8 +432,8 @@ jobs:
       # on us-central1 and the bundle on us-east5, the emulator answers
       # "Tried to queue a task from a non-existent queue" and the doc lands
       # `failed` instead of `deferred`).
-      FUNCTIONS_REGION: us-east5
-      MERCADO_LIVRE_TASKS_REGION: us-east5
+      FUNCTIONS_REGION: us-east1
+      MERCADO_LIVRE_TASKS_REGION: us-east1
       FIREBASE_PROJECT_ID: demo-erp
       FIREBASE_DATABASE_ID: default
       REQUIRE_EMULATOR: '1'
