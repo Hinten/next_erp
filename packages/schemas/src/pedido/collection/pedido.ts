@@ -84,32 +84,43 @@ export const ESTADO_PEDIDO = {
 
 /**
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
- * `packages/pedido/lib/src/models.dart` ItemDoPedido. Nested complex
- * fields (`imposto`) are pass-through.
+ * `packages/pedido/lib/src/models.dart` ItemDoPedido — all 13 legacy fields
+ * (`.old` `models.dart:57–195`) are enumerated below (confirmed 100% by the
+ * #462 parity audit). `imposto` stays `z.unknown()`: it round-trips a
+ * point-in-time `Imposto` (produto subcollection) snapshot, not a reference,
+ * and full modeling is tracked separately (the sibling "nested strictness
+ * gap" issue).
+ *
+ * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
+ * `parseSoftRead` (`@delfrance/data`) still tolerates an unmodeled key: it
+ * strips it silently rather than throwing, which is what keeps a legacy
+ * corpus doc carrying a since-retired field readable (root `CLAUDE.md` rule
+ * 8). On WRITE, `parseForWrite`/`parseMergePatch` (same package) notice the
+ * strip and re-parse with `.strict()`, so a genuinely unknown key throws a
+ * `ZodError` instead of being silently persisted — see
+ * `packages/data/src/zodParse.ts`.
  */
-export const itemDoPedidoSchema = z
-  .object({
-    produtoUid: z.string().nullable().default(null),
-    ordem: z.number().int().default(1),
-    ensureUniqueId: z.string().nullable().default(null),
-    mktplaceId: z.string().nullable().default(null),
-    sku: z.string().nullable().default(null),
-    gtin: z.string().nullable().default(null),
-    nomeDeVenda: z.string().nullable().default(null),
-    // The STORAGE floor is 0, not 0.01: a marketplace line can legitimately
-    // price at zero (100% coupon/cashback, a bonus line, or a `206 Partial
-    // Content` order response whose `unit_price` the mapper fills with `?? 0`)
-    // and must import rather than park the whole delivery (#794). Negative is
-    // still rejected — no channel produces one. The 0.01 DATA-ENTRY floor lives
-    // in the pedido form (`min={0.01}` on the item price input), not here.
-    precoDeVenda: z.number().min(0, 'O preço não pode ser negativo'),
-    descontoUnitario: z.number().min(0).nullable().default(0),
-    quantidade: z.number().min(0),
-    custo: z.number().nullable().default(null),
-    timestamp: microsSinceEpoch().nullable().default(null),
-    imposto: z.unknown().nullable().default(null),
-  })
-  .passthrough();
+export const itemDoPedidoSchema = z.object({
+  produtoUid: z.string().nullable().default(null),
+  ordem: z.number().int().default(1),
+  ensureUniqueId: z.string().nullable().default(null),
+  mktplaceId: z.string().nullable().default(null),
+  sku: z.string().nullable().default(null),
+  gtin: z.string().nullable().default(null),
+  nomeDeVenda: z.string().nullable().default(null),
+  // The STORAGE floor is 0, not 0.01: a marketplace line can legitimately
+  // price at zero (100% coupon/cashback, a bonus line, or a `206 Partial
+  // Content` order response whose `unit_price` the mapper fills with `?? 0`)
+  // and must import rather than park the whole delivery (#794). Negative is
+  // still rejected — no channel produces one. The 0.01 DATA-ENTRY floor lives
+  // in the pedido form (`min={0.01}` on the item price input), not here.
+  precoDeVenda: z.number().min(0, 'O preço não pode ser negativo'),
+  descontoUnitario: z.number().min(0).nullable().default(0),
+  quantidade: z.number().min(0),
+  custo: z.number().nullable().default(null),
+  timestamp: microsSinceEpoch().nullable().default(null),
+  imposto: z.unknown().nullable().default(null),
+});
 
 export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
 
@@ -151,9 +162,22 @@ export type EstoqueAplicado = z.infer<typeof estoqueAplicadoSchema>;
 /**
  * Pedido schema — aligned with the legacy Flutter `Pedido` class
  * (`.old/packages/pedido/lib/src/models.dart:2537–3498`). Every field
- * Flutter writes is enumerated below with the same nullability +
- * default semantics. `.passthrough()` is preserved on the outer
- * object so any not-yet-ported Flutter field still flows through.
+ * Flutter writes is enumerated below with the same nullability + default
+ * semantics — the #462 parity audit confirmed all 39 persisted legacy
+ * fields are modeled (five of them, `valorCusto`/`valorFreteInicial`/
+ * `custoFreteInicial`/`valorDevolucao`/`valorCustoDevolvidos`, were later
+ * REMOVED as pure derived caches with no reader, see `valorCobrado` below
+ * and #796); `estoqueAplicado` is a new, server-owned field with no legacy
+ * counterpart.
+ *
+ * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
+ * `parseSoftRead` (`@delfrance/data`) still tolerates an unmodeled key: it
+ * strips it silently rather than throwing, which is what keeps a legacy
+ * corpus doc carrying a since-retired field readable (root `CLAUDE.md` rule
+ * 8). On WRITE, `parseForWrite`/`parseMergePatch` (same package) notice the
+ * strip and re-parse with `.strict()`, so a genuinely unknown key throws a
+ * `ZodError` instead of being silently persisted — see
+ * `packages/data/src/zodParse.ts`.
  *
  * Timestamp convention: datetime fields are **microseconds since epoch**
  * (`microsSinceEpoch()`), the project's higher-precision standard — NOT the
@@ -170,109 +194,103 @@ export type EstoqueAplicado = z.infer<typeof estoqueAplicadoSchema>;
  * on `.pick()` over a refined object — see the `zod4-pick-refine-runtime-crash`
  * note).
  */
-export const pedidoSchema = z
-  .object({
-    // Direction flag --------------------------------------------------------
-    ehSaida: z.boolean().default(true).describe('Saída'),
-    hasUserInteraction: z.boolean().nullable().default(null).describe('Interação do usuário'),
+export const pedidoSchema = z.object({
+  // Direction flag ----------------------------------------------------------
+  ehSaida: z.boolean().default(true).describe('Saída'),
+  hasUserInteraction: z.boolean().nullable().default(null).describe('Interação do usuário'),
 
-    // Core state + numbering ------------------------------------------------
-    estado: estadoPedidoSchema.describe('Pagamento'),
-    numero: z.string().nullable().default(null).describe('Número'),
+  // Core state + numbering ----------------------------------------------------
+  estado: estadoPedidoSchema.describe('Pagamento'),
+  numero: z.string().nullable().default(null).describe('Número'),
 
-    // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM);
-    // the UI dereferences them through Firestore .get() when needed. The issuing
-    // Filial is NOT a pedido field: the NFe orchestrator resolves it from the
-    // pedido's integração (`integracao.filialIntegracaoPedidoOuterRef`).
-    vendedorPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Vendedor'),
-    integracaoPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Integração'),
-    operacaoPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Operação'),
-    clientePedidoOuterRef: outerRefSchema.nullable().default(null).describe('Cliente'),
-    enderecoFiscalOuterRef: outerRefSchema.nullable().default(null).describe('Endereço fiscal'),
-    listaDePrecosOuterRef: outerRefSchema.nullable().default(null).describe('Lista de preços'),
+  // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM);
+  // the UI dereferences them through Firestore .get() when needed. The issuing
+  // Filial is NOT a pedido field: the NFe orchestrator resolves it from the
+  // pedido's integração (`integracao.filialIntegracaoPedidoOuterRef`).
+  vendedorPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Vendedor'),
+  integracaoPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Integração'),
+  operacaoPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Operação'),
+  clientePedidoOuterRef: outerRefSchema.nullable().default(null).describe('Cliente'),
+  enderecoFiscalOuterRef: outerRefSchema.nullable().default(null).describe('Endereço fiscal'),
+  listaDePrecosOuterRef: outerRefSchema.nullable().default(null).describe('Lista de preços'),
 
-    // Related orders --------------------------------------------------------
-    entradasRelacionadas: z
-      .array(z.string())
-      .nullable()
-      .default(null)
-      .describe('Entradas relacionadas'),
-    saidasRelacionadas: z
-      .array(z.string())
-      .nullable()
-      .default(null)
-      .describe('Saídas relacionadas'),
-    chNFeReferenciadas: z
-      .array(z.string())
-      .nullable()
-      .default(null)
-      .describe('Chaves de NF-e referenciadas'),
+  // Related orders ------------------------------------------------------------
+  entradasRelacionadas: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('Entradas relacionadas'),
+  saidasRelacionadas: z.array(z.string()).nullable().default(null).describe('Saídas relacionadas'),
+  chNFeReferenciadas: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('Chaves de NF-e referenciadas'),
 
-    // Items (record keyed by produtoUid; 'NONE' / '' when no produto bound).
-    itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}).describe('Itens'),
-    // Queryable produto-id projection of `itens`. No code queries it today —
-    // if a screen adds `array-contains` on it, declare the
-    // `pedidos(itensIds CONTAINS)` index first (Enterprise scans otherwise; #407).
-    itensIds: z.array(z.string()).default([]).describe('IDs dos itens'),
-    /** Returned items, nested by produto / volta. Heavy passthrough payload. */
-    itensDevolvidos: z
-      .record(z.string(), z.record(z.string(), z.array(itemDoPedidoSchema)))
-      .nullable()
-      .default(null)
-      .describe('Itens devolvidos'),
+  // Items (record keyed by produtoUid; 'NONE' / '' when no produto bound).
+  itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}).describe('Itens'),
+  // Queryable produto-id projection of `itens`. No code queries it today —
+  // if a screen adds `array-contains` on it, declare the
+  // `pedidos(itensIds CONTAINS)` index first (Enterprise scans otherwise; #407).
+  itensIds: z.array(z.string()).default([]).describe('IDs dos itens'),
+  /** Returned items, nested by produto / volta. Heavy nested payload. */
+  itensDevolvidos: z
+    .record(z.string(), z.record(z.string(), z.array(itemDoPedidoSchema)))
+    .nullable()
+    .default(null)
+    .describe('Itens devolvidos'),
 
-    // Shipping --------------------------------------------------------------
-    freteInicial: freteDoPedidoSchema.nullable().default(null).describe('Frete inicial'),
+  // Shipping --------------------------------------------------------------
+  freteInicial: freteDoPedidoSchema.nullable().default(null).describe('Frete inicial'),
 
-    // Stock sync (server-owned — see estoqueAplicadoSchema) ------------------
-    estoqueAplicado: estoqueAplicadoSchema.nullable().default(null).describe('Estoque aplicado'),
+  // Stock sync (server-owned — see estoqueAplicadoSchema) ------------------
+  estoqueAplicado: estoqueAplicadoSchema.nullable().default(null).describe('Estoque aplicado'),
 
-    // Totals. `valorCobrado` is the ONE derived money cache still persisted:
-    // it backs a server-side `orderBy` + currency filter on `/pedidos`
-    // (`PedidosListView.tsx`) and the two indexes serving them, so it cannot be
-    // computed at read time. The other five Flutter wrote here
-    // (`valorCusto`, `valorFreteInicial`, `custoFreteInicial`, `valorDevolucao`,
-    // `valorCustoDevolvidos`) were REMOVED: each was a pure function of `itens`
-    // or `freteInicial` on this same document, with no reader, no query and no
-    // index, so a cache could only ever drift from the value it cached (#796).
-    // `derivePedidoTotals` still computes all six — they are display values now.
-    // ⚠️ Do not re-add one to "make a report easier": reports sum item
-    // subtotals, NF-e reads `frete.valorCobrado`, the footer derives live.
-    valorCobrado: z.number().nullable().default(null).describe('Valor cobrado'),
-    descontoTotal: z.number().default(0).describe('Desconto total'),
-    valorDespesasIncidentes: z.number().nullable().default(null).describe('Despesas incidentes'),
-    valorFretesIncidentes: z.number().nullable().default(null).describe('Fretes incidentes'),
-    valorComissoes: z.number().nullable().default(null).describe('Comissões'),
-    impostos: z.number().nullable().default(null).describe('Impostos'),
+  // Totals. `valorCobrado` is the ONE derived money cache still persisted:
+  // it backs a server-side `orderBy` + currency filter on `/pedidos`
+  // (`PedidosListView.tsx`) and the two indexes serving them, so it cannot be
+  // computed at read time. The other five Flutter wrote here
+  // (`valorCusto`, `valorFreteInicial`, `custoFreteInicial`, `valorDevolucao`,
+  // `valorCustoDevolvidos`) were REMOVED: each was a pure function of `itens`
+  // or `freteInicial` on this same document, with no reader, no query and no
+  // index, so a cache could only ever drift from the value it cached (#796).
+  // `derivePedidoTotals` still computes all six — they are display values now.
+  // ⚠️ Do not re-add one to "make a report easier": reports sum item
+  // subtotals, NF-e reads `frete.valorCobrado`, the footer derives live.
+  valorCobrado: z.number().nullable().default(null).describe('Valor cobrado'),
+  descontoTotal: z.number().default(0).describe('Desconto total'),
+  valorDespesasIncidentes: z.number().nullable().default(null).describe('Despesas incidentes'),
+  valorFretesIncidentes: z.number().nullable().default(null).describe('Fretes incidentes'),
+  valorComissoes: z.number().nullable().default(null).describe('Comissões'),
+  impostos: z.number().nullable().default(null).describe('Impostos'),
 
-    // Timestamps — all stored as µs since epoch ----------------------------
-    timestamp: microsSinceEpoch('Criação').nullable().default(null),
-    ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
-    /** Deprecated in Flutter (kept for parse compatibility). */
-    dataFinalExpedicao: microsSinceEpoch('Data final de expedição').nullable().default(null),
-    dataIndisponivelEstoque: microsSinceEpoch('Indisponibilidade de estoque')
-      .nullable()
-      .default(null),
-    dataRemocaoEstoque: microsSinceEpoch('Remoção de estoque').nullable().default(null),
-    lastMarketplaceUpdate: microsSinceEpoch('Última atualização do marketplace')
-      .nullable()
-      .default(null),
+  // Timestamps — all stored as µs since epoch ----------------------------
+  timestamp: microsSinceEpoch('Criação').nullable().default(null),
+  ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
+  /** Deprecated in Flutter (kept for parse compatibility). */
+  dataFinalExpedicao: microsSinceEpoch('Data final de expedição').nullable().default(null),
+  dataIndisponivelEstoque: microsSinceEpoch('Indisponibilidade de estoque')
+    .nullable()
+    .default(null),
+  dataRemocaoEstoque: microsSinceEpoch('Remoção de estoque').nullable().default(null),
+  lastMarketplaceUpdate: microsSinceEpoch('Última atualização do marketplace')
+    .nullable()
+    .default(null),
 
-    // Print metadata --------------------------------------------------------
-    foiImpresso: z.boolean().default(false).describe('Impresso'),
-    /** Print date (µs since epoch). The table view renders an icon if set. */
-    dtImpressao: microsSinceEpoch('Data de impressão').nullable().default(null),
+  // Print metadata --------------------------------------------------------
+  foiImpresso: z.boolean().default(false).describe('Impresso'),
+  /** Print date (µs since epoch). The table view renders an icon if set. */
+  dtImpressao: microsSinceEpoch('Data de impressão').nullable().default(null),
 
-    // NF-e + observability --------------------------------------------------
-    /** When true the orchestrator refuses to emit NF-e for this pedido. */
-    bloquearEmissaoNFe: z.boolean().nullable().default(null).describe('Bloquear emissão de NF-e'),
-    observacoesInternas: z.string().nullable().default(null).describe('Observações internas'),
-    /** infCpl: NF-e complementary text (DANFE-only field). */
-    infCpl: z.string().nullable().default(null).describe('Informações complementares'),
-    /** Persisted error message from the last failed write / emission. */
-    error: z.string().nullable().default(null).describe('Erro'),
-  })
-  .passthrough();
+  // NF-e + observability --------------------------------------------------
+  /** When true the orchestrator refuses to emit NF-e for this pedido. */
+  bloquearEmissaoNFe: z.boolean().nullable().default(null).describe('Bloquear emissão de NF-e'),
+  observacoesInternas: z.string().nullable().default(null).describe('Observações internas'),
+  /** infCpl: NF-e complementary text (DANFE-only field). */
+  infCpl: z.string().nullable().default(null).describe('Informações complementares'),
+  /** Persisted error message from the last failed write / emission. */
+  error: z.string().nullable().default(null).describe('Erro'),
+});
 
 export type Pedido = z.infer<typeof pedidoSchema>;
 

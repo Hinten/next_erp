@@ -127,12 +127,15 @@ const CONCURRENCY_IGNORE = new Set<string>([
   'timestamp',
   'lastMarketplaceUpdate',
   ...CAMPOS_ESTOQUE_SYNC,
-  // Removed derived caches (#796). `pedidoSchema` is `.passthrough()`, so a key
-  // this app no longer writes still rides the raw baseline/current diff below —
-  // migrated pedidos carry all five, recomputed by the legacy `Pedido.factory`
-  // on every integral save it ever made. Without this the operator would get a
-  // conflict modal naming a field that is not on their screen and that they
-  // cannot have authored, which is exactly the question this set answers.
+  // Removed derived caches (#796). `baseline`/`current` here are the RAW
+  // Firestore doc data (`snap.data()`), never run through `pedidoSchema.parse`
+  // (see `savePedido` above) — so a key this app no longer writes still rides
+  // the raw diff below regardless of the schema's `.passthrough()` policy
+  // (dropped in #462): migrated pedidos carry all five, recomputed by the
+  // legacy `Pedido.factory` on every integral save it ever made. Without this
+  // the operator would get a conflict modal naming a field that is not on
+  // their screen and that they cannot have authored, which is exactly the
+  // question this set answers.
   'valorCusto',
   'valorFreteInicial',
   'custoFreteInicial',
