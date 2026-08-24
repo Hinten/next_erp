@@ -396,25 +396,36 @@ deliberate, short-lived state.
 
 ### ⚠️ HARD CUTOVER — delete the legacy `nfe-ml--updated-trigger` in the same window
 
-The legacy Flutter backend reacts to the SAME nfev4 approval through the Cloud
-Run service `nfe-ml` and its Eventarc trigger **`nfe-ml--updated-trigger`
-(us-east1)**. Running both is a **double-fire**: each approval makes two
-`POST /shipments/{shipmentId}/invoice_data` calls; ML accepts the first and
-rejects the second (the shipment already has invoice data). The NEW handler
-maps that rejection (`shipment_invoice_already_saved`) to a
-success-equivalent, but when the **legacy** service loses the race it **stamps
-`freteInicial.estado = 'error'` on a pedido whose invoice actually uploaded
-fine** — a false error on every approval it loses, indistinguishable from a
-real failure in the panel.
+⚠️ **Correction (2026-08-21), same as the callback-URL section below.** This used
+to read "the legacy Flutter backend reacts to the SAME nfev4 approval through …
+`nfe-ml--updated-trigger`", making each approval a **double-fire** with a race
+whose loser stamps `freteInicial.estado = 'error'` on a pedido that uploaded
+fine. **That mechanism is void — there is no dual run** (root `CLAUDE.md`
+rule 8). `nfe-ml--updated-trigger` is an Eventarc Firestore trigger created in the
+LEGACY project (`.old/docker-repos-local:62`); an `nfev4` document THIS repo
+writes cannot fire it, so an approval here produces exactly one
+`POST /shipments/{shipmentId}/invoice_data` and there is no race to lose.
+
+**What survives is the shared-provider hazard, and it is why the trigger still
+has to go.** Both stacks can reach the same ML **shipment**. After the data
+import the same order exists in both projects, so an approval driven on the
+legacy side — by a leftover process, a re-run, or a human still working that
+panel — POSTs invoice data for a shipment this backend also owns. ML accepts the
+first and rejects the second with `shipment_invoice_already_saved`; the NEW
+handler maps that to a success-equivalent, but the legacy service stamps
+`freteInicial.estado = 'error'` **on its own project's pedido**, which is a false
+error in a panel that is being turned off rather than one anybody will correct.
 
 Order of operations:
 
 1. Deploy this functions codebase (creates the queue + the new trigger).
 2. Smoke ONE real approval end-to-end: shipment leaves `invoice_pending` —
    verify via the task's structured completion log (`outcome: 'enviado'`)
-   and/or `getShipmentInvoiceData`. This single approval sits in the deliberate
-   overlap window — if the legacy service loses the race and stamps
-   `freteInicial.estado = 'error'`, correct that one pedido by hand.
+   and/or `getShipmentInvoiceData`. ⚠️ This step used to add "if the legacy
+   service loses the race and stamps `freteInicial.estado = 'error'`, correct
+   that one pedido by hand" — **unreachable as written**: the pedido the legacy
+   service would stamp lives in the legacy project, not the one you are watching.
+   Nothing here needs correcting; verify the upload and move on.
 3. **Delete the legacy trigger immediately** — do not leave the overlap
    running:
 
@@ -608,8 +619,8 @@ wipe. Create `apps/mercado-livre/functions/.env.deploy` (gitignored):
 MERCADO_LIVRE_STOCK_SYNC_ENABLED=1
 MERCADO_LIVRE_STOCK_INCREMENTAL_WINDOW_MIN=15
 MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
-# The missed_feeds backstop (#812). Safe to enable as soon as the webhook
-# callback points here — it only READS from ML; see the note below.
+# The missed_feeds backstop (#812). Enable it in the deploy that PRECEDES the
+# callback-URL flip, not after — see the note below and the cutover section.
 MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1
 # The high-stock skip on the incremental tier (ADR 0014). Default 100.
 MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
@@ -683,10 +694,32 @@ same mechanism again. It ships OFF; while off `sweepMercadoLivreMissedFeeds` tic
 at 05:00, logs one info line and reads nothing.
 
 Unlike the two flags above it is **not** a double-write hazard — the sweep only
-reads from ML and enqueues onto a queue that is already live — so it can be
-enabled as soon as the webhook callback points at this backend. Before that point
-it would be pointless rather than harmful: if ML is not delivering here, there is
-nothing for it to have missed, and `missed_feeds` for our application is empty.
+reads from ML and enqueues onto a queue that is already live.
+
+⚠️ **Corrected ordering (2026-08-21).** This used to say it "can be enabled as
+soon as the webhook callback points at this backend", and that before then it
+would be "pointless … `missed_feeds` for our application is empty". Both framings
+push the flip to AFTER the URL switch, and the cutover section below explains why
+that is the one moment it must already be on: once this backend is the registered
+target, the backstop is the only thing that recovers a delivery it fails to ack.
+
+Two reasons the "after" reading is worse than merely late:
+
+- ⚠️ **Turning it on is a REDEPLOY** (see the note above — the flag is deploy-time
+  env). Enabling it after the flip means redeploying the functions codebase while
+  ML is already delivering here, during the exact interval the backstop exists to
+  cover.
+- ⚠️ **"The feed is empty before the flip" is not established.** The production ML
+  application is SHARED with the legacy Flutter connect screen
+  (`apps/mercado-livre/CLAUDE.md`), and `missed_feeds` is per-application — so the
+  feed may well carry entries ML failed to deliver to the LEGACY callback. That
+  makes an early enable arguably harmful for the same reason
+  `MERCADO_LIVRE_ORDER_BACKFILL_ENABLED` is: a second, parallel ingestion of
+  orders the cutover import then has to reconcile against. **Not verified either
+  way — do not enable it earlier than the deploy immediately before the flip.**
+
+So: **enable it in the functions deploy that precedes the URL switch.** That is
+the only position which is neither a mid-window redeploy nor an early ingestion.
 
 On the first enabled run, read two fields of its log line:
 
@@ -828,8 +861,12 @@ backend too.
 
 Have `MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1` live **before** the switch, not after
 — it ships OFF, and it is the only thing that recovers a delivery this backend
-fails to ack once it _is_ the registered target. After the flip, confirm a live
-delivery in this backend's receiver logs before decommissioning anything.
+fails to ack once it _is_ the registered target. ⚠️ Specifically: enable it in the
+functions deploy that **precedes** the flip. Flipping it afterwards is a redeploy
+(the flag is deploy-time env) in the middle of the window it exists to cover; the
+"Runtime env" section carries the full reasoning, and the one thing that is NOT
+established about enabling it any earlier. After the flip, confirm a live delivery
+in this backend's receiver logs before decommissioning anything.
 
 Same discipline as the estoque functions. The URL flip itself is #1208 Phase 3 /
 **#905**; what happens on the ML side of it is this section.
@@ -898,6 +935,18 @@ secret server-side and forwards to the ML/MP auth hosts.
 
 Deleting it early is a second way to kill the legacy ML integration — the Flutter app
 loses its ability to refresh, and every connected account's token dies at expiry.
+
+⚠️ **Keeping it deployed has a cost, and this is the section where you decide to
+pay it.** ML's `refresh_token` is **single-use and rotating**
+(`packages/integrations/mercado-livre/src/oauth.ts:79-81` — the caller MUST persist
+the returned one, and `invalid_grant` means re-consent), and the migrated
+`tokenDuravel` carries the LEGACY lineage
+(`tokenStore.firestore.test.ts:115-129`). So while this callable is alive, both
+stacks can hold the **same** refresh token for one seller, and whichever refreshes
+first leaves the other at `invalid_grant`. That is the contention named in
+"⚠️ Callback-URL cutover" above — read the two together, because this is the
+section an operator opens when deciding what to KEEP, and the cost belongs where
+the decision is made.
 
 ⚠️ **It is also load-bearing for Mercado Pago.** The sibling callable `mercadoPagoToken`
 delegates to the **same** `mercadoLivre/tokenClientSecret.py` helper with
