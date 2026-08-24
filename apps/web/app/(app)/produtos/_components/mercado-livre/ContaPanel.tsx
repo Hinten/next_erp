@@ -1,22 +1,10 @@
 'use client';
 
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  Group,
-  List,
-  Select,
-  Stack,
-  Text,
-  Tooltip,
-} from '@mantine/core';
+import { Badge, Button, Card, Group, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
-import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
 import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
 import { isStockLatched } from '@/lib/mercado-livre/listingLinks';
 import { moderacoesPorCampo } from '@/lib/mercado-livre/listingModeracoes';

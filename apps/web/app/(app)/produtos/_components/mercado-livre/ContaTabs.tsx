@@ -83,6 +83,22 @@ export function ContaTabs({ items, renderPanel, defaultId }: ContaTabsProps) {
   // panel that no longer exists, and Mantine would render no panel at all.
   const activeId = items.some((i) => i.id === active) ? active : (items[0]?.id ?? null);
 
+  /**
+   * Whether a panel's body is built.
+   *
+   * ⚠️ `|| id === activeId` is what keeps the fallback above honest. `opened`
+   * only holds tabs the operator clicked, so when the active account is deleted
+   * mid-session the fallback selects a tab that was never opened — and the panel
+   * under it would render the skeleton. On an ALREADY-SELECTED tab that reads as
+   * "still loading" rather than "click me", and it only clears if the operator
+   * happens to click the tab they are already on.
+   *
+   * It does not weaken the laziness this component exists for: the first active
+   * tab is seeded into `opened` anyway, and a tab that is not active is still
+   * built only once it has been opened.
+   */
+  const deveRenderizar = (id: string): boolean => opened.has(id) || id === activeId;
+
   function handleChange(next: string | null): void {
     setActive(next);
     // ⚠️ The latch, and unlike `MercadoLivreTab`'s it needs no
@@ -133,7 +149,11 @@ export function ContaTabs({ items, renderPanel, defaultId }: ContaTabsProps) {
       </ScrollArea>
       {items.map((item) => (
         <Tabs.Panel key={item.id} value={item.id} pt="md">
-          {opened.has(item.id) ? renderPanel(item.id) : <ContaTabPlaceholder contaId={item.id} />}
+          {deveRenderizar(item.id) ? (
+            renderPanel(item.id)
+          ) : (
+            <ContaTabPlaceholder contaId={item.id} />
+          )}
         </Tabs.Panel>
       ))}
     </Tabs>

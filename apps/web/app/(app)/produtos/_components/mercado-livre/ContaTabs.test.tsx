@@ -102,6 +102,13 @@ describe('ContaTabs', () => {
     );
 
     expect(screen.getByRole('tab', { name: /Loja A/ }).getAttribute('aria-selected')).toBe('true');
+    // ⚠️ And it SHOWS that account, rather than its skeleton. The fallback lands
+    // on a tab nobody clicked, so it is not in `opened` — without the
+    // active-tab clause the operator would face a "still loading" panel on a tab
+    // that is already selected, clearing only if they clicked the tab they were
+    // already on.
+    expect(screen.getByTestId('painel-conta-a')).toBeTruthy();
+    expect(screen.queryByTestId('ml-conta-placeholder-conta-a')).toBeNull();
   });
 
   it('marks an account holding unsaved edits, so an off-screen one is findable', () => {

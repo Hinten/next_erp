@@ -10,6 +10,8 @@ import {
   type ProdutoMercadoLivreLink,
 } from '@delfrance/schemas';
 
+import { PERM } from '@delfrance/auth';
+
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
 import { MercadoLivreClientHttpError } from '@/lib/mercado-livre/client';
 
@@ -40,8 +42,15 @@ const h = vi.hoisted(() => ({
   client: {} as Record<string, unknown>,
   createListingDraft: vi.fn(async () => ({ docId: 'novo', outcome: 'created' as const })),
   removeListingDraft: vi.fn(async () => 'removed' as const),
-  /** What `usePermission` answers, per permission bit the editor asks for. */
-  permitido: true,
+  /**
+   * Which permission bits `usePermission` grants.
+   *
+   * ⚠️ A single boolean here made the delete-permission test VACUOUS: it turned
+   * off `integracao.write` and `produto.delete` together, so "absent without the
+   * produto's delete permission" stayed green even if the control were gated on
+   * the publish bit — which is the one thing that test's name claims to check.
+   */
+  permitidos: new Set<bigint>(),
 }));
 
 vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
@@ -75,7 +84,9 @@ vi.mock('@delfrance/data/hooks', () => ({
   }),
 }));
 
-vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: h.permitido }) }));
+vi.mock('@/lib/auth', () => ({
+  usePermission: (bit: bigint) => ({ allowed: h.permitidos.has(bit) }),
+}));
 vi.mock('@/lib/mercado-livre/client', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
   return { ...actual, useMercadoLivreClient: () => h.client };
@@ -163,7 +174,7 @@ beforeEach(() => {
   h.client = {};
   h.createListingDraft.mockClear();
   h.removeListingDraft.mockClear();
-  h.permitido = true;
+  h.permitidos = new Set([PERM.integracao.write, PERM.produto.delete]);
 });
 
 /** Open one account's tab — the panels are lazy, so nothing renders until then. */
@@ -1016,15 +1027,25 @@ describe('Excluir anúncio', () => {
     expect(botaoExcluir('L-PUB')).toBeUndefined();
   });
 
-  it("is absent without the produto's delete permission", async () => {
-    // ⚠️ A different bit from the one gating publish: Firestore gates a
-    // `produtoMercadoLivre` doc by the PARENT produto's permissions, so the
-    // control has to follow the rule that would actually reject the write.
-    h.permitido = false;
+  it("is absent without the produto's delete permission, WITH publish still granted", async () => {
+    // ⚠️ The discriminating case, and the only one that proves the claim.
+    // Firestore gates a `produtoMercadoLivre` doc by the PARENT produto's
+    // permissions, so the control follows the rule that would actually reject
+    // the write — a different bit from the one gating publish. Revoking both at
+    // once would leave this green even if the control were gated on
+    // `integracao.write`, so publish is deliberately left granted: Republicar is
+    // asserted enabled, and Excluir absent, in the same render.
+    h.permitidos = new Set([PERM.integracao.write]);
     h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
     renderEditor();
     await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
 
+    const bloco = screen.getByTestId('ml-anuncio-L-DRAFT');
+    const publicar = [...bloco.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Publicar no Mercado Livre',
+    );
+    expect(publicar).toBeDefined();
+    expect(publicar!.disabled).toBe(false);
     expect(botaoExcluir('L-DRAFT')).toBeUndefined();
   });
 
@@ -1043,6 +1064,47 @@ describe('Excluir anúncio', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
     });
     expect(h.removeListingDraft).toHaveBeenCalledWith(expect.anything(), 'prod-1', 'L-B');
+  });
+
+  it("drops the listing's blocked-publish issues with the listing", async () => {
+    // ⚠️ The FIRST draft on an account takes the integração id as its doc id, so
+    // a recreated draft lands on the same `blockedIssues` key. Without the clear,
+    // publicar → 422 → excluir → novo anúncio greets the operator with a red
+    // alert from a publish that was never attempted on the new draft.
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    h.client = {
+      publicar: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('bloqueado', 422, 'ML_PUBLISH_BLOCKED', [
+          'produto sem título',
+        ]);
+      }),
+    };
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    const bloco = screen.getByTestId('ml-anuncio-L-DRAFT');
+    await act(async () => {
+      fireEvent.click(
+        [...bloco.querySelectorAll('button')].find(
+          (b) => b.textContent === 'Publicar no Mercado Livre',
+        )!,
+      );
+    });
+    await waitFor(() => expect(bloco.textContent).toContain('produto sem título'));
+
+    fireEvent.click(botaoExcluir('L-DRAFT')!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    });
+
+    // The live snapshot has not dropped the doc in this harness, so the block is
+    // still on screen — which is what lets us see that the ISSUES went even
+    // though the listing's key did not change.
+    await waitFor(() =>
+      expect(screen.getByTestId('ml-anuncio-L-DRAFT').textContent).not.toContain(
+        'produto sem título',
+      ),
+    );
   });
 
   it('says so when the listing was published while the confirm was open', async () => {

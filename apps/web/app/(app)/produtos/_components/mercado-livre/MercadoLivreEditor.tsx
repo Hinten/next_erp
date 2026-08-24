@@ -27,15 +27,10 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
-import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
-import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
-import { moderacoesPorCampo } from '@/lib/mercado-livre/listingModeracoes';
-import { mapPublishIssues } from '@/lib/mercado-livre/publishIssues';
 import { createListingDraft, removeListingDraft } from '@/lib/mercado-livre/listingDraft';
-import { DEFAULT_LISTING_TYPE, LISTING_TYPE_OPTIONS } from '@/lib/mercado-livre/listingFields';
+import { DEFAULT_LISTING_TYPE } from '@/lib/mercado-livre/listingFields';
 import {
   estadoLabel,
-  isStockLatched,
   publishSummary,
   refMatchesIntegracao,
 } from '@/lib/mercado-livre/listingLinks';
@@ -447,6 +442,22 @@ export function MercadoLivreEditor({
     try {
       const outcome = await removeListingDraft(db, produtoId, linkDocId);
       setExcluirAlvo(null);
+      // ⚠️ Drop the listing's 422 issues with the listing itself. `blockedIssues`
+      // is keyed by link doc id and otherwise only cleared at the START of a
+      // publish for that same id — and the FIRST draft on an account takes the
+      // integração id as its doc id (deliberately; `listingDraft.ts`). So
+      // publicar → 422 → excluir → novo anúncio lands the fresh draft on the
+      // same key and greets the operator with a red "Publicação bloqueada" from
+      // a publish that was never attempted on it, with its form fields painted
+      // to match. Cosmetic, but exactly where they are deciding whether to
+      // publish.
+      if (outcome === 'removed') {
+        setBlockedIssues((prev) => {
+          if (!(linkDocId in prev)) return prev;
+          const { [linkDocId]: _descartado, ...resto } = prev;
+          return resto;
+        });
+      }
       if (outcome === 'published') {
         notifications.show({
           color: 'yellow',
@@ -788,6 +799,17 @@ export function MercadoLivreEditor({
             A publicação envia os dados <strong>salvos</strong> do produto — salve as alterações
             antes de publicar.
           </Text>
+          {/* The alert `MAX_LINKS` exists for. Splitting the bound stopped the
+              cap being reached at 50 links, but a cap reached is still a cap:
+              past it the tail is dropped, an account whose anúncios all landed
+              there reads "Não publicado", and "Novo anúncio" offers to make
+              another. Saying so is the difference between a limit and a lie. */}
+          {links.length >= MAX_LINKS && (
+            <Alert color="yellow" variant="light" data-testid="ml-limite-anuncios">
+              Este produto tem {MAX_LINKS} anúncios ou mais. A lista abaixo está truncada — nem
+              todos aparecem, e uma conta pode aparecer como não publicada mesmo tendo anúncio.
+            </Alert>
+          )}
           <ContaTabs
             items={tabItems}
             defaultId={contaInicial}
