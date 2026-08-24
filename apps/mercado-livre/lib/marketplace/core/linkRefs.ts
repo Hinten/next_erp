@@ -17,6 +17,32 @@ export function refMatchesIntegracao(ref: unknown, integracaoId: string): boolea
 }
 
 /**
+ * Is this request-body value unusable as a Firestore **document id**?
+ *
+ * Every route that takes an id from a body and feeds it to `.doc()` needs this,
+ * because `.doc()` validates the resulting PATH, not the id, and it does so
+ * outside any `try` the handler owns — so a bad value escapes as a 500 for what
+ * is plainly a client error. Measured against a real `firebase-admin` Firestore:
+ *
+ * ```
+ * ''      → throws  "Path must be a non-empty string"
+ * 'a/b'   → throws  "must point to a document … not an even number of components"
+ * 'a/b/c' → NO throw: resolves to produtos/<id>/produtoMercadoLivre/a/b/c
+ * ```
+ *
+ * ⚠️ That third row is why the test is `includes('/')` and not just "does
+ * `.doc()` throw". An odd number of extra segments builds a perfectly valid path
+ * to a document two levels below the collection we meant — no error, no security
+ * consequence (it stays under the produto the caller already named, and the
+ * publisher re-derives ownership from its own snapshot anyway), but it is a
+ * document the caller had no business naming, and it comes back as a puzzling
+ * 404. Rejecting the separator outright covers both rows with one condition.
+ */
+export function naoDocId(v: unknown): boolean {
+  return typeof v !== 'string' || v === '' || v.includes('/');
+}
+
+/**
  * Split a `produtoMercadoLivreOuterRef` into the parent produto + link doc ids.
  * Tolerates both the canonical `documents/produtos/<id>/produtoMercadoLivre/<docId>`
  * and a bare `produtos/...`; returns null for anything else, including a ref

@@ -184,9 +184,12 @@ describe('POST /api/marketplace/mercado-livre/publicar — linkDocId', () => {
   });
 
   it('400s a present-but-unusable linkDocId without touching Firestore', async () => {
-    // A truthy non-string sails past a `!value` guard and then throws inside
-    // `.doc(id)` — a 500 for what is a client error.
-    for (const linkDocId of [1, '', {}, []]) {
+    // Each of these reaches `.doc(id)` and misbehaves there, which is outside
+    // any `try` this handler owns — so without the guard a client error escapes
+    // as a 500. `'a/b'` throws on the odd component count; `'a/b/c'` does NOT
+    // throw at all, it silently resolves two levels deeper than the collection
+    // we meant. Both measured against a real firebase-admin Firestore.
+    for (const linkDocId of [1, '', {}, [], 'a/b', 'a/b/c', '/leading']) {
       const res = await POST(req({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId }));
       expect(res.status).toBe(400);
     }
