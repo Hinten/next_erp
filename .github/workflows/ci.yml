@@ -9,34 +9,78 @@ on:
     # child based on any other prefix reports zero checks, not a failure.
     #
     # `production` is the release base (main → production). It used to be omitted
-    # on the grounds that the release PR is covered by the `push:` on `main`, but
-    # that stopped being enough: `lint-typecheck-test` is now a pinned required
-    # check, and a required check that never reports leaves the PR unmergeable.
-    # It also closes a real coverage gap — ci-storage.yml no longer re-runs the
-    # @delfrance/schemas and @delfrance/data suites, so on a main → production PR
-    # this job is the only thing that runs them.
+    # on the grounds that the release PR is covered by the `push:` on `main`. That
+    # is not enough: it closes a real coverage gap — ci-storage.yml, ci-nfe.yml and
+    # ci-rules.yml no longer re-run the @delfrance/{schemas,data,auth} suites, so
+    # on a main → production PR the `test` job below is the only thing that runs
+    # them.
     branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# ---------------------------------------------------------------------------
+# Five sibling jobs, not five steps of one job.
+#
+# They used to be one `lint-typecheck-test` job running them in sequence, which
+# cost ~13m26s of wall clock while every other lane finished in under 5. The
+# steps are independent, so the split takes the critical path down to the
+# slowest single job (`test`, ~5m30s).
+#
+# ⚠️ Splitting is only free because turbo's `^build` edge on lint/typecheck/test
+# resolves to ZERO tasks here: no `packages/*`, `packages/integrations/*` or
+# `tools/*` workspace defines a `build` script — the libraries export raw
+# TypeScript (`"main": "./src/index.ts"`) and nothing depends on an app. Give a
+# package a `build` script and each of these jobs starts paying for it
+# separately; measure before assuming the split is still free.
+#
+# There is also no turbo remote cache and no `.turbo` persistence anywhere, so
+# every task already ran cold in the single-job form — the split loses no cache
+# locality. The five jobs DO share the pnpm-store cache key, and on a lockfile
+# change four of them will log "Unable to reserve cache with key ..., another job
+# may be creating this cache". That is not an error and not new: the six other
+# lanes already share that key namespace concurrently.
+#
+# ⚠️ None of the five carries an `if:` and the workflow has no `paths:`, so all
+# five are unskippable and each is directly pinnable — which is why this file
+# needs no `gate` job (see .claude/skills/ci-lanes/SKILL.md). Adding an `if:` to
+# any of them would make it skippable, and GitHub counts a `skipped` job as
+# SATISFYING a required check. Don't.
+#
+# ⚠️ The `env:` block and the first six steps are BYTE-IDENTICAL in all five
+# jobs, deliberately — that is what lets `diff` prove they have not drifted, the
+# same discipline the domain lanes apply to their gate bodies. Every comment
+# that used to sit inside them lives here instead, once:
+#
+#   · FUNCTIONS_REGION — required by the `build` job; the reason is recorded on
+#     that job, next to the command that needs it. It is replicated on the other
+#     four rather than scoped to `build` because it was a job-level env before
+#     the split, so the test suite ran with it set, and `requireRegion`
+#     (@delfrance/core/region) THROWS when it is unset. Keeping it everywhere
+#     preserves the previous behaviour exactly.
+#   · NEXT_TELEMETRY_DISABLED — skips Next.js telemetry and its build-time
+#     notice in CI.
+#   · `ref: … || github.sha` — the fallback is explicit rather than implicit: on
+#     a push or dispatch the PR context is unset, and `actions/checkout` only
+#     does the right thing there because it treats the empty string as unset.
+#     Same form as every other lane.
+#   · `corepack enable` with no version — corepack takes it from `packageManager`
+#     in package.json, the single source of truth, and overrides any
+#     `corepack prepare` pin.
+# ---------------------------------------------------------------------------
 jobs:
-  lint-typecheck-test:
+  typecheck:
+    name: CI typecheck
     runs-on: ubuntu-latest
-    # `turbo run build` compiles apps/functions, whose build.mjs inlines
-    # FUNCTIONS_REGION and fails without it. Must match the Storage bucket region.
+    # Observed 111-118s over 4 runs on 2026-08-24.
+    timeout-minutes: 15
     env:
       FUNCTIONS_REGION: us-central1
-      # Skip Next.js telemetry collection + its build-time notice in CI.
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
         with:
-          # The `|| github.sha` fallback is explicit rather than implicit: on a
-          # push or dispatch the PR context is unset, and `actions/checkout` only
-          # does the right thing there because it treats the empty string as
-          # unset. Same form as every other lane.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v6
@@ -46,9 +90,6 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          # No version pinned on purpose: corepack takes it from
-          # `packageManager` in package.json — the single source of
-          # truth — and overrides any `corepack prepare` pin.
           pnpm --version
 
       - name: Get pnpm store path
@@ -68,11 +109,123 @@ jobs:
       - name: Typecheck
         run: pnpm turbo run typecheck
 
+  lint:
+    name: CI lint
+    runs-on: ubuntu-latest
+    # Observed 159-174s over 4 runs on 2026-08-24.
+    timeout-minutes: 15
+    env:
+      FUNCTIONS_REGION: us-central1
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
       - name: Lint
         run: pnpm turbo run lint
 
+  format-check:
+    name: CI format check
+    runs-on: ubuntu-latest
+    # Observed 29-33s over 4 runs on 2026-08-24. `format:check` is a plain
+    # root-level `prettier --check .`, not a turbo task, so it cannot be
+    # filtered or parallelised further.
+    timeout-minutes: 10
+    env:
+      FUNCTIONS_REGION: us-central1
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
       - name: Format check
         run: pnpm format:check
+
+  test:
+    name: CI test
+    runs-on: ubuntu-latest
+    # Observed 265-292s over 4 runs on 2026-08-24 — the critical path of this
+    # workflow. @delfrance/web alone is ~256s of it (223 test files), so this is
+    # the only job worth optimising further.
+    timeout-minutes: 25
+    env:
+      FUNCTIONS_REGION: us-central1
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
 
       - name: Test
         # Every exclusion here is owned by exactly one domain lane, which runs
@@ -88,8 +241,23 @@ jobs:
         # scope from the dependency graph and reports through a pinned gate. Do
         # not add a filter here without an owner on the other side.
         #
-        # Lint / typecheck / build above stay full-graph and unfiltered, so
-        # cross-package breaks still surface here on every PR.
+        # The converse also holds, and is why @delfrance/{schemas,auth,data} are
+        # NOT excluded: this workflow has no `paths:` and no `if:`, so it is the
+        # one lane that always runs. No domain lane re-runs those three — the
+        # test steps of ci-storage.yml, ci-nfe.yml and ci-rules.yml each say so.
+        #
+        # ⚠️ That is NOT true of a lane's OWN root package, and deliberately so.
+        # `@delfrance/rules-gen` runs here AND in ci-rules.yml, which is genuine
+        # duplicate work — kept because it cannot be removed from either side:
+        # excluding it here would be an unowned exclusion (ci-rules.yml's
+        # `rules-offline` carries `if: needs.changes.outputs.run_e2e == 'true'`,
+        # so it SKIPS out of scope and the suite would then run nowhere), and
+        # dropping it there would leave that lane with no unit step to attribute
+        # a rules-gen failure to. The eight exclusions above are the only ones
+        # whose owning lane is worth the trade.
+        #
+        # Lint / typecheck / build are their own jobs and stay full-graph and
+        # unfiltered, so cross-package breaks still surface on every PR.
         run: |
           pnpm turbo run test \
             --filter '!@delfrance/nfe-app' \
@@ -100,6 +268,47 @@ jobs:
             --filter '!@delfrance/functions' \
             --filter '!@delfrance/mercado-livre-app' \
             --filter '!@delfrance/integrations-mercado-livre'
+
+  build:
+    name: CI build
+    runs-on: ubuntu-latest
+    # Observed 136-151s over 4 runs on 2026-08-24.
+    timeout-minutes: 20
+    # ⚠️ `turbo run build` compiles apps/functions through `node build.mjs` →
+    # `requireBuildRegion('FUNCTIONS_REGION')`, which THROWS when it is unset —
+    # there is no default. This is the dependency
+    # packages/config-eslint/rules/functions-region-supplied.test.js scans for,
+    # and the region must match the Storage bucket's.
+    env:
+      FUNCTIONS_REGION: us-central1
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
 
       # Persist Next.js's incremental build cache across runs for every Next app
       # `turbo run build` compiles (apps/*/.next/cache — non-Next apps have none
@@ -116,15 +325,17 @@ jobs:
       - name: Build
         run: pnpm turbo run build
 
+
   report-failure:
     name: Post failure logs on PR
-    # Quando o job acima falha num PR, este job puxa o tail dos logs dos jobs
-    # que falharam (via API actions:read) e posta como comentário no PR.
+    # Quando um dos jobs acima falha num PR, este job puxa o tail dos logs dos
+    # jobs que falharam (via API actions:read) e posta como comentário no PR.
     # Substitui o antigo workflow externo post-ci-logs.yml — agora o próprio
     # workflow reporta a falha, sem depender de um workflow_run separado.
-    needs: [lint-typecheck-test]
+    needs: [typecheck, lint, format-check, test, build]
     if: ${{ failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: read
       pull-requests: write

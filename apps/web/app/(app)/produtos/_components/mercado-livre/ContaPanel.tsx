@@ -11,6 +11,7 @@ import { moderacoesPorCampo } from '@/lib/mercado-livre/listingModeracoes';
 import { mapPublishIssues } from '@/lib/mercado-livre/publishIssues';
 import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
 import { AnuncioBlock } from './AnuncioBlock';
+import type { MotivoReverificacao } from './ListingStatusStrip';
 import type { ListingSaveFn } from './ListingForm';
 
 /**
@@ -85,7 +86,7 @@ export interface ContaPanelProps {
   excluindo: string | null;
   onSalvarAnuncios: (contaId: string, linkIds: readonly string[]) => void;
   onEnviarEstoque: (conta: StockPushIntegracao, temLatch: boolean) => void;
-  onReverificar: (integracaoId: string, linkDocId: string) => void;
+  onReverificar: (integracaoId: string, linkDocId: string, motivo: MotivoReverificacao) => void;
   onAbrirAnuncio: (integracaoId: string, linkDocId: string) => void;
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   onLoadingChange: (linkDocId: string, loading: boolean) => void;
@@ -267,7 +268,7 @@ export function ContaPanel({
               rechecking={rechecking === l.id}
               recheckBusy={rechecking !== null}
               abrindo={abrindoAnuncio === l.id}
-              onReverificar={() => onReverificar(conta.id, l.id)}
+              onReverificar={(motivo) => onReverificar(conta.id, l.id, motivo)}
               // Reading a public URL is a read: gated on having a client at all,
               // never on the publish permission.
               onAbrirAnuncio={hasClient ? () => onAbrirAnuncio(conta.id, l.id) : undefined}

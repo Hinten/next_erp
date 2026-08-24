@@ -16,6 +16,7 @@ import {
 import { splitCausas, textoDaCausa } from '@/lib/mercado-livre/listingCausas';
 import {
   corDaModeracao,
+  moderacaoNaoConsultada,
   moderacoesDoLink,
   secoesLabel,
   severidadeModeracao,
@@ -37,13 +38,31 @@ const ESTADO_COLORS: Record<EstadoPublicacaoMl, string> = {
   am: 'orange',
 };
 
+/**
+ * Why the operator asked for a re-check. The two entry points want different
+ * feedback, so the reason travels with the call instead of being guessed at the
+ * far end: `'latch'` is the stock escape hatch (#781), `'moderacao'` is the
+ * "consultar motivo" button in the not-consulted notice (#1239).
+ *
+ * Exported because the callback crosses three components on its way up —
+ * strip → {@link AnuncioBlock} → {@link ContaPanel} → the editor — and an
+ * inline union repeated four times is a union that drifts.
+ */
+export type MotivoReverificacao = 'latch' | 'moderacao';
+
 export interface ListingStatusStripProps {
   link: ProdutoMercadoLivreLink;
   /** Enables the latch escape hatch; false for a read-only operator. */
   canWrite: boolean;
   disabled: boolean;
   rechecking: boolean;
-  onReverificar: () => void;
+  /**
+   * Re-read this listing from ML. The argument says WHY, because the two entry
+   * points want different feedback: `'latch'` is the stock escape hatch (#781)
+   * and talks about stock, `'moderacao'` is the "consultar motivo" button in the
+   * not-consulted notice (#1239) and must not.
+   */
+  onReverificar: (motivo: MotivoReverificacao) => void;
   /**
    * A listing URL the editor has already resolved from Mercado Livre — the
    * User-Products answer {@link listingPermalink} cannot compute on its own.
@@ -258,6 +277,59 @@ export function ListingStatusStrip({
         </Alert>
       )}
 
+      {/* ML says this listing is moderated, but nobody ever fetched the reason
+          (#1239) — the `moderacoes: null` third state. The mass import skips the
+          lookup by design and a failed `/moderations` read degrades to the same
+          value, so without this the operator reads `paused · moderation_penalty`
+          and has no way to learn what ML objected to.
+
+          ⚠️ BLUE, not one of the three moderation severities. Red/orange/yellow
+          encode how bad ML's ANSWER is; here there is no answer yet. Borrowing a
+          severity would assert a verdict we do not have — the same class of
+          mistake as rendering `sem-motivo` as `sem-conserto`.
+
+          ⚠️ Mutually exclusive with the block above by construction
+          (`moderacoes == null` vs `length > 0`), so the two can never both show.
+
+          ⚠️ Its own button, NOT the latch one below: that is gated on
+          `isStockLatched` (`estado === 'E'`), and a moderated listing is `pa`,
+          `v` or an `active` `p` — so the existing affordance renders on none of
+          the listings this notice appears on. */}
+      {moderacaoNaoConsultada(link) && (
+        <Alert
+          color="blue"
+          variant="light"
+          title="Moderação não consultada"
+          data-testid="ml-moderacao-nao-consultada"
+        >
+          <Stack gap="xs" align="flex-start">
+            {/* ⚠️ "possível", deliberately. The gate's `under_review` arm fires while ML
+                is merely REVIEWING a listing — which can conclude with no moderation at
+                all, and is the state every freshly published anúncio passes through
+                (publish leaves `moderacoes` null — #1252). Asserting "há uma moderação"
+                would be false there, on the most common occurrence of this notice. The
+                weaker claim is the only one true of BOTH arms; do not tighten it without
+                first splitting the two apart. */}
+            <Text size="sm">
+              O status deste anúncio no Mercado Livre indica uma possível moderação, mas o motivo
+              ainda não foi consultado.
+            </Text>
+            <Button
+              type="button"
+              variant="default"
+              size="xs"
+              onClick={() => {
+                onReverificar('moderacao');
+              }}
+              loading={rechecking}
+              disabled={disabled || !canWrite}
+            >
+              Consultar motivo
+            </Button>
+          </Stack>
+        </Alert>
+      )}
+
       {/* Structured causes when we have them; the raw `errors` strings otherwise
           — a doc written by the Flutter app, or by this app before #1109, has
           `causas: null` and must keep showing what it does have. */}
@@ -326,7 +398,9 @@ export function ListingStatusStrip({
             type="button"
             variant="default"
             size="xs"
-            onClick={onReverificar}
+            onClick={() => {
+              onReverificar('latch');
+            }}
             loading={rechecking}
             disabled={disabled || !canWrite}
           >

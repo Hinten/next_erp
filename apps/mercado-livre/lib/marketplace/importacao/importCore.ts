@@ -17,10 +17,12 @@
  *    (`completarDadosProdutoPai`).
  *
  * ⚠️ `moderacoes` (#1087) is SUPPLIED by the IO layer, never derived here. The
- * gate (`precisaConsultarModeracao`), the 404-is-data narrow and the transient
- * degrade all live in `moderacoes.ts` + `import.ts` so this module stays pure and
- * so the importer, the `items` sync and `reverificarAnuncio` cannot drift on any
- * of them. All this file decides is WHERE the value lands in the two link docs.
+ * gate (`precisaConsultarModeracao` — in `@delfrance/schemas` since #1239, not in
+ * this app), the 404-is-data narrow and the transient degrade all live outside
+ * this file: the schema, `moderacoes.ts` and `import.ts` respectively. So this
+ * module stays pure, and the importer, the `items` sync and `reverificarAnuncio`
+ * cannot drift on any of them. All this file decides is WHERE the value lands in
+ * the two link docs.
  */
 import type {
   MappedMlItem,
