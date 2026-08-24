@@ -202,4 +202,42 @@ describe("OutroCheckoutModal — reprints target the row's OWN pedido", () => {
     resolveFirst();
     await waitFor(() => expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(1));
   });
+
+  it('keeps a pending confirm answerable after the modal closes, so the print mutex releases', async () => {
+    // Before #1096, confirm.element was nested inside the <Modal>, so closing
+    // the parent modal unmounted it. keepMounted defaults to false, so the
+    // stored resolve never fired, and printInFlight.run's finally block never
+    // ran — leaving the print mutex wedged for the life of the pane. Both
+    // reprint buttons would spin forever.
+    h.reprintCheckoutEtiqueta.mockImplementation(
+      async (args: { ui: { confirmRisk: (msg: string) => Promise<boolean> } }) => {
+        const ok = await args.ui.confirmRisk('etiqueta já postada — reimprimir?');
+        return { status: ok ? 'printed' : 'skipped' };
+      },
+    );
+
+    const { rerender } = renderModal(makeRow());
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+    await waitFor(() => expect(screen.getByText(/já postada/)).toBeTruthy());
+
+    // The operator closes the reprint modal while the risk confirm is still open.
+    rerender(
+      <MantineTestProvider>
+        <OutroCheckoutModal
+          row={null}
+          onClose={() => {}}
+          db={{} as never}
+          nfeClient={null}
+          freightClient={null}
+          mercadoLivreClient={null}
+          formatoDanfe="simplificadoPdf"
+          formatoEtiqueta="pdf"
+        />
+      </MantineTestProvider>,
+    );
+
+    // The confirm dialog must STILL be in the document so the operator can
+    // still answer, or the promise settles and releases the print mutex.
+    expect(screen.queryByText(/já postada/)).not.toBeNull();
+  });
 });
