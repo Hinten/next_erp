@@ -205,8 +205,36 @@ function buildBuyerWire(order: MlOrder): Record<string, unknown> | null {
 /*                                payments wire                               */
 /* -------------------------------------------------------------------------- */
 
+/** A signed decimal literal, and nothing else. Mirrors the plugin's `mlNumber`. */
+const DECIMAL_STRING = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
+
+/**
+ * A money field off the raw order-embedded payment.
+ *
+ * ⚠️ Accepts a numeric STRING as well as a number. ML quotes numeric fields
+ * inconsistently — #1087 is the live case, where `GET /collections/{id}` sent
+ * `order_id` quoted — and the same drift reaches the order-embedded payment
+ * summary. This function used to be `typeof v === 'number' ? v : null`, which
+ * does not throw: it silently wrote `null` into the pedido's `orderML` mirror for
+ * every quoted amount. A quiet null is worse than the loud failure the plugin
+ * schema raises, because nothing ever reports it.
+ *
+ * This does NOT diverge from the legacy-parity contract this file defends. Dart's
+ * `json['transaction_amount'] as num?` THROWS on a string, so there is no working
+ * legacy behaviour that produced `null` here to reproduce.
+ *
+ * ⚠️ Still never invents a value: a non-decimal string stays `null` rather than
+ * becoming 0. `Number('')` is 0, `Number('0x1F')` is 31 and `Number('1e3')` is
+ * 1000 — which is why this tests a regex before parsing, exactly as the plugin's
+ * `mlNumber` and `asInt` in `@delfrance/data/admin/notifications/coerce.ts` do.
+ */
 function asNumber(v: unknown): number | null {
-  return typeof v === 'number' ? v : null;
+  if (typeof v === 'number') return v;
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (!DECIMAL_STRING.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
 }
 
 function asMaybeString(v: unknown): string | null {

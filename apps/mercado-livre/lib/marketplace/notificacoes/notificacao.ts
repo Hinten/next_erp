@@ -959,9 +959,41 @@ async function wrapImportRunner<T extends { skipped?: unknown }>(
   }
 }
 
+/**
+ * What the `orders_v2`/`orders` import actually DID, for the log.
+ *
+ * `created` vs `updated` is the distinction that matters most here: re-importing
+ * an order the ERP already has is the common case, and before this it was
+ * indistinguishable from the first import that created the pedido.
+ */
+export type OrderImportOutcome = 'created' | 'updated' | 'seller-mismatch' | 'no-buyer';
+
+/**
+ * What the `payments` import actually DID, for the log. Every member but
+ * `imported` is a deterministic skip that writes NOTHING — and every one of them
+ * used to ack as a bare `done`, which is how a payment that never imported read
+ * as a success while the pedido sat at `emProcessamento` (#1087).
+ */
+export type PaymentImportOutcome =
+  | 'imported'
+  | 'payment-404'
+  | 'marketplace-none'
+  | 'sem-order-key'
+  | 'pedido-nao-encontrado'
+  | 'stale';
+
+/**
+ * The union of every handler's own outcome. ⚠️ Kept as a union of the concrete
+ * unions rather than widened to `string`: `TaskResult.detail` widens it for the
+ * log and that is right THERE, but the widening also meant renaming or dropping a
+ * member compiled everywhere in silence. Narrowing the PRODUCER makes the next
+ * such change a typecheck error at the branch that produces it.
+ */
+export type HandlerOutcome = ItemsSyncOutcome | OrderImportOutcome | PaymentImportOutcome;
+
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
-  | { kind: 'done'; integracaoId: string; detail?: ItemsSyncOutcome } // known topic processed
+  | { kind: 'done'; integracaoId: string; detail?: HandlerOutcome } // known topic processed
   //   `detail` is the HANDLER's own outcome, when it has one worth reporting.
   //   ⚠️ `done` is a DISPOSITION, not an assertion that work happened: an
   //   items sync that found no link and one that rewrote the listing both
@@ -972,7 +1004,9 @@ export type ProcessOutcome =
   //   widens it for the log and that is the right shape there, but the widening
   //   also meant renaming or dropping a member compiled everywhere in silence.
   //   Narrowing the PRODUCER makes the next such change a typecheck error here.
-  //   A second handler wanting its own detail widens this to a union of unions.
+  //   A second handler wanting its own detail widens this to a union of unions —
+  //   which is exactly what `HandlerOutcome` above now is (#1087, second round:
+  //   `orders_v2` and `payments` were the two topics #1136 left behind).
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
   | { kind: 'ignored-topic' } // TOPIC_DISPOSITION says `ignore` — no account resolved, nothing written
@@ -1081,7 +1115,12 @@ export async function processNotificationPayload(
         skipped: result.skipped,
       });
     }
-    return { kind: 'done', integracaoId };
+    // The runner's outcome rides out on `detail`, the same way the `items` topic
+    // does since #1136. Discarding it made an import that skipped EVERYTHING log
+    // identically to one that created a pedido — and #1087 is the live run where
+    // that cost a day of "outcome: done" over an order that never arrived.
+    const detail: OrderImportOutcome = result.skipped ?? (result.created ? 'created' : 'updated');
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `payments` — payment status/amount sync onto an already-imported pedido's
@@ -1110,7 +1149,11 @@ export async function processNotificationPayload(
         skipped: result.skipped,
       });
     }
-    return { kind: 'done', integracaoId };
+    // Same as `orders_v2` above. This is the branch #1087 was actually watching:
+    // a payment that never imported acked `done` and looked exactly like one that
+    // advanced the pedido to `pago`.
+    const detail: PaymentImportOutcome = result.skipped ?? 'imported';
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `shipments` — shipment/freteInicial status sync onto an already-imported
@@ -1256,7 +1299,11 @@ export interface TaskResult {
    * `done` that processed a topic from one that dropped an ignored topic.
    */
   kind?: ProcessOutcome['kind'];
-  /** The handler's own outcome (today: the `items` sync result). */
+  /**
+   * The handler's own outcome — `items`, `orders_v2`/`orders` and `payments` each
+   * report their own. Widened to `string` deliberately: this is the log-facing
+   * shape, and `HandlerOutcome` is the narrow union the PRODUCER is held to.
+   */
   detail?: string;
 }
 /** The operator-facing reason for a seller that maps to no active integração. */
