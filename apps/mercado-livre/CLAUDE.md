@@ -427,7 +427,9 @@ A writer that ASKED ML may write any value: `itemsStatusSync`, `reverificarAnunc
 the **importer**. A writer that merely holds a fresh `status`/`sub_status` may write
 `[]` and nothing else, because `precisaConsultarModeracao` is pure — when it reports
 no moderation that IS ML's verdict, obtained for free — and omits the key otherwise:
-**publish**, the **UP member publish**, the **stock send** and the **price send**.
+**publish**, the **UP member publish**, the **stock send** and the **price send** —
+the stock send on BOTH its success writeback and its terminal-4xx verification path,
+which reads a real `GET /items` and so holds the strongest evidence of any of them.
 Seven writers, one invariant. `errors`/`causas` record OUR failed write, so a later success
 invalidates them; a moderação is ML's verdict and nothing we do lifts it. The stock
 writeback is the case that makes the distinction concrete — it fires on a successful

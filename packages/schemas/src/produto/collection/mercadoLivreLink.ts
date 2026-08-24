@@ -459,7 +459,8 @@ export const produtoMercadoLivreLinkSchema = z
      * merely holds a fresh `status`/`sub_status` may write `[]` and nothing
      * else, because {@link precisaConsultarModeracao} is pure: when it reports
      * no moderation, that IS ML's verdict, obtained for free. That is publish,
-     * the UP member publish, the stock send and the price send, which otherwise
+     * the UP member publish, the stock send — on both its success writeback and
+     * its terminal-4xx verification path — and the price send, which otherwise
      * omit the key.
      * It is NOT in `clearFalha()`, and that omission is deliberate: `errors`/`causas` record
      * OUR failed write, which a later success invalidates, but a moderação is
