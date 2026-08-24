@@ -176,9 +176,27 @@ export const PERM = {
   // delete (the provider owns claim state), and `configuracoes` is the existing
   // precedent for a two-action domain.
   //
-  // ⚠️ Nobody holds these until a cargo grants them AND claims are re-minted
-  // (#173). That fail-closed default is intended — a new money-moving verb must
-  // not arrive switched on.
+  // ⚠️ **Fail-closed for cargo-derived claims, NOT for superusers — and the
+  // money-moving half is the one that differs.** Two populations:
+  //
+  //  - **cargo-derived** (`permissionsForUser` → the stored bitmask): genuinely
+  //    fail-closed. The bits are new, so no stored mask carries them until a
+  //    cargo grants them and claims are re-minted (#173).
+  //  - **superusers**: already granted, retroactively, by construction.
+  //    `SUPERUSER_MASK` is `(1n << 128n) - 1n` — an all-ones SENTINEL, not an
+  //    enumeration of PERM (`packages/schemas/src/usuario.ts:74`) — and
+  //    `verifyCaller` does a plain `hasPerm` with no superuser branch. Since
+  //    `108n < 128n`, every account already carrying that claim holds
+  //    `incidenteResolucao.write` the instant the route lands: no cargo edit, no
+  //    re-mint, no #173.
+  //
+  // `grant-all-perms` sits between the two and shows the distinction: `ALL_PERMS`
+  // is DERIVED from `PERM` at mint time, so an e2e user minted before this commit
+  // does not hold the bits and one minted after does.
+  //
+  // ⚠️ So "a new money-moving verb does not arrive switched on" is true for
+  // ordinary operators and false for superusers. Whoever ships the route should
+  // know which population they are testing with.
   incidenteResolucao: {
     read: 1n << 107n,
     write: 1n << 108n,
