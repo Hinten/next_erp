@@ -10,8 +10,11 @@ Firebase credentials.
 
 ## Prerequisites
 
-- Node 22 (matches CI; the repo's hard minimum is 20.10).
-- pnpm 10 — provided via Corepack: `corepack enable`.
+- Node 22 (matches CI; the repo's hard minimum is 22).
+- pnpm 11.2.2 — provided via Corepack: `corepack enable`. Corepack takes the
+  version from `packageManager` in the root `package.json`, so never pin one
+  yourself; `engines.pnpm` pins the same version for the App Hosting buildpack,
+  which reads that field instead.
 - `pnpm install` at the repo root.
 - For e2e only: a Firebase project, a service-account key, and the Playwright
   browser (see [E2E tests](#e2e-tests)).

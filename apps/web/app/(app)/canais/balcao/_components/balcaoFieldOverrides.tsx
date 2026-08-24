@@ -1,56 +1,12 @@
 'use client';
 
-import { ColorInput } from '@mantine/core';
-import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
+import type { FieldConfig } from '@delfrance/ui';
 import { depositoCollection } from '@/lib/data/depositoCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
-
-/** RGB int (`0xRRGGBB`) → `#rrggbb`. */
-function intToHex(value: number): string {
-  const clamped = Math.max(0, Math.min(0xffffff, Math.trunc(value)));
-  return `#${clamped.toString(16).padStart(6, '0')}`;
-}
-
-/** `#rrggbb` (or `#rgb`) → RGB int. Anything else → null. */
-function hexToInt(hex: string): number | null {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
-  const body = m?.[1];
-  if (!body) return null;
-  const full =
-    body.length === 3
-      ? body
-          .split('')
-          .map((c) => c + c)
-          .join('')
-      : body;
-  return Number.parseInt(full, 16);
-}
-
-function CorInput({ value, onChange, onBlur, label, hint, disabled, error }: FieldRenderProps) {
-  const hex = typeof value === 'number' ? intToHex(value) : '';
-  return (
-    <ColorInput
-      label={label}
-      description={hint ?? 'Cor de destaque para identificar o canal.'}
-      value={hex}
-      onChange={(next) => {
-        if (!next) {
-          onChange(null);
-          return;
-        }
-        const int = hexToInt(next);
-        onChange(int);
-      }}
-      onBlur={onBlur}
-      disabled={disabled}
-      error={error}
-      format="hex"
-    />
-  );
-}
+import { CorInput } from '@/components/inputs/CorInput';
 
 /**
  * The four outer-ref selectors + the `cor` color picker shared by the

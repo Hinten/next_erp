@@ -37,6 +37,7 @@ import {
   mensagemCollection,
   produtoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
+import { corToEtiquetaArgb } from '@delfrance/core/cor';
 import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import {
   MercadoLivreHttpError,
@@ -262,7 +263,11 @@ export async function importQuestionMercadoLivre(
     integracaoOuterRef: outerRef('integracao', integracaoId),
     produtoOuterRef,
     tituloAnuncio,
-    corEtiqueta: conta.cor,
+    // ⚠️ CONVERTED, not copied. `integracao.cor` is a 24-bit RGB int; `cor_etiqueta`
+    // is a 32-bit ARGB `Color.value`, and the chat etiqueta filter matches its
+    // palette with an exact `==`. A raw copy paints the right colour but is
+    // selectable by no etiqueta at all. See `corToEtiquetaArgb`.
+    corEtiqueta: corToEtiquetaArgb(conta.cor),
     nowMs,
     acao,
   });

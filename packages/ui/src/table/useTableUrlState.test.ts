@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { FilterableField } from '../schema/types';
-import { parseFiltersFromParams, parseSortFromParams } from './useTableUrlState';
+import type { ColumnFilterValue, FilterableField } from '../schema/types';
+import { encodeFilterValue, parseFiltersFromParams, parseSortFromParams } from './useTableUrlState';
 
 function field(key: string, kind: FilterableField['kind']): FilterableField {
   return { key, kind, label: key };
@@ -13,6 +13,10 @@ const FIELDS: FilterableField[] = [
   field('estado', 'enum'),
   field('timestamp', 'datetime'),
   field('nf', 'string'), // synthetic virtual-column (subcollection-lookup) field
+  // Synthetic virtual-column field backing an ARRAY document field: its `kind`
+  // describes the array, never its elements, which is why the list ops decode
+  // by op rather than by kind.
+  field('canais', 'string'),
 ];
 
 function parse(qs: string) {
@@ -49,12 +53,68 @@ describe('parseFiltersFromParams', () => {
     });
   });
 
+  it('decodes an array-contains-any candidate list', () => {
+    expect(parse('canais=array-contains-any:abc,def')).toEqual({
+      canais: { op: 'array-contains-any', value: ['abc', 'def'] },
+    });
+  });
+
+  it('decodes a single-value array-contains', () => {
+    expect(parse('canais=array-contains:abc')).toEqual({
+      canais: { op: 'array-contains', value: 'abc' },
+    });
+  });
+
+  it('drops a candidate list with a malformed percent escape instead of throwing', () => {
+    // `URLSearchParams.get()` leaves a stray `%` verbatim, so it reaches
+    // `decodeURIComponent`, which throws `URIError`. This function runs from a
+    // `useState` initializer, so a throw here takes down the whole TableView
+    // subtree during render — every other unparseable input drops its filter.
+    expect(() => parse('canais=array-contains-any:abc%,def')).not.toThrow();
+    expect(parse('canais=array-contains-any:abc%,def')).toEqual({});
+  });
+
+  it('drops an array-contains-any with an empty list', () => {
+    // An empty candidate list means "no rows" — not a filter worth restoring
+    // from a URL, and `buildPipeline` throws on it.
+    expect(parse('canais=array-contains-any:')).toEqual({});
+  });
+
   it('skips params without a known field or with a bad op', () => {
     expect(parse('desconhecido=eq:x&preco=bogus:1')).toEqual({});
   });
 
   it('drops a datetime value that is not a number', () => {
     expect(parse('timestamp=gte:notanumber')).toEqual({});
+  });
+});
+
+describe('encodeFilterValue ⇄ parseFiltersFromParams round trip', () => {
+  function roundTrip(field: string, v: ColumnFilterValue) {
+    const params = new URLSearchParams();
+    params.set(field, `${v.op}:${encodeFilterValue(v.value)}`);
+    return parseFiltersFromParams(params, FIELDS)[field];
+  }
+
+  it('restores a candidate list unchanged', () => {
+    const v: ColumnFilterValue = { op: 'array-contains-any', value: ['abc', 'def', 'ghi'] };
+    expect(roundTrip('canais', v)).toEqual(v);
+  });
+
+  it('restores a candidate containing the list separator', () => {
+    // The join would otherwise split `a,b` into two candidates and silently
+    // widen the filter — hence the per-element percent-encoding.
+    const v: ColumnFilterValue = { op: 'array-contains-any', value: ['a,b', 'c'] };
+    expect(roundTrip('canais', v)).toEqual(v);
+  });
+
+  it('leaves scalar values untouched', () => {
+    expect(roundTrip('preco', { op: 'lte', value: 150 })).toEqual({ op: 'lte', value: 150 });
+    expect(roundTrip('ativo', { op: 'eq', value: true })).toEqual({ op: 'eq', value: true });
+    expect(roundTrip('nome', { op: 'contains', value: 'ana' })).toEqual({
+      op: 'contains',
+      value: 'ana',
+    });
   });
 });
 
