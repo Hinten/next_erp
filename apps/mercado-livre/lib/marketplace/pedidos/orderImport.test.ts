@@ -2224,6 +2224,37 @@ describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', (
     ).toBe(true);
   });
 
+  it('⚠️ waits for the endereço — seeding early would freeze the address null forever', async () => {
+    // `applyEnderecoStep` has a `sem-cep` path that leaves `enderecoFiscalOuterRef`
+    // null and RETRIES on later runs. This step is create-only, so a block seeded
+    // now would keep `enderecoFreteOuterReference: null` forever. The shipment
+    // path self-heals (`mergeFreteInicial` re-applies the ref every run); this one
+    // cannot, so it declines instead — mirroring `applyFreteStep`'s own
+    // "no fiscal address AND no prior frete → nothing is written" fallthrough.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db, { enderecoFiscalOuterRef: null });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping'] })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+    expect(
+      db.docs('pedidos').get('pedido-1')!.freteInicial,
+      'must not seed a block whose address it would never revisit',
+    ).toBeNull();
+
+    // The endereço lands on a later run — now the seed carries it.
+    db.seed('pedidos', 'pedido-1', {
+      ...(db.docs('pedidos').get('pedido-1') as DocData),
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+    });
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const frete = db.docs('pedidos').get('pedido-1')!.freteInicial as DocData;
+    expect(frete.enderecoFreteOuterReference).toBe('documents/clientes/cli-1/enderecos/end-1');
+  });
+
   it('the written block carries the stamp', async () => {
     const db = new FakeDb();
     seedConta(db);

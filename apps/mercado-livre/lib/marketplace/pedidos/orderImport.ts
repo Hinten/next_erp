@@ -1037,6 +1037,21 @@ async function applyFreteSemEnvioStep(args: {
     // Create-only. Re-derived from the tx-fresh doc, never from the pre-read.
     if (freshPedido.freteInicial != null) return;
 
+    // ⚠️ And not before the endereço exists. `applyEnderecoStep` has a `sem-cep`
+    // path that returns with `enderecoFiscalOuterRef` still null and RETRIES on
+    // every later run — but this step is create-only, so a block seeded now would
+    // freeze `enderecoFreteOuterReference: null` forever, and the readers of that
+    // field (`collectFreteErrors`, the generic etiqueta, `melhorEnvioCart`) would
+    // never see the address that arrives a run later. The shipment path does not
+    // have this problem: `mergeFreteInicial` re-applies the ref on every run.
+    //
+    // Nothing is lost by waiting — `podeAvancarParaPago` requires
+    // `enderecoFiscalOuterRef` too, so the pedido cannot advance meanwhile, and
+    // the next run seeds the block WITH the address. This deliberately mirrors
+    // `applyFreteStep`'s own fallthrough ("no fiscal address AND no prior frete →
+    // nothing is written at all").
+    if (freshPedido.enderecoFiscalOuterRef == null) return;
+
     const semEnvio: FreteDoPedido = {
       ...seedFreteInicial(MODALIDADE_FRETE.fob, true),
       // The one field the seed cannot know: whose address this ships to. Same
