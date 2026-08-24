@@ -966,7 +966,22 @@ async function wrapImportRunner<T extends { skipped?: unknown }>(
  * an order the ERP already has is the common case, and before this it was
  * indistinguishable from the first import that created the pedido.
  */
-export type OrderImportOutcome = 'created' | 'updated' | 'seller-mismatch' | 'no-buyer';
+export type OrderImportOutcome =
+  | 'created'
+  | 'updated'
+  /**
+   * ⚠️ The `-sem-envio` pair is not redundant with `created`/`updated`: the order
+   * carries NO Mercado Envios shipment ("frete a combinar"), so its freight was
+   * synthesized and no `shipments` notification will ever arrive to complete it.
+   * That needs a human, and it is invisible otherwise. Spelled as a pair rather
+   * than replacing created/updated so the log still says whether the pedido was
+   * new — losing information to save an enum member is the habit this whole
+   * series exists to break.
+   */
+  | 'created-sem-envio'
+  | 'updated-sem-envio'
+  | 'seller-mismatch'
+  | 'no-buyer';
 
 /**
  * What the `payments` import actually DID, for the log. Every member but
@@ -1137,7 +1152,15 @@ export async function processNotificationPayload(
     // does since #1136. Discarding it made an import that skipped EVERYTHING log
     // identically to one that created a pedido — and #1087 is the live run where
     // that cost a day of "outcome: done" over an order that never arrived.
-    const detail: OrderImportOutcome = result.skipped ?? (result.created ? 'created' : 'updated');
+    const detail: OrderImportOutcome =
+      result.skipped ??
+      (result.created
+        ? result.semEnvio
+          ? 'created-sem-envio'
+          : 'created'
+        : result.semEnvio
+          ? 'updated-sem-envio'
+          : 'updated');
     return { kind: 'done', integracaoId, detail };
   }
 

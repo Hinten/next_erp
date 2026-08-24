@@ -761,3 +761,27 @@ export const freteDoPedidoSchema = z
   })
   .passthrough();
 export type FreteDoPedido = z.infer<typeof freteDoPedidoSchema>;
+
+/**
+ * A fresh `freteInicial` block for a pedido that has none.
+ *
+ * Every wire key starts at its schema default, which is Flutter's — with two
+ * exceptions. `ehReverso` is direction-aware: an entrada (`ehSaida: false`) is a
+ * cliente → loja shipment, so its freight defaults to reverse (legacy parity).
+ * And `modalidade` always comes from the caller, so the schema default never
+ * applies here — that default deliberately diverges from Flutter's read default
+ * (#1090).
+ *
+ * ⚠️ Lives in `@delfrance/schemas`, beside the schema it seeds, because it has
+ * TWO callers that must not disagree: the pedido form's Frete tab, where an
+ * operator picks a modalidade, and the Mercado Livre order import, which
+ * synthesizes a block for an order sold with no Mercado Envios shipment
+ * ("frete a combinar"). A private second copy is the #810 shape.
+ */
+export function seedFreteInicial(modalidade: ModalidadeFrete, ehSaida: boolean): FreteDoPedido {
+  return freteDoPedidoSchema.parse({
+    estado: ESTADO_FRETE.iniciado,
+    modalidade,
+    ehReverso: !ehSaida,
+  });
+}
