@@ -122,6 +122,24 @@ export const itemAttributeSchema = z
     attribute_group_id: z.string().nullable().optional(),
     attribute_group_name: z.string().nullable().optional(),
     unit_id: z.string().nullable().optional(),
+    /**
+     * A `number_unit` measurement, split the way ML stores it.
+     *
+     * ⚠️ This is the ONLY place an item response states the unit. ML answers
+     * `GET /items` with `value_name: '355 mL'` — the unit baked into the text —
+     * and **no `unit_id` at all**; `unit_id` is a field we SEND, not one we get
+     * back. The schema is `.passthrough()`, so this key already survived the
+     * parse and was merely untyped, which is why the import mapper could not
+     * read it and every imported measurement arrived unitless.
+     */
+    value_struct: z
+      .object({
+        number: z.number().nullable().optional(),
+        unit: z.string().nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type MlItemAttribute = z.infer<typeof itemAttributeSchema>;

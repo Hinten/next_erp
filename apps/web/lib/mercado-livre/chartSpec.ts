@@ -422,22 +422,6 @@ export function mainAttributeCandidates(specs: unknown): ChartSpecValue[] {
     .filter((c) => c.id !== '');
 }
 
-/**
- * How a unit reads in a picker.
- *
- * ⚠️ ML's id AND name for INCHES is the bare double-quote character:
- * `units: [{id: '"', name: '"'}, {id: 'cm', name: 'cm'}]`. That is real data,
- * not a null or an empty string — but on its own it renders as two barely
- * visible tick marks that look like a blank option, so it gets spelled out.
- *
- * The VALUE is untouched: `"` is what ML expects in `unit_id`, and the backend
- * folds it into the value name (`'36 "'`) and `struct.unit`. Filtering the unit
- * out would drop a measurement system sellers legitimately use.
- */
-export function unitLabel(unitId: string): string {
-  return unitId === '"' ? 'pol. (")' : unitId;
-}
-
 /** ML's per-chart row cap (`ui_config.max_allowed` on the GRID), or null. */
 export function maxRows(specs: unknown): number | null {
   let found: number | null = null;
