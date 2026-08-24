@@ -97,6 +97,39 @@ describe('POST /api/marketplace/mercado-livre/publicar', () => {
     });
   });
 
+  /**
+   * The conta's `shipping.mode` reaches `PublishDeps` from the integração doc,
+   * the same way the two outer refs above do.
+   */
+  describe('shippingMode', () => {
+    async function depsFor(modo: unknown): Promise<Record<string, unknown>> {
+      h.loadCtx.mockResolvedValue({
+        integracaoId: 'int-1',
+        conta: { modoEnvioMercadoLivre: modo },
+        resolveChannelContext: h.resolveChannelContext,
+      });
+      await POST(req({ integracaoId: 'int-1', produtoId: 'prod-1' }));
+      return h.publishProduto.mock.calls[0]![0] as Record<string, unknown>;
+    }
+
+    it('forwards a configured mode', async () => {
+      expect(await depsFor('me2')).toMatchObject({ shippingMode: 'me2' });
+    });
+
+    it('sends null when the conta has none', async () => {
+      expect(await depsFor(null)).toMatchObject({ shippingMode: null });
+      expect(await depsFor(undefined)).toMatchObject({ shippingMode: null });
+    });
+
+    // ⚠️ `ctx.conta` is untyped passthrough. A doc carrying a mode this build
+    // does not know — a value added later, a legacy shape — must degrade to
+    // "send no shipping node", never throw and fail the whole publish.
+    it('degrades an unparseable stored value to null instead of throwing', async () => {
+      expect(await depsFor('custom')).toMatchObject({ shippingMode: null });
+      expect(await depsFor(7)).toMatchObject({ shippingMode: null });
+    });
+  });
+
   it('400s on a missing produtoId, invalid JSON and non-object bodies', async () => {
     expect((await POST(req({ integracaoId: 'int-1' }))).status).toBe(400);
     expect((await POST(req('{not json'))).status).toBe(400);

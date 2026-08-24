@@ -40,6 +40,10 @@ export const mercadoLivreFields: Record<string, FieldConfig> = {
     hint: 'Depósito de onde o estoque é enviado ao Mercado Livre.',
     renderInput: refRenderInput(depositoCollection, true),
   },
+  modoEnvioMercadoLivre: {
+    label: 'Modo de envio',
+    hint: 'Enviado em toda publicação e republicação desta conta. Vazio: não enviar o modo — o Mercado Livre aplica o padrão da conta.',
+  },
   nome: { label: 'Nome' },
   ativo: { label: 'Ativo' },
   padrao: { label: 'Padrão' },

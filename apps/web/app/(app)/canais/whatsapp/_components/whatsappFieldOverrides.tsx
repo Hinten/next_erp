@@ -287,6 +287,7 @@ export const whatsappExcludedFields = [
   'ultimaModificacao',
   'verificado',
   'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows
+  'modoEnvioMercadoLivre', // Mercado Livre field — hidden here, surfaced by its own channel screen
   'shop_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
   'main_account_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
   'tabelasAtacado', // per-channel fields — hidden here, surfaced by their own channel screens/flows

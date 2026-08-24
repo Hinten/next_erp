@@ -23,6 +23,7 @@ import {
   MercadoLivreHttpError,
   type MlAttribute,
   type MlItem,
+  type MlShippingMode,
   type MlUser,
   buildItemPayload,
   estadoFromMlStatus,
@@ -100,6 +101,14 @@ export interface PublishDeps {
   /** From the integração doc (parsed upstream by loadMercadoLivreContext). */
   tabelaNormalOuterRef: string | null;
   depositoOuterRef: string | null;
+  /**
+   * The conta's `shipping.mode` (`integracao.modoEnvioMercadoLivre`), same
+   * source as the two refs above. Null/absent sends no `shipping` node at all,
+   * which is what every publish did before this existed — so an unconfigured
+   * conta is unaffected. Rides on republishes too, so an existing "a combinar"
+   * listing self-heals the next time it is published.
+   */
+  shippingMode?: MlShippingMode | null;
   /**
    * The conta's ML `user_id` — the seller whose items the removed-variation
    * sweep searches. Null disables the sweep (it cannot enumerate a family
@@ -515,6 +524,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
     isUserProductSeller: listingModel === 'user-products',
     sizeChart: tabela.resolved,
+    shippingMode: deps.shippingMode ?? null,
   });
 
   const now = Date.now();
