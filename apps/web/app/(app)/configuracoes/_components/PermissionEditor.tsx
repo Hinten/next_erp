@@ -24,12 +24,22 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   arquivo: 'Arquivos',
   frete: 'Frete',
   cmun: 'Tabela de municípios (CEP → IBGE)',
+  incidenteResolucao: 'Resolução de reclamações (marketplace)',
 };
 
 const ACTION_LABELS: Record<string, string> = {
   read: 'Ler',
   write: 'Editar',
   delete: 'Excluir',
+};
+
+/**
+ * Per-domain overrides where "Editar" would understate what the bit does.
+ * `incidenteResolucao.write` executes a refund on the marketplace — the checkbox
+ * has to say so, because a cargo editor is where someone decides who may.
+ */
+const ACTION_LABELS_POR_DOMINIO: Partial<Record<keyof typeof PERM, Record<string, string>>> = {
+  incidenteResolucao: { read: 'Consultar', write: 'Executar (reembolso, devolução, mediação)' },
 };
 
 export interface PermissionEditorProps {
@@ -58,7 +68,11 @@ export function PermissionEditor({ value, onChange, readOnly = false }: Permissi
                   return (
                     <Checkbox
                       key={action}
-                      label={ACTION_LABELS[action] ?? action}
+                      label={
+                        ACTION_LABELS_POR_DOMINIO[domain]?.[action] ??
+                        ACTION_LABELS[action] ??
+                        action
+                      }
                       checked={granted}
                       readOnly={readOnly}
                       disabled={readOnly}

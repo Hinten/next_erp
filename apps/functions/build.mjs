@@ -1,17 +1,18 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { loadBuildEnv } from '../../tools/deploy-env/build-env.mjs';
+import { loadBuildEnv, requireBuildRegion } from '../../tools/deploy-env/build-env.mjs';
 
 // Bundle the Cloud Functions, inlining the function region at build time.
 // Firebase can't read `process.env`/params/`.env` during codebase analysis (where
 // setGlobalOptions runs), so the region is baked into the bundle here.
 //
-// The region is a non-secret project constant: the Storage bucket lives in
-// us-east1 and the gen2 trigger must match it. It is deliberately NOT sourced
-// from `.env.local` — that file holds secrets that must never be loaded into the
-// deploy/build process. It defaults to the bucket region and can be overridden
-// via FUNCTIONS_REGION for another environment.
+// The region is a non-secret PER-PROJECT value, never a constant: it must equal
+// the Storage bucket's region or the gen2 (Eventarc) trigger silently never
+// fires. It is deliberately NOT sourced from `.env.local` — that file holds
+// secrets that must never be loaded into the deploy/build process — and it has
+// NO default, so a missing FUNCTIONS_REGION stops the build instead of inlining
+// a region nobody chose. See requireBuildRegion in tools/deploy-env.
 
 // Resolve paths from THIS file's location, never the cwd: the deploy predeploy
 // runs `node apps/functions/scripts/prepare-deploy.mjs` from the repo root, which
@@ -29,7 +30,7 @@ export async function bundle(outfile) {
   // they are not exported in the deploy shell. A real export still wins, and a
   // missing file is a no-op — see tools/deploy-env/build-env.mjs.
   loadBuildEnv();
-  const region = process.env.FUNCTIONS_REGION || 'us-east1';
+  const region = requireBuildRegion('FUNCTIONS_REGION');
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above
   // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase

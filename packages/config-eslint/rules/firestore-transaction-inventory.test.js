@@ -140,7 +140,7 @@ const INVENTARIO = {
   'apps/web/lib/mercado-livre/listingPort.ts':
     'Same port shape — the patch builder runs on the `tx.get` snapshot inside the callback.',
   'apps/web/lib/mercado-livre/listingDraft.ts':
-    '`runTransaction<DraftOutcome>` (generic — invisible to a `runTransaction\\(` pattern). Reads the draft and only writes when it is absent, decided on that read.',
+    "Two sites, both `runTransaction<T>` (generic — invisible to a `runTransaction\\(` pattern). `createListingDraft`\u2019s `'primeiro'` path reads the draft and only writes when it is absent, decided on that read; its `'adicional'` path runs no transaction at all (a fresh auto-id has nothing to check against). `removeListingDraft` re-derives \u201cnever published\u201d from the `tx.get` snapshot rather than from the link the button was rendered with, so a publish landing inside the confirm window aborts the delete instead of orphaning a live listing.",
   'apps/web/lib/pedidos/clientPort.ts':
     'Two sites, both class A by construction. `:97` calls `apply(current)` on the `tx.get` snapshot; `:125` reads every path up front (JS SDK: all reads before the first write) and calls `apply(docs)` on that map. The port shape is what makes a stale closure unrepresentable.',
   'apps/web/lib/pedidos/createPedido.ts':

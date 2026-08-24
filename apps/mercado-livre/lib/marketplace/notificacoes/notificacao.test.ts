@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
+import type { OrderImportResult } from '../pedidos/orderImport';
+import type { PaymentImportResult } from '../pedidos/orderPaymentImport';
+import type { ShipmentImportResult } from '../pedidos/orderShipmentImport';
 
 import {
   MAX_TENTATIVAS,
@@ -1442,7 +1445,12 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         0,
         { orderImportRunner, paymentImportRunner, shipmentImportRunner },
       );
-      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
+      expect(r).toMatchObject({
+        outcome: 'done',
+        integracaoId: 'conta-A',
+        topic: 'payments',
+        detail: 'imported',
+      });
       expect(paymentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 123456);
       expect(orderImportRunner).not.toHaveBeenCalled();
       expect(shipmentImportRunner).not.toHaveBeenCalled();
@@ -1462,7 +1470,14 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         0,
         { paymentImportRunner },
       );
-      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
+      // ⚠️ `done` alone is NOT the assertion. A skipped import and a real one are
+      // the same disposition; `detail` is the only thing that separates them.
+      expect(r).toMatchObject({
+        outcome: 'done',
+        integracaoId: 'conta-A',
+        topic: 'payments',
+        detail: 'payment-404',
+      });
       expect(db.docs(NOTIF).size).toBe(0);
     });
 
@@ -2256,3 +2271,117 @@ describe('#808 acceptance — a notification survives a connect-after-the-fact',
 // with `indexSatisfies`. The hand-rolled block that used to live here compared
 // `fieldPath` only and ignored `order`, so flipping user_id to DESCENDING passed
 // it while breaking the query — verified before deleting it (#823).
+
+/**
+ * #1087, second round. #1136 fixed this for the `items` topic and left the other
+ * two data-bearing importers behind: `orders_v2` and `payments` returned a bare
+ * `{ kind: 'done' }`, so an import that skipped EVERYTHING logged identically to
+ * one that created a pedido or advanced it to `pago`. During the live run that
+ * read as a healthy stream over a payment that never imported.
+ *
+ * The property under test is not "detail is present" — it is that two runs which
+ * DID DIFFERENT THINGS can no longer produce the same log line.
+ */
+describe('orders_v2 / payments report what they actually did (#1087)', () => {
+  async function runPayment(skipped: PaymentImportResult['skipped']) {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    return handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: `NP-${String(skipped)}`, resource: '/payments/1', topic: 'payments' }),
+      0,
+      { paymentImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', skipped })) },
+    );
+  }
+
+  async function runOrder(over: { created: boolean; skipped: OrderImportResult['skipped'] }) {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    return handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: `NO-${String(over.skipped)}-${String(over.created)}`,
+        resource: '/orders/1',
+        topic: 'orders_v2',
+      }),
+      0,
+      { orderImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', ...over })) },
+    );
+  }
+
+  const PAYMENT_CASES: ReadonlyArray<readonly [PaymentImportResult['skipped'], string]> = [
+    [null, 'imported'],
+    ['payment-404', 'payment-404'],
+    ['marketplace-none', 'marketplace-none'],
+    ['sem-order-key', 'sem-order-key'],
+    ['pedido-nao-encontrado', 'pedido-nao-encontrado'],
+    ['stale', 'stale'],
+  ];
+
+  it.each(PAYMENT_CASES)(
+    'payments: a runner skip of %s reports detail %s',
+    async (skipped, detail) => {
+      expect(await runPayment(skipped)).toMatchObject({ outcome: 'done', detail });
+    },
+  );
+
+  const ORDER_CASES: ReadonlyArray<
+    readonly [{ created: boolean; skipped: OrderImportResult['skipped'] }, string]
+  > = [
+    [{ created: true, skipped: null }, 'created'],
+    [{ created: false, skipped: null }, 'updated'],
+    [{ created: false, skipped: 'seller-mismatch' }, 'seller-mismatch'],
+    [{ created: false, skipped: 'no-buyer' }, 'no-buyer'],
+  ];
+
+  it.each(ORDER_CASES)('orders_v2: %o reports detail %s', async (over, detail) => {
+    expect(await runOrder(over)).toMatchObject({ outcome: 'done', detail });
+  });
+
+  async function runShipment(skipped: ShipmentImportResult['skipped']) {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    return handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: `NS-${String(skipped)}`, resource: '/shipments/1', topic: 'shipments' }),
+      0,
+      { shipmentImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', skipped })) },
+    );
+  }
+
+  const SHIPMENT_CASES: ReadonlyArray<readonly [ShipmentImportResult['skipped'], string]> = [
+    [null, 'synced'],
+    ['shipment-404', 'shipment-404'],
+    ['sem-order-id', 'sem-order-id'],
+    ['pedido-nao-encontrado', 'pedido-nao-encontrado'],
+    ['sem-frete-inicial', 'sem-frete-inicial'],
+    ['stale', 'stale'],
+  ];
+
+  it.each(SHIPMENT_CASES)(
+    'shipments: a runner skip of %s reports detail %s',
+    async (skipped, detail) => {
+      expect(await runShipment(skipped)).toMatchObject({ outcome: 'done', detail });
+    },
+  );
+
+  it('a payment that imported and one that skipped are no longer the same log line', async () => {
+    // The whole point. Before this both were `{ outcome: 'done' }` and nothing
+    // downstream could tell them apart.
+    const imported = await runPayment(null);
+    const skipped = await runPayment('pedido-nao-encontrado');
+    expect(imported.outcome).toBe(skipped.outcome);
+    expect(imported.detail).not.toBe(skipped.detail);
+  });
+
+  it('all four data-bearing importers report a detail — none left behind', async () => {
+    // `items` gained this in #1136; the other three here. A fifth importer added
+    // without one is the same blind spot again, so assert the set, not each one.
+    const results = [
+      await runOrder({ created: true, skipped: null }),
+      await runPayment(null),
+      await runShipment(null),
+    ];
+    expect(results.map((r) => r.detail)).toEqual(['created', 'imported', 'synced']);
+  });
+});

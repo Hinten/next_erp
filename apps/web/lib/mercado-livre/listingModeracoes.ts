@@ -1,12 +1,20 @@
 /**
  * Route a listing's persisted Mercado Livre MODERATION onto the screen (#1087).
  *
- * `itemsStatusSync` writes `produtoMercadoLivre.moderacoes` — ML's
- * `/moderations/last_moderation` answer, parsed
- * (`apps/mercado-livre/lib/marketplace/anuncios/moderacoes.ts`) — and the editor subscribes
- * to the link doc live, so a moderação repaints the moment the `items`
- * notification lands and survives a reload. Before this, ML paused a listing for
- * a policy reason and the ERP showed a bare "pausado".
+ * `itemsStatusSync`, `reverificarAnuncio` and the product IMPORTER write
+ * `produtoMercadoLivre.moderacoes` — ML's `/moderations/last_moderation` answer,
+ * parsed (`apps/mercado-livre/lib/marketplace/anuncios/moderacoes.ts`) — and the
+ * editor subscribes to the link doc live, so a moderação repaints the moment an
+ * `items` notification, a re-check or an import lands, and survives a reload.
+ * Before this, ML paused a listing for a policy reason and the ERP showed a bare
+ * "pausado".
+ *
+ * ⚠️ A stored `null` and a stored `[]` are DIFFERENT — "never asked" vs "asked,
+ * ML reported none" — and this module currently renders both as no moderation.
+ * The mass import and a failed `/moderations` read both produce `null`, so a
+ * moderated listing can sit here with `paused · moderation_penalty` and no
+ * alert. Surfacing that state (and prompting the one-click "Reverificar
+ * anúncio") is tracked separately; do not "fix" it by collapsing the two.
  *
  * ⚠️ A sibling of `listingCausas.ts`, deliberately NOT part of it. A causa is a
  * PAYLOAD validation failure ML answered a write of ours with; a moderação is a

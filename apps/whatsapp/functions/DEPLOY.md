@@ -194,16 +194,53 @@ The legacy Flutter pipeline runs as two Cloud Run services (deployed via
   that this codebase's `processWhatsappNotification` replaces.
 
 **Only one of the two pipelines may be registered as Meta's webhook callback
-URL at a time.** Both sides create/append the same `Conversa`/`Mensagem` docs
-from the same inbound Meta payload — running both concurrently against the
-same WhatsApp Business Account double-processes (and double-shows) every
-inbound message.
+URL at a time.**
+
+⚠️ **Whether only one _can_ be is NOT established, and everything below depends
+on it.** A callback URL is configured per **Meta App**, and a WABA can have
+several **subscribed apps** — Meta delivers each inbound event to every subscribed
+app's own URL. This repo already encodes that plurality: `getSubscribedApps`
+returns an **array**, and `health.ts:286-294` maps over it and joins multiple
+names into the health row. The next paragraph's "(or unsubscribe its Meta App
+subscription)" reads as though the legacy pipeline has a subscription of its own.
+
+So there are two cases, with **opposite** orderings:
+
+- **(a) Same Meta App.** One callback URL, so the two can never both receive:
+  the risk is a **gap**, and the order below (repoint first, disable second) is
+  correct.
+- **(b) Legacy is a SECOND Meta App.** Both receive every message: the risk is a
+  genuine **overlap**, and repointing first double-processes. There the order
+  inverts — unsubscribe legacy, then subscribe this one, accepting a short gap
+  rather than a double-write.
+
+**Establish which before the window**: read the WABA's subscribed apps
+(`getSubscribedApps`, or the health row) and check whether the legacy Cloud Run
+service sits under the same app id as this backend. The rest of this section
+assumes **(a)**.
+
+⚠️ **Correction (2026-08-21).** This used to add that "both sides create/append
+the same `Conversa`/`Mensagem` docs". **They cannot — there is no dual run**
+(root `CLAUDE.md` rule 8); the legacy stack writes only the legacy project. The
+rest of the original sentence was already right, and is the whole reason the step
+survives: both stacks act **against the same WhatsApp Business Account**, so a
+legacy service left running keeps sending and receiving on the real WABA.
 
 **When you point the Meta App Dashboard's webhook callback URL at
 `https://<this-app>/api/webhooks/whatsapp`, you MUST disable
 `distribuidorWhastappCloudApi` (or unsubscribe its Meta App subscription) in
-the same window**, so a redelivery never lands on both pipelines. Until the
-cutover the webhook URL still points at the legacy Cloud Run service and this
-backend's queue never runs, so there is no overlap either side of a _correctly
-sequenced_ cutover. Verify by tailing this backend's receiver logs for the
-first live inbound message before decommissioning `processarNotificacoesWhatsapp`.
+the same window** — **in that order: repoint first, disable second.**
+
+⚠️ **Disabling first loses messages silently.** `distribuidorWhastappCloudApi`
+(`.old/…/whatsapp_cloud_api/lib/functions.dart:37-81`) enqueues a Cloud Task and
+**returns `Response.ok('OK')` immediately** — its own comment says the point is
+to "responder a request em até 250ms". So while it is still the registered
+callback it keeps acking 200 with nothing behind it, and Meta, having received a
+200, never redelivers. Taking the receiver down instead is not the answer either:
+Meta disables a subscription that keeps failing.
+
+Until the cutover the webhook URL still points at the legacy Cloud Run service
+and this backend's queue never runs, so there is no overlap either side of a
+_correctly sequenced_ cutover. Verify by tailing this backend's receiver logs for
+the first live inbound message before decommissioning
+`processarNotificacoesWhatsapp`.

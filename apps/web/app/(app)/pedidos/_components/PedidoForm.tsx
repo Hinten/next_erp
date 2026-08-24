@@ -21,6 +21,7 @@ import {
   type EstadoPedido,
   type Pedido,
   pedidoSchema,
+  idFromRef,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -599,7 +600,18 @@ export function PedidoForm({
 
           {visibleTabs.has('incidentes') && (
             <Tabs.Panel value="incidentes" pt="md">
-              <IncidentesTab pedidoId={pedidoId} disabled={disabled} />
+              <IncidentesTab
+                pedidoId={pedidoId}
+                disabled={disabled}
+                // ⚠️ The ML claim lives on the account the pedido came through.
+                // Absent for a pedido with no integração, which is exactly when
+                // the panel must not render.
+                integracaoId={
+                  defaultValues?.integracaoPedidoOuterRef
+                    ? idFromRef(defaultValues.integracaoPedidoOuterRef)
+                    : null
+                }
+              />
             </Tabs.Panel>
           )}
 

@@ -5,7 +5,11 @@ photos, variations and the link doc. The inverse direction (ERP → ML) is
 `anuncios/`.
 
 - `import.ts` — the IO orchestration: fetch item → map → produto + extraData +
-  estoque + link.
+  estoque + link. ⚠️ Reaches **across** into `anuncios/moderacoes.ts` (#1087):
+  the importer is the third writer of the link doc's `moderacoes` and shares the
+  `items` sync's gate rather than restating it. `lerModeracoesDoItem` holds the
+  two divergences — the read sits above every write, and a transient ML failure
+  degrades to "never asked" instead of discarding the produto.
 - `importCore.ts` — the pure write-plan assembly (create vs fill-nulls, gating,
   link doc). ⚠️ Inventoried in `reserva-arithmetic-inventory.test.js` — it reads
   `args.existingEstoqueReservada` without ever naming the identifier (#931).

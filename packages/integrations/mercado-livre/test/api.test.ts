@@ -299,6 +299,76 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     expect((payment.payer as Record<string, unknown>).a_field_the_mapper_never_reads).toBe(true);
   });
 
+  it('getPayment parses a numeric field Mercado Livre sent as a STRING (#1087 live run)', async () => {
+    // The 2026-08-21 regression, taken from the live payload of payment
+    // 174034247387 (order 2000018052464608, seller 3616169770): ML quoted
+    // `order_id` while `id` stayed a JSON number. Both were `z.number().int()`,
+    // so Zod rejected the WHOLE body, the pagamento never imported, the pedido
+    // stuck at `emProcessamento`, and Cloud Tasks retried the identical request
+    // until the notification parked.
+    //
+    // ⚠️ The blast radius is out of all proportion to the field. `order_id` is
+    // only a FALLBACK for the order key — `parsePaymentOrderKey` prefers
+    // `external_reference`, which arrived present and valid. The import had
+    // everything it needed and still died, because `parseOk` validates the whole
+    // body before any caller reads a field.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 174034247387,
+        order_id: '2000018052464608', // ← quoted by ML; the field that broke the run
+        external_reference: '2000018052464608',
+        authorization_code: '301299',
+        api_version: '2',
+        transaction_amount: 1000.02,
+        total_paid_amount: 1000.02,
+        shipping_cost: 0,
+        coupon_amount: 0,
+        marketplace_fee: 0,
+        installments: 1,
+        status: 'approved',
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const payment = await api.getPayment(174034247387);
+    expect(payment.order_id).toBe(2000018052464608);
+    expect(typeof payment.order_id).toBe('number');
+    // Everything else on the body still parses exactly as it did before.
+    expect(payment.id).toBe(174034247387);
+    expect(payment.transaction_amount).toBe(1000.02);
+    expect(payment.external_reference).toBe('2000018052464608');
+  });
+
+  it('a schema failure names the offending field in the MESSAGE, not only in issues', async () => {
+    // ⚠️ The message is the only part that survives into the durable record. The
+    // notification pipeline persists `err.message` ALONE (`persistFailure`) and
+    // the sweep marks with `err.message` too, so a bare "formato inesperado" is
+    // exactly what made the #1087 parked notification undiagnosable. `issues`
+    // never reaches that document.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 1, transaction_amount: 'R$ 100,00' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPayment(1)).rejects.toThrow(/Campos inválidos: transaction_amount/);
+  });
+
+  it('the message dedups paths and never carries the response body (#1015)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 1,
+        fee_details: [{ amount: 'x' }, { amount: 'y' }],
+        payer: { email: 'buyer@example.com' },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPayment(1)).rejects.toMatchObject({
+      // Both bad entries share a path shape, but each carries its own index, so
+      // the dedup keeps them distinct without repeating a path.
+      message: expect.stringContaining('Campos inválidos:'),
+    });
+    const err = await api.getPayment(1).catch((e: unknown) => e as Error);
+    expect(err.message).not.toContain('buyer@example.com');
+  });
+
   it('getPayment maps a 404 to an HTTP error', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ message: 'payment not found' }, 404),

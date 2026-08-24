@@ -3,12 +3,13 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 // Region must be inlined at build time by build.mjs (esbuild `define`) — Firebase
 // runs `setGlobalOptions` during codebase analysis BEFORE process.env/.env is
 // available, so the build-time literal is what makes the region available there.
-// Defaults to us-east5 (the ML backend's region); override via FUNCTIONS_REGION.
+// REQUIRED — build.mjs has no default, so an unset value stops the build
+// rather than inlining a region nobody chose.
 const region = process.env.FUNCTIONS_REGION;
 if (!region) {
   throw new Error(
     'FUNCTIONS_REGION was not inlined at build time. Build via build.mjs ' +
-      '(defaults us-east5) or set FUNCTIONS_REGION.',
+      'with FUNCTIONS_REGION set. There is no default.',
   );
 }
 
@@ -30,7 +31,15 @@ if (!region) {
  * Inlined at build time by `build.mjs` for the same reason as `region` — the
  * `region:` option is read during codebase analysis, before any env exists.
  */
-export const TASKS_SCHEDULER_REGION = process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || 'us-east1';
+const tasksSchedulerRegion = process.env.MERCADO_LIVRE_TASKS_REGION?.trim();
+if (!tasksSchedulerRegion) {
+  throw new Error(
+    'MERCADO_LIVRE_TASKS_REGION was not inlined at build time. Build via build.mjs ' +
+      'with it set, or set MERCADO_LIVRE_TASKS_REGION. There is no default: a wrong ' +
+      'queue region is dropped silently, so this must fail instead of guessing.',
+  );
+}
+export const TASKS_SCHEDULER_REGION = tasksSchedulerRegion;
 
 // ⚠️ Do NOT assign back to `process.env.MERCADO_LIVRE_TASKS_REGION` here. The
 // build `define`s that expression, so every read of it — including the one in
@@ -38,6 +47,14 @@ export const TASKS_SCHEDULER_REGION = process.env.MERCADO_LIVRE_TASKS_REGION?.tr
 // assignment esbuild sees is `"us-east1" = "us-east1"` (it warns, rightly).
 // An enqueue from INSIDE a function therefore resolves the same region as the
 // task functions themselves, which is exactly where the queues live.
+
+/**
+ * The validated codebase region, re-exported so a per-function `region:` option
+ * uses the value that already passed the check above instead of re-reading the
+ * variable with a fallback of its own. A literal there would silently outvote
+ * this check for that one function.
+ */
+export const FUNCTIONS_REGION = region;
 
 setGlobalOptions({
   region,

@@ -276,3 +276,53 @@ export function loadBuildEnv(repoRoot = REPO_ROOT, env = process.env) {
   }
   return { file, applied, skipped };
 }
+
+/**
+ * Read a build-time region variable, or REFUSE the build.
+ *
+ * ⚠️ **There is deliberately no default.** Every `build.mjs` used to carry one
+ * (`process.env.FUNCTIONS_REGION || 'us-east1'`), and that literal is how this
+ * project drifted into three regions without anything ever failing: a default
+ * guarantees the `options.ts` throw can never fire, so a forgotten variable
+ * deploys to whichever region the literal happens to name rather than stopping.
+ *
+ * The failure it protects against is silent on both sides. A function deployed to
+ * the wrong region still deploys; an enqueuer pointed at the wrong region does not
+ * raise — the Admin SDK resolves `us-central1`, the queue does not exist there, and
+ * the task is DROPPED while the route still answers 200 (#1108). Neither shows up
+ * in a log you would think to read. A build that stops is the only cheap signal
+ * available, so this throws where a default would have quietly succeeded.
+ *
+ * Trims, because the value reaches an esbuild `define` and a trailing space would
+ * be baked into the bundle as part of the region id. Blank is treated as unset for
+ * the same reason `loadBuildEnv` does: it matches the `||` semantics the callers
+ * had before, so an exported-but-empty variable cannot pass for configured.
+ *
+ * @param {string} name  The variable to read, e.g. `'FUNCTIONS_REGION'`.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string} The trimmed region id.
+ * @throws {BuildEnvError} When unset or blank.
+ */
+export function requireBuildRegion(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (value) return value;
+
+  throw new BuildEnvError(
+    [
+      `${name} is not set, so this build has no region to inline.`,
+      '',
+      'There is no default on purpose: the region is inlined into the bundle at',
+      'build time, and a wrong one fails SILENTLY at runtime — a task enqueued',
+      'against a queue that does not exist is dropped while the route still',
+      'returns 200 (#1108).',
+      '',
+      'Supply it one of three ways:',
+      `  - export ${name}=<region>            # the deploy shell`,
+      `  - ${name}=<region>                   # ${BUILD_ENV_FILE}, at the repo root`,
+      '  - set it in the workflow `env:` block  # CI',
+      '',
+      'The region is a per-project decision, not a constant — see ADR 0013 and',
+      'issue #1115 for which one this project uses and why.',
+    ].join('\n'),
+  );
+}

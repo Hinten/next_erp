@@ -33,11 +33,21 @@
  * it belongs here and not in a new receiver; ML's *Gerenciar moderações* even
  * derives the `moderation_reference_id` from this notification (`id` + `-ITM`).
  *
- * ⚠️ `moderacoes` is written on EVERY status write, value or `[]`, in the SAME
- * patch as the status it explains. That is the invariant, and it is stronger than
- * the `errors`/`causas` clearing rule it deliberately does not share: a reason
- * cannot outlive the state it describes, because they are one write. A stale
- * moderation on a healthy listing is indistinguishable from a real one.
+ * ⚠️ On THIS path `moderacoes` is written on every status write, value or `[]`,
+ * in the SAME patch as the status it explains: a reason cannot outlive the state
+ * it describes, because they are one write, and a stale moderation on a healthy
+ * listing is indistinguishable from a real one. That is the invariant, and it is
+ * stronger than the `errors`/`causas` clearing rule it deliberately does not
+ * share.
+ *
+ * ⚠️ Repo-wide it carries one qualification this sync never exercises. The
+ * IMPORTER can write a THIRD value — `null`, "never asked" — on its two skip
+ * paths (the mass import, and a `/moderations` read that failed), which omits the
+ * key so the stored reason stands instead of being overwritten with a
+ * healthy-looking `[]`. The CLEARING half still holds on every path, because
+ * `precisaConsultarModeracao` answers from the item already fetched. Do not
+ * restate the rule as unconditional here — `produtoMercadoLivreLinkSchema` owns
+ * the canonical wording.
  *
  * `applyItemStatusToLink` (exported at the bottom) is the shared status-writeback
  * core: this sync and the stock sender's terminal 4xx branch refresh a listing
@@ -331,7 +341,7 @@ export async function syncItemStatus(
  *
  * A thin adapter over the shared {@link consultarModeracoes} — gating, the
  * `-ITM` reference, the 404-is-data narrow and the rethrow all live there, so
- * this sync and `reverificarAnuncio` cannot drift on any of them.
+ * this sync, `reverificarAnuncio` and the importer cannot drift on any of them.
  */
 function fetchModeracoes(api: ItemsSyncApi, itemId: string, item: MlItem): Promise<MlModeracao[]> {
   return consultarModeracoes(api, itemId, item.status, item.sub_status);
