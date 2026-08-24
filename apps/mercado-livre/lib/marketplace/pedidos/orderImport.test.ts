@@ -2287,6 +2287,27 @@ describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', (
     expect(written.estado).toBe('emProcessamento');
   });
 
+  it('says so out loud, printing the real tags — the silent third case is the trap', async () => {
+    // If `no_shipping` is not the literal ML sends, this PR fails EXACTLY like
+    // #1087 did: stranded pedido, `detail: "updated"`, nothing explaining why.
+    // The tag set in this warn is what settles the question from a live replay.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db);
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['paid', 'not_delivered'] })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('sem tag no_shipping'),
+      expect.objectContaining({ tags: ['paid', 'not_delivered'], esperado: 'no_shipping' }),
+    );
+    warn.mockRestore();
+  });
+
   it('advances the pedido to pago once the payment is there', async () => {
     const db = new FakeDb();
     seedConta(db);

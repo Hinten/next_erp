@@ -124,6 +124,7 @@ import { mlPaymentToPagamento } from './orderPaymentMapping';
 import {
   POLITICA_FRESCOR_IMPORT_PEDIDO,
   freteRecebidoEhMaisNovo,
+  ML_TAG_SEM_ENVIO,
   mergeFreteInicial,
   mlShipmentToFreteInicial,
   pedidoSemEnvioMercadoEnvios,
@@ -1784,6 +1785,22 @@ export async function importPedidoMercadoLivre(
     });
   } else if (semEnvio) {
     await applyFreteSemEnvioStep({ db, pedidoId, nowUs });
+  } else {
+    // ⚠️ The third case, and the only silent one: no shipment AND no tag. It is
+    // the legitimate async-propagation window — but it is ALSO what this whole
+    // change looks like if `no_shipping` turns out not to be the literal ML
+    // actually sends. In that case the pedido strands at `emProcessamento`
+    // exactly as in #1087, the log says `updated`, and nothing says why.
+    //
+    // Printing the real tag set is the one thing that settles it, so the live
+    // replay diagnoses itself instead of needing another round trip. Fires at
+    // most a couple of times per order while the shipment propagates.
+    console.warn('[mercado-livre] order sem shipment e sem tag no_shipping — frete não semeado', {
+      orderId: initialOrder.id,
+      pedidoId,
+      tags: initialOrder.tags ?? [],
+      esperado: ML_TAG_SEM_ENVIO,
+    });
   }
 
   await applyPagoAdvanceOrDowngrade({
