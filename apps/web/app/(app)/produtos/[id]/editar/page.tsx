@@ -1,12 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Anchor, Stack } from '@mantine/core';
+import { Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { z } from 'zod';
-import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
+import { type FieldConfig, ObjectView, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
   type Anexo,
@@ -40,6 +39,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { EditarProdutoHeader } from '../../_components/EditarProdutoHeader';
 import { MercadoLivreTab } from '../../_components/mercado-livre/MercadoLivreTab';
 import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
@@ -513,165 +513,153 @@ export default function EditarProdutoPage() {
   }
 
   return (
-    <Stack>
-      <PageHeader
-        title="Editar produto"
-        actions={
-          <Anchor component={Link} href="/produtos" size="sm">
-            Cancelar
-          </Anchor>
-        }
-      />
-      <ObjectView
-        schema={produtoEditarSchema}
-        collection={produtoCollection}
-        db={db}
-        currentUserUid={user?.uid ?? ''}
-        recordId={params.id}
-        sections={PRODUTO_SECTIONS_EDITAR}
-        persistentSections={PRODUTO_PERSISTENT_SECTIONS}
-        fields={fields}
-        excludedFields={PRODUTO_EXCLUDED_FIELDS}
-        transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
-        // Pending Mercado Livre edits live in their own documents and their own
-        // form, so the leave-guard needs to be told about them explicitly.
-        extraDirty={mlDirty}
-        transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
-        deriveOnSave={(values) => {
-          // Keep the Flutter wire shapes on every save: bare group ids sorted
-          // by ordem, canonical group-major fake paths for the variants. The
-          // group selection falls back to what the doc + variants imply when
-          // the user never touched the selector.
-          const uids = (values.variacoesUid as string[] | null) ?? [];
-          const implied = [
-            ...new Set([
-              ...((values.grupoDeVariacoesUid as string[] | null) ?? []).map(
-                (u) => u.split('/').pop()!,
-              ),
-              ...uids
-                .map((u) => parseFakePath(u)?.grupoId)
-                .filter((g): g is string => g !== undefined),
-            ]),
-          ];
-          // Kit denormalization: `componentesKitKeys` mirrors the component ids
-          // (the delete-guard queries it); a non-kit clears both.
-          const ehKit = values.ehKit === true;
-          const componentesKit = ehKit
-            ? ((values.componentesKit as ComponentesKit | null) ?? null)
-            : null;
-          // ⚠️ Denorm written on EVERY save for the legacy Flutter deletion
-          // guard — the bare arquivo ids of the produto's photos
-          // (`models.dart:2022-2026`). That guard never runs against this
-          // database (no dual run; root `CLAUDE.md` rule 8), so the reason is
-          // VOID; the field is kept because the migrated corpus carries it and
-          // dropping it is a real decision, not a drive-by edit. `null`
-          // (the schema default) when there are no fotos, so an untouched produto
-          // isn't churned from `null` to `[]` on an unrelated save.
-          const fotoIds = deriveFotosArquivosIds(values.fotos as Foto[] | null);
-          const gruposDerived = sortGrupoUids(groupsRef.current ?? implied, grupos);
-          const variacoesDerived = normalizeVariacoesUid(uids, grupos);
-          return {
-            grupoDeVariacoesUid: gruposDerived.length > 0 ? gruposDerived : null,
-            variacoesUid: variacoesDerived.length > 0 ? variacoesDerived : null,
-            componentesKit,
-            // Sorted so the denorm is order-stable — the keys feed an
-            // `array-contains` query (order-insensitive), and Firestore arrays
-            // are order-sensitive, so an unsorted list churns dirty detection.
-            componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
-            fotosArquivosIds: fotoIds.length > 0 ? fotoIds : null,
-          };
-        }}
-        validate={(values) => {
-          // Cross-document rules, concentrated in the page model
-          // (`produtoPageIssues`). Estoque is edited directly in its tab (not on
-          // this save), so it's not part of the form value here.
-          const issues = [
-            ...produtoPageIssues({
-              id: params.id,
-              ehKit: values.ehKit as boolean | null,
-              // #298: a kit parent's variation children must also be kits.
-              parentIsKit,
-              componentesKit: values.componentesKit as Record<
-                string,
-                { quantidade: number }
-              > | null,
-              impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
-            }),
-          ];
-          // Guard the #298 race: a child whose parent doc hasn't loaded yet would
-          // see `parentIsKit = false` and slip past the child-edit guard. Block
-          // the save until the parent snapshot resolves.
-          if (paiId && paiSnap.loading) {
-            issues.push({
-              path: 'ehKit',
-              message: 'Aguarde o carregamento do produto pai para validar o kit.',
-            });
-          }
-          return issues;
-        }}
-        onAfterSave={async (id, values) => {
-          // Precos/custo history + child-precos propagation used to be recorded
-          // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
-          // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
-          // Function trigger (since 2026-07-21) fires on the produto write this
-          // save just made, diffs precos/custo against the previous doc itself,
-          // records the history and propagates to the variation children — this
-          // page no longer needs to (and skips entirely for a child produto,
-          // `paiId != null`, and when `propagatePriceToChildren` is false).
-
-          // Kit-status propagation (Flutter parity,
-          // `produtoTableProvider.dart:556-589`): when the parent's
-          // `ehKit`/`ehKitVirtual` flips, sync the EXISTING variation children —
-          // a child of a non-kit can't stay a kit, so its `componentesKit` is
-          // cleared. "Old" value = the ref pinned at the first emit, else the
-          // live snapshot (so a save beating that emit still propagates).
-          const newEhKit = values.ehKit === true;
-          const newEhKitVirtual = values.ehKitVirtual === true;
-          const oldKit = lastSavedKitStatus.current.ready
-            ? lastSavedKitStatus.current
-            : {
-                ehKit: produtoSnap.data?.data.ehKit ?? false,
-                ehKitVirtual: produtoSnap.data?.data.ehKitVirtual ?? false,
-              };
-          await propagateKitStatusToChildren(port, id, {
-            ehKit: newEhKit,
-            ehKitVirtual: newEhKitVirtual,
-            oldEhKit: oldKit.ehKit,
-            oldEhKitVirtual: oldKit.ehKitVirtual,
+    <ObjectView
+      title={<EditarProdutoHeader loading={produtoSnap.loading} />}
+      schema={produtoEditarSchema}
+      collection={produtoCollection}
+      db={db}
+      currentUserUid={user?.uid ?? ''}
+      recordId={params.id}
+      sections={PRODUTO_SECTIONS_EDITAR}
+      persistentSections={PRODUTO_PERSISTENT_SECTIONS}
+      fields={fields}
+      excludedFields={PRODUTO_EXCLUDED_FIELDS}
+      transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
+      // Pending Mercado Livre edits live in their own documents and their own
+      // form, so the leave-guard needs to be told about them explicitly.
+      extraDirty={mlDirty}
+      transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
+      deriveOnSave={(values) => {
+        // Keep the Flutter wire shapes on every save: bare group ids sorted
+        // by ordem, canonical group-major fake paths for the variants. The
+        // group selection falls back to what the doc + variants imply when
+        // the user never touched the selector.
+        const uids = (values.variacoesUid as string[] | null) ?? [];
+        const implied = [
+          ...new Set([
+            ...((values.grupoDeVariacoesUid as string[] | null) ?? []).map(
+              (u) => u.split('/').pop()!,
+            ),
+            ...uids
+              .map((u) => parseFakePath(u)?.grupoId)
+              .filter((g): g is string => g !== undefined),
+          ]),
+        ];
+        // Kit denormalization: `componentesKitKeys` mirrors the component ids
+        // (the delete-guard queries it); a non-kit clears both.
+        const ehKit = values.ehKit === true;
+        const componentesKit = ehKit
+          ? ((values.componentesKit as ComponentesKit | null) ?? null)
+          : null;
+        // ⚠️ Denorm written on EVERY save for the legacy Flutter deletion
+        // guard — the bare arquivo ids of the produto's photos
+        // (`models.dart:2022-2026`). That guard never runs against this
+        // database (no dual run; root `CLAUDE.md` rule 8), so the reason is
+        // VOID; the field is kept because the migrated corpus carries it and
+        // dropping it is a real decision, not a drive-by edit. `null`
+        // (the schema default) when there are no fotos, so an untouched produto
+        // isn't churned from `null` to `[]` on an unrelated save.
+        const fotoIds = deriveFotosArquivosIds(values.fotos as Foto[] | null);
+        const gruposDerived = sortGrupoUids(groupsRef.current ?? implied, grupos);
+        const variacoesDerived = normalizeVariacoesUid(uids, grupos);
+        return {
+          grupoDeVariacoesUid: gruposDerived.length > 0 ? gruposDerived : null,
+          variacoesUid: variacoesDerived.length > 0 ? variacoesDerived : null,
+          componentesKit,
+          // Sorted so the denorm is order-stable — the keys feed an
+          // `array-contains` query (order-insensitive), and Firestore arrays
+          // are order-sensitive, so an unsorted list churns dirty detection.
+          componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
+          fotosArquivosIds: fotoIds.length > 0 ? fotoIds : null,
+        };
+      }}
+      validate={(values) => {
+        // Cross-document rules, concentrated in the page model
+        // (`produtoPageIssues`). Estoque is edited directly in its tab (not on
+        // this save), so it's not part of the form value here.
+        const issues = [
+          ...produtoPageIssues({
+            id: params.id,
+            ehKit: values.ehKit as boolean | null,
+            // #298: a kit parent's variation children must also be kits.
+            parentIsKit,
+            componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
+            impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
+          }),
+        ];
+        // Guard the #298 race: a child whose parent doc hasn't loaded yet would
+        // see `parentIsKit = false` and slip past the child-edit guard. Block
+        // the save until the parent snapshot resolves.
+        if (paiId && paiSnap.loading) {
+          issues.push({
+            path: 'ehKit',
+            message: 'Aguarde o carregamento do produto pai para validar o kit.',
           });
-          lastSavedKitStatus.current = {
-            ready: true,
-            ehKit: newEhKit,
-            ehKitVirtual: newEhKitVirtual,
-          };
+        }
+        return issues;
+      }}
+      onAfterSave={async (id, values) => {
+        // Precos/custo history + child-precos propagation used to be recorded
+        // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
+        // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
+        // Function trigger (since 2026-07-21) fires on the produto write this
+        // save just made, diffs precos/custo against the previous doc itself,
+        // records the history and propagates to the variation children — this
+        // page no longer needs to (and skips entirely for a child produto,
+        // `paiId != null`, and when `propagatePriceToChildren` is false).
 
-          // (The extraData singleton is now written atomically with the produto
-          // doc via `transactionWrites`, not here — so a flaky connection can't
-          // leave the produto saved without its Descrição.)
+        // Kit-status propagation (Flutter parity,
+        // `produtoTableProvider.dart:556-589`): when the parent's
+        // `ehKit`/`ehKitVirtual` flips, sync the EXISTING variation children —
+        // a child of a non-kit can't stay a kit, so its `componentesKit` is
+        // cleared. "Old" value = the ref pinned at the first emit, else the
+        // live snapshot (so a save beating that emit still propagates).
+        const newEhKit = values.ehKit === true;
+        const newEhKitVirtual = values.ehKitVirtual === true;
+        const oldKit = lastSavedKitStatus.current.ready
+          ? lastSavedKitStatus.current
+          : {
+              ehKit: produtoSnap.data?.data.ehKit ?? false,
+              ehKitVirtual: produtoSnap.data?.data.ehKitVirtual ?? false,
+            };
+        await propagateKitStatusToChildren(port, id, {
+          ehKit: newEhKit,
+          ehKitVirtual: newEhKitVirtual,
+          oldEhKit: oldKit.ehKit,
+          oldEhKitVirtual: oldKit.ehKitVirtual,
+        });
+        lastSavedKitStatus.current = {
+          ready: true,
+          ehKit: newEhKit,
+          ehKitVirtual: newEhKitVirtual,
+        };
 
-          // The children flush runs before the kit-variation flush: it creates
-          // any new children already carrying the parent's precos (plus their
-          // initial history records).
-          await flushChildrenRef.current?.(id);
+        // (The extraData singleton is now written atomically with the produto
+        // doc via `transactionWrites`, not here — so a flaky connection can't
+        // leave the produto saved without its Descrição.)
 
-          // Then persist each kit-variation child's generated `componentesKit`
-          // (from "Gerar Variações") — the child docs exist by now.
-          await flushKitVariacoesRef.current?.(id);
+        // The children flush runs before the kit-variation flush: it creates
+        // any new children already carrying the parent's precos (plus their
+        // initial history records).
+        await flushChildrenRef.current?.(id);
 
-          // Mercado Livre last: its link docs have six writers, so a save here
-          // can lose a race and raise `AfterSaveBlockedError` (tier 3). Running
-          // it after the child flushes means that pause never costs the produto
-          // its own sibling writes — they are already committed.
-          await flushMercadoLivreRef.current?.();
-        }}
-        saveLabel="Salvar alterações"
-        canEdit={canWrite}
-        readOnly={!canWrite}
-        canDelete={canWrite}
-        onDelete={handleDelete}
-        deleteConfirmMessage="O produto e suas variações serão excluídos permanentemente. Esta ação não pode ser desfeita."
-        onSaved={() => router.replace('/produtos')}
-      />
-    </Stack>
+        // Then persist each kit-variation child's generated `componentesKit`
+        // (from "Gerar Variações") — the child docs exist by now.
+        await flushKitVariacoesRef.current?.(id);
+
+        // Mercado Livre last: its link docs have six writers, so a save here
+        // can lose a race and raise `AfterSaveBlockedError` (tier 3). Running
+        // it after the child flushes means that pause never costs the produto
+        // its own sibling writes — they are already committed.
+        await flushMercadoLivreRef.current?.();
+      }}
+      saveLabel="Salvar alterações"
+      canEdit={canWrite}
+      readOnly={!canWrite}
+      canDelete={canWrite}
+      onDelete={handleDelete}
+      deleteConfirmMessage="O produto e suas variações serão excluídos permanentemente. Esta ação não pode ser desfeita."
+      onSaved={() => router.replace('/produtos')}
+    />
   );
 }
