@@ -680,13 +680,32 @@ describe('processPriceSyncJob — body shapes', () => {
     expect(db.docs(JOBS_PATH).get('job7')).toMatchObject({ enviados: 1, falhas: 0 });
   });
 
-  it('a variationItem draft PUTs a plain price-only body on its own MLB item', async () => {
+  /**
+   * ⚠️ #1252 CHANGED what this asserts, and the old expectation was the bug.
+   *
+   * It used to require the writeback to "carry status fields only, never
+   * `precoPublicado`". The `precoPublicado` half was right and still holds. The
+   * status half was not: `resp` describes ONE MEMBER (`draft.itemId` is the
+   * member's own MLB item) while `draft.linkDocId` names the FAMILY's parent
+   * link, so stamping it published one member's lifecycle as the family's.
+   *
+   * That is the same over-reach `estoqueSend.ts` guards with `ehMembro`, and the
+   * consequence is not confined to price: `estado` feeds `linkHasLiveListing` →
+   * `integracoesComProduto`, the anchor pre-filter BOTH sweeps open with, so one
+   * member coming back `paused` on an otherwise accepted PUT could silently drop
+   * a produto whose siblings were still selling.
+   *
+   * A member send now writes `ultimaModificacao` and nothing else.
+   */
+  it('a variationItem draft PUTs price-only AND writes no family state at all', async () => {
     const db = new FakeDb();
     seedJob(db, 'job8', {
       planejamentoConcluido: true,
       fila: [draft('UPV', { kind: 'variationItem', variacaoProdutoId: 'child-1' })],
     });
-    seedLink(db, 'UPV');
+    // Seeded `paused` on purpose: ML answers `active` for the member below, so a
+    // writeback that leaked the member's status would visibly overwrite this.
+    seedLink(db, 'UPV', { estado: 'pa', status: 'paused', sub_status: ['x'] });
     const api = makeApi({ UPV: mlItem('UPV') });
     const deps = runDeps(db, api);
 
@@ -694,17 +713,60 @@ describe('processPriceSyncJob — body shapes', () => {
 
     expect(outcome).toBe('done');
     expect(api.updateItem).toHaveBeenCalledWith('UPV', { price: 50 });
-    // M5/M8: sibling variation items share the PARENT link doc — the success
-    // writeback must carry status fields only, never precoPublicado (with
-    // propagatePriceToChildren=false it would flip-flop to the last-sent child).
-    const link = db.docs(linkPath('prod-UPV')).get('lnk-UPV')!;
-    expect(link).toMatchObject({
-      estado: estadoFromMlStatus('active'),
-      status: 'active',
-      sub_status: [],
+
+    // ⚠️ Exact match, not `toMatchObject`: the claim is the ABSENCE of keys, and
+    // a partial match would pass with every one of them written.
+    expect(db.docs(linkPath('prod-UPV')).get('lnk-UPV')).toEqual({
+      estado: 'pa',
+      status: 'paused',
+      sub_status: ['x'],
       ultimaModificacao: CLOCK_NOW,
     });
-    expect(link).not.toHaveProperty('precoPublicado');
+  });
+
+  /**
+   * #1252. The parent-draft half of the same rule: an `item` draft DOES own the
+   * family's state, so it writes the status pair — and, with it, ML's verdict on
+   * moderation, read off the response it already holds.
+   */
+  it("an 'item' draft clears a moderação ML has stopped reporting", async () => {
+    const db = new FakeDb();
+    seedJob(db, 'job8c', { planejamentoConcluido: true, fila: [draft('PLAIN')] });
+    seedLink(db, 'PLAIN', { moderacoes: [{ nome: 'WATERMARK', motivo: "Marca d'água" }] });
+    const api = makeApi({ PLAIN: mlItem('PLAIN') });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'job8c', integracaoId: CONTA }, 0);
+
+    // One object carrying both — the reason and the status it explains move in
+    // the same patch, so asserting them apart would pass on a writer that split
+    // them.
+    expect(db.docs(linkPath('prod-PLAIN')).get('lnk-PLAIN')).toMatchObject({
+      status: 'active',
+      moderacoes: [],
+    });
+  });
+
+  /**
+   * ⚠️ The case the clear must not swallow. `poor_quality_thumbnail` leaves the
+   * listing `active`, so the price send succeeds while the moderation is still
+   * in force — and the gate matches that sub_status, so the key is omitted and
+   * the stored reason survives.
+   */
+  it("an 'item' draft leaves a moderação ML is still reporting", async () => {
+    const moderacao = { nome: 'WATERMARK', motivo: "Marca d'água" };
+    const db = new FakeDb();
+    seedJob(db, 'job8d', { planejamentoConcluido: true, fila: [draft('PLAIN')] });
+    seedLink(db, 'PLAIN', { moderacoes: [moderacao] });
+    const api = makeApi({
+      PLAIN: mlItem('PLAIN', { sub_status: ['poor_quality_thumbnail'] }),
+    });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'job8d', integracaoId: CONTA }, 0);
+
+    expect(db.docs(linkPath('prod-PLAIN')).get('lnk-PLAIN')).toMatchObject({
+      sub_status: ['poor_quality_thumbnail'],
+      moderacoes: [moderacao],
+    });
   });
 
   it("an 'item' draft's success writeback DOES carry precoPublicado", async () => {

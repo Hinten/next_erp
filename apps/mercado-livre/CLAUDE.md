@@ -427,8 +427,8 @@ A writer that ASKED ML may write any value: `itemsStatusSync`, `reverificarAnunc
 the **importer**. A writer that merely holds a fresh `status`/`sub_status` may write
 `[]` and nothing else, because `precisaConsultarModeracao` is pure — when it reports
 no moderation that IS ML's verdict, obtained for free — and omits the key otherwise:
-**publish**, the **UP member publish** and the **stock send**. Seven writers, one
-invariant. `errors`/`causas` record OUR failed write, so a later success
+**publish**, the **UP member publish**, the **stock send** and the **price send**.
+Seven writers, one invariant. `errors`/`causas` record OUR failed write, so a later success
 invalidates them; a moderação is ML's verdict and nothing we do lifts it. The stock
 writeback is the case that makes the distinction concrete — it fires on a successful
 `PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
@@ -492,6 +492,16 @@ the UP branch made the whole self-heal a no-op: the phantom went straight back i
 `estoqueSend.test.ts` joins the two halves so that cannot pass again. Both fields
 ride the `varLinks` subcollection projection in `stockJoinBuilders`; dropping them
 there silently disables both rungs.
+
+⚠️ **The price sender follows the SAME member rule as the stock sender (#1252).**
+`precoDraftSend` used to stamp `estado`/`status`/`sub_status` on the FAMILY's parent
+link from a MEMBER's `PUT /items` response — a `variationItem` draft carries the
+member's `itemId` next to the parent's `linkDocId`, exactly like a `variationItem`
+stock task — and unlike `estoqueSend` it had no `ehMembro` guard. Its own comment
+blessed it ("variation sends stamp status only"), so the two senders disagreed and
+one of them was wrong. A member price send now writes `ultimaModificacao` and nothing
+else. ⚠️ Do not restore either half without changing both senders: a family's status
+has exactly one writer per path, and only the `items` webhook's fold spans members.
 
 ⚠️ **A variation link is NOT backfilled by a successful send, unlike the parent.**
 `estoqueSend`'s happy-path writeback is family-scoped, and for a `variationItem`

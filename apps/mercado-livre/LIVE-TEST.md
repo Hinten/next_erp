@@ -394,19 +394,23 @@ the stock send. None of them asks ML about moderation; each clears only when ML'
 all about a reason ML has **lifted**, and the thing to watch is that no
 `/moderations` call appears in the log for any of them.
 
-| Signal                                                             | Assert                                                                                                        | Result |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ------ |
-| Fix the photo, wait for ML to lift it, then **republish**          | `moderacoes` becomes `[]` on the publish writeback alone — no `items` delivery needed, no `/moderations` call |        |
-| Republish while the moderação is **still** in force                | ⚠️ the reason SURVIVES — `poor_quality_thumbnail` is `active`, so the publish succeeds and must not clear it  |        |
-| Send stock to a listing whose reason ML lifted                     | `moderacoes` becomes `[]` on the stock writeback                                                              |        |
-| Send stock to a listing that is **still** `poor_quality_thumbnail` | ⚠️ the reason survives — this is the case the whole gate exists for                                           |        |
-| Send stock for ONE MEMBER of a UP family (`variationItem`)         | ⚠️ the family parent link's `moderacoes` is **untouched** — one member does not speak for the family          |        |
-| Republish a UP family whose member reason ML lifted                | the MEMBER's `variacaoMercadoLivre` doc clears to `[]`                                                        |        |
+| Signal                                                             | Assert                                                                                                                                                        | Result |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Fix the photo, wait for ML to lift it, then **republish**          | `moderacoes` becomes `[]` on the publish writeback alone — no `items` delivery needed, no `/moderations` call                                                 |        |
+| Republish while the moderação is **still** in force                | ⚠️ the reason SURVIVES — `poor_quality_thumbnail` is `active`, so the publish succeeds and must not clear it                                                  |        |
+| Send stock to a listing whose reason ML lifted                     | `moderacoes` becomes `[]` on the stock writeback                                                                                                              |        |
+| Send stock to a listing that is **still** `poor_quality_thumbnail` | ⚠️ the reason survives — this is the case the whole gate exists for                                                                                           |        |
+| Send stock for ONE MEMBER of a UP family (`variationItem`)         | ⚠️ the family parent link's `moderacoes` is **untouched** — one member does not speak for the family                                                          |        |
+| Send PRICE to a listing whose reason ML lifted                     | `moderacoes` becomes `[]` on the price writeback                                                                                                              |        |
+| Send PRICE for ONE MEMBER of a UP family (`variationItem`)         | ⚠️ the parent link gains **only** `ultimaModificacao` — no `estado`, no `status`, no `moderacoes`. #1252 removed the member→parent stamp this path used to do |        |
+| Republish a UP family whose member reason ML lifted                | the MEMBER's `variacaoMercadoLivre` doc clears to `[]`                                                                                                        |        |
 
-⚠️ Rows 2, 4 and 5 are the ones worth a slot. The clearing rows are pinned by unit
-tests; the **survival** rows are what prove the gate reads ML's real sub_status rather
-than assuming success means healthy, and row 5 is the member/family boundary that no
-fixture can prove is wired to the live task shape.
+⚠️ The rows worth a slot are the two **survival** ones (republish and stock send while
+still moderated) and the two **member** ones. The clearing rows are pinned by unit
+tests; the survival rows are what prove the gate reads ML's real `sub_status` rather
+than assuming success means healthy, and the member rows are the family boundary no
+fixture can prove is wired to the live task shape — a `variationItem` task is built by
+the sweep, not by the test.
 
 The NOTICE is what #1259 added on top: the `null` state — "ML reports a moderation and
 nobody ever asked why" — is now visible instead of rendering identically to `[]`. The
