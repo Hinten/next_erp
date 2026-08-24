@@ -56,7 +56,6 @@ export default function CanalMercadoLivrePage() {
         db={db}
         meta={integracaoMeta}
         queryParams={{ tipo: INTEGRACAO_TIPO.mercadoLivre }}
-        defaultColumns={['nome', 'ativo', 'padrao', 'dataCadastro']}
         rowHref={(id) => `/canais/mercado-livre/${id}`}
         renderNewButton={() => (
           <Button component={Link} href="/canais/mercado-livre/novo">

@@ -376,10 +376,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Ten custom lint rules in `packages/config-eslint/rules/`:
+- Eleven custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
   `no-optional-without-nullable`, `no-client-estado-history-write`,
-  `no-env-secrets-access` and
+  `no-env-secrets-access`, `no-hardcoded-gcp-region` and
   `prefer-schema-enum` (error), `no-inline-admin-collection`,
   `no-lossy-date-parse`, `no-ambient-timezone` and
   `no-error-as-sole-instanceof` (warn). `no-ambient-timezone` bans reading the
@@ -389,7 +389,19 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   runner's own third zone hides it. `no-env-secrets-access` bans any literal
   naming `.env.secrets` — the repo's credential template, which nothing automated
   may read; its non-JS half (workflows, firebase configs, shell) is the
-  `env-secrets-no-copy` backstop test, since ESLint parses neither. `no-client-estado-history-write` guards
+  `env-secrets-no-copy` backstop test, since ESLint parses neither.
+  `no-hardcoded-gcp-region` bans a bare region id (`us-east1`, `nam5`) as a string
+  literal: the region belongs in the environment, read through `requireRegion`
+  (`@delfrance/core/region`) or `requireBuildRegion` (`tools/deploy-env`), both of
+  which **throw** when it is unset. A hardcoded fallback is how this repo drifted
+  into three regions with nothing failing — a function deployed to the wrong region
+  deploys fine, and an enqueue against the wrong one is **dropped while the route
+  returns 200** (#1108), so the first signal was the inter-region transfer bill.
+  Tests and `preflight.mjs`'s `REGIONS_WITHOUT_TASKS` are exempt (both must name a
+  region to mean anything); config files legitimately hold the literal, and the
+  matching `functions-region-supplied` backstop asserts the inverse there — every
+  workflow that builds a functions bundle must SET `FUNCTIONS_REGION`, since a
+  missing one now refuses the build. `no-client-estado-history-write` guards
   BOTH server-owned pedido audit trails — `historicoEstadoPedido` and
   `historicoFtIni` — whose sole writer is the `onPedidoChanged` trigger.
   `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside

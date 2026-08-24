@@ -33,6 +33,9 @@ export default function CanalWhatsappPage() {
       db={db}
       meta={integracaoMeta}
       queryParams={{ tipo: INTEGRACAO_TIPO.whatsapp }}
+      // Overrides `integracaoMeta.defaultQuery.columns`: the same meta backs
+      // /canais/balcao and /canais/mercado-livre, which show padrão + data de
+      // cadastro instead. One meta, three screens — hence the prop.
       defaultColumns={['nome', 'numero', 'ativo']}
       rowHref={(id) => `/canais/whatsapp/${id}`}
       renderNewButton={() => (

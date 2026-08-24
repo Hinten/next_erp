@@ -13,12 +13,63 @@ import { CODEBASES, REGIONS_WITHOUT_TASKS, crossCheckNote, preflight } from './p
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GOOD_SA = 'apphosting@p.iam.gserviceaccount.com';
 
-/** A codebase whose task region default is fine, so only the invoker varies. */
 const OK = 'mercado-livre';
 
+/**
+ * Every region is mandatory now, so a bare `run({})` would report the missing
+ * regions alongside whatever the test is actually about. `REGIONS` supplies them
+ * so each describe block isolates its own subject; the block below owns the
+ * missing-region behaviour and passes them explicitly instead.
+ */
+const REGIONS = { FUNCTIONS_REGION: 'us-central1', MERCADO_LIVRE_TASKS_REGION: 'us-central1' };
+
 function run(env, codebase = OK) {
+  return preflight(codebase, { ...REGIONS, ...env });
+}
+
+/** Same, without the region backfill — for the tests that assert on its absence. */
+function runBare(env, codebase = OK) {
   return preflight(codebase, env);
 }
+
+describe('a region with no default is mandatory', () => {
+  it('refuses an unset FUNCTIONS_REGION, naming it and how to set it', () => {
+    const { errors, rows } = runBare({ TASKS_INVOKER_SA: GOOD_SA }, 'nfe');
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('FUNCTIONS_REGION is not set, and it has NO default');
+    expect(errors[0]).toContain('export FUNCTIONS_REGION=');
+    // The WHY travels with the error — this is the failure nobody sees.
+    expect(errors[0]).toContain('dropped');
+    expect(rows.find((r) => r.name === 'FUNCTIONS_REGION')).toMatchObject({
+      value: '(unset)',
+      source: 'MISSING — build refuses',
+    });
+  });
+
+  it('reports every missing region at once, not just the first', () => {
+    // mercado-livre inlines two, and an operator fixing them one deploy at a
+    // time is exactly the loop this preflight exists to collapse.
+    const { errors } = runBare({ TASKS_INVOKER_SA: GOOD_SA });
+
+    expect(errors).toHaveLength(2);
+    expect(errors.map((e) => e.split(' ')[0]).sort()).toEqual([
+      'FUNCTIONS_REGION',
+      'MERCADO_LIVRE_TASKS_REGION',
+    ]);
+  });
+
+  it('still refuses a key whose default is legitimately kept', () => {
+    // FIREBASE_DATABASE_ID keeps its `|| 'default'` — it names this repo's
+    // Firestore database, which really is a constant. Only regions lost theirs.
+    const { rows } = runBare({ TASKS_INVOKER_SA: GOOD_SA });
+
+    expect(rows.find((r) => r.name === 'FIREBASE_DATABASE_ID')).toMatchObject({
+      value: 'default',
+      source: 'build.mjs default',
+    });
+  });
+});
 
 describe('TASKS_INVOKER_SA is mandatory to deploy (#1133)', () => {
   it('fails when unset, naming the var and the export that fixes it', () => {
@@ -59,9 +110,14 @@ describe('TASKS_INVOKER_SA is mandatory to deploy (#1133)', () => {
 describe('a region with no Cloud Tasks is refused up front (#1108)', () => {
   it('rejects a task region of us-east5', () => {
     // mercado-pago's onTaskDispatched inherits setGlobalOptions({ region }), so
-    // FUNCTIONS_REGION *is* its queue region — and its build.mjs default is
-    // us-east5, which is why this codebase cannot deploy as it stands (#1121).
-    const { errors } = run({ TASKS_INVOKER_SA: GOOD_SA }, 'mercado-pago');
+    // FUNCTIONS_REGION *is* its queue region. It used to DEFAULT to us-east5,
+    // which is why the codebase could not deploy as it stood (#1121); the default
+    // is gone, so the value is set explicitly here to keep testing the guard
+    // rather than the missing-value path.
+    const { errors } = runBare(
+      { TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: 'us-east5' },
+      'mercado-pago',
+    );
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("FUNCTIONS_REGION resolves to 'us-east5'");
@@ -70,7 +126,7 @@ describe('a region with no Cloud Tasks is refused up front (#1108)', () => {
 
   it('accepts the same codebase once a real region is exported', () => {
     const { errors } = run(
-      { TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: 'us-east1' },
+      { TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: 'us-central1' },
       'mercado-pago',
     );
 
@@ -79,8 +135,10 @@ describe('a region with no Cloud Tasks is refused up front (#1108)', () => {
 
   it('reports BOTH problems at once rather than stopping at the first', () => {
     // An operator fixing one and re-running only to hit the other is the kind of
-    // friction that gets a guard disabled.
-    const { errors } = run({}, 'mercado-pago');
+    // friction that gets a guard disabled. The region is set explicitly to a BAD
+    // one: left unset it would report "missing" instead, which is a different
+    // pairing and would not exercise this guard alongside the invoker check.
+    const { errors } = runBare({ FUNCTIONS_REGION: 'us-east5' }, 'mercado-pago');
 
     expect(errors).toHaveLength(2);
   });
@@ -99,8 +157,10 @@ describe('the resolved-value table', () => {
     const byName = Object.fromEntries(rows.map((r) => [r.name, r]));
 
     expect(byName.FUNCTIONS_REGION).toMatchObject({ value: 'europe-west4', source: 'env' });
-    expect(byName.MERCADO_LIVRE_TASKS_REGION).toMatchObject({
-      value: 'us-east1',
+    // FIREBASE_DATABASE_ID is the only inlined key that still HAS a default, so
+    // it is what proves the two sources still render differently.
+    expect(byName.FIREBASE_DATABASE_ID).toMatchObject({
+      value: 'default',
       source: 'build.mjs default',
     });
   });
@@ -131,10 +191,29 @@ describe('the duplicated defaults still match build.mjs', () => {
   // CODEBASES restates each build.mjs default so the printed table can show what
   // will actually be baked in. Two sources of truth need a test, or the table
   // starts lying — which is worse than not printing it.
+  //
+  // ⚠️ A `null` entry asserts the OPPOSITE: that build.mjs has no default for
+  // that key. Re-adding one is the regression this guards — a literal in
+  // build.mjs is how this project deployed into three regions with nothing
+  // failing, and it would also make the table's `(unset)` row a lie.
   it.each(Object.entries(CODEBASES))('%s', (codebase, spec) => {
     const source = readFileSync(resolve(REPO_ROOT, spec.buildScript), 'utf8');
     for (const [name, expected] of Object.entries(spec.inlined)) {
       const match = new RegExp(`process\\.env\\.${name}\\s*\\|\\|\\s*'([^']*)'`).exec(source);
+
+      if (expected === null) {
+        expect(
+          match?.[1],
+          `${spec.buildScript} defaults ${name} to '${match?.[1]}'. Regions must have ` +
+            'NO default — use requireBuildRegion so an unset value stops the build.',
+        ).toBeUndefined();
+        expect(
+          new RegExp(`requireBuildRegion\\(\\s*'${name}'`).test(source),
+          `${spec.buildScript} must read ${name} via requireBuildRegion`,
+        ).toBe(true);
+        continue;
+      }
+
       expect(match, `${spec.buildScript} does not default ${name}`).not.toBeNull();
       expect(match[1], `${name} default drifted from ${spec.buildScript}`).toBe(expected);
     }
@@ -166,7 +245,12 @@ describe('the duplicated defaults still match build.mjs', () => {
       const found = [...source.matchAll(/process\.env\.([A-Z0-9_]+)\s*\|\|\s*'[^']*'/g)].map(
         (m) => m[1],
       );
-      const missing = found.filter(
+      // Both shapes count: a `|| '<default>'` and a `requireBuildRegion('X')`
+      // are equally invisible to the table if CODEBASES omits them.
+      const required = [...source.matchAll(/requireBuildRegion\(\s*'([A-Z0-9_]+)'/g)].map(
+        (m) => m[1],
+      );
+      const missing = [...found, ...required].filter(
         // TASKS_INVOKER_SA is the guard's own subject, handled separately above.
         (name) => name !== 'TASKS_INVOKER_SA' && !(name in spec.inlined),
       );
@@ -196,28 +280,37 @@ describe('the duplicated defaults still match build.mjs', () => {
 });
 
 describe('a padded value is refused rather than silently trimmed', () => {
-  // `build.mjs` is a bare `process.env.X || '<default>'` — no trim — so `''`
-  // falls through but `'   '` is inlined VERBATIM. Without this check the table
-  // reported the trimmed value while the bundle got the padded one.
+  // Regions go through `requireBuildRegion`, which trims; the other inlined keys
+  // are a bare `process.env.X || '<default>'` and are inlined VERBATIM. Padding
+  // is refused for both, because which keys tolerate it is not something a deploy
+  // should have to know.
   it('rejects a region with surrounding whitespace', () => {
-    const { errors } = run({ TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: ' us-east1 ' }, 'nfe');
+    const { errors } = runBare(
+      { TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: ' us-central1 ' },
+      'nfe',
+    );
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('surrounding whitespace');
     expect(errors[0]).toContain('VERBATIM');
   });
 
-  it('still treats a whitespace-ONLY value as unset, matching `||`', () => {
-    // `'   ' || 'us-east1'` is `'   '` in build.mjs, so this is flagged too —
-    // but as the whitespace error, not as a missing value.
-    const { errors, rows } = run({ TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: '   ' }, 'nfe');
+  it('treats a whitespace-ONLY region as unset AND as padded', () => {
+    // `requireBuildRegion` trims, so `'   '` supplies nothing — the row is
+    // MISSING rather than defaulted (there is no default left to fall to), and
+    // the padding is reported as well so the operator sees why it looked set.
+    const { errors, rows } = runBare({ TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: '   ' }, 'nfe');
 
-    expect(rows.find((r) => r.name === 'FUNCTIONS_REGION')?.source).toBe('build.mjs default');
+    expect(rows.find((r) => r.name === 'FUNCTIONS_REGION')?.source).toBe('MISSING — build refuses');
     expect(errors.some((e) => e.includes('surrounding whitespace'))).toBe(true);
+    expect(errors.some((e) => e.includes('has NO default'))).toBe(true);
   });
 
   it('accepts a clean value', () => {
-    const { errors } = run({ TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: 'us-east1' }, 'nfe');
+    const { errors } = runBare(
+      { TASKS_INVOKER_SA: GOOD_SA, FUNCTIONS_REGION: 'us-central1' },
+      'nfe',
+    );
 
     expect(errors).toEqual([]);
   });

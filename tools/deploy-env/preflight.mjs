@@ -73,12 +73,19 @@ const REGIONS_WITHOUT_TASKS = new Set(['us-east5']);
  * Per codebase: the build-time values, their `build.mjs` defaults, and which one
  * governs the TASK/SCHEDULE functions (the only one the region check applies to).
  *
+ * ⚠️ `inlined` maps a key to its `build.mjs` default, or to **`null` when there
+ * is none**. Every region is now `null`: the defaults were deleted because a
+ * literal there is what let this project deploy into three regions without
+ * anything failing. A `null` key that is unset is an ERROR here rather than a
+ * printed fallback — the build would refuse anyway, and refusing in the preflight
+ * says which variable and where to set it.
+ *
  * `tasksRegionVar` is not always `*_TASKS_REGION`: only `mercado-livre` inlines a
  * separate one. In `mercado-pago` and `whatsapp` the task functions inherit
  * `setGlobalOptions({ region: FUNCTIONS_REGION })`, so FUNCTIONS_REGION is the
- * region their queues would be created in — which is why their `us-east5` default
- * is a latent broken deploy (#1121) that this preflight now refuses up front,
- * instead of 5 confusing per-function errors partway through.
+ * region their queues would be created in — which is why an unset value there is
+ * a latent broken deploy (#1121) that this preflight refuses up front, instead of
+ * 5 confusing per-function errors partway through.
  */
 const CODEBASES = {
   'mercado-livre': {
@@ -86,8 +93,8 @@ const CODEBASES = {
     buildScript: 'apps/mercado-livre/functions/build.mjs',
     deployDoc: 'apps/mercado-livre/functions/DEPLOY.md',
     inlined: {
-      FUNCTIONS_REGION: 'us-east5',
-      MERCADO_LIVRE_TASKS_REGION: 'us-east1',
+      FUNCTIONS_REGION: null,
+      MERCADO_LIVRE_TASKS_REGION: null,
       FIREBASE_DATABASE_ID: 'default',
     },
     tasksRegionVar: 'MERCADO_LIVRE_TASKS_REGION',
@@ -104,7 +111,7 @@ const CODEBASES = {
       MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES: '2',
       MERCADO_LIVRE_STOCK_DISPATCHES_PER_SECOND: '2',
     },
-    deployShellSource: 'apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts',
+    deployShellSource: 'apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts',
     // Read at RUNTIME by the enqueuer inside the deployed function, so a value in
     // `.env.deploy` (copied into the artifact by prepare-deploy.mjs) overrides
     // the inlined one. Printed, not validated — this script cannot see that file.
@@ -114,7 +121,7 @@ const CODEBASES = {
     deployConfig: 'firebase.mercado-pago.deploy.json',
     buildScript: 'apps/mercado-pago/functions/build.mjs',
     deployDoc: 'apps/mercado-pago/functions/DEPLOY.md',
-    inlined: { FUNCTIONS_REGION: 'us-east5' },
+    inlined: { FUNCTIONS_REGION: null },
     tasksRegionVar: 'FUNCTIONS_REGION',
     backendVar: 'MERCADO_PAGO_TASKS_REGION',
     backendManifest: 'apps/mercado-pago/apphosting.yaml',
@@ -125,7 +132,7 @@ const CODEBASES = {
     deployConfig: 'firebase.whatsapp.deploy.json',
     buildScript: 'apps/whatsapp/functions/build.mjs',
     deployDoc: 'apps/whatsapp/functions/DEPLOY.md',
-    inlined: { FUNCTIONS_REGION: 'us-east5', FIREBASE_DATABASE_ID: 'default' },
+    inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
     backendVar: 'WHATSAPP_TASKS_REGION',
     backendManifest: 'apps/whatsapp/apphosting.yaml',
@@ -136,7 +143,7 @@ const CODEBASES = {
     deployConfig: 'firebase.nfe.deploy.json',
     buildScript: 'apps/nfe/functions/build.mjs',
     deployDoc: 'apps/nfe/functions/DEPLOY.md',
-    inlined: { FUNCTIONS_REGION: 'us-east1' },
+    inlined: { FUNCTIONS_REGION: null },
     tasksRegionVar: 'FUNCTIONS_REGION',
     backendVar: 'NFE_TASKS_REGION',
     backendManifest: 'apps/nfe/apphosting.yaml',
@@ -147,7 +154,7 @@ const CODEBASES = {
     deployConfig: 'firebase.functions.deploy.json',
     buildScript: 'apps/functions/build.mjs',
     deployDoc: 'apps/functions/DEPLOY.md',
-    inlined: { FUNCTIONS_REGION: 'us-east1' },
+    inlined: { FUNCTIONS_REGION: null },
     tasksRegionVar: 'FUNCTIONS_REGION',
     // No App Hosting backend enqueues this one — `processarBalanco` is enqueued
     // by the `finalizarBalanco` callable and by itself, both inside the codebase.
@@ -182,7 +189,7 @@ function valueOf(env, name) {
  */
 /** The region the queue/schedule functions will be created in. */
 function tasksRegionOf(spec, env) {
-  return valueOf(env, spec.tasksRegionVar) ?? spec.inlined[spec.tasksRegionVar] ?? '(unknown)';
+  return valueOf(env, spec.tasksRegionVar) ?? spec.inlined[spec.tasksRegionVar] ?? '(unset)';
 }
 
 function checkWhitespace(env, names) {
@@ -192,10 +199,15 @@ function checkWhitespace(env, names) {
     if (typeof raw !== 'string' || raw === '' || raw === raw.trim()) continue;
     errors.push(
       [
-        `${name} is ${JSON.stringify(raw)} — it has surrounding whitespace, and`,
-        '`build.mjs` inlines it VERBATIM (its expression is a bare `process.env.X ||',
-        "'<default>'`, with no trim). The bundle would get the padded string while",
-        'this table reported the trimmed one. Export it without the whitespace.',
+        `${name} is ${JSON.stringify(raw)} — it has surrounding whitespace.`,
+        '',
+        'A region goes through `requireBuildRegion`, which trims, so that one would',
+        'survive. The other inlined values are taken VERBATIM (their expression is a',
+        "bare `process.env.X || '<default>'`, with no trim), so the bundle would get",
+        'the padded string while this table reported the trimmed one.',
+        '',
+        'Refused either way: padding here is a typo, and which keys happen to',
+        'tolerate it is not something a deploy should depend on.',
       ].join('\n'),
     );
   }
@@ -251,6 +263,25 @@ export function preflight(codebase, env = process.env, fromFile = new Set()) {
 
   for (const [name, fallback] of Object.entries(spec.inlined)) {
     const set = valueOf(env, name);
+    if (!set && fallback === null) {
+      // No default to print, so there is nothing to warn about — the build will
+      // refuse. Say so here, where the operator can still fix it in one export.
+      rows.push({ name, value: '(unset)', source: 'MISSING — build refuses' });
+      errors.push(
+        [
+          `${name} is not set, and it has NO default.`,
+          '',
+          'The region is inlined into the bundle at build time and a wrong one',
+          'fails silently at runtime — a task enqueued against a queue that does',
+          'not exist is dropped while the route still returns 200 (#1108). So the',
+          'build refuses rather than guessing, and this check refuses first.',
+          '',
+          `  export ${name}=<region>          # this shell`,
+          `  ${name}=<region>                 # ${BUILD_ENV_FILE}, at the repo root`,
+        ].join('\n'),
+      );
+      continue;
+    }
     rows.push({
       name,
       value: set ?? fallback,
@@ -278,7 +309,7 @@ export function preflight(codebase, env = process.env, fromFile = new Set()) {
   errors.push(...checkWhitespace(env, Object.keys(spec.inlined)));
 
   const tasksRegion =
-    valueOf(env, spec.tasksRegionVar) ?? spec.inlined[spec.tasksRegionVar] ?? '(unknown)';
+    valueOf(env, spec.tasksRegionVar) ?? spec.inlined[spec.tasksRegionVar] ?? '(unset)';
   if (REGIONS_WITHOUT_TASKS.has(tasksRegion)) {
     errors.push(
       [
@@ -287,7 +318,7 @@ export function preflight(codebase, env = process.env, fromFile = new Set()) {
         'codebase would fail to deploy, while the Firestore triggers succeeded — the',
         'asymmetric failure list from #1108.',
         '',
-        `  export ${spec.tasksRegionVar}=us-east1   # or another region offering both`,
+        `  export ${spec.tasksRegionVar}=<region>   # one offering Cloud Tasks AND Scheduler`,
       ].join('\n'),
     );
   }

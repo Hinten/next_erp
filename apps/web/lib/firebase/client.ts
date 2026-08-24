@@ -94,10 +94,25 @@ export function getFirebaseFirestore(): Firestore {
 
 export function getFirebaseFunctions(): Functions {
   if (functions) return functions;
-  // Region MUST match the Cloud Functions deploy region (apps/functions
-  // build.mjs defaults to us-east1 — the Storage bucket region the gen2 triggers
-  // are pinned to). Kept in an env var so client + functions stay in sync.
-  const region = process.env.NEXT_PUBLIC_FUNCTIONS_REGION ?? 'us-east1';
+  // Region MUST match the Cloud Functions deploy region — which must itself match
+  // the Storage bucket's, or the gen2 triggers never fire. Kept in an env var so
+  // client and functions stay in sync, with NO default: a callable invoked against
+  // the wrong region fails as an opaque `internal`/CORS error rather than
+  // anything that names the real problem, so a missing value must stop here.
+  //
+  // ⚠️ Thrown from this lazy accessor, never at module scope: NEXT_PUBLIC_* is
+  // inlined at build time, so a module-scope check would take the whole app down
+  // at boot over a feature most screens never touch. Here it fails only when a
+  // callable is actually used, and says why.
+  const region = process.env.NEXT_PUBLIC_FUNCTIONS_REGION?.trim();
+  if (!region) {
+    throw new Error(
+      'NEXT_PUBLIC_FUNCTIONS_REGION is not set, so callables have no region to ' +
+        'target. It is inlined at BUILD time, so setting it now is not enough — ' +
+        'set it and rebuild. It must equal the region apps/functions was deployed ' +
+        'to (FUNCTIONS_REGION).',
+    );
+  }
   functions = getFunctions(getFirebaseApp(), region);
   if (USE_FIREBASE_EMULATOR) {
     connectFunctionsEmulator(functions, EMULATOR_HOST, 5001);

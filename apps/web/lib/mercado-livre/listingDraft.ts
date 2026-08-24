@@ -19,7 +19,7 @@
  * category must be *offered* — but it left nothing to break the cycle. This is
  * that something.
  */
-import { runTransaction, type Firestore } from 'firebase/firestore';
+import { addDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import { ESTADO_PUBLICACAO_ML, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivreLinkCollection';
@@ -31,7 +31,20 @@ export interface ListingDraftArgs {
   /** What the operator chose in the Tipo de anúncio select, if anything. */
   listingTypeId: string | null;
   nowMs: number;
+  /**
+   * Which draft this is for the account.
+   *
+   * `'primeiro'` — the account has no anúncio yet, so the doc id is the
+   * integração id and the write is guarded (see {@link draftDocId}).
+   *
+   * `'adicional'` — the operator asked for ANOTHER anúncio on an account that
+   * already has one. "Another one" has no deterministic name, so the id is a
+   * fresh auto-id and there is nothing to check for first.
+   */
+  modo: DraftMode;
 }
+
+export type DraftMode = 'primeiro' | 'adicional';
 
 /**
  * The document a "Preparar anúncio" writes.
@@ -75,7 +88,8 @@ export function buildListingDraft(args: ListingDraftArgs): ProdutoMercadoLivreLi
 }
 
 /**
- * The draft's document id is the **integração id**, not a fresh auto-id.
+ * The FIRST draft on an account gets the **integração id** as its document id,
+ * not a fresh auto-id.
  *
  * That is tier 0 of the lost-update ladder — the race is made impossible rather
  * than detected. Two operators (or one impatient double-click) both land on the
@@ -84,6 +98,11 @@ export function buildListingDraft(args: ListingDraftArgs): ProdutoMercadoLivreLi
  * by Flutter or by an earlier publish keep their own ids and are found by the
  * `contaOuterRef` filter exactly as before; nothing downstream reads meaning
  * into a link doc's id.
+ *
+ * ⚠️ It applies to the first draft only. A produto may carry SEVERAL anúncios on
+ * one account, and a deliberate second one is intent, not a race — there is
+ * nothing for a deterministic id to deduplicate against. Those get auto-ids; see
+ * `modo` on {@link ListingDraftArgs}.
  */
 export function draftDocId(integracaoId: string): string {
   return integracaoId;
@@ -92,28 +111,103 @@ export function draftDocId(integracaoId: string): string {
 export type DraftOutcome = 'created' | 'exists';
 
 /**
- * Create the draft unless one is already there.
+ * Create a draft listing for an account.
  *
- * The read and the write share a transaction so "check then create" cannot
- * interleave with another tab doing the same thing. `exists` is a success, not
- * an error: the operator wanted a draft to edit and there is one.
+ * Two shapes, because the two cases have different races.
+ *
+ * **`'primeiro'`** — the account has no anúncio yet. The read and the write
+ * share a transaction so "check then create" cannot interleave with another tab
+ * doing the same thing, and the id is deterministic so both tabs contend for one
+ * document. `exists` is a success, not an error: the operator wanted a draft to
+ * edit and there is one.
+ *
+ * **`'adicional'`** — the operator asked for another anúncio on an account that
+ * already has one. There is nothing to check: a fresh auto-id cannot collide,
+ * and a second draft is what was asked for, so a transaction would guard against
+ * nothing. What it does NOT protect against is duplicated *intent* — two
+ * operators clicking at once get two drafts. That is accepted rather than
+ * prevented: a duplicate draft is inert (`estado 'r'`, `id: null`, so both
+ * sweeps skip it and `integracoesComProduto` never counts it), the button is
+ * single-flight while the write is in flight, and an unpublished draft can be
+ * deleted from the tab.
  */
 export async function createListingDraft(
   db: Firestore,
   produtoId: string,
   args: ListingDraftArgs,
 ): Promise<{ docId: string; outcome: DraftOutcome }> {
+  // A converted write of a COMPLETE document — the converter full-parses it,
+  // which is what we want here. (The rule against converted writes is about
+  // partial `merge` patches, where that same full parse fills defaults the merge
+  // mask then writes over stored siblings.)
+  if (args.modo === 'adicional') {
+    const ref = await addDoc(
+      produtoMercadoLivreLinkCollection.ref(db, { produtoId }),
+      buildListingDraft(args),
+    );
+    return { docId: ref.id, outcome: 'created' };
+  }
+
   const docId = draftDocId(args.integracaoId);
   const ref = produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, docId);
   const outcome = await runTransaction<DraftOutcome>(db, async (tx) => {
     const snap = await tx.get(ref);
     if (snap.exists()) return 'exists';
-    // A converted `set` of a COMPLETE document — the converter full-parses it,
-    // which is what we want here. (The rule against converted writes is about
-    // partial `merge` patches, where that same full parse fills defaults the
-    // merge mask then writes over stored siblings.)
     tx.set(ref, buildListingDraft(args));
     return 'created';
   });
   return { docId, outcome };
+}
+
+/** What {@link removeListingDraft} found when it looked. */
+export type RemoveDraftOutcome = 'removed' | 'missing' | 'published';
+
+/**
+ * Delete a draft listing — one that has never reached Mercado Livre.
+ *
+ * ## Why this exists at all
+ *
+ * Nothing could delete a link doc before, and nothing needed to: the doc set was
+ * bounded at one per account and every one of them meant something. "Novo
+ * anúncio" is the first way to make a link doc that is pure clutter — the
+ * duplicated-intent case `createListingDraft` accepts rather than prevents — so
+ * the way to remove one ships with it.
+ *
+ * ## Why a transaction, for a delete
+ *
+ * The predicate is "never published", and it can stop being true between the
+ * operator opening the confirm and confirming it: a publish from another tab, or
+ * the `items` webhook, stamps `id` on this same doc. Deleting then would orphan a
+ * LIVE Mercado Livre listing — `itemsStatusSync`'s `resolveLink` would find
+ * nothing, both sweeps would stop reaching it, and its child
+ * `variacaoMercadoLivre` docs would dangle with no parent.
+ *
+ * So the check is re-derived from the `tx.get` snapshot rather than from the
+ * `link` the button was rendered with (root `CLAUDE.md` rule 7 — a predicate
+ * re-checked against a binding read OUTSIDE the transaction is not a guard).
+ * `'published'` is the caller's cue to say so rather than to retry.
+ *
+ * ⚠️ `id === ''` counts as never published, matching the backend's own test
+ * (`bulkEstoquePlan` takes `link.id !== ''`): the schema permits `''` and the
+ * migrated corpus contains it.
+ *
+ * The `integracoesComProduto` denorm needs nothing here — the
+ * `onProdutoMercadoLivreLinkChanged` trigger re-derives account membership from
+ * the whole subcollection, so removing one draft cannot drop an account that
+ * still holds a live listing.
+ */
+export async function removeListingDraft(
+  db: Firestore,
+  produtoId: string,
+  linkDocId: string,
+): Promise<RemoveDraftOutcome> {
+  const ref = produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId);
+  return runTransaction<RemoveDraftOutcome>(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return 'missing';
+    const atual = snap.data() as Pick<ProdutoMercadoLivreLink, 'id'> | undefined;
+    if ((atual?.id ?? '') !== '') return 'published';
+    tx.delete(ref);
+    return 'removed';
+  });
 }

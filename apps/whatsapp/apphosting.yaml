@@ -28,7 +28,8 @@ runConfig:
 #   WHATSAPP_TASKS_DISABLED      OPTIONAL — set to "1" to force the persist-for-the-
 #                                sweep fallback (no enqueue).
 #   WHATSAPP_TASKS_REGION        OPTIONAL — region of the processWhatsappNotification
-#                                function/queue (default us-east5); MUST match its
+#                                function/queue (falls back to FUNCTIONS_REGION; no
+#                                default — unset, it throws); MUST match its
 #                                deploy region or the enqueue silently drops.
 #   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for cached inbound media
 #                                (default <projectId>.appspot.com)

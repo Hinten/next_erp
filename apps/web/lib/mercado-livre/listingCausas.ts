@@ -2,7 +2,7 @@
  * Route a listing's persisted Mercado Livre rejection onto the screen.
  *
  * The publisher writes `produtoMercadoLivre.causas` — ML's `cause[]` parsed and
- * already resolved to control keys (`apps/mercado-livre/lib/marketplace/publishFalhas.ts`)
+ * already resolved to control keys (`apps/mercado-livre/lib/marketplace/core/publishFalhas.ts`)
  * — and the editor subscribes to the link doc live. That is deliberately the
  * ONLY channel: it repaints the right listing the moment the publish fails,
  * survives a reload and a second operator, and is the only channel at all for

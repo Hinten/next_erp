@@ -147,6 +147,7 @@ export {
   modalidadeFreteSchema,
   podeAutorizarDespacho,
   reboqueSchema,
+  seedFreteInicial,
   transportadoraSchema,
   veiculoSchema,
   volumeSchema,

@@ -51,7 +51,7 @@ export const TIPO_CLIENTE = {
  * somewhere both ends can see it: the NF-e generator reads it to derive
  * `dest.indIEDest` (`packages/integrations/nfe/src/generator/parties.ts`) and
  * the Mercado Livre order import writes it
- * (`apps/mercado-livre/lib/marketplace/orderCliente.ts`). Leaving it an
+ * (`apps/mercado-livre/lib/marketplace/pedidos/orderCliente.ts`). Leaving it an
  * implicit contract between those two files is exactly how they drifted apart:
  * the port carried the legacy writer and never carried the legacy reader.
  *
@@ -268,6 +268,10 @@ export const clienteMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'ultimaModificacao', direction: 'desc' }],
     limit: 50,
+    // `ultimaModificacao` is here because it is the sort key (#381) — a list
+    // ordered by a hidden column shows no sort arrow and no reason for its order.
+    // `cpf_cnpj` and `telefone` render masked/formatted (LGPD) at the page.
+    columns: ['nome', 'tipo', 'cpf_cnpj', 'email', 'telefone', 'ultimaModificacao'],
   },
 };
 

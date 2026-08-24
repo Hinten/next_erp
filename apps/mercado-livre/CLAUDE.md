@@ -9,6 +9,37 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 
 ## Layout
 
+`lib/marketplace/` is **organised by theme**, one folder per domain, each with
+its own `README.md` — read `lib/marketplace/README.md` first, it indexes them
+all and records the cross-theme edges. There is deliberately **no barrel
+`index.ts`**; importers reach concrete files
+(`@/lib/marketplace/pedidos/orderImport`).
+
+| Folder | Owns |
+| --- | --- |
+| `core/` | channel context, token store, HTTP responder, link refs — the shared sink |
+| `conta/` | OAuth connect, PKCE state, ML test users |
+| `notificacoes/` | webhook ingestion, Cloud Tasks queue, backstop sweeps |
+| `pedidos/` | the order → pedido import pipeline |
+| `claims/` | claims & mediations |
+| `chat/` | perguntas, post-sale mensagens, outbound send |
+| `importacao/` | product import, ML → ERP |
+| `mass-import/` | the resumable "importar todos os anúncios" job |
+| `anuncios/` | publishing & listing lifecycle, ERP → ML |
+| `estoque/` | stock sync |
+| `preco/` | price sync |
+| `size-charts/` | grades de tamanho |
+| `categorias/` | category tree & catalog metadata |
+| `nfe/` | NF-e upload to ML |
+| `frete/` | `int_frete` ⇆ ML conta sync |
+
+⚠️ Three things bind to these paths from **outside** the app and red CI on a
+move: `tools/deploy-env/preflight.mjs` (reads `estoque/bulkEstoquePlan.ts` from
+disk), and the two path-keyed inventories
+`packages/config-eslint/rules/{firestore-transaction,reserva-arithmetic}-inventory.test.js`.
+
+The per-surface notes below stay the authority on behaviour.
+
 - `app/api/health` — uptime check (no auth).
 - `app/api/marketplace/mercado-livre/oauth/start` — **#291**: `PERM.integracao.write`-gated;
   mints a signed `state` and returns the ML consent URL (`channel.oauthFlow.start`).
@@ -27,8 +58,8 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (`topic`+`resource`
   callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues onto the
   `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
-  write on the happy path — see `lib/marketplace/mlTasks.ts` + `functions/DEPLOY.md`).
-- `lib/marketplace/webhookOrigin.ts` — **#811**: the receiver's only inbound origin check.
+  write on the happy path — see `lib/marketplace/notificacoes/mlTasks.ts` + `functions/DEPLOY.md`).
+- `lib/marketplace/notificacoes/webhookOrigin.ts` — **#811**: the receiver's only inbound origin check.
   There is no signature to verify (confirmed against the 03/08/2026 Notificações reference:
   no `x-signature`, no manifest, no shared secret — the `ts=…,v1=…` scheme people find is
   **Mercado Pago**), so this is an `application_id` comparison against `MERCADO_LIVRE_CLIENT_ID`
@@ -41,7 +72,7 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   ML's published notification source IPs were considered and **declined** (an undocumented
   rotation would reject every genuine notification). Follow-up if the logs show no signature
   header: a secret path segment on the registered callback URL.
-- `lib/marketplace/notificacao.ts` — this channel's webhook adapter: `parseNotificationBody`,
+- `lib/marketplace/notificacoes/notificacao.ts` — this channel's webhook adapter: `parseNotificationBody`,
   the dispatch-by-topic `processNotificationPayload`, and a `defineNotificationPipeline({...})`
   binding. The resilience behaviour (retry disposition, failures-only persistence, the
   durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications` — see the
@@ -68,7 +99,7 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   WHOLE resource because `<topic>:<last segment>` would collide `/orders/7` with
   `/shipments/7`. The doc's `id` FIELD stays null — the derived value keys the document, it
   is not a claim ML issued one.
-- `lib/marketplace/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
+- `lib/marketplace/notificacoes/missedFeedsSweep.ts` — **#812**: the daily 05:00 `missed_feeds`
   backstop. Everything else in this channel can only re-drive a notification that was
   RECEIVED; this asks ML what it failed to deliver (`GET /missed_feeds` — filed only
   after its ~8 retries over ~1h, retained 2 days) and replays each entry onto the same
@@ -82,13 +113,13 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   skipped and counted, never enqueued, so a replay cannot park a fresh doc every morning
   (#813); `request`/`response` are stripped from every entry (the callback URL is a leak
   surface, #811). Flag-gated OFF behind `MERCADO_LIVRE_MISSED_FEEDS_ENABLED`.
-- `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
+- `lib/marketplace/core/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
-- `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
+- `lib/marketplace/core/tokenStore.ts` — the durable-token store over the admin-only
   `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape — kept
   because the migrated corpus carries it, not because a second app writes it;
   "one wins" refresh).
-- `lib/marketplace/oauthState.ts` — **#821**, the connect flow's two trust anchors.
+- `lib/marketplace/conta/oauthState.ts` — **#821**, the connect flow's two trust anchors.
   The implementation is the SHARED module `@delfrance/data/admin/oauth-state`
   (extracted in #1034 and now serving all three OAuth channels); this file is a thin
   binding holding only what is per-channel — the `integracao/{id}/oauthState`
@@ -103,7 +134,7 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   once it is on the parameters become MANDATORY — so the flag and the toggle are flipped
   together for a given `client_id`. The prod application is shared with the legacy Flutter
   connect screen, which sends no `code_challenge`; staging has its own application.
-- `app/api/marketplace/mercado-livre/usuarios-teste` + `lib/marketplace/testUsers.ts`
+- `app/api/marketplace/mercado-livre/usuarios-teste` + `lib/marketplace/conta/testUsers.ts`
   + `testUserStore.ts` — the dev-only bootstrap for an end-to-end run: mint ML's
   seller/buyer **test users** and store them under `integracao/{id}/usuariosTeste`
   (admin-only, deliberately OUT of `ALL_DOMAINS` — it holds a password in the clear —
@@ -127,7 +158,7 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   logs a validation error's payload straight to the log stream — the exact route #1015
   leaked an OAuth token response by.
 - `app/api/marketplace/mercado-livre/chat/{responder,pergunta-acao}` +
-  `lib/marketplace/chatOutbound.ts` — **#533**: answering a pergunta or a post-sale
+  `lib/marketplace/chat/chatOutbound.ts` — **#533**: answering a pergunta or a post-sale
   thread from the unified inbox, plus ML's two question-moderation actions.
   ⚠️ **HTTP, not a Firestore trigger, and that is the design.** WhatsApp sends by
   writing a mensagem and letting `sendOutbound` transmit it, which buys free retries —
@@ -149,7 +180,7 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   the seller's items, and neither is undoable from here. Neither action writes to the
   thread — ML changes the question's `status` and the importer is the one writer of
   that state.
-- `lib/marketplace/claim{Import,Mapping,Ids,Attachments,Actionability,Cliente}.ts` —
+- `lib/marketplace/claims/claim{Import,Mapping,Ids,Attachments,Actionability,Cliente}.ts` —
   **Step 14 + #768**: one ML claim → an Incidente on the pedido, plus a chat Conversa
   and its Mensagens, at the BYTE-EXACT legacy doc ids so re-processing a claim the
   Flutter app already imported UPDATES those docs instead of forking them.
@@ -200,9 +231,21 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   percentage to 50%**. So an amount with no exact offer is refused with the list
   of real ones rather than rounded to the nearest: a refund is not a value worth
   approximating.
-- `lib/marketplace/orderMessageAttachments.ts` — **#1162**: post-sale message
+- **Claim RESOLUTION routes** (#364) — `app/api/marketplace/mercado-livre/reclamacao/`
+  `{estado,acao}` over `lib/marketplace/claims/claimResolve.ts`: the surface that
+  finally REACHES the verbs above. `respondIncidentMl` had existed since #768 with
+  no caller at all — refund, partial refund, allow-return and open-dispute were
+  implemented and unreachable.
+  ⚠️ `claimResolve.ts` deliberately takes **no** `db`, and that absence IS the
+  enforcement: `claimImport.ts` stays the single writer of incidente state, so root
+  `CLAUDE.md` rule 7 tier **0** applies — the race is made impossible rather than
+  guarded. A module holding no Firestore handle cannot become a second writer by
+  accident.
+  ⚠️ Availability is a SNAPSHOT, re-read LIVE on every call, so the UI must never
+  cache it — the list empties as the claim closes.
+- `lib/marketplace/chat/orderMessageAttachments.ts` — **#1162**: post-sale message
   attachments downloaded into Storage as `Arquivo`s, the `mlped` sibling of
-  `claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
+  `claims/claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
   operator had to leave the ERP to see it; that `[n anexos]` note stays as the
   FALLBACK, because silently dropping one is worse than not having it.
   ⚠️ **Not symmetric with the claims endpoint**, in three ways that each cost a
@@ -225,9 +268,19 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 
 Two suites, deliberately separated by filename:
 
-- **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Runs in
-  `ci.yml` on **every** PR; that workflow has no `paths:` filter, so this coverage can
-  never develop a hole.
+- **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Run by
+  `ci-mercado-livre.yml` in `ML offline (unit)`, **not** by `ci.yml`: that workflow
+  excludes this workspace and `@delfrance/integrations-mercado-livre` from
+  `turbo run test` (`ci.yml:95-102`), an exclusion this lane owns. ⚠️ It used to say
+  the opposite here — "runs in `ci.yml` on every PR, which has no `paths:` filter, so
+  this coverage can never develop a hole". The `paths:` half is true and the
+  conclusion does not follow: `ci.yml` filters by **workspace**, so an assertion in
+  this suite runs only when `ci-mercado-livre.yml`'s scope job says the ML app is
+  affected, and that scope is the `workspace:*` closure of
+  `@delfrance/mercado-livre-app` — which contains no sibling APP. A test here that
+  asserts something about `apps/web` therefore runs nowhere on a web-only PR (#1255
+  shipped one and had to split it). Assert about a workspace from inside that
+  workspace; `ci.yml` still lints, typechecks and builds the full graph unfiltered.
 - **Firestore integration** — `test:firestore` (`*.firestore.test.ts`), run by
   `ci-mercado-livre.yml` under
   `firebase emulators:exec --config firebase.mercado-livre.json --only firestore`.
@@ -248,8 +301,8 @@ Two suites, deliberately separated by filename:
   `processMercadoLivreNotification` → a real Firestore write. ⚠️ The enqueuer's region and the TASK
   functions' region MUST match — a mismatch is the silent drop `mlTasks.ts` warns about,
   and it is what this test detects. Both are `MERCADO_LIVRE_TASKS_REGION` (inlined into
-  the bundle, **us-east1**), which is deliberately NOT `FUNCTIONS_REGION` (**us-east5**):
-  Cloud Tasks and Cloud Scheduler do not exist in us-east5, so the eleven queue/schedule
+  the bundle), which is deliberately NOT `FUNCTIONS_REGION`: Cloud Tasks and Cloud
+  Scheduler do not exist in every region, so where they are absent the eleven queue/schedule
   functions live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
@@ -270,7 +323,7 @@ deployed backend is holding.
 
 ## Stock sweep tiers — read ADR 0014 first
 
-The stock sweep (`lib/marketplace/bulkEstoquePlan.ts` + `estoqueSweep.ts`) runs three
+The stock sweep (`lib/marketplace/estoque/bulkEstoquePlan.ts` + `estoqueSweep.ts`) runs three
 tiers — a 15-minute incremental, a 02:00 daily and a monthly force-all — and it
 **deliberately under-sends**. A kit whose component moved but which did not itself
 sell is not a candidate on the first two tiers; the monthly pass corrects it.
@@ -296,7 +349,7 @@ concurrency-safe refresh + the conta status route, driven by apps/web's
 `onSchedule` reprocess sweep behind it.
 
 Per-topic handlers, as of the `processNotificationPayload` dispatch in
-`lib/marketplace/notificacao.ts` — check that function, not this list, when it
+`lib/marketplace/notificacoes/notificacao.ts` — check that function, not this list, when it
 matters:
 
 | Topic | Disposition | Handler |
@@ -329,11 +382,26 @@ the `moderation_reference_id` straight from it (`id` + **`-ITM`**). So the reaso
 lives in `itemsStatusSync`, not in a new receiver, and `TOPIC_DISPOSITION` is
 unchanged. The sync reads `GET /moderations/last_moderation/{id}-ITM` only when the
 fetched item's status says there is one (`precisaConsultarModeracao` in
-`lib/marketplace/moderacoes.ts`) — `under_review`, or a moderation `sub_status` —
+`lib/marketplace/anuncios/moderacoes.ts`) — `under_review`, or a moderation `sub_status` —
 so a healthy listing still costs exactly one `GET /items/{id}`, and a
 moderation-endpoint outage cannot stall the `items` stream. A **404 is data**
 ("not moderated"); everything else rethrows, because persisting `[]` after a
 failed read records "not moderated" and is indistinguishable from healthy.
+
+⚠️ **The IMPORT is the third writer of `moderacoes`, and it diverges on failure
+deliberately.** It reads through the same gate — so a healthy listing still costs
+one `GET /items/{id}` — but places the call ABOVE every write (`importCategoriaChain`
+and `resolveTaxonomia` both write Firestore before `assembleImportPlan` runs, so a
+read below them could orphan docs), and it does **not** rethrow: for the other two
+writers the status write IS the unit of work, while here a throw discards a produto,
+its extraData, its stock, its photos and its children over a diagnostic. It degrades
+to `null` — the field's **third value, "never asked"**, distinct from `[]` = "asked,
+none" — which omits the key so the stored reason stands. ⚠️ The **mass import**
+(`lerModeracoes: false`) takes the same `null` path on purpose: a catalogue drain must
+not pay a lookup per moderated listing. What neither skips is the free half — a
+listing whose own `status`/`sub_status` warrant no moderation is written `[]` with no
+ML call at all, so even a full re-import clears every stale reason. Both `null` cases
+self-heal through an `items` delivery or "Reverificar anúncio".
 
 ⚠️ **`moderacoes` is a SEPARATE field from `errors`/`causas`, and the reason is the
 #781 stock re-arm.** `errors` is cleared whenever `podeEnviarEstoque(...).enviar` —
@@ -341,24 +409,38 @@ deliberately, so a `closed`/`under_review` listing keeps its diagnosis. Moderati
 needs the opposite on both sides: it must SURVIVE on a listing ML still calls
 `active` (`poor_quality_thumbnail` — live, but losing exposure) and VANISH the moment
 ML stops reporting one, even mid-review. Sharing `errors` would have wiped the first
-case on the very write that set it. The invariant that replaces the clearing rule is
-stronger: `moderacoes` is written in the **same patch** as the `status` it explains,
-on every status write, value or `[]` — so a reason cannot outlive its state.
+case on the very write that set it. The invariant that replaces the clearing rule:
+`moderacoes` is written in the **same patch** as the `status` it explains — never on
+its own, never left behind by a writer that moved the status. ⚠️ It holds
+**unconditionally in the clearing direction**, which is the half that produces the
+bug: `precisaConsultarModeracao` is pure, so a listing ML calls healthy is written
+`[]` on every path with no ML call at all, and a lifted reason cannot outlive its
+state. It is **qualified in the other** by the third value — `null` = "never asked"
+omits the key rather than inventing `[]`. Both `null` cases are the importer's; see
+the import ⚠️ above rather than restating them here.
 
 ⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and only a writer that
-just asked ML may touch it.** `errors`/`causas` record OUR failed write, so a later
-success invalidates them; a moderação is ML's verdict and nothing we do lifts it. Two
-`clearFalha()` callers prove the point — the stock writeback fires on a successful
-`PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
-updates **while moderated**; the importer re-reads the item but never asks
-`/moderations`. Clearing there would erase a live reason and show a clean listing that
+just asked ML may touch it** — today `itemsStatusSync`, `reverificarAnuncio` and the
+**importer**. `errors`/`causas` record OUR failed write, so a later success
+invalidates them; a moderação is ML's verdict and nothing we do lifts it. The stock
+writeback proves the point — it fires on a successful `PUT /items`, and a
+`poor_quality_thumbnail` listing is `active` and accepts stock updates **while
+moderated**. Clearing there would erase a live reason and show a clean listing that
 is really still penalised, which hides a real problem rather than merely failing to
 explain one. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
 unconditionally, so clear-only would erase the reason the operator pressed the button
-to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER and the parent takes the
-**fold winner's** (`upFamilyStatus.ts`) — never a union, or the parent would show a
-reason for a sibling it is not reporting. Siblings' values come off disk, so the fold
-costs no extra ML call.
+to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER, and what the PARENT
+takes depends on the path. On the **`items` sync** it takes the **fold winner's**
+(`upFamilyStatus.ts`) — never a union, or the parent would show a reason for a sibling
+it is not reporting; siblings' values come off disk, so the fold costs no extra ML
+call. The **importer** deliberately diverges: it writes the IMPORTED member's onto the
+parent, matching the `estado`/`status` that same member already sets there
+(`upFamilyStatus.ts`'s own header blesses that convention — "the importer does the
+same with whichever member it happened to import"). That keeps the parent internally
+consistent: one listing, one status, one reason. Folding on the import path would
+read every sibling on the hot path and change `estado` semantics, which feed
+`linkHasLiveListing` → `integracoesComProduto`, the anchor pre-filter both sweeps
+open with.
 
 ⚠️ **A User-Products FAMILY's `estado` is a FOLD of its members, never one member's
 status.** A family's parent link carries the FAMILY id, so a member's `items`
@@ -437,7 +519,7 @@ it. Of the send paths only the price one re-reads ML's tags itself, so this sync
 stamps its verdict (it is the only component holding the fetched item) and those
 three gate without a fetch of their own.
 
-⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacao.ts`, not
+⚠️ The authority is `TOPIC_DISPOSITION` in `lib/marketplace/notificacoes/notificacao.ts`, not
 this table. The four dispositions differ in what they COST: `handled` and `ack`
 persist nothing on success, `park` writes one document per delivery (the price
 of a replayable record while an importer is pending), and `ignore` is refused at

@@ -21,9 +21,9 @@ import {
   signState,
 } from '@delfrance/data/admin/oauth-state';
 
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { mercadoLivreOauthState, pkceEnabled } from '@/lib/marketplace/oauthState';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { mercadoLivreOauthState, pkceEnabled } from '@/lib/marketplace/conta/oauthState';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

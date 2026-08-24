@@ -408,6 +408,10 @@ export const integracaoMeta: CollectionMetadata = {
     where: [{ field: 'tipo', param: true }],
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    // Shared by /canais/balcao and /canais/mercado-livre. /canais/whatsapp binds
+    // the same meta but shows `['nome','numero','ativo']`, so it keeps the
+    // page-level `defaultColumns` override — one meta, three screens.
+    columns: ['nome', 'ativo', 'padrao', 'dataCadastro'],
   },
 };
 
@@ -737,7 +741,7 @@ export const USUARIO_TESTE_ROLE = {
  * dropped write is an **unrecoverable** credential that has permanently consumed
  * one of ten slots. That is why `password` is stored in the clear here rather
  * than shown once and discarded, and why the mint flow persists each user before
- * minting the next (`apps/mercado-livre/lib/marketplace/testUsers.ts`).
+ * minting the next (`apps/mercado-livre/lib/marketplace/conta/testUsers.ts`).
  *
  * **Admin-only / default-deny** — same posture as `credenciaisIntegracao` and
  * `credenciaisWhatsapp`: deliberately left OUT of `ALL_DOMAINS`, so rules-gen

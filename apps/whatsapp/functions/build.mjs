@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { loadBuildEnv } from '../../../tools/deploy-env/build-env.mjs';
+import { loadBuildEnv, requireBuildRegion } from '../../../tools/deploy-env/build-env.mjs';
 
 // Bundle the WhatsApp Cloud Functions (codebase `whatsapp`) into a single
 // self-contained ESM file, inlining the function region (Firebase reads no env
@@ -17,11 +17,11 @@ export async function bundle(outfile) {
   // they are not exported in the deploy shell. A real export still wins, and a
   // missing file is a no-op — see tools/deploy-env/build-env.mjs.
   loadBuildEnv();
-  // Default to us-east5 — matches the WhatsApp task scheduler's default region
-  // (waTasks.ts: WHATSAPP_TASKS_REGION ?? FUNCTIONS_REGION ?? us-east5). Must
-  // match or the enqueuer targets a queue that doesn't exist in this region and
-  // silently drops.
-  const region = process.env.FUNCTIONS_REGION || 'us-east5';
+  // Must match the enqueuer's region (waTasks.ts, which reads
+  // WHATSAPP_TASKS_REGION and falls back to this) or the enqueuer targets a queue
+  // that does not exist and is silently dropped. No default: an unset variable
+  // stops the build rather than inlining a region nobody chose.
+  const region = requireBuildRegion('FUNCTIONS_REGION');
   // Default to `default` — the repo's NAMED Firestore database. Firebase reads no
   // env during codebase analysis, so `sendOutbound`'s `database:` binding
   // (sendOutbound.ts) and `getDb()` (lib/admin.ts) would see `undefined` and bind

@@ -11,6 +11,31 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 
+/**
+ * Listen options for BOTH hooks below. The flag is not a nicety — without it
+ * `fromCache` is a signal that can never fire.
+ *
+ * The SDK decides in `QueryListener.shouldRaiseEvent`: a snapshot carrying no
+ * document changes is delivered only when `syncStateChanged` (the cache -> server
+ * transition) coincides with `includeMetadataChanges === true`; otherwise it
+ * returns `false` and the event is dropped. So by default a consumer sees
+ * `fromCache: false` ONLY when the server's copy also differs in DATA from the
+ * cached one. Open a record whose cached copy is already correct — the common
+ * case once anything has been viewed in the session — and the listener never
+ * fires again: `fromCache` stays `true` forever.
+ *
+ * Four gates in this repo read that signal, and all four were silently dead on
+ * that path: `useServerTruthSeed` (the ObjectView re-seed AND `baseline.current`,
+ * which is the ADR 0011 tier-3 concurrency guard — a null baseline means the save
+ * is unguarded), `useCollectionMonitor`, the produto editor's server-truth seed,
+ * and `RecalcularPrecosScreen`'s lista preselect.
+ *
+ * The cost is one extra emission per listener when its target first becomes
+ * CURRENT, plus one per `hasPendingWrites` flip. Both are per-listener, not
+ * per-document, and every consumer above already de-duplicates its own work.
+ */
+const SERVER_SYNC_LISTEN_OPTIONS = { includeMetadataChanges: true } as const;
+
 export interface SnapshotState<T> {
   data: T | undefined;
   loading: boolean;
@@ -24,6 +49,14 @@ export interface SnapshotState<T> {
    * responds. Consumers that must seed from SERVER truth (e.g. an edit form)
    * gate on `fromCache === false`. Left `undefined` by non-Firestore sources
    * (the one-shot Pipelines hook), which are always authoritative.
+   *
+   * ⚠️ That second emission only exists because both listeners below pass
+   * `includeMetadataChanges: true`. WITHOUT it the SDK drops the cache -> server
+   * transition whenever the document data is unchanged, and `fromCache` stays
+   * `true` for the life of the listener — see the note on those calls. Every
+   * gate above is written as `=== false` / `!== false` rather than truthiness
+   * precisely so the `undefined` (non-Firestore) case stays distinguishable;
+   * none of them can distinguish "server said nothing changed" on its own.
    */
   fromCache?: boolean;
   /** Latest emission carries local writes not yet acknowledged by the server. */
@@ -100,6 +133,7 @@ function useSnapshotRows<T>(
     setState((s) => ({ ...s, loading: true }));
     const unsub = onSnapshot(
       q,
+      SERVER_SYNC_LISTEN_OPTIONS,
       (snap: QuerySnapshot<T>) => {
         setState({
           data: mapSnapshotRows(snap, includeDocs),
@@ -138,6 +172,7 @@ export function useDocSnapshot<T>(
     setState((s) => ({ ...s, loading: true }));
     const unsub = onSnapshot(
       ref,
+      SERVER_SYNC_LISTEN_OPTIONS,
       (snap: DocumentSnapshot<T>) => {
         const data = snap.data();
         setState({

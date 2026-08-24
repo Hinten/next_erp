@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 // (see the issue). `onSchedule` doesn't run the handler at import time — it
 // only records the declared options onto `func.__endpoint` — so this is a
 // pure config assertion, not a live Firestore/ML-API test (that behaviour is
-// already covered by `lib/marketplace/notificacao.test.ts`'s
+// already covered by `lib/marketplace/notificacoes/notificacao.test.ts`'s
 // `reprocessNotifications` suite). We assert over `JSON.stringify(__endpoint)`
 // rather than its internal shape (mirrors `apps/whatsapp/functions/src/sendOutbound.test.ts`)
 // since `secretEnvironmentVariables`/`{ key }` is firebase-functions-internal
@@ -22,7 +22,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 // `process.env` at import time via a top-level `const`, so the stub must land
 // before the dynamic import (mirrors `mlTasks.test.ts`'s pattern).
 const originalFunctionsRegion = process.env.FUNCTIONS_REGION;
-process.env.FUNCTIONS_REGION = 'us-east5';
+process.env.FUNCTIONS_REGION = 'us-central1';
+const originalMlTasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION;
+process.env.MERCADO_LIVRE_TASKS_REGION = 'us-central1';
 
 // ⚠️ Keep this import at the TOP LEVEL — do NOT move it into a `beforeAll`.
 // `./index` is the heaviest module in this codebase (firebase-functions v2 plus
@@ -36,6 +38,7 @@ const { reprocessMercadoLivreNotifications, sweepMercadoLivreMissedFeeds } =
 
 afterAll(() => {
   process.env.FUNCTIONS_REGION = originalFunctionsRegion;
+  process.env.MERCADO_LIVRE_TASKS_REGION = originalMlTasksRegion;
 });
 
 function endpointOf(fn: unknown): Record<string, unknown> {

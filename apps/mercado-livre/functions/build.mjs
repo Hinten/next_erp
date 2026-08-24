@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { loadBuildEnv } from '../../../tools/deploy-env/build-env.mjs';
+import { loadBuildEnv, requireBuildRegion } from '../../../tools/deploy-env/build-env.mjs';
 
 // Bundle the Mercado Livre Cloud Functions (codebase `mercado-livre`) into a
 // single self-contained ESM file, inlining the function region (Firebase reads
@@ -19,10 +19,9 @@ export async function bundle(outfile) {
   // they are not exported in the deploy shell. A real export still wins, and a
   // missing file is a no-op — see tools/deploy-env/build-env.mjs.
   loadBuildEnv();
-  // Default to us-east5 — the ML backend's deploy region. Must match the
-  // enqueuer's MERCADO_LIVRE_TASKS_REGION default (mlTasks.ts) or tasks target a
-  // queue that doesn't exist in this region and silently drop.
-  const region = process.env.FUNCTIONS_REGION || 'us-east5';
+  // The codebase (Firestore-trigger) region. No default: an unset variable stops
+  // the build rather than inlining a region nobody chose — see requireBuildRegion.
+  const region = requireBuildRegion('FUNCTIONS_REGION');
   // Default to `default` — the repo's NAMED Firestore database. Firebase reads no
   // env during codebase analysis, so `onNfeAprovada`'s `database:` binding
   // (onNfeAprovada.ts) and `getDb()` (lib/admin.ts) would see `undefined` and bind
@@ -30,16 +29,19 @@ export async function bundle(outfile) {
   // FUNCTIONS_REGION so the analyzed endpoint carries the real database id.
   // Mirrors apps/whatsapp/functions/build.mjs.
   const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
-  // ⚠️ Cloud Tasks and Cloud Scheduler DO NOT EXIST in us-east5, so the eleven
-  // onTaskDispatched/onSchedule functions cannot live in the codebase region —
-  // `firebase deploy` fails them all while the four Firestore triggers succeed.
-  // They are pinned to us-east1 instead (the nearest region offering both).
+  // ⚠️ SEPARATE from FUNCTIONS_REGION on purpose. Cloud Tasks and Cloud Scheduler
+  // do not exist in every region — where they are absent, `firebase deploy` fails
+  // all eleven onTaskDispatched/onSchedule functions while the four Firestore
+  // triggers succeed (#1108, measured 2026-08-19). The two variables collapse to
+  // one value once the project sits in a region offering both; until then this
+  // names the queue/schedule region and FUNCTIONS_REGION names the data region.
   // Inlined for the same reason as FUNCTIONS_REGION: their `region:` option is
   // read during codebase analysis, before any env is available.
   // ⚠️ This is also the ENQUEUER's region — apps/mercado-livre/lib/marketplace/
-  // mlTasks.ts builds a region-qualified queue name from the same variable, and
-  // a mismatch makes the Admin SDK target us-central1 and SILENTLY DROP the task.
-  const tasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION || 'us-east1';
+  // notificacoes/mlTasks.ts builds a region-qualified queue name from the same
+  // variable, and a mismatch makes the Admin SDK target us-central1 and
+  // SILENTLY DROP the task.
+  const tasksRegion = requireBuildRegion('MERCADO_LIVRE_TASKS_REGION');
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above
   // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase

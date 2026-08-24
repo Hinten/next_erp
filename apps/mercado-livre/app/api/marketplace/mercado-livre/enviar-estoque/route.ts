@@ -39,9 +39,9 @@ import {
   MANUAL_PUSH_MAX_PRODUTOS,
   ManualPushGuardError,
   enviarEstoqueManual,
-} from '@/lib/marketplace/estoqueManual';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+} from '@/lib/marketplace/estoque/estoqueManual';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

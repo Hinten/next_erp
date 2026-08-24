@@ -196,8 +196,17 @@ export const produtoSchema = z
     // System stamps — create-only `timestamp` (nullish coalesce) and
     // `ultimaModificacao` on every write; both stamped by `saveRecord` /
     // ObjectView so the TableView update-monitor sees edits.
+    //
+    // ⚠️ BOTH are `.nullable().default(null)`, never `.nullable().optional()`.
+    // `.optional()` with no default makes Zod DROP the key, so the document is
+    // written with the field ABSENT — and Firestore `orderBy` silently SKIPS
+    // documents missing the ordered field. `ultimaModificacao` is this list's
+    // default sort (see `defaultQuery` below), so an absent key makes a produto
+    // invisible in /produtos. That is exactly how ML-imported produtos vanished
+    // before #861, and how seeded clientes vanished in #381/#384. Fixed in #159
+    // together with a one-time backfill for rows written before it.
     timestamp: millisSinceEpoch('Criação').nullable().default(null),
-    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
   })
   .passthrough();
 
@@ -216,8 +225,24 @@ export const produtoMeta: CollectionMetadata = {
   // parents), so the equality filter misses nothing.
   defaultQuery: {
     where: [{ field: 'paiId', value: null }],
-    orderBy: [{ field: 'nome', direction: 'asc' }],
+    // Most-recently-EDITED first (#159). Legacy browsed newest-created first
+    // (`orderBy__timestamp(false)`, `.old/lib/produtos/pages/produtoTableView.dart:302`);
+    // `nome asc` was only ever its semantic-search branch (`:238`), never the
+    // browse order. Requires `ultimaModificacao` to be present on every doc —
+    // see the stamp note on the field.
+    //
+    // ⚠️ The /produtos search box range-filters `nome`, and Firestore requires
+    // an inequality field to be the FIRST orderBy — so that page overrides the
+    // sort back to `nome asc` while the box is non-empty. Do not delete the
+    // `produtos(paiId, nome)` index: the search still rides it.
+    orderBy: [{ field: 'ultimaModificacao', direction: 'desc' }],
     limit: 50,
+    // Legacy showed Foto · SKU · Nome · Preço · Canais de Venda
+    // (`produtoTableView.dart:1568-1587`). `foto` and `preco` are page-owned
+    // virtual columns; `ultimaModificacao` is here because it is the sort key —
+    // without it the list is ordered by a column nobody can see and no sort
+    // arrow renders. "Canais de venda" is deferred (needs a join) — see #159.
+    columns: ['foto', 'nomeLink', 'sku', 'gtin', 'preco', 'publicado', 'ultimaModificacao'],
   },
 };
 

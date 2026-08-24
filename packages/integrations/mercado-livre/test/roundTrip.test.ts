@@ -86,7 +86,7 @@ const PRODUTO: SourceProduto = {
 
 /**
  * Mirror of `buildParentAttributes` in
- * `apps/mercado-livre/lib/marketplace/publishCore.ts` — the app assembles the
+ * `apps/mercado-livre/lib/marketplace/anuncios/publishCore.ts` — the app assembles the
  * parent attribute list there, and this package cannot import from an app. Kept
  * deliberately literal so a divergence between the two is visible on sight.
  */

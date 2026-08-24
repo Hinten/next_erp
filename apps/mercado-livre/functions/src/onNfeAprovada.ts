@@ -1,10 +1,14 @@
 import { logger } from 'firebase-functions';
+import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { nfeMeta } from '@delfrance/schemas';
 
-import { createMlNfeUploadScheduler } from '../../lib/marketplace/mlNfeUploadTasks';
-import { MlTasksDisabledError } from '../../lib/marketplace/mlTasks';
-import { decideNfeUploadDispatch, shouldUploadForPedido } from '../../lib/marketplace/nfeUpload';
+import { createMlNfeUploadScheduler } from '../../lib/marketplace/nfe/mlNfeUploadTasks';
+import { MlTasksDisabledError } from '../../lib/marketplace/notificacoes/mlTasks';
+import {
+  decideNfeUploadDispatch,
+  shouldUploadForPedido,
+} from '../../lib/marketplace/nfe/nfeUpload';
 import { getDb } from './lib/admin';
 
 /**
@@ -51,7 +55,7 @@ export const onNfeAprovada = onDocumentWritten(
   {
     document: `${nfeMeta.collectionPath}/{nfeId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
-    region: process.env.FUNCTIONS_REGION ?? 'us-east5',
+    region: FUNCTIONS_REGION,
     retry: true,
   },
   async (event) => {

@@ -14,7 +14,8 @@ import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 
 import type { ChartCellValue, ChartRowDraft } from '@/lib/mercado-livre/chartRows';
 import { cellErrorKey } from '@/lib/mercado-livre/chartRows';
-import { type ChartColumn, type ChartColumnPart, unitLabel } from '@/lib/mercado-livre/chartSpec';
+import { type ChartColumn, type ChartColumnPart } from '@/lib/mercado-livre/chartSpec';
+import { unitLabel } from '@/lib/mercado-livre/units';
 
 /** Width of the frozen first column, shared by the header and body cells. */
 const MAIN_COL_WIDTH = 180;

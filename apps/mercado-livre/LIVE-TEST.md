@@ -29,7 +29,7 @@ Therefore:
 | E-mail verification code = **the last 4 or 6 digits of the user id** | There is no inbox                                             |
 
 Listing rules ML imposes, all already encoded in
-[`lib/marketplace/anuncioTeste.ts`](lib/marketplace/anuncioTeste.ts):
+[`lib/marketplace/conta/anuncioTeste.ts`](lib/marketplace/conta/anuncioTeste.ts):
 
 - title exactly `Item de Teste – Por favor, NÃO OFERTAR!`
 - category `Outros` «na medida do possível» (on MLB it is a **leaf** under
@@ -53,7 +53,7 @@ Tick every box before step 2.1. Most failures in this run trace back to a missed
       functions gets the same notification ingested by **both** systems.
 - [ ] Redirect URI → `<staging backend>/api/oauth/mercado-livre/callback`
 - [ ] Notification callback → `<staging backend>/api/webhooks/mercado-livre`
-- [ ] Every topic in `KNOWN_TOPICS` subscribed (`lib/marketplace/notificacao.ts`):
+- [ ] Every topic in `KNOWN_TOPICS` subscribed (`lib/marketplace/notificacoes/notificacao.ts`):
       `orders_v2`, `orders`, `items`, `shipments`, `payments`, `items_prices`, `claims`,
       `orders_feedback`, `questions`, `messages`, `stock-location` / `stock-locations`
 - [ ] ⚠️ Stock is **one** DevCenter checkbox ("Stock-Locations"), not two. The backend
@@ -276,27 +276,28 @@ delete charts last.
 
 ### 7.1 The money map — assert every row
 
-The mapping lives in [`orderMapping.ts`](lib/marketplace/orderMapping.ts) and
-[`orderPaymentMapping.ts`](lib/marketplace/orderPaymentMapping.ts). Both were ported
+The mapping lives in [`orderMapping.ts`](lib/marketplace/pedidos/orderMapping.ts) and
+[`orderPaymentMapping.ts`](lib/marketplace/pedidos/orderPaymentMapping.ts). Both were ported
 verbatim from the Flutter app and **have never been checked against a real order**.
 
-| Field                      | Formula in code                                                                 | What to verify                                                                                                                                                                                     | Result |
-| -------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| `quantidade`               | `order_item.quantity`                                                           | trivial                                                                                                                                                                                            |        |
-| `precoDeVenda`             | `unit_price + Σ discounts[].amounts.full` — a **plus**                          | reconstructs the _gross_ unit price. Confirm ML returns `amounts.full` **positive**; a negative flips the sign                                                                                     |        |
-| `descontoUnitario`         | `Σ discounts[].amounts.full`                                                    | line-level discount                                                                                                                                                                                |        |
-| `descontoTotal`            | `Σ payments[].coupon_amount`                                                    | order-level **coupon** — a different source from the line discount. Confirm one discount is not counted in both                                                                                    |        |
-| **`valorCobrado`**         | `Σ transaction_amount + Σ shipping_cost − Σ coupon_amount`                      | **the highest-value assertion in this run.** If ML's `transaction_amount` already includes shipping and is already net of coupon, this double-counts. Compare against what the buyer actually paid |        |
-| `valorFreteInicial`        | `Σ payments[].shipping_cost`                                                    | vs the checkout freight                                                                                                                                                                            |        |
-| `tarifas` (ML fee)         | `max(0, marketplace_fee + Σ fee_details[].amount + Σ collector→mp charges)`     | vs ML's own sale-fee report                                                                                                                                                                        |        |
-| `numero`                   | `packId ?? order.id`                                                            | a pack collapses siblings onto one pedido                                                                                                                                                          |        |
-| `sku` / `mktplaceId`       | `item.seller_sku` / `variation_id ?? item.id`                                   | binds the line to the ERP produto                                                                                                                                                                  |        |
-| `gtin`, `custo`, `imposto` | always `null`                                                                   | legacy parity — confirm that is still wanted                                                                                                                                                       |        |
-| cliente                    | `GET /orders/{id}/billing_info`                                                 | ⚠️ a non-CPF/CNPJ `identification.type` **throws and is swallowed**, so the pedido never reaches `pago`. Test users are the likeliest place to hit this                                            |        |
-| endereço                   | billing first, `shipment.receiver_address` fallback                             | ⚠️ if ViaCEP recovery fails the code stores UF **`AC`** with only a warn; `sem-cep` ⇒ no endereço ⇒ never `pago`                                                                                   |        |
-| `estado`                   | `estadoPedidoFromOrderStatus`                                                   | default is `iniciado` (tolerant)                                                                                                                                                                   |        |
-| payment status             | `statusPagamentoFromMlPaymentStatus`                                            | ⚠️ **throws** on an unknown ML status — a new status poisons the import into a retry loop                                                                                                          |        |
-| `pago` advance             | needs `emProcessamento` **and** cliente **and** endereço **and** `freteInicial` | if the pedido stalls, this is why                                                                                                                                                                  |        |
+| Field                      | Formula in code                                                                 | What to verify                                                                                                                                                                                                                                           | Result |
+| -------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| `quantidade`               | `order_item.quantity`                                                           | trivial                                                                                                                                                                                                                                                  |        |
+| `precoDeVenda`             | `unit_price + Σ discounts[].amounts.full` — a **plus**                          | reconstructs the _gross_ unit price. Confirm ML returns `amounts.full` **positive**; a negative flips the sign                                                                                                                                           |        |
+| `descontoUnitario`         | `Σ discounts[].amounts.full`                                                    | line-level discount                                                                                                                                                                                                                                      |        |
+| `descontoTotal`            | `Σ payments[].coupon_amount`                                                    | order-level **coupon** — a different source from the line discount. Confirm one discount is not counted in both                                                                                                                                          |        |
+| **`valorCobrado`**         | `Σ transaction_amount + Σ shipping_cost − Σ coupon_amount`                      | **the highest-value assertion in this run.** If ML's `transaction_amount` already includes shipping and is already net of coupon, this double-counts. Compare against what the buyer actually paid                                                       |        |
+| `valorFreteInicial`        | `Σ payments[].shipping_cost`                                                    | vs the checkout freight                                                                                                                                                                                                                                  |        |
+| `tarifas` (ML fee)         | `max(0, marketplace_fee + Σ fee_details[].amount + Σ collector→mp charges)`     | vs ML's own sale-fee report                                                                                                                                                                                                                              |        |
+| `numero`                   | `packId ?? order.id`                                                            | a pack collapses siblings onto one pedido                                                                                                                                                                                                                |        |
+| `sku` / `mktplaceId`       | `item.seller_sku` / `variation_id ?? item.id`                                   | binds the line to the ERP produto                                                                                                                                                                                                                        |        |
+| `gtin`, `custo`, `imposto` | always `null`                                                                   | legacy parity — confirm that is still wanted                                                                                                                                                                                                             |        |
+| cliente                    | `GET /orders/{id}/billing_info`                                                 | ⚠️ a non-CPF/CNPJ `identification.type` **throws and is swallowed**, so the pedido never reaches `pago`. Test users are the likeliest place to hit this                                                                                                  |        |
+| endereço                   | billing first, `shipment.receiver_address` fallback                             | ⚠️ if ViaCEP recovery fails the code stores UF **`AC`** with only a warn; `sem-cep` ⇒ no endereço ⇒ never `pago`                                                                                                                                         |        |
+| `estado`                   | `estadoPedidoFromOrderStatus`                                                   | default is `iniciado` (tolerant)                                                                                                                                                                                                                         |        |
+| payment status             | `statusPagamentoFromMlPaymentStatus`                                            | ⚠️ **throws** on an unknown ML status — a new status poisons the import into a retry loop                                                                                                                                                                |        |
+| `pago` advance             | needs `emProcessamento` **and** cliente **and** endereço **and** `freteInicial` | if the pedido stalls, this is why                                                                                                                                                                                                                        |        |
+| `freteInicial`             | `applyFreteStep` (needs a shipment) **or** `applyFreteSemEnvioStep`             | an order sold **"frete a combinar"** carries no Mercado Envios shipment; the seeded block is what lets it reach `pago` at all (#1087). Detected by the `no_shipping` **tag**, never by a missing `shipping.id` — ML attaches the shipment asynchronously |        |
 
 ⚠️ `payments[]` and `discounts[]` are read through `as unknown as` passthrough casts — Zod
 never validates them, so a shape change is **silent**. Capture the real bodies (§9).
@@ -356,6 +357,62 @@ which is also the most interesting case here because the listing stays `active`.
 | A removed listing (`under_review` + `forbidden`) | `remedio` is **null** — ML sends REASON only, and no fix exists                                                            |        |
 | A UP **family** member is moderated              | the reason lands on the MEMBER's `variacaoMercadoLivre` doc; the parent carries it only if that member won the status fold |        |
 
+The IMPORT path is the third writer (it was added after the rows above, which
+cover the `items` webhook and the re-check button). Its rows:
+
+| Signal                                                   | Assert                                                                                                                                           | Result |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| **Import** a moderated listing (`/importar`)             | the fresh link doc lands with `moderacoes[]` — never `status: 'paused'` with no reason                                                           |        |
+| **Re-import** after ML lifts it                          | `moderacoes` becomes `[]` — ⚠️ the stale-reason case; the `...existingLink` spread used to carry the old one onto a now-`active` anúncio         |        |
+| Import a **healthy** listing                             | **no** `last_moderation` call, and `moderacoes` is written `[]` anyway (the gate answers off the item already fetched)                           |        |
+| **Mass** import (`/importar-todos`) over a moderated one | **no** `last_moderation` call at all, and `moderacoes` stays `null` — ⚠️ `null`, not `[]`: "never asked" must not read as "ML reported none"     |        |
+| Mass import over a listing whose reason was lifted       | `moderacoes` still becomes `[]` — the free half of the invariant survives the skip                                                               |        |
+| `/moderations` 5xx during a single import                | the produto **still imports**, `moderacoes` untouched, one `console.warn` in the backend log naming the item                                     |        |
+| Import a moderated **UP family** member                  | the reason lands on the MEMBER's `variacaoMercadoLivre` doc AND on the family parent link (the importer takes the imported member's, not a fold) |        |
+
+### 7.3 — Settle #957 (the shipment `x-format-new` body)
+
+The **code already shipped**: `x-format-new: true` now rides on `getShipment` and
+`getShipmentPayments` (deliberately NOT on `getShipmentSla`, whose documented example
+omits it), `mlShipmentSchema` types `lead_time` / `logistic` / `destination`, and
+`custoCalculado`/`custoFinal` merge with `?? existing ?? null` instead of overwriting
+with a fabricated `0`.
+
+⚠️ **It merged without the one check the issue itself asked for.** Its own text:
+
+> The new-format shape here is taken from ML's documentation, not from a live call. One
+> `curl -H 'x-format-new: true' …/shipments/$ID` against a real shipment is worth more
+> than the whole analysis above.
+
+That call is what closes the issue. Every field below was mapped from documentation and
+has never been seen on the wire.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -H "x-format-new: true" "https://api.mercadolibre.com/shipments/$SHIPMENT_ID"
+```
+
+Compare against the same call **without** the header — the diff is the migration.
+
+| Assert                                                                                                   | Why it matters                                                                                                                                                 | Result |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| `lead_time` exists, with `list_cost` + `estimated_delivery_time`/`_limit`                                | replaces the legacy top-level `shipping_option`; feeds `custoFinal` and the delivery window                                                                    |        |
+| `logistic.type` exists (legacy `logistic_type` gone)                                                     | ⚠️ the LOUD one — `orderPrazoDespacho` throws `MlLogisticTypeInvalidoError` on a miss, poisoning the import into a retry loop                                  |        |
+| `destination.shipping_address`, children renamed (`street_name`, `street_number`, `zip_code`, `comment`) | a miss means `sem-cep`, no `enderecoFiscalOuterRef`, and the pedido can NEVER reach `pago`                                                                     |        |
+| `base_cost` is **absent**                                                                                | confirms `shipmentBaseCost` must yield `null`, not `0`. `76f97589` already refuses to substitute `lead_time.cost` for it — check that decision against reality |        |
+| `order_id` / `external_reference` **absent**                                                             | discontinued 12/10/2025; the resolver must fall through to `GET /shipments/{id}/orders`                                                                        |        |
+| `last_updated` still present                                                                             | ⚠️ silent if lost: `mergeFreteInicialSeMaisNovo` returns null under BOTH freshness policies, so the frete block freezes forever with no error and no log       |        |
+| `id`, `status`, `substatus`, `tracking_number`, `tags`, `declared_value`, `dimensions` unchanged         | the documented no-change set                                                                                                                                   |        |
+
+**Then capture the body as a fixture.** Of the 14 shipment fixtures in the repo, 11 are
+`as unknown as` casts that stay green through the switch, and **no fixture anywhere uses
+`destination`, `logistic` or `lead_time`** — so today there is zero real-format coverage.
+One captured body fixes that permanently.
+
+⚠️ **The label is stale.** #957 carries `needs-migration-window` while its own text says
+"**No migration window.** No schema change, no backfill, no index, no rules regeneration."
+Now that the code has merged, drop the label when closing — or it sits in the cutover
+queue forever as work that is already done.
+
 ---
 
 ## 9. Phase 8 — capture fixtures, clean up, decide on CI
@@ -363,13 +420,13 @@ which is also the most interesting case here because the listing stays `active`.
 **The most durable output of this run is real ML response bodies.** Every offline test in
 this repo currently runs on hand-written fixtures.
 
-| Capture                                                                         | Where it helps                                                                              | Result |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------ |
-| Item — simple and with variations                                               | the round-trip test                                                                         |        |
-| Order (+ the `pedidos/{id}/orderML/{orderId}` mirror the import already stores) | the money map                                                                               |        |
-| Payment                                                                         | `orderPaymentMapping`                                                                       |        |
-| **Shipment with `x-format-new: true`**                                          | **#957** — its own text says this single call is worth more than the whole written analysis |        |
-| Claim                                                                           | `claimImport`                                                                               |        |
+| Capture                                                                         | Where it helps                                               | Result |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------ |
+| Item — simple and with variations                                               | the round-trip test                                          |        |
+| Order (+ the `pedidos/{id}/orderML/{orderId}` mirror the import already stores) | the money map                                                |        |
+| Payment                                                                         | `orderPaymentMapping`                                        |        |
+| **Shipment with `x-format-new: true`**                                          | **#957** — the assertions are in §7.3; capture the body here |        |
+| Claim                                                                           | `claimImport`                                                |        |
 
 ### Cleanup
 
@@ -411,7 +468,7 @@ inside this run** — the run's job is evidence.
 | #1087                           | closed by completing the run                                                                                                                            |        |
 | #831 — partial `variations` PUT | closable — §5.5                                                                                                                                         |        |
 | #758 — PDF label branch         | closable — §7.2                                                                                                                                         |        |
-| #957 — shipments `x-format-new` | evidence captured — §9                                                                                                                                  |        |
+| #957 — shipments `x-format-new` | **closable** — §7.3 (the code already merged; only the live call is left)                                                                               |        |
 | #706 — multiorigin contas       | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got |        |
 | #898, #1083, #1072, #707        | observed only — record evidence                                                                                                                         |        |
 

@@ -31,6 +31,13 @@ export interface ServerTruthSeedArgs {
  * one. `packages/data/src/hooks/useSnapshot.ts` states the contract: consumers
  * that must seed from SERVER truth (an edit form) gate on `fromCache === false`.
  *
+ * ⚠️ That gate is only reachable because the hook's listener passes
+ * `includeMetadataChanges: true`. Without it the SDK suppresses the cache ->
+ * server transition whenever the document data is unchanged, so `fromCache`
+ * stays `true` for the life of the listener and this correction — plus the
+ * `baseline` its caller derives, which is the ADR 0011 tier-3 guard — never runs
+ * at all. Enforced by `packages/config-eslint/rules/snapshot-metadata-changes.test.js`.
+ *
  * Blocking the paint until the server answers would cost every editor a round
  * trip on open, so this does what `ObjectView` has always done instead: paint
  * the first emission for instant feedback, then **re-seed once** when the

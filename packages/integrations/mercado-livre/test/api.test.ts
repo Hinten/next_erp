@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  MercadoLivreError,
   MercadoLivreHttpError,
   MercadoLivreLabelUnavailableError,
   MercadoLivreNetworkError,
@@ -8,7 +9,7 @@ import {
   isVersionConflict,
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
-import { orderSchema } from '../src/types';
+import { ML_MULTIGET_MAX_IDS, orderSchema } from '../src/types';
 import {
   __resetAvisoFormatoLegado,
   ehFormatoLegado,
@@ -84,6 +85,99 @@ describe('createMercadoLivreApi — happy paths', () => {
     const item = await api.getItem('MLB1');
     expect(item.id).toBe('MLB1');
     expect(String(fetchMock.mock.calls[0]![0])).toContain('include_attributes=all');
+  });
+
+  it('getItemsByIds joins ids and attributes, and parses the VERBOSE envelope', async () => {
+    // Multiget does not answer with items — it answers `[{code, body}, …]`, one
+    // entry per requested id, each with its own status. A caller that reads
+    // `body` without `code` sees a 403/404 as an item with no fields.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        { code: 200, body: { id: 'MLB1', user_product_id: 'MLBU1' } },
+        { code: 404, body: null },
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const out = await api.getItemsByIds(['MLB1', 'MLB2'], ['id', 'user_product_id']);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]!.code).toBe(200);
+    expect(out[0]!.body?.user_product_id).toBe('MLBU1');
+    expect(out[1]!.code).toBe(404);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('/items?');
+    expect(url).toContain('ids=MLB1%2CMLB2');
+    expect(url).toContain('attributes=id%2Cuser_product_id');
+  });
+
+  it('getItemsByIds tolerates a QUOTED code — ML quoting a number must not kill the body', async () => {
+    // #1087's shape, applied here: `parseOk` validates the whole body, so one
+    // strict field costs the entire multiget. This one is the worst place for
+    // it — every entry would fail `code !== 200`, `verificarMembros` would
+    // confirm nothing, and the orphan sweep would silently stop closing.
+    // ⚠️ Only reachable through the real client: the sweep's own tests mock
+    // `getItemsByIds` and never run this schema.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ code: '200', body: { id: 'MLB1', user_product_id: 'MLBU1' } }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const out = await api.getItemsByIds(['MLB1'], ['id', 'user_product_id']);
+
+    expect(out[0]!.code).toBe(200);
+    expect(out[0]!.body?.user_product_id).toBe('MLBU1');
+  });
+
+  it('getItemsByIds omits attributes entirely when none are named', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ code: 200, body: { id: 'MLB1' } }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.getItemsByIds(['MLB1']);
+
+    expect(String(fetchMock.mock.calls[0]![0])).not.toContain('attributes=');
+  });
+
+  it('getItemsByIds REFUSES more than the cap, before touching the network', async () => {
+    // ML does not error on an over-long multiget — it truncates — so a caller
+    // deciding what to CLOSE from the difference would act on a set it only
+    // partly verified. The "no fetch" half is the point: the refusal has to
+    // happen at the seam, not after ML has already answered for a prefix.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const demais = Array.from({ length: ML_MULTIGET_MAX_IDS + 1 }, (_, i) => `MLB${String(i)}`);
+
+    await expect(api.getItemsByIds(demais)).rejects.toBeInstanceOf(MercadoLivreError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('getItemsByIds allows EXACTLY the cap — the boundary is inclusive', async () => {
+    // Pins the off-by-one: a cap that silently became `>=` would leave the last
+    // id of every full chunk unverified, which is the same silent prefix in a
+    // different disguise.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const noLimite = Array.from({ length: ML_MULTIGET_MAX_IDS }, (_, i) => `MLB${String(i)}`);
+
+    await api.getItemsByIds(noLimite);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('getItemsByIds maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getItemsByIds(['MLB1'])).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
   });
 
   it('searchOrders forwards the query params', async () => {
@@ -297,6 +391,76 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     expect(payment.order_id).toBe(2000003508419013);
     // `payer` isn't consumed by any mapper — still rides through untyped.
     expect((payment.payer as Record<string, unknown>).a_field_the_mapper_never_reads).toBe(true);
+  });
+
+  it('getPayment parses a numeric field Mercado Livre sent as a STRING (#1087 live run)', async () => {
+    // The 2026-08-21 regression, taken from the live payload of payment
+    // 174034247387 (order 2000018052464608, seller 3616169770): ML quoted
+    // `order_id` while `id` stayed a JSON number. Both were `z.number().int()`,
+    // so Zod rejected the WHOLE body, the pagamento never imported, the pedido
+    // stuck at `emProcessamento`, and Cloud Tasks retried the identical request
+    // until the notification parked.
+    //
+    // ⚠️ The blast radius is out of all proportion to the field. `order_id` is
+    // only a FALLBACK for the order key — `parsePaymentOrderKey` prefers
+    // `external_reference`, which arrived present and valid. The import had
+    // everything it needed and still died, because `parseOk` validates the whole
+    // body before any caller reads a field.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 174034247387,
+        order_id: '2000018052464608', // ← quoted by ML; the field that broke the run
+        external_reference: '2000018052464608',
+        authorization_code: '301299',
+        api_version: '2',
+        transaction_amount: 1000.02,
+        total_paid_amount: 1000.02,
+        shipping_cost: 0,
+        coupon_amount: 0,
+        marketplace_fee: 0,
+        installments: 1,
+        status: 'approved',
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const payment = await api.getPayment(174034247387);
+    expect(payment.order_id).toBe(2000018052464608);
+    expect(typeof payment.order_id).toBe('number');
+    // Everything else on the body still parses exactly as it did before.
+    expect(payment.id).toBe(174034247387);
+    expect(payment.transaction_amount).toBe(1000.02);
+    expect(payment.external_reference).toBe('2000018052464608');
+  });
+
+  it('a schema failure names the offending field in the MESSAGE, not only in issues', async () => {
+    // ⚠️ The message is the only part that survives into the durable record. The
+    // notification pipeline persists `err.message` ALONE (`persistFailure`) and
+    // the sweep marks with `err.message` too, so a bare "formato inesperado" is
+    // exactly what made the #1087 parked notification undiagnosable. `issues`
+    // never reaches that document.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 1, transaction_amount: 'R$ 100,00' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPayment(1)).rejects.toThrow(/Campos inválidos: transaction_amount/);
+  });
+
+  it('the message dedups paths and never carries the response body (#1015)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 1,
+        fee_details: [{ amount: 'x' }, { amount: 'y' }],
+        payer: { email: 'buyer@example.com' },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPayment(1)).rejects.toMatchObject({
+      // Both bad entries share a path shape, but each carries its own index, so
+      // the dedup keeps them distinct without repeating a path.
+      message: expect.stringContaining('Campos inválidos:'),
+    });
+    const err = await api.getPayment(1).catch((e: unknown) => e as Error);
+    expect(err.message).not.toContain('buyer@example.com');
   });
 
   it('getPayment maps a 404 to an HTTP error', async () => {
@@ -1027,6 +1191,23 @@ describe('createMercadoLivreApi — User-Products family fan-out (#521)', () => 
     const api = createMercadoLivreApi(cfg(fetchMock));
     const found = await api.searchItemsByUserProduct(999, ['UPtin1']);
     expect(found.results).toEqual([]);
+  });
+
+  it('searchItemsByUserProduct sends status ONLY when a caller asks for it', async () => {
+    // The filter narrows a família to its live members (`resolveAnuncioUrl`), but
+    // the existing callers' request shape must stay byte-identical — a `status`
+    // that leaked into the publish orphan sweep's search would hide members it
+    // decides what to CLOSE from.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: ['MLB111'] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.searchItemsByUserProduct(999, ['UPtin1'], { limit: 1, offset: 0, status: 'active' });
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('status=active');
+
+    await api.searchItemsByUserProduct(999, ['UPtin1'], { limit: 50, offset: 0 });
+    expect(String(fetchMock.mock.calls[1]![0])).not.toContain('status=');
   });
 
   it('searchItemsByUserProduct maps a 500 to an HTTP error', async () => {

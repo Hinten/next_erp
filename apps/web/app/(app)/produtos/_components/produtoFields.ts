@@ -25,8 +25,19 @@ import { dimensaoRenderInput, pesoRenderInput } from './PesoField';
  */
 export const SECTION_MERCADO_LIVRE = 'Mercado Livre';
 
-/** Tab order for the Produto ObjectView — Variações before the media tabs. */
-export const PRODUTO_SECTIONS: string[] = [
+/**
+ * Tab order shared by every Produto screen, WITHOUT the Mercado Livre tab —
+ * Variações before the media tabs.
+ *
+ * ⚠️ Mercado Livre is deliberately not in here: it must stay the LAST tab on
+ * every produto screen, so each page appends `SECTION_MERCADO_LIVRE` itself
+ * after whatever screen-specific tabs it adds. A page-specific tab
+ * (`Modificações` on the edit screen) therefore slots in BETWEEN this list and
+ * Mercado Livre — never after it. Appending to `PRODUTO_SECTIONS` instead is
+ * what made the tab jump one position to the left the moment a produto was
+ * saved.
+ */
+export const PRODUTO_SECTIONS_BASE: string[] = [
   'Dados gerais',
   'Descrição',
   'Dimensões e peso',
@@ -39,6 +50,34 @@ export const PRODUTO_SECTIONS: string[] = [
   'Fotos',
   'Vídeos',
   'Anexos',
+];
+
+/**
+ * The edit-only Modificações tab, named once for the same reason as
+ * `SECTION_MERCADO_LIVRE`: the section list and the `modificacoes` field
+ * override must name the identical string, and a typo in either silently
+ * strands the tab (an empty panel, or a field grouped under a tab nobody
+ * renders).
+ */
+export const SECTION_MODIFICACOES = 'Modificações';
+
+/** Tab order for the create screen: the shared tabs, Mercado Livre last. */
+export const PRODUTO_SECTIONS: string[] = [...PRODUTO_SECTIONS_BASE, SECTION_MERCADO_LIVRE];
+
+/**
+ * Tab order for the edit screen: the shared tabs, then the edit-only
+ * Modificações tab, then Mercado Livre.
+ *
+ * ⚠️ Modificações slots in BEFORE Mercado Livre on purpose — Mercado Livre is
+ * the last tab on the create screen too, and appending here would shift it one
+ * position left the moment the produto is saved, which is exactly the bug this
+ * pairing exists to prevent. Lives here beside `PRODUTO_SECTIONS` so the two
+ * arms of the invariant sit in one file and `produtoFields.test.ts` can assert
+ * both.
+ */
+export const PRODUTO_SECTIONS_EDITAR: string[] = [
+  ...PRODUTO_SECTIONS_BASE,
+  SECTION_MODIFICACOES,
   SECTION_MERCADO_LIVRE,
 ];
 

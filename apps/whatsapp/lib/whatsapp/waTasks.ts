@@ -17,12 +17,14 @@
  *   - `WHATSAPP_TASKS_DISABLED=1` → `enqueue()` throws `WhatsappTasksDisabledError`;
  *     the receiver falls back to persisting the notification as `failed` so the
  *     reprocess sweep drains it (sweep-only mode — never a silent drop).
- *   - `WHATSAPP_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) → the
+ *   - `WHATSAPP_TASKS_REGION` (falls back to `FUNCTIONS_REGION`; no default, so
+ *     an unset value THROWS on the first enqueue) → the
  *     region the function + its queue live in. The region-qualified name is
  *     mandatory: without it the Admin SDK targets `us-central1` and the task
  *     silently drops. App Hosting / Cloud Run does NOT expose its region as an
  *     env var, so it must be configured.
  */
+import { requireRegion } from '@delfrance/core/region';
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
@@ -30,7 +32,10 @@ import { WHATSAPP_NOTIFICATION_QUEUE, type WhatsappNotificationPayload } from '.
 
 /** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
 function whatsappTasksRegion(): string {
-  return process.env.WHATSAPP_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5';
+  return requireRegion({
+    WHATSAPP_TASKS_REGION: process.env.WHATSAPP_TASKS_REGION,
+    FUNCTIONS_REGION: process.env.FUNCTIONS_REGION,
+  });
 }
 
 /**

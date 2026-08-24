@@ -24,10 +24,10 @@ import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collect
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { refMatchesIntegracao } from '@/lib/marketplace/linkRefs';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { reverificarAnuncio } from '@/lib/marketplace/reverificarAnuncio';
+import { naoDocId, refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
+import { reverificarAnuncio } from '@/lib/marketplace/anuncios/reverificarAnuncio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -53,10 +53,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   // TYPE-check, not just truthiness: a non-string that happens to be truthy
   // (`linkDocId: 1`) would sail past a `!value` guard and then throw deep inside
   // `.doc(id)` ("not a valid resource path") — a 500 for what is a client error.
-  const naoString = (v: unknown): boolean => typeof v !== 'string' || v === '';
-  if (naoString(body.integracaoId) || naoString(body.produtoId) || naoString(body.linkDocId)) {
+  // `naoDocId` also rejects a separator-bearing id, which the local check this
+  // replaced let through; see its docblock for the two shapes that reach `.doc()`.
+  if (naoDocId(body.integracaoId) || naoDocId(body.produtoId) || naoDocId(body.linkDocId)) {
     return NextResponse.json(
-      { error: 'integracaoId, produtoId e linkDocId são obrigatórios (string não vazia).' },
+      { error: 'integracaoId, produtoId e linkDocId são obrigatórios (id de documento válido).' },
       { status: 400 },
     );
   }
@@ -93,7 +94,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
     // The behaviour (record ML's real state, clear `errors`, stamp `closed` on
-    // a 404) lives in lib/marketplace/reverificarAnuncio.ts — shared verbatim
+    // a 404) lives in lib/marketplace/anuncios/reverificarAnuncio.ts — shared verbatim
     // with the manual stock push's re-arm pass (#819).
     return NextResponse.json(await reverificarAnuncio(db, integracaoId, target, api, nowMs));
   } catch (err) {

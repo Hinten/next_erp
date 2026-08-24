@@ -3,6 +3,7 @@ import type { ChannelContext } from '@delfrance/core/plugins';
 
 import {
   ClaimActionUnavailableError,
+  ClaimPartialRefundOfferError,
   acoesDoVendedor,
   respondIncidentMl,
 } from '../src/incidentRespond';
@@ -191,8 +192,29 @@ describe('respondIncidentMl — partial refund is a PERCENTAGE, not an amount', 
         refundAmount: 20000, // 200.00 — not on the list
         partial: true,
       }),
-    ).rejects.toBeInstanceOf(MercadoLivreValidationError);
+    ).rejects.toBeInstanceOf(ClaimPartialRefundOfferError);
     expect(a.partialRefundClaim).not.toHaveBeenCalled();
+  });
+
+  it('carries the offer list on the refusal, so the caller can re-render the picker', async () => {
+    // ⚠️ Its own class rather than MercadoLivreValidationError, because of how
+    // the two are MAPPED: `respond.ts` turns a validation error into a 502
+    // "ML returned an unexpected shape — upstream problem", which is the wrong
+    // sentence for the most operator-actionable state in the feature. The
+    // message already names the real percentages; `ofertas` lets the UI show
+    // them in place instead of sending the operator back to the start.
+    const a = api(['allow_partial_refund']);
+    const erro = await respondIncidentMl(a, CTX, String(CLAIM_ID), {
+      type: 'offer_refund',
+      refundAmount: 20000,
+      partial: true,
+    }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ClaimPartialRefundOfferError);
+    const off = (erro as ClaimPartialRefundOfferError).ofertas;
+    expect(off.available_offers.length).toBeGreaterThan(0);
+    // And the message names them, since that string reaches the operator verbatim.
+    expect((erro as Error).message).toMatch(/Dispon[ií]veis:/);
   });
 
   it('does not attempt a partial refund the seller cannot make', async () => {

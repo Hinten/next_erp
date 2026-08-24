@@ -32,6 +32,7 @@ export const motivoIncidenteMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'nome', direction: 'asc' }],
     limit: 50,
+    columns: ['nome', 'ativo'],
   },
 };
 
