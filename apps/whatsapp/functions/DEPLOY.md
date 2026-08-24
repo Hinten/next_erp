@@ -194,8 +194,30 @@ The legacy Flutter pipeline runs as two Cloud Run services (deployed via
   that this codebase's `processWhatsappNotification` replaces.
 
 **Only one of the two pipelines may be registered as Meta's webhook callback
-URL at a time** — and only one _can_ be, which is why the risk is a gap rather
-than an overlap.
+URL at a time.**
+
+⚠️ **Whether only one _can_ be is NOT established, and everything below depends
+on it.** A callback URL is configured per **Meta App**, and a WABA can have
+several **subscribed apps** — Meta delivers each inbound event to every subscribed
+app's own URL. This repo already encodes that plurality: `getSubscribedApps`
+returns an **array**, and `health.ts:286-294` maps over it and joins multiple
+names into the health row. The next paragraph's "(or unsubscribe its Meta App
+subscription)" reads as though the legacy pipeline has a subscription of its own.
+
+So there are two cases, with **opposite** orderings:
+
+- **(a) Same Meta App.** One callback URL, so the two can never both receive:
+  the risk is a **gap**, and the order below (repoint first, disable second) is
+  correct.
+- **(b) Legacy is a SECOND Meta App.** Both receive every message: the risk is a
+  genuine **overlap**, and repointing first double-processes. There the order
+  inverts — unsubscribe legacy, then subscribe this one, accepting a short gap
+  rather than a double-write.
+
+**Establish which before the window**: read the WABA's subscribed apps
+(`getSubscribedApps`, or the health row) and check whether the legacy Cloud Run
+service sits under the same app id as this backend. The rest of this section
+assumes **(a)**.
 
 ⚠️ **Correction (2026-08-21).** This used to add that "both sides create/append
 the same `Conversa`/`Mensagem` docs". **They cannot — there is no dual run**

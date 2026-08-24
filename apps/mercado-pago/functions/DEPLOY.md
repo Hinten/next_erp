@@ -185,20 +185,40 @@ running keeps acting on the seller's real MP account and burning its rate limit.
 ⚠️ **MP's legacy receiver is a forwarding ROUTER, not an ack-fast enqueuer — do
 not copy the ordering rule from the Mercado Livre runbook.**
 `distribuidorDeNotificacoesMercadoPago`
-(`.old/packages/pagamento/mercado_pago/lib/functions.dart:18-53`) resolves
+(`.old/packages/pagamento/mercado_pago/lib/functions.dart:18-58`) resolves
 `targetInstanceUid` against
 `GrupoEconomcioPrivateData.mercadoPagoInstanceIdMercadoPagoUrlMap`, POSTs the body
 to that per-instance URL, and **propagates the downstream status** (non-200 →
-`Response.internalServerError()`). Two consequences:
+`Response.internalServerError()`).
 
-- **The flip is probably a map edit, not a dashboard edit.** The URL MP is
-  registered against belongs to the router; which backend serves a given account
-  is the map entry. Confirm which layer holds the registration before the window.
-- **A disabled downstream is not silent here.** Unlike Mercado Livre and
-  WhatsApp — whose receivers ack 200 the moment they enqueue — this one answers
-  non-200 when the target is gone, so MP retries instead of dropping. That makes
-  the ordering less dangerous, not safe: MP still disables a webhook that keeps
-  failing.
+⚠️ **Nothing in that router ever acks a message it did not deliver.** Every miss
+path answers non-2xx, so MP retries rather than dropping — verified line by line:
+no `targetInstanceUid` → `404` (bar the `test.created` ping, which is a real 200
+for a real no-op); no matching `grupoEconomico` → `404`; a map entry missing for
+the instance → the `!` on line 43 throws, i.e. a 500. **MP therefore has no
+ack-and-drop hazard at all, on any path** — which is the whole reason its ordering
+differs from ML's and WhatsApp's.
+
+### ⚠️ Two possible flips — establish WHICH before the window
+
+The URL MP is registered against may be the router's or this backend's, and the
+two give **opposite** instructions. Executing the wrong one is an outage.
+
+**(a) The registration is in MP's dashboard, pointing at the router.** Then the
+flip is a **map edit**: repoint `mercadoPagoInstanceIdMercadoPagoUrlMap[instance]`
+at `https://<mp-backend>/api/webhooks/mercado-pago`, verify a live delivery
+arrives _through_ the router, and **leave
+`distribuidorDeNotificacoesMercadoPago` running** — it is still the delivery path.
+Only `updateGrupoEconomicoMercadoPago` (the map's writer) is disabled here.
+
+**(b) The registration points at this backend directly.** Then the map is
+irrelevant, and the MUST above applies as written: register the URL, then disable
+both legacy services.
+
+⚠️ **Under (a), obeying that MUST is an outage** — it takes down the router that
+is still delivering. The bolded instruction assumes (b); do not run it until the
+registration layer is confirmed. Tracked as an open question alongside the same
+one for Mercado Livre.
 
 Until the cutover the webhook URL still points at the legacy services and this
 backend's queue never runs, so there is no overlap either side of a _correctly
