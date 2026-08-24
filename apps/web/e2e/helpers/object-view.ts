@@ -220,11 +220,11 @@ export const SERVER_TRUTH_TIMEOUT = 10_000;
  * after a save + `goto`/reload, on a pristine form with nothing on screen worth
  * preserving. Do NOT reach for this mid-interaction.
  */
-export async function waitForServerSnapshot(page: Page): Promise<void> {
+export async function waitForServerSnapshot(page: Page): Promise<{ reloaded: boolean }> {
   const served = page.locator('form[data-snapshot-source="server"]');
   try {
     await served.waitFor({ state: 'attached', timeout: SERVER_TRUTH_TIMEOUT });
-    return;
+    return { reloaded: false };
   } catch (err) {
     // Only a timeout means "stalled, try a fresh connection". A strict-mode
     // violation (two ObjectViews on one page) or a closed page is a real
@@ -251,6 +251,35 @@ export async function waitForServerSnapshot(page: Page): Promise<void> {
     'server',
     { timeout: SERVER_TRUTH_TIMEOUT },
   );
+  return { reloaded: true };
+}
+
+/**
+ * Turn the reload's collateral damage into a failure that explains itself.
+ *
+ * The recovery above is a real navigation, so it resets whatever view state a
+ * reload cannot restore — an open tab, an expanded section, a modal. That makes
+ * the two helpers below conditionally navigating, which their names do not
+ * advertise: a call from inside a tab passes every run EXCEPT a stalled one, and
+ * then fails as a value mismatch on an element that is simply no longer
+ * rendered. Ambiguous failures on this exact assertion are what
+ * `data-snapshot-source` exists to end, so the stall path must not reintroduce
+ * one.
+ *
+ * Only ever runs when the reload actually happened, so the healthy path pays
+ * nothing.
+ */
+async function expectSurvivedReload(page: Page, label: string): Promise<void> {
+  if (await page.getByLabel(label, { exact: true }).count()) return;
+  throw new Error(
+    `"${label}" is not on the page after the server-snapshot reload.\n` +
+      'The snapshot stalled, so the helper reloaded to reset the watch-stream ' +
+      'backoff — which also reset any view state the caller had set up (an open ' +
+      'tab, an expanded section, a modal).\n' +
+      'Fix: call `waitForServerSnapshot(page)` explicitly BEFORE entering that ' +
+      'state, then assert with plain `expect(...)`. See ' +
+      'canais-whatsapp.vendas.e2e.spec.ts for that shape.',
+  );
 }
 
 /**
@@ -268,7 +297,8 @@ export async function expectFieldAfterReload(
   label: string,
   value: string | RegExp,
 ): Promise<void> {
-  await waitForServerSnapshot(page);
+  const { reloaded } = await waitForServerSnapshot(page);
+  if (reloaded) await expectSurvivedReload(page, label);
   await expect(page.getByLabel(label, { exact: true })).toHaveValue(value);
 }
 
@@ -278,6 +308,7 @@ export async function expectSwitchAfterReload(
   label: string,
   checked = true,
 ): Promise<void> {
-  await waitForServerSnapshot(page);
+  const { reloaded } = await waitForServerSnapshot(page);
+  if (reloaded) await expectSurvivedReload(page, label);
   await expect(page.getByLabel(label, { exact: true })).toBeChecked({ checked });
 }

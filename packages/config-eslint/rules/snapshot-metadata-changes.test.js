@@ -76,6 +76,59 @@ const KNOWN_LISTENER_FILE = 'packages/data/src/hooks/useSnapshot.ts';
 const CALL_RE = /(^|[^.\w])onSnapshot\(/g;
 
 /**
+ * Blank out comment and string spans, preserving both length and newlines so
+ * every index still lines up with the original source (line numbers below are
+ * computed from these indices).
+ *
+ * Two things need this. `onSnapshot(q, cb)` written inside a doc comment is not
+ * a call site and must not be flagged; and a string or comment sitting between
+ * two arguments must not be mistaken for one.
+ *
+ * ⚠️ Regex literals are NOT tracked. A regex containing an unbalanced quote or
+ * paren near a listener could confuse the scan. That is accepted because the two
+ * anchors below run this exact pipeline over the real file, so corruption that
+ * ate a genuine call site fails loudly rather than passing vacuously — which is
+ * the direction that matters.
+ */
+function blankCommentsAndStrings(source) {
+  const out = source.split('');
+  const n = source.length;
+  let i = 0;
+  const blank = (at) => {
+    if (source[at] !== '\n') out[at] = ' ';
+  };
+  while (i < n) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (c === '/' && next === '/') {
+      while (i < n && source[i] !== '\n') blank(i++);
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      blank(i++);
+      blank(i++);
+      while (i < n && !(source[i] === '*' && source[i + 1] === '/')) blank(i++);
+      if (i < n) {
+        blank(i++);
+        blank(i++);
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      i += 1; // keep the opening quote, so the span is still visibly a string
+      while (i < n && source[i] !== c) {
+        if (source[i] === '\\') blank(i++);
+        if (i < n) blank(i++);
+      }
+      i += 1;
+      continue;
+    }
+    i += 1;
+  }
+  return out.join('');
+}
+
+/**
  * Discovery only — a literal-string search, so no regex dialect is involved.
  * (`basic` mode would read `\\(` as a GROUP, not a paren, and fail outright.)
  * The precise per-call-site matching is `CALL_RE`, in JS, where the dialect is
@@ -86,52 +139,81 @@ function listenerFiles() {
 }
 
 /**
- * The options argument of an `onSnapshot(` call, as source text.
+ * The top-level arguments of the call whose `(` is at `parenIndex`, as source
+ * text — a bracket-depth scan splitting on depth-0 commas.
  *
- * Deliberately positional rather than "does this file mention the flag
- * anywhere": a file with two listeners where only one is configured is exactly
- * the bug this is for, and a file-level `includes()` would pass it. Prettier
- * formats every multi-line call one argument per line, so the argument that
- * matters is the second non-empty line after the opening paren; a single-line
- * call is read from the same line. Returns `null` when there is no second
- * argument at all.
+ * ⚠️ Deliberately NOT a per-line read. Prettier does put one argument per line,
+ * but it also BREAKS A LONG ARGUMENT across lines, and then the continuation
+ * lines look exactly like arguments. The ordinary shape
+ *
+ *   onSnapshot(
+ *     query(
+ *       collection(db, 'pedidos'),
+ *       where('estado', '==', ESTADO_PEDIDO.pago),
+ *     ),
+ *     { includeMetadataChanges: true },
+ *     (snap) => { ... },
+ *   );
+ *
+ * has `collection(db, 'pedidos'),` as its second LINE and
+ * `{ includeMetadataChanges: true }` as its second ARGUMENT. A line-based reader
+ * flags that call — telling a contributor who did exactly the right thing that
+ * their options argument is `collection(db, 'pedidos'),` and to add a flag they
+ * already added. It fails closed, so nothing ships broken, but a guard that
+ * misdirects is a guard someone eventually deletes.
  */
-function optionsArgument(source, callIndex) {
-  const afterParen = source.slice(source.indexOf('(', callIndex) + 1);
-  const [firstLine, ...rest] = afterParen.split('\n');
-  // Single-line call: `onSnapshot(ref, opts, cb)` — split what follows the paren.
-  if (firstLine.includes(')') || firstLine.split(',').length > 2) {
-    const parts = firstLine.split(',');
-    return parts.length > 1 ? (parts[1]?.trim() ?? null) : null;
+function topLevelArgs(source, parenIndex) {
+  const args = [];
+  let depth = 0;
+  let start = parenIndex + 1;
+  for (let i = parenIndex; i < source.length; i += 1) {
+    const c = source[i];
+    if (c === '(' || c === '[' || c === '{') depth += 1;
+    else if (c === ')' || c === ']' || c === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        args.push(source.slice(start, i));
+        return args.map((a) => a.trim());
+      }
+    } else if (c === ',' && depth === 1) {
+      args.push(source.slice(start, i));
+      start = i + 1;
+    }
   }
-  // Comment lines are not arguments. A call whose options argument carries an
-  // explanation above it — which is the shape this guard actively wants, since
-  // the whole point is that the choice be visible — would otherwise have its
-  // own comment counted as the argument and be reported as an offender.
-  //
-  // `args[1]`, not `args[0]`: index 0 is the reference/query. Getting that wrong
-  // reports every correctly-configured call, which at least fails loudly — the
-  // anti-vacuity anchors above are what stop the mirror-image mistake (a parser
-  // that finds nothing) from passing silently.
-  const args = rest
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('//') && !l.startsWith('*') && !l.startsWith('/*'));
-  return args[1] ?? null;
+  return args.map((a) => a.trim()); // unbalanced source — report what we have
+}
+
+/** The options argument: index 1, after the reference/query at index 0. */
+function optionsArgument(source, callIndex) {
+  return topLevelArgs(source, source.indexOf('(', callIndex))[1] ?? null;
+}
+
+/** Whether an options argument declares the flag, directly or via the constant. */
+function declaresIntent(arg) {
+  return arg !== null && (arg.includes('includeMetadataChanges') || /LISTEN_OPTIONS/.test(arg));
 }
 
 function unconfiguredCalls(relPath) {
-  const source = readFileSync(resolve(REPO_ROOT, relPath), 'utf8');
+  return scanSource(readFileSync(resolve(REPO_ROOT, relPath), 'utf8'), relPath);
+}
+
+/**
+ * Split from the file read so the fixture tests below can drive the parser
+ * directly. The repo-state anchors prove it runs over the real tree; the
+ * fixtures prove it reads the shapes correctly. Neither substitutes for the
+ * other — the line-based reader this replaced passed every anchor.
+ */
+function scanSource(raw, relPath) {
+  // Scan the BLANKED source throughout: it keeps every index, so the line
+  // numbers still point at the real file, while a call mentioned only in prose
+  // is no longer a call.
+  const source = blankCommentsAndStrings(raw);
   const offenders = [];
   for (const match of source.matchAll(CALL_RE)) {
     const arg = optionsArgument(source, match.index);
-    // An options argument is anything naming the flag, directly or through the
-    // shared constant. A callback (`(snap` / `snap =>`) means none was passed.
-    const configured =
-      arg !== null && (arg.includes('includeMetadataChanges') || /LISTEN_OPTIONS/.test(arg));
-    if (!configured) {
-      const line = source.slice(0, match.index).split('\n').length;
-      offenders.push(`${relPath}:${line} — second argument is \`${arg ?? '<none>'}\``);
-    }
+    if (declaresIntent(arg)) continue;
+    const line = source.slice(0, match.index).split('\n').length;
+    offenders.push(`${relPath}:${line} — second argument is \`${arg ?? '<none>'}\``);
   }
   return offenders;
 }
@@ -154,7 +236,11 @@ describe('client onSnapshot listeners declare their metadata-change behaviour', 
     // Second anchor, and the one that matters most: the assertion below reports
     // OFFENDERS, so a parser that silently found zero calls would pass it. This
     // proves the regex still matches real source.
-    const source = readFileSync(resolve(REPO_ROOT, KNOWN_LISTENER_FILE), 'utf8');
+    // Through `blankCommentsAndStrings`, i.e. the pipeline that actually runs —
+    // otherwise blanking that ate a real call site would pass this anchor.
+    const source = blankCommentsAndStrings(
+      readFileSync(resolve(REPO_ROOT, KNOWN_LISTENER_FILE), 'utf8'),
+    );
     const found = [...source.matchAll(CALL_RE)];
     expect(
       found.length,
@@ -180,5 +266,65 @@ describe('client onSnapshot listeners declare their metadata-change behaviour', 
         'choice is visible at the call site, not that one answer is always right.',
       ].join('\n'),
     ).toEqual([]);
+  });
+});
+
+describe('the call-site parser reads the options ARGUMENT, not the second LINE', () => {
+  // Regression fixtures for shapes Prettier really produces. The first is the
+  // one the line-based reader got wrong: it flagged a correctly configured call.
+  const flagged = (src) => scanSource(src, 'fixture.ts').length > 0;
+
+  it('accepts a configured call whose FIRST argument spans several lines', () => {
+    expect(
+      flagged(`const unsub = onSnapshot(
+  query(
+    collection(db, 'pedidos'),
+    where('estado', '==', ESTADO_PEDIDO.pago),
+  ),
+  { includeMetadataChanges: true },
+  (snap) => handle(snap),
+);`),
+      'A continuation line of argument 0 must not be read as the options argument.',
+    ).toBe(false);
+  });
+
+  it('still flags that same shape when the options argument is missing', () => {
+    // The mirror, proving the fix did not just stop flagging multi-line calls.
+    expect(
+      flagged(`const unsub = onSnapshot(
+  query(
+    collection(db, 'pedidos'),
+    where('estado', '==', ESTADO_PEDIDO.pago),
+  ),
+  (snap) => handle(snap),
+);`),
+    ).toBe(true);
+  });
+
+  it('accepts a configured single-line call', () => {
+    expect(flagged(`onSnapshot(ref, { includeMetadataChanges: true }, cb);`)).toBe(false);
+  });
+
+  it('flags a single-line call with no options argument', () => {
+    expect(flagged(`onSnapshot(ref, cb);`)).toBe(true);
+  });
+
+  it('accepts the explicit opt-out', () => {
+    // The point is that the choice is visible, not that one answer is right.
+    expect(flagged(`onSnapshot(ref, { includeMetadataChanges: false }, cb);`)).toBe(false);
+  });
+
+  it('ignores a call written inside a comment', () => {
+    expect(
+      flagged(`/**
+ * Do not write onSnapshot(q, cb) and forget the options argument.
+ */
+onSnapshot(ref, { includeMetadataChanges: true }, cb);`),
+      'Prose describing a call is not a call site.',
+    ).toBe(false);
+  });
+
+  it('ignores a call written inside a string', () => {
+    expect(flagged(`const msg = 'call onSnapshot(q, cb) carefully';`)).toBe(false);
   });
 });
