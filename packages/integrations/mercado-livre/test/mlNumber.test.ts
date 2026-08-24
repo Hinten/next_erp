@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { mlInt, mlNumber } from '../src/mlNumber';
+import { mlInt, mlNumber, parseMlDecimal } from '../src/mlNumber';
 import {
   mlClaimSchema,
   mlPaymentSchema,
@@ -185,5 +185,53 @@ describe('a stringified REQUIRED id no longer kills a whole resource parse', () 
   ])('%s', (_label, schema, body) => {
     const result = schema.safeParse(body);
     expect(result.success).toBe(true);
+  });
+});
+
+/**
+ * `parseMlDecimal` is the scalar half, and the ONE place the string rule lives —
+ * `mlNumber()`/`mlInt()` and `orderMLWire.asNumber` both call it rather than
+ * keeping a regex of their own (#810). It has no inner Zod schema behind it, so
+ * everything the schemas get for free from `z.number()` has to be closed here.
+ */
+describe('parseMlDecimal — the shared scalar rule', () => {
+  it.each([
+    ['0', 0],
+    ['-3', -3],
+    ['+3', 3],
+    ['1.5', 1.5],
+    ['  2.50  ', 2.5],
+    ['0.500000', 0.5],
+    ['2000018052464608', 2000018052464608],
+  ])('reads %s as %s', (input, expected) => {
+    expect(parseMlDecimal(input)).toBe(expected);
+  });
+
+  it.each([
+    ['', 'z.coerce.number() reads it as 0'],
+    ['   ', 'z.coerce.number() reads it as 0'],
+    ['abc', 'not a number'],
+    ['1,50', 'a locale parse would say 1.5 OR 150'],
+    ['0x1F', 'bare Number() says 31'],
+    ['1e3', 'bare Number() says 1000'],
+    ['R$ 100,00', 'not a number'],
+    ['3.', 'no serializer emits this'],
+    ['9007199254740993', 'silently rounds to ...92'],
+  ])('refuses %s — %s', (input) => {
+    expect(parseMlDecimal(input)).toBe(null);
+  });
+
+  it('returns null for every non-string, so a plain caller can trust the type', () => {
+    for (const v of [1, null, undefined, true, [], {}]) expect(parseMlDecimal(v)).toBe(null);
+  });
+
+  it('⚠️ refuses BOTH overflow shapes, not just the integer one', () => {
+    // The integer run is caught by the safe-integer branch. The DECIMAL one skips
+    // that branch entirely and is `Infinity` — `z.number()` would have refused it
+    // for the schemas, but `orderMLWire` has no schema behind this call.
+    expect(Number('9'.repeat(400))).toBe(Infinity);
+    expect(Number(`${'9'.repeat(400)}.5`)).toBe(Infinity);
+    expect(parseMlDecimal('9'.repeat(400))).toBe(null);
+    expect(parseMlDecimal(`${'9'.repeat(400)}.5`)).toBe(null);
   });
 });

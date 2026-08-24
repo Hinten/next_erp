@@ -73,14 +73,23 @@ import { z } from 'zod';
 const DECIMAL_STRING = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
 
 /**
- * The shared preprocess step. Returns a `number` when — and only when — the input
- * is a string that means exactly one number; otherwise returns the input VERBATIM
- * so the wrapped `z.number()` produces the ordinary `invalid_type`.
+ * A Mercado Livre numeric string as a number, or `null` when it is not one.
+ *
+ * ⚠️ **The one place this rule is written.** Anything else in this repo that has
+ * to read a quoted ML number — the Zod builders below, and `asNumber` in
+ * `apps/mercado-livre`'s `orderMLWire.ts`, which rebuilds the pedido's `orderML`
+ * mirror off the raw order-embedded payment — calls THIS, rather than keeping its
+ * own regex. That is the whole lesson of #810: Mercado Livre's private `asInt`
+ * accepted only `typeof v === 'number'` while its sibling one import away had
+ * always accepted numeric strings too, and side by side they could not have
+ * drifted. A second copy of the rule here would repeat it exactly.
+ *
+ * Returns `null` — never `0` — for anything it cannot read.
  */
-function toNumberish(v: unknown): unknown {
-  if (typeof v !== 'string') return v; // number/null/undefined/boolean pass straight through
+export function parseMlDecimal(v: unknown): number | null {
+  if (typeof v !== 'string') return null;
   const t = v.trim();
-  if (!DECIMAL_STRING.test(t)) return v;
+  if (!DECIMAL_STRING.test(t)) return null;
   const n = Number(t);
   // ⚠️ Load-bearing, and the one hole a decimal regex does not already close.
   // `Number('9007199254740993')` is 9007199254740992 — silently rounded — and
@@ -92,12 +101,29 @@ function toNumberish(v: unknown): unknown {
   //
   // Integer strings only: no money amount approaches 2^53, and `'0.500000'` must
   // not be rejected for having a fractional part.
-  //
-  // No `Number.isFinite` guard is needed alongside it. A 400-digit run of `9`
-  // matches the regex and overflows to `Infinity`, but `z.number()` REJECTS
-  // `Infinity` (and `NaN`), so the inner schema already closes that one.
-  if (!t.includes('.') && !Number.isSafeInteger(n)) return v;
-  return n;
+  if (!t.includes('.') && !Number.isSafeInteger(n)) return null;
+  // ⚠️ And the DECIMAL half of the same overflow. `'9'.repeat(400)` is caught
+  // above (no dot, not a safe integer), but `'9'.repeat(400) + '.5'` skips that
+  // branch and is `Infinity`. `z.number()` rejects `Infinity`, so the Zod
+  // builders below would have been fine either way — but this function is also
+  // called from a plain, non-Zod caller (`orderMLWire`), which has no inner
+  // schema to catch it. Relying on the consumer is precisely the assumption that
+  // breaks the moment a second one appears.
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The shared preprocess step. Returns a `number` when — and only when — the input
+ * is a string that means exactly one number; otherwise returns the input VERBATIM
+ * so the wrapped `z.number()` produces the ordinary `invalid_type` at the right
+ * `path`.
+ *
+ * ⚠️ `??`, not `||`: `parseMlDecimal('0')` is `0`, which is falsy and a perfectly
+ * good amount.
+ */
+function toNumberish(v: unknown): unknown {
+  if (typeof v !== 'string') return v; // number/null/undefined/boolean pass straight through
+  return parseMlDecimal(v) ?? v;
 }
 
 /** A JSON number, or a decimal string that unambiguously means one. */
