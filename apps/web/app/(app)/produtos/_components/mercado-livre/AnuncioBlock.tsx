@@ -8,7 +8,7 @@ import type { StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
 import { ListingForm } from './ListingForm';
 import type { ListingSaveFn } from './ListingForm';
-import { ListingStatusStrip } from './ListingStatusStrip';
+import { ListingStatusStrip, type MotivoReverificacao } from './ListingStatusStrip';
 
 /**
  * ONE Mercado Livre anúncio: its live status, the last stock-push outcome, the
@@ -52,7 +52,8 @@ export interface AnuncioBlockProps {
   /** True while ANY listing's re-check is in flight — the action is single-flight. */
   recheckBusy: boolean;
   abrindo: boolean;
-  onReverificar: () => void;
+  /** Re-read this listing from ML; the reason travels up to pick the toast. */
+  onReverificar: (motivo: MotivoReverificacao) => void;
   /** Undefined with no client: reading a public URL still needs one. */
   onAbrirAnuncio?: () => void;
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;

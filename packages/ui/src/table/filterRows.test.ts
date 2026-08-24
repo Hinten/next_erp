@@ -92,10 +92,11 @@ describe('applyColumnFilters', () => {
     expect(result[0]!.data.freteInicial?.estado).toBe('entregue');
   });
 
-  // `array-contains` is not reachable from the built-in ColumnFilter UI (it only
-  // emits contains/eq/lt/lte/gt/gte), but `buildPipeline` can wire it by hand as
-  // an extraFilter — and then the client-side fallback has to agree with what the
-  // server pipeline would have returned.
+  // Neither array op is reachable from the built-in ColumnFilter UI (it only
+  // emits contains/eq/lt/lte/gt/gte), but a virtual column's `renderFilter` can
+  // emit them and `buildPipeline` can wire them by hand as an extraFilter — and
+  // then the client-side fallback has to agree with what the server pipeline
+  // would have returned.
   it('array-contains matches a row whose array holds the value', () => {
     const result = applyColumnFilters(
       tagRows({ tags: ['novo', 'promo'] }, { tags: ['usado'] }, { tags: [] }, {}),
@@ -111,16 +112,38 @@ describe('applyColumnFilters', () => {
     expect(result).toHaveLength(0);
   });
 
-  it('array-contains-any throws instead of silently returning the wrong rows', () => {
-    // `ColumnFilterValue.value` is a scalar, so the candidate LIST this op needs
-    // can never arrive. Degrading to a one-candidate `array-contains` would look
-    // like it worked; `filterExpr` throws on the same shape mismatch and so does
-    // this fallback.
-    expect(() =>
-      applyColumnFilters(tagRows({ tags: ['promo'] }), {
-        tags: { op: 'array-contains-any', value: 'promo' },
-      }),
-    ).toThrow(/array-contains-any/);
+  it('array-contains-any matches a row holding ANY of the candidates', () => {
+    const result = applyColumnFilters(
+      tagRows(
+        { tags: ['novo', 'promo'] },
+        { tags: ['usado'] },
+        { tags: ['liquida'] },
+        { tags: [] },
+        {},
+      ),
+      { tags: { op: 'array-contains-any', value: ['promo', 'liquida'] } },
+    );
+    // Both matching rows, and ONLY those — a candidate list must not degrade to
+    // its first element (that would drop `liquida`) nor match everything.
+    expect(result.map((r) => r.data.tags)).toEqual([['novo', 'promo'], ['liquida']]);
+  });
+
+  it('array-contains-any accepts a bare scalar as a one-candidate list', () => {
+    const result = applyColumnFilters(tagRows({ tags: ['promo'] }, { tags: ['usado'] }), {
+      tags: { op: 'array-contains-any', value: 'promo' },
+    });
+    expect(result.map((r) => r.data.tags)).toEqual([['promo']]);
+  });
+
+  it('array-contains-any with an empty candidate list matches nothing', () => {
+    // An empty list means "no rows" — TableView short-circuits before querying
+    // and `buildPipeline` throws on it, so this path should only ever be reached
+    // by a caller that skipped both. Matching everything would be the dangerous
+    // disagreement: the server would have returned zero rows.
+    const result = applyColumnFilters(tagRows({ tags: ['promo'] }, { tags: ['usado'] }), {
+      tags: { op: 'array-contains-any', value: [] },
+    });
+    expect(result).toHaveLength(0);
   });
 
   it('AND-combines multiple column filters', () => {

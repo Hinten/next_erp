@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { MlModeracao } from '@delfrance/schemas';
+import type { MlModeracao, ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { linkFixture } from './linkFixture';
 import {
   SECAO_LABELS,
   corDaModeracao,
+  moderacaoNaoConsultada,
   moderacoesDoLink,
   moderacoesPorCampo,
   secaoLabel,
@@ -224,5 +225,74 @@ describe('moderacoesPorCampo', () => {
       moderacoes: [moderacaoFixture({ secoes: ['title', 'title'], motivo: 'Título ruim' })],
     };
     expect(moderacoesPorCampo(link)).toEqual({ title: ['Título ruim'] });
+  });
+});
+
+/**
+ * The third value of `moderacoes` (#1239): ML says this listing is moderated and
+ * nobody ever fetched the reason. Before this the strip showed
+ * `paused · moderation_penalty` with no alert and no hint one existed.
+ */
+describe('moderacaoNaoConsultada', () => {
+  const MODERADO: Partial<ProdutoMercadoLivreLink> = {
+    status: 'paused',
+    sub_status: ['moderation_penalty'],
+  };
+
+  it('fires when ML reports a moderation and the field was never populated', () => {
+    expect(moderacaoNaoConsultada(linkFixture({ ...MODERADO, moderacoes: null }))).toBe(true);
+  });
+
+  it('fires on under_review, where the STATUS alone is the moderation signal', () => {
+    expect(
+      moderacaoNaoConsultada(
+        linkFixture({ status: 'under_review', sub_status: null, moderacoes: null }),
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * ⚠️ THE distinction this function exists for. A stored `[]` is a real answer
+   * from ML — "asked, reported none" — and reading emptiness instead of nullness
+   * would put a "not consulted" notice on a listing ML has already cleared.
+   */
+  it('stays silent for an ASKED-and-none, even while the status still says moderated', () => {
+    expect(moderacaoNaoConsultada(linkFixture({ ...MODERADO, moderacoes: [] }))).toBe(false);
+  });
+
+  /**
+   * ⚠️ The same rule one step further in. These entries carry nothing, so
+   * `moderacoesDoLink` drops them to `[]` — but the ARRAY still means ML was
+   * asked, so the notice must not fire. Reading `moderacoesDoLink(...).length`
+   * here would get this wrong while looking right.
+   */
+  it('stays silent for content-empty entries — the array itself means ML was asked', () => {
+    const vazia = moderacaoFixture({ nome: null, motivo: null, remedio: null });
+    const link = linkFixture({ ...MODERADO, moderacoes: [vazia] });
+    expect(moderacoesDoLink(link)).toEqual([]);
+    expect(moderacaoNaoConsultada(link)).toBe(false);
+  });
+
+  it('stays silent once a real moderação is stored — the alert takes over', () => {
+    expect(
+      moderacaoNaoConsultada(linkFixture({ ...MODERADO, moderacoes: [moderacaoFixture()] })),
+    ).toBe(false);
+  });
+
+  /**
+   * ⚠️ Why the status predicate is not optional. `null` is also the resting
+   * state of every legacy row and of every link a publish, stock or price send
+   * created (#1252) — all healthy. Gating on `null` alone would warn about
+   * listings with nothing wrong with them.
+   */
+  it('stays silent on a HEALTHY listing whose field was simply never populated', () => {
+    expect(
+      moderacaoNaoConsultada(linkFixture({ status: 'active', sub_status: null, moderacoes: null })),
+    ).toBe(false);
+    expect(
+      moderacaoNaoConsultada(
+        linkFixture({ status: 'paused', sub_status: ['out_of_stock'], moderacoes: null }),
+      ),
+    ).toBe(false);
   });
 });

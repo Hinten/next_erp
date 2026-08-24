@@ -33,6 +33,12 @@ export function linkFixture(over: Partial<ProdutoMercadoLivreLink> = {}): Produt
     video_id: null,
     attributes: null,
     errors: null,
+    // ⚠️ Spelled out rather than left unset. `undefined` and `null` behave
+    // identically through every `!= null` read, but the field is load-bearing
+    // since #1239 — `null` means "never asked", distinct from `[]` — and a
+    // fixture that omits it invites the reader to think the distinction is not
+    // being exercised.
+    moderacoes: null,
     ultimaModificacao: 1_700_000_000_000,
     dataCadastro: 1_690_000_000_000,
     ...over,

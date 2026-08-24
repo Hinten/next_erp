@@ -58,9 +58,12 @@ cross-theme edges this layout exists to expose. Same convention as
 - **`importacao/ → anuncios/moderacoes.ts`** (#1087). One-directional. The
   importer is the third writer of the link doc's `moderacoes`, beside the `items`
   sync and `reverificarAnuncio`, and it deliberately shares their module rather
-  than restating the gate, the `-ITM` reference and the 404-is-data narrow — the
-  three places those could drift. `moderacoes.ts` lives in `anuncios/` because
-  listing lifecycle is its subject; the import merely reads it.
+  than restating the `-ITM` reference and the 404-is-data narrow — the places
+  those could drift. `moderacoes.ts` lives in `anuncios/` because listing
+  lifecycle is its subject; the import merely reads it. ⚠️ The **gate** (_when_ to
+  ask) is no longer part of this edge: `precisaConsultarModeracao` moved to
+  `@delfrance/schemas` in #1239 so `apps/web` could reach it, and all three
+  writers import it from there.
 
 ## Paths that are load-bearing outside this folder
 

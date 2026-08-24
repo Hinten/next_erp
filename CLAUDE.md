@@ -29,8 +29,11 @@ Five rules you must not break without reading it first:
    not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
-   unique repo-wide. The pinnable ones are `E2E gate (cadastros|vendas|emulator)`,
-   `CI gate (nfe|freight|mercado-livre|storage|rules)` and `lint-typecheck-test`.
+   unique repo-wide. The thirteen pinnable ones are
+   `E2E gate (cadastros|vendas|emulator)`,
+   `CI gate (nfe|freight|mercado-livre|storage|rules)` and — since `ci.yml` split
+   its single `lint-typecheck-test` job into five concurrent ones —
+   `CI typecheck`, `CI lint`, `CI format check`, `CI test`, `CI build`.
 3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
    downstream job makes it run even after its upstream failed. Let `needs:` carry
    the skip instead.
@@ -462,11 +465,29 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
   next install. Do not bump it with `pnpm add` — under `catalogMode: strict`
   that rewrites the spec back to `catalog:`, the exact string that blocks the
-  deploy. **`packageManager` is the sole authority for pnpm** — corepack
+  deploy. **`packageManager` is the sole authority for pnpm *in CI*** — corepack
   honours it over any activated default, so CI runs only `corepack enable`
   and never pins a version. Do not re-add a `corepack prepare pnpm@x.y.z`:
   it is silently overridden, which is exactly how the workflows drifted to
-  declaring a version they never used (#612).
+  declaring a version they never used (#612). ⚠️ **App Hosting does NOT read
+  it.** `google.nodejs.pnpm`'s `detectPNPMVersion` gives **`engines.pnpm`
+  precedence over `packageManager`**, and falls back to a pinned/`latest`
+  version only when BOTH are empty — so CI and the cloud resolve pnpm through
+  *different fields*, and `engines.pnpm` must be an **exact** version **equal
+  to** `packageManager`'s, never a range. Same failure class as the `next` pin
+  above: no lockfile reaches the cloud, so a range is resolved against the npm
+  registry at DEPLOY time to the highest published match — which includes a
+  version published under a **non-`latest` dist-tag whose GitHub release does
+  not exist yet**. On 2026-08-24 `>=11.0.0` resolved to `11.24.0` (dist-tag
+  `next-11`; npm `latest` was `11.23.0`) and the staging deploy died fetching
+  `pnpm-linux-x64.tar.gz` — **HTTP 404**, inside the pnpm buildpack, before a
+  line of app code was built. Nothing in the repo had changed, and nothing
+  changes when it heals: the coin flip belongs to pnpm's publish schedule.
+  Guarded by `packages/config-eslint/rules/apphosting-pnpm-pinned.test.js`.
+  ⚠️ `engines.node` deliberately stays a **range** — pnpm hard-fails an install
+  outright (`ERR_PNPM_UNSUPPORTED_ENGINE`) when the running version does not
+  satisfy `engines`, and the deployed runtime comes from
+  `GOOGLE_RUNTIME_VERSION` (24.19.0 today), not from that field.
 - **Turbo is the only test aggregator — there is no root vitest config.** Each
   workspace owns a `vitest.config.ts` and a `test` script; `pnpm test`
   (= `turbo run test`) fans out across them with caching, and `ci.yml` filters

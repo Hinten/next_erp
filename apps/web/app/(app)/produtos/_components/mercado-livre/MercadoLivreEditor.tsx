@@ -43,6 +43,7 @@ import {
 } from '@/lib/mercado-livre/listingSaveOutcome';
 import type { ListingSaveFn } from './ListingForm';
 import { ContaPanel } from './ContaPanel';
+import type { MotivoReverificacao } from './ListingStatusStrip';
 import { ContaTabs } from './ContaTabs';
 import { NovoAnuncioModal } from './NovoAnuncioModal';
 
@@ -563,25 +564,51 @@ export function MercadoLivreEditor({
   }
 
   /**
-   * Re-read ONE listing from ML and record its real state (#781). The stock
-   * sender stops sending to a listing stamped `estado 'E'` — it writes that only
-   * after ML confirmed the anúncio is healthy, so the payload was at fault. An
-   * `items` webhook normally clears it, but a listing nobody touches never fires
-   * one, and this is the manual way out. The live `useSnapshot` above repaints
-   * the row as soon as the server write lands.
+   * Re-read ONE listing from ML and record its real state. The live `useSnapshot`
+   * above repaints the row as soon as the server write lands — which is this
+   * handler's entire feedback model, since the route returns the new state but
+   * never the `moderacoes` it also writes.
+   *
+   * ⚠️ TWO entry points, hence `motivo`; the branch is on the toast, not the
+   * call, because both want the same re-read.
+   *  - `'latch'` (#781) — the stock escape hatch. The stock sender stops sending
+   *    to a listing stamped `estado 'E'`, and writes that only after ML confirmed
+   *    the anúncio is healthy, so the payload was at fault. An `items` webhook
+   *    normally clears it, but a listing nobody touches never fires one, and this
+   *    is the manual way out.
+   *  - `'moderacao'` (#1239) — "Consultar motivo" in the not-consulted notice.
+   *    Nothing here is about stock: the listing may be `active` the whole time.
    */
-  async function handleReverificar(integracaoId: string, linkDocId: string) {
+  async function handleReverificar(
+    integracaoId: string,
+    linkDocId: string,
+    motivo: MotivoReverificacao,
+  ) {
     if (!client) return;
     setRechecking(linkDocId);
     try {
       const result = await client.reverificarAnuncio({ integracaoId, produtoId, linkDocId });
       notifications.show({
-        color: result.enviavel ? 'green' : 'yellow',
+        // ⚠️ The two entry points ask different questions, so they get different
+        // answers (#1239). Someone who pressed "Consultar motivo" wants ML's
+        // moderation reason; telling them the stock sweep resumed answers
+        // something they did not ask, and on an `active` `poor_quality_thumbnail`
+        // listing — whose stock was never stopped — it is actively misleading.
+        //
+        // ⚠️ The moderation message stays vague about WHAT ML said because it has
+        // to: `reverificarAnuncio` answers `{estado, status, subStatus, enviavel}`
+        // and no `moderacoes`. The route does write the field, so the real answer
+        // arrives through the live `useSnapshot` repainting the strip — which is
+        // this handler's whole feedback model anyway.
+        color: motivo === 'moderacao' ? 'blue' : result.enviavel ? 'green' : 'yellow',
         title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
-        message: result.enviavel
-          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
-            'Enviar estoque para enviar agora.'
-          : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
+        message:
+          motivo === 'moderacao'
+            ? 'Se o Mercado Livre informou um motivo, ele aparece abaixo.'
+            : result.enviavel
+              ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
+                'Enviar estoque para enviar agora.'
+              : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
       });
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {

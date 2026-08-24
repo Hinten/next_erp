@@ -2,11 +2,10 @@
 
 import { useMemo } from 'react';
 import { Select } from '@mantine/core';
-import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { type Firestore, getDocs } from 'firebase/firestore';
-import { buildQuery, orderByField } from '@delfrance/data';
+import { type Firestore } from 'firebase/firestore';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
+import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 
 export interface IntegracaoPickerProps {
@@ -28,28 +27,9 @@ export function IntegracaoPicker({
   disabled,
   error,
 }: IntegracaoPickerProps) {
-  const query = useQuery({
-    queryKey: ['integracoes'],
-    queryFn: async () => {
-      const base = integracaoCollection.ref(db, {});
-      const q = buildQuery(base, [orderByField('nome')]);
-      try {
-        const snap = await getDocs(q);
-        return snap.docs.map((d) => ({
-          id: d.id,
-          ref: d.ref,
-          data: d.data(),
-        }));
-      } catch (err) {
-        if (err instanceof FirebaseError) {
-          throw err;
-        }
-        throw err;
-      }
-    },
-  });
-
-  const rows = useMemo(() => query.data ?? [], [query.data]);
+  // The SHARED `['integracoes']` read — see `useIntegracoes`. It must not be
+  // re-issued here under the same key with a different row shape.
+  const { rows, query } = useIntegracoes(db);
 
   const currentId = useMemo(() => {
     const r = dereferenceOuterRef(db, value);
