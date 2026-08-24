@@ -353,3 +353,71 @@ describe('ReclamacaoMlPanel — review findings on #1228', () => {
     expect(screen.queryByText('claim')).toBeNull();
   });
 });
+
+describe('ReclamacaoMlPanel — review findings on #1230', () => {
+  const OFERTAS = {
+    currency_id: 'BRL',
+    available_offers: [{ amount: 149, percentage: 50 }],
+    recommendations: [],
+    restrictions: [],
+  };
+
+  async function abrirPainel(ofertasParciais: unknown) {
+    h.reclamacaoEstado.mockResolvedValue({
+      ...ESTADO,
+      acoesDisponiveis: ['allow_partial_refund'],
+      ofertasParciais,
+    });
+    abrir();
+    await waitFor(() => expect(screen.getByText(/Ações disponíveis/)).toBeTruthy());
+  }
+
+  it('FORGETS the choice and the acknowledgement across close/reopen', async () => {
+    // ⚠️⚠️ The bug that defeated layers 2 and 3. The modal was mounted
+    // unconditionally, so Mantine's `opened` toggled the overlay while the
+    // component kept its state — cancel and reopen restored both the selection
+    // AND the ack, arming an irreversible refund with one click, under a consent
+    // given in an earlier session of the dialog.
+    await abrirPainel(OFERTAS);
+    fireEvent.click(screen.getByRole('button', { name: 'Reembolso parcial…' }));
+    fireEvent.click(await screen.findByRole('radio', { name: /R\$\s?149,00/ }));
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(
+      (screen.getByRole('button', { name: 'Confirmar reembolso parcial' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reembolso parcial…' }));
+
+    // Nothing chosen, so the acknowledgement is not even rendered — it only
+    // appears once an offer is selected. Stronger than "unticked": there is no
+    // consent on screen to inherit.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Confirmar reembolso parcial' })).toBeTruthy(),
+    );
+    expect(screen.queryByRole('radio', { checked: true })).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'Confirmar reembolso parcial' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it('offers no partial-refund BUTTON when ML returned no offers, and says so as a badge', async () => {
+    // ⚠️ The comment claimed the button needed offers; the condition only tested
+    // the verb, so the operator got a button whose modal said "no partial refund
+    // available" — the dead end it claimed to prevent. And the verb must still
+    // appear, or the panel silently stops reporting what ML offers.
+    await abrirPainel({ ...OFERTAS, available_offers: [] });
+    expect(screen.queryByRole('button', { name: 'Reembolso parcial…' })).toBeNull();
+    expect(screen.getByText('Reembolso parcial…')).toBeTruthy(); // the badge
+  });
+
+  it('shows the button, and NOT a duplicate badge, when offers exist', async () => {
+    // The positive control for the pair above.
+    await abrirPainel(OFERTAS);
+    expect(screen.getByRole('button', { name: 'Reembolso parcial…' })).toBeTruthy();
+    expect(screen.getAllByText('Reembolso parcial…')).toHaveLength(1);
+  });
+});

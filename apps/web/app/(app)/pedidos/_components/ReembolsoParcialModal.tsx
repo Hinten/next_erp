@@ -113,7 +113,27 @@ export function ReembolsoParcialModal({
   const selecionada = opcoes.find((o) => String(o.percentage) === escolha) ?? null;
   const valorMinor = selecionada?.amount != null ? centavosDeReais(selecionada.amount) : null;
 
-  const bloqueado = selecionada == null || valorMinor == null || !ciente || carregando || enviando;
+  /**
+   * ⚠️ Eligibility is re-checked at COMMIT time, not only at click time.
+   * `escolha` is re-validated against `opcoes` every render but was not checked
+   * against `restricoes`, so a refetch that adds `{ type: 'minimum' }` greyed out
+   * the row while `selecionada` still resolved to it and `ciente` stayed true —
+   * confirm armed on an offer the operator can no longer take. Same shape as the
+   * bug the `cienteDe` mutation caught: the guard covered the offer's PRESENCE
+   * but not its ELIGIBILITY. ML answers 400 rather than refunding the wrong sum,
+   * so the cost is a confusing refusal rather than lost money — but layer 7 only
+   * held at click time until this.
+   */
+  const escolhaInelegivel =
+    selecionada?.percentage != null && minimo != null && selecionada.percentage < minimo;
+
+  const bloqueado =
+    selecionada == null ||
+    valorMinor == null ||
+    escolhaInelegivel ||
+    !ciente ||
+    carregando ||
+    enviando;
 
   return (
     <Modal
@@ -123,6 +143,12 @@ export function ReembolsoParcialModal({
       centered
       closeOnClickOutside={false}
       closeOnEscape={!enviando}
+      // ⚠️ The header X too. Escape and Cancelar were locked while sending and
+      // this one was not, so the likeliest mid-flight exit was the one left open
+      // — and closing during the request means the `catch` writes ML's refusal
+      // into a modal nobody is looking at, which is precisely what the
+      // "stays open on a refusal" design exists to prevent.
+      closeButtonProps={{ disabled: enviando }}
     >
       <Stack gap="sm">
         {opcoes.length === 0 ? (

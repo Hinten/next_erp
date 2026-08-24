@@ -102,10 +102,13 @@ const ACOES_SIMPLES = [
 type AcaoSimples = (typeof ACOES_SIMPLES)[number];
 
 /** Verbs this panel renders a button for; the rest still show as badges. */
-const VERBOS_COM_BOTAO = new Set([
-  ...ACOES_SIMPLES.flatMap((a) => a.verbos),
-  'allow_partial_refund',
-]);
+/**
+ * Verbs that ALWAYS render a button when offered. Partial refund is deliberately
+ * absent: its button also needs offers to pick from, so whether it appears is
+ * decided per render — and when it does not, the verb must still show as a badge
+ * or the panel silently stops reporting that ML offers it.
+ */
+const VERBOS_COM_BOTAO = new Set(ACOES_SIMPLES.flatMap((a) => a.verbos));
 
 export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelProps) {
   const client = useMercadoLivreClient();
@@ -195,6 +198,13 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
   const prazosFormatados = (estado.data?.prazos ?? [])
     .map((p) => ({ ...p, texto: formatarPrazo(p.prazo) }))
     .filter((p) => p.texto != null);
+
+  // ⚠️ The picker needs BOTH: the verb, and offers to pick from. Without the
+  // second half the operator gets a button whose modal only says ML offers no
+  // partial refund — the dead end the comment below claims is prevented.
+  const mostraBotaoParcial =
+    (estado.data?.acoesDisponiveis.includes('allow_partial_refund') ?? false) &&
+    (estado.data?.ofertasParciais?.available_offers.length ?? 0) > 0;
 
   if (!podeConsultar) return null;
 
@@ -411,8 +421,13 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
                       than a plain confirm: ML accepts only percentages from its
                       own offer list and reads a MISSING one as 50%. The button
                       appears only when ML offers the verb AND actually returned
-                      offers — a picker with nothing to pick is a dead end. */}
-                  {estado.data.acoesDisponiveis.includes('allow_partial_refund') && (
+                      offers — a picker with nothing to pick is a dead end. The
+                      condition now checks BOTH; it used to test only the verb,
+                      so the comment described a guard that was not there. When
+                      the offers are missing the verb falls through to a badge
+                      below, which keeps "ML offers something this screen cannot
+                      do" visible instead of silently dropping it. */}
+                  {mostraBotaoParcial && (
                     <Button
                       size="compact-xs"
                       variant="light"
@@ -429,7 +444,11 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
                   {/* Verbs with no button yet still show, so the operator can
                       see ML offers something this screen cannot do. */}
                   {estado.data.acoesDisponiveis
-                    .filter((v) => !VERBOS_COM_BOTAO.has(v))
+                    .filter(
+                      (v) =>
+                        !VERBOS_COM_BOTAO.has(v) &&
+                        !(v === 'allow_partial_refund' && mostraBotaoParcial),
+                    )
                     .map((v) => (
                       <Badge key={v} size="sm" variant="outline">
                         {rotuloAcao(v)}
@@ -451,17 +470,28 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
         )}
       </Stack>
       {confirmEl}
-      <ReembolsoParcialModal
-        opened={parcialAberto}
-        onClose={() => setParcialAberto(false)}
-        ofertas={estado.data?.ofertasParciais?.available_offers ?? []}
-        recomendacoes={estado.data?.ofertasParciais?.recommendations ?? []}
-        restricoes={estado.data?.ofertasParciais?.restrictions ?? []}
-        carregando={estado.isFetching}
-        enviando={enviandoParcial}
-        erro={parcialErro}
-        onConfirm={(e) => void confirmarParcial(e)}
-      />
+      {/* ⚠️ UNMOUNTED when closed, not merely hidden. Mantine's `opened` only
+          toggles the overlay, so a mounted modal keeps its `useState` — and
+          closing then reopening restored both the selection AND the
+          acknowledgement, arming confirm with one click on a consent given in an
+          earlier session of the dialog. Worse, `cienteDe` is keyed on the
+          PERCENTAGE, so the amount behind it was re-derived from whatever
+          `available_offers` says now: the same-percentage-different-amount case
+          the `cienteDe` refactor exists to close, still open across a reopen.
+          Unmounting makes the reset structural — no effect, nothing to remember. */}
+      {parcialAberto && (
+        <ReembolsoParcialModal
+          opened={parcialAberto}
+          onClose={() => setParcialAberto(false)}
+          ofertas={estado.data?.ofertasParciais?.available_offers ?? []}
+          recomendacoes={estado.data?.ofertasParciais?.recommendations ?? []}
+          restricoes={estado.data?.ofertasParciais?.restrictions ?? []}
+          carregando={estado.isFetching}
+          enviando={enviandoParcial}
+          erro={parcialErro}
+          onConfirm={(e) => void confirmarParcial(e)}
+        />
+      )}
     </Card>
   );
 }
