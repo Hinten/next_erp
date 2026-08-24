@@ -6,8 +6,11 @@ photos, variations and the link doc. The inverse direction (ERP → ML) is
 
 - `import.ts` — the IO orchestration: fetch item → map → produto + extraData +
   estoque + link. ⚠️ Reaches **across** into `anuncios/moderacoes.ts` (#1087):
-  the importer is the third writer of the link doc's `moderacoes` and shares the
-  `items` sync's gate rather than restating it. `lerModeracoesDoItem` holds the
+  the importer is the third writer of the link doc's `moderacoes` and shares that
+  module's ML read rather than restating it. ⚠️ The **gate** is no longer part of
+  what it borrows from there: `precisaConsultarModeracao` moved to
+  `@delfrance/schemas` in #1239, and all three writers import it from the schema.
+  `lerModeracoesDoItem` holds the
   two divergences — the read sits above every write, and a transient ML failure
   degrades to "never asked" instead of discarding the produto.
 - `importCore.ts` — the pure write-plan assembly (create vs fill-nulls, gating,

@@ -382,7 +382,9 @@ the `moderation_reference_id` straight from it (`id` + **`-ITM`**). So the reaso
 lives in `itemsStatusSync`, not in a new receiver, and `TOPIC_DISPOSITION` is
 unchanged. The sync reads `GET /moderations/last_moderation/{id}-ITM` only when the
 fetched item's status says there is one (`precisaConsultarModeracao` in
-`lib/marketplace/anuncios/moderacoes.ts`) — `under_review`, or a moderation `sub_status` —
+`packages/schemas/src/produto/collection/mercadoLivreLink.ts`, beside the field it
+gates — it moved out of this app in #1239 so `apps/web` could reach it) —
+`under_review`, or a moderation `sub_status` —
 so a healthy listing still costs exactly one `GET /items/{id}`, and a
 moderation-endpoint outage cannot stall the `items` stream. A **404 is data**
 ("not moderated"); everything else rethrows, because persisting `[]` after a
