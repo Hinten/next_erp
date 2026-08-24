@@ -789,3 +789,66 @@ describe('a moderação reaches the control it names', () => {
     expect(screen.queryByTestId('ml-moderacoes')).toBeNull();
   });
 });
+
+/**
+ * The two entry points into `handleReverificar` want different feedback (#1239).
+ * Nothing covered this flow before — the older tests only assert the latch
+ * button's GATING — so both branches are pinned here.
+ */
+describe('reverificar — the reason decides what the operator is told', () => {
+  const RESULT = {
+    estado: ESTADO_PUBLICACAO_ML.pausado,
+    status: 'paused',
+    subStatus: [],
+    enviavel: false,
+  };
+
+  function wireReverificar() {
+    const reverificarAnuncio = vi.fn(async () => RESULT);
+    h.client = { reverificarAnuncio };
+    return reverificarAnuncio;
+  }
+
+  it('"Consultar motivo" re-checks the listing and does NOT talk about stock', async () => {
+    h.links = [
+      link('L-MOD', {
+        id: 'MLB1',
+        estado: ESTADO_PUBLICACAO_ML.pausado,
+        status: 'paused',
+        sub_status: ['moderation_penalty'],
+        moderacoes: null,
+      }),
+    ];
+    const reverificarAnuncio = wireReverificar();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Consultar motivo' }));
+    });
+
+    expect(reverificarAnuncio).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-MOD',
+    });
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).not.toContain('estoque');
+  });
+
+  /**
+   * ⚠️ The stock wording must survive untouched on its own button. It is correct
+   * there and only there — the latch IS about stock.
+   */
+  it('the latch button keeps its stock wording', async () => {
+    h.links = [link('L-LATCH', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.erro })];
+    wireReverificar();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reverificar anúncio' }));
+    });
+
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).toContain('estoque');
+  });
+});

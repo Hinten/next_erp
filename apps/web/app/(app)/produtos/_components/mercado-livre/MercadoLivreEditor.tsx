@@ -467,18 +467,36 @@ export function MercadoLivreEditor({
    * one, and this is the manual way out. The live `useSnapshot` above repaints
    * the row as soon as the server write lands.
    */
-  async function handleReverificar(integracaoId: string, linkDocId: string) {
+  async function handleReverificar(
+    integracaoId: string,
+    linkDocId: string,
+    motivo: 'latch' | 'moderacao',
+  ) {
     if (!client) return;
     setRechecking(linkDocId);
     try {
       const result = await client.reverificarAnuncio({ integracaoId, produtoId, linkDocId });
       notifications.show({
-        color: result.enviavel ? 'green' : 'yellow',
+        // ⚠️ The two entry points ask different questions, so they get different
+        // answers (#1239). Someone who pressed "Consultar motivo" wants ML's
+        // moderation reason; telling them the stock sweep resumed answers
+        // something they did not ask, and on an `active` `poor_quality_thumbnail`
+        // listing — whose stock was never stopped — it is actively misleading.
+        //
+        // ⚠️ The moderation message stays vague about WHAT ML said because it has
+        // to: `reverificarAnuncio` answers `{estado, status, subStatus, enviavel}`
+        // and no `moderacoes`. The route does write the field, so the real answer
+        // arrives through the live `useSnapshot` repainting the strip — which is
+        // this handler's whole feedback model anyway.
+        color: motivo === 'moderacao' ? 'blue' : result.enviavel ? 'green' : 'yellow',
         title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
-        message: result.enviavel
-          ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
-            'Enviar estoque para enviar agora.'
-          : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
+        message:
+          motivo === 'moderacao'
+            ? 'Se o Mercado Livre informou um motivo, ele aparece abaixo.'
+            : result.enviavel
+              ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
+                'Enviar estoque para enviar agora.'
+              : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
       });
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {
@@ -753,7 +771,7 @@ export function MercadoLivreEditor({
                           canWrite={Boolean(client) && canPublish}
                           disabled={Boolean(disabled) || rechecking !== null || contaLoading}
                           rechecking={rechecking === l.id}
-                          onReverificar={() => handleReverificar(conta.id, l.id)}
+                          onReverificar={(motivo) => handleReverificar(conta.id, l.id, motivo)}
                           urlResolvida={urlPorLink[l.id] ?? null}
                           abrindo={abrindoAnuncio === l.id}
                           // Reading a public URL is a read: gated on having a

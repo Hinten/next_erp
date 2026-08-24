@@ -10,11 +10,14 @@
  * "pausado".
  *
  * ⚠️ A stored `null` and a stored `[]` are DIFFERENT — "never asked" vs "asked,
- * ML reported none" — and this module currently renders both as no moderation.
- * The mass import and a failed `/moderations` read both produce `null`, so a
- * moderated listing can sit here with `paused · moderation_penalty` and no
- * alert. Surfacing that state (and prompting the one-click "Reverificar
- * anúncio") is tracked separately; do not "fix" it by collapsing the two.
+ * ML reported none" — and the difference is USER-VISIBLE (#1239). The mass
+ * import and a failed `/moderations` read both produce `null`, so a moderated
+ * listing used to sit here showing `paused · moderation_penalty` with no alert
+ * and no hint a reason existed. {@link moderacaoNaoConsultada} is the third
+ * state; the strip renders it as its own notice with a button that fetches the
+ * reason. Do not "fix" any of this by collapsing the two values — and note
+ * {@link moderacoesDoLink} still returns `[]` for both on purpose, because the
+ * question it answers ("what should I render?") has the same answer either way.
  *
  * ⚠️ A sibling of `listingCausas.ts`, deliberately NOT part of it. A causa is a
  * PAYLOAD validation failure ML answered a write of ours with; a moderação is a
@@ -33,7 +36,7 @@
  * The banner depends on nothing.
  */
 import type { MlModeracao, ProdutoMercadoLivreLink } from '@delfrance/schemas';
-import { ML_CAUSA_CAMPO } from '@delfrance/schemas';
+import { ML_CAUSA_CAMPO, precisaConsultarModeracao } from '@delfrance/schemas';
 
 /**
  * How bad one moderação is, and — the part that matters — how much the UI is
@@ -122,6 +125,42 @@ export function moderacoesDoLink(link: Pick<ProdutoMercadoLivreLink, 'moderacoes
     out.push(m);
   }
   return out;
+}
+
+/**
+ * ML reports a moderation on this listing and **nobody ever fetched the reason**
+ * (#1239) — the third value of `moderacoes`, which {@link moderacoesDoLink}
+ * cannot express and deliberately does not try to.
+ *
+ * A sibling rather than a widened return, because these are two questions:
+ * `moderacoesDoLink` answers *what are the entries*, this answers *should there
+ * be entries at all*. Only the strip needs the second one; `moderacoesPorCampo`
+ * must keep seeing exactly what it sees today.
+ *
+ * ⚠️ **`moderacoes == null` is the "never asked" test — never
+ * `moderacoesDoLink(link).length === 0`.** A stored `[]` is a real answer from
+ * ML ("asked, reported none") and must stay silent, and so must an array whose
+ * entries all normalise to nothing: that array still means ML was asked, even
+ * though `moderacoesDoLink` drops it to `[]`. Reading emptiness instead of
+ * nullness would put a "not consulted" notice on listings ML has already
+ * cleared.
+ *
+ * ⚠️ **The status predicate is the other half, and it is not optional.** `null`
+ * on its own means only "this field was never populated", which is also the
+ * resting state of every legacy row and of every link a publish, stock or price
+ * send created (#1252) — all of them perfectly healthy. Gating on `null` alone
+ * would warn about listings that have nothing wrong with them. The notice is
+ * earned only when ML's OWN `status`/`sub_status` say a moderation exists.
+ *
+ * `precisaConsultarModeracao` is the same pure predicate the backend gates its
+ * `/moderations` call on, imported from `@delfrance/schemas` so the two sides
+ * cannot drift — see its docblock beside the field it gates.
+ */
+export function moderacaoNaoConsultada(
+  link: Pick<ProdutoMercadoLivreLink, 'moderacoes' | 'status' | 'sub_status'>,
+): boolean {
+  if (link.moderacoes != null) return false;
+  return precisaConsultarModeracao(link.status, link.sub_status);
 }
 
 /**
