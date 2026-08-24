@@ -13,6 +13,7 @@ import {
   type Produto,
 } from '@delfrance/schemas';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
+import type { IntegracoesStatus } from '@/lib/data/useIntegracoes';
 import { integracaoBadgeStyle } from '@/lib/integracoes/cor';
 import { coverArquivoId, useProdutoFotoUrl } from '@/lib/produtos/fotoCapa';
 
@@ -144,16 +145,47 @@ export function ProdutoPrecoCell({
  * produtos whose `integracoesComProduto` disagrees with the live listings — and
  * the id can also name a deleted conta. Silently rendering an empty cell would
  * read as "listed nowhere", which is the opposite of what the row says.
+ *
+ * ⚠️ `desconhecida` is reserved for that DATA verdict, which is why `status` is
+ * a required prop rather than an empty `byId` being read as "nothing resolves".
+ * The lookup is empty while it loads and empty when it fails — a user without
+ * `PERM.integracao.read` gets `permission-denied` — and in both cases every
+ * badge on every row would claim a drifted denorm. Those are system states and
+ * they render as such: a skeleton while pending, one explicit "indisponível"
+ * badge on error.
  */
 export function ProdutoIntegracoesCell({
   produto,
   byId,
+  status,
 }: {
   produto: Produto;
   byId: Map<string, Integracao>;
+  status: IntegracoesStatus;
 }) {
   const ids = produto.integracoesComProduto ?? [];
   if (ids.length === 0) return null;
+
+  // Sized like a badge so the column does not reflow when the lookup lands.
+  if (status === 'pending') {
+    return (
+      <Group gap={4} wrap="wrap">
+        {ids.map((id) => (
+          <Skeleton key={id} h={20} w={72} radius="xl" />
+        ))}
+      </Group>
+    );
+  }
+
+  if (status === 'error') {
+    return (
+      <Tooltip label={`Não foi possível carregar os canais de venda (${ids.length}).`} withArrow>
+        <Badge size="sm" variant="light" color="gray">
+          indisponível
+        </Badge>
+      </Tooltip>
+    );
+  }
 
   // Sorted by the label the operator reads, not by id — legacy's `opcoes.sort()`.
   // Unresolved ids sort last, together, under their placeholder label.

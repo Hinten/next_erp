@@ -65,6 +65,15 @@ describe('parseFiltersFromParams', () => {
     });
   });
 
+  it('drops a candidate list with a malformed percent escape instead of throwing', () => {
+    // `URLSearchParams.get()` leaves a stray `%` verbatim, so it reaches
+    // `decodeURIComponent`, which throws `URIError`. This function runs from a
+    // `useState` initializer, so a throw here takes down the whole TableView
+    // subtree during render — every other unparseable input drops its filter.
+    expect(() => parse('canais=array-contains-any:abc%,def')).not.toThrow();
+    expect(parse('canais=array-contains-any:abc%,def')).toEqual({});
+  });
+
   it('drops an array-contains-any with an empty list', () => {
     // An empty candidate list means "no rows" — not a filter worth restoring
     // from a URL, and `buildPipeline` throws on it.
