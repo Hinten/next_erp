@@ -303,9 +303,16 @@ export function ListingStatusStrip({
           data-testid="ml-moderacao-nao-consultada"
         >
           <Stack gap="xs" align="flex-start">
+            {/* ⚠️ "possível", deliberately. The gate's `under_review` arm fires while ML
+                is merely REVIEWING a listing — which can conclude with no moderation at
+                all, and is the state every freshly published anúncio passes through
+                (publish leaves `moderacoes` null — #1252). Asserting "há uma moderação"
+                would be false there, on the most common occurrence of this notice. The
+                weaker claim is the only one true of BOTH arms; do not tighten it without
+                first splitting the two apart. */}
             <Text size="sm">
-              O Mercado Livre indica uma moderação neste anúncio, mas o motivo ainda não foi
-              consultado.
+              O status deste anúncio no Mercado Livre indica uma possível moderação, mas o motivo
+              ainda não foi consultado.
             </Text>
             <Button
               type="button"

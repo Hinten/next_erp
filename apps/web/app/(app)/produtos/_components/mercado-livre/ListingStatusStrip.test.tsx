@@ -529,6 +529,28 @@ describe('ListingStatusStrip — moderação não consultada (#1239)', () => {
    * `poor_quality_thumbnail` listing is ACTIVE and merely losing exposure, and it
    * is the case the operator has no other way to discover.
    */
+  /**
+   * ⚠️ The wording must be true on BOTH arms of the gate. `under_review` with no
+   * moderation sub_status is ML REVIEWING — it can conclude with no moderation,
+   * and it is what every freshly published anúncio looks like (#1252), so this is
+   * the notice's most common appearance. Claiming a moderation exists would be
+   * false exactly there.
+   */
+  it('does not claim a moderation EXISTS on a listing merely under review', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.publicado,
+      status: 'under_review',
+      sub_status: null,
+      moderacoes: null,
+    });
+
+    const texto = screen.getByTestId('ml-moderacao-nao-consultada').textContent ?? '';
+    expect(texto).toContain('ainda não foi consultado');
+    expect(texto).toContain('possível');
+    // The assertive phrasing this replaced — a moderation stated as fact.
+    expect(texto).not.toContain('indica uma moderação');
+  });
+
   it('renders on a listing ML still calls ACTIVE', () => {
     renderStrip({
       estado: ESTADO_PUBLICACAO_ML.publicado,

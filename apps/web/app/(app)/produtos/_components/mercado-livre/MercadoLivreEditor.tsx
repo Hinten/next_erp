@@ -544,12 +544,20 @@ export function MercadoLivreEditor({
   }
 
   /**
-   * Re-read ONE listing from ML and record its real state (#781). The stock
-   * sender stops sending to a listing stamped `estado 'E'` — it writes that only
-   * after ML confirmed the anúncio is healthy, so the payload was at fault. An
-   * `items` webhook normally clears it, but a listing nobody touches never fires
-   * one, and this is the manual way out. The live `useSnapshot` above repaints
-   * the row as soon as the server write lands.
+   * Re-read ONE listing from ML and record its real state. The live `useSnapshot`
+   * above repaints the row as soon as the server write lands — which is this
+   * handler's entire feedback model, since the route returns the new state but
+   * never the `moderacoes` it also writes.
+   *
+   * ⚠️ TWO entry points, hence `motivo`; the branch is on the toast, not the
+   * call, because both want the same re-read.
+   *  - `'latch'` (#781) — the stock escape hatch. The stock sender stops sending
+   *    to a listing stamped `estado 'E'`, and writes that only after ML confirmed
+   *    the anúncio is healthy, so the payload was at fault. An `items` webhook
+   *    normally clears it, but a listing nobody touches never fires one, and this
+   *    is the manual way out.
+   *  - `'moderacao'` (#1239) — "Consultar motivo" in the not-consulted notice.
+   *    Nothing here is about stock: the listing may be `active` the whole time.
    */
   async function handleReverificar(
     integracaoId: string,
