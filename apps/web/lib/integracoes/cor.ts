@@ -51,6 +51,24 @@ export function corToHex(cor: number | null | undefined): string | null {
 }
 
 /**
+ * `#rrggbb` (or the `#rgb` shorthand) → the 24-bit RGB int this app stores.
+ * Anything else → `null`. The write half of {@link corToHex}.
+ */
+export function hexToCor(hex: string): number | null {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  const body = m?.[1];
+  if (!body) return null;
+  const full =
+    body.length === 3
+      ? body
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : body;
+  return Number.parseInt(full, 16);
+}
+
+/**
  * Inline styles for a badge painted in an integração's registered colour, or
  * `null` when it has none (the caller falls back to a neutral badge).
  *
