@@ -1692,9 +1692,18 @@ export type MlPartialRefundOffer = z.infer<typeof mlPartialRefundOfferSchema>;
  */
 export const mlPartialRefundAdviceSchema = z
   .object({
-    percentage: z.number().nullable().default(null),
-    reason: z.string().nullable().default(null),
-    type: z.string().nullable().default(null),
+    // ⚠️ `string | number`, like every other ML numeric in this file
+    // (`mlMissedFeedEntrySchema` models `user_id`/`attempts` the same way, and
+    // for the same observed reason). A quoted `"30"` must not fail the read.
+    percentage: z
+      .union([z.string(), z.number()])
+      .nullable()
+      .default(null)
+      .transform((v) => (typeof v === 'string' ? Number(v) : v))
+      .refine((v) => v == null || Number.isFinite(v), { message: 'percentage não numérico' })
+      .catch(null),
+    reason: z.string().nullable().default(null).catch(null),
+    type: z.string().nullable().default(null).catch(null),
   })
   .passthrough();
 export type MlPartialRefundAdvice = z.infer<typeof mlPartialRefundAdviceSchema>;
@@ -1716,14 +1725,24 @@ export const mlPartialRefundOffersSchema = z
       .array(mlPartialRefundOfferSchema)
       .nullish()
       .transform((v) => v ?? []),
+    // ⚠️ `.catch([])`, the idiom this file already uses (see `.catch(null)` on
+    // the order schema above). Typing these turned the CONTAINER strict where it
+    // was `.passthrough()`-tolerant, which is the same failure mode by another
+    // door: a shape drift stopped degrading the ADVICE and started failing the
+    // whole offers read → `MercadoLivreValidationError` → the picker is down.
+    // An object instead of an array, an array of strings, a quoted number — all
+    // parsed before and must keep parsing. Advice is exactly the field that may
+    // be lost without costing the operator the decision.
     recommendations: z
       .array(mlPartialRefundAdviceSchema)
       .nullish()
-      .transform((v) => v ?? []),
+      .transform((v) => v ?? [])
+      .catch([]),
     restrictions: z
       .array(mlPartialRefundAdviceSchema)
       .nullish()
-      .transform((v) => v ?? []),
+      .transform((v) => v ?? [])
+      .catch([]),
   })
   .passthrough();
 export type MlPartialRefundOffers = z.infer<typeof mlPartialRefundOffersSchema>;

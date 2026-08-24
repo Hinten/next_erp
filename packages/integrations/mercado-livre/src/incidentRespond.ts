@@ -47,22 +47,25 @@ const DESTINO_DA_ACAO: Readonly<Record<string, string>> = {
 };
 
 /**
- * Raised when ML has not offered the seller this action. Distinct from
- * `MercadoLivreHttpError`: nothing was sent, and the operator can see what they
- * could do instead.
- */
-/**
  * Raised when the amount the operator authorised is not one Mercado Livre
  * offers for this claim.
  *
- * ⚠️ Its own class rather than `MercadoLivreValidationError`, and the reason is
- * how the two are MAPPED. `respond.ts` turns a validation error into
+ * ⚠️ Its own class rather than `MercadoLivreValidationError`, because of how the
+ * two are MAPPED. `respond.ts` turns a validation error into
  * **502 ML_BAD_RESPONSE — "ML returned an unexpected shape (a field changed),
- * upstream problem"**, which is the wrong sentence for the most
- * operator-actionable condition in the whole feature: the message already says
- * exactly which percentages ARE available, and the operator can act on it right
- * now. Carrying `ofertas` lets the caller re-render the picker in place instead
- * of sending them back to the start.
+ * upstream problem"** — the wrong sentence for the most operator-actionable
+ * condition in the feature: the message already names exactly which percentages
+ * ARE available. Carrying `ofertas` lets the caller re-render the picker in
+ * place instead of sending the operator back to the start.
+ *
+ * ⚠️⚠️ **It extends `Error`, NOT `MercadoLivreError` — so every route that can
+ * raise it MUST catch it explicitly.** `isMercadoLivreError` in
+ * `apps/mercado-livre/lib/marketplace/respond.ts` does not match it, and that
+ * file's contract is that the route rethrows whatever the guard rejects. Left
+ * unmapped this is a bare **500 with the message gone**, which is strictly worse
+ * than the 502 it replaced — the 502 sentence was wrong, but it still carried
+ * the string the whole refusal turns on. `/reclamacao/acao` maps it to a 409
+ * with `ofertas`; a new caller has to do the same.
  */
 export class ClaimPartialRefundOfferError extends Error {
   constructor(
@@ -74,6 +77,14 @@ export class ClaimPartialRefundOfferError extends Error {
   }
 }
 
+/**
+ * Raised when ML has not offered the seller this action. Distinct from
+ * `MercadoLivreHttpError`: nothing was sent, and the operator can see what they
+ * could do instead.
+ *
+ * ⚠️ Also extends `Error`, not `MercadoLivreError` — same explicit-catch
+ * requirement as the class above.
+ */
 export class ClaimActionUnavailableError extends Error {
   constructor(
     readonly acao: string,

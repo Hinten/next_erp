@@ -123,14 +123,11 @@ describe('incidenteResolucao — the marketplace resolution bits', () => {
     expect(rulesClaimsFromBits(bits)).toEqual({ d_incidenteResolucao: 3 });
   });
 
-  it('does not overlap any other domain bit', () => {
-    // Byte 13, bits 107-108. A collision would silently grant two domains at
-    // once — the failure mode the "single power of two" test cannot see.
-    const outros = Object.entries(PERM)
-      .filter(([dominio]) => dominio !== 'incidenteResolucao')
-      .flatMap(([, acoes]) => Object.values(acoes));
-    for (const bit of Object.values(PERM.incidenteResolucao)) {
-      expect(outros).not.toContain(bit);
-    }
-  });
+  // ⚠️ No collision test here on purpose. `permissions.test.ts:53` — "no two
+  // domains share a bit" — already walks all of `Object.entries(PERM)` into a
+  // `Map<bigint, string>`, so it picked `incidenteResolucao` up the moment this
+  // domain was added, with no edit, and it names the offender
+  // ("incidenteResolucao.read reuses the bit of cmun.read") rather than failing a
+  // bare `not.toContain`. A domain-scoped copy here was strictly weaker and would
+  // rot the day someone assumes it is the guard.
 });
