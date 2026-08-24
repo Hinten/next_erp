@@ -33,7 +33,7 @@ jobs:
       # FUNCTIONS_REGION is in turbo.json's `globalEnv`, so it participates in
       # every task hash. It is set to the value ci.yml uses so a cache entry
       # warmed here is the one a later `turbo run` looks up, not a hash mismatch.
-      FUNCTIONS_REGION: us-east1
+      FUNCTIONS_REGION: us-central1
       # Skip Next.js telemetry collection + its build-time notice in CI.
       NEXT_TELEMETRY_DISABLED: '1'
     steps:

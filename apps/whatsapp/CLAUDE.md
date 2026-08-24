@@ -345,7 +345,7 @@ env var — it is entered per integração and stored server-side. The app-wide
 **mandatory** `X-Hub-Signature-256` HMAC secret — unset → the POST returns 503) are
 now consumed by the webhook route. `WHATSAPP_TASKS_DISABLED=1` forces the receiver's
 persist-for-the-sweep fallback (no enqueue); `WHATSAPP_TASKS_REGION` (default
-`FUNCTIONS_REGION` → `us-east5`) is the region of the `processWhatsappNotification`
+`FUNCTIONS_REGION`; no default — unset, the enqueue throws) is the region of the `processWhatsappNotification`
 function/queue and MUST match its deploy region.
 
 Set `NEXT_PUBLIC_WHATSAPP_URL=http://localhost:3008` so apps/web targets this

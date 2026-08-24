@@ -332,6 +332,13 @@ jobs:
       # demo-erp via FIREBASE_CONFIG, but pinning it here keeps the lane off an
       # undocumented CLI detail.
       FIREBASE_PROJECT_ID: demo-erp
+      # ⚠️ REQUIRED. This suite drives the real webhook route, which enqueues via
+      # `mlTasksRegion()` — and that no longer falls back to a literal: an unset
+      # region THROWS rather than producing a well-formed path to a queue that does
+      # not exist (#1108). The value is arbitrary here (no Cloud Tasks emulator on
+      # this config; the enqueue is exercised through the `*_TASKS_DISABLED` valve),
+      # but it has to be present. `us-central1` matches the sibling lanes.
+      MERCADO_LIVRE_TASKS_REGION: us-central1
       # The database is literally named `default`, not `(default)` (Enterprise).
       # In the emulator `(default)` silently exists, so a wrong id is invisible
       # here and fatal in production — hence pinned, and hence every suite
@@ -432,8 +439,8 @@ jobs:
       # on us-central1 and the bundle on us-east5, the emulator answers
       # "Tried to queue a task from a non-existent queue" and the doc lands
       # `failed` instead of `deferred`).
-      FUNCTIONS_REGION: us-east5
-      MERCADO_LIVRE_TASKS_REGION: us-east5
+      FUNCTIONS_REGION: us-central1
+      MERCADO_LIVRE_TASKS_REGION: us-central1
       FIREBASE_PROJECT_ID: demo-erp
       FIREBASE_DATABASE_ID: default
       REQUIRE_EMULATOR: '1'

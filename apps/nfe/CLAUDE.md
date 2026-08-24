@@ -128,7 +128,7 @@ NFE_CERT_ENC_KEY=...                 # base64 32 bytes (openssl rand -base64 32)
 # auto-provisioned on deploy. There is NO queue-path / endpoint / runner-SA env:
 # the queue is named after the function and the enqueue is authenticated by the
 # Admin SDK. Both vars below are OPTIONAL — the reconciler works unset.
-# NFE_TASKS_REGION=us-east1          # must match the nfe functions' FUNCTIONS_REGION
+# NFE_TASKS_REGION=<region>          # REQUIRED; must match the nfe functions' FUNCTIONS_REGION
 # NFE_TASKS_DISABLED=1               # deliberate sweep-only / local dev (no enqueue)
 
 ALLOWED_ADMIN_ORIGINS=https://app.example.com  # CSV; localhost allowed by default

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MissingRegionError } from '@delfrance/core/region';
 
 // Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
 // binding. The scheduler's own env-driven wiring runs real.
@@ -43,15 +44,25 @@ describe('createMlMassImportScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload);
   });
 
-  it('defaults the region to us-east5 when nothing is configured', async () => {
+  it('REFUSES to enqueue when nothing is configured', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
-    // Truly unset (not empty) so the `?? default` chain falls through.
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMlMassImportScheduler();
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+  });
+
+  it('falls through to FUNCTIONS_REGION when only that is set', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', 'us-central1');
+    const scheduler = createMlMassImportScheduler();
     await scheduler.enqueue(payload);
+
     expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processMercadoLivreMassImport',
+      'locations/us-central1/functions/processMercadoLivreMassImport',
     );
   });
 
