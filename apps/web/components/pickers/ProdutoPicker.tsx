@@ -22,6 +22,9 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 
 const PAGE_SIZE = 20;
+// U+F8FF: a very high private-use code point. Appended to the search term it
+// bounds a nome prefix range (nome >= term && nome <= term + sentinel).
+const PREFIX_SENTINEL = '';
 
 export interface ProdutoPickerResult {
   ref: DocumentReference<Produto>;
@@ -92,7 +95,7 @@ export function ProdutoPicker({
           ? buildQuery(base, [
               orderByField('nome'),
               whereOp('nome', '>=', trimmed),
-              whereOp('nome', '<=', `${trimmed}`),
+              whereOp('nome', '<=', `${trimmed}${PREFIX_SENTINEL}`),
               limit(PAGE_SIZE),
             ])
           : buildQuery(base, [orderByField('nome'), limit(PAGE_SIZE)]);
