@@ -379,10 +379,13 @@ describe('falhaPatch / clearFalha', () => {
    * ⚠️ #1087, and the reasoning is the opposite of what "clear it with the
    * others" suggests. `errors`/`causas` record OUR failed write, so a later
    * success invalidates them. A moderação is ML's POLICY verdict, and nothing
-   * these callers do lifts it — two of them prove it: the stock writeback clears
-   * on a successful `PUT /items`, and a `poor_quality_thumbnail` listing is
-   * `active` and accepts stock updates WHILE moderated; the importer re-reads the
-   * item but never asks `/moderations`.
+   * these callers do lifts it — the stock writeback proves it: it clears on a
+   * successful `PUT /items`, and a `poor_quality_thumbnail` listing is `active`
+   * and accepts stock updates WHILE moderated.
+   *
+   * ⚠️ The IMPORTER also calls `clearFalha()` and is no longer an example here:
+   * it asks `/moderations` itself now and spreads its own `moderacoes` on top of
+   * this patch. That is exactly the rule holding, not an exception to it.
    *
    * Clearing there would erase a live, still-true reason and show a clean listing
    * that is really still penalised — hiding a real problem, which is worse than
