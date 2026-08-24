@@ -337,9 +337,19 @@ was paused with _"Pausamos o anúncio porque ele infringe nossas políticas. Aju
 o título e/ou substitua as fotos…"_ and the ERP recorded `status`/`sub_status` and
 nothing else.
 
-⚠️ **There is nothing to click yet** — the strip rendering is a follow-up, so this
-is verified at the data layer: read the `produtoMercadoLivre` link doc in the
-Firestore console (or the child's `variacaoMercadoLivre` doc for a UP family).
+Verify at **both** layers. The strip rendering shipped in #1259, so the produto's ML tab
+now shows the moderação — and, when the reason was never fetched, a blue **"Moderação não
+consultada"** notice with a **Consultar motivo** button. But the UI cannot show you the
+distinction that matters most: `moderacoes` is **three-valued** — `null` = never asked,
+`[]` = asked and ML reported none, `[…]` = asked and these — and `null` vs `[]` render
+identically everywhere except that notice. So read the `produtoMercadoLivre` link doc in
+the Firestore console too (or the child's `variacaoMercadoLivre` doc for a UP family)
+whenever a row names a specific stored value.
+
+**Recording a result.** Nothing in this document has been filled in yet, so: write the
+date, the test-user seller, and the item id — `2026-08-24 · TESTUSER123 · MLB456` — the
+same shape §12 uses for its recorded findings. A row you could not run gets
+`deferred — <why>`, like the `questions`/`messages` row in §8 above.
 
 Trigger a moderation the cheap way rather than waiting for one: publish a listing
 whose cover photo breaks ML's image rules (a watermark, or below the 250px/500px
@@ -360,15 +370,42 @@ which is also the most interesting case here because the listing stays `active`.
 The IMPORT path is the third writer (it was added after the rows above, which
 cover the `items` webhook and the re-check button). Its rows:
 
-| Signal                                                   | Assert                                                                                                                                           | Result |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| **Import** a moderated listing (`/importar`)             | the fresh link doc lands with `moderacoes[]` — never `status: 'paused'` with no reason                                                           |        |
-| **Re-import** after ML lifts it                          | `moderacoes` becomes `[]` — ⚠️ the stale-reason case; the `...existingLink` spread used to carry the old one onto a now-`active` anúncio         |        |
-| Import a **healthy** listing                             | **no** `last_moderation` call, and `moderacoes` is written `[]` anyway (the gate answers off the item already fetched)                           |        |
-| **Mass** import (`/importar-todos`) over a moderated one | **no** `last_moderation` call at all, and `moderacoes` stays `null` — ⚠️ `null`, not `[]`: "never asked" must not read as "ML reported none"     |        |
-| Mass import over a listing whose reason was lifted       | `moderacoes` still becomes `[]` — the free half of the invariant survives the skip                                                               |        |
-| `/moderations` 5xx during a single import                | the produto **still imports**, `moderacoes` untouched, one `console.warn` in the backend log naming the item                                     |        |
-| Import a moderated **UP family** member                  | the reason lands on the MEMBER's `variacaoMercadoLivre` doc AND on the family parent link (the importer takes the imported member's, not a fold) |        |
+⚠️ **Every row below is already pinned by a unit test** (named in the last column), and
+that changes what running it is _for_. A unit test proves our code does the right thing
+**given a fixture**; only a live run proves ML actually behaves the way the fixture
+assumes. So these rows are no longer catching our logic bugs — they are validating
+fixture fidelity. **Test-user slots are capped at 10 forever** (§0), so if a run is
+short, spend the listing on the rows that have no unit test — the eight in the table
+above, and the notice rows below — and treat these seven as confirmatory.
+
+| Signal                                                   | Assert                                                                                                                                           | Result | Covered by (unit)                                                                          |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------ |
+| **Import** a moderated listing (`/importar`)             | the fresh link doc lands with `moderacoes[]` — never `status: 'paused'` with no reason                                                           |        | `import.test.ts` — _"a moderated listing lands with ML's REASON, not a bare pausado"_      |
+| **Re-import** after ML lifts it                          | `moderacoes` becomes `[]` — ⚠️ the stale-reason case; the `...existingLink` spread used to carry the old one onto a now-`active` anúncio         |        | `import.test.ts` — _"a re-import of a listing whose moderação ML LIFTED clears…"_          |
+| Import a **healthy** listing                             | **no** `last_moderation` call, and `moderacoes` is written `[]` anyway (the gate answers off the item already fetched)                           |        | `import.test.ts` — _"THE HOT-PATH GUARANTEE: a healthy listing spends NO moderation call"_ |
+| **Mass** import (`/importar-todos`) over a moderated one | **no** `last_moderation` call at all, and `moderacoes` stays `null` — ⚠️ `null`, not `[]`: "never asked" must not read as "ML reported none"     |        | `massImport.test.ts` — _"never calls /moderations, even for a listing ML has moderated"_   |
+| Mass import over a listing whose reason was lifted       | `moderacoes` still becomes `[]` — the free half of the invariant survives the skip                                                               |        | `massImport.test.ts` — _"still clears a stale reason off a HEALTHY listing"_               |
+| `/moderations` 5xx during a single import                | the produto **still imports**, `moderacoes` untouched, one `console.warn` in the backend log naming the item                                     |        | `import.test.ts` — _"a TRANSIENT moderation failure degrades to 'never asked'…"_           |
+| Import a moderated **UP family** member                  | the reason lands on the MEMBER's `variacaoMercadoLivre` doc AND on the family parent link (the importer takes the imported member's, not a fold) |        | `import.test.ts` — _"a moderated member stamps both its variacaoMercadoLivre link and…"_   |
+
+The NOTICE is what #1259 added on top: the `null` state — "ML reports a moderation and
+nobody ever asked why" — is now visible instead of rendering identically to `[]`. The
+mass import above is what makes it reachable in production, which is why these rows come
+after it.
+
+| #     | Step                                                                             | Surface          | Assert                                                                                                            | Result |
+| ----- | -------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------- | ------ |
+| 8.1.1 | Mass-import a moderated listing, then open the produto                           | Produto → ML tab | the blue **"Moderação não consultada"** notice renders — the `null` state made visible                            |        |
+| 8.1.2 | Click **Consultar motivo**                                                       | Produto → ML tab | it is replaced by the real moderation alert, repainted by the live snapshot — no page reload                      |        |
+| 8.1.3 | ⚠️ A listing merely `under_review` (freshly published, no moderation sub_status) | Produto → ML tab | the notice says _"possível moderação"_ — it must **NOT** assert a moderation exists, because ML may conclude none |        |
+| 8.1.4 | Click **Consultar motivo** on that one                                           | Produto → ML tab | ML reports nothing, `moderacoes` becomes `[]`, and the notice goes for good                                       |        |
+| 8.1.5 | Open the same produto as an operator without `integracao.write`                  | Produto → ML tab | the notice still renders; the button is **disabled**                                                              |        |
+
+⚠️ **8.1.3 is the row worth a slot.** It is the case #1259's wording exists for, and the
+only one a unit test cannot settle: the test pins the string, not what ML does to a
+freshly published listing. If ML turns out never to leave a test listing at bare
+`under_review`, record that — it would mean the notice's most common trigger in
+production does not reproduce here, which is worth knowing before trusting the row.
 
 ### 7.3 — Settle #957 (the shipment `x-format-new` body)
 
