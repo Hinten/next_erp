@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red-alert.mjs';
 import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
+import { checkName, jobBlocks, topBlock } from './lib/workflow-scan.js';
 
 /**
  * Every PR-triggered lane must ALWAYS publish a check, and that check must tell
@@ -297,19 +298,6 @@ function findByPathspec(pathspec) {
  */
 const read = (file) => readFileSync(resolve(REPO_ROOT, file), 'utf8').split('\r\n').join('\n');
 
-/** Lines of a top-level block (`on:`, `jobs:`), exclusive of the header. */
-function topBlock(source, key) {
-  const lines = source.split('\n');
-  const start = lines.findIndex((l) => new RegExp(`^(?:${key}|'${key}'|"${key}")\\s*:`).test(l));
-  if (start === -1) return { header: null, body: [] };
-  const body = [];
-  for (const line of lines.slice(start + 1)) {
-    if (/^\S/.test(line)) break;
-    body.push(line);
-  }
-  return { header: lines[start], body };
-}
-
 /** Lines of a sub-block of `on:` (`pull_request:`, `push:`), or null if absent. */
 function onSubBlock(source, key) {
   const { body } = topBlock(source, 'on');
@@ -370,27 +358,6 @@ export function yamlListUnder(lines, key) {
   return out;
 }
 
-/** `{ jobId: body }` for the top-level `jobs:` mapping, with the indent derived. */
-export function jobBlocks(source) {
-  const { body } = topBlock(source, 'jobs');
-  const firstReal = body.find((l) => l.trim() && !l.trim().startsWith('#'));
-  const indent = firstReal ? firstReal.match(/^\s*/)[0] : '  ';
-  const idRe = new RegExp(`^${indent}([A-Za-z_][A-Za-z0-9_-]*)\\s*:\\s*(?:#.*)?$`);
-
-  const jobs = {};
-  let current = null;
-  for (const line of body) {
-    const m = line.match(idRe);
-    if (m) {
-      current = m[1];
-      jobs[current] = [];
-    } else if (current) {
-      jobs[current].push(line);
-    }
-  }
-  return Object.fromEntries(Object.entries(jobs).map(([k, v]) => [k, v.join('\n')]));
-}
-
 /**
  * Every `e2e-affected.mjs` invocation in a workflow, with the shell around it.
  *
@@ -434,13 +401,6 @@ export function scopeInvocations(source) {
     });
   }
   return found;
-}
-
-/** The check-run name GitHub publishes for a job: its `name:`, else its id. */
-function checkName(jobId, jobBody) {
-  const m = jobBody.match(/^\s{4}name\s*:\s*(.+?)\s*$/m);
-  if (!m) return jobId;
-  return m[1].replace(/^['"]|['"]$/g, '');
 }
 
 describe('CI lanes always report', () => {
