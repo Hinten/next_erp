@@ -81,7 +81,12 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { millisToMicros } from '@delfrance/core/datetime';
-import { ESTADO_PUBLICACAO_ML, idFromRef, toOuterRef } from '@delfrance/schemas';
+import {
+  ESTADO_PUBLICACAO_ML,
+  idFromRef,
+  precisaConsultarModeracao,
+  toOuterRef,
+} from '@delfrance/schemas';
 import {
   type MlItem,
   type MlUserProductStock,
@@ -500,18 +505,38 @@ export async function processStockSendTask(
               estado: estadoFromMlStatus(resp.status),
               status: resp.status ?? null,
               sub_status: resp.sub_status ?? [],
+              // ⚠️ #1252, and read the paragraph below before touching it: the
+              // authority for this clear is ML's `resp`, NEVER the fact that the
+              // send succeeded.
+              //
+              // `clearFalha()` still covers `errors`/`causas` and deliberately
+              // NOT `moderacoes` (#1087), because a successful stock update says
+              // nothing about ML's policy verdict — a `poor_quality_thumbnail`
+              // listing is `active` and takes stock updates WHILE moderated, so
+              // clearing on the send's authority would erase a live reason and
+              // show a clean listing that is still penalised.
+              //
+              // What makes a GATED clear safe is that the gate answers from
+              // `resp` alone, and `poor_quality_thumbnail` is one of the
+              // sub_statuses it matches — so on exactly the listing that
+              // paragraph is about, `precisaConsultarModeracao` returns TRUE, the
+              // key is omitted, and the reason survives untouched. Only a
+              // response reporting no moderation at all clears, which is ML
+              // telling us the reason is gone. No `/moderations` call: the
+              // predicate is pure.
+              //
+              // ⚠️ Inside the `ehMembro` guard, not beside it. On the member arm
+              // this path writes no status at all (see above), so there is
+              // nothing for `moderacoes` to ride — and one member's verdict must
+              // not clear the FAMILY's reason.
+              ...(precisaConsultarModeracao(resp.status, resp.sub_status)
+                ? {}
+                : { moderacoes: [] }),
             }),
         ultimaModificacao: nowMs,
         // A send that lands clears whatever diagnosis the last failure left
         // behind — otherwise the produto tab keeps showing a red alert for a
         // fault that has since healed (#781).
-        //
-        // ⚠️ `clearFalha()` covers `errors`/`causas` and deliberately NOT
-        // `moderacoes` (#1087). A successful stock update says nothing about
-        // ML's policy verdict: a `poor_quality_thumbnail` listing is `active`
-        // and takes stock updates WHILE moderated, so clearing here would erase
-        // a live reason and show a clean listing that is still penalised. This
-        // path never asked `/moderations`, so it leaves the field alone.
         ...clearFalha(),
       },
     );

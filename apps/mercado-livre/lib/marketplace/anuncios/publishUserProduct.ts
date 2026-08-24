@@ -40,7 +40,7 @@ import {
   buildUserProductItemPayload,
   userProductMemberInputs,
 } from '@delfrance/integrations-mercado-livre';
-import { toOuterRef } from '@delfrance/schemas';
+import { type MlModeracao, precisaConsultarModeracao, toOuterRef } from '@delfrance/schemas';
 import { variacaoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
 import { resolveFamilyItemIds } from '../importacao/importFamily';
@@ -155,6 +155,10 @@ export async function publishUserProductMembers(
       // decline to conclude until every member had fired an `items` notification.
       status: item.status ?? null,
       subStatus: item.sub_status ?? null,
+      // #1252, and free: the gate is pure, so a member ML now calls healthy is
+      // written `[]` without a `/moderations` call. Evaluated HERE because this
+      // is where the ML item still exists as one object — see the arg's docblock.
+      moderacoes: precisaConsultarModeracao(item.status, item.sub_status) ? null : [],
       userProductId: item.user_product_id ?? null,
     });
   }
@@ -396,6 +400,17 @@ async function writeMemberLink(
     sku: string | null;
     status: string | null;
     subStatus: string[] | null;
+    /**
+     * #1252, three-valued like the field itself: `[]` = ML reports no moderation
+     * on this member, `null` = we did not ask and the stored reason stands.
+     *
+     * ⚠️ Decided by the CALLER, not here. The gate reads an `MlItem`'s own
+     * `status`/`sub_status`, and by this point those have been flattened into the
+     * two loose fields above — re-deriving it from them would be a second source
+     * of truth for one decision. Mirrors how `applyMemberStatusAndFold` threads
+     * the same three-valued value on the `items` path.
+     */
+    moderacoes: MlModeracao[] | null;
     userProductId: string | null;
   },
 ): Promise<void> {
@@ -418,6 +433,12 @@ async function writeMemberLink(
     // is a FAMILY summary and a member has no business carrying one.
     status: args.status,
     sub_status: args.subStatus,
+    // #1252. Omitted rather than written when the caller passed `null`: the patch
+    // is `update()`-backed, so an absent key leaves the stored reason standing —
+    // "never asked", not "ML reported none". On the `set` fallback below it is
+    // spread into `parse`, which fills the schema's own `null` default, so a
+    // genuine first publish lands the same value either way.
+    ...(args.moderacoes != null ? { moderacoes: args.moderacoes } : {}),
     // #706 multiorigem: this member's own `user_product_id`, straight off the
     // create/update response. It is the STOCK identity on a
     // `warehouse_management` conta, where `PUT /items` moves nothing. Recorded
