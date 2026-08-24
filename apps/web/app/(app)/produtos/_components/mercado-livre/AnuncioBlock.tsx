@@ -2,7 +2,7 @@
 
 import { Alert, Button, Divider, Group, List, Stack, Text, Tooltip } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
-import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import type { MedidasDoPacote, ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import type { StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
@@ -31,6 +31,7 @@ export interface AnuncioBlockProps {
   produtoNome: string;
   produtoEhUsado: boolean;
   produtoCondicao: number | null;
+  produtoMedidas: MedidasDoPacote | null;
   /** `null` while the produto doc is still loading — NOT 0. */
   produtoFotoCount: number | null;
   canWrite: boolean;
@@ -87,6 +88,7 @@ export function AnuncioBlock({
   produtoNome,
   produtoEhUsado,
   produtoCondicao,
+  produtoMedidas,
   produtoFotoCount,
   canWrite,
   hasClient,
@@ -155,6 +157,7 @@ export function AnuncioBlock({
         produtoNome={produtoNome}
         produtoEhUsado={produtoEhUsado}
         produtoCondicao={produtoCondicao}
+        produtoMedidas={produtoMedidas}
         link={link}
         db={db}
         canWrite={canWrite}

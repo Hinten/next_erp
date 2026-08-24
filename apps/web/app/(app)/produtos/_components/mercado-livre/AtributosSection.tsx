@@ -80,11 +80,17 @@ export interface AtributosSectionProps {
  * `item.attributes.required`. This is that screen.
  *
  * Order and membership are the SERVER's decision (`projectCategoriaAtributos`):
- * ERP-owned ids (`SELLER_SKU`, `SELLER_PACKAGE_*`), hidden attributes and
- * size-chart attributes never arrive here, and what does arrive is already
- * sorted required-first. The legacy screen wanted that ordering and never
- * shipped it — there is a commented-out `getAtributosObrigatorio` in
+ * produto-derived ids (`SELLER_SKU`, `WEIGHT`, `SELLER_PACKAGE_*`), hidden
+ * attributes and size-chart attributes never arrive here, and what does arrive
+ * is already sorted required-first. The legacy screen wanted that ordering and
+ * never shipped it — there is a commented-out `getAtributosObrigatorio` in
  * `cadastroProdutoMLNew.dart` where it should have been.
+ *
+ * ⚠️ The derived ids are not simply *absent* from the screen — `ListingForm`
+ * shows their values read-only (`DimensoesPacoteField`, `CondicaoField`). A
+ * required ML attribute that just vanishes reads as a bug; one that says "this
+ * comes from the produto" reads as a design. Keep any future addition to that
+ * list paired with somewhere to see it.
  */
 export function AtributosSection({
   categoryId,

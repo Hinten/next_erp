@@ -2,7 +2,7 @@
 
 import { Badge, Button, Card, Group, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
-import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import type { MedidasDoPacote, ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
@@ -49,6 +49,7 @@ export interface ContaPanelProps {
   produtoNome: string;
   produtoEhUsado: boolean;
   produtoCondicao: number | null;
+  produtoMedidas: MedidasDoPacote | null;
   produtoFotoCount: number | null;
   /** The surrounding produto form holds unsaved edits. */
   produtoDirty: boolean;
@@ -100,6 +101,7 @@ export function ContaPanel({
   produtoNome,
   produtoEhUsado,
   produtoCondicao,
+  produtoMedidas,
   produtoFotoCount,
   produtoDirty,
   carregandoGeral,
@@ -239,6 +241,7 @@ export function ContaPanel({
               produtoNome={produtoNome}
               produtoEhUsado={produtoEhUsado}
               produtoCondicao={produtoCondicao}
+              produtoMedidas={produtoMedidas}
               produtoFotoCount={produtoFotoCount}
               canWrite={canPublish}
               hasClient={hasClient}

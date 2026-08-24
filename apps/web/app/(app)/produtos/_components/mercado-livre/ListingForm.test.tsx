@@ -38,6 +38,17 @@ vi.mock('@/lib/mercado-livre/listingPort', () => ({
 
 const { ListingForm } = await import('./ListingForm');
 
+/** A produto with every dimension filled — the default, so a test that does not
+ * care about the package block never has to think about it. Whole numbers, so
+ * the rounding is not what any assertion here is measuring. */
+const MEDIDAS = {
+  alturaCm: 5,
+  larguraCm: 10,
+  profundidadeCm: 10,
+  pesoBrutoKg: 1,
+  pesoLiquidoKg: 0.9,
+};
+
 function renderForm(
   over: Partial<ProdutoMercadoLivreLink> = {},
   props: Record<string, unknown> = {},
@@ -60,6 +71,7 @@ function renderForm(
       produtoNome="Camiseta Básica"
       produtoEhUsado={false}
       produtoCondicao={null}
+      produtoMedidas={MEDIDAS}
       link={l}
       db={{} as Firestore}
       canWrite
@@ -387,6 +399,65 @@ describe('ListingForm', () => {
     renderForm({}, { canWrite: false });
     expect(screen.getByLabelText('Título do anúncio')).toHaveProperty('disabled', true);
     expect(screen.getByLabelText('Descrição')).toHaveProperty('disabled', true);
+  });
+});
+
+describe('Dimensões do pacote come from the produto', () => {
+  it('renders the package publish will send, read-only', () => {
+    // These four leave as SELLER_PACKAGE_* on every publish, rebuilt from the
+    // produto, which is why the category grid never offers them as inputs.
+    // Showing them is what stops that filtering reading as four missing fields.
+    renderForm();
+    expect(screen.getByText('5 × 10 × 10 cm · 1000 g')).toBeDefined();
+    expect(screen.getByText(/Dimensões e peso do produto/)).toBeDefined();
+  });
+
+  // ⚠️ THE display↔payload assertion. ML accepts only whole cm/g, so a produto
+  // measured 5.5 publishes 6 — a screen printing "5,5" would describe a payload
+  // that does not exist. Same trap `CondicaoField` documents.
+  it('shows the ROUNDED values, not the raw produto fields', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5.5,
+          larguraCm: 10.01,
+          profundidadeCm: 30,
+          pesoBrutoKg: 0.2504,
+          pesoLiquidoKg: null,
+        },
+      },
+    );
+    expect(screen.getByText('6 × 11 × 30 cm · 250 g')).toBeDefined();
+    expect(screen.queryByText(/5,5|5\.5/)).toBeNull();
+  });
+
+  // ML requires all four for ME2 cross docking and does NOT tag them `required`
+  // in its per-category attributes, so nothing else on this screen can warn —
+  // and publish omits all four when one is missing rather than sending three.
+  it('names the empty produto fields instead of failing silently at ML', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5,
+          larguraCm: null,
+          profundidadeCm: null,
+          pesoBrutoKg: 1,
+          pesoLiquidoKg: null,
+        },
+      },
+    );
+    expect(screen.getByText('Falta preencher: Largura e Profundidade')).toBeDefined();
+    expect(screen.getByText(/não envia nenhum deles/)).toBeDefined();
+  });
+
+  // ⚠️ `null` is "the produto snapshot has not landed", not "the produto is
+  // empty". Collapsing the two flashes the warning on every open — the bug
+  // `produtoFotoCount` avoids by staying null while loading.
+  it('stays quiet while the produto snapshot is still loading', () => {
+    renderForm({}, { produtoMedidas: null });
+    expect(screen.queryByText(/Falta preencher/)).toBeNull();
   });
 });
 
