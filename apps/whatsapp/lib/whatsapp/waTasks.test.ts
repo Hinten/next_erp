@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MissingRegionError } from '@delfrance/core/region';
+
 // Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
 // binding. The scheduler's own env-driven wiring runs real.
 const h = vi.hoisted(() => ({
@@ -47,26 +49,39 @@ describe('createWhatsappTaskScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload);
   });
 
-  it('defaults the region to us-east5 when nothing is configured', async () => {
+  it('REFUSES to enqueue when no region is configured', async () => {
     vi.stubEnv('WHATSAPP_TASKS_DISABLED', '');
     vi.stubEnv('WHATSAPP_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createWhatsappTaskScheduler();
-    await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processWhatsappNotification',
-    );
+
+    // No default left to fall through to: a literal here produced a well-formed
+    // path to a queue that does not exist, and the Admin SDK then resolved
+    // us-central1 and dropped the task while this call resolved successfully.
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
   });
 
-  it('treats blank WHATSAPP_TASKS_REGION as unset and falls through to default', async () => {
+  it('treats a blank WHATSAPP_TASKS_REGION as unset, and unset now throws', async () => {
     vi.stubEnv('WHATSAPP_TASKS_DISABLED', '');
-    // Empty string should be treated as unset
+    // Empty string counts as unset — what changed is that "unset" no longer
+    // reaches a literal.
     vi.stubEnv('WHATSAPP_TASKS_REGION', '');
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createWhatsappTaskScheduler();
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+  });
+
+  it('falls through to FUNCTIONS_REGION when only that is set', async () => {
+    vi.stubEnv('WHATSAPP_TASKS_DISABLED', '');
+    vi.stubEnv('WHATSAPP_TASKS_REGION', '');
+    vi.stubEnv('FUNCTIONS_REGION', 'us-central1');
+    const scheduler = createWhatsappTaskScheduler();
     await scheduler.enqueue(payload);
+
     expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processWhatsappNotification',
+      'locations/us-central1/functions/processWhatsappNotification',
     );
   });
 

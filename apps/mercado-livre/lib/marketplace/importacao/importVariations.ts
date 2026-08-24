@@ -40,7 +40,7 @@
 import { createHash } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { type MappedMlVariation } from '@delfrance/integrations-mercado-livre';
-import { sameCombo } from '@delfrance/schemas';
+import { type MlModeracao, sameCombo } from '@delfrance/schemas';
 import {
   estoqueCollection,
   produtoCollection,
@@ -97,6 +97,13 @@ export interface ImportVariationChildrenUpOptions {
    * `variacaoMercadoLivreLinkSchema`.
    */
   userProductId: string | null;
+  /**
+   * ML's active moderations on the member item (#1087), read by `import.ts`
+   * beside the `status`/`sub_status` above and written in the same patch as them.
+   * `null` = "never asked" and leaves the stored value alone; see
+   * `ImportAssembleArgs.moderacoes`.
+   */
+  moderacoes: MlModeracao[] | null;
 }
 
 export async function importVariationChildren(
@@ -166,6 +173,7 @@ export async function importVariationChildren(
             status: up.status,
             subStatus: up.subStatus,
             userProductId: up.userProductId,
+            moderacoes: up.moderacoes,
           }
         : null,
       now,

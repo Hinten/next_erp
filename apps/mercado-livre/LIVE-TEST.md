@@ -356,6 +356,19 @@ which is also the most interesting case here because the listing stays `active`.
 | A removed listing (`under_review` + `forbidden`) | `remedio` is **null** — ML sends REASON only, and no fix exists                                                            |        |
 | A UP **family** member is moderated              | the reason lands on the MEMBER's `variacaoMercadoLivre` doc; the parent carries it only if that member won the status fold |        |
 
+The IMPORT path is the third writer (it was added after the rows above, which
+cover the `items` webhook and the re-check button). Its rows:
+
+| Signal                                                   | Assert                                                                                                                                           | Result |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
+| **Import** a moderated listing (`/importar`)             | the fresh link doc lands with `moderacoes[]` — never `status: 'paused'` with no reason                                                           |        |
+| **Re-import** after ML lifts it                          | `moderacoes` becomes `[]` — ⚠️ the stale-reason case; the `...existingLink` spread used to carry the old one onto a now-`active` anúncio         |        |
+| Import a **healthy** listing                             | **no** `last_moderation` call, and `moderacoes` is written `[]` anyway (the gate answers off the item already fetched)                           |        |
+| **Mass** import (`/importar-todos`) over a moderated one | **no** `last_moderation` call at all, and `moderacoes` stays `null` — ⚠️ `null`, not `[]`: "never asked" must not read as "ML reported none"     |        |
+| Mass import over a listing whose reason was lifted       | `moderacoes` still becomes `[]` — the free half of the invariant survives the skip                                                               |        |
+| `/moderations` 5xx during a single import                | the produto **still imports**, `moderacoes` untouched, one `console.warn` in the backend log naming the item                                     |        |
+| Import a moderated **UP family** member                  | the reason lands on the MEMBER's `variacaoMercadoLivre` doc AND on the family parent link (the importer takes the imported member's, not a fold) |        |
+
 ### 7.3 — Settle #957 (the shipment `x-format-new` body)
 
 The **code already shipped**: `x-format-new: true` now rides on `getShipment` and

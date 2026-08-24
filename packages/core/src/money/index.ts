@@ -80,5 +80,24 @@ export function roundReais(n: number): number {
  * `format(money(Math.round(value * 100)))`.
  */
 export function formatReais(reais: number, currency = 'BRL', locale = 'pt-BR'): string {
-  return format(money(Math.round(roundReais(reais) * 100), currency), locale);
+  return format(money(centavosDeReais(reais), currency), locale);
+}
+
+/**
+ * Reais → integer minor units (cents), applying {@link roundReais} first.
+ *
+ * The same conversion {@link formatReais} performs, exported because callers
+ * increasingly need the NUMBER rather than the formatted string: a
+ * `MinorUnits` field on a channel contract (Mercado Livre's partial-refund
+ * amount, #364), a payment gateway payload, a comparison against a stored
+ * integer.
+ *
+ * ⚠️ Exists so those callers do not hand-roll `Math.round(x * 100)`, which
+ * `delfrance/no-ad-hoc-money-rounding` forbids for a real reason: skipping
+ * {@link roundReais} makes a stray third decimal round differently from every
+ * other total in the ERP, and the divergence only shows at the x.xx5 edges
+ * where it is hardest to notice.
+ */
+export function centavosDeReais(reais: number): number {
+  return Math.round(roundReais(reais) * 100);
 }

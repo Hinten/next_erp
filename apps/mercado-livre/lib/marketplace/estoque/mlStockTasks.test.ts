@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MissingRegionError } from '@delfrance/core/region';
 
 // Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
 // binding. The scheduler's own env-driven wiring runs real. Mirrors
@@ -54,28 +55,40 @@ describe('createMlStockTaskScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload, undefined);
   });
 
-  it('defaults the region to us-east5 when nothing is configured', async () => {
+  it('REFUSES to enqueue when nothing is configured', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
-    // Truly unset (not empty) so the `?? default` chain falls through.
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMlStockTaskScheduler();
-    await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith('locations/us-east5/functions/sendMercadoLivreStock');
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
   });
 
-  it('treats blank MERCADO_LIVRE_TASKS_REGION as unset and falls through to default', async () => {
+  it('falls through to FUNCTIONS_REGION when only that is set', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
-    // Empty string should be treated as unset
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', 'us-central1');
+    const scheduler = createMlStockTaskScheduler();
+    await scheduler.enqueue(payload);
+
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-central1/functions/sendMercadoLivreStock',
+    );
+  });
+
+  it('treats a blank MERCADO_LIVRE_TASKS_REGION as unset, and unset now throws', async () => {
+    vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', '');
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMlStockTaskScheduler();
-    await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith('locations/us-east5/functions/sendMercadoLivreStock');
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
   });
 
   it('passes scheduleDelaySeconds through to the underlying queue.enqueue (429 pause re-enqueue)', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', 'us-central1');
     const scheduler = createMlStockTaskScheduler();
     await scheduler.enqueue(payload, { scheduleDelaySeconds: 300 });
     expect(h.enqueue).toHaveBeenCalledWith(payload, { scheduleDelaySeconds: 300 });

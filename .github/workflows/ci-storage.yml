@@ -169,7 +169,7 @@ jobs:
     # Inlined into the functions bundle at build time (build.mjs); the build
     # fails without it. Must match the Storage bucket region.
     env:
-      FUNCTIONS_REGION: us-east1
+      FUNCTIONS_REGION: us-central1
     steps:
       - uses: actions/checkout@v6
         with:
@@ -239,7 +239,7 @@ jobs:
     needs: [changes, storage-build-test]
     # Inlined into the functions bundle at build time (build.mjs).
     env:
-      FUNCTIONS_REGION: us-east1
+      FUNCTIONS_REGION: us-central1
       # There is no Cloud Tasks emulator, and the LIVE `onProdutoChanged` runs in
       # this lane's functions emulator — so every produto `set()` a storage test
       # makes would otherwise try to reach the real Cloud Tasks API. The flag is
@@ -283,8 +283,11 @@ jobs:
       - name: Run storage suite on the emulators
         # Demo-project mode → no real credentials, nothing touches staging. The
         # functions emulator fires the Storage trigger; the *.storage.test.ts
-        # suite asserts the resize round-trip. The function region resolves from
-        # the FUNCTIONS_REGION param default (us-east1) — no env needed here.
+        # suite asserts the resize round-trip.
+        # ⚠️ The region comes from this JOB's `env:` block above, and is now
+        # REQUIRED rather than convenient: build.mjs no longer defaults it (a
+        # literal there is how the project drifted into three regions), so
+        # `Build functions bundle` refuses without it.
         run: |
           firebase emulators:exec \
             --config firebase.functions.json \

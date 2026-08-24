@@ -215,9 +215,16 @@ export interface ModeracaoApi {
 /**
  * ML's active moderations for one listing, or `[]` when there are none.
  *
- * Shared by `itemsStatusSync` (the webhook) and `reverificarAnuncio` (the
- * operator's manual re-check) so the two can never disagree about when a
- * moderation is read or what a 404 means.
+ * Shared by `itemsStatusSync` (the webhook), `reverificarAnuncio` (the
+ * operator's manual re-check) and the IMPORTER, so the three can never disagree
+ * about when a moderation is read or what a 404 means.
+ *
+ * ⚠️ The importer is the one caller that does NOT let the transient rethrow
+ * reach its own caller — it degrades to "never asked" instead, because unlike
+ * the other two its unit of work is a whole produto rather than a status write.
+ * That choice lives at ITS call site (`lerModeracoesDoItem`), never here: this
+ * function's contract is unchanged and a future caller still inherits the strict
+ * one by default.
  *
  * ⚠️ GATED, not unconditional — see {@link precisaConsultarModeracao}. `items`
  * fires for every change to every listing the seller owns, and the sync's cost

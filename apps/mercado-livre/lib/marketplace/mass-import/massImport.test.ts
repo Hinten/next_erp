@@ -197,6 +197,9 @@ function makeApi(opts: { scan?: DocData; items?: Record<string, DocData> }): Mer
     }),
     getItemDescription: vi.fn(async () => ({ plain_text: 'Descrição' })),
     getCategory: vi.fn(async () => ({ id: 'MLB1430', name: 'Roupas' })),
+    // #1087 — present so an accidental call is observable rather than a
+    // `is not a function` crash. The mass path must never reach it.
+    getLastModeration: vi.fn(async () => []),
   } as unknown as MercadoLivreApi;
 }
 
@@ -318,6 +321,65 @@ describe('processMassImportJob — scan + skip-filter', () => {
     const job = db.docs('importacoesMercadoLivre').get('job7')!;
     expect(job).toMatchObject({ status: 'completed', scanned: 0, imported: 0, fila: [] });
     expect(job.finishedAt).toBe(CLOCK_NOW);
+  });
+});
+
+describe('processMassImportJob — ML moderations (#1087)', () => {
+  /**
+   * The mass path deliberately does NOT spend a `/moderations` call: it drains a
+   * whole catalogue, and the reason is a diagnostic the operator can pull
+   * per-listing with "Reverificar anúncio". `lerModeracoes: false` suppresses the
+   * CALL, never the write — which is the distinction these two pin.
+   */
+  function linkOf(db: FakeDb, produtoId: string): DocData {
+    return [...db.docs(`produtos/${produtoId}/produtoMercadoLivre`).values()][0]!;
+  }
+
+  it('⚠️ never calls /moderations, even for a listing ML has moderated', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'jobMod');
+    const api = makeApi({
+      scan: { results: ['MLB9'], scroll_id: null },
+      items: {
+        MLB9: simpleItem('MLB9', { status: 'paused', sub_status: ['moderation_penalty'] }),
+      },
+    });
+
+    await processMassImportJob(runDeps(db, api), { jobId: 'jobMod', integracaoId: 'conta-A' }, 0);
+
+    expect(api.getLastModeration).not.toHaveBeenCalled();
+    const produtoId = [...db.docs('produtos').keys()][0]!;
+    // "Never asked" — NOT `[]`, which on disk is byte-identical to a healthy
+    // listing and would record "not moderated" about one nobody asked about.
+    expect(linkOf(db, produtoId).moderacoes ?? null).toBeNull();
+    expect(linkOf(db, produtoId).status).toBe('paused');
+  });
+
+  it('still clears a stale reason off a HEALTHY listing — that verdict is free', async () => {
+    // The half of the invariant the mass path keeps: the item already fetched
+    // says there is nothing to explain, so any stored reason is stale. No call.
+    const db = new FakeDb();
+    seedJob(db, 'jobLimpo', { options: { ...BASE_OPTIONS, atualizarCadastrados: true } });
+    db.seed('produtos', 'prodM', { nome: 'Camiseta', sku: 'SKU-M' });
+    db.seed('produtos/prodM/produtoMercadoLivre', 'lnkM', {
+      id: 'MLB9',
+      title: 'Camiseta',
+      contaOuterRef: 'documents/integracao/conta-A',
+      status: 'paused',
+      moderacoes: [{ nome: 'POOR_QUALITY_THUMBNAIL', motivo: 'Foto ruim' }],
+    });
+    const api = makeApi({
+      scan: { results: ['MLB9'], scroll_id: null },
+      items: { MLB9: simpleItem('MLB9') },
+    });
+
+    await processMassImportJob(runDeps(db, api), { jobId: 'jobLimpo', integracaoId: 'conta-A' }, 0);
+
+    expect(api.getLastModeration).not.toHaveBeenCalled();
+    expect(db.docs('produtos/prodM/produtoMercadoLivre').get('lnkM')).toMatchObject({
+      status: 'active',
+      moderacoes: [],
+    });
   });
 });
 

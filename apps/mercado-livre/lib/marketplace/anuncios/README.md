@@ -26,7 +26,10 @@ its status and moderation state current. The inverse direction (ML → ERP) is
   another member is live, silently dropping the conta from
   `integracoesComProduto`.
 - `moderacoes.ts` — when to ask ML for moderation reasons, and how to write
-  `link.moderacoes`.
+  `link.moderacoes`. ⚠️ Consumed from **outside** this theme too:
+  `importacao/import.ts` is the third writer of that field (#1087) and shares
+  this module so the gate, the `-ITM` reference and the 404-is-data narrow cannot
+  drift between the three. Keep it free of anything import-specific.
 - `reverificarAnuncio.ts` — the operator escape hatch: re-read one listing and
   record its real state (stock-latch recovery).
 - `anuncioUrl.ts` — resolves a listing's public ML URL (needed only for
