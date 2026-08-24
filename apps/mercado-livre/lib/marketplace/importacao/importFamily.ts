@@ -104,6 +104,20 @@ export interface FamilyItemsResult {
   /** Every MLB item id ML reports for the family, deduped. */
   ids: string[];
   /**
+   * The family's own `user_products_ids` — the set {@link ids} was searched
+   * under, surfaced so a caller can VERIFY what came back rather than trust it.
+   *
+   * Costs nothing: `familyUserProductIds` already fetches this on hop one, and
+   * it used to be discarded. `sweepRemovedMembers` needs it because the search
+   * is the input to a **close**, and every other guard there checks that our
+   * view is complete — none checks that ML's answer was not broader than asked.
+   *
+   * Empty whenever {@link resolutionError} is set: on an error path there is
+   * nothing to verify against, and an empty authority must never read as "this
+   * item belongs to no family, close it".
+   */
+  userProductIds: string[];
+  /**
    * The ML-API failure that aborted resolution; null on success. ⚠️ An error
    * and an empty family are NOT interchangeable for a caller that acts on
    * absence — see {@link resolveFamilyItemIds}.
@@ -152,7 +166,7 @@ export async function resolveFamilyItemIds(
 ): Promise<FamilyItemsResult> {
   try {
     const userProductIds = await familyUserProductIds(deps, familyId);
-    if (userProductIds.length === 0) return { ids: [], resolutionError: null };
+    if (userProductIds.length === 0) return { ids: [], userProductIds: [], resolutionError: null };
 
     const ids = new Set<string>();
     let total: number | null = null;
@@ -172,27 +186,30 @@ export async function resolveFamilyItemIds(
         if (total != null && ids.size < total) {
           return {
             ids: [],
+            userProductIds: [],
             resolutionError: `a busca devolveu ${ids.size} de ${total} anúncios da família`,
           };
         }
-        return { ids: [...ids], resolutionError: null };
+        return { ids: [...ids], userProductIds, resolutionError: null };
       }
-      if (total != null && ids.size >= total) return { ids: [...ids], resolutionError: null };
+      if (total != null && ids.size >= total)
+        return { ids: [...ids], userProductIds, resolutionError: null };
       // A full page that added NOTHING means `offset` is not advancing the
       // window — no more ids are coming, and continuing to the cap would report
       // a truncation that is not one.
-      if (ids.size === sizeBefore) return { ids: [...ids], resolutionError: null };
+      if (ids.size === sizeBefore) return { ids: [...ids], userProductIds, resolutionError: null };
     }
 
     return {
       ids: [],
+      userProductIds: [],
       resolutionError: `família com mais de ${MAX_FAMILY_ITEM_PAGES * FAMILY_ITEMS_PAGE_SIZE} anúncios`,
     };
   } catch (err) {
     // Best-effort: SURFACED (not silently identical to an empty family) so the
     // caller can tell "the family has no members" from "we couldn't ask".
     if (err instanceof MercadoLivreError) {
-      return { ids: [], resolutionError: err.message };
+      return { ids: [], userProductIds: [], resolutionError: err.message };
     }
     throw err;
   }

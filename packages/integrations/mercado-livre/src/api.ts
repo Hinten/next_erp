@@ -27,6 +27,7 @@ import {
   type MlClaimSearch,
   type MlDomainDiscovery,
   type MlItem,
+  type MlItemsMultiget,
   type MlItemDescription,
   type MlItemPrices,
   type MlListingPrices,
@@ -64,6 +65,7 @@ import {
   itemDescriptionSchema,
   itemPricesSchema,
   itemSchema,
+  itemsMultigetSchema,
   listingPricesSchema,
   migrationLiveListingSchema,
   mlBillingInfoSchema,
@@ -176,6 +178,19 @@ export interface MercadoLivreApi {
    */
   criarUsuarioTeste(siteId: string): Promise<MlTestUser>;
   getItem(id: string): Promise<MlItem>;
+  /**
+   * `GET /items?ids=<csv>&attributes=<csv>` — ML's **Multiget**: up to
+   * {@link ML_MULTIGET_MAX_IDS} items in one request, each entry carrying its own
+   * status code (see {@link itemsMultigetSchema} for why `code` must be read).
+   *
+   * `attributes` trims the response to the named fields. Omit it for whole items
+   * — but prefer naming them: this exists to make a bulk check affordable, and an
+   * unfiltered multiget of 20 full listings is a large body for two fields.
+   *
+   * ⚠️ Passing more than {@link ML_MULTIGET_MAX_IDS} ids does NOT error — ML
+   * truncates, so the answer silently describes a prefix. Chunk at the call site.
+   */
+  getItemsByIds(ids: readonly string[], attributes?: readonly string[]): Promise<MlItemsMultiget>;
   /**
    * `GET /moderations/last_moderation/{referenceId}` — the ACTIVE moderation(s)
    * on one element, with ML's own REASON and REMEDY texts (#1087).
@@ -984,6 +999,15 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     // docs make a point of the flag and its absence looks like an omission.
     getLastModeration: (referenceId) =>
       request('GET', `/moderations/last_moderation/${referenceId}`, mlModerationsSchema),
+    getItemsByIds: (ids, attributes) =>
+      request('GET', '/items', itemsMultigetSchema, {
+        query: {
+          ids: ids.join(','),
+          ...(attributes != null && attributes.length > 0
+            ? { attributes: attributes.join(',') }
+            : {}),
+        },
+      }),
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
     getOrderResponse: async (id) => {

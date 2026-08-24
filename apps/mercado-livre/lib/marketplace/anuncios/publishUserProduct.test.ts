@@ -23,6 +23,11 @@ function makeApi(overrides: Record<string, unknown> = {}): {
       results: ['MLB1', 'MLB2', 'MLB3'],
       paging: { total: 3, limit: FAMILY_ITEMS_PAGE_SIZE, offset: 0 },
     })),
+    // Confirms every id it is asked about as a member of the família — the
+    // honest default, so a test that cares about verification opts in.
+    getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+      ids.map((id) => ({ code: 200, body: { id, user_product_id: 'MLBU1' } })),
+    ),
     updateItem: vi.fn(async (id: string) => ({ id, status: 'closed' })),
     ...overrides,
   } as Record<string, ReturnType<typeof vi.fn>>;
@@ -136,6 +141,128 @@ describe('sweepRemovedMembers', () => {
     expect(out).toEqual({ closed: ['MLB3'], skipped: null });
   });
 
+  it('does NOT close an item ML returned that belongs to another família', async () => {
+    // The finding this guard exists for. The search is asked for the família's
+    // UPs, but nothing here can verify ML honours that filter — and the four
+    // older refusals cannot see a foreign item: it passes `keptItemIds.every`
+    // (that tests the other direction) and passes the whole-family test as long
+    // as one genuine member is kept. Before this it was paused and closed.
+    const { api, mocks } = makeApi({
+      searchItemsByUserProduct: vi.fn(async () => ({
+        results: ['MLB1', 'MLB2', 'MLB3', 'MLB-ESTRANHO'],
+        paging: { total: 4, limit: FAMILY_ITEMS_PAGE_SIZE, offset: 0 },
+      })),
+      getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+        ids.map((id) => ({
+          code: 200,
+          body: { id, user_product_id: id === 'MLB-ESTRANHO' ? 'MLBU-OUTRA' : 'MLBU1' },
+        })),
+      ),
+    });
+
+    const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB1', 'MLB2'] });
+
+    // The genuine orphan still closes — the guard narrows, it does not disable.
+    expect(out).toEqual({ closed: ['MLB3'], skipped: null });
+    expect(mocks.updateItem!.mock.calls.map((c) => c[0])).toEqual(['MLB3', 'MLB3']);
+  });
+
+  it('verifies NOTHING when there is nothing to close — the guard is free', async () => {
+    // The cost argument in the docblock, pinned: a normal publish removes no
+    // variação, and that path must not pay for a membership check.
+    const { api, mocks } = makeApi();
+
+    const out = await sweepRemovedMembers(
+      { api },
+      { ...ARGS, keptItemIds: ['MLB1', 'MLB2', 'MLB3'] },
+    );
+
+    expect(out).toEqual({ closed: [], skipped: null });
+    expect(mocks.getItemsByIds).not.toHaveBeenCalled();
+  });
+
+  it('closes nothing when the membership check itself fails', async () => {
+    const { api, mocks } = makeApi({
+      getItemsByIds: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 500: boom', 500, null);
+      }),
+    });
+
+    const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB1', 'MLB2'] });
+
+    expect(out.closed).toEqual([]);
+    expect(out.skipped).toContain('não foi possível confirmar os membros');
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('does NOT close an item ML reports with no user_product_id', async () => {
+    // Unprovable is not the same as foreign, and both keep the listing open:
+    // leaving an orphan costs a later sweep, closing a live listing cannot be
+    // undone from here.
+    const { api, mocks } = makeApi({
+      getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+        ids.map((id) => ({ code: 200, body: { id, user_product_id: null } })),
+      ),
+    });
+
+    const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB1', 'MLB2'] });
+
+    expect(out.closed).toEqual([]);
+    expect(out.skipped).toBe('nenhum anúncio a encerrar pertence comprovadamente à família');
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('does NOT close an item whose multiget entry is not a 200', async () => {
+    // ML answers a partial failure as 200 OVERALL with a per-entry code, so a
+    // reader that skips `code` sees a 403/404 as "an item with no UP" — which,
+    // without this, is indistinguishable from a real one.
+    const { api, mocks } = makeApi({
+      getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+        ids.map((id) => ({ code: 403, body: { id, user_product_id: 'MLBU1' } })),
+      ),
+    });
+
+    const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB1', 'MLB2'] });
+
+    expect(out.closed).toEqual([]);
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it("chunks the verification at ML's multiget cap instead of truncating", async () => {
+    // ML TRUNCATES an over-long multiget rather than rejecting it, so an
+    // unchunked call would silently confirm a prefix and leave every candidate
+    // past the 20th unverified — which here would mean 5 listings left open,
+    // and in the inverse framing is exactly how a silent cap hides work.
+    const todos = idsOf(1, 25);
+    const { api, mocks } = makeApi({
+      searchItemsByUserProduct: vi.fn(async () => ({
+        results: [...todos, 'MLB-KEPT'],
+        paging: { total: todos.length + 1, limit: FAMILY_ITEMS_PAGE_SIZE, offset: 0 },
+      })),
+    });
+
+    const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB-KEPT'] });
+
+    expect(out.closed).toEqual(todos);
+    expect(mocks.getItemsByIds!.mock.calls.map((c) => (c[0] as string[]).length)).toEqual([20, 5]);
+  });
+
+  it('closes nothing when the família reports no user products at all', async () => {
+    // ⚠️ This does NOT reach `verificarMembros`: `resolveFamilyItemIds`
+    // short-circuits an empty family to `ids: []`, so the sweep returns at the
+    // no-candidates line above. Named for the OUTCOME it pins, which is the part
+    // that must hold however it is reached — the helper's own empty-authority
+    // refusal is belt-and-braces behind this, not the mechanism here.
+    const { api, mocks } = makeApi({
+      getUserProductFamily: vi.fn(async () => ({ user_products_ids: [] })),
+    });
+
+    const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB1'] });
+
+    expect(out.closed).toEqual([]);
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
   it('rethrows anything that is not an ML error', async () => {
     // A coding bug must not be swallowed by the best-effort wrapper.
     const { api } = makeApi({
@@ -163,6 +290,9 @@ describe('resolveFamilyItemIds — completeness', () => {
 
     expect(await resolveFamilyItemIds({ api }, 'FAM-1', 9)).toEqual({
       ids: ['MLB1', 'MLB2', 'MLB3'],
+      // Surfaced, not fetched again — hop one already had them, and the sweep
+      // needs them to VERIFY what the search returned before closing anything.
+      userProductIds: ['MLBU1', 'MLBU2', 'MLBU3'],
       resolutionError: null,
     });
     expect(mocks.searchItemsByUserProduct).toHaveBeenCalledTimes(1);
@@ -231,6 +361,7 @@ describe('resolveFamilyItemIds — completeness', () => {
 
     expect(await resolveFamilyItemIds({ api }, 'FAM-1', 9)).toEqual({
       ids: ['MLB1', 'MLB2'],
+      userProductIds: ['MLBU1', 'MLBU2', 'MLBU3'],
       resolutionError: null,
     });
   });

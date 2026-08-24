@@ -86,6 +86,52 @@ describe('createMercadoLivreApi — happy paths', () => {
     expect(String(fetchMock.mock.calls[0]![0])).toContain('include_attributes=all');
   });
 
+  it('getItemsByIds joins ids and attributes, and parses the VERBOSE envelope', async () => {
+    // Multiget does not answer with items — it answers `[{code, body}, …]`, one
+    // entry per requested id, each with its own status. A caller that reads
+    // `body` without `code` sees a 403/404 as an item with no fields.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        { code: 200, body: { id: 'MLB1', user_product_id: 'MLBU1' } },
+        { code: 404, body: null },
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const out = await api.getItemsByIds(['MLB1', 'MLB2'], ['id', 'user_product_id']);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]!.code).toBe(200);
+    expect(out[0]!.body?.user_product_id).toBe('MLBU1');
+    expect(out[1]!.code).toBe(404);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('/items?');
+    expect(url).toContain('ids=MLB1%2CMLB2');
+    expect(url).toContain('attributes=id%2Cuser_product_id');
+  });
+
+  it('getItemsByIds omits attributes entirely when none are named', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ code: 200, body: { id: 'MLB1' } }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.getItemsByIds(['MLB1']);
+
+    expect(String(fetchMock.mock.calls[0]![0])).not.toContain('attributes=');
+  });
+
+  it('getItemsByIds maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getItemsByIds(['MLB1'])).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+
   it('searchOrders forwards the query params', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ results: [ORDER], paging: { total: 1 } }),
