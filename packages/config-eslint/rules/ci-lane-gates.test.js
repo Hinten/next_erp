@@ -257,6 +257,30 @@ const UNGATED = {
     'deliberate shape as copilot-setup-steps.yml.',
 };
 
+/**
+ * `ci.yml`'s five suite jobs: job id → the check-run name it publishes.
+ *
+ * ⚠️ This exists because `ci.yml` lives in UNGATED, which carries no
+ * `jobs[].check` structure — so assertion 9's `published !== job.check`
+ * comparison, which protects every GATED lane's names, never runs for it.
+ * Without this table the five names that a human types into `protect-main`
+ * (#1052) are asserted NOWHERE: they appear only in prose — CLAUDE.md rule 2,
+ * SKILL.md's table, the UNGATED string above. Renaming `name: CI test` to
+ * anything else would keep this whole suite green, silently rot both documents,
+ * and once the name is pinned leave branch protection waiting forever on a check
+ * that never reports — the unmergeable-`main` failure mode this file's header
+ * warns about.
+ *
+ * Pure ASCII, no `:` and no `/`, for the reasons in the LANES docstring.
+ */
+const CI_YML_JOBS = {
+  typecheck: 'CI typecheck',
+  lint: 'CI lint',
+  'format-check': 'CI format check',
+  test: 'CI test',
+  build: 'CI build',
+};
+
 /** Same discovery shape as `env-example-location.test.js` — see its long note. */
 function findByPathspec(pathspec) {
   return gitLsFiles(pathspec);
@@ -740,6 +764,63 @@ describe('CI lanes always report', () => {
         'breaks the gates, which locate their jobs by name through the jobs API.',
         '',
         ...dupes.map((d) => `  - ${d}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 5b. ci.yml is gateless BECAUSE it is unskippable. Enforce both halves.
+  // ------------------------------------------------------------------
+  it('ci.yml publishes the five pinnable names and none of the five can skip', () => {
+    const CI = '.github/workflows/ci.yml';
+    const jobs = jobBlocks(read(CI));
+    const suite = Object.keys(jobs).filter((id) => !/^report-/.test(id));
+
+    // (a) The suite jobs are exactly the five declared. A sixth added without a
+    //     table entry would be unasserted; a removed one silently drops a check.
+    expect(
+      suite.sort(),
+      [
+        `${CI}'s suite jobs drifted from CI_YML_JOBS.`,
+        '',
+        'Add the new job to that table (and to CLAUDE.md rule 2 + the SKILL.md',
+        'table), or this lane gains a check that nothing pins and nothing describes.',
+      ].join('\n'),
+    ).toEqual(Object.keys(CI_YML_JOBS).sort());
+
+    // (b) Each publishes the exact name a human pins on the ruleset.
+    const names = Object.fromEntries(suite.map((id) => [id, checkName(id, jobs[id])]));
+    expect(
+      names,
+      [
+        `A ${CI} check-run name changed.`,
+        '',
+        'These are the names #1052 pins on `protect-main` (id 16348427). GitHub',
+        'matches a required check BY NAME: a renamed check is never reported and the',
+        'branch waits on it forever. If the rename is intentional, update CI_YML_JOBS,',
+        'CLAUDE.md rule 2, the SKILL.md table and the ruleset in the same change.',
+      ].join('\n'),
+    ).toEqual(CI_YML_JOBS);
+
+    // (c) None of them carries an `if:`. This is the WHOLE reason ci.yml needs no
+    //     gate, and until now it was asserted only in prose. A job skipped by `if:`
+    //     publishes `skipped`, which GitHub counts as SATISFYING a required check —
+    //     so an `if:` here turns a pinned check into a permanent free pass.
+    const skippable = suite.filter((id) => /^\s{4}if\s*:/m.test(jobs[id]));
+    expect(
+      skippable,
+      [
+        `These ${CI} jobs gained an \`if:\`, which makes them SKIPPABLE.`,
+        '',
+        'A skipped job publishes `skipped`, and GitHub counts that as satisfying a',
+        'required status check — so each of these becomes a permanent free pass once',
+        'pinned. Unskippability is the entire reason this lane is allowed to sit in',
+        'UNGATED with no gate job of its own.',
+        '',
+        'If the condition is genuinely needed, this lane must grow a `gate` job and',
+        'move into LANES — do not just delete this assertion.',
+        '',
+        ...skippable.map((id) => `  - ${id}`),
       ].join('\n'),
     ).toEqual([]);
   });

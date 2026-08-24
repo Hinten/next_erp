@@ -243,9 +243,18 @@ jobs:
         #
         # The converse also holds, and is why @delfrance/{schemas,auth,data} are
         # NOT excluded: this workflow has no `paths:` and no `if:`, so it is the
-        # one lane that always runs. The domain lanes therefore do not re-run
-        # those suites — ci-storage.yml, ci-nfe.yml and ci-rules.yml each say so
-        # on their own test step.
+        # one lane that always runs. No domain lane re-runs those three — the
+        # test steps of ci-storage.yml, ci-nfe.yml and ci-rules.yml each say so.
+        #
+        # ⚠️ That is NOT true of a lane's OWN root package, and deliberately so.
+        # `@delfrance/rules-gen` runs here AND in ci-rules.yml, which is genuine
+        # duplicate work — kept because it cannot be removed from either side:
+        # excluding it here would be an unowned exclusion (ci-rules.yml's
+        # `rules-offline` carries `if: needs.changes.outputs.run_e2e == 'true'`,
+        # so it SKIPS out of scope and the suite would then run nowhere), and
+        # dropping it there would leave that lane with no unit step to attribute
+        # a rules-gen failure to. The eight exclusions above are the only ones
+        # whose owning lane is worth the trade.
         #
         # Lint / typecheck / build are their own jobs and stay full-graph and
         # unfiltered, so cross-package breaks still surface on every PR.

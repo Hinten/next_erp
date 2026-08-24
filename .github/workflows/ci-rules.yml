@@ -213,6 +213,15 @@ jobs:
         # it was genuine duplicate execution. Same fix ci-storage.yml made for
         # schemas + data. Nothing is lost — ci.yml has no `paths:` and no `if:`, so it
         # never skips and excludes neither package.
+        #
+        # ⚠️ `@delfrance/rules-gen` itself is NOT excluded from ci.yml either, so what
+        # remains here IS duplicate execution — knowingly. It cannot be removed from
+        # either side: this job carries `if: needs.changes.outputs.run_e2e == 'true'`
+        # and therefore SKIPS out of scope, so excluding rules-gen from ci.yml would
+        # be an exclusion whose owner can vanish — the suite would run nowhere. And
+        # dropping it here would leave this lane with no unit step, so a rules-gen
+        # failure would report on `lint-typecheck-test`'s successor rather than on
+        # `CI gate (rules)`. Ownership is what the second run buys.
         run: |
           pnpm turbo run test \
             --filter @delfrance/rules-gen
