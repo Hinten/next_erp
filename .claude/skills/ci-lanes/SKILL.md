@@ -8,7 +8,7 @@ description: >-
   `protect-main` ruleset, or when deciding what should trigger a lane. Covers
   the `changes` scope job and `.github/scripts/e2e-affected.mjs` (--roots,
   --self, --only-paths, --kind), the unskippable `gate` job and its
-  required/optional guard manifest, the nine pinnable check names, the
+  required/optional guard manifest, the thirteen pinnable check names, the
   `ci-lane-gates.test.js` backstop, and the three GitHub behaviours that make
   naive CI silently green — a non-matching `paths:` publishing no check at all,
   a `skipped` job satisfying a required check, and check-run names carrying no
@@ -40,13 +40,13 @@ Everything here exists because of these. None is obvious, all three bite.
 2. **A job skipped by `if:` publishes `skipped`, and GitHub's required-status-check
    evaluation counts `skipped` as SATISFYING the requirement.** A required check
    that can be skipped is a permanent free pass. **Never pin a skippable job.**
-3. **A check-run name carries no workflow-name prefix.** `ci.yml`'s job publishes
-   as bare `lint-typecheck-test`; a reusable-workflow job publishes as
+3. **A check-run name carries no workflow-name prefix.** A job with no `name:`
+   publishes as its bare job id; a reusable-workflow job publishes as
    `<caller job id> / <called job id>`. Names must therefore be unique
    repo-wide — three lanes once published an identical
    `Lint / typecheck / unit / build (offline)`.
 
-## The nine pinnable checks
+## The thirteen pinnable checks
 
 | lane | gate | roots |
 | --- | --- | --- |
@@ -58,10 +58,23 @@ Everything here exists because of these. None is obvious, all three bite.
 | ci-mercado-livre | `CI gate (mercado-livre)` | `mercado-livre-app` |
 | ci-storage | `CI gate (storage)` | `storage`, `functions` |
 | ci-rules | `CI gate (rules)` | `rules-gen` |
-| ci.yml | `lint-typecheck-test` | — (full graph) |
+| ci.yml | `CI typecheck` | — (full graph) |
+| ci.yml | `CI lint` | — (full graph) |
+| ci.yml | `CI format check` | — (whole repo) |
+| ci.yml | `CI test` | — (full graph minus the eight lane-owned workspaces) |
+| ci.yml | `CI build` | — (full graph) |
 
-`ci.yml` needs no gate: it has no `paths:` and its job carries no `if:`, so it is
-already unskippable and directly pinnable.
+`ci.yml` needs no gate: it has no `paths:` and **none of its five jobs carries an
+`if:`**, so each is already unskippable and directly pinnable. That property is
+the whole reason it can stay gateless — adding an `if:` to any of the five would
+make it skippable, and behaviour 2 above turns a skippable pinned check into a
+permanent free pass.
+
+⚠️ **Nothing is pinned yet.** As of 2026-08-24 `protect-main` (id `16348427`)
+carries only `deletion` and `non_fast_forward` — there is no
+`required_status_checks` rule at all, and `branches/main/protection` 404s. So the
+table above is the list #1052 should pin, not a description of live state, and a
+check-name change costs nothing on the ruleset **until** #1052 lands.
 
 Names are **pure ASCII** on purpose — they get pasted into a JSON payload from
 PowerShell on Windows, and a mangled em dash yields a required check that never
@@ -371,8 +384,48 @@ Before assuming an exclusion speeds `ci.yml` up, note what was measured on
 turbo runs these in parallel and `web` is 83 % of the step's wall time, so
 removing 17 % of the CPU saved ~0 s. The reason to move tests into a lane is
 **ownership and failure attribution** — the failure lands on `CI gate (<lane>)`
-instead of the catch-all `lint-typecheck-test`. Anything that shortens `ci.yml`
-has to shorten `@delfrance/web`.
+instead of a catch-all. Anything that shortens `ci.yml`'s **test** work has to
+shorten `@delfrance/web`.
+
+### What DID shorten `ci.yml`: removing serialisation, not work — measured
+
+That conclusion is about the Test step alone. The lane as a whole was slow for a
+different reason: five independent steps ran **in sequence** on one runner.
+Measured over four PR runs on 2026-08-24 (`32752392629` and three siblings):
+
+| step | observed | turbo |
+| --- | --- | --- |
+| checkout → pnpm-store cache → `Install` | ~34 s | — |
+| Typecheck | 111–118 s | 33 tasks, **0 cached** |
+| Lint | 159–174 s | 35 tasks, **0 cached** |
+| Format check | 29–33 s | root prettier, not a turbo task |
+| Test | 265–292 s | 18 tasks — `@delfrance/web` alone ≈ 256 s / 223 files |
+| Build | 136–151 s | 10 tasks, 0 cached |
+| **job wall** | **13 m 26 s** | |
+
+Splitting them into five sibling jobs takes the critical path to `test` alone,
+≈ 5 m 30 s. Three facts made that free, and all three must be **re-checked**
+before anyone assumes it still is:
+
+1. **turbo's `^build` edge on `lint`/`typecheck`/`test` resolves to ZERO tasks.**
+   `turbo.json` declares it, but no `packages/*`, `packages/integrations/*` or
+   `tools/*` workspace defines a `build` script — the libraries export raw
+   TypeScript and nothing depends on an app. Proof: the `Build` step reported
+   `0 cached, 10 total` *after* typecheck, lint and test had run in the same job,
+   so no build task ran earlier. Give one package a `build` script and every one
+   of the five jobs starts paying for it separately.
+2. **No cache locality to lose.** No turbo remote cache exists (`grep -rn "TURBO_"`
+   → zero hits) and no gating lane persists `.turbo`, so every task already ran
+   cold. ⚠️ Do **not** "fix" that by caching `.turbo`:
+   `packages/config-eslint/turbo.json` sets `cache: false` and explains why — its
+   tests `git grep` files belonging to no workspace, so turbo's input hashing
+   misses them and a replayed green is a **false** green.
+3. **Fan-out is free.** The repo is public, so `ubuntu-latest` is 4 vCPU / 16 GB
+   on unmetered minutes.
+
+The five jobs share the pnpm-store cache key; on a lockfile change four of them
+log `Unable to reserve cache with key …, another job may be creating this cache`.
+Not an error, and not new — the six other lanes already share that namespace.
 
 ### ⚠️ `turbo run <task>` has TWO ways to exit 0 having run nothing
 

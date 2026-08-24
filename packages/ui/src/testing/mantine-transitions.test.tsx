@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
  * The bug it guards: `useTransition` schedules
  * `window.setTimeout(() => setStatus(...), duration)` whenever a `Transition`'s
  * `mounted` toggles. If that timer survives jsdom teardown its React setter
- * reaches for `window` and reds `lint-typecheck-test` with EVERY TEST GREEN and
+ * reaches for `window` and reds `CI test` with EVERY TEST GREEN and
  * one unattributable `ReferenceError`. It cost #1025 and #1089 a full
  * investigation each.
  *

@@ -66,8 +66,8 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * The pinned contract, one entry per gated lane.
  *
  * `check` strings are what a human types into the `protect-main` ruleset (id
- * 16348427). ⚠️ A check-run name carries NO workflow-name prefix — `ci.yml`'s job
- * publishes as bare `lint-typecheck-test` — so every name here must be unique
+ * 16348427). ⚠️ A check-run name carries NO workflow-name prefix — a job with
+ * no `name:` publishes as its bare job id — so every name here must be unique
  * across the WHOLE repo, which assertion 5 enforces. They are pure ASCII on
  * purpose: they get pasted into a JSON payload from PowerShell on Windows, and a
  * mangled em dash produces a required check that never matches and an unmergeable
@@ -228,8 +228,13 @@ const LANES = {
  */
 const UNGATED = {
   '.github/workflows/ci.yml':
-    'Full-graph lane. No `paths:` at all and its suite job carries no `if:`, so ' +
-    '`lint-typecheck-test` is directly pinnable and needs no gate of its own.',
+    'Full-graph lane, split into five sibling jobs (typecheck / lint / ' +
+    'format-check / test / build) so they run concurrently instead of ' +
+    'sequentially. No `paths:` at all and NONE of the five carries an `if:`, so ' +
+    'every one of them is unskippable and directly pinnable — `CI typecheck`, ' +
+    '`CI lint`, `CI format check`, `CI test`, `CI build` — and the lane needs no ' +
+    'gate of its own. ⚠️ Adding an `if:` to any of them would make it skippable, ' +
+    'and GitHub counts a `skipped` job as SATISFYING a required check.',
   '.github/workflows/e2e-reusable.yml':
     'The shared engine. `workflow_call`-only — asserted separately below.',
   '.github/workflows/nfe-epec-scheduled.yml':
@@ -250,6 +255,30 @@ const UNGATED = {
     'Copilot review runner config. Its `pull_request:` trigger is self-referential ' +
     '(`paths:` = this file), so it reports on nothing but its own edits — the same ' +
     'deliberate shape as copilot-setup-steps.yml.',
+};
+
+/**
+ * `ci.yml`'s five suite jobs: job id → the check-run name it publishes.
+ *
+ * ⚠️ This exists because `ci.yml` lives in UNGATED, which carries no
+ * `jobs[].check` structure — so assertion 9's `published !== job.check`
+ * comparison, which protects every GATED lane's names, never runs for it.
+ * Without this table the five names that a human types into `protect-main`
+ * (#1052) are asserted NOWHERE: they appear only in prose — CLAUDE.md rule 2,
+ * SKILL.md's table, the UNGATED string above. Renaming `name: CI test` to
+ * anything else would keep this whole suite green, silently rot both documents,
+ * and once the name is pinned leave branch protection waiting forever on a check
+ * that never reports — the unmergeable-`main` failure mode this file's header
+ * warns about.
+ *
+ * Pure ASCII, no `:` and no `/`, for the reasons in the LANES docstring.
+ */
+const CI_YML_JOBS = {
+  typecheck: 'CI typecheck',
+  lint: 'CI lint',
+  'format-check': 'CI format check',
+  test: 'CI test',
+  build: 'CI build',
 };
 
 /** Same discovery shape as `env-example-location.test.js` — see its long note. */
@@ -480,7 +509,11 @@ describe('CI lanes always report', () => {
 
     // ...and it still reads real files in this repo.
     expect(Object.keys(jobBlocks(read('.github/workflows/ci.yml')))).toEqual([
-      'lint-typecheck-test',
+      'typecheck',
+      'lint',
+      'format-check',
+      'test',
+      'build',
       'report-failure',
     ]);
 
@@ -731,6 +764,63 @@ describe('CI lanes always report', () => {
         'breaks the gates, which locate their jobs by name through the jobs API.',
         '',
         ...dupes.map((d) => `  - ${d}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 5b. ci.yml is gateless BECAUSE it is unskippable. Enforce both halves.
+  // ------------------------------------------------------------------
+  it('ci.yml publishes the five pinnable names and none of the five can skip', () => {
+    const CI = '.github/workflows/ci.yml';
+    const jobs = jobBlocks(read(CI));
+    const suite = Object.keys(jobs).filter((id) => !/^report-/.test(id));
+
+    // (a) The suite jobs are exactly the five declared. A sixth added without a
+    //     table entry would be unasserted; a removed one silently drops a check.
+    expect(
+      suite.sort(),
+      [
+        `${CI}'s suite jobs drifted from CI_YML_JOBS.`,
+        '',
+        'Add the new job to that table (and to CLAUDE.md rule 2 + the SKILL.md',
+        'table), or this lane gains a check that nothing pins and nothing describes.',
+      ].join('\n'),
+    ).toEqual(Object.keys(CI_YML_JOBS).sort());
+
+    // (b) Each publishes the exact name a human pins on the ruleset.
+    const names = Object.fromEntries(suite.map((id) => [id, checkName(id, jobs[id])]));
+    expect(
+      names,
+      [
+        `A ${CI} check-run name changed.`,
+        '',
+        'These are the names #1052 pins on `protect-main` (id 16348427). GitHub',
+        'matches a required check BY NAME: a renamed check is never reported and the',
+        'branch waits on it forever. If the rename is intentional, update CI_YML_JOBS,',
+        'CLAUDE.md rule 2, the SKILL.md table and the ruleset in the same change.',
+      ].join('\n'),
+    ).toEqual(CI_YML_JOBS);
+
+    // (c) None of them carries an `if:`. This is the WHOLE reason ci.yml needs no
+    //     gate, and until now it was asserted only in prose. A job skipped by `if:`
+    //     publishes `skipped`, which GitHub counts as SATISFYING a required check —
+    //     so an `if:` here turns a pinned check into a permanent free pass.
+    const skippable = suite.filter((id) => /^\s{4}if\s*:/m.test(jobs[id]));
+    expect(
+      skippable,
+      [
+        `These ${CI} jobs gained an \`if:\`, which makes them SKIPPABLE.`,
+        '',
+        'A skipped job publishes `skipped`, and GitHub counts that as satisfying a',
+        'required status check — so each of these becomes a permanent free pass once',
+        'pinned. Unskippability is the entire reason this lane is allowed to sit in',
+        'UNGATED with no gate job of its own.',
+        '',
+        'If the condition is genuinely needed, this lane must grow a `gate` job and',
+        'move into LANES — do not just delete this assertion.',
+        '',
+        ...skippable.map((id) => `  - ${id}`),
       ].join('\n'),
     ).toEqual([]);
   });
