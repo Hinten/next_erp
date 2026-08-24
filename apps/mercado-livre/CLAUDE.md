@@ -231,6 +231,18 @@ The per-surface notes below stay the authority on behaviour.
   percentage to 50%**. So an amount with no exact offer is refused with the list
   of real ones rather than rounded to the nearest: a refund is not a value worth
   approximating.
+- **Claim RESOLUTION routes** (#364) — `app/api/marketplace/mercado-livre/reclamacao/`
+  `{estado,acao}` over `lib/marketplace/claims/claimResolve.ts`: the surface that
+  finally REACHES the verbs above. `respondIncidentMl` had existed since #768 with
+  no caller at all — refund, partial refund, allow-return and open-dispute were
+  implemented and unreachable.
+  ⚠️ `claimResolve.ts` deliberately takes **no** `db`, and that absence IS the
+  enforcement: `claimImport.ts` stays the single writer of incidente state, so root
+  `CLAUDE.md` rule 7 tier **0** applies — the race is made impossible rather than
+  guarded. A module holding no Firestore handle cannot become a second writer by
+  accident.
+  ⚠️ Availability is a SNAPSHOT, re-read LIVE on every call, so the UI must never
+  cache it — the list empties as the claim closes.
 - `lib/marketplace/chat/orderMessageAttachments.ts` — **#1162**: post-sale message
   attachments downloaded into Storage as `Arquivo`s, the `mlped` sibling of
   `claims/claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
@@ -256,9 +268,19 @@ The per-surface notes below stay the authority on behaviour.
 
 Two suites, deliberately separated by filename:
 
-- **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Runs in
-  `ci.yml` on **every** PR; that workflow has no `paths:` filter, so this coverage can
-  never develop a hole.
+- **Offline** — `pnpm --filter @delfrance/mercado-livre-app test` (`*.test.ts`). Run by
+  `ci-mercado-livre.yml` in `ML offline (unit)`, **not** by `ci.yml`: that workflow
+  excludes this workspace and `@delfrance/integrations-mercado-livre` from
+  `turbo run test` (`ci.yml:95-102`), an exclusion this lane owns. ⚠️ It used to say
+  the opposite here — "runs in `ci.yml` on every PR, which has no `paths:` filter, so
+  this coverage can never develop a hole". The `paths:` half is true and the
+  conclusion does not follow: `ci.yml` filters by **workspace**, so an assertion in
+  this suite runs only when `ci-mercado-livre.yml`'s scope job says the ML app is
+  affected, and that scope is the `workspace:*` closure of
+  `@delfrance/mercado-livre-app` — which contains no sibling APP. A test here that
+  asserts something about `apps/web` therefore runs nowhere on a web-only PR (#1255
+  shipped one and had to split it). Assert about a workspace from inside that
+  workspace; `ci.yml` still lints, typechecks and builds the full graph unfiltered.
 - **Firestore integration** — `test:firestore` (`*.firestore.test.ts`), run by
   `ci-mercado-livre.yml` under
   `firebase emulators:exec --config firebase.mercado-livre.json --only firestore`.
