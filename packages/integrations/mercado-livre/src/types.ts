@@ -134,7 +134,7 @@ export const itemAttributeSchema = z
      */
     value_struct: z
       .object({
-        number: z.number().nullable().optional(),
+        number: mlNumber().nullable().optional(),
         unit: z.string().nullable().optional(),
       })
       .passthrough()
@@ -1719,16 +1719,14 @@ export type MlPartialRefundOffer = z.infer<typeof mlPartialRefundOfferSchema>;
  */
 export const mlPartialRefundAdviceSchema = z
   .object({
-    // ⚠️ `string | number`, like every other ML numeric in this file
-    // (`mlMissedFeedEntrySchema` models `user_id`/`attempts` the same way, and
-    // for the same observed reason). A quoted `"30"` must not fail the read.
-    percentage: z
-      .union([z.string(), z.number()])
-      .nullable()
-      .default(null)
-      .transform((v) => (typeof v === 'string' ? Number(v) : v))
-      .refine((v) => v == null || Number.isFinite(v), { message: 'percentage não numérico' })
-      .catch(null),
+    // ⚠️ Tolerant like every other numeric in this file — a quoted `"30"` must not
+    // fail the read. `mlNumber()` rather than the hand-rolled union this started
+    // as: that one coerced with a bare `Number(v)`, which reads `'1e3'` as 1000
+    // and `'0x1F'` as 31. `./mlNumber` is the one place that rule is written.
+    // `.catch(null)` keeps a percentage ML sends as garbage from taking the whole
+    // offers read down — this is advice for a human, not a value anything decides
+    // on, so degrading it beats failing the picker.
+    percentage: mlNumber().nullable().default(null).catch(null),
     reason: z.string().nullable().default(null).catch(null),
     type: z.string().nullable().default(null).catch(null),
   })
