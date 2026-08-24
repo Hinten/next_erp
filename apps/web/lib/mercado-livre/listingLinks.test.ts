@@ -65,16 +65,16 @@ describe('listingPermalink', () => {
     );
   });
 
-  it('prefers the user_product_id for a User-Products listing', () => {
-    expect(
-      listingPermalink(
-        { id: '6264141844942250', isUserProductModel: true },
-        { userProductId: 'MLBU3844434863' },
-      ),
-    ).toBe('https://www.mercadolivre.com.br/up/MLBU3844434863');
+  it('never builds a User Products page, even for a família', () => {
+    // The inverted assertion. A UP (`MLBU…`) is a *product*, not an offer, so
+    // `/up/<MLBU>` has nothing to sell and renders indisponível whenever that
+    // member's items are paused or closed. A família id addresses nothing public
+    // either, so the honest answer here is null and the backend resolves it —
+    // see the ⚠️ on `listingPermalink`.
+    expect(listingPermalink({ id: '6264141844942250', isUserProductModel: true })).toBeNull();
   });
 
-  it('falls back to a member item, which resolves and redirects', () => {
+  it('links a member item, which resolves and redirects', () => {
     expect(
       listingPermalink(
         { id: '6264141844942250', isUserProductModel: true },

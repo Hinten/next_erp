@@ -285,11 +285,19 @@ export interface MercadoLivreApi {
    * `paging.total`. A caller that needs completeness — the publish orphan sweep
    * decides what to CLOSE from this — must pass an explicit `limit`/`offset` and
    * check `paging` (see `resolveFamilyItemIds`).
+   *
+   * `status` is ML's own listing-state filter on this endpoint (*Busca de itens*
+   * → "Por estado"), narrowing the answer to e.g. the `active` members of a
+   * family. ⚠️ A caller must still tolerate an EMPTY result when it passes one:
+   * ML combining two filters is not something this repo can exercise (no
+   * sandbox), so a filtered search that comes back empty means "no such member
+   * OR the filter was not honoured", and the only safe reading is to retry
+   * unfiltered (`resolveAnuncioUrl`).
    */
   searchItemsByUserProduct(
     sellerId: number,
     userProductIds: readonly string[],
-    page?: { limit?: number; offset?: number },
+    page?: { limit?: number; offset?: number; status?: string },
   ): Promise<MlUserProductItemsSearch>;
   /**
    * `GET /user-products/{userProductId}/stock` — the per-location stock of a
@@ -1041,6 +1049,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
           // when the caller does not care, keeping the legacy request shape.
           ...(page?.limit != null ? { limit: String(page.limit) } : {}),
           ...(page?.offset != null ? { offset: String(page.offset) } : {}),
+          // Same rule: absent unless asked for, so the existing callers'
+          // request shape is byte-identical.
+          ...(page?.status != null ? { status: page.status } : {}),
         },
       }),
     getUserProductStock: async (userProductId) => {

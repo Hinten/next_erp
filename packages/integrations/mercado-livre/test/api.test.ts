@@ -1029,6 +1029,23 @@ describe('createMercadoLivreApi — User-Products family fan-out (#521)', () => 
     expect(found.results).toEqual([]);
   });
 
+  it('searchItemsByUserProduct sends status ONLY when a caller asks for it', async () => {
+    // The filter narrows a família to its live members (`resolveAnuncioUrl`), but
+    // the existing callers' request shape must stay byte-identical — a `status`
+    // that leaked into the publish orphan sweep's search would hide members it
+    // decides what to CLOSE from.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: ['MLB111'] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.searchItemsByUserProduct(999, ['UPtin1'], { limit: 1, offset: 0, status: 'active' });
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('status=active');
+
+    await api.searchItemsByUserProduct(999, ['UPtin1'], { limit: 50, offset: 0 });
+    expect(String(fetchMock.mock.calls[1]![0])).not.toContain('status=');
+  });
+
   it('searchItemsByUserProduct maps a 500 to an HTTP error', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ message: 'boom' }, 500),

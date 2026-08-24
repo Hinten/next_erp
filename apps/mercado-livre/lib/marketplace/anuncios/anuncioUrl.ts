@@ -8,6 +8,19 @@
  * listing the browser has nothing it can turn into a URL, so the answer comes
  * from ML.
  *
+ * ⚠️ **Always resolve to an ITEM, never to a User Product.** ML's three levels
+ * are família → user product (`MLBU…`) → item (`MLB…`), and only the last one
+ * carries a sale condition: the *User Products* guide defines a UP as "o produto
+ * físico que um vendedor possui" and an item as "a publicação que um comprador
+ * visualiza… contém as condições de venda (preço, parcelas, etc.)". So
+ * `mercadolivre.com.br/up/<MLBU>` names a product and NO offer — when that UP's
+ * items are paused or closed the page renders **indisponível**, which is what
+ * this module used to hand the operator for a listing that was live and selling.
+ * Nothing here builds a `/up/` URL any more, and nothing should: ML annotates its
+ * own `POST /items` example with *"O permalink vai redirecionar para o UPP do
+ * item"*, so an item permalink reaches the very same User Products Page — with a
+ * sale condition selected, and therefore with a buy button.
+ *
  * ⚠️ Under User Products `link.id` is `familyId ?? itemId` — NOT reliably a
  * family id. Three writers put an `MLB…` item id there under
  * `isUserProductModel: true`: `publish.ts` and `importUserProduct.ts` both fall
@@ -25,19 +38,27 @@
  * run (root `CLAUDE.md` rule 8). The decision stands on its own: a persisted URL
  * is a cache that can go stale silently, and resolving costs one request.
  *
- * Cost: ONE ML request either way. The old app spent two — it read the first
- * variation's `itemId` from Firestore, then `GET /items/{id}` just to learn
- * `user_product_id`.
+ * Cost: ZERO ML requests for a legacy listing, ONE for a User-Products listing
+ * whose stored id is an item, THREE for a família (family → item search → item).
+ * The família price is deliberate and was ONE before: naming a member costs a
+ * search, and asking for a live member is the whole point — see
+ * {@link familyItemUrl}.
  */
 import {
   type MlItem,
   type MlUserProductFamily,
+  type MlUserProductItemsSearch,
   MercadoLivreHttpError,
 } from '@delfrance/integrations-mercado-livre';
 
 /** The minimal ML surface a URL resolution needs (injectable for tests). */
 export interface AnuncioUrlApi {
   getUserProductFamily(familyId: string): Promise<MlUserProductFamily>;
+  searchItemsByUserProduct(
+    sellerId: number,
+    userProductIds: readonly string[],
+    page?: { limit?: number; offset?: number; status?: string },
+  ): Promise<MlUserProductItemsSearch>;
   getItem(id: string): Promise<MlItem>;
 }
 
@@ -45,6 +66,22 @@ export interface AnuncioUrlApi {
 export interface AnuncioUrlLink {
   id?: unknown;
   isUserProductModel?: unknown;
+}
+
+/**
+ * The conta carries no ML `user_id`, so a família's members cannot be searched.
+ *
+ * Its own class rather than a `null` return, because the two mean opposite
+ * things to the operator: `null` is "this listing is gone from ML" and the route
+ * says so, while this is a connection that never finished identifying itself —
+ * reconnecting fixes it, and reporting it as a dead anúncio would send someone
+ * hunting for the wrong problem.
+ */
+export class AnuncioUrlSemUserIdError extends Error {
+  constructor() {
+    super('Integração sem user_id do Mercado Livre — reconecte a conta.');
+    this.name = 'AnuncioUrlSemUserIdError';
+  }
 }
 
 /**
@@ -60,11 +97,6 @@ export interface AnuncioUrlLink {
 export function mlbProductUrl(itemId: string): string | null {
   const digits = itemId.replace(/\D/g, '');
   return digits ? `https://produto.mercadolivre.com.br/MLB-${digits}` : null;
-}
-
-/** `mercadolivre.com.br/up/<user_product_id>` — the User Products Page. */
-export function upProductUrl(userProductId: string): string {
-  return `https://www.mercadolivre.com.br/up/${userProductId}`;
 }
 
 /**
@@ -104,7 +136,7 @@ function nonEmpty(value: unknown): string | null {
  * ANSWER, and reporting it beats handing the operator a URL that 404s.
  */
 export async function resolveAnuncioUrl(
-  deps: { api: AnuncioUrlApi },
+  deps: { api: AnuncioUrlApi; sellerUserId: number | null },
   link: AnuncioUrlLink,
 ): Promise<string | null> {
   const id = typeof link.id === 'string' && link.id !== '' ? link.id : null;
@@ -112,35 +144,20 @@ export async function resolveAnuncioUrl(
 
   if (link.isUserProductModel !== true) return mlbProductUrl(id);
 
-  return isFamilyId(id) ? familyUrl(deps.api, id) : upItemUrl(deps.api, id);
-}
-
-/** The first member's page — one family groups the sale conditions of one product. */
-async function familyUrl(api: AnuncioUrlApi, familyId: string): Promise<string | null> {
-  try {
-    const family = await api.getUserProductFamily(familyId);
-    const upId = family.user_products_ids.find((u) => u.length > 0);
-    return upId != null ? upProductUrl(upId) : null;
-  } catch (err) {
-    if (err instanceof MercadoLivreHttpError && err.status === 404) return null;
-    throw err;
-  }
+  return isFamilyId(id) ? familyItemUrl(deps.api, deps.sellerUserId, id) : itemUrl(deps.api, id);
 }
 
 /**
- * The page for a UP listing whose stored id is an ITEM — the UPtin case above.
+ * The buyable page for ONE item.
  *
- * `GET /items/{id}` carries `user_product_id` (ML's *User Products* guide: item →
- * `user_product_id` → the User Products Page), and that is the page to open: the
- * same one the family branch reaches and the old Flutter screen linked to, rather
- * than the single sale condition `permalink` names. `permalink` is the fallback
- * for an item ML reports without a UP id at all.
+ * `permalink` is ML's own canonical address for the item and — per the ⚠️ at the
+ * top of this file — redirects to that item's UPP under User Products, so this
+ * one helper serves both models. {@link mlbProductUrl} is the fallback for an
+ * item ML reports without a permalink at all.
  */
-async function upItemUrl(api: AnuncioUrlApi, id: string): Promise<string | null> {
+async function itemUrl(api: AnuncioUrlApi, id: string): Promise<string | null> {
   try {
     const item = await api.getItem(id);
-    const upId = nonEmpty(item.user_product_id);
-    if (upId != null) return upProductUrl(upId);
     return nonEmpty(item.permalink) ?? mlbProductUrl(id);
   } catch (err) {
     // The listing is gone — there is no page to open, and saying so beats a
@@ -148,4 +165,67 @@ async function upItemUrl(api: AnuncioUrlApi, id: string): Promise<string | null>
     if (err instanceof MercadoLivreHttpError && err.status === 404) return null;
     throw err;
   }
+}
+
+/**
+ * A LIVE member's page for a família whose stored id is the family key.
+ *
+ * The family endpoint answers `user_products_ids` — an unordered list of UPs with
+ * no status on it — so the previous "first member" pick was arbitrary twice over:
+ * neither necessarily the variação the operator is looking at, nor necessarily
+ * one that still has a live item. Resolving through
+ * `GET /users/{sellerId}/items/search?user_product_id=<csv>&status=active` fixes
+ * both at once: it crosses from the UP level down to the sale-condition level,
+ * which is the only level that can be bought, and it asks ML for a member that
+ * is actually selling.
+ *
+ * ⚠️ The unfiltered retry is load-bearing in two different ways. A família whose
+ * members are ALL paused has no buyable page, and showing that paused item is
+ * honest — a sibling's UP page is not. And this repo cannot exercise ML combining
+ * `user_product_id` with `status` (no sandbox, and no lane may hold real ML
+ * credentials), so an empty filtered answer must degrade rather than be trusted
+ * as "no members".
+ *
+ * `limit: 1` because this is a link, not a membership audit — contrast
+ * `resolveFamilyItemIds`, which pages the COMPLETE membership because the publish
+ * orphan sweep decides what to close from it.
+ */
+async function familyItemUrl(
+  api: AnuncioUrlApi,
+  sellerUserId: number | null,
+  familyId: string,
+): Promise<string | null> {
+  if (sellerUserId == null) throw new AnuncioUrlSemUserIdError();
+
+  let userProductIds: string[];
+  try {
+    const family = await api.getUserProductFamily(familyId);
+    // `user_products_ids` is a schema-defaulted `string[]` — only an empty VALUE
+    // needs filtering, not the type.
+    userProductIds = family.user_products_ids.filter((u) => u.length > 0);
+  } catch (err) {
+    if (err instanceof MercadoLivreHttpError && err.status === 404) return null;
+    throw err;
+  }
+  if (userProductIds.length === 0) return null;
+
+  const primeiroItem = async (status?: string): Promise<string | null> => {
+    const search = await api.searchItemsByUserProduct(sellerUserId, userProductIds, {
+      limit: 1,
+      offset: 0,
+      ...(status != null ? { status } : {}),
+    });
+    return search.results.find((r) => r.length > 0) ?? null;
+  };
+
+  let itemId: string | null;
+  try {
+    itemId = (await primeiroItem('active')) ?? (await primeiroItem());
+  } catch (err) {
+    if (err instanceof MercadoLivreHttpError && err.status === 404) return null;
+    throw err;
+  }
+  if (itemId == null) return null;
+
+  return itemUrl(api, itemId);
 }
