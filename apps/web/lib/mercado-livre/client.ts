@@ -349,6 +349,61 @@ export interface MercadoLivreTiposAnuncio {
 }
 
 /** What a successful ML chat reply reports back. */
+/** One party's stated expectation on a claim. */
+export interface MercadoLivreExpectativaReclamacao {
+  playerRole: string | null;
+  expectedResolution: string | null;
+  status: string | null;
+}
+
+/** A seller action ML still offers, with its SLA clock. */
+export interface MercadoLivrePrazoAcao {
+  acao: string;
+  obrigatoria: boolean;
+  prazo: string | null;
+}
+
+/** One partial-refund offer, or a recommendation/restriction about them. */
+export interface MercadoLivreOfertaParcial {
+  amount: number | null;
+  percentage: number | null;
+}
+export interface MercadoLivreConselhoParcial {
+  percentage: number | null;
+  reason: string | null;
+  type: string | null;
+}
+
+/**
+ * Live state of one Mercado Livre claim.
+ *
+ * ⚠️ **A snapshot, never a cache.** `acoesDisponiveis` is ML's answer to "what
+ * may this seller do right now", derived from the claim's stage and status, and
+ * it empties as the claim closes. Anything rendered from it has to be refetched
+ * rather than remembered.
+ */
+export interface MercadoLivreReclamacaoEstado {
+  claimId: number;
+  status: string | null;
+  stage: string | null;
+  tipo: string | null;
+  reasonId: string | null;
+  tipoReclamacao: 'PNR' | 'PDD' | null;
+  acoesDisponiveis: string[];
+  prazos: MercadoLivrePrazoAcao[];
+  podeResponder: boolean;
+  motivoSemResposta: string | null;
+  /** `null` WITH `expectativasIndisponiveis` means the read failed, not "none". */
+  expectativas: MercadoLivreExpectativaReclamacao[] | null;
+  expectativasIndisponiveis: boolean;
+  ofertasParciais: {
+    currency_id: string | null;
+    available_offers: MercadoLivreOfertaParcial[];
+    recommendations: MercadoLivreConselhoParcial[];
+    restrictions: MercadoLivreConselhoParcial[];
+  } | null;
+}
+
 export interface MercadoLivreRespostaChat {
   conversaId: string;
   mensagemId: string;
@@ -837,6 +892,36 @@ export interface MercadoLivreClient {
    * ⚠️ Both are PUBLIC and not undoable from here — a deleted question leaves
    * the listing for everyone, a blocked buyer cannot ask on any listing.
    */
+  /**
+   * Live state of one ML claim (`PERM.incidenteResolucao.read`).
+   *
+   * ⚠️ Never cache the result. `available_actions` is stale the moment it leaves
+   * ML, so the panel refetches rather than remembering.
+   */
+  reclamacaoEstado(input: {
+    integracaoId: string;
+    claimId: number;
+  }): Promise<MercadoLivreReclamacaoEstado>;
+  /**
+   * Run one resolution action on an ML claim
+   * (`PERM.incidenteResolucao.write`).
+   *
+   * ⚠️ **Irreversible and money-moving.** Writes NOTHING locally — the claims
+   * importer stays the single writer of the resulting incidente state, so the
+   * caller learns the outcome by refetching {@link reclamacaoEstado}, which is
+   * ML's own word rather than our guess.
+   *
+   * ⚠️ For `reembolso_parcial` BOTH `valorReembolsoMinor` and
+   * `percentualExibido` are required, and the backend refuses without them:
+   * Mercado Livre treats a MISSING percentage as **50%**.
+   */
+  reclamacaoAcao(input: {
+    integracaoId: string;
+    claimId: number;
+    acao: 'reembolso' | 'reembolso_parcial' | 'aceitar_devolucao' | 'abrir_mediacao';
+    valorReembolsoMinor?: number;
+    percentualExibido?: number;
+  }): Promise<{ ok: boolean; status: string | null; acao: string }>;
   acaoPergunta(input: {
     integracaoId: string;
     conversaId: string;
@@ -1247,6 +1332,15 @@ export function createMercadoLivreClient(config: {
       ),
     responderConversa: (input) =>
       call<MercadoLivreRespostaChat>('/api/marketplace/mercado-livre/chat/responder', input),
+    reclamacaoEstado: (input) =>
+      call<MercadoLivreReclamacaoEstado>(
+        `/api/marketplace/mercado-livre/reclamacao/estado?integracaoId=${encodeURIComponent(input.integracaoId)}&claimId=${encodeURIComponent(String(input.claimId))}`,
+      ),
+    reclamacaoAcao: (input) =>
+      call<{ ok: boolean; status: string | null; acao: string }>(
+        '/api/marketplace/mercado-livre/reclamacao/acao',
+        input,
+      ),
     acaoPergunta: (input) =>
       call<{ conversaId: string; acao: 'excluir' | 'bloquear' }>(
         '/api/marketplace/mercado-livre/chat/pergunta-acao',
