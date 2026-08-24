@@ -21,7 +21,8 @@ in `pedidos/` despite the filename prefix.
   not the message time alone.
 - `orderMessageIds.ts` — byte-exact legacy ids for post-sale threads.
 - `orderMessageMapping.ts` — pure builders (ms timestamps).
-- `orderMessageAttachments.ts` — the `mlped` sibling of `claimAttachments.ts`.
+- `orderMessageAttachments.ts` — the `mlped` sibling of
+  `claims/claimAttachments.ts`.
 
 **Outbound**
 

@@ -233,7 +233,7 @@ The per-surface notes below stay the authority on behaviour.
   approximating.
 - `lib/marketplace/chat/orderMessageAttachments.ts` — **#1162**: post-sale message
   attachments downloaded into Storage as `Arquivo`s, the `mlped` sibling of
-  `claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
+  `claims/claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
   operator had to leave the ERP to see it; that `[n anexos]` note stays as the
   FALLBACK, because silently dropping one is worse than not having it.
   ⚠️ **Not symmetric with the claims endpoint**, in three ways that each cost a

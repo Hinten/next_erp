@@ -1,8 +1,8 @@
 # preco — pricing
 
 Pushing ERP prices onto ML listings, as a bulk job or a hand-picked push. The
-shape mirrors `estoque/` closely; the two share `bulkEstoquePlan.ts` for family
-discovery.
+shape mirrors `estoque/` closely; the two share
+`estoque/bulkEstoquePlan.ts` for family discovery.
 
 - `precoPlan.ts` — the compute core: keyset page discovery of linked families.
 - `precoDraftSend.ts` — the per-listing sender holding the eight-gate ladder,
