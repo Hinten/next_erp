@@ -37,7 +37,7 @@ import {
 import type { ChannelContext } from '@delfrance/core/plugins';
 
 import { claimActionability } from './claimActionability';
-import { isMercadoLivreRequestError } from './respond';
+import { isMercadoLivreRequestError } from '../core/respond';
 
 /** The verbs this surface exposes. An ALLOW-LIST, never a denylist. */
 export const ACOES_RECLAMACAO = [

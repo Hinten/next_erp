@@ -231,6 +231,18 @@ The per-surface notes below stay the authority on behaviour.
   percentage to 50%**. So an amount with no exact offer is refused with the list
   of real ones rather than rounded to the nearest: a refund is not a value worth
   approximating.
+- **Claim RESOLUTION routes** (#364) — `app/api/marketplace/mercado-livre/reclamacao/`
+  `{estado,acao}` over `lib/marketplace/claims/claimResolve.ts`: the surface that
+  finally REACHES the verbs above. `respondIncidentMl` had existed since #768 with
+  no caller at all — refund, partial refund, allow-return and open-dispute were
+  implemented and unreachable.
+  ⚠️ `claimResolve.ts` deliberately takes **no** `db`, and that absence IS the
+  enforcement: `claimImport.ts` stays the single writer of incidente state, so root
+  `CLAUDE.md` rule 7 tier **0** applies — the race is made impossible rather than
+  guarded. A module holding no Firestore handle cannot become a second writer by
+  accident.
+  ⚠️ Availability is a SNAPSHOT, re-read LIVE on every call, so the UI must never
+  cache it — the list empties as the claim closes.
 - `lib/marketplace/chat/orderMessageAttachments.ts` — **#1162**: post-sale message
   attachments downloaded into Storage as `Arquivo`s, the `mlped` sibling of
   `claims/claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
