@@ -915,6 +915,31 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
 
   const loading = internalId && docSnap.loading;
 
+  /**
+   * Which snapshot is currently on screen: `pending` (nothing emitted yet — an
+   * unresolved listener, a load error, or create mode), `cache` (the local copy,
+   * so a server correction is still owed) or `server` (the authoritative
+   * `fromCache: false` snapshot landed).
+   *
+   * Exposed on the form below because that difference is otherwise invisible from
+   * the outside, and the invisibility is what costs: a field still showing the
+   * cached pre-save value and a genuinely lost write render identically, so an
+   * assertion that only reads the value cannot say which it hit. That ambiguity is
+   * the whole reason `expectFieldAfterReload` kept costing investigations.
+   *
+   * ⚠️ It reports which snapshot ARRIVED — never that the form matches the server.
+   * `useServerTruthSeed` deliberately withholds the re-seed while the form is dirty,
+   * so on a dirty form `server` coexists with the operator's own unsaved value. That
+   * is correct, and it is why this must not be read as "converged".
+   *
+   * ⚠️ It also leads the inputs by one paint: this flips during render, while
+   * `form.reset` runs in the effect that follows. A reader must therefore poll for
+   * the value it expects, never take one synchronous reading the moment it turns
+   * `server`.
+   */
+  const snapshotSource =
+    docSnap.fromCache === undefined ? 'pending' : docSnap.fromCache ? 'cache' : 'server';
+
   // In genuine edit mode (a `recordId` was supplied) surface load errors and
   // missing documents instead of rendering an empty, un-saveable form — saving
   // would throw on `tx.update` for a non-existent doc. Gated on `recordId`, not
@@ -931,6 +956,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     // SKUs from the parent's unsaved `sku` via `useFormContext().getValues`).
     <FormProvider {...form}>
       <form
+        // Which Firestore snapshot the fields below were painted from. See
+        // `snapshotSource` above for the two things it does NOT mean.
+        data-snapshot-source={snapshotSource}
         // Zod (via the resolver) owns ALL validation. Without noValidate the
         // browser's native constraint validation intercepts the submit when
         // any control carries the native `required` attribute (e.g. Mantine

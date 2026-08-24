@@ -1,4 +1,4 @@
-import { type Page, expect } from '@playwright/test';
+import { type Page, errors, expect } from '@playwright/test';
 
 /**
  * Helpers for driving the generic `ObjectView` (`@delfrance/ui`): field
@@ -169,36 +169,100 @@ export async function expectToast(page: Page, matcher: string | RegExp): Promise
 }
 
 /**
- * Budget for a value that has to survive a save followed by a full page load.
+ * Per-attempt budget for the authoritative Firestore snapshot to reach a record
+ * that was just re-opened after a save.
  *
- * ## Why the default 5s is not a valid budget here
+ * ## Why a bigger wall clock is the wrong lever
  *
  * `ObjectView` deliberately paints the Firestore snapshot it can get
  * *immediately* and corrects it afterwards. With `persistentLocalCache`,
  * `onSnapshot` emits `fromCache: true` FIRST, and `saveRecord` commits in a
  * transaction — which has no latency compensation — while the screen navigates
  * away in `onSaved`, tearing the listener down before the server echo lands. So
- * the local cache still holds the pre-save value when the record is re-opened.
- * `useServerTruthSeed` re-seeds the form once the authoritative
- * `fromCache: false` snapshot arrives; on a cold page load that includes
- * re-establishing the Firestore connection, which 5s does not reliably cover.
+ * the local cache still holds the pre-save value when the record is re-opened,
+ * and `useServerTruthSeed` only re-seeds the form once the authoritative
+ * `fromCache: false` snapshot arrives.
  *
- * ⚠️ This widens the window, it does NOT weaken the assertion: the same
- * converged value is still required, so a regression that never converges still
- * fails. Use it ONLY after a save + `goto`/reload. A same-page assertion must
- * keep the default, or it stops catching a genuine hang.
+ * That budget was widened once already (5s → 15s, #799) and went red again
+ * anyway — three in-job retries in a row, then green on a fresh job. The reason
+ * is in the SDK: the watch stream backs off exponentially (1s, ×1.5, capped at
+ * 60s) and `OnlineStateTracker` gives up after 10s and surfaces cached data. Once
+ * the initial handshake misses, the retries land FURTHER apart, so a stalled load
+ * is no likelier to converge at 30s than at 15s — while a fresh page load resets
+ * the backoff to zero and typically converges in under two seconds.
+ *
+ * So this is a per-attempt budget, not a total: {@link waitForServerSnapshot}
+ * spends it once, reloads, and spends it again. 10s is ~5× the healthy path.
  */
-export const SERVER_TRUTH_TIMEOUT = 15_000;
+export const SERVER_TRUTH_TIMEOUT = 10_000;
 
-/** Assert a field's value on a record re-opened after a save. */
+/**
+ * Block until the form on screen is showing SERVER truth, reloading once if the
+ * stream stalls.
+ *
+ * `ObjectView` advertises which snapshot it painted from on its `<form>` as
+ * `data-snapshot-source={'pending'|'cache'|'server'}`. Waiting on that instead of
+ * on the field's value is what makes a failure here diagnosable: `cache` means
+ * the stream never delivered and the field is showing the pre-save value;
+ * `pending` means no snapshot arrived at all (dead listener, wrong id); and a
+ * value that is still wrong AFTER this returns is a genuinely lost write. Read
+ * off the value alone, all three produce the identical `toHaveValue` failure —
+ * which is exactly what cost PR #1241 a full investigation.
+ *
+ * ⚠️ The reload is safe only because these helpers are contracted to run right
+ * after a save + `goto`/reload, on a pristine form with nothing on screen worth
+ * preserving. Do NOT reach for this mid-interaction.
+ */
+export async function waitForServerSnapshot(page: Page): Promise<void> {
+  const served = page.locator('form[data-snapshot-source="server"]');
+  try {
+    await served.waitFor({ state: 'attached', timeout: SERVER_TRUTH_TIMEOUT });
+    return;
+  } catch (err) {
+    // Only a timeout means "stalled, try a fresh connection". A strict-mode
+    // violation (two ObjectViews on one page) or a closed page is a real
+    // problem and must not be retried into a confusing second failure.
+    if (!(err instanceof errors.TimeoutError)) throw err;
+  }
+  // Say so even though we are about to recover. A stall that the reload fixes
+  // leaves no other trace, and a lane that starts logging this on every spec is
+  // telling you staging is degrading — which is worth seeing BEFORE it turns
+  // into a red build nobody can reproduce.
+  // Deliberately does not read the DOM to report WHICH state it stalled in: that
+  // read can itself throw on the failure path, and the distinction is already in
+  // the assertion below if the reload does not save us.
+  console.warn(
+    `[server-snapshot] no server snapshot after ${SERVER_TRUTH_TIMEOUT}ms on ${page.url()} —` +
+      ' reloading to reset the watch-stream backoff',
+  );
+  // Reload rather than wait longer — see SERVER_TRUTH_TIMEOUT. Asserted through
+  // `expect` this time so the failure names what the form actually settled on
+  // (`cache` / `pending`) instead of just reporting a missing selector.
+  await page.reload();
+  await expect(page.locator('form[data-snapshot-source]')).toHaveAttribute(
+    'data-snapshot-source',
+    'server',
+    { timeout: SERVER_TRUTH_TIMEOUT },
+  );
+}
+
+/**
+ * Assert a field's value on a record re-opened after a save.
+ *
+ * The value assertion runs on the DEFAULT expect timeout, and that is a
+ * strengthening rather than a relaxation: the round trip it used to be padding
+ * for is now waited out explicitly above, so all this has to absorb is the one
+ * paint by which `data-snapshot-source` leads the inputs (the attribute flips
+ * during render, `form.reset` runs in the effect after). A wrong value now
+ * reports in 5s and means something specific.
+ */
 export async function expectFieldAfterReload(
   page: Page,
   label: string,
   value: string | RegExp,
 ): Promise<void> {
-  await expect(page.getByLabel(label, { exact: true })).toHaveValue(value, {
-    timeout: SERVER_TRUTH_TIMEOUT,
-  });
+  await waitForServerSnapshot(page);
+  await expect(page.getByLabel(label, { exact: true })).toHaveValue(value);
 }
 
 /** `expectFieldAfterReload` for a Mantine `Switch` / checkbox. */
@@ -207,6 +271,6 @@ export async function expectSwitchAfterReload(
   label: string,
   checked = true,
 ): Promise<void> {
-  const control = page.getByLabel(label, { exact: true });
-  await expect(control).toBeChecked({ checked, timeout: SERVER_TRUTH_TIMEOUT });
+  await waitForServerSnapshot(page);
+  await expect(page.getByLabel(label, { exact: true })).toBeChecked({ checked });
 }

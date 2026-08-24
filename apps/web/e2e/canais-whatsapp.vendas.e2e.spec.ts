@@ -13,6 +13,7 @@ import {
   expectSwitchAfterReload,
   fillField,
   selectFieldWithSearch,
+  waitForServerSnapshot,
 } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -138,6 +139,13 @@ test.describe.serial('Canais WhatsApp e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/canais\/whatsapp$/, { timeout: 15_000 });
 
     await page.goto(`/canais/whatsapp/${row(3)}`);
+    // Wait for server truth BEFORE opening the tab, not after: on a stalled
+    // stream `waitForServerSnapshot` reloads the page, which would drop us back
+    // on "Geral" and leave every assertion below looking for inputs that are no
+    // longer rendered. Ordered this way the reload (if any) happens while there
+    // is nothing on screen worth keeping, and the three helpers below then find
+    // the snapshot already served and return without touching the page.
+    await waitForServerSnapshot(page);
     await page.getByRole('tab', { name: 'Atendimento' }).click();
     await expectSwitchAfterReload(page, 'Segunda-feira');
     await expectFieldAfterReload(page, 'Segunda-feira — Abertura', '09:00');
