@@ -1,3 +1,7 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -129,5 +133,65 @@ describe('publishSummary (#798)', () => {
     // apps/web calls the DEPLOYED channel backend, not this checkout — a
     // revision without the new fields must not render "undefined anúncios".
     expect(publishSummary({ itemId: 'MLB1', estado: 'pa' })).toBe('Anúncio MLB1 — Pausado.');
+  });
+});
+
+/**
+ * The `apps/web` half of the User-Products-page guard.
+ *
+ * ⚠️ It lives HERE, not beside its twin in
+ * `apps/mercado-livre/lib/marketplace/anuncios/anuncioUrl.test.ts`, and the split
+ * is the whole point. `ci.yml` excludes `@delfrance/mercado-livre-app` from
+ * `turbo run test` (line 101 — an exclusion `ci-mercado-livre.yml` owns), and that
+ * lane derives its scope from the `workspace:*` closure of the ML app, which does
+ * NOT contain `apps/web`. So a PR that reintroduced
+ * `mercadolivre.com.br/up/<userProductId>` in this file's own module would have
+ * run the ML-side assertion nowhere at all — not a red check, not a skip, simply
+ * never executed, which is the silent-pass shape the root `CLAUDE.md` CI rules
+ * exist to prevent. This workspace's `test` task runs in `ci.yml` on every PR,
+ * unfiltered, so the guard now rides a lane its own diff always triggers.
+ *
+ * The duplication is deliberate, and the same trade `mlbProductUrl` already makes
+ * across these two surfaces: a shared helper would need a package, and a guard
+ * that cannot run is worth less than one written twice.
+ */
+describe('apps/web builds no User Products page URL', () => {
+  const SKIP = new Set(['node_modules', '.next', 'dist', '.turbo', 'coverage', 'test-results']);
+
+  function sourceFiles(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP.has(entry)) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) {
+        sourceFiles(full, out);
+      } else if (/\.tsx?$/.test(entry) && !/\.(test|spec)\.tsx?$/.test(entry)) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  /** Block comments hold the JSDoc; a `//` line is stripped whole. */
+  const stripComments = (src: string): string =>
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('//'))
+      .join('\n');
+
+  it('never constructs mercadolivre.com.br/up/', () => {
+    // `lib/mercado-livre` → `lib` → the app root.
+    const appRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+    const scanned = sourceFiles(appRoot);
+
+    // A guard that scans nothing rejects nothing — fail here rather than pass
+    // vacuously if this path ever stops resolving.
+    expect(scanned.length).toBeGreaterThan(100);
+
+    const offenders = scanned.filter((file) =>
+      stripComments(readFileSync(file, 'utf8')).includes('mercadolivre.com.br/up/'),
+    );
+
+    expect(offenders).toEqual([]);
   });
 });

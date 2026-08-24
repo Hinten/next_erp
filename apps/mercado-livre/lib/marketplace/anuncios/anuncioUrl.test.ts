@@ -363,15 +363,25 @@ describe('URL builders', () => {
 });
 
 /**
- * The regression guard. Four separate places have now reached for the UP page —
- * this file twice, the browser helper, and the test that pinned it — so the
- * cheapest thing that ends it is an assertion that no CODE anywhere builds one.
+ * The regression guard for THIS app. Four separate places have now reached for
+ * the UP page — this file twice, the browser helper, and the test that pinned it
+ * — so the cheapest thing that ends it is an assertion that no CODE builds one.
  *
  * Comments are stripped first, deliberately: every ⚠️ that explains WHY the URL
  * is wrong has to be free to spell it out.
+ *
+ * ⚠️ Scans `apps/mercado-livre` ONLY, and its `apps/web` half lives in
+ * `apps/web/lib/mercado-livre/listingLinks.test.ts` rather than here. Scanning
+ * both from this file looks stronger and is weaker: `ci.yml` excludes this
+ * workspace from `turbo run test` (an exclusion `ci-mercado-livre.yml` owns), and
+ * that lane scopes on the `workspace:*` closure of `@delfrance/mercado-livre-app`
+ * — which does not contain `apps/web`. A PR reintroducing the URL in `apps/web`
+ * alone would therefore run this assertion NOWHERE: not red, not skipped, simply
+ * never executed. Each guard lives in the workspace it scans, so each one rides a
+ * lane that its own diff is guaranteed to trigger.
  */
 describe('no surface builds a User Products page URL', () => {
-  const ROOTS = ['apps/mercado-livre', 'apps/web'];
+  const ROOTS = ['apps/mercado-livre'];
   const SKIP = new Set(['node_modules', '.next', 'dist', '.turbo', 'coverage', 'test-results']);
 
   function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -402,7 +412,7 @@ describe('no surface builds a User Products page URL', () => {
 
     // A guard that scans nothing rejects nothing. If a move breaks the path
     // above, fail HERE rather than pass vacuously for the rest of the repo's life.
-    expect(scanned.length).toBeGreaterThan(200);
+    expect(scanned.length).toBeGreaterThan(100);
 
     const offenders = scanned.filter((file) =>
       stripComments(readFileSync(file, 'utf8')).includes('mercadolivre.com.br/up/'),
