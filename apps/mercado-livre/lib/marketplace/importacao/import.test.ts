@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
-import { MercadoLivreError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import {
+  MercadoLivreError,
+  MercadoLivreHttpError,
+  type MercadoLivreApi,
+} from '@delfrance/integrations-mercado-livre';
 
 import { type ImportDeps, importProduto } from './import';
 import { MercadoLivreImportError } from './importCore';
@@ -260,6 +264,10 @@ function makeApi(
   // Default: a single-node chain (the item's own category, no ancestors) — enough
   // for tests that don't care about the category-import specifics (#442).
   category: DocData | Error = { id: (item.category_id as string) ?? 'MLB0000', name: 'Categoria' },
+  // #1087 — what `GET /moderations/last_moderation/{id}-ITM` answers. An `Error`
+  // is thrown instead, which is how the 404-is-data and the transient-degrade
+  // branches are driven. Default `[]`: ML has nothing on this listing.
+  moderations: DocData[] | Error = [],
 ): MercadoLivreApi {
   return {
     getItem: vi.fn(async () => item),
@@ -268,8 +276,34 @@ function makeApi(
       if (category instanceof Error) throw category;
       return category;
     }),
+    getLastModeration: vi.fn(async () => {
+      if (moderations instanceof Error) throw moderations;
+      return moderations;
+    }),
   } as unknown as MercadoLivreApi;
 }
+
+/** ML's `last_moderation` wire shape for a paused-by-policy listing (#1087). */
+const MODERACAO_ML: DocData = {
+  name: 'POOR_QUALITY_THUMBNAIL',
+  id: 'mod-1',
+  date_created: '2021-04-14T10:47:05.270-0400',
+  evidences: [{ section_name: 'pictures', text_matched: '604505-MLB' }],
+  wordings: [
+    { type: 'REASON', value: 'A foto principal não atende à qualidade exigida.' },
+    { type: 'REMEDY', value: 'Suba uma foto com fundo branco e sem textos.' },
+  ],
+};
+
+/** The same moderação as `mapModeracoes` stores it on the link doc. */
+const MODERACAO_GRAVADA = {
+  nome: 'POOR_QUALITY_THUMBNAIL',
+  dataCriacao: '2021-04-14T10:47:05.270-0400',
+  motivo: 'A foto principal não atende à qualidade exigida.',
+  remedio: 'Suba uma foto com fundo branco e sem textos.',
+  secoes: ['pictures'],
+  evidencias: ['604505-MLB'],
+};
 
 const SIMPLE_ITEM: DocData = {
   id: 'MLB123',
@@ -284,6 +318,13 @@ const SIMPLE_ITEM: DocData = {
   seller_id: 55,
   seller_custom_field: 'SKU1',
   attributes: [{ id: 'SELLER_SKU', value_name: 'SKU1' }],
+};
+
+/** A listing ML has paused for a policy reason — trips `precisaConsultarModeracao`. */
+const ITEM_MODERADO: DocData = {
+  ...SIMPLE_ITEM,
+  status: 'paused',
+  sub_status: ['moderation_penalty'],
 };
 
 function deps(db: FakeDb, api: MercadoLivreApi, over: Partial<ImportDeps> = {}): ImportDeps {
@@ -535,6 +576,185 @@ describe('importProduto — ERP Categoria chain (#442)', () => {
     expect(res.created).toBe(true);
     expect(db.docs('produtos').get(res.produtoId)!.categoriaProdutoOuterRef).toBeNull();
     expect(db.docs('categorias').size).toBe(0);
+  });
+});
+
+/**
+ * ML MODERATIONS on the import path (#1087).
+ *
+ * The import is the THIRD writer of the link doc's `moderacoes`, after the
+ * `items` webhook and `reverificarAnuncio`. Before this it wrote `status` and
+ * `sub_status` while never asking ML why — so a moderated anúncio imported as a
+ * bare "pausado", which is exactly the state #1087 exists to abolish.
+ */
+describe('importProduto — ML moderations (#1087)', () => {
+  /** The parent link doc, whatever id it was minted under. */
+  function linkOf(db: FakeDb, produtoId: string): DocData {
+    return [...db.docs(`produtos/${produtoId}/produtoMercadoLivre`).values()][0]!;
+  }
+
+  it('a moderated listing lands with ML’s REASON, not a bare pausado', async () => {
+    const db = new FakeDb();
+    const api = makeApi(ITEM_MODERADO, undefined, undefined, [MODERACAO_ML]);
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(linkOf(db, res.produtoId)).toMatchObject({
+      status: 'paused',
+      sub_status: ['moderation_penalty'],
+      moderacoes: [MODERACAO_GRAVADA],
+    });
+    // The `-ITM` element suffix, through the real `moderationReferenceId` — a
+    // bare item id is a silent miss on ML's side, not an error.
+    expect(api.getLastModeration).toHaveBeenCalledWith('MLB123-ITM');
+  });
+
+  it('⚠️ THE HOT-PATH GUARANTEE: a healthy listing spends NO moderation call', async () => {
+    // `items`-driven or catalogue-wide, the overwhelming majority of listings are
+    // healthy, and they must keep costing exactly the one `GET /items/{id}` they
+    // cost before. The gate is what makes that true.
+    const db = new FakeDb();
+    const api = makeApi(SIMPLE_ITEM);
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(api.getLastModeration).not.toHaveBeenCalled();
+    // …and it still records "asked, none" — free, off the item already fetched.
+    expect(linkOf(db, res.produtoId).moderacoes).toEqual([]);
+  });
+
+  it('⚠️ a re-import of a listing whose moderação ML LIFTED clears the stored reason', async () => {
+    // The regression, end to end. The link write spreads the existing doc and
+    // `clearFalha()` deliberately carries no `moderacoes`, so the old reason used
+    // to survive onto a listing ML now calls `active`.
+    const db = new FakeDb();
+    const moderado = makeApi(ITEM_MODERADO, undefined, undefined, [MODERACAO_ML]);
+    const res = await importProduto(deps(db, moderado), 'MLB123');
+    expect(linkOf(db, res.produtoId).moderacoes).toEqual([MODERACAO_GRAVADA]);
+
+    const saudavel = makeApi({ ...SIMPLE_ITEM, status: 'active', sub_status: [] });
+    await importProduto(deps(db, saudavel), 'MLB123');
+
+    expect(linkOf(db, res.produtoId)).toMatchObject({ status: 'active', moderacoes: [] });
+    // Cleared by the GATE, not by a second endpoint call — the item itself said
+    // there was nothing left to explain.
+    expect(saudavel.getLastModeration).not.toHaveBeenCalled();
+  });
+
+  it('reads a 404 from last_moderation as "não moderado", never as a failure', async () => {
+    const db = new FakeDb();
+    const api = makeApi(
+      ITEM_MODERADO,
+      undefined,
+      undefined,
+      new MercadoLivreHttpError('ML 404', 404, null),
+    );
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(api.getLastModeration).toHaveBeenCalled();
+    expect(linkOf(db, res.produtoId).moderacoes).toEqual([]);
+  });
+
+  it('⚠️ a TRANSIENT moderation failure degrades to "never asked" — the produto still imports', async () => {
+    // The deliberate divergence from the other two writers. For them the status
+    // write IS the unit of work, so rethrowing costs nothing; here it would throw
+    // away a produto, its extraData, its stock and its children over a
+    // diagnostic. The listing is not left blind — `status`/`sub_status` are
+    // recorded from the item already in hand.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = new FakeDb();
+    const api = makeApi(
+      ITEM_MODERADO,
+      undefined,
+      undefined,
+      new MercadoLivreHttpError('ML 500', 500, null),
+    );
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(db.docs('produtos').get(res.produtoId)).toBeDefined();
+    expect(linkOf(db, res.produtoId)).toMatchObject({ status: 'paused' });
+    // `null`, never `[]`: on disk `[]` is byte-identical to a healthy listing, so
+    // it would record "not moderated" about a listing we failed to ask about.
+    expect(linkOf(db, res.produtoId).moderacoes ?? null).toBeNull();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('a degraded re-import keeps the reason it already had rather than blanking it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = new FakeDb();
+    const ok = makeApi(ITEM_MODERADO, undefined, undefined, [MODERACAO_ML]);
+    const res = await importProduto(deps(db, ok), 'MLB123');
+
+    const falha = makeApi(
+      ITEM_MODERADO,
+      undefined,
+      undefined,
+      new MercadoLivreHttpError('ML 500', 500, null),
+    );
+    await importProduto(deps(db, falha), 'MLB123');
+
+    expect(linkOf(db, res.produtoId).moderacoes).toEqual([MODERACAO_GRAVADA]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('⚠️ lerModeracoes:false (the mass path) skips the CALL but still clears a healthy listing', async () => {
+    // The flag suppresses the network read, never the write. A listing whose own
+    // status warrants no moderation still lands `[]`, so a catalogue-wide
+    // re-import self-heals every stale reason for free.
+    const db = new FakeDb();
+    const saudavel = makeApi(SIMPLE_ITEM);
+    const res = await importProduto(deps(db, saudavel, { lerModeracoes: false }), 'MLB123');
+    expect(saudavel.getLastModeration).not.toHaveBeenCalled();
+    expect(linkOf(db, res.produtoId).moderacoes).toEqual([]);
+
+    // A genuinely moderated one degrades to "never asked" instead.
+    const db2 = new FakeDb();
+    const moderado = makeApi(ITEM_MODERADO, undefined, undefined, [MODERACAO_ML]);
+    const res2 = await importProduto(deps(db2, moderado, { lerModeracoes: false }), 'MLB123');
+    expect(moderado.getLastModeration).not.toHaveBeenCalled();
+    expect(linkOf(db2, res2.produtoId).moderacoes ?? null).toBeNull();
+  });
+
+  it('a closed listing never spends a moderation call — the guard runs first', async () => {
+    // `closed` + `moderation_penalty` IS a moderation reading, so without the
+    // ordering this would pay ML for a listing the import rejects anyway.
+    const db = new FakeDb();
+    const api = makeApi({ ...SIMPLE_ITEM, status: 'closed', sub_status: ['moderation_penalty'] });
+    await expect(importProduto(deps(db, api), 'MLB123')).rejects.toThrow(/encerrado/);
+    expect(api.getLastModeration).not.toHaveBeenCalled();
+  });
+
+  it('a legacy variations[] child link never gains a moderação of its own', async () => {
+    // A `variations[]` entry is not a listing of its own and has no status to
+    // explain — symmetric with `status`/`sub_status`, and what keeps #707's
+    // phantom prune free of reasons it never read.
+    const db = new FakeDb();
+    const api = makeApi(
+      {
+        ...ITEM_MODERADO,
+        variations: [
+          {
+            id: 111,
+            available_quantity: 3,
+            attributes: [{ id: 'SELLER_SKU', value_name: 'SKU1-P' }],
+            attribute_combinations: [{ id: 'SIZE', name: 'Tamanho', value_name: 'P' }],
+          },
+        ],
+      },
+      undefined,
+      undefined,
+      [MODERACAO_ML],
+    );
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    // The parent still carries it…
+    expect(linkOf(db, res.produtoId).moderacoes).toEqual([MODERACAO_GRAVADA]);
+    // …every child link does not.
+    const childLinks = [...db.cols.keys()].filter((p) => p.endsWith('/variacaoMercadoLivre'));
+    expect(childLinks.length).toBeGreaterThan(0);
+    for (const path of childLinks) {
+      for (const doc of db.docs(path).values()) {
+        expect(doc.moderacoes ?? null).toBeNull();
+      }
+    }
   });
 });
 
@@ -1241,6 +1461,8 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     family?: DocData | Error;
     search?: DocData | Error;
     category?: DocData | Error;
+    /** `<memberItemId>-ITM` → ML's `last_moderation` answer for that member (#1087). */
+    moderations?: Record<string, DocData[] | Error>;
   }): MercadoLivreApi {
     const category = opts.category ?? { id: 'MLB1430', name: 'Roupas' };
     return {
@@ -1263,6 +1485,14 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       searchItemsByUserProduct: vi.fn(async () => {
         if (opts.search instanceof Error) throw opts.search;
         return opts.search ?? { results: [] };
+      }),
+      // #1087 — keyed by MEMBER item id, because under User Products each member
+      // is its own listing and carries its own moderation. The key is the full
+      // `moderation_reference_id` (`<itemId>-ITM`).
+      getLastModeration: vi.fn(async (referenceId: string) => {
+        const found = opts.moderations?.[referenceId];
+        if (found instanceof Error) throw found;
+        return found ?? [];
       }),
     } as unknown as MercadoLivreApi;
   }
@@ -1354,6 +1584,53 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     expect(second.created).toBe(false);
     expect(second.variations).toEqual({ total: 1, created: 0 });
     expect(db.docs('produtos').size).toBe(countAfterFirst);
+  });
+
+  describe('ML moderations on a family member (#1087)', () => {
+    it('a moderated member stamps both its variacaoMercadoLivre link and the family parent link', async () => {
+      // Moderation is per ML item, and under User Products a member IS its own
+      // listing — so the member's own link records ML's verdict. The family
+      // parent takes the SAME value rather than a fold: its `estado`/`status`
+      // already come from whichever member was imported, so taking that member's
+      // reason too is what keeps the parent internally consistent — one listing,
+      // one status, one reason.
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: { ...MEMBER_A, status: 'paused', sub_status: ['moderation_penalty'] },
+        },
+        moderations: { [`${MEMBER_A_ID}-ITM`]: [MODERACAO_ML] },
+      });
+      const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(api.getLastModeration).toHaveBeenCalledWith(`${MEMBER_A_ID}-ITM`);
+
+      const childId = expectedChildId(MEMBER_A_ID);
+      expect(db.docs(`produtos/${childId}/variacaoMercadoLivre`).get(childId)).toMatchObject({
+        status: 'paused',
+        sub_status: ['moderation_penalty'],
+        moderacoes: [MODERACAO_GRAVADA],
+      });
+      expect(
+        db.docs(`produtos/${res.produtoId}/produtoMercadoLivre`).get(expectedParentLinkId),
+      ).toMatchObject({ status: 'paused', moderacoes: [MODERACAO_GRAVADA] });
+    });
+
+    it('a healthy member costs no moderation call and still clears both links', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(api.getLastModeration).not.toHaveBeenCalled();
+      const childId = expectedChildId(MEMBER_A_ID);
+      expect(db.docs(`produtos/${childId}/variacaoMercadoLivre`).get(childId)?.moderacoes).toEqual(
+        [],
+      );
+      expect(
+        db.docs(`produtos/${res.produtoId}/produtoMercadoLivre`).get(expectedParentLinkId)
+          ?.moderacoes,
+      ).toEqual([]);
+    });
   });
 
   describe('family fan-out', () => {

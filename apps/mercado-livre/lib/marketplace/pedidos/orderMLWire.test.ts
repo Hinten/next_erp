@@ -516,3 +516,66 @@ describe('mergeOrderMLWire', () => {
     }
   });
 });
+
+/**
+ * #1087. ML quotes numeric fields inconsistently — the live case was `order_id`
+ * on `GET /collections/{id}` — and the same drift reaches the order-embedded
+ * payment summary this wire mirrors.
+ *
+ * ⚠️ This path fails QUIETLY, which is why it needs its own coverage. The plugin
+ * schema raises a `MercadoLivreValidationError` a human eventually sees; here a
+ * quoted amount just became `null` in the pedido's `orderML` mirror, with nothing
+ * logged and nothing thrown.
+ */
+describe('buildOrderMLWire — money on the embedded payment (#1087)', () => {
+  function wireForPayment(payment: Record<string, unknown>): Record<string, unknown> {
+    const order = buildFixtureOrder() as unknown as Record<string, unknown>;
+    order.payments = [payment];
+    const wire = buildOrderMLWire({
+      order: order as unknown as MlOrder,
+      contaOuterRef: 'integracao/CONTA123',
+    }) as Record<string, unknown>;
+    return (wire.payments as Record<string, unknown>[])[0]!;
+  }
+
+  it('reads a quoted amount as the number, not null', () => {
+    const p = wireForPayment({
+      id: 174034247387,
+      transaction_amount: '1000.02',
+      total_paid_amount: '1000.02',
+      shipping_cost: '0',
+      coupon_amount: '12.5',
+      overpaid_amount: '0',
+    });
+    expect(p.transaction_amount).toBe(1000.02);
+    expect(p.total_paid_amount).toBe(1000.02);
+    expect(p.shipping_cost).toBe(0);
+    expect(p.coupon_amount).toBe(12.5);
+    expect(p.overpaid_amount).toBe(0);
+  });
+
+  it('still reads a plain JSON number unchanged', () => {
+    const p = wireForPayment({ transaction_amount: 1000.02, coupon_amount: 0 });
+    expect(p.transaction_amount).toBe(1000.02);
+    expect(p.coupon_amount).toBe(0);
+  });
+
+  it('⛔ never invents a value from a non-decimal string', () => {
+    // `Number('')` is 0, `Number('0x1F')` is 31, `Number('1e3')` is 1000. Writing
+    // any of those into a money mirror is worse than writing null.
+    const p = wireForPayment({
+      transaction_amount: '',
+      total_paid_amount: 'R$ 1.000,02',
+      shipping_cost: '0x1F',
+      overpaid_amount: '1e3',
+    });
+    expect(p.transaction_amount).toBe(null);
+    expect(p.total_paid_amount).toBe(null);
+    expect(p.shipping_cost).toBe(null);
+    expect(p.overpaid_amount).toBe(null);
+  });
+
+  it('coupon_amount keeps its legacy `?? 0` default when absent', () => {
+    expect(wireForPayment({}).coupon_amount).toBe(0);
+  });
+});

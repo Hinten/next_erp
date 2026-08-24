@@ -421,3 +421,69 @@ describe('ChatComposer — Mercado Livre replies leave through the route (#533)'
     expect(wa.container.querySelector('input[type="file"]')).not.toBeNull();
   });
 });
+
+describe('ChatComposer — claim replies leave through the route too (#768)', () => {
+  /**
+   * ⚠️ The regression this file exists to stop repeating. #768 gave mlclaims a
+   * backend route and set ORIGEM_RULES.mlclaims.temEnvio = true, but the
+   * composer kept a hand-written ORIGENS_ROTA set that listed only the two
+   * #533 surfaces. So enviaPorRota was false, handleSend took the Firestore
+   * branch, and every claim reply landed estadoEnvio: 'salva' — a state only
+   * WhatsApp's sendOutbound trigger consumes. Nothing failed; the replies just
+   * never left. The commit that introduced it is titled "reply and resolve ML
+   * claims from the inbox".
+   */
+  const conversaClaim: Conversa = conversaSchema.parse({
+    usuarios: ['op1'],
+    estadoConversa: 1,
+    origem: 'mlclaims',
+    nome: 'Comprador',
+    integracaoOuterRef: 'documents/integracao/conta1',
+  });
+
+  it('calls the channel backend and writes NOTHING to Firestore', async () => {
+    // ⚠️ BOTH halves are load-bearing. Asserting only the route call would pass
+    // against a composer that ALSO wrote the mensagem — i.e. green while the
+    // thread grows a phantom bubble ML never received.
+    wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaClaim}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Digite uma mensagem/), {
+      target: { value: 'Enviamos a etiqueta de devolução.' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Enviar'));
+    });
+
+    expect(responderConversa).toHaveBeenCalledWith({
+      integracaoId: 'conta1',
+      conversaId: 'c1',
+      texto: 'Enviamos a etiqueta de devolução.',
+    });
+    expect(setDocMock).not.toHaveBeenCalled();
+    expect(batchCommit).not.toHaveBeenCalled();
+  });
+
+  it('hides the paperclip, because the responder route sends text only', async () => {
+    // ORIGEM_RULES.mlclaims allows 3 attachments — that is what ML accepts on
+    // the claim endpoint, not what this composer can deliver. While the origem
+    // was mis-classified the paperclip was ENABLED here, so a staged file was
+    // written as a mensagem and silently dropped. uploadClaimAttachment has no
+    // caller anywhere, so there was never a path that sent it.
+    const { container } = wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaClaim}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+  });
+});

@@ -231,9 +231,21 @@ The per-surface notes below stay the authority on behaviour.
   percentage to 50%**. So an amount with no exact offer is refused with the list
   of real ones rather than rounded to the nearest: a refund is not a value worth
   approximating.
+- **Claim RESOLUTION routes** (#364) — `app/api/marketplace/mercado-livre/reclamacao/`
+  `{estado,acao}` over `lib/marketplace/claims/claimResolve.ts`: the surface that
+  finally REACHES the verbs above. `respondIncidentMl` had existed since #768 with
+  no caller at all — refund, partial refund, allow-return and open-dispute were
+  implemented and unreachable.
+  ⚠️ `claimResolve.ts` deliberately takes **no** `db`, and that absence IS the
+  enforcement: `claimImport.ts` stays the single writer of incidente state, so root
+  `CLAUDE.md` rule 7 tier **0** applies — the race is made impossible rather than
+  guarded. A module holding no Firestore handle cannot become a second writer by
+  accident.
+  ⚠️ Availability is a SNAPSHOT, re-read LIVE on every call, so the UI must never
+  cache it — the list empties as the claim closes.
 - `lib/marketplace/chat/orderMessageAttachments.ts` — **#1162**: post-sale message
   attachments downloaded into Storage as `Arquivo`s, the `mlped` sibling of
-  `claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
+  `claims/claimAttachments.ts`. Before it, an attachment arrived as TEXT only and the
   operator had to leave the ERP to see it; that `[n anexos]` note stays as the
   FALLBACK, because silently dropping one is worse than not having it.
   ⚠️ **Not symmetric with the claims endpoint**, in three ways that each cost a
@@ -289,8 +301,8 @@ Two suites, deliberately separated by filename:
   `processMercadoLivreNotification` → a real Firestore write. ⚠️ The enqueuer's region and the TASK
   functions' region MUST match — a mismatch is the silent drop `mlTasks.ts` warns about,
   and it is what this test detects. Both are `MERCADO_LIVRE_TASKS_REGION` (inlined into
-  the bundle, **us-east1**), which is deliberately NOT `FUNCTIONS_REGION` (**us-east5**):
-  Cloud Tasks and Cloud Scheduler do not exist in us-east5, so the eleven queue/schedule
+  the bundle), which is deliberately NOT `FUNCTIONS_REGION`: Cloud Tasks and Cloud
+  Scheduler do not exist in every region, so where they are absent the eleven queue/schedule
   functions live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
@@ -376,30 +388,59 @@ moderation-endpoint outage cannot stall the `items` stream. A **404 is data**
 ("not moderated"); everything else rethrows, because persisting `[]` after a
 failed read records "not moderated" and is indistinguishable from healthy.
 
+⚠️ **The IMPORT is the third writer of `moderacoes`, and it diverges on failure
+deliberately.** It reads through the same gate — so a healthy listing still costs
+one `GET /items/{id}` — but places the call ABOVE every write (`importCategoriaChain`
+and `resolveTaxonomia` both write Firestore before `assembleImportPlan` runs, so a
+read below them could orphan docs), and it does **not** rethrow: for the other two
+writers the status write IS the unit of work, while here a throw discards a produto,
+its extraData, its stock, its photos and its children over a diagnostic. It degrades
+to `null` — the field's **third value, "never asked"**, distinct from `[]` = "asked,
+none" — which omits the key so the stored reason stands. ⚠️ The **mass import**
+(`lerModeracoes: false`) takes the same `null` path on purpose: a catalogue drain must
+not pay a lookup per moderated listing. What neither skips is the free half — a
+listing whose own `status`/`sub_status` warrant no moderation is written `[]` with no
+ML call at all, so even a full re-import clears every stale reason. Both `null` cases
+self-heal through an `items` delivery or "Reverificar anúncio".
+
 ⚠️ **`moderacoes` is a SEPARATE field from `errors`/`causas`, and the reason is the
 #781 stock re-arm.** `errors` is cleared whenever `podeEnviarEstoque(...).enviar` —
 deliberately, so a `closed`/`under_review` listing keeps its diagnosis. Moderation
 needs the opposite on both sides: it must SURVIVE on a listing ML still calls
 `active` (`poor_quality_thumbnail` — live, but losing exposure) and VANISH the moment
 ML stops reporting one, even mid-review. Sharing `errors` would have wiped the first
-case on the very write that set it. The invariant that replaces the clearing rule is
-stronger: `moderacoes` is written in the **same patch** as the `status` it explains,
-on every status write, value or `[]` — so a reason cannot outlive its state.
+case on the very write that set it. The invariant that replaces the clearing rule:
+`moderacoes` is written in the **same patch** as the `status` it explains — never on
+its own, never left behind by a writer that moved the status. ⚠️ It holds
+**unconditionally in the clearing direction**, which is the half that produces the
+bug: `precisaConsultarModeracao` is pure, so a listing ML calls healthy is written
+`[]` on every path with no ML call at all, and a lifted reason cannot outlive its
+state. It is **qualified in the other** by the third value — `null` = "never asked"
+omits the key rather than inventing `[]`. Both `null` cases are the importer's; see
+the import ⚠️ above rather than restating them here.
 
 ⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and only a writer that
-just asked ML may touch it.** `errors`/`causas` record OUR failed write, so a later
-success invalidates them; a moderação is ML's verdict and nothing we do lifts it. Two
-`clearFalha()` callers prove the point — the stock writeback fires on a successful
-`PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
-updates **while moderated**; the importer re-reads the item but never asks
-`/moderations`. Clearing there would erase a live reason and show a clean listing that
+just asked ML may touch it** — today `itemsStatusSync`, `reverificarAnuncio` and the
+**importer**. `errors`/`causas` record OUR failed write, so a later success
+invalidates them; a moderação is ML's verdict and nothing we do lifts it. The stock
+writeback proves the point — it fires on a successful `PUT /items`, and a
+`poor_quality_thumbnail` listing is `active` and accepts stock updates **while
+moderated**. Clearing there would erase a live reason and show a clean listing that
 is really still penalised, which hides a real problem rather than merely failing to
 explain one. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
 unconditionally, so clear-only would erase the reason the operator pressed the button
-to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER and the parent takes the
-**fold winner's** (`upFamilyStatus.ts`) — never a union, or the parent would show a
-reason for a sibling it is not reporting. Siblings' values come off disk, so the fold
-costs no extra ML call.
+to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER, and what the PARENT
+takes depends on the path. On the **`items` sync** it takes the **fold winner's**
+(`upFamilyStatus.ts`) — never a union, or the parent would show a reason for a sibling
+it is not reporting; siblings' values come off disk, so the fold costs no extra ML
+call. The **importer** deliberately diverges: it writes the IMPORTED member's onto the
+parent, matching the `estado`/`status` that same member already sets there
+(`upFamilyStatus.ts`'s own header blesses that convention — "the importer does the
+same with whichever member it happened to import"). That keeps the parent internally
+consistent: one listing, one status, one reason. Folding on the import path would
+read every sibling on the hot path and change `estado` semantics, which feed
+`linkHasLiveListing` → `integracoesComProduto`, the anchor pre-filter both sweeps
+open with.
 
 ⚠️ **A User-Products FAMILY's `estado` is a FOLD of its members, never one member's
 status.** A family's parent link carries the FAMILY id, so a member's `items`

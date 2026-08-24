@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { loadBuildEnv } from '../../../tools/deploy-env/build-env.mjs';
+import { loadBuildEnv, requireBuildRegion } from '../../../tools/deploy-env/build-env.mjs';
 
 // Bundle the Mercado Pago Cloud Functions (codebase `mercado-pago`) into a
 // single self-contained ESM file, inlining the function region (Firebase reads
@@ -17,10 +17,10 @@ export async function bundle(outfile) {
   // they are not exported in the deploy shell. A real export still wins, and a
   // missing file is a no-op — see tools/deploy-env/build-env.mjs.
   loadBuildEnv();
-  // Default to us-east5 — the MP backend's deploy region. Must match the
-  // enqueuer's MERCADO_PAGO_TASKS_REGION default (mpTasks.ts) or tasks target a
-  // queue that doesn't exist in this region and silently drop.
-  const region = process.env.FUNCTIONS_REGION || 'us-east5';
+  // Must match the enqueuer's region (mpTasks.ts) or tasks target a queue that
+  // does not exist and are silently dropped. No default: an unset variable stops
+  // the build rather than inlining a region nobody chose — see requireBuildRegion.
+  const region = requireBuildRegion('FUNCTIONS_REGION');
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above
   // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase

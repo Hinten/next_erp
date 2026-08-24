@@ -73,6 +73,69 @@ describe('attribute helpers', () => {
     ]);
     expect(attrs.map((a) => a.id)).toEqual(['BRAND', 'COLOR']);
   });
+
+  /**
+   * ⚠️ `value_struct` is the ONLY place an item response states a unit. ML
+   * answers `'355 mL'` in `value_name` with the unit baked in, and never sends
+   * `unit_id` — that is a field we SEND. Before this was read, every imported
+   * measurement stored the unit inside its own text, where the editor's
+   * digits-only filter stripped it and stamped the category default over it.
+   */
+  it('splits a number_unit measurement out of value_struct', () => {
+    expect(
+      attributesFromItem([
+        {
+          id: 'UNIT_VOLUME',
+          name: 'Volume da unidade',
+          value_id: '3681798',
+          value_name: '355 mL',
+          value_struct: { number: 355, unit: 'mL' },
+        },
+      ]),
+    ).toEqual([
+      {
+        id: 'UNIT_VOLUME',
+        // The id names the PAIR, so it cannot survive the split.
+        value_id: null,
+        name: 'Volume da unidade',
+        value_name: '355',
+        attribute_group_id: null,
+        attribute_group_name: null,
+        unit_id: 'mL',
+      },
+    ]);
+  });
+
+  it('keeps a fractional measurement exact', () => {
+    const [attr] = attributesFromItem([
+      { id: 'LENGTH', value_name: '62.5 cm', value_struct: { number: 62.5, unit: 'cm' } },
+    ]);
+    expect(attr).toMatchObject({ value_name: '62.5', unit_id: 'cm' });
+  });
+
+  it('leaves the value WHOLE when ML sends no usable struct', () => {
+    // No blind parse here: this layer has no category metadata, so it cannot
+    // tell a unit from the tail of an ordinary string. The editor splits it
+    // later, where `allowedUnits` is on hand to match against.
+    for (const struct of [null, undefined, {}, { number: 355 }, { unit: 'mL' }]) {
+      const [attr] = attributesFromItem([
+        { id: 'UNIT_VOLUME', value_id: 'v1', value_name: '355 mL', value_struct: struct },
+      ]);
+      expect(attr).toMatchObject({ value_id: 'v1', value_name: '355 mL', unit_id: null });
+    }
+  });
+
+  it('never lets a struct override a unit_id ML did send', () => {
+    const [attr] = attributesFromItem([
+      { id: 'LENGTH', value_name: '55', unit_id: 'mm', value_struct: { number: 55, unit: 'cm' } },
+    ]);
+    expect(attr).toMatchObject({ unit_id: 'mm' });
+  });
+
+  it('does not touch a plain string attribute that happens to end in letters', () => {
+    const [attr] = attributesFromItem([{ id: 'BRAND', value_name: 'Nike Air' }]);
+    expect(attr).toMatchObject({ value_name: 'Nike Air', unit_id: null });
+  });
 });
 
 describe('mapMlItemToImport', () => {

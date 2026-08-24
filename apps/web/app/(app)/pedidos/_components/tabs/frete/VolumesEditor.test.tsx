@@ -8,10 +8,10 @@ import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import { notifications } from '@mantine/notifications';
 import type { Pedido } from '@delfrance/schemas';
-import { MODALIDADE_FRETE } from '@delfrance/schemas';
+import { MODALIDADE_FRETE, seedFreteInicial } from '@delfrance/schemas';
 import type { FreteInicialFormState, PedidoFormState, VolumeFormState } from '../../types';
 import type { PedidoFormHandle } from './fields';
-import { seedFreteInicial } from './seedFreteInicial';
+
 import { VolumesEditor } from './VolumesEditor';
 import { loadProdutoPesoMap } from './produtoPeso';
 import { volumePadrao, type ProdutoMedidas } from './pesoPedido';

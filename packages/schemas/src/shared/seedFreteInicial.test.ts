@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MODALIDADE_FRETE } from '@delfrance/schemas';
-
-import { seedFreteInicial } from './seedFreteInicial';
+import { MODALIDADE_FRETE, seedFreteInicial } from './frete';
 
 describe('seedFreteInicial', () => {
   it('seeds a reverse frete for an entrada (cliente → loja)', () => {

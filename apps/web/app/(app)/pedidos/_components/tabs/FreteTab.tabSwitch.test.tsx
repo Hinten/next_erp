@@ -7,12 +7,12 @@ import { useForm, type UseFormReturn } from 'react-hook-form';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
 import type { Pedido } from '@delfrance/schemas';
-import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE, seedFreteInicial } from '@delfrance/schemas';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import type { CalculateOption } from '@delfrance/integrations-freight-br/http-client';
 import { FobFields } from './frete/FobFields';
 import { MelhorEnvioFields } from './frete/MelhorEnvioFields';
-import { seedFreteInicial } from './frete/seedFreteInicial';
+
 import type { FreteInicialFormState, PedidoFormState } from '../types';
 import type { PedidoFormHandle } from './frete/fields';
 

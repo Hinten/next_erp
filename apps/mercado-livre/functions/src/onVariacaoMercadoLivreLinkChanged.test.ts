@@ -1,4 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The trigger takes its `region:` from `./options`, the one place the
+// build-time-inlined regions are validated — so a per-function literal cannot
+// quietly outvote that check. Unbundled, that validation is what throws, so
+// both inlined variables are stubbed before the dynamic import below and
+// restored afterwards so they do not leak into this project's other files.
+const originalFunctionsRegion = process.env.FUNCTIONS_REGION;
+const originalMlTasksRegion = process.env.MERCADO_LIVRE_TASKS_REGION;
+process.env.FUNCTIONS_REGION = 'us-central1';
+process.env.MERCADO_LIVRE_TASKS_REGION = 'us-central1';
+
+afterAll(() => {
+  process.env.FUNCTIONS_REGION = originalFunctionsRegion;
+  process.env.MERCADO_LIVRE_TASKS_REGION = originalMlTasksRegion;
+});
 
 // Same split as the sibling wiring tests: the IO core is stubbed (covered by
 // `lib/marketplace/anuncios/integracoesComProduto.test.ts`), the pure gates stay REAL, and

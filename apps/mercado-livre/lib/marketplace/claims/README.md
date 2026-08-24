@@ -24,3 +24,7 @@ That is a property of today's code, not an accident of this layout.
   Fill-only-when-absent; a disagreeing stored id is logged for a human.
 - `claimAttachments.ts` — downloads and caches a claim message's attachment.
 - `claimActionability.ts` — pure: what the seller can still do on a claim.
+- `claimResolve.ts` — reads one claim and RESOLVES it (#364): the domain half of
+  the two `/reclamacao/*` routes, and the first caller `respondIncidentMl` has
+  ever had. Deliberately holds **no** `db` handle — `claimImport.ts` stays the
+  single writer of incidente state, so a resolução cannot be written from here.

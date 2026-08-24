@@ -15,6 +15,7 @@ vi.mock('firebase-admin/functions', () => ({
 }));
 
 import { createTaskScheduler, noopTaskScheduler } from '../../../lib/nfe/tasks';
+import { MissingRegionError } from '@delfrance/core/region';
 
 const KEYS = ['NFE_TASKS_DISABLED', 'NFE_TASKS_REGION'];
 let saved: Record<string, string | undefined>;
@@ -68,27 +69,33 @@ describe('createTaskScheduler', () => {
     expect(opts?.scheduleTime?.getTime()).toBe(at);
   });
 
-  it('defaults the queue region to us-east1 when NFE_TASKS_REGION is unset', async () => {
-    await createTaskScheduler().enqueueConsulta({
-      filialId: 'F',
-      nRec: 'R',
-      tpEmis: 6,
-      attempt: 0,
-      scheduleAtMs: Date.now(),
-    });
-    expect(taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/reconciliarNfe');
+  it('REFUSES to enqueue when NFE_TASKS_REGION is unset', async () => {
+    // No default, and deliberately no FUNCTIONS_REGION fall-through either:
+    // apps/nfe's backend has no region of its own to borrow, so guessing would
+    // enqueue into a queue that does not exist and drop the reconcile silently.
+    await expect(
+      createTaskScheduler().enqueueConsulta({
+        filialId: 'F',
+        nRec: 'R',
+        tpEmis: 6,
+        attempt: 0,
+        scheduleAtMs: Date.now(),
+      }),
+    ).rejects.toBeInstanceOf(MissingRegionError);
+    expect(taskQueue).not.toHaveBeenCalled();
   });
 
-  it('treats blank NFE_TASKS_REGION as unset and falls through to default', async () => {
+  it('treats a blank NFE_TASKS_REGION as unset, and unset now throws', async () => {
     process.env.NFE_TASKS_REGION = '';
-    await createTaskScheduler().enqueueConsulta({
-      filialId: 'F',
-      nRec: 'R',
-      tpEmis: 6,
-      attempt: 0,
-      scheduleAtMs: Date.now(),
-    });
-    expect(taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/reconciliarNfe');
+    await expect(
+      createTaskScheduler().enqueueConsulta({
+        filialId: 'F',
+        nRec: 'R',
+        tpEmis: 6,
+        attempt: 0,
+        scheduleAtMs: Date.now(),
+      }),
+    ).rejects.toBeInstanceOf(MissingRegionError);
   });
 
   it('noopTaskScheduler.enqueueConsulta resolves without side effects', async () => {

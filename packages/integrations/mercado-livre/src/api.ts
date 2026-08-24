@@ -618,6 +618,17 @@ export interface MercadoLivreApi {
    * is sent at all — which would refund half the order by omission.
    */
   partialRefundClaim(claimId: number, percentage: number): Promise<MlExpectedResolution[]>;
+  /**
+   * `GET …/claims/{id}/expected-resolutions` — what each party WANTS out of the
+   * claim, and whether it is `pending` / `accepted` / `rejected`.
+   *
+   * ⚠️ Read-side counterpart of the four resolution POSTs, and the one an
+   * operator needs FIRST: choosing between refund, partial refund and
+   * allow-return without knowing what the buyer asked for is guessing. The
+   * POSTs already return this same array as their write result.
+   */
+  getClaimExpectedResolutions(claimId: number): Promise<MlExpectedResolution[]>;
+
   /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
   searchClaims(params: {
     status?: string;
@@ -1292,6 +1303,12 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         mlExpectedResolutionsSchema,
         { body: { percentage } },
       ),
+    getClaimExpectedResolutions: (claimId) =>
+      request(
+        'GET',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions`,
+        mlExpectedResolutionsSchema,
+      ),
     getClaimReason: (reasonId) =>
       request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
     searchClaims: (params) =>
@@ -1364,8 +1381,20 @@ async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {
   }
   const result = schema.safeParse(parsed);
   if (!result.success) {
+    // ⚠️ The field names go in the MESSAGE, not only in `issues` — mirroring
+    // `parseTestUser` above. `issues` reaches a log line and nothing else: the
+    // notification pipeline persists `err.message` ALONE into the failures doc
+    // (`persistFailure`, pipeline.ts:215) and the sweep marks with `err.message`
+    // too (pipeline.ts:368). So the durable record of a parked notification —
+    // precisely the artifact that was useless in #1087, saying only "formato
+    // inesperado" while a quoted `order_id` stopped a payment importing — carries
+    // whatever is in this string and nothing more.
+    //
+    // Paths are field names and carry no value, which is what makes this safe;
+    // the raw body must never end up here (see the non-JSON branch above, #1015).
+    const campos = [...new Set(result.error.issues.map((i) => i.path.join('.') || '(raiz)'))];
     throw new MercadoLivreValidationError(
-      'Resposta do Mercado Livre em formato inesperado.',
+      `Resposta do Mercado Livre em formato inesperado. Campos inválidos: ${campos.join(', ')}.`,
       result.error.issues,
     );
   }

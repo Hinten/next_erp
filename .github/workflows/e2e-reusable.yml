@@ -69,6 +69,26 @@ jobs:
       # inlined value. Inert without `integrations: true` — no cadastros spec
       # calls the admin endpoints.
       NEXT_PUBLIC_INTEGRATIONS_URL: http://localhost:3001
+      # ⚠️ REQUIRED, and deliberately NOT `us-central1` like every other lane.
+      #
+      # This is the one lane that calls REAL callables on REAL staging
+      # (`reconciliarPagamentoPedido` from the Pagamentos tab), so the value must
+      # name the region staging's functions are ACTUALLY deployed to — today
+      # us-east1, the region the deleted `client.ts` fallback happened to name.
+      # Every other workflow runs against an emulator, where the region is
+      # arbitrary as long as both halves agree; here it is a fact about deployed
+      # infrastructure that no PR can change.
+      #
+      # It moves to us-central1 when the functions themselves do, in the migration
+      # window (ADR 0013 / #1115) — not before, or the callable targets a region
+      # where it does not exist. Until then a mismatch is what it was in the run
+      # that added this line: the pedido never leaves `iniciado`, because the
+      # reconcile never fires.
+      #
+      # Unconditional, like NEXT_PUBLIC_INTEGRATIONS_URL above and for the same
+      # reason: both lanes must produce an identical web build or the shared
+      # `nextjs-web-e2e-*` cache can hand one lane the other's inlined value.
+      NEXT_PUBLIC_FUNCTIONS_REGION: us-east1
       # Emit client source maps so prod-build stack traces are readable in the
       # Playwright trace. Build-only; real App Hosting deploys leave it unset.
       E2E_SOURCEMAPS: 'true'

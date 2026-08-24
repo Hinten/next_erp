@@ -42,9 +42,16 @@
  * No Bearer token and OUT of the `proxy.ts` CORS matcher — it's a server→server
  * call from ML, not a browser request.
  *
- * ⚠️ CUTOVER: a seller's ML callback URL is ONE registration. Switching it here
- * MUST be paired with disabling the legacy Flutter notification functions (see
- * functions/DEPLOY.md), or the same notification is ingested by both systems.
+ * ⚠️ CUTOVER: a seller's ML callback URL is ONE registration — which is exactly
+ * why the two receivers can never both be receiving, and why the risk is a GAP,
+ * not a double-ingest. (This comment used to end "or the same notification is
+ * ingested by both systems"; that is void — the legacy stack is a different
+ * project and there is no dual run, root `CLAUDE.md` rule 8.) Flip the URL to
+ * this backend FIRST, then disable the legacy Flutter notification functions:
+ * the legacy receiver acks 200 before anything processes the payload, so
+ * disabling it while it is still the registered target drops every delivery in
+ * between, and `missed_feeds` only files what ML could NOT get a 200 for. See
+ * functions/DEPLOY.md, "⚠️ Callback-URL cutover".
  */
 import { NextResponse } from 'next/server';
 import { logger } from 'firebase-functions/logger';

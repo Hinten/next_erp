@@ -1922,3 +1922,111 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ estado: 'am', errors: null });
   });
 });
+
+describe('publishProduto — which anúncio a publish targets', () => {
+  /**
+   * A conta holding TWO listings on one produto. Storage has always allowed
+   * this — the schema mints auto-ids and both sweeps loop every link with no
+   * `limit(1)` — but the selection here could only ever name the first, so a
+   * second anúncio was unpublishable and Publicar silently re-published #1.
+   *
+   * `ML-DOC-1` comes from `seedBase`; this adds the sibling. Insertion order is
+   * what makes `ML-DOC-1` the "first" one, matching the Firestore snapshot order
+   * the real query returns.
+   */
+  function seedSegundoAnuncio(db: FakeDb): void {
+    db.seed(LINKS_PATH, 'ML-DOC-2', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      channels: ['marketplace'],
+      estado: 'r',
+      id: null,
+      site_id: 'MLB',
+      title: 'Camiseta Básica — Premium',
+      category_id: 'MLB31447',
+      condition: 'new',
+      listing_type_id: 'gold_pro',
+      isUserProductModel: false,
+    });
+  }
+
+  it('publishes the named link doc and leaves its sibling untouched', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    seedSegundoAnuncio(db);
+    const { api, mocks } = makeApi();
+
+    await publishProduto({ ...makeDeps(db, api), linkDocId: 'ML-DOC-2' }, PROD);
+
+    expect(mocks.createItem).toHaveBeenCalledTimes(1);
+    // The listing type comes off the TARGETED doc, which is the whole point:
+    // reading it off the first link would publish the wrong listing's shape.
+    expect(mocks.createItem!.mock.calls[0]![0]).toMatchObject({ listing_type_id: 'gold_pro' });
+    expect(db.docs(LINKS_PATH).get('ML-DOC-2')).toMatchObject({ id: 'MLB777', estado: 'p' });
+    // Still the rascunho `seedBase` wrote — publish never reached it.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: null, estado: 'r' });
+  });
+
+  it('falls back to the conta first link when no linkDocId is given', async () => {
+    // The regression guard for every existing caller: omitting the id must keep
+    // the historical behaviour byte for byte.
+    const db = new FakeDb();
+    seedBase(db);
+    seedSegundoAnuncio(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: 'MLB777', estado: 'p' });
+    expect(db.docs(LINKS_PATH).get('ML-DOC-2')).toMatchObject({ id: null, estado: 'r' });
+  });
+
+  it('refuses an id this conta does not own, without calling ML', async () => {
+    // The route 404s this first, so reaching here means the doc moved conta
+    // between the two reads — or that someone called the orchestrator directly.
+    // Either way it must not publish someone else's listing under this token.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-OUTRA', {
+      contaOuterRef: 'documents/integracao/outra-conta',
+      estado: 'r',
+      id: null,
+      site_id: 'MLB',
+      title: 'De outra conta',
+      category_id: 'MLB31447',
+      condition: 'new',
+    });
+    const { api, mocks } = makeApi();
+
+    await expect(
+      publishProduto({ ...makeDeps(db, api), linkDocId: 'ML-DOC-OUTRA' }, PROD),
+    ).rejects.toThrow(/não encontrado nesta conta/);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('refuses an id that does not exist at all', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi();
+
+    await expect(
+      publishProduto({ ...makeDeps(db, api), linkDocId: 'ML-DOC-FANTASMA' }, PROD),
+    ).rejects.toThrow(/não encontrado nesta conta/);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+  });
+
+  it('treats an empty linkDocId as absent rather than as a doc that cannot exist', async () => {
+    // ⚠️ Not because `''` is a plausible doc id — it is not: `.doc('')` throws.
+    // (The `link.id !== ''` test elsewhere in this module is about the ML ITEM
+    // id, a schema field whose blank value IS in the corpus; a Firestore doc id
+    // is a different thing.) It is because a caller threading a falsy variable
+    // through should get the default, not a guaranteed refusal.
+    const db = new FakeDb();
+    seedBase(db);
+    const { api } = makeApi();
+
+    await publishProduto({ ...makeDeps(db, api), linkDocId: '' }, PROD);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: 'MLB777', estado: 'p' });
+  });
+});

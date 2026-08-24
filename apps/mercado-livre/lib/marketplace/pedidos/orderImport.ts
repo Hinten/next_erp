@@ -124,8 +124,10 @@ import { mlPaymentToPagamento } from './orderPaymentMapping';
 import {
   POLITICA_FRESCOR_IMPORT_PEDIDO,
   freteRecebidoEhMaisNovo,
+  ML_TAG_SEM_ENVIO,
   mergeFreteInicial,
   mlShipmentToFreteInicial,
+  pedidoSemEnvioMercadoEnvios,
   type MappedFreteInicialFields,
 } from './orderShipmentMapping';
 
@@ -139,6 +141,7 @@ import {
 import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { type ViaCepClient, createViaCepClient } from '@delfrance/core/cep';
 import { recoverEnderecoFromCep, type EnderecoBuildOutcome } from '@delfrance/schemas';
+import { MODALIDADE_FRETE, seedFreteInicial } from '@delfrance/schemas';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 
@@ -176,6 +179,13 @@ export interface OrderImportDeps {
 export interface OrderImportResult {
   pedidoId: string | null;
   created: boolean;
+  /**
+   * The order carries no Mercado Envios shipment ("frete a combinar"). Reported
+   * so the notification log can tell an import that will NEVER ship from an
+   * ordinary one — the freight has to be arranged by hand, and no `shipments`
+   * notification is ever coming to say so.
+   */
+  semEnvio: boolean;
   skipped: 'seller-mismatch' | 'no-buyer' | null;
 }
 
@@ -970,6 +980,110 @@ async function registrarIncidenteDeDivergencia(
  * `valorCobrado`; that step owns `pagamentos` + `estado`), one fewer
  * subcollection read here, and no need for `fullShippingPayments` on this path.
  */
+/**
+ * The `freteInicial` block for an order sold with **no Mercado Envios shipment**
+ * ("frete a combinar com o comprador"), where {@link applyFreteStep} cannot run
+ * at all because it needs an `MlShipment`.
+ *
+ * ## Why this exists
+ *
+ * Without it these pedidos are stranded FOREVER. `podeAvancarParaPago` requires
+ * `freteInicial != null`, and no other writer can supply one: the `shipments`
+ * topic never fires (there is no shipment), and `orderShipmentImport`'s freshness
+ * policy is `{ semFrete: 'ignorar' }` — "a null block is never created here".
+ * The pedido sits at `emProcessamento` with the payment correctly imported beside
+ * it and nothing to explain why (#1087). It also makes `nfeUpload` retry to its
+ * cap and park: `shouldUploadForPedido` treats an absent `freteInicial` as the
+ * 15-minute import race and waits for a writer that never comes.
+ *
+ * ## What it writes, and why those values
+ *
+ * `seedFreteInicial` from `@delfrance/schemas` — the SAME seeder the pedido
+ * form's Frete tab uses, deliberately shared rather than copied (#810). Only
+ * `estado` is required by `freteDoPedidoSchema`; every other key takes its
+ * documented default, which gives us the two that matter here for free:
+ *
+ *  - **`modalidade` = `'1'` (FOB / destinatário)** — the fiscally correct code
+ *    when the buyer arranges delivery. ⚠️ NOT `'0'` (CIF): that is the only
+ *    modalidade that charges freight INTO the nota, and three reads in the NF-e
+ *    generator key on it (#1090). NOT `'9'` (semTransporte) either — there IS
+ *    transport, it is simply not ours to record.
+ *  - **`externalOptionIntegracao` = `null`** — there is no external freight
+ *    option on this order. That is also what keeps the ML-only paths honest: the
+ *    etiqueta route and all three `nfeUpload` gates test
+ *    `=== INTEGRACAO_FRETE.mercadoLivre` and so decline, which is correct — there
+ *    is no ML label to print and no ML shipment to attach an NF-e to.
+ *
+ * ⚠️ **CREATE-ONLY, and re-derived from the `tx.get`** (root `CLAUDE.md` rule 7).
+ * A replayed notification, an operator who filled the frete in by hand, or a real
+ * shipment that arrived later must never be overwritten by this seed. There is no
+ * recency gate because there is nothing to compare: the seed carries no ML clock.
+ */
+async function applyFreteSemEnvioStep(args: {
+  db: Firestore;
+  pedidoId: string;
+  nowUs: number;
+}): Promise<void> {
+  const { db, pedidoId, nowUs } = args;
+
+  await db.runTransaction(async (tx) => {
+    const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
+    const pedidoSnap = await tx.get(pedidoRef);
+    if (!pedidoSnap.exists) return;
+    const freshPedido = pedidoCollection.parseRead(
+      pedidoSnap.data() ?? {},
+      pedidoCollection.docPath({}, pedidoId),
+    );
+
+    // Create-only. Re-derived from the tx-fresh doc, never from the pre-read.
+    if (freshPedido.freteInicial != null) return;
+
+    // ⚠️ And not before the endereço exists. `applyEnderecoStep` has a `sem-cep`
+    // path that returns with `enderecoFiscalOuterRef` still null and RETRIES on
+    // every later run — but this step is create-only, so a block seeded now would
+    // freeze `enderecoFreteOuterReference: null` forever, and the readers of that
+    // field (`collectFreteErrors`, the generic etiqueta, `melhorEnvioCart`) would
+    // never see the address that arrives a run later. The shipment path does not
+    // have this problem: `mergeFreteInicial` re-applies the ref on every run.
+    //
+    // Nothing is lost by waiting — `podeAvancarParaPago` requires
+    // `enderecoFiscalOuterRef` too, so the pedido cannot advance meanwhile, and
+    // the next run seeds the block WITH the address. This deliberately mirrors
+    // `applyFreteStep`'s own fallthrough ("no fiscal address AND no prior frete →
+    // nothing is written at all").
+    if (freshPedido.enderecoFiscalOuterRef == null) return;
+
+    const semEnvio: FreteDoPedido = {
+      ...seedFreteInicial(MODALIDADE_FRETE.fob, true),
+      // The one field the seed cannot know: whose address this ships to. Same
+      // source `applyFreteStep` uses for the shipment path.
+      enderecoFreteOuterReference: freshPedido.enderecoFiscalOuterRef,
+      // ⚠️ STAMPED, and it must be. `seedFreteInicial` leaves this null, and the
+      // SHIPMENTS-topic freshness policy reads an unstamped stored block as
+      // "already newer" (`semWatermarkArmazenado: 'ignorar'`, the deliberate
+      // inverse of the order-import policy). So an unstamped seed would make
+      // `mergeFreteInicialSeMaisNovo` refuse every later write FOREVER — if this
+      // order ever does gain a real Mercado Envios shipment, its tracking number,
+      // prazoDespacho and carrier data would be dropped silently, with no error
+      // and no log. That is the exact freeze `LIVE-TEST.md` warns about.
+      //
+      // `nowUs` (our clock) rather than an ML clock because there is no ML
+      // timestamp to borrow — the order has no shipment. Both sides are µs epoch,
+      // and the claim it encodes is honest: "this block was true when we wrote
+      // it". Any shipment created afterwards is strictly newer and wins.
+      ultimaModificacao: nowUs,
+    };
+
+    tx.update(
+      pedidoRef,
+      pedidoCollection.parseMerge({
+        freteInicial: semEnvio,
+        ultimaModificacao: avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs),
+      }) as DocumentData,
+    );
+  });
+}
+
 async function applyFreteStep(args: {
   db: Firestore;
   api: MercadoLivreApi;
@@ -1525,7 +1639,7 @@ export async function importPedidoMercadoLivre(
 
   // Buyer guard FIRST, then seller — tasks.dart:396-406 (that exact order).
   if (initialOrder.buyer == null) {
-    return { pedidoId: null, created: false, skipped: 'no-buyer' };
+    return { pedidoId: null, created: false, semEnvio: false, skipped: 'no-buyer' };
   }
 
   const contaBag = await loadContaBag(db, integracaoId);
@@ -1536,7 +1650,7 @@ export async function importPedidoMercadoLivre(
       orderSellerId: sellerId,
       contaSellerUserId: contaBag.sellerUserId,
     });
-    return { pedidoId: null, created: false, skipped: 'seller-mismatch' };
+    return { pedidoId: null, created: false, semEnvio: false, skipped: 'seller-mismatch' };
   }
 
   const { orders, packId, completeOrderIds } = await resolvePackOrders(
@@ -1600,6 +1714,9 @@ export async function importPedidoMercadoLivre(
   // the endereço fallback and the frete block (tasks.dart:442-446).
   const shippingId = initialOrder.shipping?.id ?? null;
   const shippingInstance = shippingId != null ? await api.getShipment(shippingId) : null;
+  // ⚠️ NOT `shippingInstance == null`. An absent id also means "not propagated
+  // yet" — see `pedidoSemEnvioMercadoEnvios`, which requires ML's positive tag.
+  const semEnvio = pedidoSemEnvioMercadoEnvios(initialOrder);
 
   // Run-scoped memos, same pattern as `getBillingInfo` above. The frete step and
   // the pago step both need the shipment's payments; before #791 each fetched
@@ -1648,6 +1765,8 @@ export async function importPedidoMercadoLivre(
     getBillingInfo,
   });
 
+  // ⚠️ The `else if` is the whole point: an order with no Mercado Envios shipment
+  // reached this line and did nothing, forever. See `applyFreteSemEnvioStep`.
   if (shippingInstance) {
     // No longer returns a pedido — the pago step re-reads everything it needs
     // inside its own transaction, so the trailing `readPedido` is gone.
@@ -1664,6 +1783,24 @@ export async function importPedidoMercadoLivre(
       nowUs,
       loadShipmentPayments,
     });
+  } else if (semEnvio) {
+    await applyFreteSemEnvioStep({ db, pedidoId, nowUs });
+  } else {
+    // ⚠️ The third case, and the only silent one: no shipment AND no tag. It is
+    // the legitimate async-propagation window — but it is ALSO what this whole
+    // change looks like if `no_shipping` turns out not to be the literal ML
+    // actually sends. In that case the pedido strands at `emProcessamento`
+    // exactly as in #1087, the log says `updated`, and nothing says why.
+    //
+    // Printing the real tag set is the one thing that settles it, so the live
+    // replay diagnoses itself instead of needing another round trip. Fires at
+    // most a couple of times per order while the shipment propagates.
+    console.warn('[mercado-livre] order sem shipment e sem tag no_shipping — frete não semeado', {
+      orderId: initialOrder.id,
+      pedidoId,
+      tags: initialOrder.tags ?? [],
+      esperado: ML_TAG_SEM_ENVIO,
+    });
   }
 
   await applyPagoAdvanceOrDowngrade({
@@ -1679,5 +1816,5 @@ export async function importPedidoMercadoLivre(
   // `getAllOrderMessagesMercadoLivre` (tasks.dart:776-781) — OUT OF SCOPE, see
   // file docstring deviation #5.
 
-  return { pedidoId, created, skipped: null };
+  return { pedidoId, created, semEnvio, skipped: null };
 }

@@ -55,6 +55,12 @@ cross-theme edges this layout exists to expose. Same convention as
 - **`anuncios/ ⇄ estoque/ ⇄ preco/`** all meet at `estoque/bulkEstoquePlan.ts`
   and `core/publishFalhas.ts`. If those edges start to chafe, hoisting
   `bulkEstoquePlan.ts` into `core/` is the obvious next move.
+- **`importacao/ → anuncios/moderacoes.ts`** (#1087). One-directional. The
+  importer is the third writer of the link doc's `moderacoes`, beside the `items`
+  sync and `reverificarAnuncio`, and it deliberately shares their module rather
+  than restating the gate, the `-ITM` reference and the 404-is-data narrow — the
+  three places those could drift. `moderacoes.ts` lives in `anuncios/` because
+  listing lifecycle is its subject; the import merely reads it.
 
 ## Paths that are load-bearing outside this folder
 

@@ -64,10 +64,27 @@ function args(over: Partial<ImportAssembleArgs> = {}): ImportAssembleArgs {
     existingExtra: null,
     existingEstoqueQty: null,
     existingEstoqueReservada: null,
+    // #1087 — the default is "asked, ML reported none", which is what every
+    // healthy listing gets. `null` ("never asked") is exercised explicitly.
+    moderacoes: [],
     now: 1_700_000_000_000,
     ...over,
   };
 }
+
+/**
+ * One parsed moderação, matching ML's `POOR_QUALITY_THUMBNAIL` sample — the case
+ * that made `moderacoes` a field of its own: the listing stays `active` and
+ * sendable while ML strips its exposure.
+ */
+const MODERACAO = {
+  nome: 'POOR_QUALITY_THUMBNAIL',
+  dataCriacao: '2021-04-14T10:47:05.270-0400',
+  motivo: 'A foto principal não atende à qualidade exigida.',
+  remedio: 'Suba uma foto com fundo branco e sem textos.',
+  secoes: ['pictures'],
+  evidencias: ['604505-MLB'],
+};
 
 describe('assembleImportPlan — create', () => {
   const plan = assembleImportPlan(args());
@@ -969,7 +986,13 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: '4455667788' }),
-        up: { itemId: '4455667788', status: null, subStatus: null, userProductId: null },
+        up: {
+          itemId: '4455667788',
+          status: null,
+          subStatus: null,
+          userProductId: null,
+          moderacoes: [],
+        },
       }),
     );
     expect(plan.link.itemId).toBe('4455667788');
@@ -984,6 +1007,7 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
           itemId: 'MLB4455667788',
           status: null,
           subStatus: null,
+          moderacoes: [],
           userProductId: 'MLBU-MEMBER-9',
         },
       }),
@@ -995,7 +1019,13 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
-        up: { itemId: 'MLB4455667788', status: null, subStatus: null, userProductId: null },
+        up: {
+          itemId: 'MLB4455667788',
+          status: null,
+          subStatus: null,
+          userProductId: null,
+          moderacoes: [],
+        },
         existingLinkRaw: { id: 42, itemId: 'MLB4455667788' },
       }),
     );
@@ -1007,7 +1037,13 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
-        up: { itemId: 'MLB4455667788', status: null, subStatus: null, userProductId: null },
+        up: {
+          itemId: 'MLB4455667788',
+          status: null,
+          subStatus: null,
+          userProductId: null,
+          moderacoes: [],
+        },
       }),
     );
     expect(plan.denorm).toEqual({
@@ -1021,7 +1057,13 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
         mappedVariation: mappedVariation({ variationId: 'MLB4455667788', sku: 'MEMBER-SKU' }),
-        up: { itemId: 'MLB4455667788', status: null, subStatus: null, userProductId: null },
+        up: {
+          itemId: 'MLB4455667788',
+          status: null,
+          subStatus: null,
+          userProductId: null,
+          moderacoes: [],
+        },
       }),
     );
     expect(plan.produto?.data.sku).toBe('MEMBER-SKU');
@@ -1034,5 +1076,161 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     expect(plan.link.itemId).toBeNull();
     expect(plan.denorm).toEqual({ externalId: '999', externalParentId: 'MLB123' });
     expect(plan.denorm).not.toHaveProperty('relevantData');
+  });
+});
+
+/**
+ * ML MODERATIONS on the import path (#1087).
+ *
+ * The invariant these pin, verbatim from `produtoMercadoLivreLinkSchema`:
+ * `moderacoes` is written in the SAME patch as the `status`/`sub_status` it
+ * explains, on every status write, either to a value or to `[]` — so a reason
+ * cannot outlive the state it explains.
+ *
+ * The import writes `status` (see the create describe above) but used to write
+ * no `moderacoes` at all, which broke that invariant in both directions: a
+ * moderated listing imported with no reason, and a re-import carried a LIFTED
+ * moderation forward on the `...existingLink` spread.
+ */
+describe('assembleImportPlan — ML moderations (#1087)', () => {
+  it('writes the moderação in the SAME link patch as the status it explains', () => {
+    const plan = assembleImportPlan(
+      args({
+        mapped: mapped({ estado: 'pa', status: 'paused', subStatus: ['moderation_penalty'] }),
+        moderacoes: [MODERACAO],
+      }),
+    );
+    expect(plan.link).toMatchObject({
+      estado: 'pa',
+      status: 'paused',
+      sub_status: ['moderation_penalty'],
+      moderacoes: [MODERACAO],
+    });
+  });
+
+  it('⚠️ a re-import of a listing whose moderação ML LIFTED overwrites the stored reason', () => {
+    // THE regression. The link write is `{ ...existingLink, … }` and
+    // `clearFalha()` deliberately carries no `moderacoes`, so before this the old
+    // reason survived onto a listing ML now calls `active` — and a stale reason
+    // is indistinguishable from a real one, which makes it worse than none.
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: { nome: 'Camiseta' },
+        existingLinkRaw: { status: 'paused', moderacoes: [MODERACAO] },
+        mapped: mapped({ estado: 'p', status: 'active', subStatus: [] }),
+        moderacoes: [],
+      }),
+    );
+    expect(plan.link.moderacoes).toEqual([]);
+    expect(plan.link.status).toBe('active');
+  });
+
+  it('survives clearFalha() — our failed write and ML’s verdict are not the same statement', () => {
+    // `errors`/`causas` record OUR rejected write, so an import invalidates them.
+    // A moderação is ML's policy verdict and nothing we do lifts it, which is why
+    // it rides its own rule and must land in the same object as the cleared pair.
+    const plan = assembleImportPlan(args({ moderacoes: [MODERACAO] }));
+    expect(plan.link).toMatchObject({
+      errors: [],
+      causas: [],
+      moderacoes: [MODERACAO],
+    });
+  });
+
+  it('an ASKED-and-none is [], never the never-asked null', () => {
+    // The two are byte-distinct on disk and the whole degrade story rests on it.
+    const plan = assembleImportPlan(args({ moderacoes: [] }));
+    expect(plan.link.moderacoes).toEqual([]);
+    expect(plan.link.moderacoes).not.toBeNull();
+  });
+
+  it('⚠️ null ("never asked") OMITS the key — it must not write [] over a real reason', () => {
+    // The mass import and a failed `/moderations` read both land here. Writing
+    // `[]` would record "not moderated" about a listing nobody asked about;
+    // omitting lets the spread preserve what was stored (and the schema default
+    // supply `null` on create).
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: { nome: 'Camiseta' },
+        existingLinkRaw: { status: 'paused', moderacoes: [MODERACAO] },
+        mapped: mapped({ estado: 'pa', status: 'paused', subStatus: ['moderation_penalty'] }),
+        moderacoes: null,
+      }),
+    );
+    // Carried by the spread, untouched — not re-stated by the plan.
+    expect(plan.link.moderacoes).toEqual([MODERACAO]);
+
+    const fresh = assembleImportPlan(args({ moderacoes: null }));
+    expect(fresh.link).not.toHaveProperty('moderacoes');
+  });
+});
+
+describe('assembleVariationChildPlan — ML moderations (#1087)', () => {
+  const upBase = {
+    itemId: 'MLB4455667788',
+    status: 'under_review',
+    subStatus: ['held'],
+    userProductId: 'MLBU-MEMBER-9',
+  };
+
+  it('a UP member stamps its OWN moderação beside its own status', () => {
+    // Moderation is per ML item, and under User Products a member IS its own
+    // listing — so the member link carries the member's verdict, never the
+    // family's.
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
+        up: { ...upBase, moderacoes: [MODERACAO] },
+      }),
+    );
+    expect(plan.link).toMatchObject({
+      status: 'under_review',
+      sub_status: ['held'],
+      moderacoes: [MODERACAO],
+    });
+  });
+
+  it('a UP member whose moderação was lifted clears over the spread', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
+        existingLinkRaw: { moderacoes: [MODERACAO] },
+        up: { ...upBase, status: 'active', subStatus: [], moderacoes: [] },
+      }),
+    );
+    expect(plan.link.moderacoes).toEqual([]);
+  });
+
+  it('a UP member with null ("never asked") keeps whatever the spread carried', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
+        existingLinkRaw: { moderacoes: [MODERACAO] },
+        up: { ...upBase, moderacoes: null },
+      }),
+    );
+    expect(plan.link.moderacoes).toEqual([MODERACAO]);
+  });
+
+  it('⚠️ a legacy variations[] member is NEVER written — symmetric with status', () => {
+    // A `variations[]` entry is not a listing of its own and has no status to
+    // explain, so it has no moderation either. That symmetry is what keeps
+    // #707's phantom prune — which writes only legacy member links — free of
+    // stale reasons it never read.
+    const fresh = assembleVariationChildPlan(childArgs({ up: null }));
+    expect(fresh.link.moderacoes).toBeNull();
+
+    const existing = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        up: null,
+        existingLinkRaw: { id: 999, moderacoes: [MODERACAO] },
+      }),
+    );
+    expect(existing.link.moderacoes).toEqual([MODERACAO]);
   });
 });

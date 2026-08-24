@@ -108,6 +108,16 @@ export interface PublishDeps {
   sellerUserId?: number | null;
   /** Listing type for FIRST publishes (link doc value wins on re-publish). */
   listingTypeId?: string | null;
+  /**
+   * Publish THIS link doc instead of whichever one comes first.
+   *
+   * A conta can hold several anúncios on one produto — storage has always
+   * allowed it, and the stock and price sweeps already loop every one — but the
+   * selection below could only ever name the first, which is what made a second
+   * anúncio unpublishable. Null or absent keeps that historical behaviour
+   * exactly: first match, else a freshly minted id for a first publish.
+   */
+  linkDocId?: string | null;
   /** Injectable for tests — downloads image bytes from `arquivo.url`. */
   fetchImpl?: typeof globalThis.fetch;
   /**
@@ -167,9 +177,45 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   // ---- Existing link docs (this integração) ------------------------------
   const linkSnap = await produtoMercadoLivreLinkCollection.ref(db, { produtoId }).get();
-  const linkDoc = linkSnap.docs
+  const contaLinks = linkSnap.docs
     .map((d) => ({ docId: d.id, data: d.data() as Partial<ProdutoMercadoLivreLink> }))
-    .find((d) => refMatchesIntegracao(d.data.contaOuterRef, integracaoId));
+    .filter((d) => refMatchesIntegracao(d.data.contaOuterRef, integracaoId));
+  /**
+   * WHICH of the conta's anúncios this publish is for.
+   *
+   * Without `deps.linkDocId` this is the historical behaviour verbatim — the
+   * first link matching the conta, or a fresh doc id when there is none. That
+   * first-match is exactly what makes a second anúncio unpublishable, so the
+   * caller that means a specific one says so.
+   *
+   * ⚠️ Ownership is re-derived from `contaLinks`, never taken on trust: the id
+   * arrives in a request body, and resolving it against the whole subcollection
+   * would let a caller publish one produto's listing under another conta. The
+   * route 404s both cases before we get here (`publicar/route.ts`); this is the
+   * backstop, and it is free because the snapshot is already in hand.
+   */
+  // Empty string counts as ABSENT.
+  //
+  // ⚠️ NOT for the reason `link.id !== ''` exists elsewhere in this module. That
+  // one is about the **ML item id**, a schema field (`z.string().nullable()`,
+  // no `.min(1)`) whose blank value really is in the migrated corpus. This is a
+  // **Firestore document id**, and one can never be `''` — `.doc('')` throws
+  // "Path must be a non-empty string". So `''` here cannot name a real doc, and
+  // treating it as absent beats treating it as a guaranteed refusal.
+  //
+  // ⚠️ The route ahead of this one 400s a PRESENT `''` rather than ignoring it,
+  // and the divergence is deliberate: a route can reject a body the caller
+  // plainly got wrong, while a library entry point should degrade to its default
+  // instead of failing a caller who passed a falsy variable through. Do not
+  // "unify" them without deciding which of the two you are.
+  const alvoLinkDocId = deps.linkDocId != null && deps.linkDocId !== '' ? deps.linkDocId : null;
+  const linkDoc =
+    alvoLinkDocId != null ? contaLinks.find((d) => d.docId === alvoLinkDocId) : contaLinks[0];
+  if (alvoLinkDocId != null && linkDoc == null) {
+    throw new MercadoLivrePublishError([
+      'anúncio não encontrado nesta conta — recarregue a página e tente de novo',
+    ]);
+  }
   const link: PublishLink | null = linkDoc
     ? {
         docId: linkDoc.docId,

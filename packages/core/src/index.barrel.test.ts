@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as cep from './cep';
+import * as region from './region';
 import * as core from './index';
 
 /**
@@ -23,6 +24,21 @@ describe('packages/core root barrel', () => {
     const leaked = Object.keys(cep).filter((name) => rootExports.has(name));
 
     expect(leaked).toEqual([]);
+  });
+
+  it('does not re-export anything from the ./region subpath', () => {
+    // Same rule as ./cep, different reason: ./region reads `process.env` to
+    // resolve a Cloud Tasks region — a server-only concern. Nothing that ends up
+    // in a browser bundle should be able to reach it, and a root-barrel
+    // re-export would put it there for every consumer of `formatReais`.
+    const rootExports = new Set(Object.keys(core));
+    const leaked = Object.keys(region).filter((name) => rootExports.has(name));
+
+    expect(leaked).toEqual([]);
+  });
+
+  it('is comparing against a non-empty ./region surface', () => {
+    expect(Object.keys(region).length).toBeGreaterThan(0);
   });
 
   it('is comparing against a non-empty ./cep surface', () => {
