@@ -34,10 +34,29 @@ describe('pagamentoSchema', () => {
     }
   });
 
-  it('passes cartao/cheque through unchanged (passthrough)', () => {
+  it('keeps cartao/cheque untyped (z.unknown() opaque fields)', () => {
     const cartao = { last4: '1234', bandeira: 'visa' };
     const out = pagamentoSchema.parse({ valor: 50, cartao });
     expect(out.cartao).toEqual(cartao);
+  });
+
+  // No `.passthrough()` (#463): an unmodeled key is stripped on a lenient
+  // parse (the read path, `parseSoftRead` in `@delfrance/data`) — this is what
+  // keeps a legacy corpus doc carrying a since-retired field readable (root
+  // `CLAUDE.md` rule 8) — but throws on the write path, which re-parses
+  // strictly whenever the lenient parse dropped a caller-supplied key
+  // (`parseForWrite`/`parseMergePatch`, `packages/data/src/zodParse.ts`).
+  it('silently strips a genuinely unknown top-level key on a lenient (read) parse', () => {
+    const parsed = pagamentoSchema.parse({ valor: 100, someRetiredLegacyField: 'whatever' });
+    expect(parsed).not.toHaveProperty('someRetiredLegacyField');
+  });
+
+  it('rejects a genuinely unknown top-level key on a strict (write) parse', () => {
+    // Mirrors the `.strict()` re-parse `parseForWrite`/`parseMergePatch` run
+    // internally once they notice the lenient parse above dropped a key.
+    expect(() =>
+      pagamentoSchema.strict().parse({ valor: 100, someUnknownField: 'whatever' }),
+    ).toThrow(/nrecognized/);
   });
 });
 
