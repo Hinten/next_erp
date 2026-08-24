@@ -36,9 +36,13 @@
  *      are the same classes as (1);
  *  (7) verify the echoed price (`PRECO_NAO_ATUALIZADO` on mismatch, and
  *      deliberately no link stamp — the PUT was accepted, the listing is fine);
- *  (8) success writeback onto the link doc — fresh status always, plus
- *      `precoPublicado` for `item` drafts ONLY, because sibling `variationItem`
- *      drafts share the parent link doc and would flip-flop it.
+ *  (8) success writeback onto the link doc — everything except
+ *      `ultimaModificacao` is for `item` drafts ONLY: the fresh status pair,
+ *      `precoPublicado`, and the gated `moderacoes` clear. A `variationItem`
+ *      draft writes `ultimaModificacao` alone. Two different reasons — sibling
+ *      drafts share the parent link doc so `precoPublicado` would flip-flop, and
+ *      `resp` describes a MEMBER while `linkDocId` names the FAMILY, so its
+ *      status is not the family's to publish (#1252).
  *
  * Gate (9), the per-item checkpoint, belongs to the caller: the manual push has
  * no job document to checkpoint into.
@@ -307,9 +311,18 @@ export async function enviarPrecoDraft(
   // the anchor pre-filter BOTH sweeps open with. One member could silently drop
   // a produto whose siblings were still selling.
   //
-  // ⚠️ The two senders now agree. Do not "restore" the status write here without
-  // also changing `estoqueSend.ts` — a family's status has exactly one writer
-  // per path, and the `items` webhook's fold is the one that spans members.
+  // ⚠️ The two senders now agree ON THIS GATE. Do not "restore" the status write
+  // here without also changing `estoqueSend.ts` — a family's status has exactly
+  // one writer per path, and the `items` webhook's fold is the one that spans
+  // members.
+  //
+  // ⚠️ They still diverge on the FAILURE direction, and that is not fixed here:
+  // gate (6) above stamps `estado: 'E'` on the parent for a deterministic 4xx on
+  // a member's PUT, where `estoqueSend`'s terminal branch routes a member through
+  // `applyMemberStatusAndFold`. Both latch the family at `'E'`, which
+  // `apps/mercado-livre/CLAUDE.md` records as a deliberate, loud, self-clearing
+  // residual — so it is consistent enough to leave, but it is a real asymmetry
+  // and "the senders agree" must not be read as covering it.
   const ehMembro = draft.kind === 'variationItem';
   const writeback: Record<string, unknown> = { ultimaModificacao: nowMs };
   if (!ehMembro) {
