@@ -184,12 +184,38 @@ jobs:
             --filter @delfrance/schemas \
             --filter @delfrance/auth
 
+      # ⚠️ The filter below is down to ONE package, which makes this guard
+      # load-bearing: `turbo run test` exits 0 BOTH when a package name is wrong
+      # ("No package found with name …") and when a filtered package has no `test`
+      # script ("Tasks: 0 successful, 0 total"). With a single filter either mode is
+      # TOTAL silent loss of this lane's unit coverage. `--dry=json` still emits an
+      # entry for a scriptless package, tagged `"command": "<NONEXISTENT>"`, so those
+      # are excluded from the count; a bad name emits no JSON at all, so `JSON.parse`
+      # throws and `pipefail` fails the step. One check, both modes — the same shape
+      # as ci-mercado-livre.yml's `ml-offline`, the reference implementation.
+      - name: Assert the test task exists and is runnable
+        run: |
+          set -euo pipefail
+          n=$(pnpm turbo run test --dry=json \
+                --filter @delfrance/rules-gen \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s).tasks;console.log(t.filter(x=>x.task==="test"&&x.command&&x.command!=="<NONEXISTENT>").length)})')
+          echo "runnable \`test\` tasks resolved: $n"
+          if [ "$n" != "1" ]; then
+            echo "::error::turbo resolved $n runnable \`test\` tasks, expected 1 — the test step below would exit 0 without running anything."
+            exit 1
+          fi
+
       - name: Unit tests (offline — excludes test/*.rules.test.ts)
+        # Only the workspace this lane OWNS. `@delfrance/schemas` (82 files) and
+        # `@delfrance/auth` used to be listed here as well, which re-ran on the same
+        # commit suites ci.yml had already run: turbo's `test` task declares
+        # `dependsOn: ["^build"]`, not `^test`, and no remote cache is configured, so
+        # it was genuine duplicate execution. Same fix ci-storage.yml made for
+        # schemas + data. Nothing is lost — ci.yml has no `paths:` and no `if:`, so it
+        # never skips and excludes neither package.
         run: |
           pnpm turbo run test \
-            --filter @delfrance/rules-gen \
-            --filter @delfrance/schemas \
-            --filter @delfrance/auth
+            --filter @delfrance/rules-gen
 
       - name: Drift check + size gate (firestore.rules matches the generator)
         run: pnpm --filter @delfrance/rules-gen gen:rules:check

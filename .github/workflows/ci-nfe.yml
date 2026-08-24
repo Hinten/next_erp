@@ -342,6 +342,27 @@ jobs:
             --filter @delfrance/integrations-nfe \
             --filter @delfrance/schemas
 
+      # ⚠️ `turbo run test` exits 0 BOTH when a package name is wrong ("No package
+      # found with name …") and when a filtered package has no `test` script
+      # ("Tasks: 0 successful, 0 total"). Both matter more now that the filter is
+      # down to the two workspaces `ci.yml` excludes: if this step ran nothing, their
+      # suites would run NOWHERE. `--dry=json` still emits an entry for a scriptless
+      # package, tagged `"command": "<NONEXISTENT>"`, so those are excluded from the
+      # count; a bad name emits no JSON at all, so `JSON.parse` throws and `pipefail`
+      # fails the step. Same shape as ci-mercado-livre.yml's `ml-offline`.
+      - name: Assert both test tasks exist and are runnable
+        run: |
+          set -euo pipefail
+          n=$(pnpm turbo run test --dry=json \
+                --filter @delfrance/nfe-app \
+                --filter @delfrance/integrations-nfe \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=JSON.parse(s).tasks;console.log(t.filter(x=>x.task==="test"&&x.command&&x.command!=="<NONEXISTENT>").length)})')
+          echo "runnable \`test\` tasks resolved: $n"
+          if [ "$n" != "2" ]; then
+            echo "::error::turbo resolved $n runnable \`test\` tasks, expected 2 — the test step below would exit 0 without running anything."
+            exit 1
+          fi
+
       - name: Unit tests (offline)
         # The live suites (*.homologacao + numeracao.staging) skip locally
         # without creds but THROW when collected in CI without secrets
@@ -349,11 +370,19 @@ jobs:
         # args after `--` to each `vitest run`, so we drop them
         # file-by-file. They still run in nfe-live below, invoked by name
         # (no --exclude), gated by secrets.
+        #
+        # Only the two workspaces `ci.yml` EXCLUDES from its own `turbo run test`.
+        # `@delfrance/schemas` used to be listed here as well, which re-ran on the
+        # same commit an 82-file suite ci.yml had already run: turbo's `test` task
+        # declares `dependsOn: ["^build"]`, not `^test`, and no remote cache is
+        # configured, so it was genuine duplicate execution. Same fix ci-storage.yml
+        # made for schemas + data. Nothing is lost — ci.yml has no `paths:` and no
+        # `if:`, so it never skips, and `packages/schemas` holds no *.homologacao or
+        # *.staging spec that the --exclude above was hiding from it.
         run: |
           pnpm turbo run test \
             --filter @delfrance/nfe-app \
             --filter @delfrance/integrations-nfe \
-            --filter @delfrance/schemas \
             -- --exclude '**/*.homologacao.test.ts' --exclude '**/*.staging.test.ts'
 
       # Persist Next.js's incremental build cache between runs so the nfe-app

@@ -66,8 +66,8 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * The pinned contract, one entry per gated lane.
  *
  * `check` strings are what a human types into the `protect-main` ruleset (id
- * 16348427). ⚠️ A check-run name carries NO workflow-name prefix — `ci.yml`'s job
- * publishes as bare `lint-typecheck-test` — so every name here must be unique
+ * 16348427). ⚠️ A check-run name carries NO workflow-name prefix — a job with
+ * no `name:` publishes as its bare job id — so every name here must be unique
  * across the WHOLE repo, which assertion 5 enforces. They are pure ASCII on
  * purpose: they get pasted into a JSON payload from PowerShell on Windows, and a
  * mangled em dash produces a required check that never matches and an unmergeable
@@ -228,8 +228,13 @@ const LANES = {
  */
 const UNGATED = {
   '.github/workflows/ci.yml':
-    'Full-graph lane. No `paths:` at all and its suite job carries no `if:`, so ' +
-    '`lint-typecheck-test` is directly pinnable and needs no gate of its own.',
+    'Full-graph lane, split into five sibling jobs (typecheck / lint / ' +
+    'format-check / test / build) so they run concurrently instead of ' +
+    'sequentially. No `paths:` at all and NONE of the five carries an `if:`, so ' +
+    'every one of them is unskippable and directly pinnable — `CI typecheck`, ' +
+    '`CI lint`, `CI format check`, `CI test`, `CI build` — and the lane needs no ' +
+    'gate of its own. ⚠️ Adding an `if:` to any of them would make it skippable, ' +
+    'and GitHub counts a `skipped` job as SATISFYING a required check.',
   '.github/workflows/e2e-reusable.yml':
     'The shared engine. `workflow_call`-only — asserted separately below.',
   '.github/workflows/nfe-epec-scheduled.yml':
@@ -480,7 +485,11 @@ describe('CI lanes always report', () => {
 
     // ...and it still reads real files in this repo.
     expect(Object.keys(jobBlocks(read('.github/workflows/ci.yml')))).toEqual([
-      'lint-typecheck-test',
+      'typecheck',
+      'lint',
+      'format-check',
+      'test',
+      'build',
       'report-failure',
     ]);
 
