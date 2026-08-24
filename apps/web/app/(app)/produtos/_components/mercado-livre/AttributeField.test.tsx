@@ -415,6 +415,23 @@ describe('AttributeField — number_unit', () => {
     expect(document.getElementById(id!)?.textContent).toBe('Este campo é obrigatório');
   });
 
+  it('still shows the unit when the stored casing differs from the allow-list', () => {
+    // ⚠️ A Mantine Select handed a value absent from its `data` renders BLANK.
+    // `seedRow` canonicalises to the allow-list spelling so the picker keeps a
+    // value and the row keeps agreeing with the screen.
+    const a = volume({
+      allowedUnits: [
+        { id: 'ml', name: 'ml' },
+        { id: 'l', name: 'l' },
+      ],
+    });
+    const seeded = seedRow(a, { id: 'VOLUME', value_name: '355', unit_id: 'mL' });
+    const reported = renderControlled(a, seeded);
+    expect(combo(UNIT)).toHaveProperty('value', 'ml');
+    fireEvent.blur(combo('Volume'));
+    expect(reported).not.toHaveBeenCalled();
+  });
+
   it('leaves a plain number attribute with no unit control at all', () => {
     // Guards the widgetKind split from quietly drifting back together.
     renderField(attr({ id: 'QTD', name: 'Quantidade', valueType: 'number' }));

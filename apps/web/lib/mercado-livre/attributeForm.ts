@@ -107,8 +107,15 @@ export function unitOptions(
 
   function push(id: string | null | undefined): void {
     const value = (id ?? '').trim();
-    if (value === '' || seen.has(value)) return;
-    seen.add(value);
+    // ⚠️ Deduped case-INSENSITIVELY, and `allowedUnits` is pushed first so the
+    // category taxonomy's spelling is the one that survives. Mercado Livre does
+    // not guarantee that `value_struct.unit` matches the casing of the same
+    // unit's `allowed_units` id, and `mL` sitting next to `ml` is two picker
+    // entries for one unit. `effectiveUnit` answers in this same spelling, so
+    // what the Select is handed is always one of its own options.
+    const key = value.toLowerCase();
+    if (value === '' || seen.has(key)) return;
+    seen.add(key);
     // `unitLabel`, not ML's `name`: for INCHES both are the bare `"` character,
     // which renders as a blank-looking option.
     out.push({ value, label: unitLabel(value) });
@@ -137,11 +144,19 @@ export function effectiveUnit(
   attr: MercadoLivreCategoriaAtributo,
   row: Pick<AttrRow, 'unit_id'> | undefined,
 ): string | null {
-  const stored = (row?.unit_id ?? '').trim();
-  if (stored !== '') return stored;
-  const fallback = (attr.defaultUnit ?? '').trim();
-  if (fallback !== '') return fallback;
-  return unitOptions(attr)[0]?.value ?? null;
+  const options = unitOptions(attr, row?.unit_id ?? null);
+  const wanted = (row?.unit_id ?? '').trim() || (attr.defaultUnit ?? '').trim();
+  if (wanted !== '') {
+    // ⚠️ Return the OPTION's spelling, not the one that was asked for. A Mantine
+    // `Select` handed a value absent from its `data` renders blank, so a stored
+    // `mL` against an allow-list of `ml` would empty the picker — and leave the
+    // row disagreeing with the screen, which is what makes the next blur report
+    // an edit nobody made. `unitOptions` pushes both the stored unit and
+    // `defaultUnit`, so the fallback below is unreachable in practice and only
+    // keeps this total.
+    return options.find((u) => u.value.toLowerCase() === wanted.toLowerCase())?.value ?? wanted;
+  }
+  return options[0]?.value ?? null;
 }
 
 /**
@@ -383,7 +398,12 @@ export function seedRow(
     // Mercado Livre or the legacy corpus — it is what the seller actually saw,
     // while a `unit_id` contradicting it is the spurious `defaultUnit` stamp
     // described above.
-    unit_id: split.unit ?? row.unit_id ?? effectiveUnit(attr, undefined),
+    //
+    // Otherwise `effectiveUnit` decides, and it already means "stored, else the
+    // category default, else the only unit on offer" — canonicalised to the
+    // allow-list's spelling, which is what keeps the row equal to the picker
+    // when a stored unit differs only by case.
+    unit_id: split.unit ?? effectiveUnit(attr, row),
   };
 }
 

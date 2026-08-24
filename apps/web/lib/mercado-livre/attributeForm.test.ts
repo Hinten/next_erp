@@ -160,6 +160,15 @@ describe('unitOptions', () => {
   it('is empty for an attribute with no units at all', () => {
     expect(unitOptions(attr({ id: 'BRAND' }))).toEqual([]);
   });
+
+  it('treats a unit as ONE unit whatever its casing', () => {
+    // ⚠️ ML's `value_struct.unit` is not guaranteed to match the casing of the
+    // category's `allowed_units` id. Keyed on the raw string, `mL` and `ml`
+    // become two picker entries for one unit.
+    const a = lengthAttr({ defaultUnit: 'ML', allowedUnits: [{ id: 'ml', name: 'ml' }] });
+    // The allow-list's casing wins: it is the category taxonomy.
+    expect(unitOptions(a, 'mL')).toEqual([{ value: 'ml', label: 'ml' }]);
+  });
 });
 
 describe('effectiveUnit', () => {
@@ -180,6 +189,18 @@ describe('effectiveUnit', () => {
   it('is null when ML gave the attribute no unit', () => {
     expect(effectiveUnit(attr({ id: 'BRAND' }), { unit_id: null })).toBeNull();
   });
+
+  it("answers in the allow-list's casing for a stored unit", () => {
+    // ⚠️ Load-bearing: the Select's `value` must be one of its own options, or
+    // Mantine renders it blank.
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ml' });
+    expect(effectiveUnit(a, { unit_id: 'mL' })).toBe('ml');
+  });
+
+  it("answers in the allow-list's casing for a mismatched defaultUnit", () => {
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ML' });
+    expect(effectiveUnit(a, { unit_id: null })).toBe('ml');
+  });
 });
 
 describe('splitNumberUnit', () => {
@@ -193,6 +214,11 @@ describe('splitNumberUnit', () => {
       ],
     });
     expect(splitNumberUnit(a, '355 mL')).toEqual({ value: '355', unit: 'mL' });
+  });
+
+  it("returns the allow-list's casing when the value spells it differently", () => {
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ml' });
+    expect(splitNumberUnit(a, '355 mL')).toEqual({ value: '355', unit: 'ml' });
   });
 
   it("returns ML's casing, not the operator's", () => {
@@ -373,6 +399,16 @@ describe('seedRow', () => {
       value_name: '55',
       unit_id: 'cm',
     });
+  });
+
+  it('canonicalises a stored unit so the row matches the picker', () => {
+    // The invariant, asserted directly: a row holding `mL` while the Select
+    // renders `ml` makes the next blur resolve to a different row and report a
+    // phantom edit.
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ml' });
+    const row = seedRow(a, { id: 'LENGTH', value_name: '355', unit_id: 'mL' });
+    expect(row.unit_id).toBe('ml');
+    expect(row.unit_id).toBe(effectiveUnit(a, row));
   });
 
   it('does not split a plain string attribute', () => {
