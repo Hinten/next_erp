@@ -4,6 +4,7 @@ import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import type { OrderImportResult } from '../pedidos/orderImport';
 import type { PaymentImportResult } from '../pedidos/orderPaymentImport';
+import type { ShipmentImportResult } from '../pedidos/orderShipmentImport';
 
 import {
   MAX_TENTATIVAS,
@@ -2337,6 +2338,33 @@ describe('orders_v2 / payments report what they actually did (#1087)', () => {
     expect(await runOrder(over)).toMatchObject({ outcome: 'done', detail });
   });
 
+  async function runShipment(skipped: ShipmentImportResult['skipped']) {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    return handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: `NS-${String(skipped)}`, resource: '/shipments/1', topic: 'shipments' }),
+      0,
+      { shipmentImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', skipped })) },
+    );
+  }
+
+  const SHIPMENT_CASES: ReadonlyArray<readonly [ShipmentImportResult['skipped'], string]> = [
+    [null, 'synced'],
+    ['shipment-404', 'shipment-404'],
+    ['sem-order-id', 'sem-order-id'],
+    ['pedido-nao-encontrado', 'pedido-nao-encontrado'],
+    ['sem-frete-inicial', 'sem-frete-inicial'],
+    ['stale', 'stale'],
+  ];
+
+  it.each(SHIPMENT_CASES)(
+    'shipments: a runner skip of %s reports detail %s',
+    async (skipped, detail) => {
+      expect(await runShipment(skipped)).toMatchObject({ outcome: 'done', detail });
+    },
+  );
+
   it('a payment that imported and one that skipped are no longer the same log line', async () => {
     // The whole point. Before this both were `{ outcome: 'done' }` and nothing
     // downstream could tell them apart.
@@ -2344,5 +2372,16 @@ describe('orders_v2 / payments report what they actually did (#1087)', () => {
     const skipped = await runPayment('pedido-nao-encontrado');
     expect(imported.outcome).toBe(skipped.outcome);
     expect(imported.detail).not.toBe(skipped.detail);
+  });
+
+  it('all four data-bearing importers report a detail — none left behind', async () => {
+    // `items` gained this in #1136; the other three here. A fifth importer added
+    // without one is the same blind spot again, so assert the set, not each one.
+    const results = [
+      await runOrder({ created: true, skipped: null }),
+      await runPayment(null),
+      await runShipment(null),
+    ];
+    expect(results.map((r) => r.detail)).toEqual(['created', 'imported', 'synced']);
   });
 });

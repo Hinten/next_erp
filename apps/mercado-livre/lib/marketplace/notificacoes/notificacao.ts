@@ -983,13 +983,31 @@ export type PaymentImportOutcome =
   | 'stale';
 
 /**
+ * What the `shipments` import actually DID, for the log. The fourth and last of
+ * the data-bearing importers — structurally identical to `payments` above, and
+ * with just as rich a skip union, so leaving it bare would have kept exactly the
+ * blind spot this change exists to close.
+ */
+export type ShipmentImportOutcome =
+  | 'synced'
+  | 'shipment-404'
+  | 'sem-order-id'
+  | 'pedido-nao-encontrado'
+  | 'sem-frete-inicial'
+  | 'stale';
+
+/**
  * The union of every handler's own outcome. ⚠️ Kept as a union of the concrete
  * unions rather than widened to `string`: `TaskResult.detail` widens it for the
  * log and that is right THERE, but the widening also meant renaming or dropping a
  * member compiled everywhere in silence. Narrowing the PRODUCER makes the next
  * such change a typecheck error at the branch that produces it.
  */
-export type HandlerOutcome = ItemsSyncOutcome | OrderImportOutcome | PaymentImportOutcome;
+export type HandlerOutcome =
+  | ItemsSyncOutcome
+  | OrderImportOutcome
+  | PaymentImportOutcome
+  | ShipmentImportOutcome;
 
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
@@ -1182,7 +1200,11 @@ export async function processNotificationPayload(
         skipped: result.skipped,
       });
     }
-    return { kind: 'done', integracaoId };
+    // As `orders_v2` and `payments` above. A shipment sync that wrote nothing to
+    // `freteInicial` must not log identically to one that advanced the tracking
+    // state.
+    const detail: ShipmentImportOutcome = result.skipped ?? 'synced';
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `claims` — claim → incidente/conversa/mensagens import (Step 14).

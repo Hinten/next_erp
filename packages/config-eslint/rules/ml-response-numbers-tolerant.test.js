@@ -35,6 +35,25 @@
 // (one file at a time, no repo context) cannot express and a pathspec states in
 // three lines. Failing this test fails CI exactly like a lint error would — the
 // same reasoning as `env-example-location.test.js`.
+//
+// ## What it cannot catch
+//
+// 1. It is LINE-BASED, so `z\n  .number()` is invisible. Prettier (printWidth 100)
+//    never breaks a chain this short and `pnpm format:check` gates CI, so this is
+//    not reachable in practice — but a hand-broken chain would escape.
+// 2. It does not look INSIDE `z.union([...])`, so a money field hiding in one stays
+//    uncoerced. `mlShipmentPaymentSchema.amount` is exactly that case today.
+// 3. It does not reach `apps/mercado-livre` (whose only ML-inbound numeric schema,
+//    `mlNotificationWireSchema`, is already tolerant via `normalizeMlWire`'s
+//    pre-parse `asInt`) or the near-identical `packages/integrations/mercado-pago`.
+// 4. It assumes every schema under `src/` is a RESPONSE schema — true today, since
+//    `types.ts` holds only response shapes and nothing else in `src/` declares a
+//    `z.number()`. But `src/mapping/` builds the outbound REQUEST payloads (as plain
+//    objects, no schema), and for a request shape strictness is CORRECT: we must not
+//    coerce a stringified number on the way OUT. The pathspec still covers it
+//    deliberately — a response schema quietly added there would otherwise escape in
+//    silence, which is the worse failure — so the FIX text names the case and
+//    `ALLOWED_STRICT` absorbs it as one reviewed edit.
 import { describe, expect, it } from 'vitest';
 
 import { gitGrep } from './lib/repo-scan.js';
@@ -115,8 +134,12 @@ const FIX = [
   '    total: z.number().int().nullable().default(null) ->  mlInt().nullable().default(null)',
   '',
   "`z.coerce.number()` is NOT the fix: it reads '' and null as 0 and true as 1, and",
-  'these are money fields. If a field genuinely must reject a numeric string, add its',
-  'exact source line to ALLOWED_STRICT in this file, with the reason.',
+  'these are money fields.',
+  '',
+  'Is your schema validating something we SEND rather than something ML sends us?',
+  'Then tolerance is the WRONG direction and none of the above applies — a request',
+  'shape should reject a stringified number, not coerce it. Add its exact source',
+  'line to ALLOWED_STRICT in this file, with that as the reason.',
 ].join('\n');
 
 /** `path:line:text` triples, left in git's own order because they feed a message. */

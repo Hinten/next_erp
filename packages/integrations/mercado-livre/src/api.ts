@@ -1308,8 +1308,20 @@ async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {
   }
   const result = schema.safeParse(parsed);
   if (!result.success) {
+    // ⚠️ The field names go in the MESSAGE, not only in `issues` — mirroring
+    // `parseTestUser` above. `issues` reaches a log line and nothing else: the
+    // notification pipeline persists `err.message` ALONE into the failures doc
+    // (`persistFailure`, pipeline.ts:215) and the sweep marks with `err.message`
+    // too (pipeline.ts:368). So the durable record of a parked notification —
+    // precisely the artifact that was useless in #1087, saying only "formato
+    // inesperado" while a quoted `order_id` stopped a payment importing — carries
+    // whatever is in this string and nothing more.
+    //
+    // Paths are field names and carry no value, which is what makes this safe;
+    // the raw body must never end up here (see the non-JSON branch above, #1015).
+    const campos = [...new Set(result.error.issues.map((i) => i.path.join('.') || '(raiz)'))];
     throw new MercadoLivreValidationError(
-      'Resposta do Mercado Livre em formato inesperado.',
+      `Resposta do Mercado Livre em formato inesperado. Campos inválidos: ${campos.join(', ')}.`,
       result.error.issues,
     );
   }

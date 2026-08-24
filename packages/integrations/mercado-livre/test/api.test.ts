@@ -338,6 +338,37 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     expect(payment.external_reference).toBe('2000018052464608');
   });
 
+  it('a schema failure names the offending field in the MESSAGE, not only in issues', async () => {
+    // ⚠️ The message is the only part that survives into the durable record. The
+    // notification pipeline persists `err.message` ALONE (`persistFailure`) and
+    // the sweep marks with `err.message` too, so a bare "formato inesperado" is
+    // exactly what made the #1087 parked notification undiagnosable. `issues`
+    // never reaches that document.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 1, transaction_amount: 'R$ 100,00' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPayment(1)).rejects.toThrow(/Campos inválidos: transaction_amount/);
+  });
+
+  it('the message dedups paths and never carries the response body (#1015)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 1,
+        fee_details: [{ amount: 'x' }, { amount: 'y' }],
+        payer: { email: 'buyer@example.com' },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPayment(1)).rejects.toMatchObject({
+      // Both bad entries share a path shape, but each carries its own index, so
+      // the dedup keeps them distinct without repeating a path.
+      message: expect.stringContaining('Campos inválidos:'),
+    });
+    const err = await api.getPayment(1).catch((e: unknown) => e as Error);
+    expect(err.message).not.toContain('buyer@example.com');
+  });
+
   it('getPayment maps a 404 to an HTTP error', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ message: 'payment not found' }, 404),

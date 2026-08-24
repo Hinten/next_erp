@@ -39,6 +39,13 @@ import { z } from 'zod';
  * diagnostic: it names the field, which is what turns "formato inesperado" from
  * true-and-useless into actionable.
  */
+/**
+ * What a Zod path looks like once joined: `order_id`, `fee_details.0.amount`,
+ * `(raiz)`. Deliberately excludes whitespace, quotes and braces, so neither prose
+ * nor a JSON fragment can pass as one.
+ */
+const PATH_LIKE = /^[A-Za-z0-9_.[\]()-]{1,64}$/;
+
 export function validationPaths(issues: unknown): readonly string[] {
   if (!Array.isArray(issues)) return [];
   return issues.map((issue) => {
@@ -48,6 +55,20 @@ export function validationPaths(issues: unknown): readonly string[] {
     // throws a TypeError — from inside a catch block, where it would replace a
     // handled failure with a worse one. A helper whose whole job is to make a
     // failure legible must not be able to cause a bigger failure.
+    // ⚠️ A PATH-SHAPED string passes through, and this arm must come first.
+    // `parseTestUser` (`api.ts`) puts a `string[]` of already-computed field paths
+    // on `issues` precisely so nothing sensitive can ride along — the one producer
+    // that has already done this function's job — and falling straight through to
+    // the object guard turned `['nickname', 'password']` into
+    // `['(desconhecido)', '(desconhecido)']`, destroying the only shape that was
+    // safe by construction.
+    //
+    // ⚠️ But NOT any string. `issues` is typed `unknown`, so a future producer can
+    // put arbitrary text in that array, and echoing it verbatim into a log is the
+    // #1015 shape in miniature. Trust the SHAPE, not the producer: a field path is
+    // a short run of identifier characters, so prose and a serialized body fail it
+    // and degrade to `(desconhecido)` exactly as before.
+    if (typeof issue === 'string') return PATH_LIKE.test(issue) ? issue : '(desconhecido)';
     if (typeof issue !== 'object' || issue === null) return '(desconhecido)';
     const { path, code } = issue as { path?: unknown; code?: unknown };
     const caminho = Array.isArray(path) && path.length > 0 ? path.join('.') : '(raiz)';
