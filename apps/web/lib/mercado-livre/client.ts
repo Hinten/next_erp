@@ -692,6 +692,14 @@ export interface MercadoLivreClient {
     integracaoId: string;
     produtoId: string;
     listingTypeId?: string;
+    /**
+     * WHICH of the conta's anúncios to publish. A produto can carry more than
+     * one listing on the same account, and the backend's link lookup would
+     * otherwise take the first — silently re-publishing the wrong one. Omit for
+     * a conta whose listing is unambiguous; the backend 404s an id that names a
+     * doc this produto does not have or that belongs to another conta.
+     */
+    linkDocId?: string;
   }): Promise<MercadoLivrePublicarResult>;
   /**
    * Re-read ONE listing from ML and record its real state on the link doc
