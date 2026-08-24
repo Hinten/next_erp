@@ -175,6 +175,18 @@ export const itemSchema = z
 export type MlItem = z.infer<typeof itemSchema>;
 
 /**
+ * ML's documented Multiget cap (*Busca de itens* → "Multiget": "um máximo de 20
+ * resultados com uma única chamada").
+ *
+ * ⚠️ ML does not error on an over-long multiget — it TRUNCATES, so a caller that
+ * does not chunk gets a silent prefix and, if it is deciding what to DELETE or
+ * CLOSE from the difference, acts on a set it only partly verified. That is why
+ * `getItemsByIds` refuses locally instead of forwarding the request: the trap is
+ * invisible at the ML end, so the seam has to be the one that says no.
+ */
+export const ML_MULTIGET_MAX_IDS = 20;
+
+/**
  * `GET /items?ids=<csv>&attributes=<csv>` — ML's **Multiget**, capped at 20 ids.
  *
  * ⚠️ The response is NOT an array of items. Multiget answers in the *verbose*
@@ -190,16 +202,6 @@ export type MlItem = z.infer<typeof itemSchema>;
  * everything else, so reusing `itemSchema` here would claim fields the request
  * never asked for. `.passthrough()` keeps whatever else a wider caller requests.
  */
-/**
- * ML's documented Multiget cap (*Busca de itens* → "Multiget": "um máximo de 20
- * resultados com uma única chamada").
- *
- * ⚠️ Exceeding it is not an error — ML truncates the answer, so a caller that
- * does not chunk gets a silent prefix and, if it is deciding what to DELETE or
- * CLOSE from the difference, acts on a set it only partly verified.
- */
-export const ML_MULTIGET_MAX_IDS = 20;
-
 export const itemsMultigetSchema = z.array(
   z
     .object({

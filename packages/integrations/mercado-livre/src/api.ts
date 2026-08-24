@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  MercadoLivreError,
   MercadoLivreHttpError,
   MercadoLivreLabelUnavailableError,
   MercadoLivreNetworkError,
@@ -65,6 +66,7 @@ import {
   itemDescriptionSchema,
   itemPricesSchema,
   itemSchema,
+  ML_MULTIGET_MAX_IDS,
   itemsMultigetSchema,
   listingPricesSchema,
   migrationLiveListingSchema,
@@ -187,8 +189,13 @@ export interface MercadoLivreApi {
    * — but prefer naming them: this exists to make a bulk check affordable, and an
    * unfiltered multiget of 20 full listings is a large body for two fields.
    *
-   * ⚠️ Passing more than {@link ML_MULTIGET_MAX_IDS} ids does NOT error — ML
-   * truncates, so the answer silently describes a prefix. Chunk at the call site.
+   * ⚠️ Passing more than {@link ML_MULTIGET_MAX_IDS} ids throws `MercadoLivreError`
+   * BEFORE the request. ML itself does not error on an over-long multiget — it
+   * TRUNCATES, so the answer silently describes a prefix — and a caller deciding
+   * what to close or delete from that difference would act on a set it only
+   * partly verified. "Chunk at the call site" was a convention held in this
+   * comment; the refusal makes it a property of the seam. Chunk at
+   * {@link ML_MULTIGET_MAX_IDS}.
    */
   getItemsByIds(ids: readonly string[], attributes?: readonly string[]): Promise<MlItemsMultiget>;
   /**
@@ -999,15 +1006,29 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     // docs make a point of the flag and its absence looks like an omission.
     getLastModeration: (referenceId) =>
       request('GET', `/moderations/last_moderation/${referenceId}`, mlModerationsSchema),
-    getItemsByIds: (ids, attributes) =>
-      request('GET', '/items', itemsMultigetSchema, {
+    // `async` so the refusal below REJECTS rather than throwing synchronously:
+    // the signature promises a `Promise`, and a caller writing
+    // `getItemsByIds(x).catch(…)` would otherwise take an uncaught exception at
+    // the call site instead. The one caller `await`s inside a `try`, which hides
+    // the difference — which is exactly why it is worth not depending on.
+    getItemsByIds: async (ids, attributes) => {
+      // Refuse locally rather than let ML answer for a prefix. A silent prefix is
+      // the failure nobody notices, and the one caller reads this to decide what
+      // to CLOSE — see `sweepRemovedMembers`.
+      if (ids.length > ML_MULTIGET_MAX_IDS) {
+        throw new MercadoLivreError(
+          `multiget aceita no máximo ${String(ML_MULTIGET_MAX_IDS)} ids (recebeu ${String(ids.length)})`,
+        );
+      }
+      return request('GET', '/items', itemsMultigetSchema, {
         query: {
           ids: ids.join(','),
           ...(attributes != null && attributes.length > 0
             ? { attributes: attributes.join(',') }
             : {}),
         },
-      }),
+      });
+    },
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
     getOrderResponse: async (id) => {
