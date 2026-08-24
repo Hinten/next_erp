@@ -39,7 +39,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
-import { EditarProdutoHeader } from '../../_components/EditarProdutoHeader';
+import { EditarProdutoHeader, isProdutoPending } from '../../_components/EditarProdutoHeader';
 import { MercadoLivreTab } from '../../_components/mercado-livre/MercadoLivreTab';
 import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
@@ -514,7 +514,7 @@ export default function EditarProdutoPage() {
 
   return (
     <ObjectView
-      title={<EditarProdutoHeader loading={produtoSnap.loading} />}
+      title={<EditarProdutoHeader pending={isProdutoPending(produtoSnap)} />}
       schema={produtoEditarSchema}
       collection={produtoCollection}
       db={db}

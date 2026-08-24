@@ -30,14 +30,28 @@ export function buildEditarProdutoTitle(nome: unknown, sku: unknown): string {
   return `Editar ${displayable(nome) ?? SEM_NOME} - ${displayable(sku) ?? SEM_SKU}`;
 }
 
+/**
+ * True while there is no produto for the heading to name: the listener has not
+ * emitted yet, the id does not exist, or the read errored. In all three the form
+ * still holds `buildEmptyDefaults`' `nome: ''` / `sku: null`, so an ungated
+ * heading reads "Editar produto sem nome - sem sku" — over the loading
+ * skeletons, or worse, above `ObjectView`'s "Registro não encontrado." for as
+ * long as the operator stays on the page.
+ *
+ * ⚠️ `snap.loading` alone is not enough (a missing doc is `loading: false`,
+ * `data: null`) and `!snap.data` alone is not either: `useDocSnapshot` sets
+ * `loading: true` but KEEPS the previous document's `data` while a new ref
+ * loads, so navigating from one produto's editor to another's — same mount, new
+ * `params.id` — would leave the OLD produto's name in the heading while the new
+ * one loads. Both terms are load-bearing.
+ */
+export function isProdutoPending(snap: { loading: boolean; data?: unknown }): boolean {
+  return snap.loading || !snap.data;
+}
+
 export interface EditarProdutoHeaderProps {
-  /**
-   * True while the produto document has not emitted yet. The form still holds
-   * `buildEmptyDefaults`' `nome: ''` / `sku: null` at that point, so without this
-   * the heading would flash "Editar produto sem nome - sem sku" over the loading
-   * skeletons — show the neutral title until there is something real to name.
-   */
-  loading: boolean;
+  /** {@link isProdutoPending} — no produto to name, so show the neutral title. */
+  pending: boolean;
 }
 
 /**
@@ -52,7 +66,7 @@ export interface EditarProdutoHeaderProps {
  * a control at all — and it is what keeps a keystroke from re-rendering the page
  * and, with it, every field in all fifteen tabs.
  */
-export function EditarProdutoHeader({ loading }: EditarProdutoHeaderProps) {
+export function EditarProdutoHeader({ pending }: EditarProdutoHeaderProps) {
   // No `control`: RHF takes it from the surrounding FormProvider.
   const [nome, sku] = useWatch({ name: ['nome', 'sku'] }) as [unknown, unknown];
   return (
@@ -60,7 +74,7 @@ export function EditarProdutoHeader({ loading }: EditarProdutoHeaderProps) {
       // A plain STRING on purpose — that is what gets PageHeader's
       // `<Title order={2}>` wrapper, and with it the `heading` role the e2e
       // specs query. A node would render bare.
-      title={loading ? 'Editar produto' : buildEditarProdutoTitle(nome, sku)}
+      title={pending ? 'Editar produto' : buildEditarProdutoTitle(nome, sku)}
       actions={
         <Anchor component={Link} href="/produtos" size="sm">
           Cancelar

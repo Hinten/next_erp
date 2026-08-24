@@ -12,7 +12,11 @@ vi.mock('next/link', () => ({
   ),
 }));
 
-import { EditarProdutoHeader, buildEditarProdutoTitle } from './EditarProdutoHeader';
+import {
+  EditarProdutoHeader,
+  buildEditarProdutoTitle,
+  isProdutoPending,
+} from './EditarProdutoHeader';
 
 describe('buildEditarProdutoTitle', () => {
   it.each([
@@ -33,17 +37,48 @@ describe('buildEditarProdutoTitle', () => {
   });
 });
 
+describe('isProdutoPending', () => {
+  const doc = { id: 'p1', data: { nome: 'Camiseta Azul' } };
+
+  it('is pending while the listener has not emitted', () => {
+    expect(isProdutoPending({ loading: true, data: undefined })).toBe(true);
+  });
+
+  // The regression this suite exists for: a produto id that does not exist is
+  // `loading: false, data: null` for as long as the operator stays on the page,
+  // so a gate reading only `loading` puts "Editar produto sem nome - sem sku"
+  // above ObjectView's "Registro não encontrado.".
+  it('is pending when the id resolves to nothing', () => {
+    expect(isProdutoPending({ loading: false, data: null })).toBe(true);
+  });
+
+  it('is pending when the read errored', () => {
+    expect(isProdutoPending({ loading: false, data: undefined })).toBe(true);
+  });
+
+  // `useDocSnapshot` flips `loading` back to true on a ref change but KEEPS the
+  // previous document's data, so a gate reading only `!data` would leave the
+  // PREVIOUS produto's name in the heading while the next one loads.
+  it('is pending while a new ref loads over a previous document', () => {
+    expect(isProdutoPending({ loading: true, data: doc })).toBe(true);
+  });
+
+  it('is not pending once the document has resolved', () => {
+    expect(isProdutoPending({ loading: false, data: doc })).toBe(false);
+  });
+});
+
 /**
  * The header inside a form, mirroring its real position under `ObjectView`'s
  * `FormProvider`. The buttons stand in for the Nome/SKU inputs: what matters is
  * that the form value changed, not which control changed it.
  */
 function Harness({
-  loading = false,
+  pending = false,
   nome = 'Camiseta Azul',
   sku = 'CAM-001' as string | null,
 }: {
-  loading?: boolean;
+  pending?: boolean;
   nome?: string;
   sku?: string | null;
 }) {
@@ -51,7 +86,7 @@ function Harness({
   return (
     <MantineTestProvider>
       <FormProvider {...form}>
-        <EditarProdutoHeader loading={loading} />
+        <EditarProdutoHeader pending={pending} />
         <button type="button" onClick={() => form.setValue('nome', 'Camiseta Vermelha')}>
           renomear
         </button>
@@ -83,10 +118,10 @@ describe('EditarProdutoHeader', () => {
     expect(screen.getByRole('heading', { name: 'Editar Camiseta Azul - sem sku' })).toBeTruthy();
   });
 
-  it('shows the neutral title while the document is still loading', () => {
-    // Seeded values on purpose: a component that ignored `loading` would pass
+  it('shows the neutral title while there is no produto to name', () => {
+    // Seeded values on purpose: a component that ignored `pending` would pass
     // this against an empty form by accident.
-    render(<Harness loading />);
+    render(<Harness pending />);
     expect(screen.getByRole('heading', { name: 'Editar produto' })).toBeTruthy();
   });
 
