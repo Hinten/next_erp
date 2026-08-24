@@ -88,6 +88,50 @@ describe('resolveAnuncioUrl', () => {
     expect(mocks.searchItemsByUserProduct!.mock.calls[1]![2]).toEqual({ limit: 1, offset: 0 });
   });
 
+  it('retries UNFILTERED when ML REJECTS the status filter, not just when it ignores it', async () => {
+    // The gap a review caught: degrading only on an empty result left a 400
+    // propagating out of familyItemUrl, so an ML that refuses to combine
+    // `user_product_id` with `status` would break "ver no Mercado Livre" on
+    // EVERY família — the one outcome the fallback exists to survive.
+    const search = vi
+      .fn()
+      .mockRejectedValueOnce(httpError(400, 'invalid parameter status'))
+      .mockResolvedValueOnce({ results: ['MLB808'] });
+    const { api, mocks } = makeApi({ searchItemsByUserProduct: search });
+
+    expect(await resolveAnuncioUrl(deps(api), { id: FAMILIA, isUserProductModel: true })).toBe(
+      'https://ml/MLB808',
+    );
+    expect(mocks.searchItemsByUserProduct).toHaveBeenCalledTimes(2);
+    expect(mocks.searchItemsByUserProduct!.mock.calls[1]![2]).toEqual({ limit: 1, offset: 0 });
+  });
+
+  it('degrades on a 5xx from the FILTERED call, then propagates the unfiltered one', async () => {
+    // The filter is best-effort, so even an outage degrades rather than throws
+    // from the filtered arm; the unfiltered arm is the one that reports.
+    const search = vi
+      .fn()
+      .mockRejectedValueOnce(httpError(500, 'primeiro'))
+      .mockRejectedValueOnce(httpError(500, 'segundo'));
+    const { api } = makeApi({ searchItemsByUserProduct: search });
+
+    await expect(
+      resolveAnuncioUrl(deps(api), { id: FAMILIA, isUserProductModel: true }),
+    ).rejects.toThrow('segundo');
+  });
+
+  it('does NOT re-ask unfiltered when the filtered search 404s', async () => {
+    // A 404 is data — "no such seller or família" — and asking again without the
+    // status filter would only spend a request to learn the same thing.
+    const search = vi.fn().mockRejectedValue(httpError(404));
+    const { api, mocks } = makeApi({ searchItemsByUserProduct: search });
+
+    expect(
+      await resolveAnuncioUrl(deps(api), { id: FAMILIA, isUserProductModel: true }),
+    ).toBeNull();
+    expect(mocks.searchItemsByUserProduct).toHaveBeenCalledTimes(1);
+  });
+
   it('skips an empty member id rather than searching under it', async () => {
     const { api, mocks } = makeApi({
       getUserProductFamily: vi.fn(async () => ({ user_products_ids: ['', 'MLBU2'] })),

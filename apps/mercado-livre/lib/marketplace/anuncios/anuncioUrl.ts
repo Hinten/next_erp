@@ -183,8 +183,17 @@ async function itemUrl(api: AnuncioUrlApi, id: string): Promise<string | null> {
  * members are ALL paused has no buyable page, and showing that paused item is
  * honest — a sibling's UP page is not. And this repo cannot exercise ML combining
  * `user_product_id` with `status` (no sandbox, and no lane may hold real ML
- * credentials), so an empty filtered answer must degrade rather than be trusted
- * as "no members".
+ * credentials), so a filtered answer that does not work out must degrade rather
+ * than be trusted as "no members".
+ *
+ * ⚠️ "Does not work out" covers ML REJECTING the combination as well as ML
+ * IGNORING it — the filter is best-effort, and the two are indistinguishable from
+ * here. Degrading only on an EMPTY result would leave a 400 propagating out of
+ * this function, breaking "ver no Mercado Livre" on **every** família: the one
+ * outcome this design exists to survive, on the one assumption nothing here can
+ * verify. Only a 404 escapes the degrade, because it is data ("no such seller or
+ * família") the caller acts on, and re-asking unfiltered would just cost a second
+ * request to learn the same thing.
  *
  * `limit: 1` because this is a link, not a membership audit — contrast
  * `resolveFamilyItemIds`, which pages the COMPLETE membership because the publish
@@ -218,9 +227,23 @@ async function familyItemUrl(
     return search.results.find((r) => r.length > 0) ?? null;
   };
 
+  /**
+   * The `status=active` attempt, reporting "found nothing" for any ML failure but
+   * a 404 — the ⚠️ above is the whole reason this wrapper exists rather than one
+   * `try` around both calls.
+   */
+  const primeiroItemAtivo = async (): Promise<string | null> => {
+    try {
+      return await primeiroItem('active');
+    } catch (err) {
+      if (err instanceof MercadoLivreHttpError && err.status !== 404) return null;
+      throw err;
+    }
+  };
+
   let itemId: string | null;
   try {
-    itemId = (await primeiroItem('active')) ?? (await primeiroItem());
+    itemId = (await primeiroItemAtivo()) ?? (await primeiroItem());
   } catch (err) {
     if (err instanceof MercadoLivreHttpError && err.status === 404) return null;
     throw err;
