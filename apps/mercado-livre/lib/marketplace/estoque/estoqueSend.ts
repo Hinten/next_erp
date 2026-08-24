@@ -1141,19 +1141,34 @@ async function registrarRejeicaoFinal(
   const podadas = await podarVariacoesFantasma(db, payload, item, diagnostico.causas);
 
   const sendable = podeEnviarEstoque(item.status, item.sub_status).enviar;
+  /**
+   * #1252: ML's moderation verdict, read off the verification GET already made.
+   * `[]` = it reports none, so a stored reason is stale and clears for free;
+   * `null` = it reports one, which needs a `/moderations` read this branch does
+   * not make, so the stored reason stands ("never asked").
+   */
+  const moderacoesDoGet = precisaConsultarModeracao(item.status, item.sub_status) ? null : [];
 
   if (membro != null) {
     // Record what ML said about THIS member on the member's own link, and let the
     // fold decide what that means for the family.
-    // `null` moderacoes: this branch verified the member's STATUS, never its
-    // moderation — it has no `/moderations` read to report, and inventing `[]`
-    // would clear a live reason off the family (#1087).
+    //
+    // ⚠️ #1252 CHANGED the third value here. It used to be an unconditional
+    // `null` ("never asked"), justified by "this branch verified the member's
+    // STATUS, never its moderation, and inventing `[]` would clear a live
+    // reason". The first half is still true and the conclusion no longer
+    // follows: `item` came from a real `GET /items` above, so ML's own
+    // `status`/`sub_status` ARE its verdict on whether a moderation is being
+    // reported, and `precisaConsultarModeracao` reads it for free. This is
+    // strictly better evidence than the PUT echo the success path clears on.
+    // Still `null` when ML IS reporting one — that needs a `/moderations` read
+    // this branch does not make.
     await applyMemberStatusAndFold(
       db,
       payload.integracaoId,
       membro.foldTarget,
       { status: item.status ?? null, subStatus: item.sub_status ?? null },
-      null,
+      moderacoesDoGet,
     );
     if (!sendable) {
       return await gravarDiagnostico(db, target, diagnostico, nowMs, 'anuncio-nao-enviavel');
@@ -1190,10 +1205,20 @@ async function registrarRejeicaoFinal(
     // rebuilds without the phantom entries and the send is expected to land; if
     // it does not, the ladder runs again and the `podadas === 0` arm latches it
     // then, so #781's 96×/day loop cannot reopen.
+    //
+    // ⚠️ `moderacoes` rides BOTH arms (#1252). `applyItemStatusToLink` writes
+    // `item`'s status pair either way, so the reason has to move with it or it
+    // outlives the state it explains — the one thing the invariant forbids. The
+    // `estado 'E'` latch above is OUR diagnosis of OUR payload and says nothing
+    // about ML's policy verdict, so it does not change what the GET reported.
     extra:
       sendable && podadas === 0
-        ? { estado: ESTADO_PUBLICACAO_ML.erro, ...diagnostico }
-        : { ...diagnostico },
+        ? {
+            estado: ESTADO_PUBLICACAO_ML.erro,
+            ...diagnostico,
+            ...(moderacoesDoGet != null ? { moderacoes: moderacoesDoGet } : {}),
+          }
+        : { ...diagnostico, ...(moderacoesDoGet != null ? { moderacoes: moderacoesDoGet } : {}) },
   });
   return {
     outcome: 'erro-registrado',

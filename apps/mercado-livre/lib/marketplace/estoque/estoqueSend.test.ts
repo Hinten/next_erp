@@ -315,6 +315,20 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
   };
 }
 
+/**
+ * ML's own words for a watermarked cover photo, as this path would store them.
+ * Module-scoped: both the success writeback and the terminal-4xx branch assert
+ * on it, and they live in different describes.
+ */
+const MODERACAO = {
+  nome: 'WATERMARK',
+  dataCriacao: null,
+  motivo: "A foto de capa contém marcas d'água.",
+  remedio: 'Corrija suas fotos de capa.',
+  secoes: ['pictures'],
+  evidencias: [],
+};
+
 /** Seed the writeback-target link doc (only the writeback/error tests need it). */
 function seedLink(db: FakeDb, extra: DocData = {}): void {
   db.seed(LINK_PATH, 'link1', {
@@ -980,6 +994,53 @@ describe('processStockSendTask — terminal 4xx (last attempt verifies with ML)'
     return h;
   }
 
+  /**
+   * ⚠️ #1252, and this path has BETTER evidence than the success writeback: the
+   * verification GET above is a real `GET /items`, not a PUT echo. So a stored
+   * reason ML no longer reports is stale here for exactly the same reason, and
+   * clearing it costs nothing.
+   *
+   * Before this, the branch wrote a fresh `status` and left `moderacoes`
+   * standing — producing `{ estado: 'E', status: 'active', sub_status: [],
+   * moderacoes: [ … ] }`, a lifted reason sitting next to a status that says
+   * there is none. That is precisely the contradiction the invariant forbids.
+   */
+  it('CLEARS a lifted reason on the verification GET, alongside the latch', async () => {
+    const h = terminal(async () => ({ id: 'MLB111', status: 'active', sub_status: [] }), {
+      moderacoes: [MODERACAO],
+    });
+
+    await run(h);
+
+    // One object: the reason and the status it explains move together, and the
+    // `estado 'E'` latch — our diagnosis of OUR payload — rides along without
+    // changing what ML reported.
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      estado: 'E',
+      status: 'active',
+      moderacoes: [],
+    });
+  });
+
+  /**
+   * ⚠️ The other arm. ML is still reporting the moderation, so this branch —
+   * which made no `/moderations` read — must leave the stored reason alone
+   * rather than invent a verdict.
+   */
+  it('leaves a reason the verification GET is STILL reporting', async () => {
+    const h = terminal(
+      async () => ({ id: 'MLB111', status: 'active', sub_status: ['poor_quality_thumbnail'] }),
+      { moderacoes: [MODERACAO] },
+    );
+
+    await run(h);
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      sub_status: ['poor_quality_thumbnail'],
+      moderacoes: [MODERACAO],
+    });
+  });
+
   it("ML says the listing is HEALTHY → our payload is the problem → estado 'E'", async () => {
     const h = terminal(async () => ({ id: 'MLB111', status: 'active', sub_status: [] }));
 
@@ -1586,16 +1647,6 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
     });
   });
 
-  /** ML's own words for a watermarked cover photo, as this path would store them. */
-  const MODERACAO = {
-    nome: 'WATERMARK',
-    dataCriacao: null,
-    motivo: "A foto de capa contém marcas d'água.",
-    remedio: 'Corrija suas fotos de capa.',
-    secoes: ['pictures'],
-    evidencias: [],
-  };
-
   /**
    * ⚠️ #1087, and it is the OPPOSITE of the rule above. A successful stock
    * update proves our payload was fine; it proves nothing about ML's POLICY
@@ -1636,8 +1687,11 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
     expect(link).toMatchObject({ errors: [] });
     // …and the policy reason survived untouched.
     expect(link).toMatchObject({ moderacoes: [MODERACAO] });
-    // Never at the cost of a lookup: this path has no moderation endpoint in its
-    // API surface at all, and the gate answers off `resp` alone.
+    // ⚠️ Deliberately NOT `expect(api.getLastModeration).toBeUndefined()`. The
+    // fake API is a fixed literal with no such key, so that assertion could
+    // never fail — it would read as a guard while checking nothing. What
+    // actually proves "no lookup" here is that the surface has no moderation
+    // endpoint at all, so a call would throw; this pins the calls it DOES make.
     expect(h.updateItem).toHaveBeenCalledTimes(1);
   });
 

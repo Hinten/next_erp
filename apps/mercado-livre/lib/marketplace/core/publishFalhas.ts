@@ -443,7 +443,9 @@ export function falhaPatch(
  * may write `[]` and nothing else, because `precisaConsultarModeracao` is pure:
  * when it says no moderation is being reported, that IS ML's answer, and it cost
  * no call. That second group is publish, the UP member publish and the stock
- * send — each gated, each omitting the key on the other arm. Either way the
+ * send (on both its success writeback and its terminal-4xx verification path,
+ * where the evidence is a real `GET /items`) — each gated, each omitting the key
+ * on the other arm. Either way the
  * write rides the same patch as the status it explains — value or `[]`, or, on
  * the importer's two skip paths, not at all (`null` = "never asked", which
  * leaves the stored reason standing rather than overwriting it with a

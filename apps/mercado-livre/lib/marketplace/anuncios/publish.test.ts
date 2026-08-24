@@ -1950,8 +1950,12 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
       status: 'active',
       moderacoes: [],
     });
-    // And it cost nothing: publish has no moderation endpoint at all.
-    expect(mocks.getLastModeration).toBeUndefined();
+    // And it cost nothing. ⚠️ Asserted on the API SURFACE, not via
+    // `expect(mocks.getLastModeration).toBeUndefined()` — `makeApi`'s mocks are a
+    // fixed literal with no such key, so that can never fail and would read as a
+    // guard while checking nothing. The surface lacking the endpoint is the real
+    // guarantee: a lookup would throw.
+    expect(Object.keys(mocks)).not.toContain('getLastModeration');
   });
 
   /**
@@ -2061,9 +2065,11 @@ describe('publishProduto — ML moderations on the parent link (#1252)', () => {
 
     await publishProduto(makeDeps(db, api), PROD);
 
-    // There is no `/moderations` call on this path at all, and adding one would
-    // put a second ML round trip on every publish.
-    expect(mocks.getLastModeration).toBeUndefined();
+    // ⚠️ The API surface publish is given has no moderation endpoint, so a
+    // lookup would THROW rather than fail an assertion — that absence is the
+    // real guard. `expect(mocks.getLastModeration).toBeUndefined()` would be
+    // vacuous here: the mocks object is a fixed literal without the key.
+    expect(Object.keys(mocks)).not.toContain('getLastModeration');
   });
 });
 
