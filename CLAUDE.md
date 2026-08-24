@@ -29,11 +29,16 @@ Five rules you must not break without reading it first:
    not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
-   unique repo-wide. The thirteen pinnable ones are
+   unique repo-wide. The fifteen pinnable ones are
    `E2E gate (cadastros|vendas|emulator)`,
    `CI gate (nfe|freight|mercado-livre|storage|rules)` and — since `ci.yml` split
-   its single `lint-typecheck-test` job into five concurrent ones —
-   `CI typecheck`, `CI lint`, `CI format check`, `CI test`, `CI build`.
+   its single `lint-typecheck-test` job into seven concurrent ones —
+   `CI typecheck`, `CI lint`, `CI format check`, `CI test`,
+   `CI test web 1of2`, `CI test web 2of2`, `CI build`. ⚠️ The last two are a
+   `vitest --shard` **partition** of `@delfrance/web`, and `CI test` excludes
+   that workspace: change one and you must change the others, or a slice of the
+   222-file suite runs **nowhere** while every job still reports green.
+   `ci-lane-gates.test.js` asserts the partition.
 3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
    downstream job makes it run even after its upstream failed. Let `needs:` carry
    the skip instead.

@@ -278,6 +278,8 @@ const CI_YML_JOBS = {
   lint: 'CI lint',
   'format-check': 'CI format check',
   test: 'CI test',
+  'test-web-1': 'CI test web 1of2',
+  'test-web-2': 'CI test web 2of2',
   build: 'CI build',
 };
 
@@ -513,6 +515,8 @@ describe('CI lanes always report', () => {
       'lint',
       'format-check',
       'test',
+      'test-web-1',
+      'test-web-2',
       'build',
       'report-failure',
     ]);
@@ -823,6 +827,75 @@ describe('CI lanes always report', () => {
         ...skippable.map((id) => `  - ${id}`),
       ].join('\n'),
     ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 5c. The web test shards are a PARTITION, and web runs in them alone.
+  // ------------------------------------------------------------------
+  it('ci.yml shards @delfrance/web completely and exactly once', () => {
+    const CI = '.github/workflows/ci.yml';
+    // Comments in this file legitimately write `--shard=i/N` while explaining the
+    // rule, so match only a real numeric argument. Stripping comments first would
+    // also work, but this cannot be fooled by a commented-out command either.
+    const source = read(CI);
+    const shards = [...source.matchAll(/--shard=(\d+)\/(\d+)/g)].map((m) => ({
+      i: Number(m[1]),
+      n: Number(m[2]),
+    }));
+
+    // (a0) Anti-vacuity FIRST. With the shard jobs gone, `shards` is empty and the
+    //      checks below pass over nothing — (a) would even report "mixes shard
+    //      denominators: " with an empty list, which reads like a parser bug rather
+    //      than the real defect. Fail here, with the real reason.
+    expect(
+      shards.length,
+      `${CI} declares no numeric \`--shard=\` command at all. Either the shard jobs were removed (in which case delete this assertion and CI_YML_JOBS' entries deliberately), or the argument shape changed and this scanner silently stopped seeing it.`,
+    ).toBeGreaterThanOrEqual(2);
+
+    // (a) There is exactly one denominator. Bumping one job to `--shard=1/3` and
+    //     forgetting the third job leaves a third of the suite running NOWHERE.
+    const denominators = [...new Set(shards.map((s) => s.n))];
+    expect(
+      denominators,
+      [
+        `${CI} mixes shard denominators: ${denominators.join(', ')}.`,
+        '',
+        'Every `--shard=i/N` for one suite must share the same N. A mismatched pair',
+        'silently drops or double-runs files, and every job still reports green.',
+      ].join('\n'),
+    ).toHaveLength(1);
+
+    // (b) The numerators are exactly 1..N, each once. This is the completeness
+    //     proof: union of the shards is the whole suite, intersection is empty.
+    const n = denominators[0];
+    expect(
+      shards.map((s) => s.i).sort((a, b) => a - b),
+      [
+        `${CI}'s shard set is not a partition of 1..${n}.`,
+        '',
+        'Found: ' + shards.map((s) => `${s.i}/${s.n}`).join(', '),
+        '',
+        '`vitest --shard=i/N` splits by FILE. A missing numerator means those files',
+        'run in NO job — the suite reports green having never executed them, which',
+        'no other check in this repo can see. A repeated one runs them twice.',
+      ].join('\n'),
+    ).toEqual(Array.from({ length: n }, (_, k) => k + 1));
+
+    // (c) The unsharded `test` job must EXCLUDE web, or it runs three times over
+    //     (once whole, once per shard) and the sharding saves nothing. The inverse
+    //     mistake — dropping the shard jobs but keeping the exclusion — is caught
+    //     by assertion 5b, which pins the job set.
+    const jobs = jobBlocks(source);
+    expect(
+      /--filter '!@delfrance\/web'/.test(jobs.test ?? ''),
+      [
+        `${CI}'s \`test\` job does not exclude @delfrance/web.`,
+        '',
+        'Web has its own shard jobs, so leaving it in the unfiltered `turbo run test`',
+        'runs the whole 222-file suite a third time and puts this job straight back',
+        'on the critical path — the exact cost the shards exist to remove.',
+      ].join('\n'),
+    ).toBe(true);
   });
 
   // ------------------------------------------------------------------

@@ -8,7 +8,7 @@ description: >-
   `protect-main` ruleset, or when deciding what should trigger a lane. Covers
   the `changes` scope job and `.github/scripts/e2e-affected.mjs` (--roots,
   --self, --only-paths, --kind), the unskippable `gate` job and its
-  required/optional guard manifest, the thirteen pinnable check names, the
+  required/optional guard manifest, the fifteen pinnable check names, the
   `ci-lane-gates.test.js` backstop, and the three GitHub behaviours that make
   naive CI silently green — a non-matching `paths:` publishing no check at all,
   a `skipped` job satisfying a required check, and check-run names carrying no
@@ -46,7 +46,7 @@ Everything here exists because of these. None is obvious, all three bite.
    repo-wide — three lanes once published an identical
    `Lint / typecheck / unit / build (offline)`.
 
-## The thirteen pinnable checks
+## The fifteen pinnable checks
 
 | lane | gate | roots |
 | --- | --- | --- |
@@ -61,14 +61,24 @@ Everything here exists because of these. None is obvious, all three bite.
 | ci.yml | `CI typecheck` | — (full graph) |
 | ci.yml | `CI lint` | — (full graph) |
 | ci.yml | `CI format check` | — (whole repo) |
-| ci.yml | `CI test` | — (full graph minus the eight lane-owned workspaces) |
+| ci.yml | `CI test` | — (full graph minus the eight lane-owned workspaces, minus `web`) |
+| ci.yml | `CI test web 1of2` | — (`@delfrance/web`, `vitest --shard=1/2`) |
+| ci.yml | `CI test web 2of2` | — (`@delfrance/web`, `vitest --shard=2/2`) |
 | ci.yml | `CI build` | — (full graph) |
 
-`ci.yml` needs no gate: it has no `paths:` and **none of its five jobs carries an
+`ci.yml` needs no gate: it has no `paths:` and **none of its seven jobs carries an
 `if:`**, so each is already unskippable and directly pinnable. That property is
-the whole reason it can stay gateless — adding an `if:` to any of the five would
+the whole reason it can stay gateless — adding an `if:` to any of the seven would
 make it skippable, and behaviour 2 above turns a skippable pinned check into a
 permanent free pass.
+
+⚠️ **The two `CI test web` rows are a PARTITION, not two independent jobs.**
+`vitest --shard=i/N` splits by FILE, so 1of2 ∪ 2of2 is the whole 222-file suite
+(111 each, measured) and `CI test` excludes `@delfrance/web` to avoid a third run.
+A missing or duplicated numerator means files run in NO job — green, having never
+executed. Nothing at runtime can see that, so `ci-lane-gates.test.js` asserts the
+numerators are exactly 1..N for one N, that web is excluded from `CI test`, and
+that at least two `--shard=` commands exist at all.
 
 ⚠️ **Nothing is pinned yet.** As of 2026-08-24 `protect-main` (id `16348427`)
 carries only `deletion` and `non_fast_forward` — there is no
@@ -423,9 +433,39 @@ before anyone assumes it still is:
 3. **Fan-out is free.** The repo is public, so `ubuntu-latest` is 4 vCPU / 16 GB
    on unmetered minutes.
 
-The five jobs share the pnpm-store cache key; on a lockfile change four of them
+The seven jobs share the pnpm-store cache key; on a lockfile change six of them
 log `Unable to reserve cache with key …, another job may be creating this cache`.
 Not an error, and not new — the six other lanes already share that namespace.
+
+### Sharding `@delfrance/web`, and where the floor actually is — measured
+
+The split left `CI test` at **314 s**, of which `@delfrance/web` alone was
+**241.8 s** of the 275 s turbo wall: the other 17 packages all finish inside its
+shadow. So web now runs as two `vitest --shard` jobs and `CI test` excludes it.
+
+⚠️ **Two shards is not a tuning choice — it is the point where the wall stops
+being `test`.** After the split the remaining jobs are:
+
+| job | observed |
+| --- | --- |
+| `CI lint` | **205 s** ← the wall now |
+| `CI build` | 185 s |
+| `CI typecheck` | 169 s |
+| `CI format check` | 60 s |
+
+Each shard lands ≈ 170 s, already under lint, so a third shard buys **nothing**.
+And web dominates lint too — `turbo run lint --filter @delfrance/web` is 96.8 s of
+a 162.3 s full-graph lint — but splitting lint the same way only reaches ~3 m 05 s
+before `CI build` takes over. That is ~20 s for another job and another pair of
+pinnable names, so it was measured and **declined**. Anything better than ~3 m 25 s
+has to make lint and build genuinely cheaper, not run them in more places.
+
+⚠️ **Never express a shard as `turbo run test -- --shard=i/N`.** Turbo forwards
+passthrough args to EVERY matched package, so that shards `@delfrance/schemas`,
+`@delfrance/data` and ~20 others as well — each losing half its files with no
+signal. Use `pnpm --filter <pkg> exec vitest run --shard=i/N`, which targets one
+workspace and exits 1 on an unknown package name (unlike `turbo run`, so the
+`--dry=json` guard the other lanes need has no equivalent hazard here).
 
 ### ⚠️ `turbo run <task>` has TWO ways to exit 0 having run nothing
 

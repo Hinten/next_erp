@@ -21,12 +21,19 @@ concurrency:
   cancel-in-progress: true
 
 # ---------------------------------------------------------------------------
-# Five sibling jobs, not five steps of one job.
+# Seven sibling jobs, not one job running them in sequence.
 #
-# They used to be one `lint-typecheck-test` job running them in sequence, which
-# cost ~13m26s of wall clock while every other lane finished in under 5. The
-# steps are independent, so the split takes the critical path down to the
-# slowest single job (`test`, ~5m30s).
+# They used to be a single `lint-typecheck-test` job, which cost ~13m26s of wall
+# clock while every other lane finished in under 5. The steps are independent, so
+# splitting them took the critical path down to the slowest single job — `test`,
+# at 5m18s. @delfrance/web was 241.8s of that on its own, so it now runs as two
+# `--shard` jobs and the wall is ~3m25s.
+#
+# ⚠️ That is the floor, and further test sharding cannot beat it: `CI lint` is
+# 205s and `CI build` 185s, so those are the wall now. Web dominates lint too
+# (96.8s of a 162.3s full-graph lint), but splitting lint the same way only
+# reaches ~3m05s before build takes over — ~20s for another job and another pair
+# of pinnable names. Measured and declined; see SKILL.md.
 #
 # ⚠️ Splitting is only free because turbo's `^build` edge on lint/typecheck/test
 # resolves to ZERO tasks here: no `packages/*`, `packages/integrations/*` or
@@ -37,25 +44,25 @@ concurrency:
 #
 # There is also no turbo remote cache and no `.turbo` persistence anywhere, so
 # every task already ran cold in the single-job form — the split loses no cache
-# locality. The five jobs DO share the pnpm-store cache key, and on a lockfile
-# change four of them will log "Unable to reserve cache with key ..., another job
+# locality. The seven jobs DO share the pnpm-store cache key, and on a lockfile
+# change six of them will log "Unable to reserve cache with key ..., another job
 # may be creating this cache". That is not an error and not new: the six other
 # lanes already share that key namespace concurrently.
 #
-# ⚠️ None of the five carries an `if:` and the workflow has no `paths:`, so all
-# five are unskippable and each is directly pinnable — which is why this file
+# ⚠️ None of the seven carries an `if:` and the workflow has no `paths:`, so all
+# seven are unskippable and each is directly pinnable — which is why this file
 # needs no `gate` job (see .claude/skills/ci-lanes/SKILL.md). Adding an `if:` to
 # any of them would make it skippable, and GitHub counts a `skipped` job as
 # SATISFYING a required check. Don't.
 #
-# ⚠️ The `env:` block and the first six steps are BYTE-IDENTICAL in all five
+# ⚠️ The `env:` block and the first six steps are BYTE-IDENTICAL in all seven
 # jobs, deliberately — that is what lets `diff` prove they have not drifted, the
 # same discipline the domain lanes apply to their gate bodies. Every comment
 # that used to sit inside them lives here instead, once:
 #
 #   · FUNCTIONS_REGION — required by the `build` job; the reason is recorded on
 #     that job, next to the command that needs it. It is replicated on the other
-#     four rather than scoped to `build` because it was a job-level env before
+#     six rather than scoped to `build` because it was a job-level env before
 #     the split, so the test suite ran with it set, and `requireRegion`
 #     (@delfrance/core/region) THROWS when it is unset. Keeping it everywhere
 #     preserves the previous behaviour exactly.
@@ -192,9 +199,10 @@ jobs:
   test:
     name: CI test
     runs-on: ubuntu-latest
-    # Observed 265-292s over 4 runs on 2026-08-24 — the critical path of this
-    # workflow. @delfrance/web alone is ~256s of it (223 test files), so this is
-    # the only job worth optimising further.
+    # Everything EXCEPT @delfrance/web, which has its own two shard jobs below.
+    # It used to run here too and was 241.8s of the step's 275s turbo wall — the
+    # other 17 packages all finish inside its shadow, so it WAS this workflow's
+    # critical path. Expect ~2m20s now.
     timeout-minutes: 25
     env:
       FUNCTIONS_REGION: us-central1
@@ -258,8 +266,17 @@ jobs:
         #
         # Lint / typecheck / build are their own jobs and stay full-graph and
         # unfiltered, so cross-package breaks still surface on every PR.
+        #
+        # ⚠️ `@delfrance/web` is the ninth exclusion and the only one whose owner
+        # is in THIS file — the two `test-web-*` shard jobs below. That makes the
+        # exclusion-is-a-promise rule hold by construction rather than by trust:
+        # unlike a domain lane, those jobs carry no `if:` and cannot skip. The
+        # partition itself (every `--shard=i/N` present exactly once, and web
+        # excluded here) is asserted by ci-lane-gates.test.js — without that, a
+        # file in no shard would simply never run and nothing would say so.
         run: |
           pnpm turbo run test \
+            --filter '!@delfrance/web' \
             --filter '!@delfrance/nfe-app' \
             --filter '!@delfrance/integrations-nfe' \
             --filter '!@delfrance/melhor-envio-app' \
@@ -268,6 +285,97 @@ jobs:
             --filter '!@delfrance/functions' \
             --filter '!@delfrance/mercado-livre-app' \
             --filter '!@delfrance/integrations-mercado-livre'
+
+  # ⚠️ The two shard jobs below are a PARTITION of @delfrance/web's 222-file
+  # vitest suite, not a sample. `vitest --shard=i/N` splits by FILE, so the union
+  # of 1of2 and 2of2 is the whole suite and their intersection is empty (measured:
+  # 111 files each). Change one and you must change the other, and the assertion in
+  # ci-lane-gates.test.js checks that the set of `--shard=i/N` args is exactly
+  # {1/N..N/N}. A file that lands in no shard runs NOWHERE and nothing else notices.
+  #
+  # ⚠️ These deliberately do NOT go through `turbo run test -- --shard=…`. Turbo
+  # forwards passthrough args to EVERY matched package, so that would also shard
+  # @delfrance/schemas, @delfrance/data and ~20 others. `pnpm --filter` targets one
+  # workspace — and it exits 1 on an unknown package name, unlike `turbo run`, so
+  # the `--dry=json` guard the other lanes need has no equivalent hazard here.
+  test-web-1:
+    name: CI test web 1of2
+    runs-on: ubuntu-latest
+    # @delfrance/web was 241.8s as one job; expect ~2m50s per shard.
+    timeout-minutes: 20
+    env:
+      FUNCTIONS_REGION: us-central1
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+
+      - name: Test (@delfrance/web, shard 1 of 2)
+        run: pnpm --filter @delfrance/web exec vitest run --shard=1/2
+
+  test-web-2:
+    name: CI test web 2of2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FUNCTIONS_REGION: us-central1
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+
+      - name: Test (@delfrance/web, shard 2 of 2)
+        run: pnpm --filter @delfrance/web exec vitest run --shard=2/2
 
   build:
     name: CI build
@@ -332,7 +440,7 @@ jobs:
     # jobs que falharam (via API actions:read) e posta como comentário no PR.
     # Substitui o antigo workflow externo post-ci-logs.yml — agora o próprio
     # workflow reporta a falha, sem depender de um workflow_run separado.
-    needs: [typecheck, lint, format-check, test, build]
+    needs: [typecheck, lint, format-check, test, test-web-1, test-web-2, build]
     if: ${{ failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
