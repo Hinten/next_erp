@@ -244,7 +244,12 @@ export const ML_MULTIGET_MAX_IDS = 20;
 export const itemsMultigetSchema = z.array(
   z
     .object({
-      code: z.number().int().nullable().optional(),
+      // `mlInt()`, not `z.number().int()`: ML quoting a number is serializer-level
+      // drift and `parseOk` validates the WHOLE body, so one strict field costs
+      // the entire multiget. Here that would be silent in the worst way — every
+      // entry would fail `code !== 200`, the sweep would confirm nothing, and it
+      // would stop closing anything at all.
+      code: mlInt().nullable().optional(),
       body: z
         .object({
           id: z.string().nullable().optional(),

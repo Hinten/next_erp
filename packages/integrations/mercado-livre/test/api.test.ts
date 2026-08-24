@@ -111,6 +111,24 @@ describe('createMercadoLivreApi — happy paths', () => {
     expect(url).toContain('attributes=id%2Cuser_product_id');
   });
 
+  it('getItemsByIds tolerates a QUOTED code — ML quoting a number must not kill the body', async () => {
+    // #1087's shape, applied here: `parseOk` validates the whole body, so one
+    // strict field costs the entire multiget. This one is the worst place for
+    // it — every entry would fail `code !== 200`, `verificarMembros` would
+    // confirm nothing, and the orphan sweep would silently stop closing.
+    // ⚠️ Only reachable through the real client: the sweep's own tests mock
+    // `getItemsByIds` and never run this schema.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ code: '200', body: { id: 'MLB1', user_product_id: 'MLBU1' } }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const out = await api.getItemsByIds(['MLB1'], ['id', 'user_product_id']);
+
+    expect(out[0]!.code).toBe(200);
+    expect(out[0]!.body?.user_product_id).toBe('MLBU1');
+  });
+
   it('getItemsByIds omits attributes entirely when none are named', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse([{ code: 200, body: { id: 'MLB1' } }]),
