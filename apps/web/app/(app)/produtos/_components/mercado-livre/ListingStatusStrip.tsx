@@ -38,6 +38,18 @@ const ESTADO_COLORS: Record<EstadoPublicacaoMl, string> = {
   am: 'orange',
 };
 
+/**
+ * Why the operator asked for a re-check. The two entry points want different
+ * feedback, so the reason travels with the call instead of being guessed at the
+ * far end: `'latch'` is the stock escape hatch (#781), `'moderacao'` is the
+ * "consultar motivo" button in the not-consulted notice (#1239).
+ *
+ * Exported because the callback crosses three components on its way up —
+ * strip → {@link AnuncioBlock} → {@link ContaPanel} → the editor — and an
+ * inline union repeated four times is a union that drifts.
+ */
+export type MotivoReverificacao = 'latch' | 'moderacao';
+
 export interface ListingStatusStripProps {
   link: ProdutoMercadoLivreLink;
   /** Enables the latch escape hatch; false for a read-only operator. */
@@ -50,7 +62,7 @@ export interface ListingStatusStripProps {
    * and talks about stock, `'moderacao'` is the "consultar motivo" button in the
    * not-consulted notice (#1239) and must not.
    */
-  onReverificar: (motivo: 'latch' | 'moderacao') => void;
+  onReverificar: (motivo: MotivoReverificacao) => void;
   /**
    * A listing URL the editor has already resolved from Mercado Livre — the
    * User-Products answer {@link listingPermalink} cannot compute on its own.
