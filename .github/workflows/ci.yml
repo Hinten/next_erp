@@ -296,8 +296,24 @@ jobs:
   # ⚠️ These deliberately do NOT go through `turbo run test -- --shard=…`. Turbo
   # forwards passthrough args to EVERY matched package, so that would also shard
   # @delfrance/schemas, @delfrance/data and ~20 others. `pnpm --filter` targets one
-  # workspace — and it exits 1 on an unknown package name, unlike `turbo run`, so
-  # the `--dry=json` guard the other lanes need has no equivalent hazard here.
+  # workspace.
+  #
+  # ⚠️ `--fail-if-no-match` is LOAD-BEARING, not hygiene. Measured on pnpm 11.2.2
+  # (the version `packageManager` pins):
+  #
+  #   pnpm --filter @delfrance/nope exec vitest run   → "No projects matched the
+  #                                                      filters", exit 0
+  #   pnpm --filter @delfrance/nope run test          → same, exit 0
+  #   pnpm --fail-if-no-match --filter … exec …       → exit 1
+  #
+  # So pnpm has the SAME silent-exit-0 hazard as `turbo run`, in both the bad-name
+  # and the missing-script shape — an earlier version of this comment claimed the
+  # opposite and was simply wrong. Rename @delfrance/web without updating these two
+  # lines and `CI test`'s `--filter '!@delfrance/web'` fails safe (web just runs
+  # there again), while both shard jobs report green having executed NONE of the
+  # 222 files. The flag is what turns that into a red job; assertion 5c in
+  # ci-lane-gates.test.js pins both the flag and the package it targets, because a
+  # `--shard=i/N` substring alone says nothing about what is being sharded.
   test-web-1:
     name: CI test web 1of2
     runs-on: ubuntu-latest
@@ -336,7 +352,7 @@ jobs:
 
 
       - name: Test (@delfrance/web, shard 1 of 2)
-        run: pnpm --filter @delfrance/web exec vitest run --shard=1/2
+        run: pnpm --fail-if-no-match --filter @delfrance/web exec vitest run --shard=1/2
 
   test-web-2:
     name: CI test web 2of2
@@ -375,7 +391,7 @@ jobs:
 
 
       - name: Test (@delfrance/web, shard 2 of 2)
-        run: pnpm --filter @delfrance/web exec vitest run --shard=2/2
+        run: pnpm --fail-if-no-match --filter @delfrance/web exec vitest run --shard=2/2
 
   build:
     name: CI build

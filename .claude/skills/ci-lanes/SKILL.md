@@ -467,7 +467,7 @@ signal. Use `pnpm --filter <pkg> exec vitest run --shard=i/N`, which targets one
 workspace and exits 1 on an unknown package name (unlike `turbo run`, so the
 `--dry=json` guard the other lanes need has no equivalent hazard here).
 
-### ⚠️ `turbo run <task>` has TWO ways to exit 0 having run nothing
+### ⚠️ `turbo run <task>` has TWO ways to exit 0 having run nothing — and so does `pnpm`
 
 Both verified in this repo:
 
@@ -476,12 +476,34 @@ Both verified in this repo:
 | bad package **name** | `turbo run test --filter '@delfrance/nope'` | `x No package found with name …` | **0** |
 | missing **script** | `turbo run test --filter <pkg with no "test">` | `Tasks: 0 successful, 0 total` | **0** |
 
-⚠️ **The second one is not shared with pnpm, and that asymmetry has already bitten
-a review.** `pnpm --filter X run <script>` exits **1** when the script is missing —
-only a bad *name* is unsafe there. So a `pnpm ls` name-check is a sufficient guard
-in front of a `pnpm --filter` step and an **insufficient** one in front of a
-`turbo run` step. Do not copy a guard across the two tools without re-deriving
-which failure modes it covers.
+⚠️ **`pnpm` is NOT the safe alternative — this page said it was, and that was
+wrong.** Re-measured on **pnpm 11.2.2**, the version `packageManager` pins:
+
+| command | output | exit |
+| --- | --- | --- |
+| `pnpm --filter '@delfrance/nope' exec vitest run` | `No projects matched the filters …` | **0** |
+| `pnpm --filter '@delfrance/nope' run test` | `No projects matched the filters …` | **0** |
+| `pnpm --filter <pkg with no "test"> run test` | *(nothing)* | **0** |
+| `pnpm --fail-if-no-match --filter '@delfrance/nope' exec …` | `No projects matched the filters …` | **1** |
+
+So a `pnpm ls` name-check is **not** a sufficient guard in front of a
+`pnpm --filter` step, and the earlier claim that only a bad *name* was unsafe there
+is false in both directions. The fix is **`--fail-if-no-match`**, which is what
+`ci.yml`'s two `CI test web` shard jobs carry — and what `ci-lane-gates.test.js`
+asserts they keep, together with the package they target. A `--shard=i/N` substring
+says nothing about *what* is being sharded.
+
+⚠️ **Pin the package by regex with a boundary, never `includes()`.** `@delfrance/webb`
+contains `@delfrance/web`, so a substring check passes for exactly the typo the guard
+exists to catch. Mutation testing caught that in the guard itself before it shipped —
+the same lesson as "never locate a job by substring" above.
+
+⚠️ **This still leaves one open question, deliberately not changed here:**
+`ci-mercado-livre.yml`'s emulator job guards its `pnpm --filter … test:firestore`
+step with a `pnpm ls` name-check, justified in-file by the now-disproved
+"`pnpm --filter` exits 1" property. The name-check does still catch a bad *name*, so
+that job is not currently broken — but the stated reasoning no longer holds, and a
+renamed *script* there would exit 0 silently. Worth revisiting on its own.
 
 ⚠️ **Counting `task == "test"` in `--dry=json` is also not enough** — turbo still
 emits an entry for a package with no script, tagged `"command": "<NONEXISTENT>"`.

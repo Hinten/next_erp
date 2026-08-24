@@ -896,6 +896,44 @@ describe('CI lanes always report', () => {
         'on the critical path — the exact cost the shards exist to remove.',
       ].join('\n'),
     ).toBe(true);
+
+    // (c2) Every shard command must name the package AND carry `--fail-if-no-match`.
+    //      Measured on pnpm 11.2.2 (the version `packageManager` pins): a `--filter`
+    //      matching nothing prints "No projects matched the filters" and exits **0**
+    //      — for a bad NAME and for a missing SCRIPT alike. So pnpm carries the same
+    //      silent-exit-0 hazard as `turbo run`, and this file previously claimed the
+    //      opposite. Without the flag, renaming the workspace leaves both shard jobs
+    //      GREEN having run ZERO of the 222 files.
+    //
+    //      ⚠️ (a)-(c) above cannot see this: a `--shard=i/N` substring says nothing
+    //      about WHAT is being sharded, or whether the filter matched anything.
+    //
+    //      ⚠️ The package match is a REGEX with a trailing boundary, not
+    //      `.includes('@delfrance/web')`. A substring test passes for
+    //      `@delfrance/webb` — the exact typo this is meant to catch — and mutation
+    //      testing caught that here before it shipped. Same lesson as the gate rule
+    //      "never locate a job by substring".
+    const shardCommands = source.split('\n').filter((l) => /^\s*run:.*--shard=\d+\/\d+/.test(l));
+    const unguarded = shardCommands.filter(
+      (l) => !(l.includes('--fail-if-no-match') && /--filter @delfrance\/web(?![\w-])/.test(l)),
+    );
+    expect(
+      unguarded,
+      [
+        `${CI} has a shard command that is not pinned to a matching package.`,
+        '',
+        'Each must contain BOTH `--fail-if-no-match` and `@delfrance/web`:',
+        '',
+        '  pnpm --fail-if-no-match --filter @delfrance/web exec vitest run --shard=i/N',
+        '',
+        'Without the flag `pnpm --filter <unknown>` exits 0 having run nothing —',
+        'verified on pnpm 11.2.2 for a bad package name AND a missing script. A rename',
+        'would leave these jobs green over an empty file set, which is the exact silent',
+        'pass this file exists to eliminate.',
+        '',
+        ...unguarded.map((l) => `  - ${l.trim()}`),
+      ].join('\n'),
+    ).toEqual([]);
   });
 
   // ------------------------------------------------------------------
