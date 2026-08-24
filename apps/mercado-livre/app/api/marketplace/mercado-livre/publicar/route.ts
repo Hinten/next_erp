@@ -20,7 +20,7 @@ import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
-import { refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
+import { naoDocId, refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
 import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 import { publishProduto } from '@/lib/marketplace/anuncios/publish';
@@ -58,17 +58,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       { status: 400 },
     );
   }
-  // TYPE-check, not just truthiness — same reasoning as the sibling
-  // `reverificar-anuncio` route: a non-string that happens to be truthy
-  // (`linkDocId: 1`) sails past a `!value` guard and then throws deep inside
-  // `.doc(id)` ("not a valid resource path"), turning a client error into a 500.
-  // Optional here, so only a PRESENT-and-wrong value is rejected.
-  if (
-    body.linkDocId !== undefined &&
-    (typeof body.linkDocId !== 'string' || body.linkDocId === '')
-  ) {
+  // Shared with the sibling `reverificar-anuncio` route, which had the same hole:
+  // the guard is about what `.doc()` will accept, and `.doc()` validates the
+  // resulting PATH outside any `try` this handler owns — so a truthy non-string,
+  // a blank, or a separator-bearing id all escape as a 500 for a client error.
+  // See `naoDocId`. Optional here, so only a PRESENT-and-wrong value is rejected.
+  if (body.linkDocId !== undefined && naoDocId(body.linkDocId)) {
     return NextResponse.json(
-      { error: 'linkDocId, quando enviado, deve ser uma string não vazia.' },
+      { error: 'linkDocId, quando enviado, deve ser um id de documento válido.' },
       { status: 400 },
     );
   }

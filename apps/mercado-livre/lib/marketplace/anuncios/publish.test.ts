@@ -2010,8 +2010,11 @@ describe('publishProduto — which anúncio a publish targets', () => {
   });
 
   it('treats an empty linkDocId as absent rather than as a doc that cannot exist', async () => {
-    // `''` is a value the link schema permits and the migrated corpus contains,
-    // so a `!= null` test alone would turn a blank into a guaranteed refusal.
+    // ⚠️ Not because `''` is a plausible doc id — it is not: `.doc('')` throws.
+    // (The `link.id !== ''` test elsewhere in this module is about the ML ITEM
+    // id, a schema field whose blank value IS in the corpus; a Firestore doc id
+    // is a different thing.) It is because a caller threading a falsy variable
+    // through should get the default, not a guaranteed refusal.
     const db = new FakeDb();
     seedBase(db);
     const { api } = makeApi();

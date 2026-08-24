@@ -242,11 +242,19 @@ describe('POST /api/marketplace/mercado-livre/reverificar-anuncio', () => {
       { integracaoId: CONTA, produtoId: PRODUTO, linkDocId: ['a'] },
       { integracaoId: CONTA, produtoId: PRODUTO, linkDocId: '' },
       { integracaoId: true, produtoId: PRODUTO, linkDocId: LINK },
+      // Separator-bearing ids, which the local `naoString` this route used to
+      // carry let straight through to `.doc()`. `'a/b'` throws there (odd
+      // component count) and `'a/b/c'` does not throw at all — it resolves two
+      // levels below the collection we meant. `naoDocId` refuses both.
+      { integracaoId: CONTA, produtoId: PRODUTO, linkDocId: 'a/b' },
+      { integracaoId: CONTA, produtoId: PRODUTO, linkDocId: 'a/b/c' },
+      { integracaoId: CONTA, produtoId: 'p/../outro', linkDocId: LINK },
     ];
     for (const body of cases) {
       expect((await POST(req(body))).status).toBe(400);
     }
     expect(h.applyItemStatusToLink).not.toHaveBeenCalled();
+    expect(h.docRef).not.toHaveBeenCalled();
   });
 
   it('is gated on the caller permission — nothing is read or written on a reject', async () => {

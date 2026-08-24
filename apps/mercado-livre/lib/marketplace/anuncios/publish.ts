@@ -194,10 +194,20 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
    * route 404s both cases before we get here (`publicar/route.ts`); this is the
    * backstop, and it is free because the snapshot is already in hand.
    */
-  // Empty string counts as ABSENT, matching how the rest of this module reads
-  // an id off a link doc (`link.id !== ''`): the schema permits `''` and the
-  // migrated corpus contains it, so a `!= null` test alone leaves a caller able
-  // to ask for a doc that can never exist.
+  // Empty string counts as ABSENT.
+  //
+  // ⚠️ NOT for the reason `link.id !== ''` exists elsewhere in this module. That
+  // one is about the **ML item id**, a schema field (`z.string().nullable()`,
+  // no `.min(1)`) whose blank value really is in the migrated corpus. This is a
+  // **Firestore document id**, and one can never be `''` — `.doc('')` throws
+  // "Path must be a non-empty string". So `''` here cannot name a real doc, and
+  // treating it as absent beats treating it as a guaranteed refusal.
+  //
+  // ⚠️ The route ahead of this one 400s a PRESENT `''` rather than ignoring it,
+  // and the divergence is deliberate: a route can reject a body the caller
+  // plainly got wrong, while a library entry point should degrade to its default
+  // instead of failing a caller who passed a falsy variable through. Do not
+  // "unify" them without deciding which of the two you are.
   const alvoLinkDocId = deps.linkDocId != null && deps.linkDocId !== '' ? deps.linkDocId : null;
   const linkDoc =
     alvoLinkDocId != null ? contaLinks.find((d) => d.docId === alvoLinkDocId) : contaLinks[0];
