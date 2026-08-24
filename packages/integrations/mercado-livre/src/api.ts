@@ -588,6 +588,17 @@ export interface MercadoLivreApi {
    * is sent at all — which would refund half the order by omission.
    */
   partialRefundClaim(claimId: number, percentage: number): Promise<MlExpectedResolution[]>;
+  /**
+   * `GET …/claims/{id}/expected-resolutions` — what each party WANTS out of the
+   * claim, and whether it is `pending` / `accepted` / `rejected`.
+   *
+   * ⚠️ Read-side counterpart of the four resolution POSTs, and the one an
+   * operator needs FIRST: choosing between refund, partial refund and
+   * allow-return without knowing what the buyer asked for is guessing. The
+   * POSTs already return this same array as their write result.
+   */
+  getClaimExpectedResolutions(claimId: number): Promise<MlExpectedResolution[]>;
+
   /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
   searchClaims(params: {
     status?: string;
@@ -1235,6 +1246,12 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         `/post-purchase/v1/claims/${claimId}/expected-resolutions/partial-refund`,
         mlExpectedResolutionsSchema,
         { body: { percentage } },
+      ),
+    getClaimExpectedResolutions: (claimId) =>
+      request(
+        'GET',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions`,
+        mlExpectedResolutionsSchema,
       ),
     getClaimReason: (reasonId) =>
       request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
