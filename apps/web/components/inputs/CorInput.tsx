@@ -2,7 +2,7 @@
 
 import { ColorInput } from '@mantine/core';
 import type { FieldRenderProps } from '@delfrance/ui';
-import { corToHex, hexToCor } from '@/lib/integracoes/cor';
+import { corToHex, hexToCor } from '@delfrance/core';
 
 /**
  * The `integracao.cor` editor — a Mantine `ColorInput` over the stored integer.

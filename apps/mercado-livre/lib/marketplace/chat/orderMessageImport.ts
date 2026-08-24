@@ -32,6 +32,7 @@ import {
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import type { MercadoLivreApi, MlPackMessages } from '@delfrance/integrations-mercado-livre';
 
+import { corToEtiquetaArgb } from '@delfrance/core/cor';
 import { coerceToMillis } from '@delfrance/core/datetime';
 
 import { ack404EhSeguro } from '../notificacoes/notificacaoFrescor';
@@ -247,7 +248,11 @@ export async function importOrderMessageMercadoLivre(
     clienteOuterRef,
     integracaoOuterRef: outerRef('integracao', integracaoId),
     pedidoOuterRef: pedidoId == null ? null : outerRef('pedidos', pedidoId),
-    corEtiqueta: conta.cor,
+    // ⚠️ CONVERTED, not copied. `integracao.cor` is a 24-bit RGB int; `cor_etiqueta`
+    // is a 32-bit ARGB `Color.value`, and the chat etiqueta filter matches its
+    // palette with an exact `==`. A raw copy paints the right colour but is
+    // selectable by no etiqueta at all. See `corToEtiquetaArgb`.
+    corEtiqueta: corToEtiquetaArgb(conta.cor),
     nowMs,
     acao,
     packOrOrderId: alvo.id,
