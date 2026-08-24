@@ -263,6 +263,70 @@ describe('sweepRemovedMembers', () => {
     expect(mocks.updateItem).not.toHaveBeenCalled();
   });
 
+  it('WARNS about the candidates it could not confirm — a partial refusal is otherwise silent', async () => {
+    // The one case with no `skipped` and no other trace: some confirm, some do
+    // not, and the sweep reports success. It is also the only signal that would
+    // reveal either untestable assumption breaking — above all a FLAT multiget
+    // response, which parses fine and then confirms nothing at all.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // ⚠️ An earlier test in this file spies `console.warn` and never restores it,
+    // and vitest hands back the SAME spy rather than stacking a new one — so
+    // without this the assertions below see that test's accumulated calls too.
+    warn.mockClear();
+    try {
+      const { api } = makeApi({
+        searchItemsByUserProduct: vi.fn(async () => ({
+          results: ['MLB1', 'MLB2', 'MLB3', 'MLB-ESTRANHO'],
+          paging: { total: 4, limit: FAMILY_ITEMS_PAGE_SIZE, offset: 0 },
+        })),
+        getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+          ids.map((id) => ({
+            code: 200,
+            body: { id, user_product_id: id === 'MLB-ESTRANHO' ? 'MLBU-OUTRA' : 'MLBU1' },
+          })),
+        ),
+      });
+
+      const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB1', 'MLB2'] });
+
+      expect(out).toEqual({ closed: ['MLB3'], skipped: null });
+      // Matched by MESSAGE, not by call count: this path emits other warns and a
+      // bare count would pass on any of them.
+      const nossos = warn.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('variações não confirmadas'),
+      );
+      expect(nossos).toHaveLength(1);
+      expect(nossos[0]![1]).toMatchObject({
+        familyId: ARGS.familyId,
+        naoConfirmadas: ['MLB-ESTRANHO'],
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does NOT warn when every candidate confirms', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // ⚠️ An earlier test in this file spies `console.warn` and never restores it,
+    // and vitest hands back the SAME spy rather than stacking a new one — so
+    // without this the assertions below see that test's accumulated calls too.
+    warn.mockClear();
+    try {
+      const { api } = makeApi();
+
+      const out = await sweepRemovedMembers({ api }, { ...ARGS, keptItemIds: ['MLB1', 'MLB2'] });
+
+      expect(out).toEqual({ closed: ['MLB3'], skipped: null });
+      expect(
+        warn.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && c[0].includes('variações não confirmadas'),
+        ),
+      ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('rethrows anything that is not an ML error', async () => {
     // A coding bug must not be swallowed by the best-effort wrapper.
     const { api } = makeApi({

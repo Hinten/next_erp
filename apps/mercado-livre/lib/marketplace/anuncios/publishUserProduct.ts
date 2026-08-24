@@ -242,6 +242,23 @@ export async function sweepRemovedMembers(
     return { closed: [], skipped: `não foi possível confirmar os membros: ${verificacao.erro}` };
   }
   const orphans = verificacao.confirmados;
+  // ⚠️ A PARTIAL refusal is otherwise invisible: `skipped` stays null and the
+  // sweep reports success, so the candidates that fell out leave no trace at all.
+  // That is the case most worth seeing, because it is the only signal that either
+  // assumption nothing here can test has broken — that ML honours the
+  // `user_product_id` filter, and that it answers in the `{code, body}` envelope.
+  // A FLAT response is the sharp one: `code` is optional on a `.passthrough()`
+  // schema, so it would parse, then fail `code !== 200` on every entry, and the
+  // sweep would quietly stop closing anything for good.
+  if (orphans.length < candidatos.length) {
+    const confirmadosSet = new Set(orphans);
+    console.warn('[mercado-livre] publish: variações não confirmadas na família', {
+      familyId,
+      naoConfirmadas: candidatos.filter((id) => !confirmadosSet.has(id)),
+      confirmadas: orphans.length,
+      candidatas: candidatos.length,
+    });
+  }
   if (orphans.length === 0) {
     return { closed: [], skipped: 'nenhum anúncio a encerrar pertence comprovadamente à família' };
   }
