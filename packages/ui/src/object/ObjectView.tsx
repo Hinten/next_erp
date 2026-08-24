@@ -635,6 +635,28 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
       form.reset(values as typeof raw);
+      // Re-base the tier-3 baseline onto what we just wrote: after a successful
+      // save, the version the operator last knew IS this one.
+      //
+      // Without this, "Salvar e continuar" leaves the form mounted holding the
+      // PRE-save baseline while the server has the post-save value, so a second
+      // edit of the same field collides with the operator's own previous write —
+      // a false conflict, which #791 already established is worse than no guard
+      // at all ("operators would learn to click through it"). `useServerTruthSeed`
+      // cannot repair it: it corrects once per record id and that already
+      // happened on open, so no later snapshot re-seeds this.
+      //
+      // Merged, not replaced, and only when a baseline was actually armed. A null
+      // one is the deliberate fail-open hole documented above the create-mode
+      // effect; building a baseline out of a patch would claim knowledge of every
+      // field the patch does not carry. Same reasoning as the conflict re-base
+      // below: whatever they decide next is judged against what they last wrote.
+      if (baseline.current) {
+        baseline.current = {
+          ...baseline.current,
+          ...(result.patch as Record<string, unknown>),
+        };
+      }
       // If we just created, retain the id so subsequent saves are updates.
       if (!internalId) setInternalId(result.id);
       // Sibling writes that belong to this save (e.g. a manager flushing
