@@ -20,6 +20,7 @@ import {
   MercadoLivreContaNotConfiguredError,
   MercadoLivreNotImplementedError,
 } from './mercadoLivre';
+import { validationPaths } from './validationIssues';
 
 // `MercadoLivreError` is the base of every plugin error (HTTP / validation /
 // network / reauth). `MercadoLivreNotConfiguredError` is the separate scaffold
@@ -108,7 +109,12 @@ function logErrorResponse(err: KnownError, status: number): void {
     err instanceof MercadoLivreHttpError
       ? ` upstream=${String(err.status)} body=${safeJson(err.body)}`
       : err instanceof MercadoLivreValidationError
-        ? ` issues=${safeJson(err.issues)}`
+        ? // ⚠️ PATHS AND CODES, never `err.issues` itself. `parseOk` puts the RAW
+          // RESPONSE BODY on this error for a non-JSON response, and a Zod issue can
+          // carry the offending input — #1015 is the worked example of a token
+          // response reaching Cloud Logging exactly this way. The field names are
+          // the whole diagnostic value; see `./validationIssues`.
+          ` campos=${safeJson(validationPaths(err.issues))}`
         : '';
   const line = `[mercado-livre/api] ${err.name} -> HTTP ${String(status)}: ${err.message}${detail}`;
   if (status >= 500) {
