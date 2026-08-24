@@ -584,3 +584,58 @@ describe('createMercadoLivreApi — claim RESOLUTION (#768, previously untested)
     );
   });
 });
+
+describe('getClaimPartialRefundOffers — advice DEGRADES, it never fails the read', () => {
+  /**
+   * ⚠️ Typing `recommendations`/`restrictions` made the CONTAINER strict where it
+   * was `.passthrough()`-tolerant — the same failure mode by another door. A
+   * shape drift stopped degrading the advice and started failing the whole offers
+   * read, taking the picker down. These are the shapes that parsed before and
+   * must keep parsing; `.catch([])` is the idiom this file already uses.
+   */
+  function offersApi(over: Record<string, unknown>) {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        currency_id: 'BRL',
+        available_offers: [{ amount: 149, percentage: 50 }],
+        ...over,
+      }),
+    );
+    return createMercadoLivreApi(cfg(fetchMock));
+  }
+
+  it.each([
+    ['an OBJECT where an array is expected', { restrictions: { minimum: 30 } }],
+    ['an array of STRINGS', { recommendations: ['PARTIAL_REFUND_BETTER_THAN_RETURN'] }],
+    ['a null where an array is expected', { restrictions: null }],
+    ['a nested shape ML has not published', { recommendations: [{ nested: { deep: true } }] }],
+  ])('tolerates %s — offers still parse', async (_nome, over) => {
+    const api = offersApi(over);
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+    // The DECISION survives; only the advice is lost.
+    expect(out.available_offers.map((o) => o.percentage)).toEqual([50]);
+  });
+
+  it('accepts a QUOTED percentage — ML does this, and it must not fail the read', async () => {
+    // `mlMissedFeedEntrySchema` already models ML numerics as `string | number`
+    // for exactly this reason.
+    const api = offersApi({
+      restrictions: [{ percentage: '30', reason: 'PAREX_REJECTED', type: 'minimum' }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+    expect(out.restrictions[0]!.percentage).toBe(30);
+    expect(out.restrictions[0]!.type).toBe('minimum');
+  });
+
+  it('still reads well-formed advice — the positive control', async () => {
+    // Without this, every tolerance case above would pass on a schema that
+    // dropped the fields entirely.
+    const api = offersApi({
+      recommendations: [{ percentage: 40, reason: 'BETTER_THAN_RETURN', type: 'maximum' }],
+      restrictions: [{ percentage: 30, reason: 'PAREX_REJECTED', type: 'minimum' }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+    expect(out.recommendations[0]!.percentage).toBe(40);
+    expect(out.restrictions[0]!.percentage).toBe(30);
+  });
+});
