@@ -42,6 +42,7 @@ const h = vi.hoisted(() => ({
     async (_deps: { nowUs: number; nowMs: number; integracaoId: string }, _resourceId: number) => ({
       pedidoId: 'ped1',
       created: true,
+      semEnvio: false,
       skipped: null,
     }),
   ),
@@ -1266,6 +1267,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: 'ped1',
       created: true,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1285,6 +1287,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: 'ped2',
       created: false,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1303,6 +1306,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: null,
       created: false,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1321,6 +1325,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: null,
       created: false,
+      semEnvio: false,
       skipped: 'seller-mismatch' as const,
     }));
     const r = await handleNotificationTask(
@@ -1339,6 +1344,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: null,
       created: false,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1402,6 +1408,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     h.importPedidoMercadoLivre.mockResolvedValue({
       pedidoId: 'ped9',
       created: true,
+      semEnvio: false,
       skipped: null,
     });
 
@@ -1435,6 +1442,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       const orderImportRunner = vi.fn(async () => ({
         pedidoId: 'ped-o',
         created: true,
+        semEnvio: false,
         skipped: null,
       }));
       const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped1', skipped: null }));
@@ -1572,6 +1580,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       const orderImportRunner = vi.fn(async () => ({
         pedidoId: 'ped-o',
         created: true,
+        semEnvio: false,
         skipped: null,
       }));
       const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-p', skipped: null }));
@@ -1733,6 +1742,7 @@ describe('handleNotificationTask — claims claim-import dispatch (Step 14)', ()
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: 'ped-o',
       created: true,
+      semEnvio: false,
       skipped: null,
     }));
     const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-p', skipped: null }));
@@ -2294,7 +2304,11 @@ describe('orders_v2 / payments report what they actually did (#1087)', () => {
     );
   }
 
-  async function runOrder(over: { created: boolean; skipped: OrderImportResult['skipped'] }) {
+  async function runOrder(over: {
+    created: boolean;
+    semEnvio?: boolean;
+    skipped: OrderImportResult['skipped'];
+  }) {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
     return handleNotificationTask(
@@ -2305,7 +2319,7 @@ describe('orders_v2 / payments report what they actually did (#1087)', () => {
         topic: 'orders_v2',
       }),
       0,
-      { orderImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', ...over })) },
+      { orderImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', semEnvio: false, ...over })) },
     );
   }
 
@@ -2326,8 +2340,15 @@ describe('orders_v2 / payments report what they actually did (#1087)', () => {
   );
 
   const ORDER_CASES: ReadonlyArray<
-    readonly [{ created: boolean; skipped: OrderImportResult['skipped'] }, string]
+    readonly [
+      { created: boolean; semEnvio?: boolean; skipped: OrderImportResult['skipped'] },
+      string,
+    ]
   > = [
+    // ⚠️ The sem-envio pair keeps created/updated rather than replacing it — an
+    // order that will never ship still needs to say whether the pedido was new.
+    [{ created: true, semEnvio: true, skipped: null }, 'created-sem-envio'],
+    [{ created: false, semEnvio: true, skipped: null }, 'updated-sem-envio'],
     [{ created: true, skipped: null }, 'created'],
     [{ created: false, skipped: null }, 'updated'],
     [{ created: false, skipped: 'seller-mismatch' }, 'seller-mismatch'],

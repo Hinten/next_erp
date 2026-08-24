@@ -17,6 +17,7 @@ import { coerceToMicros } from '@delfrance/core/datetime';
 import {
   shipmentBaseCost,
   shipmentLeadTime,
+  type MlOrder,
   type MlShipment,
   type MlShipmentPayment,
 } from '@delfrance/integrations-mercado-livre';
@@ -87,6 +88,36 @@ function sumApprovedShippingPayments(shippingPayments: readonly MlShipmentPaymen
       .filter((p) => p.status === 'approved')
       .reduce((sum, p) => sum + toAmountNumber(p.amount), 0),
   );
+}
+
+/**
+ * ML's `tags` marker for an order sold with **no Mercado Envios shipment** —
+ * "frete a combinar com o comprador". The Orders reference documents `tags` as
+ * carrying "sem envio" among its values, and ships `"no_shipping"` in its own
+ * sample response.
+ */
+export const ML_TAG_SEM_ENVIO = 'no_shipping';
+
+/**
+ * True when this order will NEVER have a Mercado Envios shipment.
+ *
+ * ⚠️ **Both halves are load-bearing, and the tag is the one that matters.** ML
+ * attaches the shipment ASYNCHRONOUSLY — its Orders reference says so outright:
+ * "o shipment é associado ao pedido de forma assíncrona após a criação do mesmo.
+ * Pode haver um breve delay". So a missing `shipping.id` on its own is ambiguous:
+ * it means *either* "sold with no envio" *or* "the envio has not propagated yet".
+ *
+ * Keying on absence alone would write a no-freight block onto an order that is
+ * about to receive a real shipment — and since `applyFreteSemEnvioStep` is
+ * create-only, that wrong block would then be the one that sticks. The positive
+ * tag is what separates the two. Do not "simplify" this to `shipping?.id == null`;
+ * `orderImport.test.ts` pins the negative case for exactly that reason.
+ *
+ * There is no order-level `mode`/`logistic_type` to consult — those live on
+ * `/shipments/{id}`, which for these orders does not exist.
+ */
+export function pedidoSemEnvioMercadoEnvios(order: MlOrder): boolean {
+  return order.shipping?.id == null && (order.tags ?? []).includes(ML_TAG_SEM_ENVIO);
 }
 
 export function mlShipmentToFreteInicial(args: {

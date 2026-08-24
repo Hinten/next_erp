@@ -266,6 +266,8 @@ function makeOrder(opts: {
   lastUpdated?: string;
   shippingId?: number | null;
   itens?: boolean;
+  /** ML order tags. `['no_shipping']` marks an order sold with no envio. */
+  tags?: readonly string[];
 }): DocData {
   return {
     id: opts.id,
@@ -287,6 +289,7 @@ function makeOrder(opts: {
     buyer: { id: 900 },
     seller: { id: SELLER_USER_ID },
     shipping: opts.shippingId != null ? { id: opts.shippingId } : null,
+    tags: opts.tags ?? [],
     payments: [],
   };
 }
@@ -421,7 +424,12 @@ describe('importPedidoMercadoLivre — guards', () => {
 
     const result = await importPedidoMercadoLivre(deps(db, api), 1);
 
-    expect(result).toEqual({ pedidoId: null, created: false, skipped: 'no-buyer' });
+    expect(result).toEqual({
+      pedidoId: null,
+      created: false,
+      semEnvio: false,
+      skipped: 'no-buyer',
+    });
     expect(discoverPedidoMercadoLivre).not.toHaveBeenCalled();
   });
 
@@ -434,7 +442,12 @@ describe('importPedidoMercadoLivre — guards', () => {
 
     const result = await importPedidoMercadoLivre(deps(db, api), 1);
 
-    expect(result).toEqual({ pedidoId: null, created: false, skipped: 'seller-mismatch' });
+    expect(result).toEqual({
+      pedidoId: null,
+      created: false,
+      semEnvio: false,
+      skipped: 'seller-mismatch',
+    });
     expect(discoverPedidoMercadoLivre).not.toHaveBeenCalled();
   });
 
@@ -467,7 +480,7 @@ describe('importPedidoMercadoLivre — order/pack fetch', () => {
 
     const result = await importPedidoMercadoLivre(deps(db, api), 500);
 
-    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, skipped: null });
+    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, semEnvio: false, skipped: null });
     expect(getOrder).toHaveBeenNthCalledWith(1, 500);
     expect(getOrder).toHaveBeenNthCalledWith(2, 501);
   });
@@ -936,7 +949,7 @@ describe('importPedidoMercadoLivre — cliente', () => {
 
     const result = await importPedidoMercadoLivre(deps(db, api), 1);
 
-    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, skipped: null });
+    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, semEnvio: false, skipped: null });
     expect(findOrCreateCliente).not.toHaveBeenCalled();
     expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ clientePedidoOuterRef: null });
     expect(warn).toHaveBeenCalled();
@@ -996,7 +1009,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       expect.objectContaining({ orderId: 1, pedidoId: 'pedido-1', cepBilling: '123' }),
     );
     // The pedido itself still imported — the endereço miss is not a skip.
-    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, skipped: null });
+    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, semEnvio: false, skipped: null });
     error.mockRestore();
   });
 
@@ -2118,5 +2131,141 @@ describe('importPedidoMercadoLivre — pago advance sums only APPROVED pagamento
     // The competitor's write, and nothing from the aborted attempt's retry.
     const estadoWrites = db.opLog.filter((o) => o.op === 'update' && o.path === 'pedidos/pedido-1');
     expect(estadoWrites.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * #1087 — an order sold with **no Mercado Envios shipment** ("frete a combinar
+ * com o comprador"). Before this, `applyFreteStep` was gated on a non-null
+ * `MlShipment` with no `else`, so `freteInicial` was never written,
+ * `podeAvancarParaPago` could never fire, and the pedido was stranded at
+ * `emProcessamento` FOREVER with the payment correctly imported beside it.
+ */
+describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', () => {
+  function seedPedidoPronto(db: FakeDb, over: DocData = {}): void {
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: null,
+      valorCobrado: 100,
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            mktplaceId: 'MLB1',
+            precoDeVenda: 100,
+            quantidade: 1,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+      ...over,
+    });
+  }
+
+  it('synthesizes a freteInicial and never asks ML for a shipment', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db);
+    const getShipment = vi.fn();
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping', 'paid'] })),
+      getShipment,
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    // There is no shipment to fetch, and asking would be a wasted round trip
+    // (and a 404 on a real order).
+    expect(getShipment).not.toHaveBeenCalled();
+
+    const frete = db.docs('pedidos').get('pedido-1')!.freteInicial as DocData;
+    expect(frete).not.toBeNull();
+    expect(frete).toMatchObject({
+      estado: 'iniciado',
+      // ⚠️ FOB, not CIF. CIF ('0') is the only modalidade that charges freight
+      // INTO the nota, and three NF-e generator reads key on it (#1090).
+      modalidade: '1',
+      // No external freight option exists on this order. This is also what makes
+      // the etiqueta route and all three nfeUpload gates decline, correctly —
+      // they test `=== INTEGRACAO_FRETE.mercadoLivre`.
+      externalOptionIntegracao: null,
+      externalId: null,
+      codRastreio: null,
+      enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
+    });
+  });
+
+  it('⛔ writes NOTHING when the shipment is merely un-propagated (no no_shipping tag)', async () => {
+    // THE test that carries the design. ML attaches the shipment asynchronously
+    // — its Orders reference says so — so an absent `shipping.id` on its own also
+    // means "not here YET". Seeding a no-freight block on that order would be
+    // wrong, and since the step is create-only the wrong block would stick.
+    // If someone "simplifies" the gate to `shipping?.id == null`, this goes red.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db);
+    const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1 })) });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.freteInicial).toBeNull();
+    expect(written.estado).toBe('emProcessamento');
+  });
+
+  it('advances the pedido to pago once the payment is there', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db);
+    db.seed('pedidos/pedido-1/pagamentos', 'pag-1', {
+      id: '900',
+      valor: 100,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping'] })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    // The whole point: cliente + endereço were already there, the frete block is
+    // what was missing, and the money is covered.
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('pago');
+  });
+
+  it('reports semEnvio so the notification log can say the freight needs a human', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db);
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping'] })),
+    });
+
+    const result = await importPedidoMercadoLivre(deps(db, api), 1);
+    expect(result.semEnvio).toBe(true);
+  });
+
+  it('is create-only — a replay never clobbers an existing freteInicial', async () => {
+    // An operator edit, or a real shipment that landed later, must survive a
+    // re-delivered notification.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db, {
+      freteInicial: { estado: 'postado', modalidade: '0', codRastreio: 'BR123456789BR' },
+    });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping'] })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.freteInicial).toMatchObject({
+      estado: 'postado',
+      modalidade: '0',
+      codRastreio: 'BR123456789BR',
+    });
   });
 });

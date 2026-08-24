@@ -134,7 +134,7 @@ export const itemAttributeSchema = z
      */
     value_struct: z
       .object({
-        number: z.number().nullable().optional(),
+        number: mlNumber().nullable().optional(),
         unit: z.string().nullable().optional(),
       })
       .passthrough()
