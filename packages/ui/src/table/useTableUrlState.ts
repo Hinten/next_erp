@@ -16,12 +16,35 @@ const FILTER_OPS = new Set<PipelineFilterOp>([
   'lte',
   'gt',
   'gte',
+  // The two array ops a virtual column's `renderFilter` can emit. They were
+  // absent here while nothing emitted them, which made a filter using one
+  // WRITE to the URL (the sync effect below is op-agnostic) and then be
+  // dropped on hydration — a shared link silently reopened unfiltered.
+  'array-contains',
+  'array-contains-any',
 ]);
 
 /**
+ * Serialize a filter value for the `?<field>=<op>:<value>` query param — the
+ * inverse of {@link parseFiltersFromParams}'s value decoding, exported so the
+ * round trip can be asserted in one place.
+ *
+ * `array-contains-any` carries a candidate LIST. Each element is
+ * percent-encoded before being joined so a separator inside an id cannot split
+ * one candidate into two; every other op stringifies its scalar as before.
+ */
+export function encodeFilterValue(value: ColumnFilterValue['value']): string {
+  return Array.isArray(value)
+    ? value.map((v) => encodeURIComponent(String(v))).join(',')
+    : String(value);
+}
+
+/**
  * Parse `?<field>=<op>:<value>` query params into the `filters` state. The
- * value is coerced by the field's `kind` (boolean / number / string). Params
- * that don't map to a known descriptor, or carry an unknown op, are skipped.
+ * value is coerced by the field's `kind` (boolean / number / string), except
+ * for `array-contains-any`, whose comma-separated candidate list is decoded by
+ * the op. Params that don't map to a known descriptor, or carry an unknown op,
+ * are skipped.
  */
 export function parseFiltersFromParams(
   params: URLSearchParams,
@@ -39,6 +62,33 @@ export function parseFiltersFromParams(
     if (!FILTER_OPS.has(op)) continue;
     const rawValue = raw.slice(sep + 1);
     let value: ColumnFilterValue['value'];
+    if (op === 'array-contains-any') {
+      // A candidate list, not a scalar — so it is decoded by the OP, ahead of
+      // the coerce-by-`kind` ladder below (the descriptor's kind describes the
+      // document ARRAY, never its elements). An empty list means "no rows",
+      // which is not a filter worth restoring: skip it and show everything.
+      //
+      // ⚠️ The decode must not throw. `URLSearchParams.get()` does NOT sanitise
+      // a stray `%` (`…:abc%,def` arrives verbatim), and `decodeURIComponent`
+      // answers a malformed escape with `URIError`. This function runs from the
+      // `useState` initializer in `useTableUrlState`, so a throw here happens
+      // DURING RENDER and takes down the whole TableView subtree — over a
+      // mangled shared link. Every other unparseable input in this loop drops
+      // its filter and continues; so does this one.
+      let list: string[];
+      try {
+        list = rawValue
+          .split(',')
+          .filter((part) => part !== '')
+          .map((part) => decodeURIComponent(part));
+      } catch (err) {
+        if (!(err instanceof URIError)) throw err;
+        continue;
+      }
+      if (list.length === 0) continue;
+      out[key] = { op, value: list };
+      continue;
+    }
     if (descriptor.kind === 'boolean') {
       value = rawValue === 'true';
     } else if (
@@ -137,7 +187,7 @@ export function useTableUrlState(
   useEffect(() => {
     const params = new URLSearchParams();
     for (const [field, v] of Object.entries(filters)) {
-      params.set(field, `${v.op}:${String(v.value)}`);
+      params.set(field, `${v.op}:${encodeFilterValue(v.value)}`);
     }
     if (sort) params.set('sort', `${sort.field}:${sort.direction}`);
     const qs = params.toString();

@@ -66,10 +66,18 @@ export type FilterableField = Pick<
  * fallback path). Subcollection-lookup filters (e.g. the pedido NF column)
  * encode their chosen child field inside `value` as `"<subfield>:<term>"` so
  * the whole filter round-trips through the URL sync unchanged.
+ *
+ * The LIST form is exclusively for `array-contains-any` (membership of a
+ * document array against several candidates) — the same contract
+ * `PipelineFieldFilter.value` states, so a filter entry spreads straight into
+ * the pipeline `where`. Every other op takes a scalar, and an EMPTY list means
+ * "no rows": `buildPipeline` throws on it rather than querying, so a caller
+ * emitting one must short-circuit (see the TableView guard) or, better, emit
+ * `undefined` and drop the filter entirely.
  */
 export interface ColumnFilterValue {
   op: PipelineFilterOp;
-  value: string | number | boolean | null;
+  value: string | number | boolean | null | ReadonlyArray<string>;
 }
 
 /**

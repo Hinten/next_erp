@@ -507,11 +507,25 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // an empty table. Under `queryOverride` the extras (and the short-circuit)
   // don't apply: that query is caller-owned.
   const extraFiltersSerial = useMemo(() => JSON.stringify(extraFilters ?? null), [extraFilters]);
+  // Same rule for a USER column filter carrying a candidate list (a virtual
+  // column's `renderFilter` can emit `array-contains-any`). Its UI is expected
+  // to emit `undefined` rather than `[]` — dropping the filter is what "nothing
+  // selected" means — so this is the backstop for the one that doesn't: an
+  // empty list reaches `buildPipeline` as a THROW, which blanks the screen with
+  // an uncaught error instead of rendering zero rows.
+  const columnFilterEmpty = useMemo(
+    () =>
+      Object.values(serverFilters).some(
+        (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
+      ),
+    [serverFiltersSerial],
+  );
   const extraEmpty =
-    !queryOverride &&
-    (extraFilters ?? []).some(
-      (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
-    );
+    columnFilterEmpty ||
+    (!queryOverride &&
+      (extraFilters ?? []).some(
+        (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
+      ));
 
   // Sort actually issued to Firestore: an explicit user/prop sort wins;
   // otherwise the declared default `orderBy` (full array — supports multi-key
