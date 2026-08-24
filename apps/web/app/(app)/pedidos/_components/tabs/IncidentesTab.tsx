@@ -188,7 +188,7 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
                 value={form.tipo}
                 onChange={(v) => v && setForm((f) => ({ ...f, tipo: v }))}
                 allowDeselect={false}
-                disabled={disabled}
+                disabled={resFieldsDisabled}
               />
               <Select
                 label="Origem"
@@ -210,7 +210,7 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
                 const value = e.currentTarget.value;
                 setForm((f) => ({ ...f, motivo: value }));
               }}
-              disabled={disabled}
+              disabled={resFieldsDisabled}
               autosize
               minRows={2}
             />
@@ -222,7 +222,7 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
                 const value = e.currentTarget.value;
                 setForm((f) => ({ ...f, comentarios: value }));
               }}
-              disabled={disabled}
+              disabled={resFieldsDisabled}
               autosize
               minRows={2}
             />
